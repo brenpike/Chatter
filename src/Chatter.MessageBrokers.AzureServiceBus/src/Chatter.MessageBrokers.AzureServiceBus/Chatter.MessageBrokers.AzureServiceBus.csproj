@@ -3,9 +3,10 @@
   <PropertyGroup>
     <TargetFramework>netcoreapp3.1</TargetFramework>
     <PackageId>Chatter.MessageBrokers.AzureServiceBus</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.0.1</Version>
     <Authors>Brennan Pike</Authors>
-    <Description>An implementation of the Chatter.MessageBrokers adapter library for Azure Service Bus</Description>
+    <Owners>Brennan Pike</Owners>
+    <Description>An implementation of the Chatter.MessageBrokers adapter library for Azure Service Bus.</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

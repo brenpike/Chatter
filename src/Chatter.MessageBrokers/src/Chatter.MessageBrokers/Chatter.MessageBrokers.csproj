@@ -3,9 +3,10 @@
   <PropertyGroup>
     <TargetFramework>netcoreapp3.1</TargetFramework>
     <PackageId>Chatter.MessageBrokers</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.0.1</Version>
     <Authors>Brennan Pike</Authors>
-    <Description>A message broker adapter library for Chatter.</Description>
+    <Owners>Brennan Pike</Owners>
+    <Description>A message broker adapter library built on top of Chatter.CQRS.</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
