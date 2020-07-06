@@ -13,8 +13,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\..\Samples.SharedKernel\Samples.SharedKernel.csproj" />
     <ProjectReference Include="..\..\..\..\src\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj" />
+    <ProjectReference Include="..\..\..\Samples.SharedKernel\Samples.SharedKernel.csproj" />
     <ProjectReference Include="..\TravelBooking.Infrastructure\TravelBooking.Infrastructure.csproj" />
   </ItemGroup>
 

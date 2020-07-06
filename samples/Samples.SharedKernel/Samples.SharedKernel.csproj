@@ -5,11 +5,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\src\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj" />
+    <Folder Include="Dtos\" />
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Dtos\" />
+    <ProjectReference Include="..\..\src\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj" />
   </ItemGroup>
 
 </Project>

@@ -5,8 +5,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\..\Samples.SharedKernel\Samples.SharedKernel.csproj" />
     <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers\src\Chatter.MessageBrokers\Chatter.MessageBrokers.csproj" />
+    <ProjectReference Include="..\..\..\Samples.SharedKernel\Samples.SharedKernel.csproj" />
     <ProjectReference Include="..\TravelBooking.Domain\TravelBooking.Domain.csproj" />
   </ItemGroup>
 
