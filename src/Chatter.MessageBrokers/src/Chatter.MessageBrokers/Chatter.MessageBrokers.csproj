@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <PackageId>Chatter.MessageBrokers</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Brennan Pike</Authors>
+    <Description>A message broker adapter library for Chatter.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Scrutor" Version="3.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj" />
+  </ItemGroup>
+
+</Project>

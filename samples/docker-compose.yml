@@ -1,0 +1,42 @@
+version: "3.5"
+
+services:
+  carrental:
+    image: carrentalapi:dev
+    build: 
+      context: ../
+      dockerfile: ./samples/CarRentalService/src/Dockerfile
+    ports:
+    - "5001:80"
+    - "5002:443"
+
+  flightbooking:
+    image: flightbookingapi:dev
+    build: 
+      context: ../
+      dockerfile: ./samples/FlightBookingService/src/Dockerfile
+    ports:
+    - "5003:80"
+    - "5004:443"
+
+  hotelbooking:
+    image: hotelbookingapi:dev
+    build: 
+      context: ../
+      dockerfile: ./samples/HotelBookingService/src/Dockerfile
+    ports:
+    - "5005:80"
+    - "5006:443"
+
+  travelbooking:
+    image: travelbookingapi:dev
+    build: 
+      context: ../
+      dockerfile: ./samples/TravelBookingService/src/Dockerfile
+    ports:
+    - "5007:80"
+    - "5008:443"
+    depends_on: 
+    - carrental
+    - flightbooking
+    - hotelbooking

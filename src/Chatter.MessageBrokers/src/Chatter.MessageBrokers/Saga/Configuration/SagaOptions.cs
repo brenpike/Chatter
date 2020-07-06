@@ -1,0 +1,22 @@
+﻿using Newtonsoft.Json;
+using System;
+using System.ComponentModel.DataAnnotations;
+
+namespace Chatter.MessageBrokers.Saga.Configuration
+{
+    public class SagaOptions
+    {
+        [Required(AllowEmptyStrings = false, ErrorMessage = "The saga data type used for this saga is required.")]
+        public string SagaDataType { get; set; }
+        public int MaxSagaDurationInMinutes { get; set; } = SagaConfigurationConstants.DefaultMaxSagaDurationInMinutes;
+        public string SagaDataContentType { get; set; } = SagaConfigurationConstants.DefaultSagaDataContentType;
+        public string Description { get; set; } = SagaConfigurationConstants.DefaultDescription;
+    }
+
+    public class SagaConfigurationConstants
+    {
+        public const string DefaultSagaDataContentType = "application/json";
+        public const int DefaultMaxSagaDurationInMinutes = 999;
+        public const string DefaultDescription = "Saga";
+    }
+}
