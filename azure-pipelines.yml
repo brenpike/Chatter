@@ -18,8 +18,6 @@ steps:
   inputs:
     command: 'restore'
     projects: 'src/**/*.csproj'
-    feedsToUse: 'select'
-    vstsFeed: 'brotocol'
 
 - task: DotNetCoreCLI@2
   displayName: 'dotnet build'
@@ -36,13 +34,16 @@ steps:
     nobuild: true
     versioningScheme: 'off'
 
+- task: NuGetAuthenticate@0
+  inputs:
+    nuGetServiceConnections: 'brenpike-nuget'
+
 - task: NuGetCommand@2
   displayName: 'nuget push'
   inputs:
     command: 'push'
     feedsToUse: 'select'
     packagesToPush: '$(Build.ArtifactStagingDirectory)/**/*.nupkg;!$(Build.ArtifactStagingDirectory)/**/*.symbols.nupkg'
-    nuGetFeedType: 'internal'
-    publishVstsFeed: 'brotocol'
+    nuGetFeedType: 'external'
     allowPackageConflicts: true
     versioningScheme: 'off'
