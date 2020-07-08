@@ -117,7 +117,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 try
                 {
                     msg.AddUserProperty(Headers.TimeToLive, msg.TimeToLive);
-                    msg.CacheInitialExpiryTimeUtc();
+                    msg.AddUserProperty(Headers.ExpiryTimeUtc, msg.ExpiresAtUtc);
 
                     var bodyConverter = _bodyConverterFactory.CreateBodyConverter(msg.ContentType);
 
