@@ -15,7 +15,7 @@ namespace Chatter.MessageBrokers.Saga
 
         public Type DispatchType => typeof(ISagaMessage);
 
-        public IMessageDispatcher CreateDispatcher<TMessage>() where TMessage : IMessage
+        public IMessageDispatcher GetDispatcher<TMessage>() where TMessage : IMessage
         {
             return new SagaMessageDispatcher(_serviceFactory);
         }

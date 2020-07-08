@@ -3,10 +3,14 @@ using System;
 
 namespace Chatter.CQRS.Commands
 {
+    /// <summary>
+    /// Provides an <see cref="IMessageDispatcher"/> for <see cref="ICommand"/>
+    /// </summary>
     internal class CommandDispatcherProvider : IMessageDispatcherProvider
     {
         private readonly IServiceScopeFactory _serviceScopeFactory;
 
+        ///<inheritdoc/>
         public Type DispatchType => typeof(ICommand);
 
         public CommandDispatcherProvider(IServiceScopeFactory serviceScopeFactory)
@@ -14,7 +18,8 @@ namespace Chatter.CQRS.Commands
             _serviceScopeFactory = serviceScopeFactory;
         }
 
-        public IMessageDispatcher CreateDispatcher<TMessage>() where TMessage : IMessage
+        ///<inheritdoc/>
+        public IMessageDispatcher GetDispatcher()
         {
             return new CommandDispatcher(_serviceScopeFactory);
         }

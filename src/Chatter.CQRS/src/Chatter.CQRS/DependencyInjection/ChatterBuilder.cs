@@ -3,7 +3,7 @@
 namespace Chatter.CQRS.DependencyInjection
 {
     /// <summary>
-    /// A builder class used to register depedencies for the Chatter.CQRS message broker adapter library.
+    /// A builder class used to register depedencies the Chatter library
     /// </summary>
     public sealed class ChatterBuilder : IChatterBuilder
     {

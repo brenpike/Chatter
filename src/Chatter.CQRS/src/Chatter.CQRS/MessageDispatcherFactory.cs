@@ -6,6 +6,9 @@ using System.Reflection;
 
 namespace Chatter.CQRS
 {
+    /// <summary>
+    /// Creates an <see cref="IMessageDispatcher"/>
+    /// </summary>
     public class MessageDispatcherFactory : IMessageDispatcherFactory
     {
         private readonly ConcurrentDictionary<Type, IMessageDispatcher> _dispatchers = new ConcurrentDictionary<Type, IMessageDispatcher>();
@@ -17,6 +20,7 @@ namespace Chatter.CQRS
             _providers = providers;
         }
 
+        ///<inheritdoc/>
         public IMessageDispatcher CreateDispatcher<TMessage>() where TMessage : IMessage
         {
             lock (_sync)
@@ -35,7 +39,7 @@ namespace Chatter.CQRS
                         throw new KeyNotFoundException($"No {typeof(IMessageDispatcherProvider).Name} exists for type '{providerType.Name}'.");
                     }
 
-                    dispatcher = provider.CreateDispatcher<TMessage>();
+                    dispatcher = provider.GetDispatcher();
                     _dispatchers[providerType] = dispatcher;
                 }
 
