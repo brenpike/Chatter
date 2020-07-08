@@ -103,7 +103,15 @@ namespace Chatter.MessageBrokers.Sending
             var expiryTimeUtc = (DateTime?)GetApplicationPropertyByKey(Headers.ExpiryTimeUtc);
             if (expiryTimeUtc != null)
             {
-                WithTimeToLive(expiryTimeUtc.Value - DateTime.UtcNow);
+                var ttl = expiryTimeUtc.Value - DateTime.UtcNow;
+                if (ttl.Duration().TotalMilliseconds > 0)
+                {
+                    WithTimeToLive(ttl);
+                }
+                else
+                {
+                    WithTimeToLive(TimeSpan.Zero);
+                }
             }
             return this;
         }

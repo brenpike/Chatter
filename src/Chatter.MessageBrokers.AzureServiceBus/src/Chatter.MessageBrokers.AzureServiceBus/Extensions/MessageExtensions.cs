@@ -52,15 +52,5 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Extensions
             message.UserProperties[name] = value;
             return message;
         }
-
-        public static Message CacheInitialExpiryTimeUtc(this Message message)
-        {
-            if (!message.UserProperties.TryGetValue(Headers.ExpiryTimeUtc, out var expiryDateUtc))
-            {
-                message.UserProperties[Headers.ExpiryTimeUtc] = message.ExpiresAtUtc;
-            }
-
-            return message;
-        }
     }
 }
