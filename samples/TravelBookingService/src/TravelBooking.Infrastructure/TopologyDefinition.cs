@@ -32,7 +32,7 @@ namespace TravelBooking.Infrastructure
                     EnableDeadLetteringOnMessageExpiration = true,
 
                     //If using DeadLetterCompensationStrategy, this should be set
-                    //ForwardDeadLetteredMessagesTo = CancelFlightQueueName
+                    ForwardDeadLetteredMessagesTo = CancelFlightQueueName
                 },
                 new QueueDescription(CancelHotelQueueName),
                 new QueueDescription(BookHotelQueueName)

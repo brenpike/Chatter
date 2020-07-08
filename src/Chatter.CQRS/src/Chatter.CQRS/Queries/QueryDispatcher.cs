@@ -3,6 +3,9 @@ using System.Threading.Tasks;
 
 namespace Chatter.CQRS.Queries
 {
+    /// <summary>
+    /// An <see cref="IMessageDispatcher"/> implementation to dispatch <see cref="IQuery"/> and <see cref="IQuery{T}"/> messages.
+    /// </summary>
     internal sealed class QueryDispatcher : IQueryDispatcher
     {
         private readonly IServiceScopeFactory _serviceFactory;
@@ -12,6 +15,7 @@ namespace Chatter.CQRS.Queries
             _serviceFactory = serviceFactory;
         }
 
+        ///<inheritdoc/>
         public async Task<TResult> Query<TResult>(IQuery<TResult> query)
         {
             using var scope = _serviceFactory.CreateScope();
@@ -20,6 +24,7 @@ namespace Chatter.CQRS.Queries
             return await handler.Handle(query);
         }
 
+        ///<inheritdoc/>
         public async Task<TResult> Query<TQuery, TResult>(TQuery query) where TQuery : class, IQuery<TResult>
         {
             using var scope = _serviceFactory.CreateScope();

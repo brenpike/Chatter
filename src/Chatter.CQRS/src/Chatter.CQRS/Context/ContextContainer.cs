@@ -2,6 +2,9 @@
 
 namespace Chatter.CQRS.Context
 {
+    /// <summary>
+    /// Contains context used to extend functionality
+    /// </summary>
     public class ContextContainer
     {
         private readonly IDictionary<string, object> _context = new Dictionary<string, object>();
