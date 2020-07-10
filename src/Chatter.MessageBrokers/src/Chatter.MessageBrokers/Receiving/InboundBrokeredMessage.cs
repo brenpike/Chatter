@@ -5,6 +5,9 @@ using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Receiving
 {
+    /// <summary>
+    /// The message received by the <see cref="BrokeredMessageReceiver{TMessage}"/>
+    /// </summary>
     public class InboundBrokeredMessage
     {
         private readonly IDictionary<string, object> _applicationProperties;
@@ -23,28 +26,67 @@ namespace Chatter.MessageBrokers.Receiving
             CorrelationId = GetApplicationPropertyByKey<string>(Headers.CorrelationId);
         }
 
+        /// <summary>
+        /// The message id of the received message
+        /// </summary>
         public string MessageId { get; }
+        /// <summary>
+        /// The body of the received message
+        /// </summary>
         public byte[] Body { get; }
+        /// <summary>
+        /// The application properties of the received message
+        /// </summary>
         public IReadOnlyDictionary<string, object> ApplicationProperties => (IReadOnlyDictionary<string, object>)_applicationProperties;
+        /// <summary>
+        /// The name of the message receiver that recieved this message
+        /// </summary>
         public string MessageReceiverPath { get; }
+        /// <summary>
+        /// The destination this message will reply to
+        /// </summary>
         public string ReplyTo { get; }
+        /// <summary>
+        /// The AMQP group this message will reply to
+        /// </summary>
         public string ReplyToGroupId { get; }
+        /// <summary>
+        /// The AMPQ group this message is in
+        /// </summary>
         public string GroupId { get; }
+        /// <summary>
+        /// The correlation id of the received message
+        /// </summary>
         public string CorrelationId { get; }
+        /// <summary>
+        /// The mode of the transaction this message is participating in
+        /// </summary>
         public TransactionMode TransactionMode { get; }
-
         /// <summary>
         /// Will be true once the <see cref="InboundBrokeredMessage"/> has been successfully received (completed). The message must be successfully handled 
         /// and routed optionally to the next and reply destination(s).
         /// NOTE: This can never be true in the received message handler.
         /// </summary>
         public bool SuccessfullyReceived { get; internal set; }
-
+        /// <summary>
+        /// True if the inbound message has encountered an error while being received
+        /// </summary>
         public bool IsError => GetApplicationPropertyByKey<bool>(Headers.IsError);
+        /// <summary>
+        /// True if the inbound message has not encountered an error while being received
+        /// </summary>
         public bool IsSuccess => !IsError;
+        /// <summary>
+        /// The receivers visited by the inbound message prior to the most recent message receiver
+        /// </summary>
         public string Via => GetApplicationPropertyByKey<string>(Headers.Via);
         internal IBrokeredMessageBodyConverter BodyConverter { get; }
 
+        /// <summary>
+        /// Gets a message of type <typeparamref name="TBody"/> from the message body
+        /// </summary>
+        /// <typeparam name="TBody">The type of the object stored as the message body</typeparam>
+        /// <returns>The strongly typed message payload</returns>
         public TBody GetMessageFromBody<TBody>()
             => this.BodyConverter.Convert<TBody>(this.Body);
 
