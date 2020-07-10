@@ -1,26 +1,20 @@
 ﻿namespace Chatter.MessageBrokers.Options
 {
     /// <summary>
-    /// The different transaction levels that can be supported by a transport.
+    /// The mode of transaction
     /// </summary>
     public enum TransactionMode : byte
     {
         /// <summary>
-        /// No transactions used. This means that received messages will not be roll the message back to the queue if a failure
-        /// occurs.
-        /// This means that the message is lost.
+        /// No transaction will be used. If an error occurs after a message is received, it will be lost.
         /// </summary>
         None = 0,
-
         /// <summary>
-        /// The receive operation will be transactional and the message will be rolled back to the queue in case of failure.
-        /// Outgoing queueing operations will not be enlisted in the ongoing receive transaction and therefor NOT roll back should
-        /// a failure occur.
+        /// Only the receive operation will be part of the transaction
         /// </summary>
         ReceiveOnly = 1,
-
         /// <summary>
-        /// In this mode all outgoing operations will be atomic with the current receive operation.
+        /// The receiver and all operations that occur during the message receiving process are considered an atomic operation
         /// </summary>
         FullAtomicity = 2,
     }
