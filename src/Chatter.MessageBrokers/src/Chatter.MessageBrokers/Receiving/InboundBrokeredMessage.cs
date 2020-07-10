@@ -58,6 +58,9 @@ namespace Chatter.MessageBrokers.Receiving
         /// The correlation id of the received message
         /// </summary>
         public string CorrelationId { get; }
+        /// <summary>
+        /// The mode of the transaction this message is participating in
+        /// </summary>
         public TransactionMode TransactionMode { get; }
         /// <summary>
         /// Will be true once the <see cref="InboundBrokeredMessage"/> has been successfully received (completed). The message must be successfully handled 
