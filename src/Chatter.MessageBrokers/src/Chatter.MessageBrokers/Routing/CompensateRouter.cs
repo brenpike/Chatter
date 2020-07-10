@@ -1,5 +1,4 @@
-﻿using Chatter.CQRS.Context;
-using Chatter.MessageBrokers.Context;
+﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using System;
 using System.Threading.Tasks;
@@ -19,7 +18,7 @@ namespace Chatter.MessageBrokers.Routing
         {
             if (!(messageContext.Container.TryGet<CompensateContext>(out var compensateContext)))
             {
-                compensateContext = new CompensateContext(compensateDestinationPath, null, reason, errorDescription, new ContextContainer(messageContext.Container));
+                compensateContext = new CompensateContext(compensateDestinationPath, null, reason, errorDescription, messageContext.Container);
                 messageContext.Container.Set(messageContext);
             }
 
@@ -33,21 +32,21 @@ namespace Chatter.MessageBrokers.Routing
                 throw new ArgumentNullException(nameof(destinationRouterContext), $"A '{typeof(CompensateContext).Name}' is required to route a compensation message");
             }
 
-            if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateReason))
+            if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateDetails))
             {
-                throw new ArgumentNullException(nameof(destinationRouterContext.CompensateReason), $"A compensation reason is required to route a compensation message");
+                throw new ArgumentNullException(nameof(destinationRouterContext.CompensateDetails), $"A compensation reason is required to route a compensation message");
             }
 
-            if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateErrorDescription))
+            if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateDescription))
             {
-                throw new ArgumentNullException(nameof(destinationRouterContext.CompensateErrorDescription), $"A compensation description is required to route a compensation message");
+                throw new ArgumentNullException(nameof(destinationRouterContext.CompensateDescription), $"A compensation description is required to route a compensation message");
             }
 
-            inboundBrokeredMessage.WithFailureDetails(destinationRouterContext.CompensateReason);
-            inboundBrokeredMessage.WithFailureDescription(destinationRouterContext.CompensateErrorDescription);
+            inboundBrokeredMessage.WithFailureDetails(destinationRouterContext.CompensateDetails);
+            inboundBrokeredMessage.WithFailureDescription(destinationRouterContext.CompensateDescription);
             inboundBrokeredMessage.SetError();
 
-            return _compensationStrategy.Compensate(inboundBrokeredMessage, destinationRouterContext.CompensateReason, destinationRouterContext.CompensateErrorDescription, transactionContext, destinationRouterContext);
+            return _compensationStrategy.Compensate(inboundBrokeredMessage, destinationRouterContext.CompensateDetails, destinationRouterContext.CompensateDescription, transactionContext, destinationRouterContext);
         }
     }
 }

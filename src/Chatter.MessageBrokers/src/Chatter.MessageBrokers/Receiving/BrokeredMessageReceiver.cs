@@ -1,5 +1,4 @@
 ﻿using Chatter.CQRS;
-using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Options;
@@ -271,14 +270,14 @@ namespace Chatter.MessageBrokers.Receiving
 
         private void CreateNextDestinationContextFromHeaders(MessageBrokerContext messageContext)
         {
-            var nextDestinationContext = new NextDestinationContext(NextDestinationPath, null, new ContextContainer(messageContext.Container));
+            var nextDestinationContext = new NextDestinationContext(NextDestinationPath, null, messageContext.Container);
             messageContext.Container.Set(nextDestinationContext);
         }
 
         private static void CreateReplyContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
         {
             var replyToSessionId = !string.IsNullOrWhiteSpace(inboundMessage.ReplyToGroupId) ? inboundMessage.ReplyToGroupId : inboundMessage.GroupId;
-            var replyContext = new ReplyDestinationContext(inboundMessage.ReplyTo, null, replyToSessionId, new ContextContainer(messageContext.Container));
+            var replyContext = new ReplyDestinationContext(inboundMessage.ReplyTo, null, replyToSessionId, messageContext.Container);
             messageContext.Container.Set(replyContext);
         }
 
@@ -286,7 +285,7 @@ namespace Chatter.MessageBrokers.Receiving
         {
             inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDetails, out var detail);
             inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDescription, out var description);
-            var compensateContext = new CompensateContext(CompensateDestinationPath, null, (string)detail, (string)description, new ContextContainer(messageContext.Container));
+            var compensateContext = new CompensateContext(CompensateDestinationPath, null, (string)detail, (string)description, messageContext.Container);
             messageContext.Container.Set(compensateContext);
         }
     }
