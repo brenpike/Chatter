@@ -7,13 +7,17 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.Routing
 {
     /// <summary>
-    /// An <see cref="ICompensationStrategy"/> implementation that performs compensation by sending a compensation message to the message broker.
+    /// An <see cref="ICompensationRoutingStrategy"/> implementation that performs compensation by dispatching a compensation message to the message broker.
     /// </summary>
-    public class MessageCompensationStrategy : ICompensationStrategy
+    public class DispatchMessageCompensatingStrategy : ICompensationRoutingStrategy
     {
         private readonly MessageDestinationRouter<CompensateContext> _messageDestinationRouter;
 
-        public MessageCompensationStrategy(IBrokeredMessageDispatcher messageBrokerMessageDispatcher)
+        /// <summary>
+        /// Creates a compensation routiung strategy that dispatches a compensating message to the message broker
+        /// </summary>
+        /// <param name="messageBrokerMessageDispatcher"></param>
+        public DispatchMessageCompensatingStrategy(IBrokeredMessageDispatcher messageBrokerMessageDispatcher)
         {
             if (messageBrokerMessageDispatcher is null)
             {
@@ -24,7 +28,7 @@ namespace Chatter.MessageBrokers.Routing
         }
 
         ///<inheritdoc/>
-        public Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string compensateReason, string compensateErrorDescription, TransactionContext transactionContext, CompensateContext compensateContext)
+        public Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string details, string description, TransactionContext transactionContext, CompensateContext compensateContext)
         {
             return _messageDestinationRouter.Route(inboundBrokeredMessage, transactionContext, compensateContext);
         }

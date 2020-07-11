@@ -11,6 +11,10 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Receiving
 {
+    /// <summary>
+    /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
+    /// </summary>
+    /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
     class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
     {
         readonly object _syncLock;
@@ -24,6 +28,16 @@ namespace Chatter.MessageBrokers.Receiving
         TaskCompletionSource<bool> _completedReceivingSource = new TaskCompletionSource<bool>();
         private CancellationTokenSource _receiverCancellationSource;
 
+        /// <summary>
+        /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
+        /// </summary>
+        /// <param name="infrastructureReceiver">The message broker infrastructure</param>
+        /// <param name="brokeredMessageDetailProvider">Provides routing details to the brokered message receiver</param>
+        /// <param name="nextDestinationRouter">Routes brokered messages to the next destination after being received</param>
+        /// <param name="replyRouter">Routes brokered messages to the reply destination after being received</param>
+        /// <param name="compensateRouter">Routes brokered messages to the compensate destination after being unsuccessfully received</param>
+        /// <param name="messageDispatcher">Dispatches messages of <typeparamref name="TMessage"/> to the appropriate <see cref="IMessageHandler{TMessage}"/></param>
+        /// <param name="logger">Provides logging capability</param>
         public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
                                        IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
                                        INextDestinationRouter nextDestinationRouter,
@@ -47,6 +61,9 @@ namespace Chatter.MessageBrokers.Receiving
             }
         }
 
+        /// <summary>
+        /// The receiver should automatically receive brokered messages when the <see cref="BrokeredMessageReceiver{TMessage}"/> is created
+        /// </summary>
         public bool AutoReceiveMessages => _brokeredMessageDetailProvider.AutoReceiveMessages<TMessage>();
 
         /// <summary>
@@ -79,15 +96,19 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
 
+        ///<inheritdoc/>
         public void StartReceiver()
             => Start((message, context) => _messageDispatcher.Dispatch(message, context), CancellationToken.None);
-
+        
+        ///<inheritdoc/>
         public Task StartReceiver(Func<TMessage, IMessageBrokerContext, Task> receiverHandler, CancellationToken receiverTerminationToken)
             => Start(receiverHandler, receiverTerminationToken);
-
+        
+        ///<inheritdoc/>
         public Task StartReceiver(CancellationToken receiverTerminationToken)
             => Start((message, context) => _messageDispatcher.Dispatch(message, context), receiverTerminationToken);
 
+        ///<inheritdoc/>
         public void StopReceiver()
         {
             try
@@ -172,7 +193,7 @@ namespace Chatter.MessageBrokers.Receiving
                         transactionContext = new TransactionContext(MessageReceiverPath, inboundMessage.TransactionMode);
                     }
 
-                    messageContext.Container.Set(transactionContext);
+                    messageContext.Container.Include(transactionContext);
 
                     messageContext.NextDestinationRouter = _nextDestinationRouter;
                     messageContext.ReplyRouter = _replyRouter;
@@ -265,20 +286,20 @@ namespace Chatter.MessageBrokers.Receiving
         {
             messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(Headers.SagaStatus, out var sagaStatus);
             var sagaContext = new SagaContext(sagaId, MessageReceiverPath, NextDestinationPath, (SagaStatusEnum)sagaStatus, parentContainer: messageContext.Container);
-            messageContext.Container.Set(sagaContext);
+            messageContext.Container.Include(sagaContext);
         }
 
         private void CreateNextDestinationContextFromHeaders(MessageBrokerContext messageContext)
         {
             var nextDestinationContext = new NextDestinationContext(NextDestinationPath, null, messageContext.Container);
-            messageContext.Container.Set(nextDestinationContext);
+            messageContext.Container.Include(nextDestinationContext);
         }
 
         private static void CreateReplyContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
         {
             var replyToSessionId = !string.IsNullOrWhiteSpace(inboundMessage.ReplyToGroupId) ? inboundMessage.ReplyToGroupId : inboundMessage.GroupId;
             var replyContext = new ReplyDestinationContext(inboundMessage.ReplyTo, null, replyToSessionId, messageContext.Container);
-            messageContext.Container.Set(replyContext);
+            messageContext.Container.Include(replyContext);
         }
 
         private void CreateCompensationContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
@@ -286,7 +307,7 @@ namespace Chatter.MessageBrokers.Receiving
             inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDetails, out var detail);
             inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDescription, out var description);
             var compensateContext = new CompensateContext(CompensateDestinationPath, null, (string)detail, (string)description, messageContext.Container);
-            messageContext.Container.Set(compensateContext);
+            messageContext.Container.Include(compensateContext);
         }
     }
 }

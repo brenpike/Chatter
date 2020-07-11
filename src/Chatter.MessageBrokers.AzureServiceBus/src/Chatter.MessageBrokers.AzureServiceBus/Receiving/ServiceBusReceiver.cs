@@ -122,14 +122,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                     var bodyConverter = _bodyConverterFactory.CreateBodyConverter(msg.ContentType);
 
                     var messageContext = new MessageBrokerContext(msg.MessageId, msg.Body, msg.UserProperties, this.MessageReceiverPath, bodyConverter);
-                    messageContext.Container.Set(msg);
+                    messageContext.Container.Include(msg);
 
                     var transactionContext = new TransactionContext(this.MessageReceiverPath, transactionMode);
-                    transactionContext.Container.Set(this.InnerReceiver);
+                    transactionContext.Container.Include(this.InnerReceiver);
 
                     if (transactionMode == TransactionMode.FullAtomicity)
                     {
-                        transactionContext.Container.Set(this.ServiceBusConnection);
+                        transactionContext.Container.Include(this.ServiceBusConnection);
                     }
 
                     await brokeredMessageHandler(messageContext, transactionContext, receiverHandler).ConfigureAwait(false);

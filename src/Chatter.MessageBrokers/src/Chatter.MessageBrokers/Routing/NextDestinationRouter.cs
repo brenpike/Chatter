@@ -15,6 +15,13 @@ namespace Chatter.MessageBrokers.Routing
             _messageDestinationRouter = new MessageDestinationRouter<NextDestinationContext>(messageBrokerMessageDispatcher);
         }
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="inboundBrokeredMessage"></param>
+        /// <param name="transactionContext"></param>
+        /// <param name="destinationRouterContext"></param>
+        /// <returns></returns>
         public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, NextDestinationContext destinationRouterContext)
         {
             if (inboundBrokeredMessage is null)

@@ -10,10 +10,10 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.AzureServiceBus.Core
 {
     /// <summary>
-    /// An <see cref="ICompensationStrategy"/> implementation that performs compensation by deadlettering the current message.
+    /// An <see cref="ICompensationRoutingStrategy"/> implementation that performs compensation by deadlettering the current message.
     /// This assumes the queue has been configured with ForwardDeadLetteredMessagesTo to the compensating queue./>
     /// </summary>
-    public class DeadLetterCompensationStrategy : ICompensationStrategy
+    public class DeadLetterCompensationStrategy : ICompensationRoutingStrategy
     {
         ///<inheritdoc/>
         public Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string compensateReason, string compensateErrorDescription, TransactionContext transactionContext, CompensateContext compensateContext)

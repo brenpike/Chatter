@@ -5,21 +5,38 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
 {
+    /// <summary>
+    /// Routes a brokered message to a receiver responsible for compensating a received message
+    /// </summary>
     public class CompensateRouter : ICompensateRouter
     {
-        private readonly ICompensationStrategy _compensationStrategy;
+        private readonly ICompensationRoutingStrategy _compensationStrategy;
 
-        public CompensateRouter(ICompensationStrategy compensationStrategy)
+        /// <summary>
+        /// Creates a router for sending a brokered message to a brokered message receiver responsible for compensating a received message
+        /// </summary>
+        /// <param name="compensationStrategy">The strategy used to compensate the a received message</param>
+        public CompensateRouter(ICompensationRoutingStrategy compensationStrategy)
         {
             _compensationStrategy = compensationStrategy;
         }
 
-        public Task Route(string compensateDestinationPath, InboundBrokeredMessage inboundMessage, MessageBrokerContext messageContext, TransactionContext transactionContext, string reason, string errorDescription)
+        /// <summary>
+        /// Routes a brokered message to a brokered message receiver responsible for compensating a received message
+        /// </summary>
+        /// <param name="compensateDestinationPath">The destination path for the receiver responsible for compensating a received message</param>
+        /// <param name="inboundMessage">The inbound message that was unsuccesfully received and requires compensation</param>
+        /// <param name="messageContext">The context that was received with <paramref name="inboundMessage"/></param>
+        /// <param name="transactionContext">The transaction information that was received with <paramref name="inboundMessage"/></param>
+        /// <param name="details">The details of the error that caused the compensation</param>
+        /// <param name="description">The description of the error that caused the compensation</param>
+        /// <returns>An awaitable <see cref="Task"/></returns>
+        public Task Route(string compensateDestinationPath, InboundBrokeredMessage inboundMessage, MessageBrokerContext messageContext, TransactionContext transactionContext, string details, string description)
         {
             if (!(messageContext.Container.TryGet<CompensateContext>(out var compensateContext)))
             {
-                compensateContext = new CompensateContext(compensateDestinationPath, null, reason, errorDescription, messageContext.Container);
-                messageContext.Container.Set(messageContext);
+                compensateContext = new CompensateContext(compensateDestinationPath, null, details, description, messageContext.Container);
+                messageContext.Container.Include(messageContext);
             }
 
             return this.Route(inboundMessage, transactionContext, compensateContext);
