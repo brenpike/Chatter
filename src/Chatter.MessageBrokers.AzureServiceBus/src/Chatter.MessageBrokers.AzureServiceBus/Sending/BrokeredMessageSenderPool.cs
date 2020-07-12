@@ -1,10 +1,8 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Threading.Tasks;
-using Chatter.MessageBrokers.AzureServiceBus.Options;
+﻿using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Core;
+using System;
+using System.Collections.Concurrent;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
@@ -26,7 +24,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             _connectionStringBuilder = new ServiceBusConnectionStringBuilder(serviceBusOptions.ConnectionString);
         }
 
-        public MessageSender GetMessageSender(string destinationEntityPath, (ServiceBusConnection connection, string sendViaPath) receiverConnectionAndPath)
+        /// <summary>
+        /// Gets a <see cref="MessageSender"/> from the pool
+        /// </summary>
+        /// <param name="destinationEntityPath">The destination entity path to be used by the sender</param>
+        /// <param name="receiverConnectionAndPath">A <see cref="Tuple{T1, T2}"/> containing the <see cref="ServiceBusConnection"/> and the transfer path of the receiver</param>
+        /// <returns>A <see cref="MessageSender"/></returns>
+        public MessageSender GetSender(string destinationEntityPath, (ServiceBusConnection connection, string sendViaPath) receiverConnectionAndPath)
         {
             var sendersForDestination = _senders.GetOrAdd((destinationEntityPath, receiverConnectionAndPath), _ => new ConcurrentQueue<MessageSender>());
 
@@ -45,7 +49,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             return sender;
         }
 
-        public void ReturnMessageSender(MessageSender sender)
+        /// <summary>
+        /// Returns a <see cref="MessageSender"/> back to the pool.
+        /// </summary>
+        /// <param name="sender">The <see cref="MessageSender"/> to be returned</param>
+        public void ReturnSender(MessageSender sender)
         {
             if (sender.IsClosedOrClosing)
             {
@@ -59,23 +67,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             {
                 sendersForDestination.Enqueue(sender);
             }
-        }
-
-        public Task Close()
-        {
-            var tasks = new List<Task>();
-
-            foreach (var key in _senders.Keys)
-            {
-                var queue = _senders[key];
-
-                foreach (var sender in queue)
-                {
-                    tasks.Add(sender.CloseAsync());
-                }
-            }
-
-            return Task.WhenAll(tasks);
         }
     }
 }

@@ -10,11 +10,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
     internal class MessageDispatcher : IBrokeredMessageDispatcher
     {
-        readonly BrokeredMessageSenderPool _messageSenderPool;
+        readonly BrokeredMessageSenderPool _pool;
 
         public MessageDispatcher(BrokeredMessageSenderPool messageSenderPool)
         {
-            _messageSenderPool = messageSenderPool ?? throw new ArgumentNullException(nameof(messageSenderPool));
+            _pool = messageSenderPool ?? throw new ArgumentNullException(nameof(messageSenderPool));
         }
 
         public Task Dispatch(OutboundBrokeredMessage brokeredMessage, TransactionContext transactionContext)
@@ -31,7 +31,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 
             ServiceBusConnection connection = null;
             transactionContext?.Container.TryGet(out connection);
-            var sender = _messageSenderPool.GetMessageSender(brokeredMessage.Destination, (connection, transactionContext?.TransactionReceiver));
+            var sender = _pool.GetSender(brokeredMessage.Destination, (connection, transactionContext?.TransactionReceiver));
 
             try
             {
@@ -41,7 +41,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             }
             finally
             {
-                _messageSenderPool.ReturnMessageSender(sender);
+                _pool.ReturnSender(sender);
             }
         }
 

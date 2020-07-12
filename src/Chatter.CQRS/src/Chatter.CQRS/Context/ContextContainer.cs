@@ -10,24 +10,70 @@ namespace Chatter.CQRS.Context
         private readonly IDictionary<string, object> _context = new Dictionary<string, object>();
         private readonly ContextContainer _inheritedContext;
 
+        /// <summary>
+        /// Creates a new Context Container.
+        /// </summary>
+        /// <param name="inheritedContext">An optional <see cref="ContextContainer"/> which allows its contained context to be accessed via this container</param>
         public ContextContainer(ContextContainer inheritedContext = null)
         {
             _inheritedContext = inheritedContext;
         }
 
+        /// <summary>
+        /// Get context of <typeparamref name="T"/> from container.
+        /// </summary>
+        /// <typeparam name="T">The tyoe of context to find in the container</typeparam>
+        /// <exception cref="KeyNotFoundException">If no context of <typeparamref name="T"/> is found in the container</exception>
+        /// <returns>The context of <typeparamref name="T"/> if found in the container</returns>
+        /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
         public T Get<T>()
         {
             return Get<T>(typeof(T).FullName);
         }
 
+        /// <summary>
+        /// Get context of <typeparamref name="T"/> from container.
+        /// </summary>
+        /// <typeparam name="T">The type of context to find in the container</typeparam>
+        /// <exception cref="KeyNotFoundException">If no context of <typeparamref name="T"/> is found in the container</exception>
+        /// <param name="fullQualifiedNamespaceOfType">The fully qualified type name of the context object to get from the container</param>
+        /// <returns>The context of <typeparamref name="T"/> if found in the container</returns>
+        /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
+        public T Get<T>(string fullQualifiedNamespaceOfType)
+        {
+            if (!TryGet(fullQualifiedNamespaceOfType, out T result))
+            {
+                throw new KeyNotFoundException("No item found in container with key: " + fullQualifiedNamespaceOfType);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Attempts to get context of <typeparamref name="T"/> from container.
+        /// </summary>
+        /// <typeparam name="T">The type of context to find in the container</typeparam>
+        /// <param name="result">The context of <typeparamref name="T"/> if it exists in the container</param>
+        /// <returns>True if the context of <typeparamref name="T"/> was found in the container, false otherwise</returns>
+        /// <remarks>
+        /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
+        /// </remarks>
         public bool TryGet<T>(out T result)
         {
             return TryGet(typeof(T).FullName, out result);
         }
 
-        public bool TryGet<T>(string key, out T result)
+        /// <summary>
+        /// Attempts to get context of <typeparamref name="T"/> from container.
+        /// </summary>
+        /// <typeparam name="T">The type of context to find in the container</typeparam>
+        /// <param name="fullQualifiedNamespaceOfType">The fully qualified type name of the context object to get from the container</param>
+        /// <param name="result">The context of <typeparamref name="T"/> if it exists in the container</param>
+        /// <returns>True if the context of <typeparamref name="T"/> was found in the container, false otherwise</returns>
+        /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
+        public bool TryGet<T>(string fullQualifiedNamespaceOfType, out T result)
         {
-            if (_context.TryGetValue(key, out var value))
+            if (_context.TryGetValue(fullQualifiedNamespaceOfType, out var value))
             {
                 result = (T)value;
                 return true;
@@ -35,55 +81,32 @@ namespace Chatter.CQRS.Context
 
             if (_inheritedContext != null)
             {
-                return _inheritedContext.TryGet(key, out result);
+                return _inheritedContext.TryGet(fullQualifiedNamespaceOfType, out result);
             }
 
             result = default;
             return false;
         }
 
-        public T Get<T>(string key)
+        /// <summary>
+        /// Includes context of <typeparamref name="T"/> in the container
+        /// </summary>
+        /// <typeparam name="T">The type of context to be included</typeparam>
+        /// <param name="t">The context to include</param>
+        public void Include<T>(T t)
         {
-            if (!TryGet(key, out T result))
-            {
-                throw new KeyNotFoundException("No item found in context with key: " + key);
-            }
-
-            return result;
+            Include(typeof(T).FullName, t);
         }
 
-        public T GetOrCreate<T>() where T : class, new()
+        /// <summary>
+        /// Includes context of <typeparamref name="T"/> in the container
+        /// </summary>
+        /// <typeparam name="T">The type of context to be included</typeparam>
+        /// <param name="fullQualifiedNamespaceOfType">The fully qualified type name of the context object to get from the container</param>
+        /// <param name="t">The context to include</param>
+        public void Include<T>(string fullQualifiedNamespaceOfType, T t)
         {
-            if (TryGet(out T value))
-            {
-                return value;
-            }
-
-            var newInstance = new T();
-
-            Set(newInstance);
-
-            return newInstance;
-        }
-
-        public void Set<T>(T t)
-        {
-            Set(typeof(T).FullName, t);
-        }
-
-        public void Remove<T>()
-        {
-            Remove(typeof(T).FullName);
-        }
-
-        public void Remove(string key)
-        {
-            _context.Remove(key);
-        }
-
-        public void Set<T>(string key, T t)
-        {
-            _context[key] = t;
+            _context[fullQualifiedNamespaceOfType] = t;
         }
     }
 }

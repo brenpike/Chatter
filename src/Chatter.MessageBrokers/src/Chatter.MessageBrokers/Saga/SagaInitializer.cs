@@ -32,7 +32,7 @@ namespace Chatter.MessageBrokers.Saga
             if (saga is null)
             {
                 saga = new SagaContext();
-                context.Container.Set(saga);
+                context.Container.Include(saga);
                 await _sagaPersister.Persist(saga, message, context).ConfigureAwait(false);
             }
 

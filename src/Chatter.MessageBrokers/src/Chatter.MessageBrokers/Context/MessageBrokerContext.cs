@@ -46,7 +46,7 @@ namespace Chatter.MessageBrokers.Context
         /// <param name="errorContext"></param>
         public void SetError(ErrorContext errorContext)
         {
-            this.Container.Set(errorContext);
+            this.Container.Include(errorContext);
             this.BrokeredMessage.SetError();
             this.BrokeredMessage.WithFailureDetails(errorContext.ErrorDetails);
             this.BrokeredMessage.WithFailureDescription(errorContext.ErrorDescription);
