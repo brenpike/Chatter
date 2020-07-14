@@ -34,7 +34,7 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         public InboundBrokeredMessage BrokeredMessage { get; private set; }
         ///<inheritdoc/>
-        public INextDestinationRouter NextDestinationRouter { get; internal set; }
+        public IMessageDestinationRouter<DestinationRouterContext> NextDestinationRouter { get; internal set; }
         ///<inheritdoc/>
         public IReplyRouter ReplyRouter { get; internal set; }
         ///<inheritdoc/>

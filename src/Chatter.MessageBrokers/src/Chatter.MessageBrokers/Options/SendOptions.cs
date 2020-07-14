@@ -1,6 +1,6 @@
 ﻿namespace Chatter.MessageBrokers.Options
 {
-    public class NextOptions
+    public class SendOptions
     {
         bool RefreshTimeToLive { get; set; } = true;
         bool ClearReplySettings { get; set; } = true;

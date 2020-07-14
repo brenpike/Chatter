@@ -8,7 +8,7 @@ namespace Chatter.MessageBrokers.Context
     /// <summary>
     /// Contains contextual information about how a received message should be routed to another destination
     /// </summary>
-    public abstract class DestinationRouterContext : IContainDestinationToRouteContext
+    public class DestinationRouterContext : IContainDestinationToRouteContext
     {
         /// <summary>
         /// Creates an object which contains contextual information about how a received message should be routed to another destination.

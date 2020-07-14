@@ -24,6 +24,7 @@ namespace Chatter.MessageBrokers.Sending
             Body = body ?? throw new ArgumentNullException(nameof(body));
             Destination = destination;
             _bodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
+            ApplicationProperties[Headers.ContentType] = _bodyConverter.ContentType;
 
             if (string.IsNullOrWhiteSpace(GetCorrelationId()))
             {

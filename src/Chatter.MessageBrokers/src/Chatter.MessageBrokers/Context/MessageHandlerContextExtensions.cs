@@ -40,9 +40,9 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         /// <param name="messageHandlerContext">The message handler context</param>
         /// <returns>The next destination context</returns>
-        public static NextDestinationContext GetNextDestinationContext(this IMessageHandlerContext messageHandlerContext)
+        public static DestinationRouterContext GetNextDestinationContext(this IMessageHandlerContext messageHandlerContext)
         {
-            return messageHandlerContext.Get<NextDestinationContext>();
+            return messageHandlerContext.Get<DestinationRouterContext>();
         }
 
         /// <summary>

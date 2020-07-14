@@ -9,12 +9,22 @@ namespace Chatter.MessageBrokers
 
         public TBody Convert<TBody>(byte[] body)
         {
-            return JsonConvert.DeserializeObject<TBody>(Encoding.UTF8.GetString(body));
+            return JsonConvert.DeserializeObject<TBody>(Stringify(body));
         }
 
         public byte[] Convert(object body)
         {
-            return Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(body));
+            return Encoding.UTF8.GetBytes(Stringify(body));
+        }
+
+        public string Stringify(byte[] body)
+        {
+            return Encoding.UTF8.GetString(body);
+        }
+
+        public string Stringify(object body)
+        {
+            return JsonConvert.SerializeObject(body);
         }
     }
 }

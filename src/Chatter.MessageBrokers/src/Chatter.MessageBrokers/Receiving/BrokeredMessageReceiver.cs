@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Saga;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,7 +21,7 @@ namespace Chatter.MessageBrokers.Receiving
         readonly object _syncLock;
         private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
-        private readonly INextDestinationRouter _nextDestinationRouter;
+        private readonly IMessageDestinationRouter<DestinationRouterContext> _nextDestinationRouter;
         private readonly IReplyRouter _replyRouter;
         private readonly ICompensateRouter _compensateRouter;
         private readonly IMessageDispatcher _messageDispatcher;
@@ -40,7 +41,7 @@ namespace Chatter.MessageBrokers.Receiving
         /// <param name="logger">Provides logging capability</param>
         public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
                                        IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
-                                       INextDestinationRouter nextDestinationRouter,
+                                       IMessageDestinationRouter<DestinationRouterContext> nextDestinationRouter,
                                        IReplyRouter replyRouter,
                                        ICompensateRouter compensateRouter,
                                        IMessageDispatcher messageDispatcher,
@@ -99,11 +100,11 @@ namespace Chatter.MessageBrokers.Receiving
         ///<inheritdoc/>
         public void StartReceiver()
             => Start((message, context) => _messageDispatcher.Dispatch(message, context), CancellationToken.None);
-        
+
         ///<inheritdoc/>
         public Task StartReceiver(Func<TMessage, IMessageBrokerContext, Task> receiverHandler, CancellationToken receiverTerminationToken)
             => Start(receiverHandler, receiverTerminationToken);
-        
+
         ///<inheritdoc/>
         public Task StartReceiver(CancellationToken receiverTerminationToken)
             => Start((message, context) => _messageDispatcher.Dispatch(message, context), receiverTerminationToken);
@@ -181,10 +182,7 @@ namespace Chatter.MessageBrokers.Receiving
                         }
                     }
 
-                    if (messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(Headers.SagaId, out var sagaId))
-                    {
-                        CreateSagaContextFromHeaders(messageContext, (string)sagaId);
-                    }
+                    CreateSagaContextFromHeaders(messageContext);
 
                     inboundMessage.UpdateVia(Description);
 
@@ -199,15 +197,9 @@ namespace Chatter.MessageBrokers.Receiving
                     messageContext.ReplyRouter = _replyRouter;
                     messageContext.CompensateRouter = _compensateRouter;
 
-                    if (!string.IsNullOrWhiteSpace(inboundMessage.ReplyTo))
-                    {
-                        CreateReplyContextFromHeaders(messageContext, inboundMessage);
-                    }
+                    CreateReplyContextFromHeaders(messageContext, inboundMessage);
 
-                    if (!string.IsNullOrWhiteSpace(NextDestinationPath))
-                    {
-                        CreateNextDestinationContextFromHeaders(messageContext);
-                    }
+                    CreateNextDestinationContextFromHeaders(messageContext);
 
                     var operationData = inboundMessage.GetMessageFromBody<TMessage>();
 
@@ -282,24 +274,35 @@ namespace Chatter.MessageBrokers.Receiving
             messageContext.SetError(errorContext);
         }
 
-        private void CreateSagaContextFromHeaders(MessageBrokerContext messageContext, string sagaId)
+        private void CreateSagaContextFromHeaders(MessageBrokerContext messageContext)
         {
-            messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(Headers.SagaStatus, out var sagaStatus);
-            var sagaContext = new SagaContext(sagaId, MessageReceiverPath, NextDestinationPath, (SagaStatusEnum)sagaStatus, parentContainer: messageContext.Container);
-            messageContext.Container.Include(sagaContext);
+            if (messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(Headers.SagaId, out var sagaId))
+            {
+                messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(Headers.SagaStatus, out var sagaStatus);
+                var sagaContext = new SagaContext((string)sagaId, MessageReceiverPath, NextDestinationPath, (SagaStatusEnum)sagaStatus, parentContainer: messageContext.Container);
+                messageContext.Container.Include(sagaContext);
+            }
         }
 
         private void CreateNextDestinationContextFromHeaders(MessageBrokerContext messageContext)
         {
-            var nextDestinationContext = new NextDestinationContext(NextDestinationPath, null, messageContext.Container);
-            messageContext.Container.Include(nextDestinationContext);
+            if (!string.IsNullOrWhiteSpace(NextDestinationPath))
+            {
+                var nextDestinationContext = new DestinationRouterContext(NextDestinationPath, null, messageContext.Container);
+                messageContext.Container.Include(nextDestinationContext);
+            }
         }
 
         private static void CreateReplyContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
         {
-            var replyToSessionId = !string.IsNullOrWhiteSpace(inboundMessage.ReplyToGroupId) ? inboundMessage.ReplyToGroupId : inboundMessage.GroupId;
-            var replyContext = new ReplyDestinationContext(inboundMessage.ReplyTo, null, replyToSessionId, messageContext.Container);
-            messageContext.Container.Include(replyContext);
+            if (inboundMessage.ApplicationProperties.TryGetValue(Headers.ReplyTo, out var replyTo))
+            {
+                inboundMessage.ApplicationProperties.TryGetValue(Headers.ReplyToGroupId, out var replyToSessionId);
+                inboundMessage.ApplicationProperties.TryGetValue(Headers.GroupId, out var groupId);
+                replyToSessionId = !string.IsNullOrWhiteSpace((string)replyToSessionId) ? (string)replyToSessionId : (string)groupId;
+                var replyContext = new ReplyDestinationContext((string)replyTo, null, (string)replyToSessionId, messageContext.Container);
+                messageContext.Container.Include(replyContext);
+            }
         }
 
         private void CreateCompensationContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)

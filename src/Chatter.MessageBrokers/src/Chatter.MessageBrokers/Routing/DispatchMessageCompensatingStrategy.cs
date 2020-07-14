@@ -1,6 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
 
@@ -11,20 +10,15 @@ namespace Chatter.MessageBrokers.Routing
     /// </summary>
     public class DispatchMessageCompensatingStrategy : ICompensationRoutingStrategy
     {
-        private readonly MessageDestinationRouter<CompensateContext> _messageDestinationRouter;
+        private readonly IMessageDestinationRouter<CompensateContext> _messageDestinationRouter;
 
         /// <summary>
         /// Creates a compensation routiung strategy that dispatches a compensating message to the message broker
         /// </summary>
         /// <param name="messageBrokerMessageDispatcher"></param>
-        public DispatchMessageCompensatingStrategy(IBrokeredMessageDispatcher messageBrokerMessageDispatcher)
+        public DispatchMessageCompensatingStrategy(IMessageDestinationRouter<CompensateContext> messageDestinationRouter)
         {
-            if (messageBrokerMessageDispatcher is null)
-            {
-                throw new ArgumentNullException(nameof(messageBrokerMessageDispatcher));
-            }
-
-            _messageDestinationRouter = new MessageDestinationRouter<CompensateContext>(messageBrokerMessageDispatcher);
+            _messageDestinationRouter = messageDestinationRouter ?? throw new ArgumentNullException(nameof(messageDestinationRouter));
         }
 
         ///<inheritdoc/>

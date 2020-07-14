@@ -1,5 +1,6 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
 
@@ -64,6 +65,11 @@ namespace Chatter.MessageBrokers.Routing
             inboundBrokeredMessage.SetError();
 
             return _compensationStrategy.Compensate(inboundBrokeredMessage, destinationRouterContext.CompensateDetails, destinationRouterContext.CompensateDescription, transactionContext, destinationRouterContext);
+        }
+
+        public Task Route(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
+        {
+            throw new NotImplementedException();
         }
     }
 }

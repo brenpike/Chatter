@@ -2,6 +2,7 @@
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Options;
+using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
@@ -12,21 +13,21 @@ namespace Chatter.MessageBrokers.Saga
     {
         private readonly ISagaPersister _sagaPersister;
         private readonly IBodyConverterFactory _bodyConverterFactory;
-        private readonly IBrokeredMessageDispatcher _brokeredMessageDispatcher;
+        private readonly IMessageDestinationRouter _messageDestinationRouter;
         private readonly ISagaInitializer _sagaInitializer;
         private readonly ISagaOptionsProvider _sagaOptionsProvider;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
 
         public SagaOrchestrator(ISagaPersister sagaPersister,
                                 IBodyConverterFactory bodyConverterFactory,
-                                IBrokeredMessageDispatcher brokeredMessageDispatcher,
+                                IMessageDestinationRouter messageDestinationRouter,
                                 ISagaInitializer sagaInitializer,
                                 ISagaOptionsProvider sagaOptionsProvider,
                                 IBrokeredMessageDetailProvider brokeredMessageDetailProvider)
         {
             _sagaPersister = sagaPersister ?? throw new ArgumentNullException(nameof(sagaPersister));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
-            _brokeredMessageDispatcher = brokeredMessageDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageDispatcher));
+            _messageDestinationRouter = messageDestinationRouter ?? throw new ArgumentNullException(nameof(messageDestinationRouter));
             _sagaInitializer = sagaInitializer ?? throw new ArgumentNullException(nameof(sagaInitializer));
             _sagaOptionsProvider = sagaOptionsProvider ?? throw new ArgumentNullException(nameof(sagaOptionsProvider));
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
@@ -89,7 +90,7 @@ namespace Chatter.MessageBrokers.Saga
             SagaContext saga = await _sagaInitializer.Initialize(message, context).ConfigureAwait(false);
 
             OutboundBrokeredMessage outbound = CreateSagaInputMessage(message, saga.SagaId, saga.Status.Status);
-            await _brokeredMessageDispatcher.Dispatch(outbound, null).ConfigureAwait(false);
+            await _messageDestinationRouter.Route(outbound, null).ConfigureAwait(false);
 
             saga.InProgress();
 
