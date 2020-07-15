@@ -6,7 +6,6 @@ using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Saga;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 

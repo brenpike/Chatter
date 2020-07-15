@@ -6,7 +6,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Chatter.MessageBrokers.Outbox
+namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     internal sealed class BrokeredMessageOutboxProcessor : IHostedService
     {

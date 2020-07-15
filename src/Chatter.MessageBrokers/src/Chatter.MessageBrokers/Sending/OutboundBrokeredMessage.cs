@@ -64,6 +64,9 @@ namespace Chatter.MessageBrokers.Sending
             return this;
         }
 
+        public string Stringify() 
+            => _bodyConverter.Stringify(Body);
+
         public TransactionMode GetTransactionMode()
         {
             if (ApplicationProperties.TryGetValue(Headers.TransactionMode, out var transactionMode))
@@ -72,7 +75,7 @@ namespace Chatter.MessageBrokers.Sending
             }
             else
             {
-                return TransactionMode.FullAtomicity;
+                return TransactionMode.FullAtomicityViaInfrastructure;
             }
         }
 

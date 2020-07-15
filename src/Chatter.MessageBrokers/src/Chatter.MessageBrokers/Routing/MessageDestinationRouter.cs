@@ -1,6 +1,7 @@
 ﻿using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Outbox;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Reliability;
+using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
@@ -11,9 +12,9 @@ namespace Chatter.MessageBrokers.Routing
         where TDestinationRouterContext : IContainDestinationToRouteContext
     {
         private readonly IBrokeredMessageInfrastructureDispatcher _messageDispatcher;
-        private readonly IBrokeredMessageOutbox _brokeredMessageOutbox;
+        private readonly IReliableBrokeredMessageProcessor _brokeredMessageOutbox;
 
-        public MessageDestinationRouter(IBrokeredMessageInfrastructureDispatcher messageDispatcher, IBrokeredMessageOutbox brokeredMessageOutbox)
+        public MessageDestinationRouter(IBrokeredMessageInfrastructureDispatcher messageDispatcher, IReliableBrokeredMessageProcessor brokeredMessageOutbox)
         {
             _messageDispatcher = messageDispatcher ?? throw new ArgumentNullException(nameof(messageDispatcher));
             _brokeredMessageOutbox = brokeredMessageOutbox ?? throw new ArgumentNullException(nameof(brokeredMessageOutbox));
@@ -46,9 +47,9 @@ namespace Chatter.MessageBrokers.Routing
 
         public Task Route(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
-            if (_brokeredMessageOutbox.IsOutboxEnabled)
+            if (_brokeredMessageOutbox.IsReliableMesageProcessingEnabled)
             {
-                return _brokeredMessageOutbox.Send(outboundBrokeredMessage, transactionContext);
+                return _brokeredMessageOutbox.SendToOutbox(outboundBrokeredMessage, transactionContext);
             }
 
             return _messageDispatcher.Dispatch(outboundBrokeredMessage, transactionContext);

@@ -41,8 +41,6 @@ namespace Chatter.MessageBrokers.Saga
             //      4) implement cancellation
             //      6) updating headers on CompleteAsync (i.e., sagastatus isn't updated correctly on successful completion)
             //      7) I don't like how saga states are updated
-            //      20) stretch - sagapersistancecontext - hold persistance connection info to ensure same persistance is used for diff processes
-            //      21) stretch - sagarestartstrategy
 
             if (!(sagaStepHandler is null))
             {
@@ -101,7 +99,7 @@ namespace Chatter.MessageBrokers.Saga
             where TSagaMessage : ISagaMessage
         {
             var options = _sagaOptionsProvider.GetOptionsFor(message);
-            var transactionMode = TransactionMode.FullAtomicity;
+            var transactionMode = TransactionMode.FullAtomicityViaInfrastructure; //TODO: add to saga options
             var inputQueue = _brokeredMessageDetailProvider.GetMessageName(message.GetType());
 
             var bodyConverter = _bodyConverterFactory.CreateBodyConverter(options.SagaDataContentType);

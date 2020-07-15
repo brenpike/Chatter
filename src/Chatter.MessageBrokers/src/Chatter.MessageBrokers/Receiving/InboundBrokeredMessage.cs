@@ -102,7 +102,7 @@ namespace Chatter.MessageBrokers.Receiving
             }
             else
             {
-                return TransactionMode.FullAtomicity;
+                return TransactionMode.FullAtomicityViaInfrastructure;
             }
         }
 

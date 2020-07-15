@@ -1,9 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 
-namespace Chatter.MessageBrokers.Outbox
+namespace Chatter.MessageBrokers.Reliability.Outbox
 {
-    internal sealed class OutboxMessage
+    public sealed class OutboxMessage
     {
         public string MessageId { get; set; }
         public string Destination { get; set; }

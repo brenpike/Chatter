@@ -1,6 +1,6 @@
 ﻿using Chatter.MessageBrokers.Sending;
 
-namespace Chatter.MessageBrokers.Outbox
+namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     public static class OutboxMessageExtensions
     {

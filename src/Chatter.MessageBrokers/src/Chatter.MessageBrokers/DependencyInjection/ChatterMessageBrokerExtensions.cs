@@ -3,8 +3,9 @@ using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
-using Chatter.MessageBrokers.Outbox;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Reliability;
+using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Microsoft.AspNetCore.Builder;
 using Scrutor;
@@ -41,7 +42,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
         public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, IEnumerable<Assembly> assemblies)
         {
-            builder.Services.AddSingleton<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>();
+            builder.Services.AddSingleton<IReliableBrokeredMessageProcessor, InMemoryBrokeredMessageProcessor>();
             builder.AddRouters();
             builder.AddReceivers(assemblies);
 
@@ -53,12 +54,12 @@ namespace Microsoft.Extensions.DependencyInjection
 
         public static IChatterBuilder AddRouters(this IChatterBuilder builder)
         {
-            builder.Services.AddTransient<IMessageDestinationRouter<CompensateContext>, MessageDestinationRouter<CompensateContext>>();
-            builder.Services.AddTransient<IMessageDestinationRouter<ReplyDestinationContext>, MessageDestinationRouter<ReplyDestinationContext>>();
-            builder.Services.AddTransient<IMessageDestinationRouter<DestinationRouterContext>, MessageDestinationRouter<DestinationRouterContext>>();
-            builder.Services.AddTransient<IMessageDestinationRouter, MessageDestinationRouter<DestinationRouterContext>>();
-            builder.Services.AddTransient<ICompensateRouter, CompensateRouter>();
-            builder.Services.AddTransient<IReplyRouter, ReplyRouter>();
+            builder.Services.AddSingleton<IMessageDestinationRouter<CompensateContext>, MessageDestinationRouter<CompensateContext>>();
+            builder.Services.AddSingleton<IMessageDestinationRouter<ReplyDestinationContext>, MessageDestinationRouter<ReplyDestinationContext>>();
+            builder.Services.AddSingleton<IMessageDestinationRouter<DestinationRouterContext>, MessageDestinationRouter<DestinationRouterContext>>();
+            builder.Services.AddSingleton<IMessageDestinationRouter, MessageDestinationRouter<DestinationRouterContext>>();
+            builder.Services.AddSingleton<ICompensateRouter, CompensateRouter>();
+            builder.Services.AddSingleton<IReplyRouter, ReplyRouter>();
 
             return builder;
         }
