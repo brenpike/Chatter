@@ -2,6 +2,7 @@
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Options;
+using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Saga;
 using Microsoft.Extensions.Logging;
@@ -21,7 +22,7 @@ namespace Chatter.MessageBrokers.Receiving
         private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
         private readonly IMessageDestinationRouter<DestinationRouterContext> _nextDestinationRouter;
-        private readonly IReplyRouter _replyRouter;
+        private readonly IMessageDestinationRouter<ReplyDestinationContext> _replyRouter;
         private readonly ICompensateRouter _compensateRouter;
         private readonly IMessageDispatcher _messageDispatcher;
         private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
@@ -41,7 +42,7 @@ namespace Chatter.MessageBrokers.Receiving
         public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
                                        IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
                                        IMessageDestinationRouter<DestinationRouterContext> nextDestinationRouter,
-                                       IReplyRouter replyRouter,
+                                       IMessageDestinationRouter<ReplyDestinationContext> replyRouter,
                                        ICompensateRouter compensateRouter,
                                        IMessageDispatcher messageDispatcher,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger)
@@ -203,8 +204,6 @@ namespace Chatter.MessageBrokers.Receiving
                     var operationData = inboundMessage.GetMessageFromBody<TMessage>();
 
                     await receiverHandler(operationData, messageContext).ConfigureAwait(false);
-                    await messageContext.NextDestinationRouter.Route(inboundMessage, transactionContext, messageContext.GetNextDestinationContext()).ConfigureAwait(false);
-                    await messageContext.ReplyRouter.Route(inboundMessage, transactionContext, messageContext.GetReplyContext()).ConfigureAwait(false);
 
                     inboundMessage.SuccessfullyReceived = true;
                 }

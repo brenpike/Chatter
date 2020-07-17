@@ -27,12 +27,13 @@ namespace TravelBooking.Api
             });
 
             services.AddChatterCqrs()
-                .AddMessageBrokers(typeof(BookTravelCommand))
-                .AddSagas(options =>
-                {
-                    options.AddSagaOptions(Configuration, "Chatter:Sagas:TravelBooking");
-                    //options.AddAllSagaOptions(Configuration);
-                })
+                .AddMessageBrokers((options) =>
+                 {
+                     options.AddReliabilityOptions(Configuration)
+                            .AddSagaOptions(Configuration);
+                          //.AddAllSagaOptions(Configuration);
+                 }, typeof(BookTravelCommand))
+                .AddSagas()
                 .AddAzureServiceBus(options =>
                 {
                     options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");

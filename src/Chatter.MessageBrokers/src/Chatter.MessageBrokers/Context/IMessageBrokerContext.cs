@@ -23,7 +23,7 @@ namespace Chatter.MessageBrokers.Context
         /// <summary>
         /// Used to route a message to the reply destination as defined in the <see cref="Headers.ReplyTo"/>
         /// </summary>
-        IReplyRouter ReplyRouter { get; }
+        IMessageDestinationRouter<ReplyDestinationContext> ReplyRouter { get; }
         /// <summary>
         /// Used to route a message to the compensation destination
         /// </summary>

@@ -99,7 +99,7 @@ namespace Chatter.MessageBrokers.Saga
             where TSagaMessage : ISagaMessage
         {
             var options = _sagaOptionsProvider.GetOptionsFor(message);
-            var transactionMode = TransactionMode.FullAtomicityViaInfrastructure; //TODO: add to saga options
+            var transactionMode = options.TransactionMode;
             var inputQueue = _brokeredMessageDetailProvider.GetMessageName(message.GetType());
 
             var bodyConverter = _bodyConverterFactory.CreateBodyConverter(options.SagaDataContentType);

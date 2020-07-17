@@ -1,14 +1,13 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability;
-using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Microsoft.AspNetCore.Builder;
-using Scrutor;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -19,6 +18,16 @@ namespace Microsoft.Extensions.DependencyInjection
     public static class ChatterMessageBrokerExtensions
     {
         /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="services"></param>
+        /// <returns></returns>
+        public static MessageBrokerOptionsBuilder AddMessageBrokerOptions(this IServiceCollection services)
+        {
+            return new MessageBrokerOptionsBuilder(services);
+        }
+
+        /// <summary>
         /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
         /// Registers all <see cref="BrokeredMessageReceiver{TMessage}"/> and automatically starts receiving if configured to do so.
         /// Registers all routers.
@@ -26,10 +35,10 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
         /// <param name="markerTypesForRequiredAssemblies">The <see cref="Type"/>s from assemblies that are required for registering receivers</param>
         /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
-        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, params Type[] markerTypesForRequiredAssemblies)
+        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, Action<MessageBrokerOptionsBuilder> messageBrokerOptionsBuilder = null, params Type[] markerTypesForRequiredAssemblies)
         {
             var assemblies = markerTypesForRequiredAssemblies.Select(t => t.GetTypeInfo().Assembly);
-            return AddMessageBrokers(builder, assemblies);
+            return AddMessageBrokers(builder, assemblies, messageBrokerOptionsBuilder);
         }
 
         /// <summary>
@@ -40,14 +49,40 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
         /// <param name="assemblies">The assemblies that are required for registering receivers</param>
         /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
-        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, IEnumerable<Assembly> assemblies)
+        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, IEnumerable<Assembly> assemblies, Action<MessageBrokerOptionsBuilder> optionsBuilder = null)
         {
-            builder.Services.AddSingleton<IReliableBrokeredMessageProcessor, InMemoryBrokeredMessageProcessor>();
-            builder.AddRouters();
+            var messageBrokerOptionsBuilder = builder.Services.AddMessageBrokerOptions();
+            optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
+            MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
+
+            builder.Services.AddSingleton<ITransactionalBrokeredMessageOutbox, InMemoryBrokeredMessageProcessor>();
+
+            if (options?.Reliability?.OutboxEnabled ?? false)
+            {
+                builder.Services.Decorate<IMessageDispatcher, TransactionalOutboxMessageDispatcherDecorator>();
+                builder.AddOutboxRouters();
+            }
+            else
+            {
+                builder.AddRouters();
+            }
+
+            builder.Services.Decorate<IMessageDispatcher, AtomicRoutingMessageDispatcherDecorator>();
             builder.AddReceivers(assemblies);
 
             builder.Services.AddSingleton<IBodyConverterFactory, BodyConverterFactory>();
             builder.Services.AddSingleton<IBrokeredMessageBodyConverter, JsonBodyConverter>();
+
+            return builder;
+        }
+
+        public static IChatterBuilder AddOutboxRouters(this IChatterBuilder builder)
+        {
+            builder.Services.AddSingleton<IMessageDestinationRouter<CompensateContext>, OutboxMessageDestinationRouter<CompensateContext>>();
+            builder.Services.AddSingleton<IMessageDestinationRouter<ReplyDestinationContext>, OutboxMessageDestinationRouter<ReplyDestinationContext>>();
+            builder.Services.AddSingleton<IMessageDestinationRouter<DestinationRouterContext>, OutboxMessageDestinationRouter<DestinationRouterContext>>();
+            builder.Services.AddSingleton<IMessageDestinationRouter, OutboxMessageDestinationRouter<DestinationRouterContext>>();
+            builder.Services.AddSingleton<ICompensateRouter, CompensateRouter>();
 
             return builder;
         }
@@ -59,7 +94,6 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddSingleton<IMessageDestinationRouter<DestinationRouterContext>, MessageDestinationRouter<DestinationRouterContext>>();
             builder.Services.AddSingleton<IMessageDestinationRouter, MessageDestinationRouter<DestinationRouterContext>>();
             builder.Services.AddSingleton<ICompensateRouter, CompensateRouter>();
-            builder.Services.AddSingleton<IReplyRouter, ReplyRouter>();
 
             return builder;
         }
@@ -126,7 +160,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 {
                     applicationBuilder.ApplicationServices.GetRequiredService(receiverType.Item1);
                 }
-            } 
+            }
         }
 
         private static IEnumerable<(Type, Type, bool)> GetAllReceiverTypes(IReadOnlyList<Type> messages)

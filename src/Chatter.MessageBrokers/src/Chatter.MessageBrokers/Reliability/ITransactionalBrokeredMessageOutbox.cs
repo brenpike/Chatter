@@ -3,8 +3,7 @@ using Chatter.MessageBrokers.Reliability.Outbox;
 
 namespace Chatter.MessageBrokers.Reliability
 {
-    public interface IReliableBrokeredMessageProcessor : IBrokeredMessageInbox, IBrokeredMessageOutbox
+    public interface ITransactionalBrokeredMessageOutbox : IBrokeredMessageInbox, IBrokeredMessageOutbox
     {
-        bool IsReliableMesageProcessingEnabled { get; }
     }
 }
