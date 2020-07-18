@@ -44,10 +44,10 @@ namespace Chatter.MessageBrokers.Context
         /// Adds contextual error information to the message broker context
         /// </summary>
         /// <param name="errorContext"></param>
-        public void SetError(ErrorContext errorContext)
+        public void SetFailure(ErrorContext errorContext)
         {
             this.Container.Include(errorContext);
-            this.BrokeredMessage.SetError();
+            this.BrokeredMessage.SetFailure();
             this.BrokeredMessage.WithFailureDetails(errorContext.ErrorDetails);
             this.BrokeredMessage.WithFailureDescription(errorContext.ErrorDescription);
         }

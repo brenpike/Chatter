@@ -49,6 +49,11 @@ namespace Chatter.MessageBrokers.Routing
         /// <returns>An awaitable <see cref="Task"/></returns>
         public Task Route(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
+            if (string.IsNullOrWhiteSpace(outboundBrokeredMessage.Destination))
+            {
+                throw new ArgumentNullException(nameof(outboundBrokeredMessage.Destination), $"Unable to route message with no destination path specified");
+            }
+
             return _brokeredMessageInfrastructureDispatcher.Dispatch(outboundBrokeredMessage, transactionContext);
         }
     }

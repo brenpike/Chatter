@@ -130,7 +130,7 @@ namespace Chatter.MessageBrokers.Receiving
             return this;
         }
 
-        internal InboundBrokeredMessage SetError()
+        internal InboundBrokeredMessage SetFailure()
         {
             _applicationProperties[Headers.IsError] = true;
             _applicationProperties[Headers.SagaStatus] = (byte)SagaStatusEnum.Failed;

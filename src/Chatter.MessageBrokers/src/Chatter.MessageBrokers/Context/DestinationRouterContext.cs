@@ -26,9 +26,9 @@ namespace Chatter.MessageBrokers.Context
         ///<inheritdoc/>
         public string DestinationPath { get; }
         /// <summary>
-        /// Transforms an <see cref="InboundBrokeredMessage"/> to an <see cref="OutboundBrokeredMessage"/> when routing to the <see cref="DestinationPath"/>
+        /// A delegate responsible for transforming an <see cref="InboundBrokeredMessage"/> to an <see cref="OutboundBrokeredMessage"/> when routing to the <see cref="DestinationPath"/>
         /// </summary>
-        protected Func<InboundBrokeredMessage, OutboundBrokeredMessage> DestinationMessageCreator { get; set; }
+        public Func<InboundBrokeredMessage, OutboundBrokeredMessage> DestinationMessageCreator { get; set; }
         ///<inheritdoc/>
         public ContextContainer Container { get; }
 
@@ -45,7 +45,7 @@ namespace Chatter.MessageBrokers.Context
         }
 
         /// <summary>
-        /// Describes how an <see cref="InboundBrokeredMessage"/> should be transformed to an <see cref="OutboundBrokeredMessage"/> when being routed.
+        /// Transforms an <see cref="InboundBrokeredMessage"/> to an <see cref="OutboundBrokeredMessage"/> when being routed.
         /// When a <see cref="DestinationMessageCreator"/> is supplied, it will be used to create the <see cref="OutboundBrokeredMessage"/>, otherwise
         /// the message will simply be forwarded via <see cref="OutboundBrokeredMessage.Forward(InboundBrokeredMessage, string)"/>.
         /// </summary>
