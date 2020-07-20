@@ -1,6 +1,5 @@
 ﻿using Chatter.MessageBrokers.Options;
 using Microsoft.Azure.ServiceBus;
-using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
@@ -13,6 +12,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Extensions
         {
             if (!string.IsNullOrWhiteSpace(messageId))
             {
+                message.MessageId = messageId;
                 return message;
             }
 

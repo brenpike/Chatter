@@ -11,6 +11,8 @@ namespace Chatter.MessageBrokers.Saga
         public string DestinationPath { get; }
         public ContextContainer Container { get; }
 
+        internal DateTime? PersistedAtUtc { get; set; } = null;//TODO: temporary for in memory saga persistance clean up
+
         internal SagaContext()
             : this(Guid.NewGuid().ToString(), string.Empty, string.Empty, SagaStatusEnum.NotStarted)
         { }

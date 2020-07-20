@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability;
+using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Microsoft.AspNetCore.Builder;
 using System;
@@ -61,10 +62,11 @@ namespace Microsoft.Extensions.DependencyInjection
             {
                 builder.Services.Decorate<IMessageDispatcher, TransactionalOutboxMessageDispatcherDecorator>();
                 builder.AddOutboxRouters();
+                builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
             }
             else
             {
-                builder.AddRouters();
+                builder.AddBrokerRouters();
             }
 
             builder.Services.Decorate<IMessageDispatcher, AtomicRoutingMessageDispatcherDecorator>();
@@ -87,7 +89,7 @@ namespace Microsoft.Extensions.DependencyInjection
             return builder;
         }
 
-        public static IChatterBuilder AddRouters(this IChatterBuilder builder)
+        public static IChatterBuilder AddBrokerRouters(this IChatterBuilder builder)
         {
             builder.Services.AddSingleton<IMessageDestinationRouter<CompensateContext>, MessageDestinationRouter<CompensateContext>>();
             builder.Services.AddSingleton<IMessageDestinationRouter<ReplyDestinationContext>, MessageDestinationRouter<ReplyDestinationContext>>();

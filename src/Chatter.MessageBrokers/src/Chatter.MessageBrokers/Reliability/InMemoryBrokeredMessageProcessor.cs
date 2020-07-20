@@ -1,4 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Logging;
@@ -14,13 +15,15 @@ namespace Chatter.MessageBrokers.Reliability
     {
         private readonly ConcurrentDictionary<string, OutboxMessage> _outbox;
         private readonly ILogger<InMemoryBrokeredMessageProcessor> _logger;
+        private readonly ReliabilityOptions _reliabilityOptions;
         private readonly ConcurrentDictionary<string, bool> _inbox;
 
-        public InMemoryBrokeredMessageProcessor(ILogger<InMemoryBrokeredMessageProcessor> logger)
+        public InMemoryBrokeredMessageProcessor(ILogger<InMemoryBrokeredMessageProcessor> logger, ReliabilityOptions reliabilityOptions)
         {
             _inbox = new ConcurrentDictionary<string, bool>();
             _outbox = new ConcurrentDictionary<string, OutboxMessage>();
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
         }
 
         public Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
@@ -38,7 +41,7 @@ namespace Chatter.MessageBrokers.Reliability
 
             _logger.LogTrace($"Outbox message created for message with id: '{outboxMessage.MessageId}'");
 
-            if (_outbox.TryAdd(outboxMessage.MessageId, outboxMessage))
+            if (!_outbox.TryAdd(outboxMessage.MessageId, outboxMessage))
             {
                 var error = $"Unable to add brokered message with id: '{outboxMessage.MessageId}' to the in memory outbox.";
                 _logger.LogError(error);
@@ -55,19 +58,47 @@ namespace Chatter.MessageBrokers.Reliability
                         .Where(m => m.ProcessedFromOutboxAtUtc is null)
                         .ToList());
 
-        public async Task ProcessFromOutbox(IEnumerable<OutboxMessage> outboxMessages)
+        public Task MarkMessageAsProcessed(IEnumerable<OutboxMessage> outboxMessages)
         {
             foreach (var outboxMessage in outboxMessages)
             {
-                await ProcessFromOutbox(outboxMessage).ConfigureAwait(false);
+                outboxMessage.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
             }
+            RemoveExpiredFromInboxOutbox();
+            return Task.CompletedTask;
         }
 
-        public Task ProcessFromOutbox(OutboxMessage outboxMessage)
+        public Task MarkMessageAsProcessed(OutboxMessage outboxMessage)
         {
             outboxMessage.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
-            //TODO: how do we remove messages? have a TTL? remove after processing?
+            RemoveExpiredFromInboxOutbox();
             return Task.CompletedTask;
+        }
+
+        private void RemoveExpiredFromInboxOutbox()
+        {
+            var ttl = _reliabilityOptions.TimeToLiveInMinutes;
+
+            if (ttl <= 0)
+            {
+                return;
+            }
+
+            foreach (var (id, message) in _outbox)
+            {
+                if (!message.ProcessedFromOutboxAtUtc.HasValue)
+                {
+                    continue;
+                }
+
+                if (message.ProcessedFromOutboxAtUtc.Value.AddMinutes(ttl) > DateTime.UtcNow)
+                {
+                    continue;
+                }
+
+                _outbox.TryRemove(id, out _);
+                _inbox.TryRemove(message.MessageId, out _);
+            }
         }
 
         public async Task Receive<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> messageReceiver)

@@ -54,7 +54,7 @@ namespace Chatter.MessageBrokers.Sending
 
         public static OutboundBrokeredMessage Forward(InboundBrokeredMessage messageToForward, string forwardDestination)
         {
-            var outbound = new OutboundBrokeredMessage(messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
+            var outbound = new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
             return outbound.RefreshTimeToLive();
         }
 

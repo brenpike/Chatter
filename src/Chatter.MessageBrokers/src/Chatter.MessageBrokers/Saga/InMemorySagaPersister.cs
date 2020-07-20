@@ -39,18 +39,38 @@ namespace Chatter.MessageBrokers.Saga
             {
                 throw new ArgumentNullException(nameof(saga), $"A non-null saga is required for persistance.");
             }
+            saga.PersistedAtUtc = DateTime.UtcNow;
+            _sagaCache[saga.SagaId] = saga;
 
-            if (saga.Status.IsSuccess() || saga.Status.IsFailed())
-            {
-                //TODO: this will only ever clear the collection of the process that handles the finalsagamessage
-                _sagaCache.Clear();
-            }
-            else
-            {
-                _sagaCache[saga.SagaId] = saga;
-            }
+            RemoveExpiredMessagesFromSagaPersistance();
+
             _logger.LogDebug($"Saga persisted to in-memory storage with id '{saga.SagaId}' and status '{saga.Status}'");
             return Task.CompletedTask;
+        }
+
+        private void RemoveExpiredMessagesFromSagaPersistance()
+        {
+            var ttl = 1;
+
+            if (ttl <= 0)
+            {
+                return;
+            }
+
+            foreach (var (id, message) in _sagaCache)
+            {
+                if (!message.PersistedAtUtc.HasValue)
+                {
+                    continue;
+                }
+
+                if (message.PersistedAtUtc.Value.AddMinutes(ttl) > DateTime.UtcNow)
+                {
+                    continue;
+                }
+
+                _sagaCache.TryRemove(id, out _);
+            }
         }
     }
 }

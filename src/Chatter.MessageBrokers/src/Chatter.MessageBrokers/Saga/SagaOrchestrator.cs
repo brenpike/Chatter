@@ -1,7 +1,6 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Options;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
 using System;
@@ -36,11 +35,6 @@ namespace Chatter.MessageBrokers.Saga
         public async Task Complete<TMessage>(Func<TMessage, IMessageHandlerContext, Task> sagaStepHandler, ISagaMessage message, IMessageBrokerContext context) where TMessage : IMessage
         {
             SagaContext saga = await _sagaInitializer.Initialize(message, context).ConfigureAwait(false);
-
-            //TODO: things left to do:
-            //      4) implement cancellation
-            //      6) updating headers on CompleteAsync (i.e., sagastatus isn't updated correctly on successful completion)
-            //      7) I don't like how saga states are updated
 
             if (!(sagaStepHandler is null))
             {
@@ -103,7 +97,7 @@ namespace Chatter.MessageBrokers.Saga
             var inputQueue = _brokeredMessageDetailProvider.GetMessageName(message.GetType());
 
             var bodyConverter = _bodyConverterFactory.CreateBodyConverter(options.SagaDataContentType);
-            return new OutboundBrokeredMessage(message, inputQueue, bodyConverter)
+            return new OutboundBrokeredMessage(Guid.NewGuid().ToString(), message, inputQueue, bodyConverter)
                 .WithSubject(options.Description)
                 .WithTimeToLiveInMinutes(options.MaxSagaDurationInMinutes)
                 .WithTransactionMode(transactionMode)

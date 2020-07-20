@@ -9,7 +9,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
     {
         Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext);
         Task<IEnumerable<OutboxMessage>> GetUnprocessedBrokeredMessagesFromOutbox();
-        Task ProcessFromOutbox(IEnumerable<OutboxMessage> outboxMessages);
-        Task ProcessFromOutbox(OutboxMessage outboxMessage);
+        Task MarkMessageAsProcessed(IEnumerable<OutboxMessage> outboxMessages);
+        Task MarkMessageAsProcessed(OutboxMessage outboxMessage);
     }
 }

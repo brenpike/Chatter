@@ -2,8 +2,6 @@
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using System;
-using System.Collections.Generic;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability

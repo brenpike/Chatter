@@ -1,7 +1,6 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Exceptions;
 using System;
 using System.Threading.Tasks;
 
@@ -30,9 +29,11 @@ namespace Chatter.MessageBrokers.Reliability
                 if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
                 {
                     var inboundMessage = messageBrokerContext.BrokeredMessage;
+
                     messageBrokerContext.Container.TryGet<TransactionContext>(out var transactionContext);
-                    await messageBrokerContext.NextDestinationRouter.Route(inboundMessage, transactionContext, messageBrokerContext.GetNextDestinationContext()).ConfigureAwait(false);
+
                     await messageBrokerContext.ReplyRouter.Route(inboundMessage, transactionContext, messageBrokerContext.GetReplyContext()).ConfigureAwait(false);
+                    await messageBrokerContext.NextDestinationRouter.Route(inboundMessage, transactionContext, messageBrokerContext.GetNextDestinationContext()).ConfigureAwait(false);
                 }
             }
             catch (Exception dispatchFailureException)
