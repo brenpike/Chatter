@@ -2,7 +2,6 @@
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Options;
-using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Saga;
 using Microsoft.Extensions.Logging;

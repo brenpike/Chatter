@@ -56,7 +56,7 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
 
-            builder.Services.AddSingleton<ITransactionalBrokeredMessageOutbox, InMemoryBrokeredMessageProcessor>();
+            builder.Services.AddSingleton<ITransactionalBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>();
 
             if (options?.Reliability?.OutboxEnabled ?? false)
             {

@@ -11,14 +11,14 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
 {
-    class InMemoryBrokeredMessageProcessor : ITransactionalBrokeredMessageOutbox
+    class InMemoryBrokeredMessageOutbox : ITransactionalBrokeredMessageOutbox
     {
         private readonly ConcurrentDictionary<string, OutboxMessage> _outbox;
-        private readonly ILogger<InMemoryBrokeredMessageProcessor> _logger;
+        private readonly ILogger<InMemoryBrokeredMessageOutbox> _logger;
         private readonly ReliabilityOptions _reliabilityOptions;
         private readonly ConcurrentDictionary<string, bool> _inbox;
 
-        public InMemoryBrokeredMessageProcessor(ILogger<InMemoryBrokeredMessageProcessor> logger, ReliabilityOptions reliabilityOptions)
+        public InMemoryBrokeredMessageOutbox(ILogger<InMemoryBrokeredMessageOutbox> logger, ReliabilityOptions reliabilityOptions)
         {
             _inbox = new ConcurrentDictionary<string, bool>();
             _outbox = new ConcurrentDictionary<string, OutboxMessage>();
@@ -116,7 +116,7 @@ namespace Chatter.MessageBrokers.Reliability
                 return;
             }
 
-            //for a database inbox implementation, a database transaction would typically be started her and commited after messageReceiver runs
+            //for a database inbox implementation, a database transaction would typically be started here and committed after messageReceiver runs
             //successfully AND the message is added to the inbox. This works because the aggregate would typically be saved as part of the messageReceiver
             //logic, domain events or commands would be routed (and thus handled by the outbox), which means they will all be part of the same transaction
 

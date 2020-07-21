@@ -29,9 +29,7 @@ namespace Chatter.MessageBrokers.Reliability
                 if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
                 {
                     var inboundMessage = messageBrokerContext.BrokeredMessage;
-
                     messageBrokerContext.Container.TryGet<TransactionContext>(out var transactionContext);
-
                     await messageBrokerContext.ReplyRouter.Route(inboundMessage, transactionContext, messageBrokerContext.GetReplyContext()).ConfigureAwait(false);
                     await messageBrokerContext.NextDestinationRouter.Route(inboundMessage, transactionContext, messageBrokerContext.GetNextDestinationContext()).ConfigureAwait(false);
                 }

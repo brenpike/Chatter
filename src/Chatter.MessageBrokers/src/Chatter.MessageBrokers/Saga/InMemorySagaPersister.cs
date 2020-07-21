@@ -39,6 +39,7 @@ namespace Chatter.MessageBrokers.Saga
             {
                 throw new ArgumentNullException(nameof(saga), $"A non-null saga is required for persistance.");
             }
+
             saga.PersistedAtUtc = DateTime.UtcNow;
             _sagaCache[saga.SagaId] = saga;
 

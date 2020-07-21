@@ -1,7 +1,4 @@
-﻿using Chatter.MessageBrokers.Reliability.Outbox;
-using System.Text.Json.Serialization;
-
-namespace Chatter.MessageBrokers.Reliability.Configuration
+﻿namespace Chatter.MessageBrokers.Reliability.Configuration
 {
     public class ReliabilityOptions
     {
