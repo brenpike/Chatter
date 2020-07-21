@@ -51,9 +51,9 @@ namespace Chatter.MessageBrokers.Saga
 
         private void RemoveExpiredMessagesFromSagaPersistance()
         {
-            var ttl = 1;
+            var ttlInMinutes = 5; //TODO: should pull this from saga options
 
-            if (ttl <= 0)
+            if (ttlInMinutes <= 0)
             {
                 return;
             }
@@ -65,7 +65,7 @@ namespace Chatter.MessageBrokers.Saga
                     continue;
                 }
 
-                if (message.PersistedAtUtc.Value.AddMinutes(ttl) > DateTime.UtcNow)
+                if (message.PersistedAtUtc.Value.AddMinutes(ttlInMinutes) > DateTime.UtcNow)
                 {
                     continue;
                 }

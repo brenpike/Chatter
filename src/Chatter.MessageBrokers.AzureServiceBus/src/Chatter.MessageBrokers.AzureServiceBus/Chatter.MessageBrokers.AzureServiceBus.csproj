@@ -3,10 +3,14 @@
   <PropertyGroup>
     <TargetFramework>netcoreapp3.1</TargetFramework>
     <PackageId>Chatter.MessageBrokers.AzureServiceBus</PackageId>
-    <Version>0.0.3</Version>
+    <Version>0.0.4</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>An implementation of the Chatter.MessageBrokers adapter library for Azure Service Bus.</Description>
+    <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>Messaging,Message Broker,.NET Core,Azure,Azure Service Bus</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
