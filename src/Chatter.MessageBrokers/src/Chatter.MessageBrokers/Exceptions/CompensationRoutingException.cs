@@ -3,14 +3,16 @@ using System;
 
 namespace Chatter.MessageBrokers.Exceptions
 {
-    public class CompensationRoutingException : Exception
+    public class CompensationRoutingException : BrokeredMessageRoutingException
     {
-        public CompensateContext CompensateContext { get; }
+        private readonly CompensateContext _compensateContext;
+
+        public override DestinationRouterContext RoutingContext => _compensateContext;
 
         public CompensationRoutingException(CompensateContext compensateContext, Exception causeOfRoutingFailure)
-            : base("Routing message broker compensation message failed.", causeOfRoutingFailure)
+            : base(compensateContext, causeOfRoutingFailure, "Routing message broker compensation message failed.")
         {
-            CompensateContext = compensateContext ?? throw new ArgumentNullException(nameof(compensateContext), "A compensate context is required.");
+            _compensateContext = compensateContext ?? throw new ArgumentNullException(nameof(compensateContext), "A compensate context is required.");
         }
     }
 }

@@ -1,25 +1,15 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers.Saga;
-using Chatter.MessageBrokers.Saga.Configuration;
-using Microsoft.Extensions.Configuration;
 using System;
-using System.Collections.Generic;
 using System.Linq;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
     public static class SagaExtensions
     {
-        public static SagaOptionsBuilder AddSagaOptions(this IServiceCollection services)
+        public static IChatterBuilder AddSagas(this IChatterBuilder builder)
         {
-            return new SagaOptionsBuilder(services);
-        }
-
-        public static IChatterBuilder AddSagas(this IChatterBuilder builder, Action<SagaOptionsBuilder> optionBuilder = null)
-        {
-            optionBuilder?.Invoke(builder.Services.AddSagaOptions());
-
             builder.Services.AddSingleton<IMessageDispatcherProvider, SagaMessageDispatcherProvider>();
             builder.Services.AddSingleton<ISagaPersister, InMemorySagaPersister>();
             builder.Services.AddSingleton<ISagaOrchestrator, SagaOrchestrator>();

@@ -1,6 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
 
@@ -8,11 +7,11 @@ namespace Chatter.MessageBrokers.Routing
 {
     public class ReplyRouter : IReplyRouter
     {
-        private readonly MessageDestinationRouter<ReplyDestinationContext> _messageDestinationRouter;
+        private readonly IMessageDestinationRouter<ReplyDestinationContext> _messageDestinationRouter;
 
-        public ReplyRouter(IBrokeredMessageDispatcher messageBrokerMessageDispatcher)
+        public ReplyRouter(IMessageDestinationRouter<ReplyDestinationContext> messageDestinationRouter)
         {
-            _messageDestinationRouter = new MessageDestinationRouter<ReplyDestinationContext>(messageBrokerMessageDispatcher);
+            _messageDestinationRouter = messageDestinationRouter;
         }
 
         public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, ReplyDestinationContext destinationRouterContext)

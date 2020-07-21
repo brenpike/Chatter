@@ -8,7 +8,7 @@ using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
-    internal class MessageDispatcher : IBrokeredMessageDispatcher
+    internal class MessageDispatcher : IBrokeredMessageInfrastructureDispatcher
     {
         readonly BrokeredMessageSenderPool _pool;
 

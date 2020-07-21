@@ -1,25 +1,25 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
 {
-    public sealed class MessageDestinationRouter<TDestinationRouterContext> : IMessageDestinationRouter, IMessageDestinationRouter<TDestinationRouterContext>
+    public sealed class OutboxMessageDestinationRouter<TDestinationRouterContext> : IMessageDestinationRouter, IMessageDestinationRouter<TDestinationRouterContext>
         where TDestinationRouterContext : IContainDestinationToRouteContext
     {
-        private readonly IBrokeredMessageInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
+        private readonly ITransactionalBrokeredMessageOutbox _brokeredMessageOutboxDispatcher;
 
-        public MessageDestinationRouter(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher)
+        public OutboxMessageDestinationRouter(ITransactionalBrokeredMessageOutbox brokeredMessageOutboxDispatcher)
         {
-            _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
+            _brokeredMessageOutboxDispatcher = brokeredMessageOutboxDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageOutboxDispatcher));
         }
 
         /// <summary>
         /// Routes a brokered message to a receiver using context of type <typeparamref name="TDestinationRouterContext"/> by 
-        /// dispatching a brokered message to messaging infrastructure OR sending a message to an outbox if brokered message outbox
-        /// is enabled.
+        /// ending a message to the brokered message outbox.
         /// </summary>
         /// <param name="inboundBrokeredMessage">The inbound brokered message to be routed to the destination receiver</param>
         /// <param name="transactionContext">The contextual transaction information to be used while routing the message to its destination</param>
@@ -42,19 +42,14 @@ namespace Chatter.MessageBrokers.Routing
         }
 
         /// <summary>
-        /// Routes a brokered message to a receiver by routing an <see cref="OutboundBrokeredMessage"/> to the message broker infrastructure.
+        /// Routes a brokered message to a receiver by routing an <see cref="OutboundBrokeredMessage"/> to the brokered message outbox.
         /// </summary>
         /// <param name="outboundBrokeredMessage">The outbound brokered message to be routed to the destination receiver</param>
         /// <param name="transactionContext">The contextual transaction information to be used while routing the message to its destination</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         public Task Route(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
-            if (string.IsNullOrWhiteSpace(outboundBrokeredMessage.Destination))
-            {
-                throw new ArgumentNullException(nameof(outboundBrokeredMessage.Destination), $"Unable to route message with no destination path specified");
-            }
-
-            return _brokeredMessageInfrastructureDispatcher.Dispatch(outboundBrokeredMessage, transactionContext);
+            return _brokeredMessageOutboxDispatcher.SendToOutbox(outboundBrokeredMessage, transactionContext);
         }
     }
 }

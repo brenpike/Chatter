@@ -19,9 +19,6 @@ namespace Chatter.MessageBrokers.Receiving
             _applicationProperties = applicationProperties ?? new ConcurrentDictionary<string, object>();
             MessageReceiverPath = messageReceiverPath;
             BodyConverter = bodyConverter ?? throw new System.ArgumentNullException(nameof(bodyConverter));
-            ReplyTo = GetApplicationPropertyByKey<string>(Headers.ReplyTo);
-            ReplyToGroupId = GetApplicationPropertyByKey<string>(Headers.ReplyToGroupId);
-            GroupId = GetApplicationPropertyByKey<string>(Headers.GroupId);
             TransactionMode = GetTransactionMode();
             CorrelationId = GetApplicationPropertyByKey<string>(Headers.CorrelationId);
         }
@@ -42,18 +39,6 @@ namespace Chatter.MessageBrokers.Receiving
         /// The name of the message receiver that recieved this message
         /// </summary>
         public string MessageReceiverPath { get; }
-        /// <summary>
-        /// The destination this message will reply to
-        /// </summary>
-        public string ReplyTo { get; }
-        /// <summary>
-        /// The AMQP group this message will reply to
-        /// </summary>
-        public string ReplyToGroupId { get; }
-        /// <summary>
-        /// The AMPQ group this message is in
-        /// </summary>
-        public string GroupId { get; }
         /// <summary>
         /// The correlation id of the received message
         /// </summary>
@@ -117,7 +102,7 @@ namespace Chatter.MessageBrokers.Receiving
             }
             else
             {
-                return TransactionMode.FullAtomicity;
+                return TransactionMode.FullAtomicityViaInfrastructure;
             }
         }
 
@@ -145,7 +130,7 @@ namespace Chatter.MessageBrokers.Receiving
             return this;
         }
 
-        internal InboundBrokeredMessage SetError()
+        internal InboundBrokeredMessage SetFailure()
         {
             _applicationProperties[Headers.IsError] = true;
             _applicationProperties[Headers.SagaStatus] = (byte)SagaStatusEnum.Failed;

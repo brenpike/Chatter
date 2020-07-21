@@ -1,4 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using System;
 using System.Threading.Tasks;
@@ -24,46 +25,40 @@ namespace Chatter.MessageBrokers.Routing
         /// <summary>
         /// Routes a brokered message to a brokered message receiver responsible for compensating a received message
         /// </summary>
-        /// <param name="compensateDestinationPath">The destination path for the receiver responsible for compensating a received message</param>
-        /// <param name="inboundMessage">The inbound message that was unsuccesfully received and requires compensation</param>
-        /// <param name="messageContext">The context that was received with <paramref name="inboundMessage"/></param>
+        /// <param name="inboundBrokeredMessage">The inbound brokered message to be routed to the compensation destination</param>
         /// <param name="transactionContext">The transaction information that was received with <paramref name="inboundMessage"/></param>
-        /// <param name="details">The details of the error that caused the compensation</param>
-        /// <param name="description">The description of the error that caused the compensation</param>
+        /// <param name="destinationRouterContext">The <see cref="CompensateContext"/> containing contextual information describing the compensating action</param>
+        /// <exception cref="CompensationRoutingException">An exception containing contextual information describing the failure and routing details</exception>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public Task Route(string compensateDestinationPath, InboundBrokeredMessage inboundMessage, MessageBrokerContext messageContext, TransactionContext transactionContext, string details, string description)
-        {
-            if (!(messageContext.Container.TryGet<CompensateContext>(out var compensateContext)))
-            {
-                compensateContext = new CompensateContext(compensateDestinationPath, null, details, description, messageContext.Container);
-                messageContext.Container.Include(messageContext);
-            }
-
-            return this.Route(inboundMessage, transactionContext, compensateContext);
-        }
-
         public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, CompensateContext destinationRouterContext)
         {
-            if (destinationRouterContext is null)
+            try
             {
-                throw new ArgumentNullException(nameof(destinationRouterContext), $"A '{typeof(CompensateContext).Name}' is required to route a compensation message");
-            }
+                if (destinationRouterContext is null)
+                {
+                    throw new ArgumentNullException(nameof(destinationRouterContext), $"A '{typeof(CompensateContext).Name}' is required to route a compensation message");
+                }
 
-            if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateDetails))
+                if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateDetails))
+                {
+                    throw new ArgumentNullException(nameof(destinationRouterContext.CompensateDetails), $"A compensation reason is required to route a compensation message");
+                }
+
+                if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateDescription))
+                {
+                    throw new ArgumentNullException(nameof(destinationRouterContext.CompensateDescription), $"A compensation description is required to route a compensation message");
+                }
+
+                inboundBrokeredMessage.WithFailureDetails(destinationRouterContext.CompensateDetails);
+                inboundBrokeredMessage.WithFailureDescription(destinationRouterContext.CompensateDescription);
+                inboundBrokeredMessage.SetFailure();
+
+                return _compensationStrategy.Compensate(inboundBrokeredMessage, destinationRouterContext.CompensateDetails, destinationRouterContext.CompensateDescription, transactionContext, destinationRouterContext);
+            }
+            catch (Exception causeOfRoutingFailure)
             {
-                throw new ArgumentNullException(nameof(destinationRouterContext.CompensateDetails), $"A compensation reason is required to route a compensation message");
+                throw new CompensationRoutingException(destinationRouterContext, causeOfRoutingFailure);
             }
-
-            if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateDescription))
-            {
-                throw new ArgumentNullException(nameof(destinationRouterContext.CompensateDescription), $"A compensation description is required to route a compensation message");
-            }
-
-            inboundBrokeredMessage.WithFailureDetails(destinationRouterContext.CompensateDetails);
-            inboundBrokeredMessage.WithFailureDescription(destinationRouterContext.CompensateDescription);
-            inboundBrokeredMessage.SetError();
-
-            return _compensationStrategy.Compensate(inboundBrokeredMessage, destinationRouterContext.CompensateDetails, destinationRouterContext.CompensateDescription, transactionContext, destinationRouterContext);
         }
     }
 }

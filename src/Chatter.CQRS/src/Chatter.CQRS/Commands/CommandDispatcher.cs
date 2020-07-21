@@ -30,7 +30,7 @@ namespace Chatter.CQRS.Commands
         /// <summary>
         /// Dispatches an <see cref="ICommand"/> to its <see cref="IMessageHandler{TMessage}"/> with additional context.
         /// </summary>
-        /// <typeparam name="TMessage">The type of event to be dispatched.</typeparam>
+        /// <typeparam name="TMessage">The type of command to be dispatched.</typeparam>
         /// <param name="message">The command to be dispatched.</param>
         /// <param name="messageHandlerContext">The context to be dispatched with <paramref name="message"/>.</param>
         /// <returns>An awaitable <see cref="Task"/></returns>

@@ -3,10 +3,14 @@
   <PropertyGroup>
     <TargetFramework>netcoreapp3.1</TargetFramework>
     <PackageId>Chatter.CQRS</PackageId>
-    <Version>0.0.3</Version>
+    <Version>0.0.4</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>An extensible CQRS library that supports passing of context to message handlers.</Description>
+    <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>Command,Query,Event,.NET Core,CQRS</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

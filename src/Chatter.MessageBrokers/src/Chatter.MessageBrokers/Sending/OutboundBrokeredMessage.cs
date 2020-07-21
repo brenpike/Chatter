@@ -24,6 +24,7 @@ namespace Chatter.MessageBrokers.Sending
             Body = body ?? throw new ArgumentNullException(nameof(body));
             Destination = destination;
             _bodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
+            ApplicationProperties[Headers.ContentType] = _bodyConverter.ContentType;
 
             if (string.IsNullOrWhiteSpace(GetCorrelationId()))
             {
@@ -53,7 +54,7 @@ namespace Chatter.MessageBrokers.Sending
 
         public static OutboundBrokeredMessage Forward(InboundBrokeredMessage messageToForward, string forwardDestination)
         {
-            var outbound = new OutboundBrokeredMessage(messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
+            var outbound = new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
             return outbound.RefreshTimeToLive();
         }
 
@@ -63,6 +64,9 @@ namespace Chatter.MessageBrokers.Sending
             return this;
         }
 
+        public string Stringify() 
+            => _bodyConverter.Stringify(Body);
+
         public TransactionMode GetTransactionMode()
         {
             if (ApplicationProperties.TryGetValue(Headers.TransactionMode, out var transactionMode))
@@ -71,7 +75,7 @@ namespace Chatter.MessageBrokers.Sending
             }
             else
             {
-                return TransactionMode.FullAtomicity;
+                return TransactionMode.FullAtomicityViaInfrastructure;
             }
         }
 

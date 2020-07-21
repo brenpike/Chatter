@@ -1,4 +1,6 @@
-﻿namespace Chatter.MessageBrokers.Options
+﻿using System.Transactions;
+
+namespace Chatter.MessageBrokers.Options
 {
     /// <summary>
     /// The mode of transaction
@@ -14,8 +16,10 @@
         /// </summary>
         ReceiveOnly = 1,
         /// <summary>
-        /// The receiver and all operations that occur during the message receiving process are considered an atomic operation
+        /// The message broker infrastructure creates a <see cref="TransactionScope"/> that all message broker infrastructure operations will be a part of.
+        /// The receiver and all operations that occur during the message receiving process are considered an atomic operation. Any operations such as database
+        /// operations that cannot be part of this transaction must be supressed via <see cref="TransactionScopeOption.Suppress"/>.
         /// </summary>
-        FullAtomicity = 2,
+        FullAtomicityViaInfrastructure = 2,
     }
 }

@@ -10,11 +10,11 @@ namespace Chatter.MessageBrokers.Context
     {
         /// <summary>
         /// Creates an object that contains contextual information about the message broker transaction. The transaction mode
-        /// is defaulted to <see cref="TransactionMode.ReceiveOnly"/>.
+        /// is defaulted to <see cref="TransactionMode.None"/>.
         /// </summary>
         /// <param name="transactionReceiver">The message broker receiver</param>
         public TransactionContext(string transactionReceiver)
-            : this(transactionReceiver, TransactionMode.ReceiveOnly)
+            : this(transactionReceiver, TransactionMode.None)
         { }
 
         /// <summary>

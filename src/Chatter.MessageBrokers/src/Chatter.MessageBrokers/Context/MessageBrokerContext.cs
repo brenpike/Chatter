@@ -34,9 +34,9 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         public InboundBrokeredMessage BrokeredMessage { get; private set; }
         ///<inheritdoc/>
-        public INextDestinationRouter NextDestinationRouter { get; internal set; }
+        public IMessageDestinationRouter<DestinationRouterContext> NextDestinationRouter { get; internal set; }
         ///<inheritdoc/>
-        public IReplyRouter ReplyRouter { get; internal set; }
+        public IMessageDestinationRouter<ReplyDestinationContext> ReplyRouter { get; internal set; }
         ///<inheritdoc/>
         public ICompensateRouter CompensateRouter { get; internal set; }
 
@@ -44,10 +44,10 @@ namespace Chatter.MessageBrokers.Context
         /// Adds contextual error information to the message broker context
         /// </summary>
         /// <param name="errorContext"></param>
-        public void SetError(ErrorContext errorContext)
+        public void SetFailure(ErrorContext errorContext)
         {
             this.Container.Include(errorContext);
-            this.BrokeredMessage.SetError();
+            this.BrokeredMessage.SetFailure();
             this.BrokeredMessage.WithFailureDetails(errorContext.ErrorDetails);
             this.BrokeredMessage.WithFailureDescription(errorContext.ErrorDescription);
         }

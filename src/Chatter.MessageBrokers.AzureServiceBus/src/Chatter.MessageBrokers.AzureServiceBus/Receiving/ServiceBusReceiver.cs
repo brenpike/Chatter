@@ -127,7 +127,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                     var transactionContext = new TransactionContext(this.MessageReceiverPath, transactionMode);
                     transactionContext.Container.Include(this.InnerReceiver);
 
-                    if (transactionMode == TransactionMode.FullAtomicity)
+                    if (transactionMode == TransactionMode.FullAtomicityViaInfrastructure)
                     {
                         transactionContext.Container.Include(this.ServiceBusConnection);
                     }
