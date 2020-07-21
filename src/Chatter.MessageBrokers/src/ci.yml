@@ -1,0 +1,41 @@
+trigger:
+  branches:
+    inclues:
+      - master
+      - feature/*
+      - hotfix/*
+      - bugfix/*
+      - release/*
+
+  paths:
+    include:
+      - src/Chatter.MessageBrokers/*
+
+pr:
+  branches:
+    include:
+      - master
+      - hotfix/*
+      - release/*
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Debug'
+  ProjectName: 'Chatter.MessageBrokers'
+  PathToCsProj: 'src/$(ProjectName)/**/$(ProjectName).csproj'
+
+steps:
+- task: DotNetCoreCLI@2
+  displayName: 'dotnet restore'
+  inputs:
+    command: 'restore'
+    projects: '$(PathToCsProj)'
+
+- task: DotNetCoreCLI@2
+  displayName: 'dotnet build'
+  inputs:
+    command: 'build'
+    arguments: '--configuration $(buildConfiguration)'
+    projects: '$(PathToCsProj)'
