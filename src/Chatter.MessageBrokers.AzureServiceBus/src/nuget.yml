@@ -5,14 +5,14 @@ trigger:
 
   paths:
     include:
-      - src/Chatter.MesageBrokers.AzureServiceBus/*
+      - src/Chatter.MessageBrokers.AzureServiceBus/*
 
 pool:
   vmImage: 'ubuntu-latest'
 
 variables:
   buildConfiguration: 'Debug'
-  ProjectName: 'Chatter.MesageBrokers.AzureServiceBus'
+  ProjectName: 'Chatter.MessageBrokers.AzureServiceBus'
   PathToCsProj: 'src/$(ProjectName)/**/$(ProjectName).csproj'
 
 steps:
