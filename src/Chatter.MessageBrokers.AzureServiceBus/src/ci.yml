@@ -9,7 +9,7 @@ trigger:
 
   paths:
     include:
-      - src/Chatter.MesageBrokers.AzureServiceBus/*
+      - src/Chatter.MessageBrokers.AzureServiceBus/*
 
 pr:
   branches:
@@ -23,7 +23,7 @@ pool:
 
 variables:
   buildConfiguration: 'Debug'
-  ProjectName: 'Chatter.MesageBrokers.AzureServiceBus'
+  ProjectName: 'Chatter.MessageBrokers.AzureServiceBus'
   PathToCsProj: 'src/$(ProjectName)/**/$(ProjectName).csproj'
 
 steps:
