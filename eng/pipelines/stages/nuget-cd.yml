@@ -1,0 +1,29 @@
+parameters:
+- name: ArtifactName
+  type: string
+  default: packages
+- name: ProjectName
+  type: string
+  default: ''
+- name: DependsOn
+  type: string
+  default: 'Build'
+    
+stages:
+  - stage: Release
+    dependsOn: '${{ parameters.DependsOn }}'
+    jobs:
+    - job: Release
+      pool:
+        vmImage: 'ubuntu-latest'
+      steps:
+        - download: 'current'
+          artifact: '${{ parameters.ArtifactName }}'
+          
+        - task: NuGetCommand@2
+          displayName: 'Push ${{ parameters.ProjectName }} to NuGet'
+          inputs:
+            command: 'push'
+            packagesToPush: '$(Pipeline.Workspace)/${{ parameters.ArtifactName }}/*.nupkg'
+            nuGetFeedType: 'external'
+            publishFeedCredentials: 'NuGet'

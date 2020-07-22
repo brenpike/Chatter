@@ -1,0 +1,37 @@
+parameters:
+- name: ArtifactName
+  type: string
+  default: packages
+- name: ProjectName
+  type: string
+  default: ''
+
+stages:
+  - stage: Build
+    jobs:
+    - job: Build
+      pool:
+        vmImage: 'ubuntu-latest'
+      steps:
+      - task: DotNetCoreCLI@2
+        displayName: 'Dotnet Publish ${{parameters.ProjectName}}'
+        inputs:
+          command: 'publish'
+          publishWebProjects: false
+          projects: 'src/${{ parameters.ProjectName }}/**/${{ parameters.ProjectName }}.csproj'
+          arguments: '-c $(BuildConfiguration) -o $(Build.ArtifactStagingDirectory)'
+
+      - task: DotNetCoreCLI@2
+        displayName: 'dotnet pack'
+        inputs:
+          command: 'pack'
+          packagesToPack: 'src/${{ parameters.ProjectName }}/**/${{ parameters.ProjectName }}.csproj'
+          nobuild: true
+          versioningScheme: 'off'
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish ${{parameters.ProjectName}} Artifacts'
+        condition: succeeded()
+        inputs:
+          artifactName: '${{parameters.ArtifactName}}'
+          path: $(Build.ArtifactStagingDirectory)

@@ -18,24 +18,8 @@ pr:
       - hotfix/*
       - release/*
 
-pool:
-  vmImage: 'ubuntu-latest'
-
-variables:
-  buildConfiguration: 'Debug'
-  ProjectName: 'Chatter.CQRS'
-  PathToCsProj: 'src/$(ProjectName)/**/$(ProjectName).csproj'
-
-steps:
-- task: DotNetCoreCLI@2
-  displayName: 'dotnet restore'
-  inputs:
-    command: 'restore'
-    projects: '$(PathToCsProj)'
-
-- task: DotNetCoreCLI@2
-  displayName: 'dotnet build'
-  inputs:
-    command: 'build'
-    arguments: '--configuration $(buildConfiguration)'
-    projects: '$(PathToCsProj)'
+extends:
+  template: ../../../eng/pipelines/stages/chatter-ci-cd.yml
+  parameters:
+    ProjectName: Chatter.CQRS
+    ArtifactName: packages
