@@ -22,7 +22,7 @@ stages:
           arguments: '-c $(buildConfiguration) -o $(Build.ArtifactStagingDirectory)'
 
       - task: DotNetCoreCLI@2
-        displayName: 'dotnet pack'
+        displayName: 'Dotnet Pack ${{ parameters.ProjectName }}'
         inputs:
           command: 'pack'
           packagesToPack: 'src/${{ parameters.ProjectName }}/**/${{ parameters.ProjectName }}.csproj'
