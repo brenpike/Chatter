@@ -1,0 +1,20 @@
+parameters:
+- name: ArtifactName
+  type: string
+  default: packages
+- name: ProjectName
+  type: string
+  default: ''
+
+stages:
+  - template: ci.yml
+    parameters:
+      ProjectName: '${{parameters.ProjectName}}'
+      ArtifactName: '${{parameters.ArtifactName}}'
+
+  - ${{if and( ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/feature/refactor-ci2'))}}:
+    - template: nuget-cd.yml
+      parameters:
+        ProjectName: '${{parameters.ProjectName}}'
+        DependsOn: Build
+        ArtifactName: '${{parameters.ArtifactName}}'
