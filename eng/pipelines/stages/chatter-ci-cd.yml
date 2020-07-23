@@ -12,7 +12,7 @@ stages:
       ProjectName: '${{parameters.ProjectName}}'
       ArtifactName: '${{parameters.ArtifactName}}'
 
-  - ${{if and( ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/feature/refactor-ci2'))}}:
+  - ${{if and( ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/master'))}}:
     - template: nuget-cd.yml
       parameters:
         ProjectName: '${{parameters.ProjectName}}'
