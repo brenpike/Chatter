@@ -28,7 +28,7 @@ namespace Chatter.MessageBrokers.Routing
         /// <param name="inboundBrokeredMessage">The inbound brokered message to be routed to the compensation destination</param>
         /// <param name="transactionContext">The transaction information that was received with <paramref name="inboundMessage"/></param>
         /// <param name="destinationRouterContext">The <see cref="CompensateContext"/> containing contextual information describing the compensating action</param>
-        /// <exception cref="CompensationRoutingException">An exception containing contextual information describing the failure and routing details</exception>
+        /// <exception cref="CompensationRoutingException">An exception containing contextual information describing the failure during compensation and routing details</exception>
         /// <returns>An awaitable <see cref="Task"/></returns>
         public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, CompensateContext destinationRouterContext)
         {

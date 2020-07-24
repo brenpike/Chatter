@@ -3,22 +3,24 @@ using Chatter.MessageBrokers.Options;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Azure.ServiceBus;
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
-    internal class MessageDispatcher : IBrokeredMessageInfrastructureDispatcher
+    internal class MessageSenderDispatcher : IBrokeredMessageInfrastructureDispatcher
     {
         readonly BrokeredMessageSenderPool _pool;
 
-        public MessageDispatcher(BrokeredMessageSenderPool messageSenderPool)
+        public MessageSenderDispatcher(BrokeredMessageSenderPool messageSenderPool)
         {
             _pool = messageSenderPool ?? throw new ArgumentNullException(nameof(messageSenderPool));
         }
 
         public Task Dispatch(OutboundBrokeredMessage brokeredMessage, TransactionContext transactionContext)
         {
+
             if (brokeredMessage == null)
             {
                 throw new ArgumentNullException(nameof(brokeredMessage), $"An outgoing message is required.");
@@ -29,20 +31,34 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
                 throw new ArgumentNullException(nameof(brokeredMessage.Destination), $"A destination is required.");
             }
 
+            return Dispatch(new[] { brokeredMessage }, transactionContext);
+        }
+
+        public Task Dispatch(IList<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext)
+        {
             ServiceBusConnection connection = null;
             transactionContext?.Container.TryGet(out connection);
-            var sender = _pool.GetSender(brokeredMessage.Destination, (connection, transactionContext?.TransactionReceiver));
 
-            try
+            var dispatchTasks = new List<Task>(brokeredMessages.Count);
+
+            //TODO: this won't work if leveraging partitioning - won't be able to send messages to multiple partitions in one transactionscope...
+            using var scope = CreateTransactionScope(transactionContext?.TransactionMode ?? TransactionMode.None);
+
+            foreach (var brokeredMessage in brokeredMessages)
             {
-                var message = brokeredMessage.AsAzureServiceBusMessage();
-                using var scope = CreateTransactionScope(transactionContext?.TransactionMode ?? TransactionMode.None);
-                return sender.SendAsync(message);
+                var sender = _pool.GetOrCreate(brokeredMessage.Destination, (connection, transactionContext?.TransactionReceiver));
+                try
+                {
+                    var message = brokeredMessage?.AsAzureServiceBusMessage();
+                    dispatchTasks.Add(sender.SendAsync(message));
+                }
+                finally
+                {
+                    _pool.Return(sender);
+                }
             }
-            finally
-            {
-                _pool.ReturnSender(sender);
-            }
+
+            return Task.WhenAll(dispatchTasks);
         }
 
         TransactionScope CreateTransactionScope(TransactionMode transactionMode)

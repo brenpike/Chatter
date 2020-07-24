@@ -32,7 +32,7 @@ namespace Microsoft.Extensions.DependencyInjection
         private static IChatterBuilder AddAzureServiceBus(IChatterBuilder builder)
         {
             builder.Services.AddSingleton<IBrokeredMessageDetailProvider, BrokeredMessageAttributeProvider>();
-            builder.Services.AddSingleton<IBrokeredMessageInfrastructureDispatcher, MessageDispatcher>();
+            builder.Services.AddSingleton<IBrokeredMessageInfrastructureDispatcher, MessageSenderDispatcher>();
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
             //builder.Services.AddTransient<ICompensationStrategy, DeadLetterCompensationStrategy>();
             builder.Services.AddTransient<ICompensationRoutingStrategy, DispatchMessageCompensatingStrategy>();

@@ -38,7 +38,11 @@ namespace Chatter.MessageBrokers.Reliability
             {
                 if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
                 {
-                    messageBrokerContext.Container.TryGet<CompensateContext>(out var compensateContext);
+                    if (!(messageBrokerContext.Container.TryGet<CompensateContext>(out var compensateContext)))
+                    {
+                        throw;
+                    }
+
                     messageBrokerContext.Container.TryGet<TransactionContext>(out var transactionContext);
 
                     var details = $"{dispatchFailureException.Message} -> {dispatchFailureException.StackTrace}";

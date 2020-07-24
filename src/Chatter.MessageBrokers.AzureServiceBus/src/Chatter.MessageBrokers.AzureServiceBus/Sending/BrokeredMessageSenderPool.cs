@@ -30,7 +30,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
         /// <param name="destinationEntityPath">The destination entity path to be used by the sender</param>
         /// <param name="receiverConnectionAndPath">A <see cref="Tuple{T1, T2}"/> containing the <see cref="ServiceBusConnection"/> and the transfer path of the receiver</param>
         /// <returns>A <see cref="MessageSender"/></returns>
-        public MessageSender GetSender(string destinationEntityPath, (ServiceBusConnection connection, string sendViaPath) receiverConnectionAndPath)
+        public MessageSender GetOrCreate(string destinationEntityPath, (ServiceBusConnection connection, string sendViaPath) receiverConnectionAndPath)
         {
             var sendersForDestination = _senders.GetOrAdd((destinationEntityPath, receiverConnectionAndPath), _ => new ConcurrentQueue<MessageSender>());
 
@@ -53,7 +53,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
         /// Returns a <see cref="MessageSender"/> back to the pool.
         /// </summary>
         /// <param name="sender">The <see cref="MessageSender"/> to be returned</param>
-        public void ReturnSender(MessageSender sender)
+        public void Return(MessageSender sender)
         {
             if (sender.IsClosedOrClosing)
             {

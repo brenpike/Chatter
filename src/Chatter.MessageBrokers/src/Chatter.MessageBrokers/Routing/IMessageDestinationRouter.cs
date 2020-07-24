@@ -1,6 +1,7 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
@@ -17,6 +18,14 @@ namespace Chatter.MessageBrokers.Routing
         /// <param name="transactionContext">The transactional information to used while routing</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         Task Route(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext);
+
+        /// <summary>
+        /// Routes a batch of brokered messages
+        /// </summary>
+        /// <param name="outboundBrokeredMessages">The batch of outbound brokered messages to be routed to their receivers</param>
+        /// <param name="transactionContext">The transactional information to used while routing</param>
+        /// <returns>An awaitable <see cref="Task"/></returns>
+        Task Route(IList<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext);
     }
 
     /// <summary>

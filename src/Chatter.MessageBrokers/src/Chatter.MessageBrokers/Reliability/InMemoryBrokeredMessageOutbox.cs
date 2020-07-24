@@ -26,6 +26,14 @@ namespace Chatter.MessageBrokers.Reliability
             _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
         }
 
+        public async Task SendToOutbox(IList<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
+        {
+            foreach (var outboundBrokeredMessage in outboundBrokeredMessages)
+            {
+                await SendToOutbox(outboundBrokeredMessage, transactionContext).ConfigureAwait(false);
+            }
+        }
+
         public Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
             var outboxMessage = new OutboxMessage
