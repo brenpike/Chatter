@@ -7,14 +7,14 @@ namespace Chatter.MessageBrokers.Routing
 {
     public class ReplyRouter : IReplyRouter
     {
-        private readonly IMessageDestinationRouter<ReplyDestinationContext> _messageDestinationRouter;
+        private readonly IRouteMessages<ReplyRoutingContext> _messageDestinationRouter;
 
-        public ReplyRouter(IMessageDestinationRouter<ReplyDestinationContext> messageDestinationRouter)
+        public ReplyRouter(IRouteMessages<ReplyRoutingContext> messageDestinationRouter)
         {
             _messageDestinationRouter = messageDestinationRouter;
         }
 
-        public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, ReplyDestinationContext destinationRouterContext)
+        public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, ReplyRoutingContext destinationRouterContext)
         {
             if (inboundBrokeredMessage is null)
             {

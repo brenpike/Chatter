@@ -16,11 +16,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Core
     public class DeadLetterCompensationStrategy : ICompensationRoutingStrategy
     {
         ///<inheritdoc/>
-        public Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string compensateReason, string compensateErrorDescription, TransactionContext transactionContext, CompensateContext compensateContext)
+        public Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string compensateReason, string compensateErrorDescription, TransactionContext transactionContext, CompensationRoutingContext compensateContext)
         {
             if (!(compensateContext.Container.TryGet<Message>(out var receivedMessage)))
             {
-                throw new InvalidOperationException($"The received {nameof(CompensateContext)} did not contain a {typeof(Message).Name}");
+                throw new InvalidOperationException($"The received {nameof(CompensationRoutingContext)} did not contain a {typeof(Message).Name}");
             }
 
             if (!(transactionContext.Container.TryGet<MessageReceiver>(out var receiver)))

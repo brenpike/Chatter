@@ -1,18 +1,18 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Sending;
+using Chatter.MessageBrokers.Routing;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
-namespace Chatter.MessageBrokers.Routing
+namespace Chatter.MessageBrokers.Sending
 {
-    public sealed class MessageDestinationRouter<TDestinationRouterContext> : IMessageDestinationRouter, IMessageDestinationRouter<TDestinationRouterContext>
-        where TDestinationRouterContext : IContainDestinationToRouteContext
+    public sealed class MessageRouter<TDestinationRouterContext> : IRouteMessages, IRouteMessages<TDestinationRouterContext>
+        where TDestinationRouterContext : IContainRoutingContext
     {
         private readonly IBrokeredMessageInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
 
-        public MessageDestinationRouter(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher)
+        public MessageRouter(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher)
         {
             _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
         }

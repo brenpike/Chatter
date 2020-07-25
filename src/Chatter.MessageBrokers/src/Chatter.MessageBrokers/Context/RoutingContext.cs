@@ -8,7 +8,7 @@ namespace Chatter.MessageBrokers.Context
     /// <summary>
     /// Contains contextual information about how a received message should be routed to another destination
     /// </summary>
-    public class DestinationRouterContext : IContainDestinationToRouteContext
+    public class RoutingContext : IContainRoutingContext
     {
         /// <summary>
         /// Creates an object which contains contextual information about how a received message should be routed to another destination.
@@ -16,7 +16,7 @@ namespace Chatter.MessageBrokers.Context
         /// <param name="destinationPath">The destination message receiver to be routed to</param>
         /// <param name="destinationMessageCreator">The delegate that creates an outbound message from the received inbound message</param>
         /// <param name="inheritedContext">An optional container with additional contextual information</param>
-        public DestinationRouterContext(string destinationPath, Func<InboundBrokeredMessage, OutboundBrokeredMessage> destinationMessageCreator, ContextContainer inheritedContext = null)
+        public RoutingContext(string destinationPath, Func<InboundBrokeredMessage, OutboundBrokeredMessage> destinationMessageCreator, ContextContainer inheritedContext = null)
         {
             this.DestinationPath = destinationPath;
             this.DestinationMessageCreator = destinationMessageCreator;
@@ -37,8 +37,8 @@ namespace Chatter.MessageBrokers.Context
         /// The outbound message will be routed to the <see cref="DestinationPath"/>.
         /// </summary>
         /// <param name="destinationMessageCreator">The delegate function to create an outbound message for message to route</param>
-        /// <returns>The current <see cref="DestinationRouterContext"/> instance</returns>
-        public DestinationRouterContext SetDestinationMessageCreator(Func<InboundBrokeredMessage, OutboundBrokeredMessage> destinationMessageCreator)
+        /// <returns>The current <see cref="RoutingContext"/> instance</returns>
+        public RoutingContext SetDestinationMessageCreator(Func<InboundBrokeredMessage, OutboundBrokeredMessage> destinationMessageCreator)
         {
             DestinationMessageCreator = destinationMessageCreator;
             return this;

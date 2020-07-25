@@ -56,7 +56,17 @@ namespace TravelBooking.Api.Controllers
         [HttpPut("orchestration/book")]
         public async Task BookTravelViaSagaOrchestration([FromBody] tb.TravelBooking travelBooking)
         {
-            var tbc = new BookTravelCommand()
+            var tbc = new BookTravelViaOrchestrationCommand()
+            {
+                SagaData = travelBooking
+            };
+            await _dispatcher.Dispatch(tbc);
+        }
+
+        [HttpPut("routingslip/book")]
+        public async Task BookTravelViaRoutingSlip([FromBody] tb.TravelBooking travelBooking)
+        {
+            var tbc = new BookTravelViaOrchestrationCommand()
             {
                 SagaData = travelBooking
             };

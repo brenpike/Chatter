@@ -1,19 +1,19 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Reliability;
+using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
-namespace Chatter.MessageBrokers.Routing
+namespace Chatter.MessageBrokers.Reliability.Outbox
 {
-    public sealed class OutboxMessageDestinationRouter<TDestinationRouterContext> : IMessageDestinationRouter, IMessageDestinationRouter<TDestinationRouterContext>
-        where TDestinationRouterContext : IContainDestinationToRouteContext
+    public sealed class OutboxMessageRouter<TDestinationRouterContext> : IRouteMessages, IRouteMessages<TDestinationRouterContext>
+        where TDestinationRouterContext : IContainRoutingContext
     {
         private readonly ITransactionalBrokeredMessageOutbox _brokeredMessageOutboxDispatcher;
 
-        public OutboxMessageDestinationRouter(ITransactionalBrokeredMessageOutbox brokeredMessageOutboxDispatcher)
+        public OutboxMessageRouter(ITransactionalBrokeredMessageOutbox brokeredMessageOutboxDispatcher)
         {
             _brokeredMessageOutboxDispatcher = brokeredMessageOutboxDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageOutboxDispatcher));
         }

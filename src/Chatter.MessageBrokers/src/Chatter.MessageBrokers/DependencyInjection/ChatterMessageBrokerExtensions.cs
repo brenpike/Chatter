@@ -8,6 +8,8 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
+using Chatter.MessageBrokers.Routing.Slips;
+using Chatter.MessageBrokers.Sending;
 using Microsoft.AspNetCore.Builder;
 using System;
 using System.Collections.Generic;
@@ -69,7 +71,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 builder.AddBrokerRouters();
             }
 
-            builder.Services.Decorate<IMessageDispatcher, AtomicRoutingMessageDispatcherDecorator>();
+            builder.Services.Decorate<IMessageDispatcher, RoutingSlipMessageDispatcherDecorator>(); //TODO: we'll only want to add this if routing slips are added
             builder.AddReceivers(assemblies);
 
             builder.Services.AddSingleton<IBodyConverterFactory, BodyConverterFactory>();
@@ -80,22 +82,32 @@ namespace Microsoft.Extensions.DependencyInjection
 
         public static IChatterBuilder AddOutboxRouters(this IChatterBuilder builder)
         {
-            builder.Services.AddSingleton<IMessageDestinationRouter<CompensateContext>, OutboxMessageDestinationRouter<CompensateContext>>();
-            builder.Services.AddSingleton<IMessageDestinationRouter<ReplyDestinationContext>, OutboxMessageDestinationRouter<ReplyDestinationContext>>();
-            builder.Services.AddSingleton<IMessageDestinationRouter<DestinationRouterContext>, OutboxMessageDestinationRouter<DestinationRouterContext>>();
-            builder.Services.AddSingleton<IMessageDestinationRouter, OutboxMessageDestinationRouter<DestinationRouterContext>>();
+            builder.Services.AddSingleton<IRouteMessages<CompensationRoutingContext>, OutboxMessageRouter<CompensationRoutingContext>>();
+            builder.Services.AddSingleton<IRouteMessages<ReplyRoutingContext>, OutboxMessageRouter<ReplyRoutingContext>>();
+            builder.Services.AddSingleton<IRouteMessages<NextDestinationRoutingContext>, OutboxMessageRouter<NextDestinationRoutingContext>>();
+
+            builder.Services.AddSingleton<IRouteMessages<RoutingContext>, OutboxMessageRouter<RoutingContext>>();
+            builder.Services.AddSingleton<IRouteMessages, OutboxMessageRouter<RoutingContext>>();
+
             builder.Services.AddSingleton<ICompensateRouter, CompensateRouter>();
+            builder.Services.AddSingleton<IReplyRouter, ReplyRouter>();
+            builder.Services.AddSingleton<INextDestinationRouter, NextDestinationRouter>();
 
             return builder;
         }
 
         public static IChatterBuilder AddBrokerRouters(this IChatterBuilder builder)
         {
-            builder.Services.AddSingleton<IMessageDestinationRouter<CompensateContext>, MessageDestinationRouter<CompensateContext>>();
-            builder.Services.AddSingleton<IMessageDestinationRouter<ReplyDestinationContext>, MessageDestinationRouter<ReplyDestinationContext>>();
-            builder.Services.AddSingleton<IMessageDestinationRouter<DestinationRouterContext>, MessageDestinationRouter<DestinationRouterContext>>();
-            builder.Services.AddSingleton<IMessageDestinationRouter, MessageDestinationRouter<DestinationRouterContext>>();
+            builder.Services.AddSingleton<IRouteMessages<CompensationRoutingContext>, MessageRouter<CompensationRoutingContext>>();
+            builder.Services.AddSingleton<IRouteMessages<ReplyRoutingContext>, MessageRouter<ReplyRoutingContext>>();
+            builder.Services.AddSingleton<IRouteMessages<NextDestinationRoutingContext>, MessageRouter<NextDestinationRoutingContext>>();
+
+            builder.Services.AddSingleton<IRouteMessages<RoutingContext>, MessageRouter<RoutingContext>>();
+            builder.Services.AddSingleton<IRouteMessages, MessageRouter<RoutingContext>>();
+
             builder.Services.AddSingleton<ICompensateRouter, CompensateRouter>();
+            builder.Services.AddSingleton<IReplyRouter, ReplyRouter>();
+            builder.Services.AddSingleton<INextDestinationRouter, NextDestinationRouter>();
 
             return builder;
         }

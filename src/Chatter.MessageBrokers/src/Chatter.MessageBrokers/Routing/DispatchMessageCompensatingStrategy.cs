@@ -10,19 +10,19 @@ namespace Chatter.MessageBrokers.Routing
     /// </summary>
     public class DispatchMessageCompensatingStrategy : ICompensationRoutingStrategy
     {
-        private readonly IMessageDestinationRouter<CompensateContext> _messageDestinationRouter;
+        private readonly IRouteMessages<CompensationRoutingContext> _messageDestinationRouter;
 
         /// <summary>
         /// Creates a compensation routiung strategy that dispatches a compensating message to the message broker
         /// </summary>
         /// <param name="messageBrokerMessageDispatcher"></param>
-        public DispatchMessageCompensatingStrategy(IMessageDestinationRouter<CompensateContext> messageDestinationRouter)
+        public DispatchMessageCompensatingStrategy(IRouteMessages<CompensationRoutingContext> messageDestinationRouter)
         {
             _messageDestinationRouter = messageDestinationRouter ?? throw new ArgumentNullException(nameof(messageDestinationRouter));
         }
 
         ///<inheritdoc/>
-        public Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string details, string description, TransactionContext transactionContext, CompensateContext compensateContext)
+        public Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string details, string description, TransactionContext transactionContext, CompensationRoutingContext compensateContext)
         {
             return _messageDestinationRouter.Route(inboundBrokeredMessage, transactionContext, compensateContext);
         }

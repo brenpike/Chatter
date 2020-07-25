@@ -4,7 +4,7 @@ using Chatter.MessageBrokers.Sending;
 
 namespace Chatter.MessageBrokers.Context
 {
-    public interface IContainDestinationToRouteContext : IContainContext
+    public interface IContainRoutingContext : IContainContext
     {
         /// <summary>
         /// The name of the destination receiver that the outbound message will be routed to

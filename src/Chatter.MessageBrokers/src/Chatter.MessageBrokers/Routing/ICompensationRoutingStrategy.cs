@@ -18,6 +18,6 @@ namespace Chatter.MessageBrokers.Routing
         /// <param name="transactionContext">The transactional information to used while routing the compensation message</param>
         /// <param name="compensateContext">The contextual information required to compensate the message</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string details, string description, TransactionContext transactionContext, CompensateContext compensateContext);
+        Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string details, string description, TransactionContext transactionContext, CompensationRoutingContext compensateContext);
     }
 }

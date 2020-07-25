@@ -9,7 +9,7 @@ namespace Chatter.MessageBrokers.Routing
     /// <summary>
     /// Routes a brokered message to a receiver
     /// </summary>
-    public interface IMessageDestinationRouter
+    public interface IRouteMessages
     {
         /// <summary>
         /// Routes a brokered message to a receiver
@@ -29,10 +29,10 @@ namespace Chatter.MessageBrokers.Routing
     }
 
     /// <summary>
-    /// Routes a brokered message to a receiver using context of type <typeparamref name="TDestinationRouterContext"/>
+    /// Routes a brokered message to a receiver using context of type <typeparamref name="TRoutingContext"/>
     /// </summary>
-    /// <typeparam name="TDestinationRouterContext">The type of context containing information required to route a message</typeparam>
-    public interface IMessageDestinationRouter<in TDestinationRouterContext> where TDestinationRouterContext : IContainDestinationToRouteContext
+    /// <typeparam name="TRoutingContext">The type of context containing information required to route a message</typeparam>
+    public interface IRouteMessages<in TRoutingContext> where TRoutingContext : IContainRoutingContext
     {
         /// <summary>
         /// Routes a brokered message to a receiver
@@ -41,6 +41,6 @@ namespace Chatter.MessageBrokers.Routing
         /// <param name="transactionContext">The transactional information to used while routing</param>
         /// <param name="destinationRouterContext">The contextual information required to successfully route the brokered message</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, TDestinationRouterContext destinationRouterContext);
+        Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, TRoutingContext destinationRouterContext);
     }
 }

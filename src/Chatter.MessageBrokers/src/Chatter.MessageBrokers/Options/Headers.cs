@@ -6,6 +6,7 @@
         private static readonly string ReplyBaseHeader = "Reply";
         private static readonly string TransactionBaseHeader = "Transaction";
         private static readonly string Saga = "Saga";
+        private static readonly string Routing = "Routing";
 
         /// <summary>
         /// The receivers visited by the inbound message prior to the most recent message receiver
@@ -76,5 +77,9 @@
         /// True if the message has encountered an error while being received
         /// </summary>
         public static readonly string IsError = $"{ChatterBaseHeader}.IsError";
+        /// <summary>
+        /// The routing slip that describes how a message will be routed
+        /// </summary>
+        public static readonly string Slip = $"{ChatterBaseHeader}.{Routing}.Slip";
     }
 }

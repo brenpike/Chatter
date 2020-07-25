@@ -27,16 +27,16 @@ namespace Chatter.MessageBrokers.Routing
         /// </summary>
         /// <param name="inboundBrokeredMessage">The inbound brokered message to be routed to the compensation destination</param>
         /// <param name="transactionContext">The transaction information that was received with <paramref name="inboundMessage"/></param>
-        /// <param name="destinationRouterContext">The <see cref="CompensateContext"/> containing contextual information describing the compensating action</param>
+        /// <param name="destinationRouterContext">The <see cref="CompensationRoutingContext"/> containing contextual information describing the compensating action</param>
         /// <exception cref="CompensationRoutingException">An exception containing contextual information describing the failure during compensation and routing details</exception>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, CompensateContext destinationRouterContext)
+        public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, CompensationRoutingContext destinationRouterContext)
         {
             try
             {
                 if (destinationRouterContext is null)
                 {
-                    throw new ArgumentNullException(nameof(destinationRouterContext), $"A '{typeof(CompensateContext).Name}' is required to route a compensation message");
+                    throw new ArgumentNullException(nameof(destinationRouterContext), $"A '{typeof(CompensationRoutingContext).Name}' is required to route a compensation message");
                 }
 
                 if (string.IsNullOrWhiteSpace(destinationRouterContext.CompensateDetails))
