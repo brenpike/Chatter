@@ -35,10 +35,10 @@ namespace Chatter.MessageBrokers.Routing
     public interface IRouteMessages<in TRoutingContext> where TRoutingContext : IContainRoutingContext
     {
         /// <summary>
-        /// Routes a brokered message to a receiver
+        /// Routes an inbound brokered message to a destination using information supplied by the <typeparamref name="TRoutingContext"/>
         /// </summary>
-        /// <param name="inboundBrokeredMessage">The inbound brokered message to be routed to a receiver</param>
-        /// <param name="transactionContext">The transactional information to used while routing</param>
+        /// <param name="inboundBrokeredMessage">The inbound brokered message to be forwarded to a receiver</param>
+        /// <param name="transactionContext">The transactional information to use while routing</param>
         /// <param name="destinationRouterContext">The contextual information required to successfully route the brokered message</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, TRoutingContext destinationRouterContext);

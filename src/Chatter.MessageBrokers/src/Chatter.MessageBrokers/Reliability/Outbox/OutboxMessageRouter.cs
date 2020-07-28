@@ -38,7 +38,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 return Task.CompletedTask;
             }
 
-            var outboundMessage = destinationRouterContext.CreateDestinationMessage(inboundBrokeredMessage);
+            var outboundMessage = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext.DestinationPath);
             return Route(outboundMessage, transactionContext);
         }
 

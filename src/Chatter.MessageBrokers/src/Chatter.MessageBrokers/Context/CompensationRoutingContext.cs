@@ -1,6 +1,4 @@
 ﻿using Chatter.CQRS.Context;
-using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Sending;
 using System;
 
 namespace Chatter.MessageBrokers.Context
@@ -15,10 +13,9 @@ namespace Chatter.MessageBrokers.Context
         /// Assumes no <see cref="CompensateDetails"/> or <see cref="CompensateDescription"/> are available.
         /// </summary>
         /// <param name="destinationPath">The destination message receiver to be routed to</param>
-        /// <param name="destinationMessageCreator">The delegate that creates an outbound message from the received inbound message</param>
         /// <param name="inheritedContext">An optional container with additional contextual information</param>
-        public CompensationRoutingContext(string destinationPath, Func<InboundBrokeredMessage, OutboundBrokeredMessage> destinationMessageCreator, ContextContainer inheritedContext = null)
-            : this(destinationPath, destinationMessageCreator, "", "", inheritedContext)
+        public CompensationRoutingContext(string destinationPath, ContextContainer inheritedContext = null)
+            : this(destinationPath, "", "", inheritedContext)
         {
         }
 
@@ -26,12 +23,11 @@ namespace Chatter.MessageBrokers.Context
         /// Creates an object which contains contextual information about how a received message should be routed to the compensating destination.
         /// </summary>
         /// <param name="destinationPath">The destination message receiver to be routed to</param>
-        /// <param name="destinationMessageCreator">The delegate that creates an outbound message from the received inbound message</param>
         /// <param name="compensateDetails">The details describing the reason the compensation is occurring</param>
         /// <param name="compensateDescription">A description of the compensation</param>
         /// <param name="inheritedContext">An optional container with additional contextual information</param>
-        public CompensationRoutingContext(string destinationPath, Func<InboundBrokeredMessage, OutboundBrokeredMessage> destinationMessageCreator, string compensateDetails, string compensateDescription, ContextContainer inheritedContext = null)
-            : base(destinationPath, destinationMessageCreator, inheritedContext)
+        public CompensationRoutingContext(string destinationPath, string compensateDetails, string compensateDescription, ContextContainer inheritedContext = null)
+            : base(destinationPath, inheritedContext)
         {
             CompensateDetails = compensateDetails;
             CompensateDescription = compensateDescription;

@@ -34,11 +34,11 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         public InboundBrokeredMessage BrokeredMessage { get; private set; }
         ///<inheritdoc/>
-        public INextDestinationRouter NextDestinationRouter { get; internal set; }
+        public IRouteMessages<RoutingContext> NextDestinationRouter { get; internal set; }
         ///<inheritdoc/>
-        public IReplyRouter ReplyRouter { get; internal set; }
+        public IRouteMessages<ReplyRoutingContext> ReplyRouter { get; internal set; }
         ///<inheritdoc/>
-        public ICompensateRouter CompensateRouter { get; internal set; }
+        public IRouteMessages<CompensationRoutingContext> CompensateRouter { get; internal set; }
 
         /// <summary>
         /// Adds contextual error information to the message broker context

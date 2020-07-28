@@ -20,9 +20,9 @@ namespace Chatter.MessageBrokers.Receiving
         readonly object _syncLock;
         private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
-        private readonly INextDestinationRouter _nextDestinationRouter;
-        private readonly IReplyRouter _replyRouter;
-        private readonly ICompensateRouter _compensateRouter;
+        private readonly IRouteMessages<RoutingContext> _nextDestinationRouter;
+        private readonly IRouteMessages<ReplyRoutingContext> _replyRouter;
+        private readonly IRouteMessages<CompensationRoutingContext> _compensateRouter;
         private readonly IMessageDispatcher _messageDispatcher;
         private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
         TaskCompletionSource<bool> _completedReceivingSource = new TaskCompletionSource<bool>();
@@ -40,9 +40,9 @@ namespace Chatter.MessageBrokers.Receiving
         /// <param name="logger">Provides logging capability</param>
         public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
                                        IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
-                                       INextDestinationRouter nextDestinationRouter,
-                                       IReplyRouter replyRouter,
-                                       ICompensateRouter compensateRouter,
+                                       IRouteMessages<RoutingContext> nextDestinationRouter,
+                                       IRouteMessages<ReplyRoutingContext> replyRouter,
+                                       IRouteMessages<CompensationRoutingContext> compensateRouter,
                                        IMessageDispatcher messageDispatcher,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger)
         {
@@ -253,7 +253,7 @@ namespace Chatter.MessageBrokers.Receiving
         {
             if (!string.IsNullOrWhiteSpace(NextDestinationPath))
             {
-                var nextDestinationContext = new NextDestinationRoutingContext(NextDestinationPath, null, messageContext.Container);
+                var nextDestinationContext = new RoutingContext(NextDestinationPath, messageContext.Container);
                 messageContext.Container.Include(nextDestinationContext);
             }
         }
@@ -265,7 +265,7 @@ namespace Chatter.MessageBrokers.Receiving
                 inboundMessage.ApplicationProperties.TryGetValue(Headers.ReplyToGroupId, out var replyToSessionId);
                 inboundMessage.ApplicationProperties.TryGetValue(Headers.GroupId, out var groupId);
                 replyToSessionId = !string.IsNullOrWhiteSpace((string)replyToSessionId) ? (string)replyToSessionId : (string)groupId;
-                var replyContext = new ReplyRoutingContext((string)replyTo, null, (string)replyToSessionId, messageContext.Container);
+                var replyContext = new ReplyRoutingContext((string)replyTo, (string)replyToSessionId, messageContext.Container);
                 messageContext.Container.Include(replyContext);
             }
         }
@@ -276,7 +276,7 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDetails, out var detail);
                 inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDescription, out var description);
-                var compensateContext = new CompensationRoutingContext(CompensateDestinationPath, null, (string)detail, (string)description, messageContext.Container);
+                var compensateContext = new CompensationRoutingContext(CompensateDestinationPath, (string)detail, (string)description, messageContext.Container);
                 messageContext.Container.Include(compensateContext);
             }
         }

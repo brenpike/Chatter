@@ -49,7 +49,6 @@ namespace Chatter.MessageBrokers.Routing.Slips
                     var description = $"'{typeof(TMessage).Name}' was not received successfully";
 
                     var newContext = new CompensationRoutingContext(compensateContext?.DestinationPath,
-                                                           compensateContext?.DestinationMessageCreator,
                                                            details,
                                                            description,
                                                            messageBrokerContext?.Container);

@@ -9,7 +9,6 @@ using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Slips;
-using Chatter.MessageBrokers.Sending;
 using Microsoft.AspNetCore.Builder;
 using System;
 using System.Collections.Generic;
@@ -82,32 +81,22 @@ namespace Microsoft.Extensions.DependencyInjection
 
         public static IChatterBuilder AddOutboxRouters(this IChatterBuilder builder)
         {
-            builder.Services.AddSingleton<IRouteMessages<CompensationRoutingContext>, OutboxMessageRouter<CompensationRoutingContext>>();
-            builder.Services.AddSingleton<IRouteMessages<ReplyRoutingContext>, OutboxMessageRouter<ReplyRoutingContext>>();
-            builder.Services.AddSingleton<IRouteMessages<NextDestinationRoutingContext>, OutboxMessageRouter<NextDestinationRoutingContext>>();
-
-            builder.Services.AddSingleton<IRouteMessages<RoutingContext>, OutboxMessageRouter<RoutingContext>>();
             builder.Services.AddSingleton<IRouteMessages, OutboxMessageRouter<RoutingContext>>();
 
-            builder.Services.AddSingleton<ICompensateRouter, CompensateRouter>();
-            builder.Services.AddSingleton<IReplyRouter, ReplyRouter>();
-            builder.Services.AddSingleton<INextDestinationRouter, NextDestinationRouter>();
+            builder.Services.AddSingleton<IRouteMessages<CompensationRoutingContext>, CompensateRouter>();
+            builder.Services.AddSingleton<IRouteMessages<ReplyRoutingContext>, OutboxMessageRouter<ReplyRoutingContext>>();
+            builder.Services.AddSingleton<IRouteMessages<RoutingContext>, OutboxMessageRouter<RoutingContext>>();
 
             return builder;
         }
 
         public static IChatterBuilder AddBrokerRouters(this IChatterBuilder builder)
         {
-            builder.Services.AddSingleton<IRouteMessages<CompensationRoutingContext>, MessageRouter<CompensationRoutingContext>>();
-            builder.Services.AddSingleton<IRouteMessages<ReplyRoutingContext>, MessageRouter<ReplyRoutingContext>>();
-            builder.Services.AddSingleton<IRouteMessages<NextDestinationRoutingContext>, MessageRouter<NextDestinationRoutingContext>>();
-
-            builder.Services.AddSingleton<IRouteMessages<RoutingContext>, MessageRouter<RoutingContext>>();
             builder.Services.AddSingleton<IRouteMessages, MessageRouter<RoutingContext>>();
 
-            builder.Services.AddSingleton<ICompensateRouter, CompensateRouter>();
-            builder.Services.AddSingleton<IReplyRouter, ReplyRouter>();
-            builder.Services.AddSingleton<INextDestinationRouter, NextDestinationRouter>();
+            builder.Services.AddSingleton<IRouteMessages<CompensationRoutingContext>, CompensateRouter>();
+            builder.Services.AddSingleton<IRouteMessages<ReplyRoutingContext>, MessageRouter<ReplyRoutingContext>>();
+            builder.Services.AddSingleton<IRouteMessages<RoutingContext>, MessageRouter<RoutingContext>>();
 
             return builder;
         }

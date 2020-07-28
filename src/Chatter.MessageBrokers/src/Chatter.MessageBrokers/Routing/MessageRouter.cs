@@ -1,11 +1,11 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Routing;
+using Chatter.MessageBrokers.Sending;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
-namespace Chatter.MessageBrokers.Sending
+namespace Chatter.MessageBrokers.Routing
 {
     public sealed class MessageRouter<TDestinationRouterContext> : IRouteMessages, IRouteMessages<TDestinationRouterContext>
         where TDestinationRouterContext : IContainRoutingContext
@@ -38,7 +38,7 @@ namespace Chatter.MessageBrokers.Sending
                 return Task.CompletedTask;
             }
 
-            var outboundMessage = destinationRouterContext.CreateDestinationMessage(inboundBrokeredMessage);
+            var outboundMessage = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext.DestinationPath);
             return Route(outboundMessage, transactionContext);
         }
 
