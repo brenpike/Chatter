@@ -10,6 +10,7 @@ using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Slips;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Hosting;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -150,20 +151,9 @@ namespace Microsoft.Extensions.DependencyInjection
             foreach (var receiverType in GetAllReceiverTypes(messages))
             {
                 builder.Services.AddSingleton(receiverType.Item1, receiverType.Item2);
+                builder.Services.AddSingleton(typeof(IHostedService), sp => sp.GetRequiredService(receiverType.Item1));
             }
             return builder;
-        }
-
-        public static void StartChatterReceivers(this IApplicationBuilder applicationBuilder)
-        {
-            var messages = FindBrokeredMessagesWithReceiversInAssembliesByType(AppDomain.CurrentDomain.GetAssemblies());
-            foreach (var receiverType in GetAllReceiverTypes(messages))
-            {
-                if (receiverType.Item3)
-                {
-                    applicationBuilder.ApplicationServices.GetRequiredService(receiverType.Item1);
-                }
-            }
         }
 
         private static IEnumerable<(Type, Type, bool)> GetAllReceiverTypes(IReadOnlyList<Type> messages)

@@ -47,9 +47,6 @@ namespace TravelBooking.Api
                 app.UseDeveloperExceptionPage();
             }
 
-            //This starts receving all message broker message receivers on startup
-            app.StartChatterReceivers();
-
             app.UseSwagger();
             app.UseSwaggerUI(c =>
             {
