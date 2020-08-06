@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Options;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Saga;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Threading;
@@ -15,7 +16,7 @@ namespace Chatter.MessageBrokers.Receiving
     /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
-    class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
+    class BrokeredMessageReceiver<TMessage> : BackgroundService, IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
     {
         readonly object _syncLock;
         private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
@@ -54,11 +55,6 @@ namespace Chatter.MessageBrokers.Receiving
             _compensateRouter = compensateRouter ?? throw new ArgumentNullException(nameof(compensateRouter));
             _messageDispatcher = messageDispatcher ?? throw new ArgumentNullException(nameof(messageDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-
-            if (AutoReceiveMessages)
-            {
-                StartReceiver();
-            }
         }
 
         /// <summary>
@@ -278,6 +274,18 @@ namespace Chatter.MessageBrokers.Receiving
                 inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDescription, out var description);
                 var compensateContext = new CompensateContext(CompensateDestinationPath, null, (string)detail, (string)description, messageContext.Container);
                 messageContext.Container.Include(compensateContext);
+            }
+        }
+
+        protected override Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            if (AutoReceiveMessages)
+            {
+                return Start((message, context) => _messageDispatcher.Dispatch(message, context), CancellationToken.None);
+            }
+            else
+            {
+                return Task.CompletedTask;
             }
         }
     }
