@@ -9,6 +9,10 @@
         private static readonly string Routing = "Routing";
 
         /// <summary>
+        /// The path to the receiver that initiated the message.
+        /// </summary>
+        public static readonly string RequestorPath = $"{ChatterBaseHeader}.RequestorPath";
+        /// <summary>
         /// The receivers visited by the inbound message prior to the most recent message receiver
         /// </summary>
         public static readonly string Via = $"{ChatterBaseHeader}.Via";
@@ -35,14 +39,14 @@
         /// The AMQP group this message should reply to
         /// </summary>
         /// <remarks>
-        /// Also known as a session in some messaging infrastructure implemntations
+        /// Also known as a session in some messaging infrastructure implementations
         /// </remarks>
         public static readonly string ReplyToGroupId = $"{ChatterBaseHeader}.{ReplyBaseHeader}.ReplyToGroupId";
         /// <summary>
         /// The AMQP group this message is part of
         /// </summary>
         /// <remarks>
-        /// Also known as session id in some messaging infrastructure implemntations
+        /// Also known as session id in some messaging infrastructure implementations
         /// </remarks>
         public static readonly string GroupId = $"{ChatterBaseHeader}.GroupId";
         /// <summary>
