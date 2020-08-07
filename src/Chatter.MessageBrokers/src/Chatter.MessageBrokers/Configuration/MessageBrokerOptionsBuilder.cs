@@ -30,8 +30,6 @@ namespace Chatter.MessageBrokers.Configuration
                 throw new ArgumentNullException(nameof(reliabilityOptions), $"No reliability options found in section '{reliabilityOptionsSectionName}'");
             }
 
-            _services.AddSingleton(reliabilityOptions);
-
             _reliabilityOptions = reliabilityOptions;
 
             return this;
@@ -61,8 +59,6 @@ namespace Chatter.MessageBrokers.Configuration
                 {
                     option.TransactionMode = transactionMode;
                 }
-
-                _services.AddSingleton(option);
             }
 
             _sagaOptions = sagaOptions;
@@ -74,10 +70,12 @@ namespace Chatter.MessageBrokers.Configuration
         {
             var options = new MessageBrokerOptions()
             {
-                Reliability = _reliabilityOptions,
-                Sagas = _sagaOptions
+                Reliability = _reliabilityOptions ?? new ReliabilityOptions(),
+                Sagas = _sagaOptions ?? new List<SagaOptions>()
             };
 
+            _services.AddSingleton(options.Reliability);
+            _services.AddSingleton(options.Sagas);
             _services.AddSingleton(options);
 
             return options;

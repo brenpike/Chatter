@@ -1,3 +1,4 @@
+using CarRental.Application.Commands;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -25,11 +26,11 @@ namespace CarRental.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Car Rental Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs()
+            services.AddChatterCqrs(typeof(BookRentalCarCommand))
                     .AddMessageBrokers()
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions(Configuration, "ServiceBus");
+                        options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
                     });
         }
 

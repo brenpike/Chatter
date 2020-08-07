@@ -36,11 +36,25 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
         /// <param name="markerTypesForRequiredAssemblies">The <see cref="Type"/>s from assemblies that are required for registering receivers</param>
+        /// <param name="messageBrokerOptionsBuilder">A delegate that uses a <see cref="MessageBrokerOptionsBuilder"/> to construct <see cref="MessageBrokerOptions"/></param>
         /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
         public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, Action<MessageBrokerOptionsBuilder> messageBrokerOptionsBuilder = null, params Type[] markerTypesForRequiredAssemblies)
         {
             var assemblies = markerTypesForRequiredAssemblies.Select(t => t.GetTypeInfo().Assembly);
             return AddMessageBrokers(builder, assemblies, messageBrokerOptionsBuilder);
+        }
+
+        /// <summary>
+        /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
+        /// Registers all <see cref="BrokeredMessageReceiver{TMessage}"/> and automatically starts receiving if configured to do so.
+        /// Registers all routers.
+        /// </summary>
+        /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
+        /// <param name="markerTypesForRequiredAssemblies">The <see cref="Type"/>s from assemblies that are required for registering receivers</param>
+        /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
+        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, params Type[] markerTypesForRequiredAssemblies)
+        {
+            return AddMessageBrokers(builder, null, markerTypesForRequiredAssemblies);
         }
 
         /// <summary>

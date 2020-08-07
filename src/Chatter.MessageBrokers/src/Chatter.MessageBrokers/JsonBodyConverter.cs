@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+﻿using System.Text.Json;
 using System.Text;
 
 namespace Chatter.MessageBrokers
@@ -9,7 +9,7 @@ namespace Chatter.MessageBrokers
 
         public TBody Convert<TBody>(byte[] body)
         {
-            return JsonConvert.DeserializeObject<TBody>(Stringify(body));
+            return JsonSerializer.Deserialize<TBody>(Stringify(body));
         }
 
         public byte[] Convert(object body)
@@ -24,7 +24,7 @@ namespace Chatter.MessageBrokers
 
         public string Stringify(object body)
         {
-            return JsonConvert.SerializeObject(body);
+            return JsonSerializer.Serialize(body);
         }
     }
 }

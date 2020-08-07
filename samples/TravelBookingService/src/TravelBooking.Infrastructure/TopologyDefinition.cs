@@ -15,9 +15,28 @@ namespace TravelBooking.Infrastructure
         public const string SagaResultQueueName = SagaQueuePathPrefix + "/result";
         public const string SagaInputQueueName = SagaQueuePathPrefix + "/input";
 
+        public const string RentalCarBooked = SagaQueuePathPrefix + "/rental-car-booked";
+        public const string RentalCarBookedHotelSub = "hotel";
+
         //the following aren't directly related to the saga topology, they're used in workers to execute logic in distributed systems
         public const string BookFlightRequest = "book-flight-request";
         public const string BookFlightResponse = "book-flight-response";
+
+        public static IEnumerable<TopicDescription> TopicDescriptions()
+        {
+            return new List<TopicDescription>
+            {
+                new TopicDescription(RentalCarBooked)
+            };
+        }
+
+        public static IEnumerable<SubscriptionDescription> TopicSubscriptionDescriptions()
+        {
+            return new List<SubscriptionDescription>
+            {
+                new SubscriptionDescription(RentalCarBooked, RentalCarBookedHotelSub)
+            };
+        }
 
         public static IEnumerable<QueueDescription> QueueDescriptions()
         {

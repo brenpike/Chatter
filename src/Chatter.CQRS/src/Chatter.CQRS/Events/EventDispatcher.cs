@@ -42,7 +42,7 @@ namespace Chatter.CQRS.Events
             var handlers = scope.ServiceProvider.GetServices<IMessageHandler<TMessage>>();
             foreach (var handler in handlers)
             {
-                await handler.Handle(message, new MessageHandlerContext()).ConfigureAwait(false);
+                await handler.Handle(message, messageHandlerContext).ConfigureAwait(false);
             }
         }
     }

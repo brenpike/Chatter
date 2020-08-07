@@ -1,3 +1,4 @@
+using HotelBooking.Application.IntegrationEvents;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -27,10 +28,10 @@ namespace HotelBooking.Api
             });
 
             services.AddChatterCqrs()
-                    .AddMessageBrokers()
+                    .AddMessageBrokers(typeof(RentalCarBookedEvent))
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions(Configuration, "ServiceBus");
+                        options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
                     });
         }
 

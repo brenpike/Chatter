@@ -6,13 +6,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers\src\Chatter.MessageBrokers\Chatter.MessageBrokers.csproj" />
+    <ProjectReference Include="..\..\..\Samples.SharedKernel\Samples.SharedKernel.csproj" />
     <ProjectReference Include="..\CarRental.Domain\CarRental.Domain.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Commands\" />
     <Folder Include="DTO\" />
-    <Folder Include="IntegrationEvents\" />
     <Folder Include="Interfaces\" />
     <Folder Include="Exceptions\" />
     <Folder Include="Services\" />

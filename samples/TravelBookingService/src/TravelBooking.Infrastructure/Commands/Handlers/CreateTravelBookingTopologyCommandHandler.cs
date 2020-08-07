@@ -32,6 +32,30 @@ namespace TravelBooking.Infrastructure.Commands.Handlers
                         await nm.CreateQueueAsync(qd);
                     }
                 }
+
+                foreach (var qd in TopologyDefinition.TopicDescriptions())
+                {
+                    if (await nm.TopicExistsAsync(qd.Path))
+                    {
+                        await nm.GetTopicAsync(qd.Path);
+                    }
+                    else
+                    {
+                        await nm.CreateTopicAsync(qd);
+                    }
+                }
+
+                foreach (var qd in TopologyDefinition.TopicSubscriptionDescriptions())
+                {
+                    if (await nm.SubscriptionExistsAsync(qd.TopicPath, qd.SubscriptionName))
+                    {
+                        await nm.GetSubscriptionAsync(qd.TopicPath, qd.SubscriptionName);
+                    }
+                    else
+                    {
+                        await nm.CreateSubscriptionAsync(qd.TopicPath, qd.SubscriptionName);
+                    }
+                }
             }
             finally
             {

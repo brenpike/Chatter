@@ -1,6 +1,8 @@
-﻿using Chatter.CQRS;
+﻿using CarRental.Application.Commands;
+using Chatter.CQRS;
 using Microsoft.AspNetCore.Mvc;
 using System.Threading.Tasks;
+using cr = Samples.SharedKernel.Dtos;
 
 namespace CarRental.Api.Controllers
 {
@@ -16,26 +18,37 @@ namespace CarRental.Api.Controllers
         }
 
         [HttpPost]
-        public async Task<IActionResult> RentCar(int request)
+        public async Task<IActionResult> RentCar(cr.CarRental rental)
         {
-            await Task.CompletedTask;
-            return Ok();
+            var rentalCmd = new BookRentalCarCommand()
+            {
+                Car = rental
+            };
+            try
+            {
+                await _dispatcher.Dispatch(rentalCmd);
+                return Ok();
+            }
+            catch (System.Exception e)
+            {
+                return BadRequest(e.Message);
+            }
         }
 
-        [HttpGet]
-        [Route("{carRentalId}")]
-        public async Task<IActionResult> GetCarRentalById(int carRentalId)
-        {
-            await Task.CompletedTask;
-            return Ok();
-        }
+        //[HttpGet]
+        //[Route("{carRentalId}")]
+        //public async Task<IActionResult> GetCarRentalById(int carRentalId)
+        //{
+        //    await Task.CompletedTask;
+        //    return Ok();
+        //}
 
-        [HttpDelete]
-        [Route("{carRentalId}/cancel")]
-        public async Task<IActionResult> CancelCarRental(int carRentalId)
-        {
-            await Task.CompletedTask;
-            return Ok();
-        }
+        //[HttpDelete]
+        //[Route("{carRentalId}/cancel")]
+        //public async Task<IActionResult> CancelCarRental(int carRentalId)
+        //{
+        //    await Task.CompletedTask;
+        //    return Ok();
+        //}
     }
 }
