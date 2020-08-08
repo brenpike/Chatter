@@ -164,7 +164,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         TransactionScope CreateTransactionScope(TransactionMode transactionMode)
         {
-            if (transactionMode == TransactionMode.None)
+            if (transactionMode == TransactionMode.None || transactionMode == TransactionMode.ReceiveOnly)
             {
                 return null;
             }

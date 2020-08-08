@@ -6,7 +6,7 @@ using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
-using System.Text.Json;
+using Newtonsoft.Json;
 
 namespace CarRental.Application.Commands.Handlers
 {
@@ -36,7 +36,7 @@ namespace CarRental.Application.Commands.Handlers
                     Console.WriteLine($"Received '{message.GetType().Name}' event from local dispatcher");
                 }
 
-                Console.WriteLine($"Command Data: {JsonSerializer.Serialize<BookRentalCarCommand>(message)}");
+                Console.WriteLine($"Command Data: {JsonConvert.SerializeObject(message)}");
 
             }
             //create new rental reservation Id
@@ -59,7 +59,7 @@ namespace CarRental.Application.Commands.Handlers
 
             lock (Console.Out)
             {
-                Console.WriteLine($"Dispatched domain event: {JsonSerializer.Serialize(e)}");
+                Console.WriteLine($"Dispatched domain event: {JsonConvert.SerializeObject(e)}");
                 Console.ResetColor();
             }
 

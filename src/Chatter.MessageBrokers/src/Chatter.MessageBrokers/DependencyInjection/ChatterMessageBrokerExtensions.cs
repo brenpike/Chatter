@@ -9,7 +9,6 @@ using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Slips;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Hosting;
 using System;
 using System.Collections.Generic;
@@ -41,7 +40,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
         public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, Action<MessageBrokerOptionsBuilder> messageBrokerOptionsBuilder = null, params Type[] markerTypesForRequiredAssemblies)
         {
-            var assemblies = markerTypesForRequiredAssemblies.Select(t => t.GetTypeInfo().Assembly);
+            var assemblies = markerTypesForRequiredAssemblies.GetAssembliesFromMarkerTypes();
             return AddMessageBrokers(builder, assemblies, messageBrokerOptionsBuilder);
         }
 

@@ -15,7 +15,7 @@ namespace Microsoft.Extensions.DependencyInjection
     {
         public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
         {
-            IEnumerable<Assembly> assemblies = GetAssemblies(markerTypesForRequiredAssemblies);
+            IEnumerable<Assembly> assemblies = GetAssembliesFromMarkerTypes(markerTypesForRequiredAssemblies);
 
             var builder = ChatterBuilder.Create(services);
 
@@ -29,7 +29,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         public static IServiceCollection AddMessageHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
         {
-            IEnumerable<Assembly> assemblies = GetAssemblies(markerTypesForRequiredAssemblies);
+            IEnumerable<Assembly> assemblies = markerTypesForRequiredAssemblies.GetAssembliesFromMarkerTypes();
             return AddMessageHandlers(services, assemblies);
         }
 
@@ -46,7 +46,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         public static IServiceCollection AddQueryHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
         {
-            IEnumerable<Assembly> assemblies = GetAssemblies(markerTypesForRequiredAssemblies);
+            IEnumerable<Assembly> assemblies = GetAssembliesFromMarkerTypes(markerTypesForRequiredAssemblies);
             return AddQueryHandlers(services, assemblies);
         }
 
@@ -74,15 +74,11 @@ namespace Microsoft.Extensions.DependencyInjection
             services.AddSingleton<IQueryDispatcher, QueryDispatcher>();
             return services;
         }
-        private static IEnumerable<Assembly> GetAssemblies(Type[] markerTypesForRequiredAssemblies)
-        {
-            var assemblies = markerTypesForRequiredAssemblies.Select(t => t.GetTypeInfo().Assembly);
-            if (assemblies is null || assemblies?.Count() == 0)
-            {
-                assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            }
 
-            return assemblies;
+        public static IEnumerable<Assembly> GetAssembliesFromMarkerTypes(this Type[] markerTypesForRequiredAssemblies)
+        {
+            var assemblies = markerTypesForRequiredAssemblies.Select(t => t.GetTypeInfo().Assembly).ToList();
+            return assemblies.Union(AppDomain.CurrentDomain.GetAssemblies());
         }
     }
 }

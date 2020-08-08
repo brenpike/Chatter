@@ -1,8 +1,8 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
+using Newtonsoft.Json;
 using System;
-using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace HotelBooking.Application.IntegrationEvents.Handlers
@@ -24,7 +24,7 @@ namespace HotelBooking.Application.IntegrationEvents.Handlers
                     Console.WriteLine($"Received '{message.GetType().Name}' event from local dispatcher");
                 }
 
-                Console.WriteLine($"Event Data: {JsonSerializer.Serialize(message)}");
+                Console.WriteLine($"Event Data: {JsonConvert.SerializeObject(message)}");
                 Console.ResetColor();
             }
 

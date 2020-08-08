@@ -52,6 +52,11 @@ namespace Chatter.CQRS
             var interfaces = messageType.GetTypeInfo().ImplementedInterfaces;
             var firstInterfaceThatIsNotIMessage = interfaces.Where(i => i != typeof(IMessage)).LastOrDefault();
 
+            if (firstInterfaceThatIsNotIMessage is null)
+            {
+                return messageType;
+            }
+
             if (firstInterfaceThatIsNotIMessage.IsGenericType)
             {
                 return GetProviderTypeFromMessage(firstInterfaceThatIsNotIMessage.GetGenericTypeDefinition());

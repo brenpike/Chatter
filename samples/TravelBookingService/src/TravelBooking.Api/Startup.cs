@@ -27,12 +27,11 @@ namespace TravelBooking.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Travel Booking Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs(typeof(CreateTravelBookingTopologyCommandHandler))
+            services.AddChatterCqrs()
                 .AddMessageBrokers((options) =>
                  {
                      options.AddReliabilityOptions(Configuration)
                             .AddSagaOptions(Configuration);
-                          //.AddAllSagaOptions(Configuration);
                  }, typeof(BookTravelViaOrchestrationCommand))
                 .AddSagas()
                 .AddAzureServiceBus(options =>

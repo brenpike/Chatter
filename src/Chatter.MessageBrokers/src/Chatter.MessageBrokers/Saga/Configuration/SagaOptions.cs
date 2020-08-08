@@ -1,6 +1,6 @@
 ﻿using Chatter.MessageBrokers.Options;
+using Newtonsoft.Json;
 using System.ComponentModel.DataAnnotations;
-using System.Text.Json.Serialization;
 
 namespace Chatter.MessageBrokers.Saga.Configuration
 {
