@@ -34,9 +34,8 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddSingleton<IBrokeredMessageDetailProvider, BrokeredMessageAttributeProvider>();
             builder.Services.AddSingleton<IBrokeredMessageInfrastructureDispatcher, MessageSenderDispatcher>();
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
-            //builder.Services.AddTransient<ICompensationStrategy, DeadLetterCompensationStrategy>();
-            builder.Services.AddTransient<ICompensationRoutingStrategy, DispatchMessageCompensatingStrategy>();
-            
+            //builder.Services.AddTransient<IRouteMessages<CompensationRoutingContext>, DeadLetterCompensationStrategy>();
+
             builder.Services.Scan(s =>
                         s.FromAssemblies(AppDomain.CurrentDomain.GetAssemblies())
                             .AddClasses(c => c.AssignableTo(typeof(IMessagingInfrastructureReceiver<>)))

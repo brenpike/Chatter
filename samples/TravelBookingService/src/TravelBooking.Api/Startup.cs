@@ -32,7 +32,8 @@ namespace TravelBooking.Api
                  {
                      options.AddReliabilityOptions(Configuration)
                             .AddSagaOptions(Configuration);
-                 }, typeof(BookTravelCommand))
+                          //.AddAllSagaOptions(Configuration);
+                 }, typeof(BookTravelViaOrchestrationCommand))
                 .AddSagas()
                 .AddAzureServiceBus(options =>
                 {

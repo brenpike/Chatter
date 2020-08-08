@@ -30,9 +30,9 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         /// <param name="messageHandlerContext">The message handler context</param>
         /// <returns>The reply destination context</returns>
-        public static ReplyDestinationContext GetReplyContext(this IMessageHandlerContext messageHandlerContext)
+        public static ReplyRoutingContext GetReplyContext(this IMessageHandlerContext messageHandlerContext)
         {
-            return messageHandlerContext.Get<ReplyDestinationContext>();
+            return messageHandlerContext.Get<ReplyRoutingContext>();
         }
 
         /// <summary>
@@ -40,9 +40,9 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         /// <param name="messageHandlerContext">The message handler context</param>
         /// <returns>The next destination context</returns>
-        public static DestinationRouterContext GetNextDestinationContext(this IMessageHandlerContext messageHandlerContext)
+        public static RoutingContext GetNextDestinationContext(this IMessageHandlerContext messageHandlerContext)
         {
-            return messageHandlerContext.Get<DestinationRouterContext>();
+            return messageHandlerContext.Get<RoutingContext>();
         }
 
         /// <summary>
@@ -50,9 +50,9 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         /// <param name="messageHandlerContext">The message handler context</param>
         /// <returns>The compensation destination context</returns>
-        public static CompensateContext GetCompensationContext(this IMessageHandlerContext messageHandlerContext)
+        public static CompensationRoutingContext GetCompensationContext(this IMessageHandlerContext messageHandlerContext)
         {
-            return messageHandlerContext.Get<CompensateContext>();
+            return messageHandlerContext.Get<CompensationRoutingContext>();
         }
 
         /// <summary>

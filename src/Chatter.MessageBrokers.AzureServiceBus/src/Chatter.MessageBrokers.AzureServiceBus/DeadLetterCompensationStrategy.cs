@@ -13,14 +13,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Core
     /// An <see cref="ICompensationRoutingStrategy"/> implementation that performs compensation by deadlettering the current message.
     /// This assumes the queue has been configured with ForwardDeadLetteredMessagesTo to the compensating queue./>
     /// </summary>
-    public class DeadLetterCompensationStrategy : ICompensationRoutingStrategy
+    public class DeadLetterCompensationStrategy : IRouteMessages<CompensationRoutingContext>
     {
         ///<inheritdoc/>
-        public Task Compensate(InboundBrokeredMessage inboundBrokeredMessage, string compensateReason, string compensateErrorDescription, TransactionContext transactionContext, CompensateContext compensateContext)
+        public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, CompensationRoutingContext compensateContext)
         {
             if (!(compensateContext.Container.TryGet<Message>(out var receivedMessage)))
             {
-                throw new InvalidOperationException($"The received {nameof(CompensateContext)} did not contain a {typeof(Message).Name}");
+                throw new InvalidOperationException($"The received {nameof(CompensationRoutingContext)} did not contain a {typeof(Message).Name}");
             }
 
             if (!(transactionContext.Container.TryGet<MessageReceiver>(out var receiver)))

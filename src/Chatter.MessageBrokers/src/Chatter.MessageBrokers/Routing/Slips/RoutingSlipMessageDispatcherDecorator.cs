@@ -4,13 +4,13 @@ using Chatter.MessageBrokers.Context;
 using System;
 using System.Threading.Tasks;
 
-namespace Chatter.MessageBrokers.Reliability
+namespace Chatter.MessageBrokers.Routing.Slips
 {
-    public class AtomicRoutingMessageDispatcherDecorator : IMessageDispatcher
+    public class RoutingSlipMessageDispatcherDecorator : IMessageDispatcher
     {
         private readonly IMessageDispatcher _messageDispatcher;
 
-        public AtomicRoutingMessageDispatcherDecorator(IMessageDispatcher messageDispatcher)
+        public RoutingSlipMessageDispatcherDecorator(IMessageDispatcher messageDispatcher)
         {
             _messageDispatcher = messageDispatcher ?? throw new ArgumentNullException(nameof(messageDispatcher));
         }
@@ -38,7 +38,7 @@ namespace Chatter.MessageBrokers.Reliability
             {
                 if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
                 {
-                    if (!(messageBrokerContext.Container.TryGet<CompensateContext>(out var compensateContext)))
+                    if (!(messageBrokerContext.Container.TryGet<CompensationRoutingContext>(out var compensateContext)))
                     {
                         throw;
                     }
@@ -48,8 +48,7 @@ namespace Chatter.MessageBrokers.Reliability
                     var details = $"{dispatchFailureException.Message} -> {dispatchFailureException.StackTrace}";
                     var description = $"'{typeof(TMessage).Name}' was not received successfully";
 
-                    var newContext = new CompensateContext(compensateContext?.DestinationPath,
-                                                           compensateContext?.DestinationMessageCreator,
+                    var newContext = new CompensationRoutingContext(compensateContext?.DestinationPath,
                                                            details,
                                                            description,
                                                            messageBrokerContext?.Container);

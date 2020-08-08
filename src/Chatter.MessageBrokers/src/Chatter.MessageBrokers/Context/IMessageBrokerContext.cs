@@ -19,14 +19,14 @@ namespace Chatter.MessageBrokers.Context
         /// <summary>
         /// Used to route a message to the next destination
         /// </summary>
-        IMessageDestinationRouter<DestinationRouterContext> NextDestinationRouter { get; }
+        IRouteMessages<RoutingContext> NextDestinationRouter { get; }
         /// <summary>
         /// Used to route a message to the reply destination as defined in the <see cref="Headers.ReplyTo"/>
         /// </summary>
-        IMessageDestinationRouter<ReplyDestinationContext> ReplyRouter { get; }
+        IRouteMessages<ReplyRoutingContext> ReplyRouter { get; }
         /// <summary>
         /// Used to route a message to the compensation destination
         /// </summary>
-        ICompensateRouter CompensateRouter { get; }
+        IRouteMessages<CompensationRoutingContext> CompensateRouter { get; }
     }
 }

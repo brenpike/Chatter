@@ -7,12 +7,12 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
 {
-    public sealed class MessageDestinationRouter<TDestinationRouterContext> : IMessageDestinationRouter, IMessageDestinationRouter<TDestinationRouterContext>
-        where TDestinationRouterContext : IContainDestinationToRouteContext
+    public sealed class MessageRouter<TDestinationRouterContext> : IRouteMessages, IRouteMessages<TDestinationRouterContext>
+        where TDestinationRouterContext : IContainRoutingContext
     {
         private readonly IBrokeredMessageInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
 
-        public MessageDestinationRouter(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher)
+        public MessageRouter(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher)
         {
             _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
         }
@@ -38,7 +38,7 @@ namespace Chatter.MessageBrokers.Routing
                 return Task.CompletedTask;
             }
 
-            var outboundMessage = destinationRouterContext.CreateDestinationMessage(inboundBrokeredMessage);
+            var outboundMessage = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext.DestinationPath);
             return Route(outboundMessage, transactionContext);
         }
 

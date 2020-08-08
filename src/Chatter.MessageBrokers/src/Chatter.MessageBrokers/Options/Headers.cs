@@ -6,7 +6,12 @@
         private static readonly string ReplyBaseHeader = "Reply";
         private static readonly string TransactionBaseHeader = "Transaction";
         private static readonly string Saga = "Saga";
+        private static readonly string Routing = "Routing";
 
+        /// <summary>
+        /// The path to the receiver that initiated the message.
+        /// </summary>
+        public static readonly string RequestorPath = $"{ChatterBaseHeader}.RequestorPath";
         /// <summary>
         /// The receivers visited by the inbound message prior to the most recent message receiver
         /// </summary>
@@ -34,14 +39,14 @@
         /// The AMQP group this message should reply to
         /// </summary>
         /// <remarks>
-        /// Also known as a session in some messaging infrastructure implemntations
+        /// Also known as a session in some messaging infrastructure implementations
         /// </remarks>
         public static readonly string ReplyToGroupId = $"{ChatterBaseHeader}.{ReplyBaseHeader}.ReplyToGroupId";
         /// <summary>
         /// The AMQP group this message is part of
         /// </summary>
         /// <remarks>
-        /// Also known as session id in some messaging infrastructure implemntations
+        /// Also known as session id in some messaging infrastructure implementations
         /// </remarks>
         public static readonly string GroupId = $"{ChatterBaseHeader}.GroupId";
         /// <summary>
@@ -76,5 +81,9 @@
         /// True if the message has encountered an error while being received
         /// </summary>
         public static readonly string IsError = $"{ChatterBaseHeader}.IsError";
+        /// <summary>
+        /// The routing slip that describes how a message will be routed
+        /// </summary>
+        public static readonly string Slip = $"{ChatterBaseHeader}.{Routing}.Slip";
     }
 }
