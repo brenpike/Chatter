@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Options;
-using Chatter.MessageBrokers.Saga;
+﻿using Chatter.MessageBrokers.Saga;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
@@ -20,7 +19,7 @@ namespace Chatter.MessageBrokers.Receiving
             MessageReceiverPath = messageReceiverPath;
             BodyConverter = bodyConverter ?? throw new System.ArgumentNullException(nameof(bodyConverter));
             TransactionMode = GetTransactionMode();
-            CorrelationId = GetApplicationPropertyByKey<string>(Headers.CorrelationId);
+            CorrelationId = GetApplicationPropertyByKey<string>(MessageBrokers.ApplicationProperties.CorrelationId);
         }
 
         /// <summary>
@@ -56,7 +55,7 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// True if the inbound message has encountered an error while being received
         /// </summary>
-        public bool IsError => GetApplicationPropertyByKey<bool>(Headers.IsError);
+        public bool IsError => GetApplicationPropertyByKey<bool>(MessageBrokers.ApplicationProperties.IsError);
         /// <summary>
         /// True if the inbound message has not encountered an error while being received
         /// </summary>
@@ -64,7 +63,7 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// The receivers visited by the inbound message prior to the most recent message receiver
         /// </summary>
-        public string Via => GetApplicationPropertyByKey<string>(Headers.Via);
+        public string Via => GetApplicationPropertyByKey<string>(MessageBrokers.ApplicationProperties.Via);
         internal IBrokeredMessageBodyConverter BodyConverter { get; }
 
         /// <summary>
@@ -77,7 +76,7 @@ namespace Chatter.MessageBrokers.Receiving
 
         internal InboundBrokeredMessage UpdateVia(string via)
         {
-            var key = Headers.Via;
+            var key = MessageBrokers.ApplicationProperties.Via;
             if (_applicationProperties.ContainsKey(key))
             {
                 var currentVia = (string)ApplicationProperties[key];
@@ -96,7 +95,7 @@ namespace Chatter.MessageBrokers.Receiving
 
         private TransactionMode GetTransactionMode()
         {
-            if (_applicationProperties.TryGetValue(Headers.TransactionMode, out var transactionMode))
+            if (_applicationProperties.TryGetValue(MessageBrokers.ApplicationProperties.TransactionMode, out var transactionMode))
             {
                 return (TransactionMode)transactionMode;
             }
@@ -120,26 +119,33 @@ namespace Chatter.MessageBrokers.Receiving
 
         internal InboundBrokeredMessage WithFailureDetails(string failureDetails)
         {
-            _applicationProperties[Headers.FailureDetails] = failureDetails;
+            _applicationProperties[MessageBrokers.ApplicationProperties.FailureDetails] = failureDetails;
             return this;
         }
 
         internal InboundBrokeredMessage WithFailureDescription(string failureDescription)
         {
-            _applicationProperties[Headers.FailureDescription] = failureDescription;
+            _applicationProperties[MessageBrokers.ApplicationProperties.FailureDescription] = failureDescription;
             return this;
         }
 
         internal InboundBrokeredMessage SetFailure()
         {
-            _applicationProperties[Headers.IsError] = true;
-            _applicationProperties[Headers.SagaStatus] = (byte)SagaStatusEnum.Failed;
+            _applicationProperties[MessageBrokers.ApplicationProperties.IsError] = true;
+            _applicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)SagaStatusEnum.Failed;
             return this;
         }
 
         internal InboundBrokeredMessage WithSagaStatus(SagaStatusEnum sagaStatus)
         {
-            _applicationProperties[Headers.SagaStatus] = (byte)sagaStatus;
+            _applicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)sagaStatus;
+            return this;
+        }
+
+        internal InboundBrokeredMessage ClearReplyToProperties()
+        {
+            _applicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyTo);
+            _applicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToGroupId);
             return this;
         }
     }

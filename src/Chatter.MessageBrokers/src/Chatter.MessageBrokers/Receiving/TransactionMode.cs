@@ -1,6 +1,6 @@
 ﻿using System.Transactions;
 
-namespace Chatter.MessageBrokers.Options
+namespace Chatter.MessageBrokers.Receiving
 {
     /// <summary>
     /// The mode of transaction

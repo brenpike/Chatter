@@ -1,6 +1,6 @@
 ﻿using Chatter.CQRS.Context;
 
-namespace Chatter.MessageBrokers.Context
+namespace Chatter.MessageBrokers.Routing.Context
 {
     public interface IContainRoutingContext : IContainContext
     {

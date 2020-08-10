@@ -1,9 +1,9 @@
 ﻿using Chatter.CQRS;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
-using Chatter.MessageBrokers.Options;
-using Chatter.MessageBrokers.Routing;
+using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Saga;
+using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
@@ -21,9 +21,7 @@ namespace Chatter.MessageBrokers.Receiving
         readonly object _syncLock;
         private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
-        private readonly IRouteMessages<RoutingContext> _nextDestinationRouter;
-        private readonly IRouteMessages<ReplyRoutingContext> _replyRouter;
-        private readonly IRouteMessages<CompensationRoutingContext> _compensateRouter;
+        private readonly IBrokeredMessageDispatcher _brokeredMessageDispatcher;
         private readonly IMessageDispatcher _messageDispatcher;
         private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
         TaskCompletionSource<bool> _completedReceivingSource = new TaskCompletionSource<bool>();
@@ -34,25 +32,18 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         /// <param name="infrastructureReceiver">The message broker infrastructure</param>
         /// <param name="brokeredMessageDetailProvider">Provides routing details to the brokered message receiver</param>
-        /// <param name="nextDestinationRouter">Routes brokered messages to the next destination after being received</param>
-        /// <param name="replyRouter">Routes brokered messages to the reply destination after being received</param>
-        /// <param name="compensateRouter">Routes brokered messages to the compensate destination after being unsuccessfully received</param>
         /// <param name="messageDispatcher">Dispatches messages of <typeparamref name="TMessage"/> to the appropriate <see cref="IMessageHandler{TMessage}"/></param>
         /// <param name="logger">Provides logging capability</param>
         public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
                                        IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
-                                       IRouteMessages<RoutingContext> nextDestinationRouter,
-                                       IRouteMessages<ReplyRoutingContext> replyRouter,
-                                       IRouteMessages<CompensationRoutingContext> compensateRouter,
+                                       IBrokeredMessageDispatcher brokeredMessageDispatcher,
                                        IMessageDispatcher messageDispatcher,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger)
         {
             _syncLock = new object();
             _infrastructureReceiver = infrastructureReceiver ?? throw new ArgumentNullException(nameof(infrastructureReceiver));
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
-            _nextDestinationRouter = nextDestinationRouter ?? throw new ArgumentNullException(nameof(nextDestinationRouter));
-            _replyRouter = replyRouter ?? throw new ArgumentNullException(nameof(replyRouter));
-            _compensateRouter = compensateRouter ?? throw new ArgumentNullException(nameof(compensateRouter));
+            _brokeredMessageDispatcher = brokeredMessageDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageDispatcher));
             _messageDispatcher = messageDispatcher ?? throw new ArgumentNullException(nameof(messageDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
@@ -91,6 +82,19 @@ namespace Chatter.MessageBrokers.Receiving
         /// Indicates if the <see cref="BrokeredMessageReceiver{TMessage}"/> is currently receiving messages
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
+
+        ///<inheritdoc/>
+        protected override Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            if (AutoReceiveMessages)
+            {
+                return Start((message, context) => _messageDispatcher.Dispatch(message, context), CancellationToken.None);
+            }
+            else
+            {
+                return Task.CompletedTask;
+            }
+        }
 
         ///<inheritdoc/>
         public void StartReceiver()
@@ -166,6 +170,9 @@ namespace Chatter.MessageBrokers.Receiving
 
                 var inboundMessage = messageContext.BrokeredMessage;
 
+                var dispatchContext = new DispatchContext(_messageDispatcher, _brokeredMessageDispatcher);
+                messageContext.Container.Include(dispatchContext);
+
                 CreateErrorContextFromHeaders(messageContext, inboundMessage);
                 CreateSagaContextFromHeaders(messageContext);
                 CreateReplyContextFromHeaders(messageContext, inboundMessage);
@@ -181,9 +188,9 @@ namespace Chatter.MessageBrokers.Receiving
 
                 messageContext.Container.Include(transactionContext);
 
-                messageContext.NextDestinationRouter = _nextDestinationRouter;
-                messageContext.ReplyRouter = _replyRouter;
-                messageContext.CompensateRouter = _compensateRouter;
+                //messageContext.NextDestinationRouter = _nextDestinationRouter;
+                //messageContext.ReplyRouter = _replyRouter;
+                //messageContext.CompensateRouter = _compensateRouter;
 
                 var brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
                 await brokeredMessagePayloadHandler(brokeredMessagePayload, messageContext).ConfigureAwait(false);
@@ -228,8 +235,8 @@ namespace Chatter.MessageBrokers.Receiving
         {
             if (inboundMessage.IsError)
             {
-                inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDetails, out var reason);
-                inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDescription, out var description);
+                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.FailureDetails, out var reason);
+                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.FailureDescription, out var description);
                 var errorContext = new ErrorContext((string)reason, (string)description);
                 messageContext.SetFailure(errorContext);
             }
@@ -237,9 +244,9 @@ namespace Chatter.MessageBrokers.Receiving
 
         private void CreateSagaContextFromHeaders(MessageBrokerContext messageContext)
         {
-            if (messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(Headers.SagaId, out var sagaId))
+            if (messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(ApplicationProperties.SagaId, out var sagaId))
             {
-                messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(Headers.SagaStatus, out var sagaStatus);
+                messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(ApplicationProperties.SagaStatus, out var sagaStatus);
                 var sagaContext = new SagaContext((string)sagaId, MessageReceiverPath, NextDestinationPath, (SagaStatusEnum)sagaStatus, parentContainer: messageContext.Container);
                 messageContext.Container.Include(sagaContext);
             }
@@ -256,12 +263,12 @@ namespace Chatter.MessageBrokers.Receiving
 
         private static void CreateReplyContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
         {
-            if (inboundMessage.ApplicationProperties.TryGetValue(Headers.ReplyTo, out var replyTo))
+            if (inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.ReplyTo, out var replyTo))
             {
-                inboundMessage.ApplicationProperties.TryGetValue(Headers.ReplyToGroupId, out var replyToSessionId);
-                inboundMessage.ApplicationProperties.TryGetValue(Headers.GroupId, out var groupId);
+                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.ReplyToGroupId, out var replyToSessionId);
+                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.GroupId, out var groupId);
                 replyToSessionId = !string.IsNullOrWhiteSpace((string)replyToSessionId) ? (string)replyToSessionId : (string)groupId;
-                var replyContext = new ReplyRoutingContext((string)replyTo, (string)replyToSessionId, messageContext.Container);
+                var replyContext = new ReplyToRoutingContext((string)replyTo, (string)replyToSessionId, messageContext.Container);
                 messageContext.Container.Include(replyContext);
             }
         }
@@ -270,22 +277,10 @@ namespace Chatter.MessageBrokers.Receiving
         {
             if (!string.IsNullOrWhiteSpace(CompensateDestinationPath))
             {
-                inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDetails, out var detail);
-                inboundMessage.ApplicationProperties.TryGetValue(Headers.FailureDescription, out var description);
+                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.FailureDetails, out var detail);
+                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.FailureDescription, out var description);
                 var compensateContext = new CompensationRoutingContext(CompensateDestinationPath, (string)detail, (string)description, messageContext.Container);
                 messageContext.Container.Include(compensateContext);
-            }
-        }
-
-        protected override Task ExecuteAsync(CancellationToken stoppingToken)
-        {
-            if (AutoReceiveMessages)
-            {
-                return Start((message, context) => _messageDispatcher.Dispatch(message, context), CancellationToken.None);
-            }
-            else
-            {
-                return Task.CompletedTask;
             }
         }
     }

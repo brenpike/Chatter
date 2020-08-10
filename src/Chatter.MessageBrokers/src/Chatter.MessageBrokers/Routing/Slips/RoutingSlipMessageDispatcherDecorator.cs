@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Routing.Context;
 using System;
 using System.Threading.Tasks;
 
@@ -28,10 +29,8 @@ namespace Chatter.MessageBrokers.Routing.Slips
 
                 if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
                 {
-                    var inboundMessage = messageBrokerContext.BrokeredMessage;
-                    messageBrokerContext.Container.TryGet<TransactionContext>(out var transactionContext);
-                    await messageBrokerContext.ReplyRouter.Route(inboundMessage, transactionContext, messageBrokerContext.GetReplyContext()).ConfigureAwait(false);
-                    await messageBrokerContext.NextDestinationRouter.Route(inboundMessage, transactionContext, messageBrokerContext.GetNextDestinationContext()).ConfigureAwait(false);
+                    await messageBrokerContext.ReplyTo().ConfigureAwait(false);
+                    await messageBrokerContext.Forward<RoutingContext>().ConfigureAwait(false);
                 }
             }
             catch (Exception dispatchFailureException)
@@ -43,8 +42,6 @@ namespace Chatter.MessageBrokers.Routing.Slips
                         throw;
                     }
 
-                    messageBrokerContext.Container.TryGet<TransactionContext>(out var transactionContext);
-
                     var details = $"{dispatchFailureException.Message} -> {dispatchFailureException.StackTrace}";
                     var description = $"'{typeof(TMessage).Name}' was not received successfully";
 
@@ -53,9 +50,9 @@ namespace Chatter.MessageBrokers.Routing.Slips
                                                            description,
                                                            messageBrokerContext?.Container);
 
-                    await messageBrokerContext.CompensateRouter.Route(messageBrokerContext?.BrokeredMessage,
-                                                                      transactionContext,
-                                                                      newContext);
+                    messageBrokerContext?.Container.Include(newContext);
+
+                    await messageBrokerContext.Compensate();
                 }
                 else
                 {

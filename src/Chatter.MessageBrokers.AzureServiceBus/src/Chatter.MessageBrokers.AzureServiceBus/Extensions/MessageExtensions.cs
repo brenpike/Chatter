@@ -1,4 +1,4 @@
-﻿using Chatter.MessageBrokers.Options;
+﻿using Chatter.MessageBrokers.Receiving;
 using Microsoft.Azure.ServiceBus;
 using System.Collections.Generic;
 using System.Security.Cryptography;
@@ -37,9 +37,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Extensions
 
         public static TransactionMode GetTransactionMode(this Message message)
         {
-            if (message.UserProperties.ContainsKey(Headers.TransactionMode))
+            if (message.UserProperties.ContainsKey(ApplicationProperties.TransactionMode))
             {
-                return (TransactionMode)message.UserProperties[Headers.TransactionMode];
+                return (TransactionMode)message.UserProperties[ApplicationProperties.TransactionMode];
             }
             else
             {

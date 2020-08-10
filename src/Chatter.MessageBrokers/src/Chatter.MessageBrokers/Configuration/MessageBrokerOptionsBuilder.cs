@@ -1,4 +1,4 @@
-﻿using Chatter.MessageBrokers.Options;
+﻿using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Saga.Configuration;
 using Microsoft.Extensions.Configuration;

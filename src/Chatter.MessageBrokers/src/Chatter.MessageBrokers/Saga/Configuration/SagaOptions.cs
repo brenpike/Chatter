@@ -1,4 +1,4 @@
-﻿using Chatter.MessageBrokers.Options;
+﻿using Chatter.MessageBrokers.Receiving;
 using Newtonsoft.Json;
 using System.ComponentModel.DataAnnotations;
 

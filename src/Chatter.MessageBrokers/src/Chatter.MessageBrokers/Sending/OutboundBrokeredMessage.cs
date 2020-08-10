@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Options;
-using Chatter.MessageBrokers.Receiving;
+﻿using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Saga;
 using System;
 using System.Collections.Concurrent;
@@ -24,7 +23,7 @@ namespace Chatter.MessageBrokers.Sending
             Body = body ?? throw new ArgumentNullException(nameof(body));
             Destination = destination;
             _bodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
-            ApplicationProperties[Headers.ContentType] = _bodyConverter.ContentType;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.ContentType] = _bodyConverter.ContentType;
 
             if (string.IsNullOrWhiteSpace(GetCorrelationId()))
             {
@@ -54,13 +53,14 @@ namespace Chatter.MessageBrokers.Sending
 
         public static OutboundBrokeredMessage Forward(InboundBrokeredMessage messageToForward, string forwardDestination)
         {
+            //TODO: how to generate guid?
             var outbound = new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
             return outbound.RefreshTimeToLive();
         }
 
         public OutboundBrokeredMessage WithTransactionMode(TransactionMode transactionMode)
         {
-            ApplicationProperties[Headers.TransactionMode] = (byte)transactionMode;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.TransactionMode] = (byte)transactionMode;
             return this;
         }
 
@@ -69,7 +69,7 @@ namespace Chatter.MessageBrokers.Sending
 
         public TransactionMode GetTransactionMode()
         {
-            if (ApplicationProperties.TryGetValue(Headers.TransactionMode, out var transactionMode))
+            if (ApplicationProperties.TryGetValue(MessageBrokers.ApplicationProperties.TransactionMode, out var transactionMode))
             {
                 return (TransactionMode)transactionMode;
             }
@@ -81,30 +81,30 @@ namespace Chatter.MessageBrokers.Sending
 
         public OutboundBrokeredMessage WithTimeToLive(TimeSpan timeToLive)
         {
-            ApplicationProperties[Headers.TimeToLive] = timeToLive;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.TimeToLive] = timeToLive;
             return this;
         }
 
         public TimeSpan? GetTimeToLive()
         {
-            return (TimeSpan?)GetApplicationPropertyByKey(Headers.TimeToLive);
+            return (TimeSpan?)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.TimeToLive);
         }
 
         public OutboundBrokeredMessage WithSagaStatus(SagaStatusEnum sagaStatus)
         {
-            ApplicationProperties[Headers.SagaStatus] = (byte)sagaStatus;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)sagaStatus;
             return this;
         }
 
         public OutboundBrokeredMessage WithSagaId(string sagaId)
         {
-            ApplicationProperties[Headers.SagaId] = sagaId;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.SagaId] = sagaId;
             return this;
         }
 
         public OutboundBrokeredMessage RefreshTimeToLive()
         {
-            var expiryTimeUtc = (DateTime?)GetApplicationPropertyByKey(Headers.ExpiryTimeUtc);
+            var expiryTimeUtc = (DateTime?)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ExpiryTimeUtc);
             if (expiryTimeUtc != null)
             {
                 var ttl = expiryTimeUtc.Value - DateTime.UtcNow;
@@ -122,57 +122,57 @@ namespace Chatter.MessageBrokers.Sending
 
         public OutboundBrokeredMessage WithCorrelationId(string correlationId)
         {
-            ApplicationProperties[Headers.CorrelationId] = correlationId;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.CorrelationId] = correlationId;
             return this;
         }
 
         public string GetCorrelationId()
         {
-            return (string)GetApplicationPropertyByKey(Headers.CorrelationId);
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.CorrelationId);
         }
 
         public OutboundBrokeredMessage WithReplyToAddress(string replyTo)
         {
-            ApplicationProperties[Headers.ReplyTo] = replyTo;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.ReplyTo] = replyTo;
             return this;
         }
 
         public string GetReplyToAddress()
         {
-            return (string)GetApplicationPropertyByKey(Headers.ReplyTo);
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ReplyTo);
         }
 
         public OutboundBrokeredMessage WithReplyToGroupId(string replyToGroupId)
         {
-            ApplicationProperties[Headers.ReplyToGroupId] = replyToGroupId;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.ReplyToGroupId] = replyToGroupId;
             return this;
         }
 
         public string GetReplyToGroupId()
         {
-            return (string)GetApplicationPropertyByKey(Headers.ReplyToGroupId);
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ReplyToGroupId);
         }
 
         public OutboundBrokeredMessage WithGroupId(string groupId)
         {
-            ApplicationProperties[Headers.GroupId] = groupId;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.GroupId] = groupId;
             return this;
         }
 
         public string GetGroupId()
         {
-            return (string)GetApplicationPropertyByKey(Headers.GroupId);
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.GroupId);
         }
 
         public OutboundBrokeredMessage WithSubject(string subject)
         {
-            ApplicationProperties[Headers.Subject] = subject;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.Subject] = subject;
             return this;
         }
 
         public string GetSubject()
         {
-            return (string)GetApplicationPropertyByKey(Headers.Subject);
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.Subject);
         }
 
         public string GetContentType()
@@ -182,7 +182,7 @@ namespace Chatter.MessageBrokers.Sending
 
         public OutboundBrokeredMessage WithTimeToLiveInMinutes(int minutes)
         {
-            ApplicationProperties[Headers.TimeToLive] = TimeSpan.FromMinutes(minutes);
+            ApplicationProperties[MessageBrokers.ApplicationProperties.TimeToLive] = TimeSpan.FromMinutes(minutes);
             return this;
         }
 

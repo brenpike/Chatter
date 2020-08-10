@@ -1,6 +1,6 @@
-﻿namespace Chatter.MessageBrokers.Options
+﻿namespace Chatter.MessageBrokers
 {
-    public class Headers
+    public class ApplicationProperties
     {
         public static readonly string ChatterBaseHeader = "Chatter";
         private static readonly string ReplyBaseHeader = "Reply";

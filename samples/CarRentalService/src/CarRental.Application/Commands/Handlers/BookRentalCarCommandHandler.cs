@@ -7,6 +7,7 @@ using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Chatter.CQRS.Events;
 
 namespace CarRental.Application.Commands.Handlers
 {
@@ -19,7 +20,7 @@ namespace CarRental.Application.Commands.Handlers
             this.brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher;
         }
 
-        public Task Handle(BookRentalCarCommand message, IMessageHandlerContext context)
+        public async Task Handle(BookRentalCarCommand message, IMessageHandlerContext context)
         {
             TransactionContext transactionContext = null;
             lock (Console.Out)
@@ -54,16 +55,19 @@ namespace CarRental.Application.Commands.Handlers
                 Console.WriteLine($"Persisted Car Rental aggregate with reservation id: {message.Car.ReservationId}");
             }
 
-            var outbound = new OutboundBrokeredMessage(e, "book-trip-saga/rental-car-booked", new JsonBodyConverter());
-            this.brokeredMessageInfrastructureDispatcher.Dispatch(outbound, transactionContext);
+            await Publish(e, transactionContext);
 
             lock (Console.Out)
             {
                 Console.WriteLine($"Dispatched domain event: {JsonConvert.SerializeObject(e)}");
                 Console.ResetColor();
             }
+        }
 
-            return Task.CompletedTask;
+        private Task Publish<TMessage>(TMessage @event, TransactionContext transactionContext) where TMessage : IEvent
+        {
+            var outbound = new OutboundBrokeredMessage(@event, "book-trip-saga/rental-car-booked", new JsonBodyConverter());
+            return this.brokeredMessageInfrastructureDispatcher.Dispatch(outbound, transactionContext);
         }
     }
 }

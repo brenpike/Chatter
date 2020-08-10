@@ -2,13 +2,13 @@
 using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Configuration;
-using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Slips;
+using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Hosting;
 using System;
 using System.Collections.Generic;
@@ -71,17 +71,22 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
 
+            builder.Services.AddTransient<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
+
             builder.Services.AddSingleton<ITransactionalBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>();
+            builder.Services.AddTransient<IForwardMessages, ForwardingRouter>();
+            builder.Services.AddTransient<IRouteCompensationMessages, CompensateRouter>();
+            builder.Services.AddTransient<IRouteReplyToMessages, ReplyToRouter>();
 
             if (options?.Reliability?.OutboxEnabled ?? false)
             {
                 builder.Services.Decorate<IMessageDispatcher, TransactionalOutboxMessageDispatcherDecorator>();
-                builder.AddOutboxRouters();
+                builder.Services.AddSingleton<IRouteMessages, OutboxMessageRouter>();
                 builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
             }
             else
             {
-                builder.AddBrokerRouters();
+                builder.Services.AddTransient<IRouteMessages, MessageRouter>();
             }
 
             builder.Services.Decorate<IMessageDispatcher, RoutingSlipMessageDispatcherDecorator>(); //TODO: we'll only want to add this if routing slips are added
@@ -89,28 +94,6 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.Services.AddSingleton<IBodyConverterFactory, BodyConverterFactory>();
             builder.Services.AddSingleton<IBrokeredMessageBodyConverter, JsonBodyConverter>();
-
-            return builder;
-        }
-
-        public static IChatterBuilder AddOutboxRouters(this IChatterBuilder builder)
-        {
-            builder.Services.AddSingleton<IRouteMessages, OutboxMessageRouter<RoutingContext>>();
-
-            builder.Services.AddSingleton<IRouteMessages<CompensationRoutingContext>, CompensateRouter>();
-            builder.Services.AddSingleton<IRouteMessages<ReplyRoutingContext>, OutboxMessageRouter<ReplyRoutingContext>>();
-            builder.Services.AddSingleton<IRouteMessages<RoutingContext>, OutboxMessageRouter<RoutingContext>>();
-
-            return builder;
-        }
-
-        public static IChatterBuilder AddBrokerRouters(this IChatterBuilder builder)
-        {
-            builder.Services.AddSingleton<IRouteMessages, MessageRouter<RoutingContext>>();
-
-            builder.Services.AddSingleton<IRouteMessages<CompensationRoutingContext>, CompensateRouter>();
-            builder.Services.AddSingleton<IRouteMessages<ReplyRoutingContext>, MessageRouter<ReplyRoutingContext>>();
-            builder.Services.AddSingleton<IRouteMessages<RoutingContext>, MessageRouter<RoutingContext>>();
 
             return builder;
         }

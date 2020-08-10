@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Options;
-using Chatter.MessageBrokers.Reliability.Configuration;
+﻿using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -67,7 +66,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
             foreach (var message in messages.OrderBy(m => m.SentToOutboxAtUtc))
             {
-                message.ApplicationProperties.TryGetValue(Headers.ContentType, out var contentType);
+                message.ApplicationProperties.TryGetValue(ApplicationProperties.ContentType, out var contentType);
                 var outbound = message.AsOutboundBrokeredMessage(_bodyConverterFactory.CreateBodyConverter((string)contentType));
                 _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 

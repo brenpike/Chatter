@@ -1,5 +1,5 @@
-﻿using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Receiving;
+﻿using Chatter.CQRS;
+using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Sending;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -11,6 +11,8 @@ namespace Chatter.MessageBrokers.Routing
     /// </summary>
     public interface IRouteMessages
     {
+        Task Route<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null) where TMessage : IMessage;
+
         /// <summary>
         /// Routes a brokered message to a receiver
         /// </summary>
@@ -26,21 +28,5 @@ namespace Chatter.MessageBrokers.Routing
         /// <param name="transactionContext">The transactional information to used while routing</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         Task Route(IList<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext);
-    }
-
-    /// <summary>
-    /// Routes a brokered message to a receiver using context of type <typeparamref name="TRoutingContext"/>
-    /// </summary>
-    /// <typeparam name="TRoutingContext">The type of context containing information required to route a message</typeparam>
-    public interface IRouteMessages<in TRoutingContext> where TRoutingContext : IContainRoutingContext
-    {
-        /// <summary>
-        /// Routes an inbound brokered message to a destination using information supplied by the <typeparamref name="TRoutingContext"/>
-        /// </summary>
-        /// <param name="inboundBrokeredMessage">The inbound brokered message to be forwarded to a receiver</param>
-        /// <param name="transactionContext">The transactional information to use while routing</param>
-        /// <param name="destinationRouterContext">The contextual information required to successfully route the brokered message</param>
-        /// <returns>An awaitable <see cref="Task"/></returns>
-        Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, TRoutingContext destinationRouterContext);
     }
 }

@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Routing.Context;
 
 namespace Chatter.MessageBrokers.Context
 {
@@ -30,9 +31,9 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         /// <param name="messageHandlerContext">The message handler context</param>
         /// <returns>The reply destination context</returns>
-        public static ReplyRoutingContext GetReplyContext(this IMessageHandlerContext messageHandlerContext)
+        public static ReplyToRoutingContext GetReplyContext(this IMessageHandlerContext messageHandlerContext)
         {
-            return messageHandlerContext.Get<ReplyRoutingContext>();
+            return messageHandlerContext.Get<ReplyToRoutingContext>();
         }
 
         /// <summary>

@@ -2,6 +2,7 @@
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Routing;
+using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;

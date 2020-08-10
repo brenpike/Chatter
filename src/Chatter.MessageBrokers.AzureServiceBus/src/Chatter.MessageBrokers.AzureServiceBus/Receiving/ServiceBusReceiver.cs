@@ -3,7 +3,6 @@ using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
-using Chatter.MessageBrokers.Options;
 using Chatter.MessageBrokers.Receiving;
 using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Core;
@@ -116,8 +115,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 using var scope = CreateTransactionScope(transactionMode);
                 try
                 {
-                    msg.AddUserProperty(Headers.TimeToLive, msg.TimeToLive);
-                    msg.AddUserProperty(Headers.ExpiryTimeUtc, msg.ExpiresAtUtc);
+                    msg.AddUserProperty(ApplicationProperties.TimeToLive, msg.TimeToLive);
+                    msg.AddUserProperty(ApplicationProperties.ExpiryTimeUtc, msg.ExpiresAtUtc);
 
                     var bodyConverter = _bodyConverterFactory.CreateBodyConverter(msg.ContentType);
 

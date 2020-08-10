@@ -1,7 +1,7 @@
 ﻿using Chatter.CQRS.Context;
 using System;
 
-namespace Chatter.MessageBrokers.Context
+namespace Chatter.MessageBrokers.Routing.Context
 {
     /// <summary>
     /// Contains contextual information about how a received message should be routed to the compensation destination

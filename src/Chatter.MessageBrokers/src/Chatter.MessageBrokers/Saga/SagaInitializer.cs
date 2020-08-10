@@ -1,6 +1,5 @@
 ﻿using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Options;
 using System;
 using System.Threading.Tasks;
 
@@ -24,7 +23,7 @@ namespace Chatter.MessageBrokers.Saga
 
             var inbound = context.GetInboundBrokeredMessage();
 
-            if (inbound != null && inbound.ApplicationProperties.TryGetValue(Headers.SagaId, out var sagaId))
+            if (inbound != null && inbound.ApplicationProperties.TryGetValue(ApplicationProperties.SagaId, out var sagaId))
             {
                 saga = await _sagaPersister.GetById((string)sagaId).ConfigureAwait(false);
             }

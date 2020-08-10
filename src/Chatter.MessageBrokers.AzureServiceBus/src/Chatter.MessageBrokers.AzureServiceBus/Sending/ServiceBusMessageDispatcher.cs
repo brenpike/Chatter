@@ -1,5 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Options;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Azure.ServiceBus;
 using System;
@@ -9,11 +9,11 @@ using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
-    internal class MessageSenderDispatcher : IBrokeredMessageInfrastructureDispatcher
+    internal class ServiceBusMessageSender : IBrokeredMessageInfrastructureDispatcher
     {
         readonly BrokeredMessageSenderPool _pool;
 
-        public MessageSenderDispatcher(BrokeredMessageSenderPool messageSenderPool)
+        public ServiceBusMessageSender(BrokeredMessageSenderPool messageSenderPool)
         {
             _pool = messageSenderPool ?? throw new ArgumentNullException(nameof(messageSenderPool));
         }

@@ -1,4 +1,4 @@
-﻿namespace Chatter.MessageBrokers.Options
+﻿namespace Chatter.MessageBrokers.Routing.Options
 {
     public class SendOptions
     {

@@ -1,4 +1,4 @@
-﻿using Chatter.MessageBrokers.Context;
+﻿using Chatter.MessageBrokers.Routing.Context;
 using System;
 
 namespace Chatter.MessageBrokers.Exceptions

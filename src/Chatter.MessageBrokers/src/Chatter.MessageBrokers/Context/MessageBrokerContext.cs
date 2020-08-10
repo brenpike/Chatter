@@ -1,8 +1,13 @@
-﻿using Chatter.CQRS.Context;
-using Chatter.CQRS;
+﻿using Chatter.CQRS;
+using Chatter.CQRS.Commands;
+using Chatter.CQRS.Context;
+using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Routing;
+using Chatter.MessageBrokers.Routing.Context;
+using Chatter.MessageBrokers.Sending;
+using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
 {
@@ -33,12 +38,47 @@ namespace Chatter.MessageBrokers.Context
         /// The received message
         /// </summary>
         public InboundBrokeredMessage BrokeredMessage { get; private set; }
-        ///<inheritdoc/>
-        public IRouteMessages<RoutingContext> NextDestinationRouter { get; internal set; }
-        ///<inheritdoc/>
-        public IRouteMessages<ReplyRoutingContext> ReplyRouter { get; internal set; }
-        ///<inheritdoc/>
-        public IRouteMessages<CompensationRoutingContext> CompensateRouter { get; internal set; }
+
+        internal IBrokeredMessageDispatcher ExternalDispatcher
+        {
+            get
+            {
+                if (this.DispatchContext.ExternalDispatcher is null)
+                {
+                    throw new ArgumentNullException(nameof(this.DispatchContext.InternalDispatcher), $"No dispatcher was found to facilitate external messaging. Unable to route messages.");
+                }
+
+                return this.DispatchContext.ExternalDispatcher;
+            }
+        }
+
+        internal IMessageDispatcher InternalDispatcher
+        {
+            get
+            {
+                if (this.DispatchContext.InternalDispatcher is null)
+                {
+                    throw new ArgumentNullException(nameof(this.DispatchContext.InternalDispatcher), $"No dispatcher was found to facilitate internal messaging. Unable to route messages.");
+                }
+
+                return this.DispatchContext.InternalDispatcher;
+            }
+        }
+
+        internal DispatchContext DispatchContext
+        {
+            get
+            {
+                if (this.Container.TryGet<DispatchContext>(out var dispatchContext))
+                {
+                    return dispatchContext;
+                }
+                else
+                {
+                    throw new ArgumentNullException(nameof(dispatchContext), $"No dispatch context was found. Unable to route messages.");
+                }
+            }
+        }
 
         /// <summary>
         /// Adds contextual error information to the message broker context
@@ -50,6 +90,82 @@ namespace Chatter.MessageBrokers.Context
             this.BrokeredMessage.SetFailure();
             this.BrokeredMessage.WithFailureDetails(errorContext.ErrorDetails);
             this.BrokeredMessage.WithFailureDescription(errorContext.ErrorDescription);
+        }
+
+        public Task Send<TMessage>(TMessage message, string destinationPath) where TMessage : ICommand
+        {
+            return this.ExternalDispatcher.Send(message, destinationPath, this.GetTransactionContext());
+        }
+
+        public Task Send<TMessage>(TMessage message) where TMessage : ICommand
+        {
+            return this.ExternalDispatcher.Send(message, this.GetTransactionContext());
+        }
+
+        public Task Publish<TMessage>(TMessage message) where TMessage : IEvent
+        {
+            return this.ExternalDispatcher.Publish(message, this.GetTransactionContext());
+        }
+
+        public Task Publish<TMessage>(IEnumerable<TMessage> messages) where TMessage : IEvent
+        {
+            return this.ExternalDispatcher.Publish(messages, this.GetTransactionContext());
+        }
+
+        public Task Publish<TMessage>(TMessage message, string destinationPath) where TMessage : IEvent
+        {
+            return this.ExternalDispatcher.Publish(message, destinationPath, this.GetTransactionContext());
+        }
+
+        public Task ReplyTo()
+        {
+            if (!this.Container.TryGet<ReplyToRoutingContext>(out var routingContext))
+            {
+                //log
+                return Task.CompletedTask;
+            }
+
+            return this.ExternalDispatcher.ReplyTo(this.BrokeredMessage, routingContext, this.GetTransactionContext());
+        }
+
+        public Task ReplyToRequester<TMessage>(TMessage message) where TMessage : ICommand
+        {
+            //TODO: finish
+            throw new System.NotImplementedException();
+        }
+
+        public Task Forward<TRoutingContext>() where TRoutingContext : IContainRoutingContext
+        {
+            if (!this.Container.TryGet<TRoutingContext>(out var routingContext))
+            {
+                //log
+                return Task.CompletedTask;
+            }           
+
+            return this.ExternalDispatcher.Forward(this.BrokeredMessage, routingContext, this.GetTransactionContext());
+        }
+
+        public Task Compensate()
+        {
+            if (!this.Container.TryGet<CompensationRoutingContext>(out var routingContext))
+            {
+                //log
+                return Task.CompletedTask;
+            }
+
+            return this.ExternalDispatcher.Compensate(this.BrokeredMessage, routingContext, this.GetTransactionContext());
+        }
+
+        public Task Compensate<TMessage>(TMessage message, string compensationDescription, string compensationDetails) where TMessage : ICommand
+        {
+            //TODO: implement
+            throw new NotImplementedException();
+        }
+
+        public Task Compensate<TMessage>(TMessage message, string destinationPath, string compensationDescription, string compensationDetails) where TMessage : ICommand
+        {
+            //TODO: implement
+            throw new NotImplementedException();
         }
     }
 }

@@ -1,5 +1,5 @@
 ﻿using Chatter.CQRS.Context;
-using Chatter.MessageBrokers.Options;
+using Chatter.MessageBrokers.Receiving;
 
 namespace Chatter.MessageBrokers.Context
 {
