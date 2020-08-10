@@ -6,6 +6,9 @@ parameters:
   type: string
   default: ''
 
+variables:
+  BuildConfiguration: Release
+
 stages:
   - template: ci.yml
     parameters:

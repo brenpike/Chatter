@@ -19,7 +19,7 @@ stages:
           command: 'publish'
           publishWebProjects: false
           projects: 'src/${{ parameters.ProjectName }}/**/${{ parameters.ProjectName }}.csproj'
-          arguments: -c $(buildConfiguration) -o $(Build.ArtifactStagingDirectory)
+          arguments: -c $(BuildConfiguration) -o $(Build.ArtifactStagingDirectory)
 
       - task: DotNetCoreCLI@2
         displayName: 'Dotnet Pack ${{ parameters.ProjectName }}'
