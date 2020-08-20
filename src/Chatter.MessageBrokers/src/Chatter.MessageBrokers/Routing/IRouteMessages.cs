@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -11,7 +12,13 @@ namespace Chatter.MessageBrokers.Routing
     /// </summary>
     public interface IRouteMessages
     {
-        Task Route<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null) where TMessage : IMessage;
+        public Task Route<TMessage, TOptions>(TMessage message, TransactionContext transactionContext, TOptions options)
+            where TMessage : IMessage
+            where TOptions : RoutingOptions, new();
+
+        public Task Route<TMessage, TOptions>(TMessage message, string destinationPath, TransactionContext transactionContext, TOptions options)
+            where TMessage : IMessage
+            where TOptions : RoutingOptions, new();
 
         /// <summary>
         /// Routes a brokered message to a receiver

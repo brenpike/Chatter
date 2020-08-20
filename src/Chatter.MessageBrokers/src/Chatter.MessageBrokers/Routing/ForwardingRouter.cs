@@ -37,6 +37,5 @@ namespace Chatter.MessageBrokers.Routing
             var outboundMessage = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, forwardDestination);
             return _router.Route(outboundMessage, transactionContext);
         }
-
     }
 }

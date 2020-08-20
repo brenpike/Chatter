@@ -4,6 +4,7 @@ using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Context;
+using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Collections.Generic;
@@ -39,46 +40,7 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         public InboundBrokeredMessage BrokeredMessage { get; private set; }
 
-        internal IBrokeredMessageDispatcher ExternalDispatcher
-        {
-            get
-            {
-                if (this.DispatchContext.ExternalDispatcher is null)
-                {
-                    throw new ArgumentNullException(nameof(this.DispatchContext.InternalDispatcher), $"No dispatcher was found to facilitate external messaging. Unable to route messages.");
-                }
-
-                return this.DispatchContext.ExternalDispatcher;
-            }
-        }
-
-        internal IMessageDispatcher InternalDispatcher
-        {
-            get
-            {
-                if (this.DispatchContext.InternalDispatcher is null)
-                {
-                    throw new ArgumentNullException(nameof(this.DispatchContext.InternalDispatcher), $"No dispatcher was found to facilitate internal messaging. Unable to route messages.");
-                }
-
-                return this.DispatchContext.InternalDispatcher;
-            }
-        }
-
-        internal DispatchContext DispatchContext
-        {
-            get
-            {
-                if (this.Container.TryGet<DispatchContext>(out var dispatchContext))
-                {
-                    return dispatchContext;
-                }
-                else
-                {
-                    throw new ArgumentNullException(nameof(dispatchContext), $"No dispatch context was found. Unable to route messages.");
-                }
-            }
-        }
+        internal IBrokeredMessageDispatcher ExternalDispatcher { get; set; }
 
         /// <summary>
         /// Adds contextual error information to the message broker context
@@ -92,40 +54,44 @@ namespace Chatter.MessageBrokers.Context
             this.BrokeredMessage.WithFailureDescription(errorContext.ErrorDescription);
         }
 
-        public Task Send<TMessage>(TMessage message, string destinationPath) where TMessage : ICommand
-        {
-            return this.ExternalDispatcher.Send(message, destinationPath, this.GetTransactionContext());
-        }
+        //TODO: agree on guiding principals:
+        //      1) MessageBrokerContext: 
+        //          a) relaying context data to internal or external dispatchers
+        //          b) providing methods that take TMessage instead of context specific params and outboundbrokeredmessage/inboundbrokeredmessage
+        //      2) BrokeredMessageDispatcher:
+        //          a) contains methods that require context from MessageBrokerContext as parameters along with TMessage
+        //          b) simply forwards all routing requests to their respectived routers, i.e., IForwardRouter, compensate, replyTo, send, publish, etc.
+        //          c) aggreagates all routing operations in a single class so it can be accessed by MessageBrokerContext
+        //      3) Strongly typed routers (i.e., ReplyToRouter, ForwardingRouter, CompensateRouter) -> Need to create SendRouter and PublishRouter
+        //          a) accept their own strongly typed IRoutingOptions
+        //          b) apply their IRoutingOptions accordingly
+        //          c) execute any router specific business logic (i.e., clearing replyto headers, setting compensate details/desc, etc.)
+        //          d) ultimately calls IRoutesMessages.Route under the hood.
+        //      4) IRouteMessages:
+        //          a) core route implementation
+        //          b) can accepted TMessage or OutboundBrokeredMessage
+        //          c) ultimately the OutboundBrokeredMessage overload is called
+        //          d) TMessage methods accept RoutingOptions for the purpose of creating OutboundBrokeredMessage.
+        //             if called directly no IRoutingOption specific logic will be executed
 
-        public Task Send<TMessage>(TMessage message) where TMessage : ICommand
-        {
-            return this.ExternalDispatcher.Send(message, this.GetTransactionContext());
-        }
 
-        public Task Publish<TMessage>(TMessage message) where TMessage : IEvent
-        {
-            return this.ExternalDispatcher.Publish(message, this.GetTransactionContext());
-        }
+        //TODO: should these all be extension methods?
+        public Task Send<TMessage>(TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand 
+            => this.ExternalDispatcher.Send(message, destinationPath, this.GetTransactionContext(), options);
 
-        public Task Publish<TMessage>(IEnumerable<TMessage> messages) where TMessage : IEvent
-        {
-            return this.ExternalDispatcher.Publish(messages, this.GetTransactionContext());
-        }
+        public Task Send<TMessage>(TMessage message, SendOptions options = null) where TMessage : ICommand 
+            => this.ExternalDispatcher.Send(message, this.GetTransactionContext(), options);
 
-        public Task Publish<TMessage>(TMessage message, string destinationPath) where TMessage : IEvent
-        {
-            return this.ExternalDispatcher.Publish(message, destinationPath, this.GetTransactionContext());
-        }
+        public Task Publish<TMessage>(TMessage message, PublishOptions options = null) where TMessage : IEvent 
+            => this.ExternalDispatcher.Publish(message, this.GetTransactionContext(), options);
 
-        public Task ReplyTo()
-        {
-            if (!this.Container.TryGet<ReplyToRoutingContext>(out var routingContext))
-            {
-                //log
-                return Task.CompletedTask;
-            }
+        public Task Publish<TMessage>(TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent 
+            => this.ExternalDispatcher.Publish(message, destinationPath, this.GetTransactionContext(), options);
 
-            return this.ExternalDispatcher.ReplyTo(this.BrokeredMessage, routingContext, this.GetTransactionContext());
+        public Task ReplyTo(ReplyToOptions options = null)
+        {
+            this.Container.TryGet<ReplyToRoutingContext>(out var routingContext);
+            return this.ExternalDispatcher.ReplyTo(this.BrokeredMessage, routingContext, this.GetTransactionContext(), options);
         }
 
         public Task ReplyToRequester<TMessage>(TMessage message) where TMessage : ICommand
@@ -134,15 +100,10 @@ namespace Chatter.MessageBrokers.Context
             throw new System.NotImplementedException();
         }
 
-        public Task Forward<TRoutingContext>() where TRoutingContext : IContainRoutingContext
+        public Task Forward<TRoutingContext>(ForwardingOptions options = null) where TRoutingContext : IContainRoutingContext
         {
-            if (!this.Container.TryGet<TRoutingContext>(out var routingContext))
-            {
-                //log
-                return Task.CompletedTask;
-            }           
-
-            return this.ExternalDispatcher.Forward(this.BrokeredMessage, routingContext, this.GetTransactionContext());
+            this.Container.TryGet<TRoutingContext>(out var routingContext);
+            return this.ExternalDispatcher.Forward(this.BrokeredMessage, routingContext, this.GetTransactionContext(), options);
         }
 
         public Task Compensate()

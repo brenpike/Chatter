@@ -170,8 +170,7 @@ namespace Chatter.MessageBrokers.Receiving
 
                 var inboundMessage = messageContext.BrokeredMessage;
 
-                var dispatchContext = new DispatchContext(_messageDispatcher, _brokeredMessageDispatcher);
-                messageContext.Container.Include(dispatchContext);
+                messageContext.ExternalDispatcher = _brokeredMessageDispatcher;
 
                 CreateErrorContextFromHeaders(messageContext, inboundMessage);
                 CreateSagaContextFromHeaders(messageContext);

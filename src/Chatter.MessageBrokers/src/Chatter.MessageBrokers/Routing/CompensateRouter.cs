@@ -50,6 +50,9 @@ namespace Chatter.MessageBrokers.Routing
                     throw new ArgumentNullException(nameof(destinationRouterContext.CompensateDescription), $"A compensation description is required to route a compensation message");
                 }
 
+                //TODO: get rid of IForwardRouter dependency and use IRouteMessages instead
+                //TODO: should call OutboundBrokeredMessage.Forward directly from here and then we can remove WithFailureDetails, description, setfailure, etc
+                //      from inboundbrokered message and to CompensateOptions or outboundbrokeredmessage where they belong
                 inboundBrokeredMessage.WithFailureDetails(destinationRouterContext.CompensateDetails);
                 inboundBrokeredMessage.WithFailureDescription(destinationRouterContext.CompensateDescription);
                 inboundBrokeredMessage.SetFailure();

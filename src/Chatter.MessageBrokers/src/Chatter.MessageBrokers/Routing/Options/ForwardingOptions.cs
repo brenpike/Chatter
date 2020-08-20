@@ -1,10 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace Chatter.MessageBrokers.Routing.Options
+﻿namespace Chatter.MessageBrokers.Routing.Options
 {
-    class ForwardingOptions
+    public class ForwardingOptions : RoutingOptions
     {
+        public bool RefreshTimeToLive { get; set; } = true;
     }
 }

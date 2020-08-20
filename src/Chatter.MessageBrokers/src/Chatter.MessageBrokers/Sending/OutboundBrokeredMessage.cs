@@ -32,31 +32,24 @@ namespace Chatter.MessageBrokers.Sending
         }
 
         public OutboundBrokeredMessage(byte[] body, IDictionary<string, object> applicationProperties, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(null, body, applicationProperties, destination, bodyConverter)
-        {
-        }
+            : this(null, body, applicationProperties, destination, bodyConverter) {}
+
+        public OutboundBrokeredMessage(string messageId, object message, IDictionary<string, object> applicationProperties, string destination, IBrokeredMessageBodyConverter bodyConverter)
+            : this(messageId, bodyConverter.Convert(message), applicationProperties, destination, bodyConverter) {}
 
         public OutboundBrokeredMessage(string messageId, object message, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(messageId, bodyConverter.Convert(message), new Dictionary<string, object>(), destination, bodyConverter)
-        {
-        }
+            : this(messageId, bodyConverter.Convert(message), new Dictionary<string, object>(), destination, bodyConverter) {}
 
         public OutboundBrokeredMessage(object message, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(bodyConverter.Convert(message), new Dictionary<string, object>(), destination, bodyConverter)
-        {
-        }
+            : this(bodyConverter.Convert(message), new Dictionary<string, object>(), destination, bodyConverter) {}
 
         public string MessageId { get; }
         public string Destination { get; }
         public byte[] Body { get; }
         public IDictionary<string, object> ApplicationProperties { get; }
 
-        public static OutboundBrokeredMessage Forward(InboundBrokeredMessage messageToForward, string forwardDestination)
-        {
-            //TODO: how to generate guid?
-            var outbound = new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
-            return outbound.RefreshTimeToLive();
-        }
+        public static OutboundBrokeredMessage Forward(InboundBrokeredMessage messageToForward, string forwardDestination) 
+            => new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
 
         public OutboundBrokeredMessage WithTransactionMode(TransactionMode transactionMode)
         {

@@ -1,6 +1,6 @@
 ﻿namespace Chatter.MessageBrokers.Routing.Options
 {
-    public class SendOptions : RoutingOptions
+    public class PublishOptions : RoutingOptions
     {
     }
 }

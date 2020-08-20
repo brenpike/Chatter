@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Routing;
+using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Collections.Generic;
@@ -44,6 +45,20 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         public Task Route(IList<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
         {
             return _brokeredMessageOutboxDispatcher.SendToOutbox(outboundBrokeredMessages, transactionContext);
+        }
+
+        public Task Route<TMessage, TOptions>(TMessage message, TransactionContext transactionContext, TOptions options)
+            where TMessage : IMessage
+            where TOptions : RoutingOptions, new()
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task Route<TMessage, TOptions>(TMessage message, string destinationPath, TransactionContext transactionContext, TOptions options)
+            where TMessage : IMessage
+            where TOptions : RoutingOptions, new()
+        {
+            throw new NotImplementedException();
         }
     }
 }

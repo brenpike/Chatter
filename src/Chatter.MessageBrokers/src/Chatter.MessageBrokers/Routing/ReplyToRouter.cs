@@ -23,11 +23,6 @@ namespace Chatter.MessageBrokers.Routing
 
         public async Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, ReplyToRoutingContext destinationRouterContext)
         {
-            if (destinationRouterContext is null)
-            {
-                throw new ArgumentNullException(nameof(destinationRouterContext), $"A '{destinationRouterContext.GetType().Name}' is required to route a reply message");
-            }
-
             try
             {
                 var outbound = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext.DestinationPath)
