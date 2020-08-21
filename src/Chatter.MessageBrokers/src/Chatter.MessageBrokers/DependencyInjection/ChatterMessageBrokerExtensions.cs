@@ -76,7 +76,7 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddSingleton<ITransactionalBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>();
             builder.Services.AddTransient<IForwardMessages, ForwardingRouter>();
             builder.Services.AddTransient<IRouteCompensationMessages, CompensateRouter>();
-            builder.Services.AddTransient<IRouteReplyToMessages, ReplyToRouter>();
+            builder.Services.AddTransient<IReplyRouter, ReplyRouter>();
 
             if (options?.Reliability?.OutboxEnabled ?? false)
             {

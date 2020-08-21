@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
 {
-    public interface IRouteReplyToMessages
+    public interface IReplyRouter
     {
         /// <summary>
         /// Routes a brokered message to a brokered message receiver using

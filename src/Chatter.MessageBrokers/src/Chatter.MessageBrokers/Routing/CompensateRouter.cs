@@ -2,6 +2,7 @@
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Context;
+using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
 
@@ -12,13 +13,13 @@ namespace Chatter.MessageBrokers.Routing
     /// </summary>
     public class CompensateRouter : IRouteCompensationMessages
     {
-        private readonly IForwardMessages _router;
+        private readonly IRouteMessages _router;
 
         /// <summary>
         /// Creates a router for sending a brokered message to a brokered message receiver responsible for compensating a received message
         /// </summary>
         /// <param name="router">The strategy used to compensate the a received message</param>
-        public CompensateRouter(IForwardMessages router)
+        public CompensateRouter(IRouteMessages router)
         {
             _router = router ?? throw new ArgumentNullException(nameof(router));
         }
@@ -50,14 +51,12 @@ namespace Chatter.MessageBrokers.Routing
                     throw new ArgumentNullException(nameof(destinationRouterContext.CompensateDescription), $"A compensation description is required to route a compensation message");
                 }
 
-                //TODO: get rid of IForwardRouter dependency and use IRouteMessages instead
-                //TODO: should call OutboundBrokeredMessage.Forward directly from here and then we can remove WithFailureDetails, description, setfailure, etc
-                //      from inboundbrokered message and to CompensateOptions or outboundbrokeredmessage where they belong
-                inboundBrokeredMessage.WithFailureDetails(destinationRouterContext.CompensateDetails);
-                inboundBrokeredMessage.WithFailureDescription(destinationRouterContext.CompensateDescription);
-                inboundBrokeredMessage.SetFailure();
+                var outbound = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext.DestinationPath)
+                                        .WithFailureDetails(destinationRouterContext.CompensateDetails)
+                                        .WithFailureDescription(destinationRouterContext.CompensateDescription)
+                                        .SetFailure();
 
-                return _router.Route(inboundBrokeredMessage, destinationRouterContext.DestinationPath, transactionContext);
+                return _router.Route(outbound, transactionContext);
             }
             catch (Exception causeOfRoutingFailure)
             {

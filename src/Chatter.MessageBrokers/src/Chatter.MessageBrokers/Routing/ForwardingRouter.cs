@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
 {
-    public class ForwardingRouter : IForwardMessages
+    class ForwardingRouter : IForwardMessages
     {
         private readonly IRouteMessages _router;
 

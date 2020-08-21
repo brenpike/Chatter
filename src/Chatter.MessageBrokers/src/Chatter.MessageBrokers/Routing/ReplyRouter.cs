@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
 {
-    public class ReplyToRouter : IRouteReplyToMessages
+    class ReplyRouter : IReplyRouter
     {
         private readonly IRouteMessages _router;
 
@@ -16,7 +16,7 @@ namespace Chatter.MessageBrokers.Routing
         /// Creates a router for sending a brokered message to a brokered message receiver designated by the 'reply to' application property
         /// </summary>
         /// <param name="router">The strategy used to compensate the a received message</param>
-        public ReplyToRouter(IRouteMessages router)
+        public ReplyRouter(IRouteMessages router)
         {
             _router = router ?? throw new ArgumentNullException(nameof(router));
         }

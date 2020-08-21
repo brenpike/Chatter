@@ -6,7 +6,6 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
-using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -94,12 +93,6 @@ namespace Chatter.MessageBrokers.Context
             return this.ExternalDispatcher.ReplyTo(this.BrokeredMessage, routingContext, this.GetTransactionContext(), options);
         }
 
-        public Task ReplyToRequester<TMessage>(TMessage message) where TMessage : ICommand
-        {
-            //TODO: finish
-            throw new System.NotImplementedException();
-        }
-
         public Task Forward<TRoutingContext>(ForwardingOptions options = null) where TRoutingContext : IContainRoutingContext
         {
             this.Container.TryGet<TRoutingContext>(out var routingContext);
@@ -115,18 +108,6 @@ namespace Chatter.MessageBrokers.Context
             }
 
             return this.ExternalDispatcher.Compensate(this.BrokeredMessage, routingContext, this.GetTransactionContext());
-        }
-
-        public Task Compensate<TMessage>(TMessage message, string compensationDescription, string compensationDetails) where TMessage : ICommand
-        {
-            //TODO: implement
-            throw new NotImplementedException();
-        }
-
-        public Task Compensate<TMessage>(TMessage message, string destinationPath, string compensationDescription, string compensationDetails) where TMessage : ICommand
-        {
-            //TODO: implement
-            throw new NotImplementedException();
         }
     }
 }

@@ -28,6 +28,7 @@ namespace Chatter.MessageBrokers.Routing
             where TOptions : RoutingOptions, new()
         {
             var destination = _brokeredMessageDetailProvider.GetMessageName<TMessage>();
+
             if (string.IsNullOrWhiteSpace(destination))
             {
                 throw new ArgumentNullException(nameof(destination), $"Routing destination is required. Use {typeof(BrokeredMessageAttribute).Name} or overload that accepts 'destinationPath'");

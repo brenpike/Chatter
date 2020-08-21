@@ -83,9 +83,36 @@ namespace Chatter.MessageBrokers.Sending
             return (TimeSpan?)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.TimeToLive);
         }
 
-        public OutboundBrokeredMessage WithSagaStatus(SagaStatusEnum sagaStatus)
+
+        internal OutboundBrokeredMessage WithFailureDetails(string failureDetails)
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.FailureDetails] = failureDetails;
+            return this;
+        }
+
+        internal OutboundBrokeredMessage WithFailureDescription(string failureDescription)
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.FailureDescription] = failureDescription;
+            return this;
+        }
+
+        internal OutboundBrokeredMessage SetFailure()
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.IsError] = true;
+            ApplicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)SagaStatusEnum.Failed;
+            return this;
+        }
+
+        internal OutboundBrokeredMessage WithSagaStatus(SagaStatusEnum sagaStatus)
         {
             ApplicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)sagaStatus;
+            return this;
+        }
+
+        internal OutboundBrokeredMessage ClearReplyToProperties()
+        {
+            ApplicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyTo);
+            ApplicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToGroupId);
             return this;
         }
 
