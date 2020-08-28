@@ -11,7 +11,7 @@
         /// <summary>
         /// The path to the receiver that initiated the message.
         /// </summary>
-        public static readonly string RequestorPath = $"{ChatterBaseHeader}.RequestorPath";
+        public static readonly string RequesterPath = $"{ChatterBaseHeader}.RequesterPath";
         /// <summary>
         /// The receivers visited by the inbound message prior to the most recent message receiver
         /// </summary>
@@ -78,11 +78,15 @@
         /// </summary>
         public static readonly string SagaId = $"{ChatterBaseHeader}.{Saga}.Id";
         /// <summary>
+        /// The path to the receiver that is performing the role of saga orchestrator
+        /// </summary>
+        public static readonly string SagaOrchestratorPath = $"{ChatterBaseHeader}.{Saga}.OrchestratorPath";
+        /// <summary>
         /// True if the message has encountered an error while being received
         /// </summary>
         public static readonly string IsError = $"{ChatterBaseHeader}.IsError";
         /// <summary>
-        /// The routing slip that describes how a message will be routed
+        /// The routing slip as json that describes how a message will be routed
         /// </summary>
         public static readonly string Slip = $"{ChatterBaseHeader}.{Routing}.Slip";
     }

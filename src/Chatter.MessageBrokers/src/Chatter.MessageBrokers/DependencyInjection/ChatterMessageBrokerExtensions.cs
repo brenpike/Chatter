@@ -81,12 +81,12 @@ namespace Microsoft.Extensions.DependencyInjection
             if (options?.Reliability?.OutboxEnabled ?? false)
             {
                 builder.Services.Decorate<IMessageDispatcher, TransactionalOutboxMessageDispatcherDecorator>();
-                builder.Services.AddSingleton<IRouteMessages, OutboxMessageRouter>();
+                builder.Services.AddSingleton<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
                 builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
             }
             else
             {
-                builder.Services.AddTransient<IRouteMessages, MessageRouter>();
+                builder.Services.AddTransient<IRouteBrokeredMessages, BrokeredMessageRouter>();
             }
 
             builder.Services.Decorate<IMessageDispatcher, RoutingSlipMessageDispatcherDecorator>(); //TODO: we'll only want to add this if routing slips are added

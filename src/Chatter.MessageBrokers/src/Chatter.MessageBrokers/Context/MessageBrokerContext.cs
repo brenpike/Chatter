@@ -3,7 +3,6 @@ using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using System.Collections.Generic;
@@ -86,28 +85,5 @@ namespace Chatter.MessageBrokers.Context
 
         public Task Publish<TMessage>(TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent 
             => this.ExternalDispatcher.Publish(message, destinationPath, this.GetTransactionContext(), options);
-
-        public Task ReplyTo(ReplyToOptions options = null)
-        {
-            this.Container.TryGet<ReplyToRoutingContext>(out var routingContext);
-            return this.ExternalDispatcher.ReplyTo(this.BrokeredMessage, routingContext, this.GetTransactionContext(), options);
-        }
-
-        public Task Forward<TRoutingContext>(ForwardingOptions options = null) where TRoutingContext : IContainRoutingContext
-        {
-            this.Container.TryGet<TRoutingContext>(out var routingContext);
-            return this.ExternalDispatcher.Forward(this.BrokeredMessage, routingContext, this.GetTransactionContext(), options);
-        }
-
-        public Task Compensate()
-        {
-            if (!this.Container.TryGet<CompensationRoutingContext>(out var routingContext))
-            {
-                //log
-                return Task.CompletedTask;
-            }
-
-            return this.ExternalDispatcher.Compensate(this.BrokeredMessage, routingContext, this.GetTransactionContext());
-        }
     }
 }

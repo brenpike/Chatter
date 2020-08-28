@@ -10,10 +10,19 @@ namespace Chatter.MessageBrokers.Routing.Slips
     public class RoutingSlipMessageDispatcherDecorator : IMessageDispatcher
     {
         private readonly IMessageDispatcher _messageDispatcher;
+        private readonly IForwardMessages _forwardMessages;
+        private readonly IRouteCompensationMessages _compensatingRouter;
+        private readonly IReplyRouter _replyRouter;
 
-        public RoutingSlipMessageDispatcherDecorator(IMessageDispatcher messageDispatcher)
+        public RoutingSlipMessageDispatcherDecorator(IMessageDispatcher messageDispatcher,
+                                                     IForwardMessages forwardMessages,
+                                                     IRouteCompensationMessages compensatingRouter,
+                                                     IReplyRouter replyRouter)
         {
             _messageDispatcher = messageDispatcher ?? throw new ArgumentNullException(nameof(messageDispatcher));
+            _forwardMessages = forwardMessages ?? throw new ArgumentNullException(nameof(forwardMessages));
+            _compensatingRouter = compensatingRouter;
+            _replyRouter = replyRouter ?? throw new ArgumentNullException(nameof(replyRouter));
         }
 
         public Task Dispatch<TMessage>(TMessage message) where TMessage : IMessage
@@ -29,8 +38,11 @@ namespace Chatter.MessageBrokers.Routing.Slips
 
                 if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
                 {
-                    await messageBrokerContext.ReplyTo().ConfigureAwait(false);
-                    await messageBrokerContext.Forward<RoutingContext>().ConfigureAwait(false);
+                    messageBrokerContext.Container.TryGet<ReplyToRoutingContext>(out var replyContext);
+                    await _replyRouter.Route(messageBrokerContext.BrokeredMessage, messageBrokerContext.GetTransactionContext(), replyContext).ConfigureAwait(false);
+
+                    messageBrokerContext.Container.TryGet<RoutingContext>(out var forwardContext);
+                    await _forwardMessages.Route(messageBrokerContext.BrokeredMessage, forwardContext?.DestinationPath, messageBrokerContext.GetTransactionContext()).ConfigureAwait(false);
                 }
             }
             catch (Exception dispatchFailureException)
@@ -52,7 +64,8 @@ namespace Chatter.MessageBrokers.Routing.Slips
 
                     messageBrokerContext?.Container.Include(newContext);
 
-                    await messageBrokerContext.Compensate();
+                    messageBrokerContext.Container.TryGet<CompensationRoutingContext>(out var compensationRoutingContext);
+                    await _compensatingRouter.Route(messageBrokerContext.BrokeredMessage, messageBrokerContext.GetTransactionContext(), compensationRoutingContext).ConfigureAwait(false);
                 }
                 else
                 {

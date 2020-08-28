@@ -8,9 +8,9 @@ namespace Chatter.MessageBrokers.Routing
 {
     class ForwardingRouter : IForwardMessages
     {
-        private readonly IRouteMessages _router;
+        private readonly IRouteBrokeredMessages _router;
 
-        public ForwardingRouter(IRouteMessages router)
+        public ForwardingRouter(IRouteBrokeredMessages router)
         {
             _router = router ?? throw new ArgumentNullException(nameof(router));
         }

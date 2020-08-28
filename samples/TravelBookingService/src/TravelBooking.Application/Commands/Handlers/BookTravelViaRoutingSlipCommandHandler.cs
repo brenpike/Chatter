@@ -9,9 +9,9 @@ namespace TravelBooking.Application.Commands.Handlers
 {
     public class BookTravelViaRoutingSlipCommandHandler : IMessageHandler<BookTravelViaRoutingSlipCommand>
     {
-        private readonly IRouteMessages _messageDestinationRouter;
+        private readonly IRouteBrokeredMessages _messageDestinationRouter;
 
-        public BookTravelViaRoutingSlipCommandHandler(IRouteMessages messageDestinationRouter)
+        public BookTravelViaRoutingSlipCommandHandler(IRouteBrokeredMessages messageDestinationRouter)
         {
             _messageDestinationRouter = messageDestinationRouter ?? throw new ArgumentNullException(nameof(messageDestinationRouter));
         }

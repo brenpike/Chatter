@@ -11,15 +11,15 @@ namespace Chatter.MessageBrokers.Routing
     /// <summary>
     /// Routes a brokered message to a receiver responsible for compensating a received message
     /// </summary>
-    public class CompensateRouter : IRouteCompensationMessages
+    class CompensateRouter : IRouteCompensationMessages
     {
-        private readonly IRouteMessages _router;
+        private readonly IRouteBrokeredMessages _router;
 
         /// <summary>
         /// Creates a router for sending a brokered message to a brokered message receiver responsible for compensating a received message
         /// </summary>
         /// <param name="router">The strategy used to compensate the a received message</param>
-        public CompensateRouter(IRouteMessages router)
+        public CompensateRouter(IRouteBrokeredMessages router)
         {
             _router = router ?? throw new ArgumentNullException(nameof(router));
         }
@@ -34,6 +34,12 @@ namespace Chatter.MessageBrokers.Routing
         /// <returns>An awaitable <see cref="Task"/></returns>
         public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, CompensationRoutingContext destinationRouterContext)
         {
+            if (destinationRouterContext is null)
+            {
+                //TODO: log
+                return Task.CompletedTask;
+            }
+
             try
             {
                 if (destinationRouterContext is null)

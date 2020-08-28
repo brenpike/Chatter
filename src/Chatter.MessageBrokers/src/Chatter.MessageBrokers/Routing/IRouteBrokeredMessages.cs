@@ -10,16 +10,8 @@ namespace Chatter.MessageBrokers.Routing
     /// <summary>
     /// Routes a brokered message to a receiver
     /// </summary>
-    public interface IRouteMessages
+    public interface IRouteBrokeredMessages
     {
-        public Task Route<TMessage, TOptions>(TMessage message, TransactionContext transactionContext, TOptions options)
-            where TMessage : IMessage
-            where TOptions : RoutingOptions, new();
-
-        public Task Route<TMessage, TOptions>(TMessage message, string destinationPath, TransactionContext transactionContext, TOptions options)
-            where TMessage : IMessage
-            where TOptions : RoutingOptions, new();
-
         /// <summary>
         /// Routes a brokered message to a receiver
         /// </summary>

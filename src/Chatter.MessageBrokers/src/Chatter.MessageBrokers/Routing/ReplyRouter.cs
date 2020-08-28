@@ -10,22 +10,29 @@ namespace Chatter.MessageBrokers.Routing
 {
     class ReplyRouter : IReplyRouter
     {
-        private readonly IRouteMessages _router;
+        private readonly IRouteBrokeredMessages _router;
 
         /// <summary>
         /// Creates a router for sending a brokered message to a brokered message receiver designated by the 'reply to' application property
         /// </summary>
         /// <param name="router">The strategy used to compensate the a received message</param>
-        public ReplyRouter(IRouteMessages router)
+        public ReplyRouter(IRouteBrokeredMessages router)
         {
             _router = router ?? throw new ArgumentNullException(nameof(router));
         }
 
         public async Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, ReplyToRoutingContext destinationRouterContext)
         {
+            if (destinationRouterContext is null)
+            {
+                //TODO: log
+                await Task.CompletedTask;
+                return;
+            }
+
             try
             {
-                var outbound = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext.DestinationPath)
+                var outbound = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext?.DestinationPath)
                                        .WithGroupId(destinationRouterContext.ReplyToGroupId);
 
                 await _router.Route(outbound, transactionContext).ConfigureAwait(false);

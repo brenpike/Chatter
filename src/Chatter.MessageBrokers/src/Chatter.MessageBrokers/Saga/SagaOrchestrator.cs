@@ -13,14 +13,14 @@ namespace Chatter.MessageBrokers.Saga
     {
         private readonly ISagaPersister _sagaPersister;
         private readonly IBodyConverterFactory _bodyConverterFactory;
-        private readonly IRouteMessages _messageDestinationRouter;
+        private readonly IRouteBrokeredMessages _messageDestinationRouter;
         private readonly ISagaInitializer _sagaInitializer;
         private readonly ISagaOptionsProvider _sagaOptionsProvider;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
 
         public SagaOrchestrator(ISagaPersister sagaPersister,
                                 IBodyConverterFactory bodyConverterFactory,
-                                IRouteMessages messageDestinationRouter,
+                                IRouteBrokeredMessages messageDestinationRouter,
                                 ISagaInitializer sagaInitializer,
                                 ISagaOptionsProvider sagaOptionsProvider,
                                 IBrokeredMessageDetailProvider brokeredMessageDetailProvider)

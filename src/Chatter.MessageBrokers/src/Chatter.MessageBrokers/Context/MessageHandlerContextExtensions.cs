@@ -1,25 +1,11 @@
-﻿using Chatter.CQRS.Commands;
-using Chatter.CQRS.Context;
-using Chatter.CQRS.Events;
+﻿using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Context;
-using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
 {
     public static class MessageHandlerContextExtensions
     {
-        //TODO: can this be done? DispatchContext won't exist, so how will we get the InternalDispatcher???
-        public static Task SendInternal<TMessage>(this IMessageHandlerContext mhc, TMessage message, TransactionContext transactionContext) where TMessage : ICommand
-        {
-            return Task.CompletedTask;
-        }
-
-        public static Task PublishInternal<TMessage>(this IMessageHandlerContext mhc, TMessage message, TransactionContext transactionContext) where TMessage : IEvent
-        {
-            return Task.CompletedTask;
-        }
-
         /// <summary>
         /// Gets contextual information about a message broker from message handler context
         /// </summary>
