@@ -78,13 +78,9 @@
         /// </summary>
         public static readonly string SelfPath = $"{ChatterBaseHeader}.{Routing}.SelfRoutingPath";
         /// <summary>
-        /// The path to the receiver that initiated the message.
-        /// </summary>
-        public static readonly string RequesterPath = $"{ChatterBaseHeader}.{Routing}.RequesterRoutingPath";
-        /// <summary>
         /// The destination this message should reply to
         /// </summary>
-        public static readonly string ReplyTo = $"{ChatterBaseHeader}.{Routing}.ReplyTo";
+        public static readonly string ReplyToAddress = $"{ChatterBaseHeader}.{Routing}.ReplyTo";
         /// <summary>
         /// The AMQP group this message should reply to
         /// </summary>

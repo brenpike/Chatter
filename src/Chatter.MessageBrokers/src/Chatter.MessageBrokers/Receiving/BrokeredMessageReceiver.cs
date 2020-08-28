@@ -258,7 +258,7 @@ namespace Chatter.MessageBrokers.Receiving
 
         private static void CreateReplyContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
         {
-            if (inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.ReplyTo, out var replyTo))
+            if (inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.ReplyToAddress, out var replyTo))
             {
                 inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.ReplyToGroupId, out var replyToSessionId);
                 inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.GroupId, out var groupId);

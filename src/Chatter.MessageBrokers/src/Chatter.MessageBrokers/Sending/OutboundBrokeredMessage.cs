@@ -60,6 +60,61 @@ namespace Chatter.MessageBrokers.Sending
         public string Stringify() 
             => _bodyConverter.Stringify(Body);
 
+        public OutboundBrokeredMessage WithTimeToLive(TimeSpan timeToLive)
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.TimeToLive] = timeToLive;
+            return this;
+        }
+
+        public OutboundBrokeredMessage RefreshTimeToLive()
+        {
+            var expiryTimeUtc = (DateTime?)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ExpiryTimeUtc);
+            if (expiryTimeUtc != null)
+            {
+                var ttl = expiryTimeUtc.Value - DateTime.UtcNow;
+                if (ttl.Duration().TotalMilliseconds > 0)
+                {
+                    WithTimeToLive(ttl);
+                }
+                else
+                {
+                    WithTimeToLive(TimeSpan.Zero);
+                }
+            }
+            return this;
+        }
+
+        //TODO: move to saga options
+        public OutboundBrokeredMessage WithSagaId(string sagaId)
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.SagaId] = sagaId;
+            return this;
+        }
+
+        public OutboundBrokeredMessage WithSubject(string subject)
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.Subject] = subject;
+            return this;
+        }
+
+        public OutboundBrokeredMessage WithCorrelationId(string correlationId)
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.CorrelationId] = correlationId;
+            return this;
+        }
+
+        public OutboundBrokeredMessage WithGroupId(string groupId)
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.GroupId] = groupId;
+            return this;
+        }
+
+        public OutboundBrokeredMessage WithTimeToLiveInMinutes(int minutes)
+        {
+            ApplicationProperties[MessageBrokers.ApplicationProperties.TimeToLive] = TimeSpan.FromMinutes(minutes);
+            return this;
+        }
+
         public TransactionMode GetTransactionMode()
         {
             if (ApplicationProperties.TryGetValue(MessageBrokers.ApplicationProperties.TransactionMode, out var transactionMode))
@@ -72,17 +127,40 @@ namespace Chatter.MessageBrokers.Sending
             }
         }
 
-        public OutboundBrokeredMessage WithTimeToLive(TimeSpan timeToLive)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.TimeToLive] = timeToLive;
-            return this;
-        }
-
         public TimeSpan? GetTimeToLive()
         {
             return (TimeSpan?)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.TimeToLive);
         }
 
+        public string GetCorrelationId()
+        {
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.CorrelationId);
+        }
+
+        public string GetReplyToAddress()
+        {
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ReplyToAddress);
+        }
+
+        public string GetReplyToGroupId()
+        {
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ReplyToGroupId);
+        }
+
+        public string GetGroupId()
+        {
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.GroupId);
+        }
+
+        public string GetSubject()
+        {
+            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.Subject);
+        }
+
+        public string GetContentType()
+        {
+            return _bodyConverter.ContentType;
+        }
 
         internal OutboundBrokeredMessage WithFailureDetails(string failureDetails)
         {
@@ -111,98 +189,8 @@ namespace Chatter.MessageBrokers.Sending
 
         internal OutboundBrokeredMessage ClearReplyToProperties()
         {
-            ApplicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyTo);
+            ApplicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToAddress);
             ApplicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToGroupId);
-            return this;
-        }
-
-        public OutboundBrokeredMessage WithSagaId(string sagaId)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.SagaId] = sagaId;
-            return this;
-        }
-
-        public OutboundBrokeredMessage RefreshTimeToLive()
-        {
-            var expiryTimeUtc = (DateTime?)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ExpiryTimeUtc);
-            if (expiryTimeUtc != null)
-            {
-                var ttl = expiryTimeUtc.Value - DateTime.UtcNow;
-                if (ttl.Duration().TotalMilliseconds > 0)
-                {
-                    WithTimeToLive(ttl);
-                }
-                else
-                {
-                    WithTimeToLive(TimeSpan.Zero);
-                }
-            }
-            return this;
-        }
-
-        public OutboundBrokeredMessage WithCorrelationId(string correlationId)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.CorrelationId] = correlationId;
-            return this;
-        }
-
-        public string GetCorrelationId()
-        {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.CorrelationId);
-        }
-
-        public OutboundBrokeredMessage WithReplyToAddress(string replyTo)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.ReplyTo] = replyTo;
-            return this;
-        }
-
-        public string GetReplyToAddress()
-        {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ReplyTo);
-        }
-
-        public OutboundBrokeredMessage WithReplyToGroupId(string replyToGroupId)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.ReplyToGroupId] = replyToGroupId;
-            return this;
-        }
-
-        public string GetReplyToGroupId()
-        {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ReplyToGroupId);
-        }
-
-        public OutboundBrokeredMessage WithGroupId(string groupId)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.GroupId] = groupId;
-            return this;
-        }
-
-        public string GetGroupId()
-        {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.GroupId);
-        }
-
-        public OutboundBrokeredMessage WithSubject(string subject)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.Subject] = subject;
-            return this;
-        }
-
-        public string GetSubject()
-        {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.Subject);
-        }
-
-        public string GetContentType()
-        {
-            return _bodyConverter.ContentType;
-        }
-
-        public OutboundBrokeredMessage WithTimeToLiveInMinutes(int minutes)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.TimeToLive] = TimeSpan.FromMinutes(minutes);
             return this;
         }
 

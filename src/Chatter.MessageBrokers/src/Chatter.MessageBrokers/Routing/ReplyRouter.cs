@@ -21,13 +21,12 @@ namespace Chatter.MessageBrokers.Routing
             _router = router ?? throw new ArgumentNullException(nameof(router));
         }
 
-        public async Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, ReplyToRoutingContext destinationRouterContext)
+        public Task Route(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, ReplyToRoutingContext destinationRouterContext)
         {
             if (destinationRouterContext is null)
             {
                 //TODO: log
-                await Task.CompletedTask;
-                return;
+                return Task.CompletedTask;
             }
 
             try
@@ -35,9 +34,7 @@ namespace Chatter.MessageBrokers.Routing
                 var outbound = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext?.DestinationPath)
                                        .WithGroupId(destinationRouterContext.ReplyToGroupId);
 
-                await _router.Route(outbound, transactionContext).ConfigureAwait(false);
-
-                inboundBrokeredMessage.ClearReplyToProperties();
+                return _router.Route(outbound, transactionContext);
             }
             catch (Exception e)
             {

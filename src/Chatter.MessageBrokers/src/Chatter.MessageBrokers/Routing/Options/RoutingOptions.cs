@@ -18,6 +18,11 @@ namespace Chatter.MessageBrokers.Routing.Options
 
         internal IDictionary<string, object> ApplicationProperties { get; }
 
+        public void SetCorrelationId(string correlationId)
+        {
+            this.SetApplicationProperty(MessageBrokers.ApplicationProperties.CorrelationId, correlationId);
+        }
+
         public ContextContainer Container { get; }
     }
 }

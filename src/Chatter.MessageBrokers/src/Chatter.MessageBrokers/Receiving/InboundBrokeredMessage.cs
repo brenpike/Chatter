@@ -145,7 +145,7 @@ namespace Chatter.MessageBrokers.Receiving
 
         internal InboundBrokeredMessage ClearReplyToProperties()
         {
-            _applicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyTo);
+            _applicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToAddress);
             _applicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToGroupId);
             return this;
         }
