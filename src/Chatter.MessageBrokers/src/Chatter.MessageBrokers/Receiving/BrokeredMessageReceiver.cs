@@ -187,10 +187,6 @@ namespace Chatter.MessageBrokers.Receiving
 
                 messageContext.Container.Include(transactionContext);
 
-                //messageContext.NextDestinationRouter = _nextDestinationRouter;
-                //messageContext.ReplyRouter = _replyRouter;
-                //messageContext.CompensateRouter = _compensateRouter;
-
                 var brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
                 await brokeredMessagePayloadHandler(brokeredMessagePayload, messageContext).ConfigureAwait(false);
 

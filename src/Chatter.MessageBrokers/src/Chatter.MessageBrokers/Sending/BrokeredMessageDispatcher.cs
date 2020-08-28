@@ -14,44 +14,41 @@ namespace Chatter.MessageBrokers.Sending
         private readonly IRouteBrokeredMessages _messageRouter;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
         private readonly IBodyConverterFactory _bodyConverterFactory;
-        private readonly IForwardMessages _forwardMessages;
-        private readonly IRouteCompensationMessages _compensationRouter;
-        private readonly IReplyRouter _replyRouter;
 
         public BrokeredMessageDispatcher(IRouteBrokeredMessages messageRouter,
                                          IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
-                                         IBodyConverterFactory bodyConverterFactory,
-                                         IForwardMessages forwardMessages,
-                                         IRouteCompensationMessages compensationRouter,
-                                         IReplyRouter replyRouter)
+                                         IBodyConverterFactory bodyConverterFactory)
         {
             _messageRouter = messageRouter ?? throw new ArgumentNullException(nameof(messageRouter));
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
-            _forwardMessages = forwardMessages ?? throw new ArgumentNullException(nameof(forwardMessages));
-            _compensationRouter = compensationRouter ?? throw new ArgumentNullException(nameof(compensationRouter));
-            _replyRouter = replyRouter ?? throw new ArgumentNullException(nameof(replyRouter));
         }
 
+        /// <inheritdoc/>
         public Task Send<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand
         {
             return Dispatch(message, destinationPath, transactionContext, options ?? new SendOptions());
         }
 
+        /// <inheritdoc/>
         public Task Send<TMessage>(TMessage message, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand
         {
             return Dispatch(message, transactionContext, options ?? new SendOptions());
         }
 
+        /// <inheritdoc/>
         public Task Publish<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
         {
             return Dispatch(message, destinationPath, transactionContext, options ?? new PublishOptions());
         }
 
+        /// <inheritdoc/>
         public Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
         {
             return Dispatch(message, transactionContext, options ?? new PublishOptions());
         }
+
+        //TODO: add replytorequester that takes a TMessage and uses the ApplicationProperty RequesterPath to reply to
 
         Task Dispatch<TMessage, TOptions>(TMessage message, TransactionContext transactionContext, TOptions options)
             where TMessage : IMessage
@@ -68,8 +65,8 @@ namespace Chatter.MessageBrokers.Sending
         }
 
         Task Dispatch<TMessage, TOptions>(TMessage message, string destinationPath, TransactionContext transactionContext, TOptions options)
-            where TMessage : IMessage
-            where TOptions : RoutingOptions, new()
+        where TMessage : IMessage
+        where TOptions : RoutingOptions, new()
         {
             if (options == null)
             {
