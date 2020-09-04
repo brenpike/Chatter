@@ -47,6 +47,5 @@ namespace Chatter.MessageBrokers.Sending
         /// <param name="options">The options to be used while publishing <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent;
-
     }
 }

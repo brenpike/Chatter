@@ -18,7 +18,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         private void ConfigureOptionsBuilder(Func<IServiceCollection> configure)
         {
             _services.AddOptions<ServiceBusOptions>()
-                     .ValidateDataAnnotations()
+                     .ValidateDataAnnotations() //TODO: requires Microsoft.Extensions.Options.DataAnnotations. Remove and validate manually?
                      .PostConfigure(options =>
                      {
                          PostConfiguration(options);
