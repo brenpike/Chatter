@@ -72,8 +72,6 @@ namespace Chatter.MessageBrokers.Context
         //          d) TMessage methods accept RoutingOptions for the purpose of creating OutboundBrokeredMessage.
         //             if called directly no IRoutingOption specific logic will be executed
 
-
-        //TODO: should these all be extension methods?
         public Task Send<TMessage>(TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand 
             => this.ExternalDispatcher.Send(message, destinationPath, this.GetTransactionContext(), options);
 

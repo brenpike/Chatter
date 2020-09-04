@@ -98,12 +98,16 @@ namespace Chatter.MessageBrokers.Saga
             var inputQueue = _brokeredMessageDetailProvider.GetMessageName(message.GetType());
 
             var bodyConverter = _bodyConverterFactory.CreateBodyConverter(options.SagaDataContentType);
-            return new OutboundBrokeredMessage(Guid.NewGuid().ToString(), message, inputQueue, bodyConverter)
-                .WithSubject(options.Description)
-                .WithTimeToLiveInMinutes(options.MaxSagaDurationInMinutes)
-                .WithTransactionMode(transactionMode)
-                .WithSagaId(sagaId)
-                .WithSagaStatus(sagaStatus);
+
+            var outbound = new OutboundBrokeredMessage(Guid.NewGuid().ToString(), message, inputQueue, bodyConverter);
+
+            outbound.ApplicationProperties[ApplicationProperties.Subject] = options.Description;
+            outbound.ApplicationProperties[ApplicationProperties.TimeToLive] = TimeSpan.FromMinutes(options.MaxSagaDurationInMinutes);
+            outbound.ApplicationProperties[ApplicationProperties.TransactionMode] = (byte)transactionMode;
+            outbound.ApplicationProperties[ApplicationProperties.SagaId] = sagaId;
+            outbound.ApplicationProperties[ApplicationProperties.SagaStatus] = (byte)sagaStatus;
+
+            return outbound;
         }
     }
 }

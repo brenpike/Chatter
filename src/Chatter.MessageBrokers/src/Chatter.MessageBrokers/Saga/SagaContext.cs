@@ -9,6 +9,8 @@ namespace Chatter.MessageBrokers.Saga
         public SagaStatus Status { get; private set; }
         public string ReceiverPath { get; }
         public string DestinationPath { get; }
+        public int RetryCount { get; internal set; }
+        public int MaxRetryCount { get; internal set; }
         public ContextContainer Container { get; }
 
         internal DateTime? PersistedAtUtc { get; set; } = null;//TODO: temporary for in memory saga persistance clean up

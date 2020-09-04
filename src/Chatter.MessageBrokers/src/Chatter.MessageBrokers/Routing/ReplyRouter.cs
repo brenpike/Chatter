@@ -31,8 +31,8 @@ namespace Chatter.MessageBrokers.Routing
 
             try
             {
-                var outbound = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext?.DestinationPath)
-                                       .WithGroupId(destinationRouterContext.ReplyToGroupId);
+                var outbound = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, destinationRouterContext?.DestinationPath);
+                outbound.ApplicationProperties[ApplicationProperties.ReplyToGroupId] = destinationRouterContext.ReplyToGroupId;
 
                 return _router.Route(outbound, transactionContext);
             }

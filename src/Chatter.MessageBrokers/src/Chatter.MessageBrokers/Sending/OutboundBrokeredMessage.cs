@@ -51,12 +51,6 @@ namespace Chatter.MessageBrokers.Sending
         public static OutboundBrokeredMessage Forward(InboundBrokeredMessage messageToForward, string forwardDestination) 
             => new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
 
-        public OutboundBrokeredMessage WithTransactionMode(TransactionMode transactionMode)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.TransactionMode] = (byte)transactionMode;
-            return this;
-        }
-
         public string Stringify() 
             => _bodyConverter.Stringify(Body);
 
@@ -84,34 +78,9 @@ namespace Chatter.MessageBrokers.Sending
             return this;
         }
 
-        //TODO: move to saga options
-        public OutboundBrokeredMessage WithSagaId(string sagaId)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.SagaId] = sagaId;
-            return this;
-        }
-
-        public OutboundBrokeredMessage WithSubject(string subject)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.Subject] = subject;
-            return this;
-        }
-
         public OutboundBrokeredMessage WithCorrelationId(string correlationId)
         {
             ApplicationProperties[MessageBrokers.ApplicationProperties.CorrelationId] = correlationId;
-            return this;
-        }
-
-        public OutboundBrokeredMessage WithGroupId(string groupId)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.GroupId] = groupId;
-            return this;
-        }
-
-        public OutboundBrokeredMessage WithTimeToLiveInMinutes(int minutes)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.TimeToLive] = TimeSpan.FromMinutes(minutes);
             return this;
         }
 
@@ -178,12 +147,6 @@ namespace Chatter.MessageBrokers.Sending
         {
             ApplicationProperties[MessageBrokers.ApplicationProperties.IsError] = true;
             ApplicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)SagaStatusEnum.Failed;
-            return this;
-        }
-
-        internal OutboundBrokeredMessage WithSagaStatus(SagaStatusEnum sagaStatus)
-        {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)sagaStatus;
             return this;
         }
 
