@@ -149,5 +149,11 @@ namespace Chatter.MessageBrokers.Receiving
             _applicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToGroupId);
             return this;
         }
+
+        internal InboundBrokeredMessage WithRouteToSelfPath(string destinationPath)
+        {
+            _applicationProperties[MessageBrokers.ApplicationProperties.RouteToSelfPath] = destinationPath;
+            return this;
+        }
     }
 }

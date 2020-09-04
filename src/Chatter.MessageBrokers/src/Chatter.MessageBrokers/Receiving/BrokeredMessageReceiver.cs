@@ -178,6 +178,7 @@ namespace Chatter.MessageBrokers.Receiving
                 CreateNextDestinationContextFromHeaders(messageContext);
                 CreateCompensationContextFromHeaders(messageContext, inboundMessage);
 
+                inboundMessage.WithRouteToSelfPath(this.DestinationPath);
                 inboundMessage.UpdateVia(Description);
 
                 if (transactionContext is null)
@@ -265,6 +266,7 @@ namespace Chatter.MessageBrokers.Receiving
                 replyToSessionId = !string.IsNullOrWhiteSpace((string)replyToSessionId) ? (string)replyToSessionId : (string)groupId;
                 var replyContext = new ReplyToRoutingContext((string)replyTo, (string)replyToSessionId, messageContext.Container);
                 messageContext.Container.Include(replyContext);
+                inboundMessage.ClearReplyToProperties();
             }
         }
 

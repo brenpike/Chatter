@@ -74,9 +74,9 @@
         /// </summary>
         public static readonly string Slip = $"{ChatterBaseHeader}.{Routing}.Slip";
         /// <summary>
-        /// The path to the receiver that initiated the message.
+        /// The destination path of the message that invoked the current message broker receiver. Used to route a message to the same receiver(s).
         /// </summary>
-        public static readonly string SelfPath = $"{ChatterBaseHeader}.{Routing}.SelfRoutingPath";
+        public static readonly string RouteToSelfPath = $"{ChatterBaseHeader}.{Routing}.RouteToSelfPath";
         /// <summary>
         /// The destination this message should reply to
         /// </summary>
