@@ -1,6 +1,6 @@
 ﻿namespace Chatter.CQRS.Pipeline
 {
-    public interface IMessageHandlerPipeline<in TMessage> : IMessageHandler<TMessage> where TMessage : IMessage
+    public interface IMessageHandlerPipeline<in TMessage> where TMessage : IMessage
     {
     }
 }
