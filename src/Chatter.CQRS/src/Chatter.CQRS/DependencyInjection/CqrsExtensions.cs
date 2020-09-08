@@ -2,6 +2,7 @@
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.CQRS.Events;
+using Chatter.CQRS.Pipeline;
 using Chatter.CQRS.Queries;
 using Scrutor;
 using System;
@@ -25,6 +26,27 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddInMemoryQueryDispatcher();
             builder.Services.AddQueryHandlers(assemblies);
             return builder;
+        }
+
+        public static PipelineBuilder CreatePipelineBuiler(this IServiceCollection services)
+        {
+            return new PipelineBuilder(services);
+        }
+
+        public static IChatterBuilder AddPipelines(this IChatterBuilder chatterBuilder, Action<PipelineBuilder> pipelineBulder)
+        {
+            var pipeline = chatterBuilder.Services.CreatePipelineBuiler();
+
+            if (pipeline is null)
+            {
+                return chatterBuilder;
+            }
+
+            chatterBuilder.Services.Decorate(typeof(IMessageHandler<>), typeof(MessageHandlerPipeline<>));
+
+            pipelineBulder?.Invoke(pipeline);
+
+            return chatterBuilder;
         }
 
         public static IServiceCollection AddMessageHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
