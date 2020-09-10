@@ -28,9 +28,10 @@ namespace CarRental.Api
             });
 
             services.AddChatterCqrs(typeof(BookRentalCarCommand))
-                    .AddPipelines(builder =>
+                    .AddCommandPipeline(builder =>
                     {
-                        builder.WithStep<LoggingBehavior>();
+                        builder.WithBehavior<LoggingBehavior>()
+                               .WithBehavior<AnotherLoggingBehavior>();
                     })
                     .AddMessageBrokers((options) =>
                     {

@@ -6,11 +6,11 @@ using System.Threading.Tasks;
 
 namespace CarRental.Application.Behaviors
 {
-    public class LoggingBehavior : ICommandBehavior
+    public class AnotherLoggingBehavior : ICommandBehavior
     {
-        private readonly ILogger<LoggingBehavior> _logger;
+        private readonly ILogger<AnotherLoggingBehavior> _logger;
 
-        public LoggingBehavior(ILogger<LoggingBehavior> logger)
+        public AnotherLoggingBehavior(ILogger<AnotherLoggingBehavior> logger)
         {
             _logger = logger;
         }

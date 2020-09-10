@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 
 namespace Chatter.CQRS
@@ -24,34 +23,17 @@ namespace Chatter.CQRS
         ///<inheritdoc/>
         public IDispatchMessages GetDispatcher<TMessage>() where TMessage : IMessage
         {
-            var dispatcherType = GetDispatcherTypeFromMessage(typeof(TMessage));
+            var interfaces = typeof(TMessage).GetTypeInfo().ImplementedInterfaces;
 
-            if (!_dispatchers.TryGetValue(dispatcherType, out var dispatcher))
+            foreach (var i in interfaces)
             {
-                throw new KeyNotFoundException($"No {typeof(IDispatchMessages).Name} exists for type '{dispatcherType.Name}'.");
+                if (_dispatchers.TryGetValue(i, out var dispatcher))
+                {
+                    return dispatcher;
+                }
             }
 
-            return dispatcher;
-        }
-
-        private Type GetDispatcherTypeFromMessage(Type messageType)
-        {
-            var interfaces = messageType.GetTypeInfo().ImplementedInterfaces;
-            var firstInterfaceThatIsNotIMessage = interfaces.Where(i => i != typeof(IMessage)).LastOrDefault();
-
-            if (firstInterfaceThatIsNotIMessage is null)
-            {
-                return messageType;
-            }
-
-            if (firstInterfaceThatIsNotIMessage.IsGenericType)
-            {
-                return GetDispatcherTypeFromMessage(firstInterfaceThatIsNotIMessage.GetGenericTypeDefinition());
-            }
-            else
-            {
-                return firstInterfaceThatIsNotIMessage;
-            }
+            throw new KeyNotFoundException($"No {typeof(IDispatchMessages).Name} exists for type '{typeof(TMessage).Name}'.");
         }
     }
 }

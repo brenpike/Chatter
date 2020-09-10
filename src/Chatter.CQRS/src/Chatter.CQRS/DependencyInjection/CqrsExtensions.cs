@@ -33,7 +33,7 @@ namespace Microsoft.Extensions.DependencyInjection
             return new PipelineBuilder(services);
         }
 
-        public static IChatterBuilder AddPipelines(this IChatterBuilder chatterBuilder, Action<PipelineBuilder> pipelineBulder)
+        public static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<PipelineBuilder> pipelineBulder)
         {
             var pipeline = chatterBuilder.Services.CreatePipelineBuiler();
 
