@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Saga
 {
-    public class SagaMessageDispatcher : IMessageDispatcher
+    public class SagaMessageDispatcher : IDispatchMessages
     {
         private readonly IServiceScopeFactory _serviceFactory;
 
@@ -16,10 +16,7 @@ namespace Chatter.MessageBrokers.Saga
             _serviceFactory = serviceFactory;
         }
 
-        public Task Dispatch<TMessage>(TMessage message) where TMessage : IMessage
-        {
-            return Dispatch(message, new MessageHandlerContext());
-        }
+        Type IDispatchMessages.DispatchType => typeof(ISagaMessage);
 
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {

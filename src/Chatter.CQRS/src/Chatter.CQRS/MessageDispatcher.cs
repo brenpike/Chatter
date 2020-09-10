@@ -7,11 +7,11 @@ namespace Chatter.CQRS
     ///<inheritdoc/>
     internal class MessageDispatcher : IMessageDispatcher
     {
-        private readonly IMessageDispatcherFactory _dispatcherFactory;
+        private readonly IMessageDispatcherProvider _dispatcherProvider;
 
-        public MessageDispatcher(IMessageDispatcherFactory dispatcherFactory)
+        public MessageDispatcher(IMessageDispatcherProvider dispatcherProvider)
         {
-            _dispatcherFactory = dispatcherFactory ?? throw new ArgumentNullException(nameof(dispatcherFactory));
+            _dispatcherProvider = dispatcherProvider ?? throw new ArgumentNullException(nameof(dispatcherProvider));
         }
 
         ///<inheritdoc/>
@@ -23,7 +23,7 @@ namespace Chatter.CQRS
         ///<inheritdoc/>
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
-            var dispatcher = _dispatcherFactory.CreateDispatcher<TMessage>();
+            var dispatcher = _dispatcherProvider.GetDispatcher<TMessage>();
             return dispatcher.Dispatch(message, messageHandlerContext);
         }
     }

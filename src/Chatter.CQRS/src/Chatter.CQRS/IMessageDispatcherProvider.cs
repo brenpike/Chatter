@@ -1,17 +1,15 @@
-﻿using System;
-
-namespace Chatter.CQRS
+﻿namespace Chatter.CQRS
 {
+    /// <summary>
+    /// Creates an <see cref="IMessageDispatcher"/>
+    /// </summary>
     public interface IMessageDispatcherProvider
     {
         /// <summary>
-        /// The type of message for which a message dispatcher must be provided
+        /// Gets an <see cref="IDispatchMessages"/> based on the <typeparamref name="TMessage"/> provided.
         /// </summary>
-        Type DispatchType { get; }
-        /// <summary>
-        /// Gets an <see cref="IMessageDispatcher"/>
-        /// </summary>
-        /// <returns>The message dispatcher for type <see cref="DispatchType"/></returns>
-        IMessageDispatcher GetDispatcher();
+        /// <typeparam name="TMessage">The type of <see cref="IDispatchMessages"/> to get.</typeparam>
+        /// <returns>A message dispatcher</returns>
+        IDispatchMessages GetDispatcher<TMessage>() where TMessage : IMessage;
     }
 }

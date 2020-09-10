@@ -21,7 +21,7 @@ namespace Microsoft.Extensions.DependencyInjection
             var builder = ChatterBuilder.Create(services);
 
             builder.Services.AddMessageHandlers(assemblies);
-            builder.Services.AddSingleton<IMessageDispatcherFactory, MessageDispatcherFactory>();
+            builder.Services.AddSingleton<IMessageDispatcherProvider, MessageDispatcherProvider>();
             builder.Services.AddInMemoryMessageDispatchers();
             builder.Services.AddInMemoryQueryDispatcher();
             builder.Services.AddQueryHandlers(assemblies);
@@ -86,8 +86,8 @@ namespace Microsoft.Extensions.DependencyInjection
         public static IServiceCollection AddInMemoryMessageDispatchers(this IServiceCollection services)
         {
             services.AddSingleton<IMessageDispatcher, MessageDispatcher>();
-            services.AddSingleton<IMessageDispatcherProvider, CommandDispatcherProvider>();
-            services.AddSingleton<IMessageDispatcherProvider, EventDispatcherProvider>();
+            services.AddSingleton<IDispatchMessages, CommandDispatcher>();
+            services.AddSingleton<IDispatchMessages, EventDispatcher>();
             return services;
         }
 

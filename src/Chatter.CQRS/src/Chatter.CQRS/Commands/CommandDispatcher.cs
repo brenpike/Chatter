@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS.Context;
 using Microsoft.Extensions.DependencyInjection;
+using System;
 using System.Threading.Tasks;
 
 namespace Chatter.CQRS.Commands
@@ -7,7 +8,7 @@ namespace Chatter.CQRS.Commands
     /// <summary>
     /// An <see cref="IMessageDispatcher"/> implementation to dispatch <see cref="ICommand"/> messages.
     /// </summary>
-    internal sealed class CommandDispatcher : IMessageDispatcher
+    internal sealed class CommandDispatcher : IDispatchMessages
     {
         private readonly IServiceScopeFactory _serviceFactory;
 
@@ -16,16 +17,7 @@ namespace Chatter.CQRS.Commands
             _serviceFactory = serviceFactory;
         }
 
-        /// <summary>
-        /// Dispatches an <see cref="ICommand"/> to its <see cref="IMessageHandler{TMessage}"/>.
-        /// </summary>
-        /// <typeparam name="TMessage">The type of command to be dispatched.</typeparam>
-        /// <param name="message">The command to be dispatched.</param>
-        /// <returns>An awaitable <see cref="Task"/></returns>
-        public async Task Dispatch<TMessage>(TMessage message) where TMessage : IMessage
-        {
-            await Dispatch(message, new MessageHandlerContext()).ConfigureAwait(false);
-        }
+        public Type DispatchType => typeof(ICommand);
 
         /// <summary>
         /// Dispatches an <see cref="ICommand"/> to its <see cref="IMessageHandler{TMessage}"/> with additional context.
