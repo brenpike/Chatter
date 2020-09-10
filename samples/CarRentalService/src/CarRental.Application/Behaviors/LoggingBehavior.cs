@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace CarRental.Application.Behaviors
 {
-    public class LoggingBehavior : IMessageHandlerPipelineStep
+    public class LoggingBehavior : ICommandBehavior
     {
         private readonly ILogger<LoggingBehavior> _logger;
 
@@ -15,7 +15,7 @@ namespace CarRental.Application.Behaviors
             _logger = logger;
         }
 
-        public async Task Handle<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext, StepHandler next) where TMessage : IMessage
+        public async Task Handle<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) where TMessage : IMessage
         {
             _logger.LogInformation("Start handler");
             await next();

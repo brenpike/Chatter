@@ -28,11 +28,14 @@ namespace CarRental.Api
             });
 
             services.AddChatterCqrs(typeof(BookRentalCarCommand))
-                    //.AddPipelines(builder =>
-                    //{
-                    //    builder.WithStep<LoggingBehavior>();
-                    //})
-                    .AddMessageBrokers()
+                    .AddPipelines(builder =>
+                    {
+                        builder.WithStep<LoggingBehavior>();
+                    })
+                    .AddMessageBrokers((options) =>
+                    {
+                        options.AddReliabilityOptions(Configuration);
+                    }, typeof(BookRentalCarCommand))
                     .AddAzureServiceBus(options =>
                     {
                         options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");

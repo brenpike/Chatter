@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS.Context;
+using Chatter.CQRS.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Threading.Tasks;
@@ -28,11 +29,18 @@ namespace Chatter.CQRS.Commands
         /// <returns>An awaitable <see cref="Task"/></returns>
         /// <remarks><see cref="ICommand"/> can only have a single handler that will be invoked when 
         /// the <paramref name="message"/> is dispatched by <see cref="IMessageDispatcher"/>.</remarks>
-        public async Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
+        public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
             using var scope = _serviceFactory.CreateScope();
             var handler = scope.ServiceProvider.GetRequiredService<IMessageHandler<TMessage>>();
-            await handler.Handle(message, messageHandlerContext).ConfigureAwait(false);
+            var pipeline = scope.ServiceProvider.GetService<ICommandBehaviorPipeline>();
+
+            if (pipeline == null)
+            {
+                return handler.Handle(message, messageHandlerContext);
+            }
+
+            return pipeline.Execute(message, messageHandlerContext, handler);
         }
     }
 }

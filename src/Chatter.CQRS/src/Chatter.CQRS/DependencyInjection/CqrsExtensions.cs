@@ -42,8 +42,6 @@ namespace Microsoft.Extensions.DependencyInjection
                 return chatterBuilder;
             }
 
-            chatterBuilder.Services.Decorate(typeof(IMessageHandler<>), typeof(MessageHandlerPipeline<>));
-
             pipelineBulder?.Invoke(pipeline);
 
             return chatterBuilder;
@@ -86,6 +84,9 @@ namespace Microsoft.Extensions.DependencyInjection
         public static IServiceCollection AddInMemoryMessageDispatchers(this IServiceCollection services)
         {
             services.AddSingleton<IMessageDispatcher, MessageDispatcher>();
+
+            services.AddSingleton<ICommandBehaviorPipeline, CommandBehaviorPipeline>();
+
             services.AddSingleton<IDispatchMessages, CommandDispatcher>();
             services.AddSingleton<IDispatchMessages, EventDispatcher>();
             return services;

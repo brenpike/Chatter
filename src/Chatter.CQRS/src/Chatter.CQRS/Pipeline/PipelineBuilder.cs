@@ -11,9 +11,9 @@ namespace Chatter.CQRS.Pipeline
             _services = services;
         }
 
-        public PipelineBuilder WithStep<TPipelineStep>() where TPipelineStep : class, IMessageHandlerPipelineStep
+        public PipelineBuilder WithStep<TPipelineStep>() where TPipelineStep : class, ICommandBehavior
         {
-            _services.AddTransient<IMessageHandlerPipelineStep, TPipelineStep>();
+            _services.AddTransient<ICommandBehavior, TPipelineStep>();
             return this;
         }
     }
