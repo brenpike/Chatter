@@ -1,8 +1,8 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Context;
+using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Threading.Tasks;
@@ -12,25 +12,19 @@ namespace Chatter.MessageBrokers.Saga
     internal class SagaOrchestrator : ISagaOrchestrator
     {
         private readonly ISagaPersister _sagaPersister;
-        private readonly IBodyConverterFactory _bodyConverterFactory;
-        private readonly IRouteBrokeredMessages _messageDestinationRouter;
         private readonly ISagaInitializer _sagaInitializer;
         private readonly ISagaOptionsProvider _sagaOptionsProvider;
-        private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
+        private readonly IBrokeredMessageDispatcher _brokeredMessageDispatcher;
 
         public SagaOrchestrator(ISagaPersister sagaPersister,
-                                IBodyConverterFactory bodyConverterFactory,
-                                IRouteBrokeredMessages messageDestinationRouter,
                                 ISagaInitializer sagaInitializer,
                                 ISagaOptionsProvider sagaOptionsProvider,
-                                IBrokeredMessageDetailProvider brokeredMessageDetailProvider)
+                                IBrokeredMessageDispatcher brokeredMessageDispatcher)
         {
             _sagaPersister = sagaPersister ?? throw new ArgumentNullException(nameof(sagaPersister));
-            _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
-            _messageDestinationRouter = messageDestinationRouter ?? throw new ArgumentNullException(nameof(messageDestinationRouter));
             _sagaInitializer = sagaInitializer ?? throw new ArgumentNullException(nameof(sagaInitializer));
             _sagaOptionsProvider = sagaOptionsProvider ?? throw new ArgumentNullException(nameof(sagaOptionsProvider));
-            _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
+            _brokeredMessageDispatcher = brokeredMessageDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageDispatcher));
         }
 
         public async Task Complete<TMessage>(Func<TMessage, IMessageHandlerContext, Task> sagaStepHandler, ISagaMessage message, IMessageBrokerContext context) where TMessage : IMessage
@@ -82,32 +76,20 @@ namespace Chatter.MessageBrokers.Saga
         {
             SagaContext saga = await _sagaInitializer.Initialize(message, context).ConfigureAwait(false);
 
-            OutboundBrokeredMessage outbound = CreateSagaInputMessage(message, saga.SagaId, saga.Status.Status);
-            await _messageDestinationRouter.Route(outbound, null).ConfigureAwait(false);
+            var options = _sagaOptionsProvider.GetOptionsFor(message);
+
+            var sendOptions = new SendOptions()
+                .WithSubject(options.Description)
+                .WithTimeToLiveInMinutes(options.MaxSagaDurationInMinutes)
+                .WithTransactionMode(options.TransactionMode)
+                .WithSagaId(saga.SagaId)
+                .WithSagaStatus(saga.Status.Status);
+
+            await _brokeredMessageDispatcher.Send(message, options: sendOptions).ConfigureAwait(false);
 
             saga.InProgress();
 
             await _sagaPersister.Persist(saga, message, context).ConfigureAwait(false);
-        }
-
-        private OutboundBrokeredMessage CreateSagaInputMessage<TSagaMessage>(TSagaMessage message, string sagaId, SagaStatusEnum sagaStatus)
-            where TSagaMessage : ISagaMessage
-        {
-            var options = _sagaOptionsProvider.GetOptionsFor(message);
-            var transactionMode = options.TransactionMode;
-            var inputQueue = _brokeredMessageDetailProvider.GetMessageName(message.GetType());
-
-            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(options.SagaDataContentType);
-
-            var outbound = new OutboundBrokeredMessage(Guid.NewGuid().ToString(), message, inputQueue, bodyConverter);
-
-            outbound.ApplicationProperties[ApplicationProperties.Subject] = options.Description;
-            outbound.ApplicationProperties[ApplicationProperties.TimeToLive] = TimeSpan.FromMinutes(options.MaxSagaDurationInMinutes);
-            outbound.ApplicationProperties[ApplicationProperties.TransactionMode] = (byte)transactionMode;
-            outbound.ApplicationProperties[ApplicationProperties.SagaId] = sagaId;
-            outbound.ApplicationProperties[ApplicationProperties.SagaStatus] = (byte)sagaStatus;
-
-            return outbound;
         }
     }
 }

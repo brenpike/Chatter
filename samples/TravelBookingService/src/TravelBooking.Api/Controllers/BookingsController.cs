@@ -18,29 +18,6 @@ namespace TravelBooking.Api.Controllers
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         }
 
-        //[HttpPost]
-        //public async Task<IActionResult> BookTravel(int request)
-        //{
-        //    await Task.CompletedTask;
-        //    return Ok();
-        //}
-
-        //[HttpGet]
-        //[Route("{travelBookingId}")]
-        //public async Task<IActionResult> GetTravelBookingById(int travelBookingId)
-        //{
-        //    await Task.CompletedTask;
-        //    return Ok();
-        //}
-
-        //[HttpDelete]
-        //[Route("{travelBookingId}/cancel")]
-        //public async Task<IActionResult> CancelTravelBooking(int travelBookingId)
-        //{
-        //    await Task.CompletedTask;
-        //    return Ok();
-        //}
-
         [HttpPut("topology/create")]
         public async Task CreateTopology()
         {
@@ -62,21 +39,5 @@ namespace TravelBooking.Api.Controllers
             };
             await _dispatcher.Dispatch(tbc);
         }
-
-        //[HttpPut("routingslip/book")]
-        //public async Task BookTravelViaRoutingSlip([FromBody] tb.TravelBooking travelBooking)
-        //{
-        //    var tbc = new BookTravelViaOrchestrationCommand()
-        //    {
-        //        SagaData = travelBooking
-        //    };
-        //    await _dispatcher.Dispatch(tbc);
-        //}
-
-        //[HttpPut("choreography/book")]
-        //public async Task BookTravelViaSagaChoreography([FromBody] tb.TravelBooking travelBooking)
-        //{
-        //    await Task.CompletedTask;
-        //}
     }
 }

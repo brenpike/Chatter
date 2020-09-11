@@ -1,8 +1,6 @@
 ﻿using Chatter.CQRS.Events;
 using Chatter.MessageBrokers;
 using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace CarRental.Application.IntegrationEvents
 {

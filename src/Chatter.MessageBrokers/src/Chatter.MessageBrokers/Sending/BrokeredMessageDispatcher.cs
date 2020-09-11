@@ -54,14 +54,14 @@ namespace Chatter.MessageBrokers.Sending
             where TMessage : IMessage
             where TOptions : RoutingOptions, new()
         {
-            var destination = _brokeredMessageDetailProvider.GetMessageName<TMessage>();
+            var destination = _brokeredMessageDetailProvider.GetMessageName(message.GetType());
 
             if (string.IsNullOrWhiteSpace(destination))
             {
                 throw new ArgumentNullException(nameof(destination), $"Routing destination is required. Use {typeof(BrokeredMessageAttribute).Name} or overload that accepts 'destinationPath'");
             }
 
-            return this.Dispatch(message, _brokeredMessageDetailProvider.GetMessageName<TMessage>(), transactionContext, options);
+            return this.Dispatch(message, destination, transactionContext, options);
         }
 
         Task Dispatch<TMessage, TOptions>(TMessage message, string destinationPath, TransactionContext transactionContext, TOptions options)

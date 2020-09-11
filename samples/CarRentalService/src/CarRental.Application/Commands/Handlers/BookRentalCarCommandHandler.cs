@@ -2,6 +2,7 @@
 using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using Newtonsoft.Json;
 using System;
@@ -25,12 +26,12 @@ namespace CarRental.Application.Commands.Handlers
                 if (context is IMessageBrokerContext messageBrokerContext)
                 {
                     Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"Received '{message.GetType().Name}' event from message broker. Message Id: '{messageBrokerContext.BrokeredMessage.MessageId}', Subscription: '{messageBrokerContext.BrokeredMessage.MessageReceiverPath}'");
+                    Console.WriteLine($"Received '{message.GetType().Name}' command from message broker. Message Id: '{messageBrokerContext.BrokeredMessage.MessageId}', Subscription: '{messageBrokerContext.BrokeredMessage.MessageReceiverPath}'");
                 }
                 else
                 {
                     Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"Received '{message.GetType().Name}' event from local dispatcher");
+                    Console.WriteLine($"Received '{message.GetType().Name}' command from local dispatcher");
                 }
                 Console.WriteLine($"Command Data: {JsonConvert.SerializeObject(message)}");
             }
@@ -44,14 +45,20 @@ namespace CarRental.Application.Commands.Handlers
             }
 
             //save the CarRental aggregate to persistance
-            //saving the aggregate would typically create and dispastch the domain events, but since no aggregate exsits in this example, creating and firing domain event below
+            //saving the aggregate would typically create and dispastch the domain events, but since no aggregate exists in this example
+            //creating and firing domain event below
             var e = new RentalCarBookedEvent()
             {
                 Id = message.Car.Id,
                 ReservationId = message.Car.ReservationId
             };
 
-            await _brokeredMessageDispatcher.Publish(e);
+            var publishOptions = new PublishOptions()
+            {
+                MessageId = Guid.NewGuid().ToString()
+            };
+
+            await _brokeredMessageDispatcher.Publish(e, options: publishOptions);
 
             lock (Console.Out)
             {

@@ -1,3 +1,4 @@
+using CarRental.Application.Behaviors;
 using CarRental.Application.Commands;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -27,7 +28,15 @@ namespace CarRental.Api
             });
 
             services.AddChatterCqrs(typeof(BookRentalCarCommand))
-                    .AddMessageBrokers()
+                    .AddCommandPipeline(builder =>
+                    {
+                        builder.WithBehavior<LoggingBehavior>()
+                               .WithBehavior<AnotherLoggingBehavior>();
+                    })
+                    .AddMessageBrokers((options) =>
+                    {
+                        options.AddReliabilityOptions(Configuration);
+                    }, typeof(BookRentalCarCommand))
                     .AddAzureServiceBus(options =>
                     {
                         options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");

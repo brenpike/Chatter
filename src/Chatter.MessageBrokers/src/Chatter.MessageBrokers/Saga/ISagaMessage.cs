@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS;
+using Chatter.CQRS.Commands;
 using System;
 
 namespace Chatter.MessageBrokers.Saga
@@ -23,7 +24,7 @@ namespace Chatter.MessageBrokers.Saga
 
     }
 
-    public interface ISagaMessage : IMessage
+    public interface ISagaMessage : ICommand//IMessage
     {
         Type SagaDataType { get; }
     }

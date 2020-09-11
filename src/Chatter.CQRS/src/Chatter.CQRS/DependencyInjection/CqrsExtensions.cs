@@ -2,6 +2,7 @@
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.CQRS.Events;
+using Chatter.CQRS.Pipeline;
 using Chatter.CQRS.Queries;
 using Scrutor;
 using System;
@@ -20,11 +21,30 @@ namespace Microsoft.Extensions.DependencyInjection
             var builder = ChatterBuilder.Create(services);
 
             builder.Services.AddMessageHandlers(assemblies);
-            builder.Services.AddSingleton<IMessageDispatcherFactory, MessageDispatcherFactory>();
+            builder.Services.AddSingleton<IMessageDispatcherProvider, MessageDispatcherProvider>();
             builder.Services.AddInMemoryMessageDispatchers();
             builder.Services.AddInMemoryQueryDispatcher();
             builder.Services.AddQueryHandlers(assemblies);
             return builder;
+        }
+
+        public static PipelineBuilder CreatePipelineBuiler(this IServiceCollection services)
+        {
+            return new PipelineBuilder(services);
+        }
+
+        public static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<PipelineBuilder> pipelineBulder)
+        {
+            var pipeline = chatterBuilder.Services.CreatePipelineBuiler();
+
+            if (pipeline is null)
+            {
+                return chatterBuilder;
+            }
+
+            pipelineBulder?.Invoke(pipeline);
+
+            return chatterBuilder;
         }
 
         public static IServiceCollection AddMessageHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
@@ -64,8 +84,11 @@ namespace Microsoft.Extensions.DependencyInjection
         public static IServiceCollection AddInMemoryMessageDispatchers(this IServiceCollection services)
         {
             services.AddSingleton<IMessageDispatcher, MessageDispatcher>();
-            services.AddSingleton<IMessageDispatcherProvider, CommandDispatcherProvider>();
-            services.AddSingleton<IMessageDispatcherProvider, EventDispatcherProvider>();
+
+            services.AddSingleton<ICommandBehaviorPipeline, CommandBehaviorPipeline>();
+
+            services.AddSingleton<IDispatchMessages, CommandDispatcher>();
+            services.AddSingleton<IDispatchMessages, EventDispatcher>();
             return services;
         }
 

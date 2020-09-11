@@ -10,7 +10,7 @@ namespace Microsoft.Extensions.DependencyInjection
     {
         public static IChatterBuilder AddSagas(this IChatterBuilder builder)
         {
-            builder.Services.AddSingleton<IMessageDispatcherProvider, SagaMessageDispatcherProvider>();
+            builder.Services.AddSingleton<IDispatchMessages, SagaMessageDispatcher>();
             builder.Services.AddSingleton<ISagaPersister, InMemorySagaPersister>();
             builder.Services.AddSingleton<ISagaOrchestrator, SagaOrchestrator>();
             builder.Services.AddSingleton<ISagaInitializer, SagaInitializer>();

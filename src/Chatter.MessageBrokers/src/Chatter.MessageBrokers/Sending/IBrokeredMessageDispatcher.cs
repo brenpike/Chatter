@@ -1,5 +1,4 @@
-﻿using Chatter.CQRS;
-using Chatter.CQRS.Commands;
+﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Routing.Options;
@@ -7,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Sending
 {
-    public interface IBrokeredMessageDispatcher : IExternalDispatcher
+    public interface IBrokeredMessageDispatcher
     {
         /// <summary>
         /// Sends a command to an external receiver specified by <paramref name="destinationPath"/>./>
