@@ -53,15 +53,44 @@ namespace Microsoft.Extensions.DependencyInjection
             return AddMessageHandlers(services, assemblies);
         }
 
-        static IServiceCollection AddMessageHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        public static IServiceCollection AddMessageHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        {
+            AddCommandHandlers(services, assemblies);
+            AddEventHandlers(services, assemblies);
+            return services;
+        }
+
+        static IServiceCollection AddEventHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
-                   .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>)))
+                   .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
+                        .Where(handler => FilterMessageHandlerByType(handler, typeof(IEvent))))
                    .UsingRegistrationStrategy(RegistrationStrategy.Append)
                    .AsImplementedInterfaces()
                    .WithTransientLifetime());
             return services;
+        }
+
+        static IServiceCollection AddCommandHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        {
+            services.Scan(s =>
+               s.FromAssemblies(assemblies)
+                   .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
+                        .Where(handler => FilterMessageHandlerByType(handler, typeof(ICommand))))
+                   .UsingRegistrationStrategy(RegistrationStrategy.Throw)
+                   .AsImplementedInterfaces()
+                   .WithTransientLifetime());
+            return services;
+        }
+
+        static bool FilterMessageHandlerByType(Type handler, Type filterType)
+        {
+            return handler.GetTypeInfo().ImplementedInterfaces
+                .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IMessageHandler<>))
+                    .SingleOrDefault().GetGenericArguments()
+                        .SingleOrDefault().GetTypeInfo().ImplementedInterfaces
+                            .Any(t => t == filterType);
         }
 
         public static IServiceCollection AddQueryHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
