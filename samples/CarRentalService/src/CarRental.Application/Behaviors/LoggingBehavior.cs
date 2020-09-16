@@ -6,16 +6,16 @@ using System.Threading.Tasks;
 
 namespace CarRental.Application.Behaviors
 {
-    public class LoggingBehavior : ICommandBehavior
+    public class LoggingBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : IMessage
     {
-        private readonly ILogger<LoggingBehavior> _logger;
+        private readonly ILogger<LoggingBehavior<TMessage>> _logger;
 
-        public LoggingBehavior(ILogger<LoggingBehavior> logger)
+        public LoggingBehavior(ILogger<LoggingBehavior<TMessage>> logger)
         {
             _logger = logger;
         }
 
-        public async Task Handle<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) where TMessage : IMessage
+        public async Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next)
         {
             _logger.LogInformation($"Executed '{this.GetType().Name}'. Pre-delegate.");
             await next();
