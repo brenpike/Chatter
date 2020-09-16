@@ -114,7 +114,13 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             services.AddSingleton<IMessageDispatcher, MessageDispatcher>();
 
-            services.AddSingleton<ICommandBehaviorPipeline, CommandBehaviorPipeline>();
+            //TODO: move this
+            services.Scan(s =>
+                    s.FromApplicationDependencies()
+                    .AddClasses(c => c.AssignableTo(typeof(ICommandBehaviorPipeline<>)))
+                    .UsingRegistrationStrategy(RegistrationStrategy.Throw)
+                    .AsImplementedInterfaces()
+                    .WithTransientLifetime());
 
             services.AddSingleton<IDispatchMessages, CommandDispatcher>();
             services.AddSingleton<IDispatchMessages, EventDispatcher>();

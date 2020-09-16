@@ -33,7 +33,7 @@ namespace Chatter.CQRS.Commands
         {
             using var scope = _serviceFactory.CreateScope();
             var handler = scope.ServiceProvider.GetRequiredService<IMessageHandler<TMessage>>();
-            var pipeline = scope.ServiceProvider.GetService<ICommandBehaviorPipeline>();
+            var pipeline = scope.ServiceProvider.GetService<ICommandBehaviorPipeline<TMessage>>();
 
             if (pipeline == null)
             {

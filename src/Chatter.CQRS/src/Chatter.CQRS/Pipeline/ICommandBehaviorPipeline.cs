@@ -3,8 +3,8 @@ using System.Threading.Tasks;
 
 namespace Chatter.CQRS.Pipeline
 {
-    public interface ICommandBehaviorPipeline
+    public interface ICommandBehaviorPipeline<TMessage> where TMessage : IMessage
     {
-        Task Execute<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext, IMessageHandler<TMessage> messageHandler) where TMessage : IMessage;
+        Task Execute(TMessage message, IMessageHandlerContext messageHandlerContext, IMessageHandler<TMessage> messageHandler);
     }
 }
