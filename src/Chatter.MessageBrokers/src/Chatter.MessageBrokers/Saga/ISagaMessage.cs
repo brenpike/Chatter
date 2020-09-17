@@ -24,7 +24,7 @@ namespace Chatter.MessageBrokers.Saga
 
     }
 
-    public interface ISagaMessage : ICommand//IMessage
+    public interface ISagaMessage : ICommand
     {
         Type SagaDataType { get; }
     }

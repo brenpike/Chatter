@@ -21,10 +21,12 @@ namespace Microsoft.Extensions.DependencyInjection
             var builder = ChatterBuilder.Create(services);
 
             builder.Services.AddMessageHandlers(assemblies);
+            builder.Services.AddQueryHandlers(assemblies);
+
             builder.Services.AddSingleton<IMessageDispatcherProvider, MessageDispatcherProvider>();
+
             builder.Services.AddInMemoryMessageDispatchers();
             builder.Services.AddInMemoryQueryDispatcher();
-            builder.Services.AddQueryHandlers(assemblies);
             return builder;
         }
 
@@ -42,6 +44,13 @@ namespace Microsoft.Extensions.DependencyInjection
                 return chatterBuilder;
             }
 
+            chatterBuilder.Services.Scan(s =>
+                                s.FromApplicationDependencies() //TODO: do we need to use marker types?
+                                .AddClasses(c => c.AssignableTo(typeof(ICommandBehaviorPipeline<>)))
+                                .UsingRegistrationStrategy(RegistrationStrategy.Throw)
+                                .AsImplementedInterfaces()
+                                .WithTransientLifetime());
+
             pipelineBulder?.Invoke(pipeline);
 
             return chatterBuilder;
@@ -53,15 +62,44 @@ namespace Microsoft.Extensions.DependencyInjection
             return AddMessageHandlers(services, assemblies);
         }
 
-        static IServiceCollection AddMessageHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        public static IServiceCollection AddMessageHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        {
+            AddCommandHandlers(services, assemblies);
+            AddEventHandlers(services, assemblies);
+            return services;
+        }
+
+        static IServiceCollection AddEventHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
-                   .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>)))
+                   .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
+                        .Where(handler => FilterMessageHandlerByType(handler, typeof(IEvent))))
                    .UsingRegistrationStrategy(RegistrationStrategy.Append)
                    .AsImplementedInterfaces()
                    .WithTransientLifetime());
             return services;
+        }
+
+        static IServiceCollection AddCommandHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        {
+            services.Scan(s =>
+               s.FromAssemblies(assemblies)
+                   .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
+                        .Where(handler => FilterMessageHandlerByType(handler, typeof(ICommand))))
+                   .UsingRegistrationStrategy(RegistrationStrategy.Throw)
+                   .AsImplementedInterfaces()
+                   .WithTransientLifetime());
+            return services;
+        }
+
+        static bool FilterMessageHandlerByType(Type handler, Type filterType)
+        {
+            return handler.GetTypeInfo().ImplementedInterfaces
+                .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IMessageHandler<>))
+                    .SingleOrDefault().GetGenericArguments()
+                        .SingleOrDefault().GetTypeInfo().ImplementedInterfaces
+                            .Any(t => t == filterType);
         }
 
         public static IServiceCollection AddQueryHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
@@ -84,9 +122,6 @@ namespace Microsoft.Extensions.DependencyInjection
         public static IServiceCollection AddInMemoryMessageDispatchers(this IServiceCollection services)
         {
             services.AddSingleton<IMessageDispatcher, MessageDispatcher>();
-
-            services.AddSingleton<ICommandBehaviorPipeline, CommandBehaviorPipeline>();
-
             services.AddSingleton<IDispatchMessages, CommandDispatcher>();
             services.AddSingleton<IDispatchMessages, EventDispatcher>();
             return services;

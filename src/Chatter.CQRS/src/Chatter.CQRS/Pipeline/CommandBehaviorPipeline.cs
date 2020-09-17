@@ -6,16 +6,16 @@ using System.Threading.Tasks;
 
 namespace Chatter.CQRS.Pipeline
 {
-    public class CommandBehaviorPipeline : ICommandBehaviorPipeline
+    internal class CommandBehaviorPipeline<TMessage> : ICommandBehaviorPipeline<TMessage> where TMessage : IMessage
     {
-        private readonly IEnumerable<ICommandBehavior> _behaviors;
+        private readonly IEnumerable<ICommandBehavior<TMessage>> _behaviors;
 
-        public CommandBehaviorPipeline(IEnumerable<ICommandBehavior> behaviors)
+        public CommandBehaviorPipeline(IEnumerable<ICommandBehavior<TMessage>> behaviors)
         {
             _behaviors = behaviors ?? throw new ArgumentNullException(nameof(behaviors));
         }
 
-        public Task Execute<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext, IMessageHandler<TMessage> messageHandler) where TMessage : IMessage
+        public Task Execute(TMessage message, IMessageHandlerContext messageHandlerContext, IMessageHandler<TMessage> messageHandler)
         {
             Task theHandler() => messageHandler.Handle(message, messageHandlerContext);
 
