@@ -20,6 +20,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
         private readonly ILogger<ServiceBusReceiver<TMessage>> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
+        private readonly int _maxConcurrentCalls = 1;
         MessageReceiver _innerReceiver;
 
         public ServiceBusReceiver(ServiceBusOptions serviceBusConfiguration,
@@ -37,6 +38,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
+            _maxConcurrentCalls = serviceBusConfiguration.MaxConcurrentCalls;
         }
 
         /// <summary>
@@ -105,7 +107,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             var messageHandlerOptions = new MessageHandlerOptions(HandleMessageException)
             {
                 AutoComplete = false,
-                MaxConcurrentCalls = 1 //TODO: config
+                MaxConcurrentCalls = _maxConcurrentCalls
             };
 
             this.InnerReceiver.RegisterMessageHandler(async (msg, receivePumpToken) =>

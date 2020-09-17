@@ -52,26 +52,6 @@ namespace Chatter.MessageBrokers.Context
             this.BrokeredMessage.WithFailureDescription(errorContext.ErrorDescription);
         }
 
-        //TODO: agree on guiding principals:
-        //      1) MessageBrokerContext: 
-        //          a) relaying context data to internal or external dispatchers
-        //          b) providing methods that take TMessage instead of context specific params and outboundbrokeredmessage/inboundbrokeredmessage
-        //      2) BrokeredMessageDispatcher:
-        //          a) contains methods that require context from MessageBrokerContext as parameters along with TMessage
-        //          b) simply forwards all routing requests to their respectived routers, i.e., IForwardRouter, compensate, replyTo, send, publish, etc.
-        //          c) aggreagates all routing operations in a single class so it can be accessed by MessageBrokerContext
-        //      3) Strongly typed routers (i.e., ReplyToRouter, ForwardingRouter, CompensateRouter) -> Need to create SendRouter and PublishRouter
-        //          a) accept their own strongly typed IRoutingOptions
-        //          b) apply their IRoutingOptions accordingly
-        //          c) execute any router specific business logic (i.e., clearing replyto headers, setting compensate details/desc, etc.)
-        //          d) ultimately calls IRoutesMessages.Route under the hood.
-        //      4) IRouteMessages:
-        //          a) core route implementation
-        //          b) can accepted TMessage or OutboundBrokeredMessage
-        //          c) ultimately the OutboundBrokeredMessage overload is called
-        //          d) TMessage methods accept RoutingOptions for the purpose of creating OutboundBrokeredMessage.
-        //             if called directly no IRoutingOption specific logic will be executed
-
         public Task Send<TMessage>(TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand 
             => this.ExternalDispatcher.Send(message, destinationPath, this.GetTransactionContext(), options);
 

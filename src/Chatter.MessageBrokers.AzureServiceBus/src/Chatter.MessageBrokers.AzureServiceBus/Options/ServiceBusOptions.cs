@@ -13,6 +13,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public string ConnectionString { get; set; }
         public TransportType TransportType { get; set; } = TransportType.AmqpWebSockets;
         public ReceiveMode ReceiveMode { get; set; } = ReceiveMode.PeekLock;
+        public int MaxConcurrentCalls { get; set; } = 1;
         public RetryPolicyConfiguation RetryPolicy { get; set; }
 
         [JsonIgnore]

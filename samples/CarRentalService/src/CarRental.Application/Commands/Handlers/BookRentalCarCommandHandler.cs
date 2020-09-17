@@ -53,6 +53,7 @@ namespace CarRental.Application.Commands.Handlers
                 ReservationId = message.Car.ReservationId
             };
 
+            //optional
             var publishOptions = new PublishOptions()
             {
                 MessageId = Guid.NewGuid().ToString()
