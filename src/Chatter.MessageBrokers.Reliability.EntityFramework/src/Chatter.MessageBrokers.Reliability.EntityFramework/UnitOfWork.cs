@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework
 {
-    public class UnitOfWork<TContext> : IUnitOfWork where TContext : DbContext
+    internal sealed class UnitOfWork<TContext> : IUnitOfWork where TContext : DbContext
     {
         private readonly TContext _context;
         private readonly ILogger<UnitOfWork<TContext>> _logger;
@@ -25,22 +25,28 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         {
             if (!HasActiveTransaction)
             {
+                _logger.LogTrace($"Cannot complete unit of work. There is not active transaction.");
                 return;
             }
 
+            var transaction = CurrentTransaction;
             await _context.SaveChangesAsync();
-            await CurrentTransaction.CommitAsync();
+            _logger.LogTrace($"Change saved for context '{typeof(TContext).Name}'. Transaction id '{transaction.TransactionId}'.");
+            await transaction.CommitAsync();
+            _logger.LogTrace($"Transaction committed for context '{typeof(TContext).Name}'. Transaction id '{transaction.TransactionId}'.");
         }
 
         public async ValueTask<IPersistanceTransaction> BeginAsync()
         {
             if (HasActiveTransaction)
             {
+                _logger.LogTrace($"Cannot create new unit of work as a the current unit of work has not completed.");
                 return CurrentTransaction;
             }
 
             var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
-            return PersistanceTransaction.Create(transaction);
+            _logger.LogTrace($"Unit of work created for context '{typeof(TContext).Name}' with transaction id '{transaction.TransactionId}'");
+            return CurrentTransaction;
         }
     }
 }

@@ -80,7 +80,8 @@ namespace Microsoft.Extensions.DependencyInjection
 
             if (options?.Reliability?.OutboxEnabled ?? false)
             {
-                builder.Services.AddSingleton<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
+                //TODO: wire up UofWBehavior
+                builder.Services.AddTransient<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
                 builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
             }
             else
@@ -91,8 +92,8 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.Decorate<IMessageDispatcher, RoutingSlipMessageDispatcherDecorator>(); //TODO: we'll only want to add this if routing slips are added
             builder.AddReceivers(assemblies);
 
-            builder.Services.AddSingleton<IBodyConverterFactory, BodyConverterFactory>();
-            builder.Services.AddSingleton<IBrokeredMessageBodyConverter, JsonBodyConverter>();
+            builder.Services.AddScoped<IBodyConverterFactory, BodyConverterFactory>();
+            builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonBodyConverter>();
 
             return builder;
         }

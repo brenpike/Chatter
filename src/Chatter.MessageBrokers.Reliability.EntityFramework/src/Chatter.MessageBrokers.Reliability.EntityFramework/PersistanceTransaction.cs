@@ -10,7 +10,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         private IDbContextTransaction _dbContextTransaction;
 
         private PersistanceTransaction(IDbContextTransaction dbContextTransaction) 
-            => _dbContextTransaction = dbContextTransaction ?? throw new ArgumentNullException(nameof(dbContextTransaction));
+            => _dbContextTransaction = dbContextTransaction;
 
         public static PersistanceTransaction Create(IDbContextTransaction dbContextTransaction)
             => new PersistanceTransaction(dbContextTransaction);

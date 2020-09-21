@@ -11,7 +11,6 @@ namespace Microsoft.Extensions.DependencyInjection
         public static PipelineBuilder WithUnitOfWorkBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) where TContext : DbContext
         {
             services.AddScoped<IUnitOfWork, UnitOfWork<TContext>>();
-            services.AddScoped<ITransactionalBrokeredMessageOutbox, TransactionalOutbox<TContext>>();
             pipelineBuilder.WithBehavior(typeof(UnitOfWorkBehavior<>));
 
             return pipelineBuilder;
@@ -20,6 +19,7 @@ namespace Microsoft.Extensions.DependencyInjection
         public static PipelineBuilder WithInboxBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) where TContext : DbContext
         {
             pipelineBuilder.WithUnitOfWorkBehavior<TContext>(services);
+            services.AddScoped<ITransactionalBrokeredMessageOutbox, TransactionalOutbox<TContext>>();
             pipelineBuilder.WithBehavior(typeof(InboxBehavior<>));
 
             return pipelineBuilder;
