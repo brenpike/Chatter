@@ -80,7 +80,6 @@ namespace Microsoft.Extensions.DependencyInjection
 
             if (options?.Reliability?.OutboxEnabled ?? false)
             {
-                builder.Services.Decorate<IMessageDispatcher, TransactionalOutboxMessageDispatcherDecorator>();
                 builder.Services.AddSingleton<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
                 builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
             }

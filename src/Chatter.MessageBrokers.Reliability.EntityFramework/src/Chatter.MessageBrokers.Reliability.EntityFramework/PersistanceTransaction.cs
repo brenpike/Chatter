@@ -37,7 +37,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             GC.SuppressFinalize(this);
         }
 
-        protected virtual void Dispose(bool disposing)
+        void Dispose(bool disposing)
         {
             if (disposing)
             {
@@ -47,7 +47,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             _dbContextTransaction = null;
         }
 
-        protected virtual async ValueTask DisposeAsyncCore()
+        async ValueTask DisposeAsyncCore()
         {
             if (!(_dbContextTransaction is null))
             {
