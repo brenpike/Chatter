@@ -109,7 +109,7 @@ namespace Chatter.MessageBrokers.Reliability
             }
         }
 
-        public async Task Receive<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> messageReceiver)
+        public async Task ReceiveViaInbox<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> messageReceiver)
         {
             var id = messageBrokerContext.BrokeredMessage.MessageId;
 

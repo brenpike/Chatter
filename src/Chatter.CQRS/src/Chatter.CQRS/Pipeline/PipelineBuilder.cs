@@ -15,8 +15,6 @@ namespace Chatter.CQRS.Pipeline
             _services = services;
         }
 
-
-
         public PipelineBuilder WithBehavior<TCommandBehavior>() 
             => WithBehavior(typeof(TCommandBehavior));
 

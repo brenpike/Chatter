@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.Reliability
         {
             if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
             {
-                return _reliableBrokeredMessageProcessor.Receive(message, messageBrokerContext, () => _messageDispatcher.Dispatch(message, messageHandlerContext));
+                return _reliableBrokeredMessageProcessor.ReceiveViaInbox(message, messageBrokerContext, () => _messageDispatcher.Dispatch(message, messageHandlerContext));
             }
 
             return _messageDispatcher.Dispatch(message, messageHandlerContext);
