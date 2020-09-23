@@ -38,7 +38,7 @@ namespace Chatter.MessageBrokers.Sending
         /// <returns>An awaitable <see cref="Task"/></returns>
         Task Publish<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent;
         /// <summary>
-        /// Publishes an event to all external receivers which are subscribed. Publisher path must be configured using <see cref="BrokeredMessageAttribute"/>./>
+        /// Publishes an event to all external receivers which are subscribed. Publisher path must be configured using <see cref="BrokeredMessageAttribute"/>.
         /// </summary>
         /// <typeparam name="TMessage">The type of command to send.</typeparam>
         /// <param name="message">The command to be sent.</param>

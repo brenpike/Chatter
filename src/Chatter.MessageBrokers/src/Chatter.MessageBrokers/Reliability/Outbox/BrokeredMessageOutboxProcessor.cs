@@ -3,7 +3,9 @@ using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,19 +18,16 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         private readonly ILogger<BrokeredMessageOutboxProcessor> _logger;
         private readonly ReliabilityOptions _reliabilityOptions;
         private readonly IServiceScopeFactory _serviceScopeFactory;
-        private readonly IBodyConverterFactory _bodyConverterFactory;
 
         public BrokeredMessageOutboxProcessor(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher,
                                               ILogger<BrokeredMessageOutboxProcessor> logger,
                                               ReliabilityOptions reliabilityOptions,
-                                              IServiceScopeFactory serviceScopeFactory,
-                                              IBodyConverterFactory bodyConverterFactory)
+                                              IServiceScopeFactory serviceScopeFactory)
         {
             _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
             _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
-            _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -54,6 +53,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         {
             using var scope = _serviceScopeFactory.CreateScope();
             var outbox = scope.ServiceProvider.GetRequiredService<ITransactionalBrokeredMessageOutbox>();
+            var bodyConverterFactory = scope.ServiceProvider.GetRequiredService<IBodyConverterFactory>();
             var messages = await outbox.GetUnprocessedBrokeredMessagesFromOutbox();
 
             if (!messages.Any())
@@ -66,8 +66,15 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
             foreach (var message in messages.OrderBy(m => m.SentToOutboxAtUtc))
             {
-                message.ApplicationProperties.TryGetValue(ApplicationProperties.ContentType, out var contentType);
-                var outbound = message.AsOutboundBrokeredMessage(_bodyConverterFactory.CreateBodyConverter((string)contentType));
+                //TODO: clean up this mess with app properties. extension methods?
+                //TODO: move this processing piece to ITransactionalBrokeredMessageOutbox. Make it configurable to dispatch from outbox on demand, 
+                //      i.e., right after saving to outbox, we process from outbox.
+                //      once this is accomplished we can have separate config settings to have the timed processor running and the on-domand processor.
+                //      on demand processor needs to happen outside of transaction or can it happen in the same transaction? (prod different, as needs to be
+                //      committed first, duh)
+                var appProps = JsonConvert.DeserializeObject<IDictionary<string, object>>(message.StringifiedApplicationProperties);
+                appProps.TryGetValue(ApplicationProperties.ContentType, out var contentType);
+                var outbound = message.AsOutboundBrokeredMessage(bodyConverterFactory.CreateBodyConverter((string)contentType));
                 _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 
                 await _brokeredMessageInfrastructureDispatcher.Dispatch(outbound, null);

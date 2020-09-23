@@ -71,22 +71,22 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
 
-            builder.Services.AddTransient<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
+            builder.Services.AddScoped<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
 
-            builder.Services.AddSingleton<ITransactionalBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>();
-            builder.Services.AddTransient<IForwardMessages, ForwardingRouter>();
-            builder.Services.AddTransient<IRouteCompensationMessages, CompensateRouter>();
-            builder.Services.AddTransient<IReplyRouter, ReplyRouter>();
+            builder.Services.AddScoped<IForwardMessages, ForwardingRouter>();
+            builder.Services.AddScoped<IRouteCompensationMessages, CompensateRouter>();
+            builder.Services.AddScoped<IReplyRouter, ReplyRouter>();
 
             if (options?.Reliability?.OutboxEnabled ?? false)
             {
-                //TODO: wire up UofWBehavior
-                builder.Services.AddTransient<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
+                //TODO: need conditionally wire up in memory outbox. use successor pattern?
+                //TODO: wire up unit of work behavior when not using inbox, but using outbox
+                builder.Services.AddScoped<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
                 builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
             }
             else
             {
-                builder.Services.AddTransient<IRouteBrokeredMessages, BrokeredMessageRouter>();
+                builder.Services.AddScoped<IRouteBrokeredMessages, BrokeredMessageRouter>();
             }
 
             builder.Services.Decorate<IMessageDispatcher, RoutingSlipMessageDispatcherDecorator>(); //TODO: we'll only want to add this if routing slips are added
@@ -146,8 +146,12 @@ namespace Microsoft.Extensions.DependencyInjection
             var messages = FindBrokeredMessagesWithReceiversInAssembliesByType(assemblies);
             foreach (var receiverType in GetAllReceiverTypes(messages))
             {
-                builder.Services.AddSingleton(receiverType.Item1, receiverType.Item2);
-                builder.Services.AddSingleton(typeof(IHostedService), sp => sp.GetRequiredService(receiverType.Item1));
+                builder.Services.AddScoped(receiverType.Item1, receiverType.Item2);
+                builder.Services.AddSingleton(typeof(IHostedService), sp => 
+                { 
+                    using var scope = sp.CreateScope();
+                    return scope.ServiceProvider.GetRequiredService(receiverType.Item1);
+                });
             }
             return builder;
         }

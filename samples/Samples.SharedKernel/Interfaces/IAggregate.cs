@@ -1,7 +1,10 @@
-﻿namespace Samples.SharedKernel.Interfaces
+﻿using Chatter.CQRS.Events;
+using System.Collections.Generic;
+
+namespace Samples.SharedKernel.Interfaces
 {
-    public interface IAggregate<TId>
+    public interface IAggregate<TId> : IEntity<TId>
     {
-        TId Id { get; }
+        IEnumerable<IDomainEvent> DomainEvents { get; }
     }
 }

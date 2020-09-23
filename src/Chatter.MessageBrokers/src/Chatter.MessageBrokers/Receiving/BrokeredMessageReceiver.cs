@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Saga;
 using Chatter.MessageBrokers.Sending;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
@@ -22,8 +23,8 @@ namespace Chatter.MessageBrokers.Receiving
         private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
         private readonly IBrokeredMessageDispatcher _brokeredMessageDispatcher;
-        private readonly IMessageDispatcher _messageDispatcher;
         private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
+        private readonly IServiceScopeFactory _serviceFactory;
         TaskCompletionSource<bool> _completedReceivingSource = new TaskCompletionSource<bool>();
         private CancellationTokenSource _receiverCancellationSource;
 
@@ -37,15 +38,15 @@ namespace Chatter.MessageBrokers.Receiving
         public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
                                        IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
                                        IBrokeredMessageDispatcher brokeredMessageDispatcher,
-                                       IMessageDispatcher messageDispatcher,
-                                       ILogger<BrokeredMessageReceiver<TMessage>> logger)
+                                       ILogger<BrokeredMessageReceiver<TMessage>> logger,
+                                       IServiceScopeFactory serviceFactory)
         {
             _syncLock = new object();
             _infrastructureReceiver = infrastructureReceiver ?? throw new ArgumentNullException(nameof(infrastructureReceiver));
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
             _brokeredMessageDispatcher = brokeredMessageDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageDispatcher));
-            _messageDispatcher = messageDispatcher ?? throw new ArgumentNullException(nameof(messageDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }
 
         /// <summary>
@@ -88,7 +89,7 @@ namespace Chatter.MessageBrokers.Receiving
         {
             if (AutoReceiveMessages)
             {
-                return Start((message, context) => _messageDispatcher.Dispatch(message, context), CancellationToken.None);
+                return Start(stoppingToken);
             }
             else
             {
@@ -98,15 +99,11 @@ namespace Chatter.MessageBrokers.Receiving
 
         ///<inheritdoc/>
         public void StartReceiver()
-            => Start((message, context) => _messageDispatcher.Dispatch(message, context), CancellationToken.None);
-
-        ///<inheritdoc/>
-        public Task StartReceiver(Func<TMessage, IMessageBrokerContext, Task> receiverHandler, CancellationToken receiverTerminationToken)
-            => Start(receiverHandler, receiverTerminationToken);
+            => Start(CancellationToken.None);
 
         ///<inheritdoc/>
         public Task StartReceiver(CancellationToken receiverTerminationToken)
-            => Start((message, context) => _messageDispatcher.Dispatch(message, context), receiverTerminationToken);
+            => Start(receiverTerminationToken);
 
         ///<inheritdoc/>
         public void StopReceiver()
@@ -121,7 +118,7 @@ namespace Chatter.MessageBrokers.Receiving
             }
         }
 
-        Task Start(Func<TMessage, IMessageBrokerContext, Task> receiverHandler, CancellationToken receiverTerminationToken)
+        Task Start(CancellationToken receiverTerminationToken)
         {
             lock (_syncLock)
             {
@@ -147,8 +144,7 @@ namespace Chatter.MessageBrokers.Receiving
                         IsReceiving = false;
                     });
 
-                    _infrastructureReceiver.StartReceiver(receiverHandler,
-                                                          ReceiveInboundBrokeredMessage,
+                    _infrastructureReceiver.StartReceiver(ReceiveInboundBrokeredMessage,
                                                           receiverTerminationToken);
                     IsReceiving = true;
                     _logger.LogInformation($"'{GetType().FullName}' has started receiving messages.");
@@ -158,8 +154,7 @@ namespace Chatter.MessageBrokers.Receiving
         }
 
         async Task ReceiveInboundBrokeredMessage(MessageBrokerContext messageContext,
-                                                 TransactionContext transactionContext,
-                                                 Func<TMessage, IMessageBrokerContext, Task> brokeredMessagePayloadHandler)
+                                                 TransactionContext transactionContext)
         {
             try
             {
@@ -189,7 +184,10 @@ namespace Chatter.MessageBrokers.Receiving
                 messageContext.Container.Include(transactionContext);
 
                 var brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
-                await brokeredMessagePayloadHandler(brokeredMessagePayload, messageContext).ConfigureAwait(false);
+
+                using var scope = _serviceFactory.CreateScope();
+                var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
+                await dispatcher.Dispatch(brokeredMessagePayload, messageContext).ConfigureAwait(false);
 
                 inboundMessage.SuccessfullyReceived = true;
             }

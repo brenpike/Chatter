@@ -1,4 +1,6 @@
 ﻿using Chatter.MessageBrokers.Sending;
+using Newtonsoft.Json;
+using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Reliability.Outbox
 {
@@ -6,7 +8,8 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
     {
         internal static OutboundBrokeredMessage AsOutboundBrokeredMessage(this OutboxMessage outboxMessage, IBrokeredMessageBodyConverter brokeredMessageBodyConverter)
         {
-            return new OutboundBrokeredMessage(outboxMessage.MessageId, outboxMessage.Body, outboxMessage.ApplicationProperties, outboxMessage.Destination, brokeredMessageBodyConverter);
+            var appProps = JsonConvert.DeserializeObject<IDictionary<string, object>>(outboxMessage.StringifiedApplicationProperties);
+            return new OutboundBrokeredMessage(outboxMessage.MessageId, outboxMessage.Body, appProps, outboxMessage.Destination, brokeredMessageBodyConverter);
         }
     }
 }

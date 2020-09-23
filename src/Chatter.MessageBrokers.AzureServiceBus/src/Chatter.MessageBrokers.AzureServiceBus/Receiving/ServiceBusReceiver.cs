@@ -93,8 +93,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public void StartReceiver(Func<TMessage, IMessageBrokerContext, Task> receiverHandler,
-                                  Func<MessageBrokerContext, TransactionContext, Func<TMessage, IMessageBrokerContext, Task>, Task> brokeredMessageHandler,
+        public void StartReceiver(Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler,
                                   CancellationToken receiverTerminationToken)
         {
             receiverTerminationToken.Register(
@@ -133,7 +132,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         transactionContext.Container.Include(this.ServiceBusConnection);
                     }
 
-                    await brokeredMessageHandler(messageContext, transactionContext, receiverHandler).ConfigureAwait(false);
+                    await brokeredMessageHandler(messageContext, transactionContext).ConfigureAwait(false);
 
                     await this.InnerReceiver.CompleteAsync(msg.SystemProperties.LockToken).ConfigureAwait(false);
                 }

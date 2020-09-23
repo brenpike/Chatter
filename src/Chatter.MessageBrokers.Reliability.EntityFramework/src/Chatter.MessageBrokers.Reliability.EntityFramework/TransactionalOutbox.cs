@@ -5,6 +5,7 @@ using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -70,6 +71,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 return;
             }
 
+            //TODO: this whole class needs to be cleaned up and needs logging.
+
             try
             {
                 await handler();
@@ -117,8 +120,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             var outboxMessage = new OutboxMessage
             {
                 MessageId = outboundBrokeredMessage.MessageId,
-                ApplicationProperties = outboundBrokeredMessage.ApplicationProperties,
-                Body = outboundBrokeredMessage.Body,
+                StringifiedApplicationProperties = JsonConvert.SerializeObject(outboundBrokeredMessage.ApplicationProperties), //TODO: extension method for serializing/de-serializing app properties?
+                Body = outboundBrokeredMessage.Body, //TODO: need to save this?
                 Destination = outboundBrokeredMessage.Destination,
                 StringifiedMessage = outboundBrokeredMessage.Stringify(),
                 SentToOutboxAtUtc = DateTime.UtcNow,

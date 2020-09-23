@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Chatter.MessageBrokers.Context;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Data;
@@ -19,13 +20,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         public IPersistanceTransaction CurrentTransaction => PersistanceTransaction.Create(_context.Database.CurrentTransaction);
 
-        public bool HasActiveTransaction => CurrentTransaction != null;
+        public bool HasActiveTransaction => _context?.Database?.CurrentTransaction != null;
 
         public async Task CompleteAsync()
         {
             if (!HasActiveTransaction)
             {
-                _logger.LogTrace($"Cannot complete unit of work. There is not active transaction.");
+                _logger.LogTrace($"Cannot complete unit of work. There is no active transaction.");
                 return;
             }
 
@@ -44,9 +45,32 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 return CurrentTransaction;
             }
 
-            var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+            var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted).ConfigureAwait(false);
             _logger.LogTrace($"Unit of work created for context '{typeof(TContext).Name}' with transaction id '{transaction.TransactionId}'");
             return CurrentTransaction;
+        }
+
+        public async Task ExecuteAsync(Func<Task> operation, TransactionContext transactionContext)
+        {
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var transaction = await BeginAsync();
+                try
+                {
+                    transactionContext?.Container.Include(transaction);
+
+                    await operation();
+                    await CompleteAsync();
+                    _logger.LogTrace($"Unit of work completed successfully.");
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogTrace($"Error occurred during unit of work: {ex.Message}");
+                    throw;
+                }
+            });
         }
     }
 }

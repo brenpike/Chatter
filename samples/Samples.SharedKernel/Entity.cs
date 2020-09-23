@@ -1,6 +1,6 @@
 ﻿namespace Samples.SharedKernel
 {
-    public abstract class EntityBase<TId>
+    public abstract class Entity<TId>
     {
         public virtual TId Id { get; set; }
     }

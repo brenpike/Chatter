@@ -31,17 +31,16 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static IChatterBuilder AddAzureServiceBus(IChatterBuilder builder)
         {
-            builder.Services.AddSingleton<IBrokeredMessageDetailProvider, BrokeredMessageAttributeProvider>();
+            builder.Services.AddScoped<IBrokeredMessageDetailProvider, BrokeredMessageAttributeProvider>();
             builder.Services.AddSingleton<IBrokeredMessageInfrastructureDispatcher, ServiceBusMessageSender>();
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
-            //builder.Services.AddTransient<IRouteMessages<CompensationRoutingContext>, DeadLetterCompensationStrategy>();
 
             builder.Services.Scan(s =>
                         s.FromAssemblies(AppDomain.CurrentDomain.GetAssemblies())
                             .AddClasses(c => c.AssignableTo(typeof(IMessagingInfrastructureReceiver<>)))
                             .UsingRegistrationStrategy(RegistrationStrategy.Skip)
                             .AsImplementedInterfaces()
-                            .WithSingletonLifetime());
+                            .WithScopedLifetime());
 
             return builder;
         }
