@@ -10,20 +10,31 @@ namespace Microsoft.Extensions.DependencyInjection
 {
     public static class Extensions
     {
-        public static PipelineBuilder WithUnitOfWorkBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) where TContext : DbContext
+        public static PipelineBuilder WithUnitOfWorkBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) 
+            where TContext : DbContext
         {
             services.Replace<IBrokeredMessageOutbox, BrokeredMessageOutbox<TContext>>(ServiceLifetime.Scoped);
-            services.AddScoped<IUnitOfWork, UnitOfWork<TContext>>();
+            services.Replace<IUnitOfWork, UnitOfWork<TContext>>(ServiceLifetime.Scoped);
             pipelineBuilder.WithBehavior(typeof(UnitOfWorkBehavior<>));
 
             return pipelineBuilder;
         }
 
-        public static PipelineBuilder WithInboxBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) where TContext : DbContext
+        public static PipelineBuilder WithInboxBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) 
+            where TContext : DbContext
         {
             pipelineBuilder.WithUnitOfWorkBehavior<TContext>(services);
             services.Replace<IBrokeredMessageInbox, BrokeredMessageInbox<TContext>>(ServiceLifetime.Scoped);
             pipelineBuilder.WithBehavior(typeof(InboxBehavior<>));
+
+            return pipelineBuilder;
+        }
+
+        public static PipelineBuilder WithOutboxProcessingBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services)
+            where TContext : DbContext
+        {
+            pipelineBuilder.WithBehavior(typeof(OutboxProcessingBehavior<>));
+            pipelineBuilder.WithUnitOfWorkBehavior<TContext>(services);
 
             return pipelineBuilder;
         }

@@ -80,13 +80,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         private async Task SendToOutbox(DbSet<OutboxMessage> outbox, OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
-            Guid transactionId = Guid.NewGuid();
-            if (transactionContext != null)
-            {
-                transactionContext.Container.TryGet<IPersistanceTransaction>(out var transaction);
-                transactionId = transaction.TransactionId;
-            }
+            var currentTransaction = transactionContext?.Container.GetOrAdd<IPersistanceTransaction>();
+            Guid transactionId = currentTransaction?.TransactionId ?? Guid.Empty;
 
+            //TODO: trim the OutboxMessage object down. likely dont need Body, etc.
             var outboxMessage = new OutboxMessage
             {
                 MessageId = outboundBrokeredMessage.MessageId,

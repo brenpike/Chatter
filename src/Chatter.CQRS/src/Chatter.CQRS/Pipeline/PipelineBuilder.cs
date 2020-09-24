@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Scrutor;
 using System;
 using System.Linq;
@@ -30,7 +31,7 @@ namespace Chatter.CQRS.Pipeline
                 _services.Scan(s =>
                         s.FromAssemblies(behaviorType.GetTypeInfo().Assembly)
                             .AddClasses(c => c.AssignableTo(behaviorType))
-                            .UsingRegistrationStrategy(RegistrationStrategy.Append)
+                            .UsingRegistrationStrategy(RegistrationStrategy.Replace(ReplacementBehavior.ImplementationType))
                             .AsImplementedInterfaces()
                             .WithTransientLifetime());
             }
@@ -38,7 +39,7 @@ namespace Chatter.CQRS.Pipeline
             {
                 var behaviorCommandType = behaviorType.GetGenericArguments().SingleOrDefault();
                 var closedCommandBehaviorInterface = typeof(ICommandBehavior<>).MakeGenericType(behaviorCommandType);
-                _services.AddTransient(closedCommandBehaviorInterface, behaviorType);
+                _services.Replace(ServiceDescriptor.Transient(closedCommandBehaviorInterface, behaviorType));
             }
 
             return this;

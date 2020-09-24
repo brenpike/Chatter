@@ -16,6 +16,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Chatter.CQRS.DependencyInjection;
+using Chatter.CQRS.Pipeline;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -85,7 +86,6 @@ namespace Microsoft.Extensions.DependencyInjection
 
             if (options?.Reliability?.RouteMessagesToOutbox ?? false)
             {
-                //TODO: wire up unit of work behavior when not using inbox, but using outbox
                 builder.Services.AddScoped<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
 
                 if (options?.Reliability?.EnableOutboxPollingProcessor ?? false)

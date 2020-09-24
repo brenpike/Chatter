@@ -55,7 +55,7 @@ namespace CarRental.Application.Commands.Handlers
                     MessageId = Guid.NewGuid().ToString()
                 };
 
-                await _brokeredMessageDispatcher.Publish(ie, options: options);
+                await _brokeredMessageDispatcher.Publish(ie, context.GetTransactionContext(), options: options);
 
                 lock (Console.Out)
                 {

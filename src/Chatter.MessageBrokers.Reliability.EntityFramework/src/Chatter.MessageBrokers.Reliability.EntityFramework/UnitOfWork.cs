@@ -59,6 +59,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 try
                 {
                     transactionContext?.Container.Include(transaction);
+                    transactionContext?.Container.Include("CurrentTransactionId", transaction.TransactionId);
 
                     await operation();
                     await CompleteAsync();

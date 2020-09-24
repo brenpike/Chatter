@@ -1,35 +1,20 @@
-﻿using Chatter.MessageBrokers.Reliability.Inbox;
+﻿using Chatter.MessageBrokers.Reliability.Configuration;
+using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.EntityFrameworkCore;
+using System;
 using System.Reflection;
 
 namespace CarRental.Infrastructure.Repositories.Contexts
 {
     public class CarRentalContext : DbContext
     {
-        public CarRentalContext(DbContextOptions<CarRentalContext> options) : base(options)
-        {
-        }
+        private readonly ReliabilityOptions _reliabilityOptions;
 
-        //public static readonly ILoggerFactory MyLoggerFactory
-        //    = LoggerFactory.Create(builder =>
-        //    {
-        //        builder.AddFilter((category, level) =>
-        //              (category == DbLoggerCategory.Database.Transaction.Name ||
-        //              category == DbLoggerCategory.Database.Connection.Name ||
-        //              category == DbLoggerCategory.Update.Name ||
-        //              category == DbLoggerCategory.Database.Command.Name ||
-        //              category == DbLoggerCategory.Query.Name ||
-        //              category == DbLoggerCategory.Infrastructure.Name ||
-        //              category == DbLoggerCategory.Model.Name)
-        //              && (level == LogLevel.Trace ||
-        //              level == LogLevel.Debug ||
-        //              level == LogLevel.Information ||
-        //              level == LogLevel.Error ||
-        //              level == LogLevel.Critical ||
-        //              level == LogLevel.Warning))
-        //          .AddConsole();
-        //    });
+        public CarRentalContext(DbContextOptions<CarRentalContext> options, ReliabilityOptions reliabilityOptions) : base(options)
+        {
+            _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
+        }
 
         DbSet<Domain.Aggregates.CarRental> CarRentals { get; set; }
         DbSet<OutboxMessage> OutboxMessages { get; set; }
@@ -43,9 +28,14 @@ namespace CarRental.Infrastructure.Repositories.Contexts
                 return;
             }
 
-            //TODO: add connstring to config
+            var connStr = _reliabilityOptions.Persistance?.ConnectionString;
+            if (string.IsNullOrWhiteSpace(connStr))
+            {
+                throw new ArgumentNullException(nameof(connStr), "A connection string is required. Consider adding 'Chatter:MessageBrokers:Reliability:ConnectionString'.");
+            }
+
             optionsBuilder.UseSqlServer(
-                @"Data Source=DESKTOP-6D5GE0I\SQLEXPRESS;Database=CarRentals;Integrated Security=True;Connect Timeout=30;Encrypt=False;TrustServerCertificate=False;ApplicationIntent=ReadWrite;MultiSubnetFailover=False",
+                connStr,
                 b => b.MigrationsAssembly(typeof(CarRentalContext).Assembly.FullName).EnableRetryOnFailure(5));
             base.OnConfiguring(optionsBuilder);
         }

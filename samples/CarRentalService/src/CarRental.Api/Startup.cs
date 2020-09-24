@@ -28,7 +28,6 @@ namespace CarRental.Api
 
         public void ConfigureServices(IServiceCollection services)
         {
-            services.AddDbContext<CarRentalContext>();
             services.AddControllers();
 
             services.AddSwaggerGen(c =>
@@ -38,12 +37,15 @@ namespace CarRental.Api
 
             services.AddScoped<IEventMapper, EventMapper>();
             services.AddScoped<IRepository<Domain.Aggregates.CarRental, Guid>, CarRentalRepository>();
+            services.AddDbContext<CarRentalContext>();
 
             services.AddChatterCqrs(typeof(BookRentalCarCommand))
                     .AddCommandPipeline(builder =>
                     {
                         builder.WithBehavior(typeof(LoggingBehavior<>))
-                               .WithUnitOfWorkBehavior<CarRentalContext>(services)
+                               //.WithUnitOfWorkBehavior<CarRentalContext>(services)
+                               //.WithInboxBehavior<CarRentalContext>(services)
+                               .WithOutboxProcessingBehavior<CarRentalContext>(services)
                                .WithBehavior(typeof(AnotherLoggingBehavior<>));
                     })
                     .AddMessageBrokers((options) =>

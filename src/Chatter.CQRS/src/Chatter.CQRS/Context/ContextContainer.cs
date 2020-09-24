@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 
 namespace Chatter.CQRS.Context
 {
@@ -58,10 +59,8 @@ namespace Chatter.CQRS.Context
         /// <remarks>
         /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
         /// </remarks>
-        public bool TryGet<T>(out T result)
-        {
-            return TryGet(typeof(T).FullName, out result);
-        }
+        public bool TryGet<T>(out T result) 
+            => TryGet(typeof(T).FullName, out result);
 
         /// <summary>
         /// Attempts to get context of <typeparamref name="T"/> from container.
@@ -93,10 +92,8 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The type of context to be included</typeparam>
         /// <param name="t">The context to include</param>
-        public void Include<T>(T t)
-        {
-            Include(typeof(T).FullName, t);
-        }
+        public void Include<T>(T t) 
+            => Include(typeof(T).FullName, t);
 
         /// <summary>
         /// Includes context of <typeparamref name="T"/> in the container
@@ -104,9 +101,34 @@ namespace Chatter.CQRS.Context
         /// <typeparam name="T">The type of context to be included</typeparam>
         /// <param name="fullQualifiedNamespaceOfType">The fully qualified type name of the context object to get from the container</param>
         /// <param name="t">The context to include</param>
-        public void Include<T>(string fullQualifiedNamespaceOfType, T t)
+        public void Include<T>(string fullQualifiedNamespaceOfType, T t) 
+            => _context[fullQualifiedNamespaceOfType] = t;
+
+        /// <summary>
+        /// Gets context of type <typeparamref name="T"/> from the container. If it doesn't exist, uses <see cref="default{T}"/> to create a new instance
+        /// of <typeparamref name="T"/>, adds to the container and returns the value.
+        /// </summary>
+        /// <typeparam name="T">The type of context to get or add.</typeparam>
+        /// <returns>The value retrieved from context or <see cref="default{T}"/>.</returns>
+        public T GetOrAdd<T>() 
+            => GetOrAdd<T>(() => default);
+
+        /// <summary>
+        /// Gets context of type <typeparamref name="T"/> from the container. If it doesn't exist, uses a factory method to create a new instance
+        /// of <typeparamref name="T"/>, adds to the container and returns the value.
+        /// </summary>
+        /// <typeparam name="T">The type of context to get or add.</typeparam>
+        /// <param name="factoryMethod">The factory to create <typeparamref name="T"/> if not found in the container.</param>
+        /// <returns>The value retrieved from context or created by <paramref name="factoryMethod"/>.</returns>
+        public T GetOrAdd<T>(Func<T> factoryMethod)
         {
-            _context[fullQualifiedNamespaceOfType] = t;
+            TryGet<T>(out var tryGetValue);
+            if (tryGetValue is null)
+            {
+                tryGetValue = factoryMethod();
+                Include(tryGetValue);
+            }
+            return tryGetValue;
         }
     }
 }

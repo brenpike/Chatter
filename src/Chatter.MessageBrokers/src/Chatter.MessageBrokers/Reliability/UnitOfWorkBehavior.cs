@@ -17,7 +17,7 @@ namespace Chatter.MessageBrokers.Reliability
 
         public async Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next)
         {
-            messageHandlerContext.Container.TryGet<TransactionContext>(out var transactionContext);
+            var transactionContext = messageHandlerContext.Container.GetOrAdd(() => new TransactionContext());
             await _unitOfWork.ExecuteAsync(() => next(), transactionContext);
         }
     }

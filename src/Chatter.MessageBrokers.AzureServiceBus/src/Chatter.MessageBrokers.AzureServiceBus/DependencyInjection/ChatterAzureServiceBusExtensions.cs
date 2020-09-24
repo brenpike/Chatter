@@ -3,7 +3,6 @@ using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
 using Scrutor;
 using System;

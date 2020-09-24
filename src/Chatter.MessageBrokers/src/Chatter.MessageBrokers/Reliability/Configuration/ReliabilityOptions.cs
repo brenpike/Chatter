@@ -6,5 +6,6 @@
         public double MinutesToLiveInMemory { get; set; } = 10;
         public bool EnableOutboxPollingProcessor { get; set; } = false;
         public int OutboxProcessingIntervalInMilliseconds { get; set; } = 3000;
+        public PersistanceOptions Persistance { get; set; }
     }
 }

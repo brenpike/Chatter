@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Receiving;
+using System;
 
 namespace Chatter.MessageBrokers.Context
 {
@@ -8,6 +9,10 @@ namespace Chatter.MessageBrokers.Context
     /// </summary>
     public sealed class TransactionContext : IContainContext
     {
+        public TransactionContext()
+            : this(null, TransactionMode.None)
+        { }
+
         /// <summary>
         /// Creates an object that contains contextual information about the message broker transaction. The transaction mode
         /// is defaulted to <see cref="TransactionMode.None"/>.
@@ -24,11 +29,6 @@ namespace Chatter.MessageBrokers.Context
         /// <param name="transactionMode">The transaction mode</param>
         public TransactionContext(string transactionReceiver, TransactionMode transactionMode)
         {
-            if (string.IsNullOrWhiteSpace(transactionReceiver))
-            {
-                throw new System.ArgumentException($"A receiver is required to create a {nameof(TransactionContext)}", nameof(transactionReceiver));
-            }
-
             TransactionReceiver = transactionReceiver;
             TransactionMode = transactionMode;
         }
