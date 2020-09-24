@@ -3,7 +3,9 @@ using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,19 +18,16 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         private readonly ILogger<BrokeredMessageOutboxProcessor> _logger;
         private readonly ReliabilityOptions _reliabilityOptions;
         private readonly IServiceScopeFactory _serviceScopeFactory;
-        private readonly IBodyConverterFactory _bodyConverterFactory;
 
         public BrokeredMessageOutboxProcessor(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher,
                                               ILogger<BrokeredMessageOutboxProcessor> logger,
                                               ReliabilityOptions reliabilityOptions,
-                                              IServiceScopeFactory serviceScopeFactory,
-                                              IBodyConverterFactory bodyConverterFactory)
+                                              IServiceScopeFactory serviceScopeFactory)
         {
             _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
             _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
-            _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -44,7 +43,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
                 await SendOutboxMessagesAsync();
 
-                await Task.Delay(_reliabilityOptions.OutboxIntervalInMilliseconds, stoppingToken);
+                await Task.Delay(_reliabilityOptions.OutboxProcessingIntervalInMilliseconds, stoppingToken);
             }
 
             _logger.LogDebug($"BrokeredMessageOutboxProcessor background task is stopping.");
@@ -53,8 +52,9 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         private async Task SendOutboxMessagesAsync()
         {
             using var scope = _serviceScopeFactory.CreateScope();
-            var outbox = scope.ServiceProvider.GetRequiredService<ITransactionalBrokeredMessageOutbox>();
-            var messages = await outbox.GetUnprocessedBrokeredMessagesFromOutbox();
+            var outbox = scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
+            var processor = scope.ServiceProvider.GetRequiredService<IOutboxProcessor>();
+            var messages = await outbox.GetUnprocessedMessagesFromOutbox();
 
             if (!messages.Any())
             {
@@ -66,14 +66,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
             foreach (var message in messages.OrderBy(m => m.SentToOutboxAtUtc))
             {
-                message.ApplicationProperties.TryGetValue(ApplicationProperties.ContentType, out var contentType);
-                var outbound = message.AsOutboundBrokeredMessage(_bodyConverterFactory.CreateBodyConverter((string)contentType));
-                _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
-
-                await _brokeredMessageInfrastructureDispatcher.Dispatch(outbound, null);
-                _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
-
-                await outbox.MarkMessageAsProcessed(message);
+                await processor.Process(message).ConfigureAwait(false);
             }
         }
     }

@@ -5,10 +5,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\..\src\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Folder Include="Aggregates\" />
     <Folder Include="Entities\" />
     <Folder Include="Events\" />

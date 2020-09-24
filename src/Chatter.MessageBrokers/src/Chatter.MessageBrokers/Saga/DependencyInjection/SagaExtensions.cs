@@ -10,11 +10,11 @@ namespace Microsoft.Extensions.DependencyInjection
     {
         public static IChatterBuilder AddSagas(this IChatterBuilder builder)
         {
-            builder.Services.AddSingleton<IDispatchMessages, SagaMessageDispatcher>();
+            builder.Services.AddScoped<IDispatchMessages, SagaMessageDispatcher>();
             builder.Services.AddSingleton<ISagaPersister, InMemorySagaPersister>();
-            builder.Services.AddSingleton<ISagaOrchestrator, SagaOrchestrator>();
-            builder.Services.AddSingleton<ISagaInitializer, SagaInitializer>();
-            builder.Services.AddSingleton<ISagaOptionsProvider, SagaOptionsProvider>();
+            builder.Services.AddScoped<ISagaOrchestrator, SagaOrchestrator>();
+            builder.Services.AddScoped<ISagaInitializer, SagaInitializer>();
+            builder.Services.AddScoped<ISagaOptionsProvider, SagaOptionsProvider>();
 
             return builder;
         }
@@ -32,16 +32,6 @@ namespace Microsoft.Extensions.DependencyInjection
             }
 
             return true;
-        }
-
-        private static bool DoesTypeImplementOpenGenericInterface(Type typeToExecuteSearch, Type typeToFind)
-        {
-            if (!IsGenericInterface(typeToFind))
-            {
-                throw new ArgumentException($"The supplied type must be an interface.", nameof(typeToFind));
-            }
-
-            return typeToExecuteSearch.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeToFind);
         }
     }
 }

@@ -10,9 +10,9 @@ namespace Chatter.CQRS.Events
     /// </summary>
     internal sealed class EventDispatcher : IDispatchMessages
     {
-        private readonly IServiceScopeFactory _serviceFactory;
+        private readonly IServiceProvider _serviceFactory;
 
-        public EventDispatcher(IServiceScopeFactory serviceFactory)
+        public EventDispatcher(IServiceProvider serviceFactory)
         {
             _serviceFactory = serviceFactory;
         }
@@ -30,8 +30,7 @@ namespace Chatter.CQRS.Events
         /// the <paramref name="message"/> is dispatched by <see cref="IMessageDispatcher"/></remarks>
         public async Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
-            using var scope = _serviceFactory.CreateScope();
-            var handlers = scope.ServiceProvider.GetServices<IMessageHandler<TMessage>>();
+            var handlers = _serviceFactory.GetServices<IMessageHandler<TMessage>>();
             foreach (var handler in handlers)
             {
                 await handler.Handle(message, messageHandlerContext).ConfigureAwait(false);

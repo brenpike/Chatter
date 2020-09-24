@@ -1,11 +1,19 @@
 using CarRental.Application.Behaviors;
 using CarRental.Application.Commands;
+using CarRental.Application.Services;
+using CarRental.Infrastructure.Repositories;
+using CarRental.Infrastructure.Repositories.Contexts;
+using CarRental.Infrastructure.Services;
+using Chatter.MessageBrokers.Reliability.EntityFramework;
+using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
+using Samples.SharedKernel.Interfaces;
+using System;
 
 namespace CarRental.Api
 {
@@ -27,10 +35,17 @@ namespace CarRental.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Car Rental Api", Version = "v1" });
             });
 
+            services.AddScoped<IEventMapper, EventMapper>();
+            services.AddScoped<IRepository<Domain.Aggregates.CarRental, Guid>, CarRentalRepository>();
+            services.AddDbContext<CarRentalContext>();
+
             services.AddChatterCqrs(typeof(BookRentalCarCommand))
                     .AddCommandPipeline(builder =>
                     {
                         builder.WithBehavior(typeof(LoggingBehavior<>))
+                               //.WithUnitOfWorkBehavior<CarRentalContext>(services)
+                               //.WithInboxBehavior<CarRentalContext>(services)
+                               .WithOutboxProcessingBehavior<CarRentalContext>(services)
                                .WithBehavior(typeof(AnotherLoggingBehavior<>));
                     })
                     .AddMessageBrokers((options) =>

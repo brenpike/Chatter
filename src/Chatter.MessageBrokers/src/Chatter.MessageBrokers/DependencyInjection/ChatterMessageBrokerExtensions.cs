@@ -5,6 +5,7 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability;
+using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Slips;
@@ -14,6 +15,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Chatter.CQRS.DependencyInjection;
+using Chatter.CQRS.Pipeline;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -71,29 +74,35 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
 
-            builder.Services.AddTransient<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
+            builder.Services.AddScoped<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
 
-            builder.Services.AddSingleton<ITransactionalBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>();
-            builder.Services.AddTransient<IForwardMessages, ForwardingRouter>();
-            builder.Services.AddTransient<IRouteCompensationMessages, CompensateRouter>();
-            builder.Services.AddTransient<IReplyRouter, ReplyRouter>();
+            builder.Services.AddScoped<IForwardMessages, ForwardingRouter>();
+            builder.Services.AddScoped<IRouteCompensationMessages, CompensateRouter>();
+            builder.Services.AddScoped<IReplyRouter, ReplyRouter>();
 
-            if (options?.Reliability?.OutboxEnabled ?? false)
+            builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
+            builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
+
+            if (options?.Reliability?.RouteMessagesToOutbox ?? false)
             {
-                builder.Services.Decorate<IMessageDispatcher, TransactionalOutboxMessageDispatcherDecorator>();
-                builder.Services.AddSingleton<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
-                builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
+                builder.Services.AddScoped<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
+
+                if (options?.Reliability?.EnableOutboxPollingProcessor ?? false)
+                {
+                    builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
+                }
             }
             else
             {
-                builder.Services.AddTransient<IRouteBrokeredMessages, BrokeredMessageRouter>();
+                builder.Services.AddScoped<IRouteBrokeredMessages, BrokeredMessageRouter>();
             }
 
             builder.Services.Decorate<IMessageDispatcher, RoutingSlipMessageDispatcherDecorator>(); //TODO: we'll only want to add this if routing slips are added
             builder.AddReceivers(assemblies);
 
-            builder.Services.AddSingleton<IBodyConverterFactory, BodyConverterFactory>();
-            builder.Services.AddSingleton<IBrokeredMessageBodyConverter, JsonBodyConverter>();
+            builder.Services.AddScoped<IBodyConverterFactory, BodyConverterFactory>();
+            builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonBodyConverter>();
 
             return builder;
         }
@@ -146,8 +155,12 @@ namespace Microsoft.Extensions.DependencyInjection
             var messages = FindBrokeredMessagesWithReceiversInAssembliesByType(assemblies);
             foreach (var receiverType in GetAllReceiverTypes(messages))
             {
-                builder.Services.AddSingleton(receiverType.Item1, receiverType.Item2);
-                builder.Services.AddSingleton(typeof(IHostedService), sp => sp.GetRequiredService(receiverType.Item1));
+                builder.Services.AddScoped(receiverType.Item1, receiverType.Item2);
+                builder.Services.AddSingleton(typeof(IHostedService), sp => 
+                { 
+                    using var scope = sp.CreateScope();
+                    return scope.ServiceProvider.GetRequiredService(receiverType.Item1);
+                });
             }
             return builder;
         }

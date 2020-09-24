@@ -1,10 +1,11 @@
-﻿using CarRental.Application.IntegrationEvents;
+﻿using CarRental.Application.Services;
 using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using Newtonsoft.Json;
+using Samples.SharedKernel.Interfaces;
 using System;
 using System.Threading.Tasks;
 
@@ -13,10 +14,14 @@ namespace CarRental.Application.Commands.Handlers
     public class BookRentalCarCommandHandler : IMessageHandler<BookRentalCarCommand>
     {
         private readonly IBrokeredMessageDispatcher _brokeredMessageDispatcher;
+        private readonly IRepository<Domain.Aggregates.CarRental, Guid> _repository;
+        private readonly IEventMapper _eventMapper;
 
-        public BookRentalCarCommandHandler(IBrokeredMessageDispatcher brokeredMessageDispatcher)
+        public BookRentalCarCommandHandler(IBrokeredMessageDispatcher brokeredMessageDispatcher, IRepository<Domain.Aggregates.CarRental, Guid> repository, IEventMapper eventMapper)
         {
-            _brokeredMessageDispatcher = brokeredMessageDispatcher;
+            _brokeredMessageDispatcher = brokeredMessageDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageDispatcher));
+            _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+            _eventMapper = eventMapper ?? throw new ArgumentNullException(nameof(eventMapper));
         }
 
         public async Task Handle(BookRentalCarCommand message, IMessageHandlerContext context)
@@ -25,46 +30,41 @@ namespace CarRental.Application.Commands.Handlers
             {
                 if (context is IMessageBrokerContext messageBrokerContext)
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.ForegroundColor = ConsoleColor.Cyan;
                     Console.WriteLine($"Received '{message.GetType().Name}' command from message broker. Message Id: '{messageBrokerContext.BrokeredMessage.MessageId}', Subscription: '{messageBrokerContext.BrokeredMessage.MessageReceiverPath}'");
                 }
                 else
                 {
-                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine($"Received '{message.GetType().Name}' command from local dispatcher");
                 }
                 Console.WriteLine($"Command Data: {JsonConvert.SerializeObject(message)}");
-            }
-
-            //create new rental reservation Id
-            message.Car.ReservationId = Guid.NewGuid();
-
-            lock (Console.Out)
-            {
-                Console.WriteLine($"Persisted Car Rental aggregate with reservation id: {message.Car.ReservationId}");
-            }
-
-            //save the CarRental aggregate to persistance
-            //saving the aggregate would typically create and dispastch the domain events, but since no aggregate exists in this example
-            //creating and firing domain event below
-            var e = new RentalCarBookedEvent()
-            {
-                Id = message.Car.Id,
-                ReservationId = message.Car.ReservationId
-            };
-
-            //optional
-            var publishOptions = new PublishOptions()
-            {
-                MessageId = Guid.NewGuid().ToString()
-            };
-
-            await _brokeredMessageDispatcher.Publish(e, options: publishOptions);
-
-            lock (Console.Out)
-            {
-                Console.WriteLine($"Dispatched domain event: {JsonConvert.SerializeObject(e)}");
                 Console.ResetColor();
+            }
+
+            var carRental = new Domain.Aggregates.CarRental(); //TODO: just an example - likely more properties would be passed in via ctor
+            var reservationId = carRental.Reserve(message.Car.Airport, message.Car.Vendor, message.Car.From, message.Car.Until);
+            await _repository.AddAsync(carRental);
+
+            var integrationEvents = _eventMapper.MapAll(carRental.DomainEvents);
+
+            //throw new Exception("without using the outbox, we're in a bad state. aggregate has been saved, integration events will never be published.");
+
+            foreach (var ie in integrationEvents)
+            {
+                var options = new PublishOptions()
+                {
+                    MessageId = Guid.NewGuid().ToString()
+                };
+
+                await _brokeredMessageDispatcher.Publish(ie, context.GetTransactionContext(), options: options);
+
+                lock (Console.Out)
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"Dispatched domain event: {JsonConvert.SerializeObject(ie)}");
+                    Console.ResetColor();
+                }
             }
         }
     }

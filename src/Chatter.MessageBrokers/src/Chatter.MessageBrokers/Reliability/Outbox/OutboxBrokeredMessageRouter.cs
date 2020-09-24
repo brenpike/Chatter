@@ -9,11 +9,11 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     public sealed class OutboxBrokeredMessageRouter : IRouteBrokeredMessages
     {
-        private readonly ITransactionalBrokeredMessageOutbox _brokeredMessageOutboxDispatcher;
+        private readonly IBrokeredMessageOutbox _brokeredMessageOutbox;
 
-        public OutboxBrokeredMessageRouter(ITransactionalBrokeredMessageOutbox brokeredMessageOutboxDispatcher)
+        public OutboxBrokeredMessageRouter(IBrokeredMessageOutbox brokeredMessageOutbox)
         {
-            _brokeredMessageOutboxDispatcher = brokeredMessageOutboxDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageOutboxDispatcher));
+            _brokeredMessageOutbox = brokeredMessageOutbox ?? throw new ArgumentNullException(nameof(brokeredMessageOutbox));
         }
 
         /// <summary>
@@ -24,7 +24,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// <returns>An awaitable <see cref="Task"/></returns>
         public Task Route(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
-            return _brokeredMessageOutboxDispatcher.SendToOutbox(outboundBrokeredMessage, transactionContext);
+            return _brokeredMessageOutbox.SendToOutbox(outboundBrokeredMessage, transactionContext);
         }
 
         /// <summary>
@@ -35,7 +35,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// <returns>An awaitable <see cref="Task"/></returns>
         public Task Route(IList<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
         {
-            return _brokeredMessageOutboxDispatcher.SendToOutbox(outboundBrokeredMessages, transactionContext);
+            return _brokeredMessageOutbox.SendToOutbox(outboundBrokeredMessages, transactionContext);
         }
     }
 }

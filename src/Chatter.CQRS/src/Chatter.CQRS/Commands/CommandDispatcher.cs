@@ -11,9 +11,9 @@ namespace Chatter.CQRS.Commands
     /// </summary>
     internal sealed class CommandDispatcher : IDispatchMessages
     {
-        private readonly IServiceScopeFactory _serviceFactory;
+        private readonly IServiceProvider _serviceFactory;
 
-        public CommandDispatcher(IServiceScopeFactory serviceFactory)
+        public CommandDispatcher(IServiceProvider serviceFactory)
         {
             _serviceFactory = serviceFactory;
         }
@@ -31,9 +31,13 @@ namespace Chatter.CQRS.Commands
         /// the <paramref name="message"/> is dispatched by <see cref="IMessageDispatcher"/>.</remarks>
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
-            using var scope = _serviceFactory.CreateScope();
-            var handler = scope.ServiceProvider.GetRequiredService<IMessageHandler<TMessage>>();
-            var pipeline = scope.ServiceProvider.GetService<ICommandBehaviorPipeline<TMessage>>();
+            //using var scope = _serviceFactory.CreateScope();
+            //var handler = scope.ServiceProvider.GetRequiredService<IMessageHandler<TMessage>>();
+            //var pipeline = scope.ServiceProvider.GetService<ICommandBehaviorPipeline<TMessage>>();
+
+            var handler = _serviceFactory.GetRequiredService<IMessageHandler<TMessage>>();
+            var pipeline = _serviceFactory.GetService<ICommandBehaviorPipeline<TMessage>>();
+
 
             if (pipeline == null)
             {

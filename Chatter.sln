@@ -71,6 +71,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Samples", "Samples", "{F0E1
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Samples.SharedKernel", "samples\Samples.SharedKernel\Samples.SharedKernel.csproj", "{5E6B653A-8F5C-4E97-986E-41F8723ACC80}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.Reliability.EntityFramework", "src\Chatter.MessageBrokers.Reliability.EntityFramework\src\Chatter.MessageBrokers.Reliability.EntityFramework\Chatter.MessageBrokers.Reliability.EntityFramework.csproj", "{0775D93A-6D78-4224-BBE9-3C48F2EB549B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -157,6 +159,10 @@ Global
 		{5E6B653A-8F5C-4E97-986E-41F8723ACC80}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5E6B653A-8F5C-4E97-986E-41F8723ACC80}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5E6B653A-8F5C-4E97-986E-41F8723ACC80}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0775D93A-6D78-4224-BBE9-3C48F2EB549B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0775D93A-6D78-4224-BBE9-3C48F2EB549B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0775D93A-6D78-4224-BBE9-3C48F2EB549B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0775D93A-6D78-4224-BBE9-3C48F2EB549B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -9,9 +9,9 @@ namespace Chatter.MessageBrokers.Saga
 {
     public class SagaMessageDispatcher : IDispatchMessages
     {
-        private readonly IServiceScopeFactory _serviceFactory;
+        private readonly IServiceProvider _serviceFactory;
 
-        public SagaMessageDispatcher(IServiceScopeFactory serviceFactory)
+        public SagaMessageDispatcher(IServiceProvider serviceFactory)
         {
             _serviceFactory = serviceFactory;
         }
@@ -20,8 +20,7 @@ namespace Chatter.MessageBrokers.Saga
 
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
-            using var scope = _serviceFactory.CreateScope();
-            var orchestrator = scope.ServiceProvider.GetRequiredService<ISagaOrchestrator>();
+            var orchestrator = _serviceFactory.GetRequiredService<ISagaOrchestrator>();
 
             if (message is IStartSagaMessage startSagaMessage)
             {
@@ -29,7 +28,7 @@ namespace Chatter.MessageBrokers.Saga
             }
 
             var context = messageHandlerContext.AsMessageBrokerContext();
-            var sagaStepHandler = scope.ServiceProvider.GetService<IMessageHandler<TMessage>>();
+            var sagaStepHandler = _serviceFactory.GetService<IMessageHandler<TMessage>>();
 
             if (message is ICompleteSagaMessage completeSagaMessage)
             {

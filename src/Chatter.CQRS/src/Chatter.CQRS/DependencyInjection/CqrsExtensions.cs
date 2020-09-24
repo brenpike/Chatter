@@ -23,7 +23,7 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddMessageHandlers(assemblies);
             builder.Services.AddQueryHandlers(assemblies);
 
-            builder.Services.AddSingleton<IMessageDispatcherProvider, MessageDispatcherProvider>();
+            builder.Services.AddScoped<IMessageDispatcherProvider, MessageDispatcherProvider>();
 
             builder.Services.AddInMemoryMessageDispatchers();
             builder.Services.AddInMemoryQueryDispatcher();
@@ -121,15 +121,15 @@ namespace Microsoft.Extensions.DependencyInjection
 
         public static IServiceCollection AddInMemoryMessageDispatchers(this IServiceCollection services)
         {
-            services.AddSingleton<IMessageDispatcher, MessageDispatcher>();
-            services.AddSingleton<IDispatchMessages, CommandDispatcher>();
-            services.AddSingleton<IDispatchMessages, EventDispatcher>();
+            services.AddScoped<IMessageDispatcher, MessageDispatcher>();
+            services.AddScoped<IDispatchMessages, CommandDispatcher>();
+            services.AddScoped<IDispatchMessages, EventDispatcher>();
             return services;
         }
 
         public static IServiceCollection AddInMemoryQueryDispatcher(this IServiceCollection services)
         {
-            services.AddSingleton<IQueryDispatcher, QueryDispatcher>();
+            services.AddScoped<IQueryDispatcher, QueryDispatcher>();
             return services;
         }
 

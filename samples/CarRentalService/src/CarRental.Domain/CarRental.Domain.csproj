@@ -5,17 +5,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\..\src\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj" />
+    <ProjectReference Include="..\..\..\Samples.SharedKernel\Samples.SharedKernel.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="DomainEvents\" />
-    <Folder Include="Aggregates\" />
-    <Folder Include="Entities\" />
     <Folder Include="Exceptions\" />
-    <Folder Include="ValueObjects\" />
-    <Folder Include="Services\" />
     <Folder Include="Repositories\" />
+    <Folder Include="Services\" />
   </ItemGroup>
 
 </Project>
