@@ -1,6 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Reliability.Configuration;
-using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.EntityFrameworkCore;
@@ -13,82 +12,46 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework
 {
-    public class TransactionalOutbox<TContext> : ITransactionalBrokeredMessageOutbox where TContext : DbContext
+    public class BrokeredMessageOutbox<TContext> : IBrokeredMessageOutbox where TContext : DbContext
     {
         private readonly TContext _context;
-        private readonly ILogger<TransactionalOutbox<TContext>> _logger;
+        private readonly ILogger<BrokeredMessageOutbox<TContext>> _logger;
         private readonly ReliabilityOptions _options;
 
-        public TransactionalOutbox(TContext context, ILogger<TransactionalOutbox<TContext>> logger, ReliabilityOptions options)
+        public BrokeredMessageOutbox(TContext context, ILogger<BrokeredMessageOutbox<TContext>> logger, ReliabilityOptions options)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _options = options ?? throw new ArgumentNullException(nameof(options));
         }
 
-        public async Task<IEnumerable<OutboxMessage>> GetUnprocessedBrokeredMessagesFromOutbox()
+        public async Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox()
         {
             var outbox = _context.Set<OutboxMessage>();
             return await outbox.Where(message => message.ProcessedFromOutboxAtUtc == null).ToListAsync();
         }
 
-        public Task MarkMessageAsProcessed(IEnumerable<OutboxMessage> outboxMessages)
+        public Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages)
         {
             var set = _context.Set<OutboxMessage>();
             foreach (var message in outboxMessages)
             {
-                MarkMessageAsProcessed(set, message);
+                UpdateProcessedDate(set, message);
             }
 
             return _context.SaveChangesAsync();
         }
 
-        public Task MarkMessageAsProcessed(OutboxMessage outboxMessage)
+        public Task UpdateProcessedDate(OutboxMessage outboxMessage)
         {
-            MarkMessageAsProcessed(_context.Set<OutboxMessage>(), outboxMessage);
+            UpdateProcessedDate(_context.Set<OutboxMessage>(), outboxMessage);
             return _context.SaveChangesAsync();
         }
 
-        private void MarkMessageAsProcessed(DbSet<OutboxMessage> outbox, OutboxMessage outboxMessage)
+        private void UpdateProcessedDate(DbSet<OutboxMessage> outbox, OutboxMessage outboxMessage)
         {
             outboxMessage.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
             outbox.Update(outboxMessage);
-        }
-
-        public async Task ReceiveViaInbox<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> handler)
-        {
-            var messageId = messageBrokerContext.BrokeredMessage.MessageId;
-
-            if (string.IsNullOrWhiteSpace(messageId))
-            {
-                throw new ArgumentException("Message id to be processed cannot be empty.", nameof(messageId));
-            }
-
-            var inbox = _context.Set<InboxMessage>();
-
-            if (await inbox.AnyAsync(m => m.MessageId == messageId))
-            {
-                return;
-            }
-
-            //TODO: this whole class needs to be cleaned up and needs logging.
-
-            try
-            {
-                await handler();
-
-                var inboxMessage = new InboxMessage()
-                {
-                    MessageId = messageId,
-                    ReceivedByInboxAtUtc = DateTime.UtcNow
-                };
-
-                await inbox.AddAsync(inboxMessage);
-            }
-            catch (Exception ex)
-            {
-                throw;
-            }
         }
 
         public async Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
@@ -117,20 +80,34 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         private async Task SendToOutbox(DbSet<OutboxMessage> outbox, OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
+            Guid transactionId = Guid.NewGuid();
+            if (transactionContext != null)
+            {
+                transactionContext.Container.TryGet<IPersistanceTransaction>(out var transaction);
+                transactionId = transaction.TransactionId;
+            }
+
             var outboxMessage = new OutboxMessage
             {
                 MessageId = outboundBrokeredMessage.MessageId,
-                StringifiedApplicationProperties = JsonConvert.SerializeObject(outboundBrokeredMessage.ApplicationProperties), //TODO: extension method for serializing/de-serializing app properties?
-                Body = outboundBrokeredMessage.Body, //TODO: need to save this?
+                StringifiedApplicationProperties = JsonConvert.SerializeObject(outboundBrokeredMessage.ApplicationProperties),
+                Body = outboundBrokeredMessage.Body,
                 Destination = outboundBrokeredMessage.Destination,
                 StringifiedMessage = outboundBrokeredMessage.Stringify(),
                 SentToOutboxAtUtc = DateTime.UtcNow,
-                ProcessedFromOutboxAtUtc = null
+                ProcessedFromOutboxAtUtc = null,
+                BatchId = transactionId
             };
 
             _logger.LogTrace($"Outbox message created for message with id: '{outboxMessage.MessageId}'");
 
             await outbox.AddAsync(outboxMessage);
+        }
+
+        public async Task<IEnumerable<OutboxMessage>> GetUnprocessedBatch(Guid batchId)
+        {
+            var outbox = _context.Set<OutboxMessage>();
+            return await outbox.Where(message => message.ProcessedFromOutboxAtUtc == null && message.BatchId == batchId).ToListAsync();
         }
     }
 }

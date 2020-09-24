@@ -9,18 +9,18 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
 {
     public class InboxBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : IMessage
     {
-        private readonly ITransactionalBrokeredMessageOutbox _transactionalBrokeredMessageOutbox;
+        private readonly IBrokeredMessageInbox _brokeredMessageInbox;
 
-        public InboxBehavior(ITransactionalBrokeredMessageOutbox transactionalBrokeredMessageOutbox)
+        public InboxBehavior(IBrokeredMessageInbox brokeredMessageInbox)
         {
-            _transactionalBrokeredMessageOutbox = transactionalBrokeredMessageOutbox ?? throw new ArgumentNullException(nameof(transactionalBrokeredMessageOutbox));
+            _brokeredMessageInbox = brokeredMessageInbox ?? throw new ArgumentNullException(nameof(brokeredMessageInbox));
         }
 
         public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next)
         {
             if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
             {
-                return _transactionalBrokeredMessageOutbox.ReceiveViaInbox(message, messageBrokerContext, () => next());
+                return _brokeredMessageInbox.ReceiveViaInbox(message, messageBrokerContext, () => next());
             }
 
             return next();

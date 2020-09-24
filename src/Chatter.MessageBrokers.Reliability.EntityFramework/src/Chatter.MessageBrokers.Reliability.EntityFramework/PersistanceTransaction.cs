@@ -15,7 +15,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         public static PersistanceTransaction Create(IDbContextTransaction dbContextTransaction)
             => new PersistanceTransaction(dbContextTransaction);
 
-        public string TransactionId => _dbContextTransaction.TransactionId.ToString();
+        public Guid TransactionId => _dbContextTransaction.TransactionId;
 
         public Task CommitAsync(CancellationToken cancellationToken = default) 
             => _dbContextTransaction.CommitAsync(cancellationToken);

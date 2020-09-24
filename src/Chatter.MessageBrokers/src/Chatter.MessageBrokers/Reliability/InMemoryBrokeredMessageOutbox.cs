@@ -12,16 +12,14 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
 {
-    class InMemoryBrokeredMessageOutbox : ITransactionalBrokeredMessageOutbox
+    class InMemoryBrokeredMessageOutbox : IBrokeredMessageOutbox
     {
         private readonly ConcurrentDictionary<string, OutboxMessage> _outbox;
         private readonly ILogger<InMemoryBrokeredMessageOutbox> _logger;
         private readonly ReliabilityOptions _reliabilityOptions;
-        private readonly ConcurrentDictionary<string, bool> _inbox;
 
         public InMemoryBrokeredMessageOutbox(ILogger<InMemoryBrokeredMessageOutbox> logger, ReliabilityOptions reliabilityOptions)
         {
-            _inbox = new ConcurrentDictionary<string, bool>();
             _outbox = new ConcurrentDictionary<string, OutboxMessage>();
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
@@ -37,6 +35,13 @@ namespace Chatter.MessageBrokers.Reliability
 
         public Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
+            Guid transactionId = Guid.NewGuid();
+            if (transactionContext != null)
+            {
+                transactionContext.Container.TryGet<IPersistanceTransaction>(out var transaction);
+                transactionId = transaction.TransactionId;
+            }
+
             var outboxMessage = new OutboxMessage
             {
                 MessageId = outboundBrokeredMessage.MessageId,
@@ -45,7 +50,8 @@ namespace Chatter.MessageBrokers.Reliability
                 Destination = outboundBrokeredMessage.Destination,
                 StringifiedMessage = outboundBrokeredMessage.Stringify(),
                 SentToOutboxAtUtc = DateTime.UtcNow,
-                ProcessedFromOutboxAtUtc = null
+                ProcessedFromOutboxAtUtc = null,
+                BatchId = transactionId
             };
 
             _logger.LogTrace($"Outbox message created for message with id: '{outboxMessage.MessageId}'");
@@ -62,12 +68,12 @@ namespace Chatter.MessageBrokers.Reliability
             return Task.CompletedTask;
         }
 
-        public Task<IEnumerable<OutboxMessage>> GetUnprocessedBrokeredMessagesFromOutbox()
+        public Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox()
                 => Task.FromResult<IEnumerable<OutboxMessage>>(_outbox.Values
                         .Where(m => m.ProcessedFromOutboxAtUtc is null)
                         .ToList());
 
-        public Task MarkMessageAsProcessed(IEnumerable<OutboxMessage> outboxMessages)
+        public Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages)
         {
             foreach (var outboxMessage in outboxMessages)
             {
@@ -77,7 +83,7 @@ namespace Chatter.MessageBrokers.Reliability
             return Task.CompletedTask;
         }
 
-        public Task MarkMessageAsProcessed(OutboxMessage outboxMessage)
+        public Task UpdateProcessedDate(OutboxMessage outboxMessage)
         {
             outboxMessage.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
             RemoveExpiredFromInboxOutbox();
@@ -86,7 +92,7 @@ namespace Chatter.MessageBrokers.Reliability
 
         private void RemoveExpiredFromInboxOutbox()
         {
-            var ttl = _reliabilityOptions.TimeToLiveInMinutes;
+            var ttl = _reliabilityOptions.MinutesToLiveInMemory;
 
             if (ttl <= 0)
             {
@@ -106,39 +112,12 @@ namespace Chatter.MessageBrokers.Reliability
                 }
 
                 _outbox.TryRemove(id, out _);
-                _inbox.TryRemove(message.MessageId, out _);
             }
         }
 
-        public async Task ReceiveViaInbox<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> messageReceiver)
-        {
-            var id = messageBrokerContext.BrokeredMessage.MessageId;
-
-            if (string.IsNullOrWhiteSpace(id))
-            {
-                throw new ArgumentException("A brokered message must have a message id to be persisted in the inbox.", nameof(id));
-            }
-
-            if (_inbox.ContainsKey(id))
-            {
-                _logger.LogTrace($"Brokered message of type '{typeof(TMessage).Name}' with id: '{id}' was already received.");
-                return;
-            }
-
-            //for a database inbox implementation, a database transaction would typically be started here and committed after messageReceiver runs
-            //successfully AND the message is added to the inbox. This works because the aggregate would typically be saved as part of the messageReceiver
-            //logic, domain events or commands would be routed (and thus handled by the outbox), which means they will all be part of the same transaction
-
-            await messageReceiver().ConfigureAwait(false);
-
-            if (!_inbox.TryAdd(id, true))
-            {
-                var error = $"Unable to retrieve brokered message of type '{typeof(TMessage).Name}' with id: '{id}' from the in memory inbox.";
-                _logger.LogError(error);
-                throw new InvalidOperationException(error);
-            }
-
-            _logger.LogTrace($"Brokered message of type '{typeof(TMessage).Name}' with id: '{id}' was successfully received and added to inbox.");
-        }
+        public Task<IEnumerable<OutboxMessage>> GetUnprocessedBatch(Guid transactionId)
+                => Task.FromResult<IEnumerable<OutboxMessage>>(_outbox.Values
+                        .Where(m => m.ProcessedFromOutboxAtUtc is null && m.BatchId == transactionId)
+                        .ToList());
     }
 }

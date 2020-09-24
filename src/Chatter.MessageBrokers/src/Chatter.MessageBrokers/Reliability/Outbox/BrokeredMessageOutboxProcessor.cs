@@ -43,7 +43,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
                 await SendOutboxMessagesAsync();
 
-                await Task.Delay(_reliabilityOptions.OutboxIntervalInMilliseconds, stoppingToken);
+                await Task.Delay(_reliabilityOptions.OutboxProcessingIntervalInMilliseconds, stoppingToken);
             }
 
             _logger.LogDebug($"BrokeredMessageOutboxProcessor background task is stopping.");
@@ -52,9 +52,9 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         private async Task SendOutboxMessagesAsync()
         {
             using var scope = _serviceScopeFactory.CreateScope();
-            var outbox = scope.ServiceProvider.GetRequiredService<ITransactionalBrokeredMessageOutbox>();
-            var bodyConverterFactory = scope.ServiceProvider.GetRequiredService<IBodyConverterFactory>();
-            var messages = await outbox.GetUnprocessedBrokeredMessagesFromOutbox();
+            var outbox = scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
+            var processor = scope.ServiceProvider.GetRequiredService<IOutboxProcessor>();
+            var messages = await outbox.GetUnprocessedMessagesFromOutbox();
 
             if (!messages.Any())
             {
@@ -66,21 +66,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
             foreach (var message in messages.OrderBy(m => m.SentToOutboxAtUtc))
             {
-                //TODO: clean up this mess with app properties. extension methods?
-                //TODO: move this processing piece to ITransactionalBrokeredMessageOutbox. Make it configurable to dispatch from outbox on demand, 
-                //      i.e., right after saving to outbox, we process from outbox.
-                //      once this is accomplished we can have separate config settings to have the timed processor running and the on-domand processor.
-                //      on demand processor needs to happen outside of transaction or can it happen in the same transaction? (prod different, as needs to be
-                //      committed first, duh)
-                var appProps = JsonConvert.DeserializeObject<IDictionary<string, object>>(message.StringifiedApplicationProperties);
-                appProps.TryGetValue(ApplicationProperties.ContentType, out var contentType);
-                var outbound = message.AsOutboundBrokeredMessage(bodyConverterFactory.CreateBodyConverter((string)contentType));
-                _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
-
-                await _brokeredMessageInfrastructureDispatcher.Dispatch(outbound, null);
-                _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
-
-                await outbox.MarkMessageAsProcessed(message);
+                await processor.Process(message).ConfigureAwait(false);
             }
         }
     }

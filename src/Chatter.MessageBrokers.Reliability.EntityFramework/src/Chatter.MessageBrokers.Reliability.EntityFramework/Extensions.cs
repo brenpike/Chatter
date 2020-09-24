@@ -1,7 +1,9 @@
-﻿using Chatter.CQRS.Pipeline;
+﻿using Chatter.CQRS.DependencyInjection;
+using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.EntityFramework;
 using Chatter.MessageBrokers.Reliability.Inbox;
+using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.EntityFrameworkCore;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -10,6 +12,7 @@ namespace Microsoft.Extensions.DependencyInjection
     {
         public static PipelineBuilder WithUnitOfWorkBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) where TContext : DbContext
         {
+            services.Replace<IBrokeredMessageOutbox, BrokeredMessageOutbox<TContext>>(ServiceLifetime.Scoped);
             services.AddScoped<IUnitOfWork, UnitOfWork<TContext>>();
             pipelineBuilder.WithBehavior(typeof(UnitOfWorkBehavior<>));
 
@@ -19,7 +22,7 @@ namespace Microsoft.Extensions.DependencyInjection
         public static PipelineBuilder WithInboxBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) where TContext : DbContext
         {
             pipelineBuilder.WithUnitOfWorkBehavior<TContext>(services);
-            services.AddScoped<ITransactionalBrokeredMessageOutbox, TransactionalOutbox<TContext>>();
+            services.Replace<IBrokeredMessageInbox, BrokeredMessageInbox<TContext>>(ServiceLifetime.Scoped);
             pipelineBuilder.WithBehavior(typeof(InboxBehavior<>));
 
             return pipelineBuilder;

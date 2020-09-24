@@ -5,6 +5,7 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability;
+using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Slips;
@@ -14,6 +15,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Chatter.CQRS.DependencyInjection;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -77,12 +79,19 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IRouteCompensationMessages, CompensateRouter>();
             builder.Services.AddScoped<IReplyRouter, ReplyRouter>();
 
-            if (options?.Reliability?.OutboxEnabled ?? false)
+            builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
+            builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
+
+            if (options?.Reliability?.RouteMessagesToOutbox ?? false)
             {
-                //TODO: need conditionally wire up in memory outbox. use successor pattern?
                 //TODO: wire up unit of work behavior when not using inbox, but using outbox
                 builder.Services.AddScoped<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
-                builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
+
+                if (options?.Reliability?.EnableOutboxPollingProcessor ?? false)
+                {
+                    builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
+                }
             }
             else
             {

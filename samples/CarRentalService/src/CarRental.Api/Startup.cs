@@ -4,8 +4,8 @@ using CarRental.Application.Services;
 using CarRental.Infrastructure.Repositories;
 using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
-using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.EntityFramework;
+using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -38,7 +38,6 @@ namespace CarRental.Api
 
             services.AddScoped<IEventMapper, EventMapper>();
             services.AddScoped<IRepository<Domain.Aggregates.CarRental, Guid>, CarRentalRepository>();
-            services.AddScoped<ITransactionalBrokeredMessageOutbox, TransactionalOutbox<CarRentalContext>>();
 
             services.AddChatterCqrs(typeof(BookRentalCarCommand))
                     .AddCommandPipeline(builder =>

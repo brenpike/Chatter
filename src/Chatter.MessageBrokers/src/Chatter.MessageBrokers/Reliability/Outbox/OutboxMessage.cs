@@ -11,5 +11,6 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         public string StringifiedMessage { get; set; }
         public DateTime SentToOutboxAtUtc { get; set; }
         public DateTime? ProcessedFromOutboxAtUtc { get; set; }
+        public Guid BatchId { get; set; }
     }
 }

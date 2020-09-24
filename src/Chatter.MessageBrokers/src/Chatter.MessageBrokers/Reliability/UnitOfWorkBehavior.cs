@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
 {
-    public class UnitOfWorkBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : IMessage
+    public sealed class UnitOfWorkBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : IMessage
     {
         private readonly IUnitOfWork _unitOfWork;
 
