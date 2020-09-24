@@ -48,6 +48,8 @@ namespace CarRental.Application.Commands.Handlers
 
             var integrationEvents = _eventMapper.MapAll(carRental.DomainEvents);
 
+            //throw new Exception("without using the outbox, we're in a bad state. aggregate has been saved, integration events will never be published.");
+
             foreach (var ie in integrationEvents)
             {
                 var options = new PublishOptions()

@@ -16,11 +16,16 @@ namespace CarRental.Infrastructure.Repositories
         public CarRentalRepository(CarRentalContext context) 
             => _context = context ?? throw new ArgumentNullException(nameof(context));
 
-        public void Add(Domain.Aggregates.CarRental entity) 
-            => _context.Set<Domain.Aggregates.CarRental>().Add(entity);
+        public void Add(Domain.Aggregates.CarRental entity)
+        {
+            _context.Set<Domain.Aggregates.CarRental>().Add(entity);
+        }
 
         public async Task AddAsync(Domain.Aggregates.CarRental entity)
-            => await _context.Set<Domain.Aggregates.CarRental>().AddAsync(entity);
+        {
+            await _context.Set<Domain.Aggregates.CarRental>().AddAsync(entity);
+            await _context.SaveChangesAsync();
+        }
 
         public void AddOrUpdate(Domain.Aggregates.CarRental entity)
         {

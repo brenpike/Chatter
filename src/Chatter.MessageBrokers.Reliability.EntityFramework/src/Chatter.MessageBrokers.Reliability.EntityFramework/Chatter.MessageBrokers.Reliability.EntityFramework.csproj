@@ -6,7 +6,7 @@
     <Version>0.0.1</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
-    <Description>An implementation of the Chatter.MessageBrokers.Reliability adapter library which leverages EF Core for transactions, unit of work, inbox and outbox</Description>
+    <Description>An implementation of the Chatter.MessageBrokers.Reliability adapter library which leverages EF Core for transactions, units of work, inbox and outbox</Description>
     <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>Messaging,Message Broker,.NET Core, EF Core</PackageTags>
