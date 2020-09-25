@@ -5,12 +5,22 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Folder Include="Creators\MessageBrokers\AzureServiceBus\" />
+    <Compile Remove="Creators\MessageBrokers\AzureServiceBus\**" />
+    <EmbeddedResource Remove="Creators\MessageBrokers\AzureServiceBus\**" />
+    <None Remove="Creators\MessageBrokers\AzureServiceBus\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Creators\AzureServiceBus\" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="3.1.8" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="3.1.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\src\Chatter.MessageBrokers.Reliability.EntityFramework\src\Chatter.MessageBrokers.Reliability.EntityFramework\Chatter.MessageBrokers.Reliability.EntityFramework.csproj" />
   </ItemGroup>
 
 </Project>

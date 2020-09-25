@@ -4,7 +4,8 @@ using System.Text;
 
 namespace Chatter.Testing.Core.Creators.CQRS
 {
-    class NewExtensions
+    public static class NewExtensions
     {
+     
     }
 }
