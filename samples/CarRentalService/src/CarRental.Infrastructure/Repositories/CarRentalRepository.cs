@@ -64,8 +64,11 @@ namespace CarRental.Infrastructure.Repositories
             return await resultWithEagerLoading.ToListAsync();
         }
 
-        public Domain.Aggregates.CarRental GetById(Guid id) 
+        public Domain.Aggregates.CarRental GetById(Guid id)
             => _context.Set<Domain.Aggregates.CarRental>().Find(id);
+
+        public async Task<Domain.Aggregates.CarRental> GetByIdAsync(Guid id) 
+            => await _context.Set<Domain.Aggregates.CarRental>().FindAsync(id);
 
         public void Remove(Domain.Aggregates.CarRental entity) 
             => _context.Set<Domain.Aggregates.CarRental>().Remove(entity);
