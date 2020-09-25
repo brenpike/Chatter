@@ -1,6 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using System;
 
 namespace CarRental.Infrastructure.Repositories.Configurations
 {
@@ -11,20 +10,15 @@ namespace CarRental.Infrastructure.Repositories.Configurations
             builder.HasKey(t => t.Id);
             builder.Property(t => t.Id).IsRequired();
 
-            builder.Property<string>("_airport")
-                .HasColumnName("Airport").IsRequired();
+            builder.Property(t => t.Airport).IsRequired();
 
-            builder.Property<DateTime>("_from")
-                .HasColumnName("From").IsRequired();
+            builder.Property(t => t.From).IsRequired();
 
-            builder.Property<DateTime>("_until")
-                .HasColumnName("Until").IsRequired();
+            builder.Property(t => t.Until).IsRequired();
 
-            builder.Property<string>("_vendor")
-                .HasColumnName("Vendor").IsRequired();
+            builder.Property(t => t.Vendor).IsRequired();
 
-            builder.Property<Guid>("_reservationId")
-                .HasColumnName("ReservationId").IsRequired();
+            builder.Property(t => t.ReservationId).IsRequired();
         }
     }
 }

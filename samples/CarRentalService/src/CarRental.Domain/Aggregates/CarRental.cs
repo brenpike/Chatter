@@ -7,11 +7,11 @@ namespace CarRental.Domain.Aggregates
 {
     public class CarRental : Aggregate<Guid>
     {
-        private string _vendor;
-        private string _airport;
-        private DateTime _from;
-        private DateTime _until;
-        private Guid _reservationId;
+        public string Vendor { get; internal set; }
+        public string Airport { get; internal set; }
+        public DateTime From { get; internal set; }
+        public DateTime Until { get; internal set; }
+        public Guid ReservationId { get; internal set; }
 
         public CarRental()
         {
@@ -20,15 +20,15 @@ namespace CarRental.Domain.Aggregates
 
         public Guid Reserve(string airportCode, string vendor, DateTime from, DateTime until)
         {
-            _vendor = vendor;
-            _airport = new AirportCode(airportCode).Code;
-            _from = from;
-            _until = until;
-            _reservationId = Guid.NewGuid();
+            Vendor = vendor;
+            Airport = new AirportCode(airportCode).Code;
+            From = from;
+            From = until;
+            ReservationId = Guid.NewGuid();
 
-            AddDomainEvent(new CarRentalBooked() { Id = Id, ReservationId = _reservationId });
+            AddDomainEvent(new CarRentalBooked() { Id = Id, ReservationId = ReservationId });
 
-            return _reservationId;
+            return ReservationId;
         }
     }
 }

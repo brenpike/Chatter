@@ -21,6 +21,13 @@ namespace Samples.SharedKernel.Interfaces
         TEntity GetById(TId id);
 
         /// <summary>
+        /// Get an entity by it's identifier
+        /// </summary>
+        /// <param name="id"></param>
+        /// <returns>Will return null if entity does not exist or an instance of the entity</returns>
+        Task<TEntity> GetByIdAsync(TId id);
+
+        /// <summary>
         /// Gets a list of all entities that matching an filter condition if one is specified
         /// </summary>
         /// <param name="func">An optional delegate that can be used to apply a filter condition</param>
