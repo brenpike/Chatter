@@ -333,6 +333,3 @@ ASALocalRun/
 .vscode
 
 Publish/
-src/Chatter.MessageBrokers.Reliability.EntityFramework.zip
-src/Chatter.MessageBrokers.Reliability.EntityFramework/tests.zip
-tests.zip
