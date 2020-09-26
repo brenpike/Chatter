@@ -4,15 +4,17 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Moq;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokeredMessageOutbox
 {
     public class WhenGettingUnprocessedMessages : Testing.Core.Context
     {
-        private readonly DbContextCreator _context;
+        private DbContextCreator _context;
         private readonly BrokeredMessageOutbox<DbContext> _sut;
         private readonly Mock<ILogger<BrokeredMessageOutbox<DbContext>>> _logger;
+
         public WhenGettingUnprocessedMessages()
         {
             _context = New.MessageBrokers().DbContext();
@@ -21,7 +23,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         }
 
         [Fact]
-        public async void MustNotGetMessagesThatAreProcessed()
+        public async Task MustNotGetMessagesThatAreProcessed()
         {
             var message = New.MessageBrokers().OutboxMessage();
             _context.ThatHasOutboxMessage(message);
@@ -30,7 +32,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         }
 
         [Fact]
-        public async void MustGetMessagesThatAreNotProcessed()
+        public async Task MustGetMessagesThatAreNotProcessed()
         {
             var message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
             _context.ThatHasOutboxMessage(message);

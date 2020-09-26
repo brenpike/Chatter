@@ -1,6 +1,4 @@
-﻿using System;
-
-namespace Chatter.MessageBrokers
+﻿namespace Chatter.MessageBrokers
 {
     public interface IBrokeredMessageBodyConverter
     {
@@ -9,5 +7,6 @@ namespace Chatter.MessageBrokers
         byte[] Convert(object body);
         string Stringify(byte[] body);
         string Stringify(object body);
+        byte[] GetBytes(string body);
     }
 }

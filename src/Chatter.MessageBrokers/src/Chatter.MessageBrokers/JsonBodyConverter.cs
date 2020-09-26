@@ -8,23 +8,18 @@ namespace Chatter.MessageBrokers
         public string ContentType => "application/json";
 
         public TBody Convert<TBody>(byte[] body)
-        {
-            return JsonConvert.DeserializeObject<TBody>(Stringify(body));
-        }
+            => JsonConvert.DeserializeObject<TBody>(Stringify(body));
 
         public byte[] Convert(object body)
-        {
-            return Encoding.UTF8.GetBytes(Stringify(body));
-        }
+            => Encoding.UTF8.GetBytes(Stringify(body));
 
         public string Stringify(byte[] body)
-        {
-            return Encoding.UTF8.GetString(body);
-        }
+            => Encoding.UTF8.GetString(body);
 
         public string Stringify(object body)
-        {
-            return JsonConvert.SerializeObject(body);
-        }
+            => JsonConvert.SerializeObject(body);
+
+        public byte[] GetBytes(string body)
+            => Encoding.UTF8.GetBytes(body);
     }
 }

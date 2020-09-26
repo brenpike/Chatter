@@ -29,7 +29,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Core
                 throw new InvalidOperationException($"The received {nameof(TransactionContext)} did not contain a {typeof(MessageReceiver).Name}");
             }
 
-            return receiver.DeadLetterAsync(receivedMessage.SystemProperties.LockToken, (IDictionary<string, object>)inboundBrokeredMessage.ApplicationProperties);
+            return receiver.DeadLetterAsync(receivedMessage.SystemProperties.LockToken, (IDictionary<string, object>)inboundBrokeredMessage.MessageContext);
         }
     }
 }

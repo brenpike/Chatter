@@ -23,7 +23,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
                 To = brokeredMessage.GetToAddress()
             }
             .WithHashedBodyMessageId(brokeredMessage.MessageId)
-            .WithUserProperties(brokeredMessage.ApplicationProperties);
+            .WithUserProperties(brokeredMessage.MessageContext);
 
             if (brokeredMessage.GetTimeToLive() != null)
             {
@@ -40,51 +40,51 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 
         public static OutboundBrokeredMessage WithScheduledEnqueueTimeUtc(this OutboundBrokeredMessage outboundBrokeredMessage, DateTime scheduledEnqueueTimeUtc)
         {
-            outboundBrokeredMessage.ApplicationProperties[ASBHeaders.ScheduledEnqueueTimeUtc] = scheduledEnqueueTimeUtc;
+            outboundBrokeredMessage.MessageContext[ASBHeaders.ScheduledEnqueueTimeUtc] = scheduledEnqueueTimeUtc;
             return outboundBrokeredMessage;
         }
 
         public static DateTime? GetScheduledEnqueueTimeUtc(this OutboundBrokeredMessage outboundBrokeredMessage)
         {
-            return (DateTime?)outboundBrokeredMessage.GetApplicationPropertyByKey(ASBHeaders.ScheduledEnqueueTimeUtc);
+            return (DateTime?)outboundBrokeredMessage.GetMessageContextByKey(ASBHeaders.ScheduledEnqueueTimeUtc);
         }
 
         public static OutboundBrokeredMessage WithTo(this OutboundBrokeredMessage outboundBrokeredMessage, string to)
         {
-            outboundBrokeredMessage.ApplicationProperties[ASBHeaders.To] = to;
+            outboundBrokeredMessage.MessageContext[ASBHeaders.To] = to;
             return outboundBrokeredMessage;
         }
 
         public static string GetToAddress(this OutboundBrokeredMessage outboundBrokeredMessage)
         {
-            return (string)outboundBrokeredMessage.GetApplicationPropertyByKey(ASBHeaders.To);
+            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBHeaders.To);
         }
 
         public static OutboundBrokeredMessage WithViaPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage, string viaPartitionKey)
         {
-            outboundBrokeredMessage.ApplicationProperties[ASBHeaders.ViaPartitionKey] = viaPartitionKey;
+            outboundBrokeredMessage.MessageContext[ASBHeaders.ViaPartitionKey] = viaPartitionKey;
             return outboundBrokeredMessage;
         }
 
         public static string GetViaPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage)
         {
-            return (string)outboundBrokeredMessage.GetApplicationPropertyByKey(ASBHeaders.ViaPartitionKey);
+            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBHeaders.ViaPartitionKey);
         }
 
         public static OutboundBrokeredMessage WithPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage, string partitionKey)
         {
-            outboundBrokeredMessage.ApplicationProperties[ASBHeaders.PartitionKey] = partitionKey;
+            outboundBrokeredMessage.MessageContext[ASBHeaders.PartitionKey] = partitionKey;
             return outboundBrokeredMessage;
         }
 
         public static string GetPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage)
         {
-            return (string)outboundBrokeredMessage.GetApplicationPropertyByKey(ASBHeaders.PartitionKey);
+            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBHeaders.PartitionKey);
         }
 
         public static object GetApplicationPropertyByKey(this OutboundBrokeredMessage outboundBrokeredMessage, string key)
         {
-            if (outboundBrokeredMessage.ApplicationProperties.TryGetValue(key, out var output))
+            if (outboundBrokeredMessage.MessageContext.TryGetValue(key, out var output))
             {
                 return output;
             }

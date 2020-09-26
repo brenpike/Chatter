@@ -116,8 +116,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 using var scope = CreateTransactionScope(transactionMode);
                 try
                 {
-                    msg.AddUserProperty(ApplicationProperties.TimeToLive, msg.TimeToLive);
-                    msg.AddUserProperty(ApplicationProperties.ExpiryTimeUtc, msg.ExpiresAtUtc);
+                    msg.AddUserProperty(MessageContext.TimeToLive, msg.TimeToLive);
+                    msg.AddUserProperty(MessageContext.ExpiryTimeUtc, msg.ExpiresAtUtc);
 
                     var bodyConverter = _bodyConverterFactory.CreateBodyConverter(msg.ContentType);
 

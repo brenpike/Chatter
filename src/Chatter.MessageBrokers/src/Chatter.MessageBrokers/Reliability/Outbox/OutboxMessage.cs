@@ -6,9 +6,9 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
     {
         public string MessageId { get; set; }
         public string Destination { get; set; }
-        public byte[] Body { get; set; }
-        public string StringifiedApplicationProperties { get; set; }
-        public string StringifiedMessage { get; set; }
+        public string MessageContext { get; set; }
+        public string MessageBody { get; set; }
+        public string MessageContentType { get; set; }
         public DateTime SentToOutboxAtUtc { get; set; }
         public DateTime? ProcessedFromOutboxAtUtc { get; set; }
         public Guid BatchId { get; set; }

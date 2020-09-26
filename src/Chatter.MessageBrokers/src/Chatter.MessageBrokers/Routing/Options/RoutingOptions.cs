@@ -20,7 +20,7 @@ namespace Chatter.MessageBrokers.Routing.Options
 
         public void SetCorrelationId(string correlationId)
         {
-            this.SetApplicationProperty(MessageBrokers.ApplicationProperties.CorrelationId, correlationId);
+            this.SetApplicationProperty(MessageBrokers.MessageContext.CorrelationId, correlationId);
         }
 
         public ContextContainer Container { get; }

@@ -25,26 +25,21 @@ namespace CarRental.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<string>("_airport")
+                    b.Property<string>("Airport")
                         .IsRequired()
-                        .HasColumnName("Airport")
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<DateTime>("_from")
-                        .HasColumnName("From")
+                    b.Property<DateTime>("From")
                         .HasColumnType("datetime2");
 
-                    b.Property<Guid>("_reservationId")
-                        .HasColumnName("ReservationId")
+                    b.Property<Guid>("ReservationId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<DateTime>("_until")
-                        .HasColumnName("Until")
+                    b.Property<DateTime>("Until")
                         .HasColumnType("datetime2");
 
-                    b.Property<string>("_vendor")
+                    b.Property<string>("Vendor")
                         .IsRequired()
-                        .HasColumnName("Vendor")
                         .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
@@ -73,11 +68,19 @@ namespace CarRental.Infrastructure.Migrations
                     b.Property<Guid>("BatchId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<byte[]>("Body")
-                        .IsRequired()
-                        .HasColumnType("varbinary(max)");
-
                     b.Property<string>("Destination")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("MessageBody")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("MessageContentType")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("MessageContext")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -86,14 +89,6 @@ namespace CarRental.Infrastructure.Migrations
 
                     b.Property<DateTime>("SentToOutboxAtUtc")
                         .HasColumnType("datetime2");
-
-                    b.Property<string>("StringifiedApplicationProperties")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("StringifiedMessage")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
 
                     b.HasKey("MessageId");
 

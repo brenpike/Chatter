@@ -10,17 +10,17 @@ namespace Chatter.MessageBrokers.Receiving
     /// </summary>
     public class InboundBrokeredMessage
     {
-        private readonly IDictionary<string, object> _applicationProperties;
+        private readonly IDictionary<string, object> _messageContext;
 
-        internal InboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> applicationProperties, string messageReceiverPath, IBrokeredMessageBodyConverter bodyConverter)
+        internal InboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> messageContext, string messageReceiverPath, IBrokeredMessageBodyConverter bodyConverter)
         {
-            MessageId = messageId ?? throw new System.ArgumentNullException(nameof(messageId));
-            Body = body ?? throw new System.ArgumentNullException(nameof(body));
-            _applicationProperties = applicationProperties ?? new ConcurrentDictionary<string, object>();
+            MessageId = messageId ?? throw new ArgumentNullException(nameof(messageId));
+            Body = body ?? throw new ArgumentNullException(nameof(body));
+            _messageContext = messageContext ?? new ConcurrentDictionary<string, object>();
             MessageReceiverPath = messageReceiverPath;
-            BodyConverter = bodyConverter ?? throw new System.ArgumentNullException(nameof(bodyConverter));
+            BodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
             TransactionMode = GetTransactionMode();
-            CorrelationId = GetApplicationPropertyByKey<string>(MessageBrokers.ApplicationProperties.CorrelationId);
+            CorrelationId = GetMessageContextByKey<string>(MessageBrokers.MessageContext.CorrelationId);
         }
 
         /// <summary>
@@ -34,7 +34,7 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// The application properties of the received message
         /// </summary>
-        public IReadOnlyDictionary<string, object> ApplicationProperties => (IReadOnlyDictionary<string, object>)_applicationProperties;
+        public IReadOnlyDictionary<string, object> MessageContext => (IReadOnlyDictionary<string, object>)_messageContext;
         /// <summary>
         /// The name of the message receiver that recieved this message
         /// </summary>
@@ -56,7 +56,7 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// True if the inbound message has encountered an error while being received
         /// </summary>
-        public bool IsError => GetApplicationPropertyByKey<bool>(MessageBrokers.ApplicationProperties.IsError);
+        public bool IsError => GetMessageContextByKey<bool>(MessageBrokers.MessageContext.IsError);
         /// <summary>
         /// True if the inbound message has not encountered an error while being received
         /// </summary>
@@ -64,7 +64,7 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// The receivers visited by the inbound message prior to the most recent message receiver
         /// </summary>
-        public string Via => GetApplicationPropertyByKey<string>(MessageBrokers.ApplicationProperties.Via);
+        public string Via => GetMessageContextByKey<string>(MessageBrokers.MessageContext.Via);
         internal IBrokeredMessageBodyConverter BodyConverter { get; }
 
         /// <summary>
@@ -77,26 +77,26 @@ namespace Chatter.MessageBrokers.Receiving
 
         internal InboundBrokeredMessage UpdateVia(string via)
         {
-            var key = MessageBrokers.ApplicationProperties.Via;
-            if (_applicationProperties.ContainsKey(key))
+            var key = MessageBrokers.MessageContext.Via;
+            if (_messageContext.ContainsKey(key))
             {
-                var currentVia = (string)ApplicationProperties[key];
+                var currentVia = (string)MessageContext[key];
                 if (!(string.IsNullOrWhiteSpace(via)))
                 {
                     currentVia += "," + via;
-                    _applicationProperties[key] = currentVia;
+                    _messageContext[key] = currentVia;
                 }
             }
             else
             {
-                _applicationProperties[key] = via;
+                _messageContext[key] = via;
             }
             return this;
         }
 
         private TransactionMode GetTransactionMode()
         {
-            if (_applicationProperties.TryGetValue(MessageBrokers.ApplicationProperties.TransactionMode, out var transactionMode))
+            if (_messageContext.TryGetValue(MessageBrokers.MessageContext.TransactionMode, out var transactionMode))
             {
                 return (TransactionMode)transactionMode;
             }
@@ -106,9 +106,9 @@ namespace Chatter.MessageBrokers.Receiving
             }
         }
 
-        private T GetApplicationPropertyByKey<T>(string key)
+        private T GetMessageContextByKey<T>(string key)
         {
-            if (_applicationProperties.TryGetValue(key, out var output))
+            if (_messageContext.TryGetValue(key, out var output))
             {
                 return (T)output;
             }
@@ -120,39 +120,39 @@ namespace Chatter.MessageBrokers.Receiving
 
         internal InboundBrokeredMessage WithFailureDetails(string failureDetails)
         {
-            _applicationProperties[MessageBrokers.ApplicationProperties.FailureDetails] = failureDetails;
+            _messageContext[MessageBrokers.MessageContext.FailureDetails] = failureDetails;
             return this;
         }
 
         internal InboundBrokeredMessage WithFailureDescription(string failureDescription)
         {
-            _applicationProperties[MessageBrokers.ApplicationProperties.FailureDescription] = failureDescription;
+            _messageContext[MessageBrokers.MessageContext.FailureDescription] = failureDescription;
             return this;
         }
 
         internal InboundBrokeredMessage SetFailure()
         {
-            _applicationProperties[MessageBrokers.ApplicationProperties.IsError] = true;
-            _applicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)SagaStatusEnum.Failed;
+            _messageContext[MessageBrokers.MessageContext.IsError] = true;
+            _messageContext[MessageBrokers.MessageContext.SagaStatus] = (byte)SagaStatusEnum.Failed;
             return this;
         }
 
         internal InboundBrokeredMessage WithSagaStatus(SagaStatusEnum sagaStatus)
         {
-            _applicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)sagaStatus;
+            _messageContext[MessageBrokers.MessageContext.SagaStatus] = (byte)sagaStatus;
             return this;
         }
 
         internal InboundBrokeredMessage ClearReplyToProperties()
         {
-            _applicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToAddress);
-            _applicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToGroupId);
+            _messageContext.Remove(MessageBrokers.MessageContext.ReplyToAddress);
+            _messageContext.Remove(MessageBrokers.MessageContext.ReplyToGroupId);
             return this;
         }
 
         internal InboundBrokeredMessage WithRouteToSelfPath(string destinationPath)
         {
-            _applicationProperties[MessageBrokers.ApplicationProperties.RouteToSelfPath] = destinationPath;
+            _messageContext[MessageBrokers.MessageContext.RouteToSelfPath] = destinationPath;
             return this;
         }
     }

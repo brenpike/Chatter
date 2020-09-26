@@ -12,9 +12,9 @@ namespace CarRental.Infrastructure.Repositories.Configurations
             builder.Property(t => t.MessageId).IsRequired();
             builder.Property(t => t.ProcessedFromOutboxAtUtc);
             builder.Property(t => t.SentToOutboxAtUtc).IsRequired();
-            builder.Property(t => t.StringifiedMessage).IsRequired();
-            builder.Property(t => t.StringifiedApplicationProperties).IsRequired();
-            builder.Property(t => t.Body).IsRequired();
+            builder.Property(t => t.MessageBody).IsRequired();
+            builder.Property(t => t.MessageContext).IsRequired();
+            builder.Property(t => t.MessageContentType).IsRequired();
             builder.Property(t => t.Destination).IsRequired();
             builder.Property(t => t.BatchId).IsRequired();
         }

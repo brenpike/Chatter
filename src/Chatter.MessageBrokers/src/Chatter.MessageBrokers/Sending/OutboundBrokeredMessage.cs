@@ -10,20 +10,20 @@ namespace Chatter.MessageBrokers.Sending
     {
         private readonly IBrokeredMessageBodyConverter _bodyConverter;
 
-        public OutboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> applicationProperties, string destination, IBrokeredMessageBodyConverter bodyConverter)
+        public OutboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> messageContext, string destination, IBrokeredMessageBodyConverter bodyConverter)
         {
             if (string.IsNullOrWhiteSpace(destination))
             {
                 throw new ArgumentException($"A destination is required for an {typeof(OutboundBrokeredMessage).Name}.", nameof(destination));
             }
 
-            ApplicationProperties = applicationProperties ?? new ConcurrentDictionary<string, object>();
+            MessageContext = messageContext ?? new ConcurrentDictionary<string, object>();
 
             MessageId = messageId;
             Body = body ?? throw new ArgumentNullException(nameof(body));
             Destination = destination;
             _bodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
-            ApplicationProperties[MessageBrokers.ApplicationProperties.ContentType] = _bodyConverter.ContentType;
+            MessageContext[MessageBrokers.MessageContext.ContentType] = _bodyConverter.ContentType;
 
             if (string.IsNullOrWhiteSpace(GetCorrelationId()))
             {
@@ -31,11 +31,11 @@ namespace Chatter.MessageBrokers.Sending
             }
         }
 
-        public OutboundBrokeredMessage(byte[] body, IDictionary<string, object> applicationProperties, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(null, body, applicationProperties, destination, bodyConverter) {}
+        public OutboundBrokeredMessage(byte[] body, IDictionary<string, object> messageContext, string destination, IBrokeredMessageBodyConverter bodyConverter)
+            : this(null, body, messageContext, destination, bodyConverter) {}
 
-        public OutboundBrokeredMessage(string messageId, object message, IDictionary<string, object> applicationProperties, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(messageId, bodyConverter.Convert(message), applicationProperties, destination, bodyConverter) {}
+        public OutboundBrokeredMessage(string messageId, object message, IDictionary<string, object> messageContext, string destination, IBrokeredMessageBodyConverter bodyConverter)
+            : this(messageId, bodyConverter.Convert(message), messageContext, destination, bodyConverter) {}
 
         public OutboundBrokeredMessage(string messageId, object message, string destination, IBrokeredMessageBodyConverter bodyConverter)
             : this(messageId, bodyConverter.Convert(message), new Dictionary<string, object>(), destination, bodyConverter) {}
@@ -46,23 +46,23 @@ namespace Chatter.MessageBrokers.Sending
         public string MessageId { get; }
         public string Destination { get; }
         public byte[] Body { get; }
-        public IDictionary<string, object> ApplicationProperties { get; }
+        public IDictionary<string, object> MessageContext { get; }
 
         public static OutboundBrokeredMessage Forward(InboundBrokeredMessage messageToForward, string forwardDestination) 
-            => new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.ApplicationProperties, forwardDestination, messageToForward.BodyConverter);
+            => new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.MessageContext, forwardDestination, messageToForward.BodyConverter);
 
         public string Stringify() 
             => _bodyConverter.Stringify(Body);
 
         public OutboundBrokeredMessage WithTimeToLive(TimeSpan timeToLive)
         {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.TimeToLive] = timeToLive;
+            MessageContext[MessageBrokers.MessageContext.TimeToLive] = timeToLive;
             return this;
         }
 
         public OutboundBrokeredMessage RefreshTimeToLive()
         {
-            var expiryTimeUtc = (DateTime?)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ExpiryTimeUtc);
+            var expiryTimeUtc = (DateTime?)GetMessageContextByKey(MessageBrokers.MessageContext.ExpiryTimeUtc);
             if (expiryTimeUtc != null)
             {
                 var ttl = expiryTimeUtc.Value - DateTime.UtcNow;
@@ -80,13 +80,13 @@ namespace Chatter.MessageBrokers.Sending
 
         public OutboundBrokeredMessage WithCorrelationId(string correlationId)
         {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.CorrelationId] = correlationId;
+            MessageContext[MessageBrokers.MessageContext.CorrelationId] = correlationId;
             return this;
         }
 
         public TransactionMode GetTransactionMode()
         {
-            if (ApplicationProperties.TryGetValue(MessageBrokers.ApplicationProperties.TransactionMode, out var transactionMode))
+            if (MessageContext.TryGetValue(MessageBrokers.MessageContext.TransactionMode, out var transactionMode))
             {
                 return (TransactionMode)transactionMode;
             }
@@ -98,32 +98,32 @@ namespace Chatter.MessageBrokers.Sending
 
         public TimeSpan? GetTimeToLive()
         {
-            return (TimeSpan?)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.TimeToLive);
+            return (TimeSpan?)GetMessageContextByKey(MessageBrokers.MessageContext.TimeToLive);
         }
 
         public string GetCorrelationId()
         {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.CorrelationId);
+            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.CorrelationId);
         }
 
         public string GetReplyToAddress()
         {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ReplyToAddress);
+            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.ReplyToAddress);
         }
 
         public string GetReplyToGroupId()
         {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.ReplyToGroupId);
+            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.ReplyToGroupId);
         }
 
         public string GetGroupId()
         {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.GroupId);
+            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.GroupId);
         }
 
         public string GetSubject()
         {
-            return (string)GetApplicationPropertyByKey(MessageBrokers.ApplicationProperties.Subject);
+            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.Subject);
         }
 
         public string GetContentType()
@@ -133,33 +133,33 @@ namespace Chatter.MessageBrokers.Sending
 
         internal OutboundBrokeredMessage WithFailureDetails(string failureDetails)
         {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.FailureDetails] = failureDetails;
+            MessageContext[MessageBrokers.MessageContext.FailureDetails] = failureDetails;
             return this;
         }
 
         internal OutboundBrokeredMessage WithFailureDescription(string failureDescription)
         {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.FailureDescription] = failureDescription;
+            MessageContext[MessageBrokers.MessageContext.FailureDescription] = failureDescription;
             return this;
         }
 
         internal OutboundBrokeredMessage SetFailure()
         {
-            ApplicationProperties[MessageBrokers.ApplicationProperties.IsError] = true;
-            ApplicationProperties[MessageBrokers.ApplicationProperties.SagaStatus] = (byte)SagaStatusEnum.Failed;
+            MessageContext[MessageBrokers.MessageContext.IsError] = true;
+            MessageContext[MessageBrokers.MessageContext.SagaStatus] = (byte)SagaStatusEnum.Failed;
             return this;
         }
 
         internal OutboundBrokeredMessage ClearReplyToProperties()
         {
-            ApplicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToAddress);
-            ApplicationProperties.Remove(MessageBrokers.ApplicationProperties.ReplyToGroupId);
+            MessageContext.Remove(MessageBrokers.MessageContext.ReplyToAddress);
+            MessageContext.Remove(MessageBrokers.MessageContext.ReplyToGroupId);
             return this;
         }
 
-        public object GetApplicationPropertyByKey(string key)
+        public object GetMessageContextByKey(string key)
         {
-            if (ApplicationProperties.TryGetValue(key, out var output))
+            if (MessageContext.TryGetValue(key, out var output))
             {
                 return output;
             }
