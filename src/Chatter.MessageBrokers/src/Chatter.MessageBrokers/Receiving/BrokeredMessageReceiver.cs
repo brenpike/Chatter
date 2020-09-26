@@ -229,8 +229,8 @@ namespace Chatter.MessageBrokers.Receiving
         {
             if (inboundMessage.IsError)
             {
-                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.FailureDetails, out var reason);
-                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.FailureDescription, out var description);
+                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDetails, out var reason);
+                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDescription, out var description);
                 var errorContext = new ErrorContext((string)reason, (string)description);
                 messageContext.SetFailure(errorContext);
             }
@@ -238,9 +238,9 @@ namespace Chatter.MessageBrokers.Receiving
 
         private void CreateSagaContextFromHeaders(MessageBrokerContext messageContext)
         {
-            if (messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(ApplicationProperties.SagaId, out var sagaId))
+            if (messageContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.SagaId, out var sagaId))
             {
-                messageContext.BrokeredMessage.ApplicationProperties.TryGetValue(ApplicationProperties.SagaStatus, out var sagaStatus);
+                messageContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.SagaStatus, out var sagaStatus);
                 var sagaContext = new SagaContext((string)sagaId, MessageReceiverPath, NextDestinationPath, (SagaStatusEnum)sagaStatus, parentContainer: messageContext.Container);
                 messageContext.Container.Include(sagaContext);
             }
@@ -257,10 +257,10 @@ namespace Chatter.MessageBrokers.Receiving
 
         private static void CreateReplyContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
         {
-            if (inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.ReplyToAddress, out var replyTo))
+            if (inboundMessage.MessageContext.TryGetValue(MessageContext.ReplyToAddress, out var replyTo))
             {
-                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.ReplyToGroupId, out var replyToSessionId);
-                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.GroupId, out var groupId);
+                inboundMessage.MessageContext.TryGetValue(MessageContext.ReplyToGroupId, out var replyToSessionId);
+                inboundMessage.MessageContext.TryGetValue(MessageContext.GroupId, out var groupId);
                 replyToSessionId = !string.IsNullOrWhiteSpace((string)replyToSessionId) ? (string)replyToSessionId : (string)groupId;
                 var replyContext = new ReplyToRoutingContext((string)replyTo, (string)replyToSessionId, messageContext.Container);
                 messageContext.Container.Include(replyContext);
@@ -272,8 +272,8 @@ namespace Chatter.MessageBrokers.Receiving
         {
             if (!string.IsNullOrWhiteSpace(CompensateDestinationPath))
             {
-                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.FailureDetails, out var detail);
-                inboundMessage.ApplicationProperties.TryGetValue(ApplicationProperties.FailureDescription, out var description);
+                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDetails, out var detail);
+                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDescription, out var description);
                 var compensateContext = new CompensationRoutingContext(CompensateDestinationPath, (string)detail, (string)description, messageContext.Container);
                 messageContext.Container.Include(compensateContext);
             }

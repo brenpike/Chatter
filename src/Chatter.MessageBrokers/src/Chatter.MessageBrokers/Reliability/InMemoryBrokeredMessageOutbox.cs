@@ -45,10 +45,10 @@ namespace Chatter.MessageBrokers.Reliability
             var outboxMessage = new OutboxMessage
             {
                 MessageId = outboundBrokeredMessage.MessageId,
-                StringifiedApplicationProperties = JsonConvert.SerializeObject(outboundBrokeredMessage.ApplicationProperties),
-                Body = outboundBrokeredMessage.Body,
+                MessageContext = JsonConvert.SerializeObject(outboundBrokeredMessage.MessageContext),
                 Destination = outboundBrokeredMessage.Destination,
-                StringifiedMessage = outboundBrokeredMessage.Stringify(),
+                MessageBody = outboundBrokeredMessage.Stringify(),
+                MessageContentType = outboundBrokeredMessage.GetContentType(),
                 SentToOutboxAtUtc = DateTime.UtcNow,
                 ProcessedFromOutboxAtUtc = null,
                 BatchId = transactionId

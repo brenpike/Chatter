@@ -83,14 +83,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             var currentTransaction = transactionContext?.Container.GetOrAdd<IPersistanceTransaction>();
             Guid transactionId = currentTransaction?.TransactionId ?? Guid.Empty;
 
-            //TODO: trim the OutboxMessage object down. likely dont need Body, etc.
             var outboxMessage = new OutboxMessage
             {
                 MessageId = outboundBrokeredMessage.MessageId,
-                StringifiedApplicationProperties = JsonConvert.SerializeObject(outboundBrokeredMessage.ApplicationProperties),
-                Body = outboundBrokeredMessage.Body,
+                MessageContext = JsonConvert.SerializeObject(outboundBrokeredMessage.MessageContext),
                 Destination = outboundBrokeredMessage.Destination,
-                StringifiedMessage = outboundBrokeredMessage.Stringify(),
+                MessageBody = outboundBrokeredMessage.Stringify(),
+                MessageContentType = outboundBrokeredMessage.GetContentType(),
                 SentToOutboxAtUtc = DateTime.UtcNow,
                 ProcessedFromOutboxAtUtc = null,
                 BatchId = transactionId

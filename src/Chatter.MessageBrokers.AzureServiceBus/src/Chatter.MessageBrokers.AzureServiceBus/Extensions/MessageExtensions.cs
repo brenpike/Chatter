@@ -37,9 +37,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Extensions
 
         public static TransactionMode GetTransactionMode(this Message message)
         {
-            if (message.UserProperties.ContainsKey(ApplicationProperties.TransactionMode))
+            if (message.UserProperties.ContainsKey(MessageContext.TransactionMode))
             {
-                return (TransactionMode)message.UserProperties[ApplicationProperties.TransactionMode];
+                return (TransactionMode)message.UserProperties[MessageContext.TransactionMode];
             }
             else
             {

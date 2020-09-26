@@ -36,9 +36,8 @@ namespace Chatter.Testing.Core.Creators.MessageBrokers
                         b.Property(t => t.MessageId).IsRequired();
                         b.Property(t => t.ProcessedFromOutboxAtUtc);
                         b.Property(t => t.SentToOutboxAtUtc).IsRequired();
-                        b.Property(t => t.StringifiedMessage).IsRequired();
-                        b.Property(t => t.StringifiedApplicationProperties).IsRequired();
-                        b.Property(t => t.Body).IsRequired();
+                        b.Property(t => t.MessageBody).IsRequired();
+                        b.Property(t => t.MessageContext).IsRequired();
                         b.Property(t => t.Destination).IsRequired();
                         b.Property(t => t.BatchId).IsRequired();
                     });

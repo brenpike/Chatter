@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace CarRental.Infrastructure.Migrations
 {
-    public partial class InitialCreate : Migration
+    public partial class Create : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -12,11 +12,11 @@ namespace CarRental.Infrastructure.Migrations
                 columns: table => new
                 {
                     Id = table.Column<Guid>(nullable: false),
+                    Vendor = table.Column<string>(nullable: false),
                     Airport = table.Column<string>(nullable: false),
                     From = table.Column<DateTime>(nullable: false),
-                    ReservationId = table.Column<Guid>(nullable: false),
                     Until = table.Column<DateTime>(nullable: false),
-                    Vendor = table.Column<string>(nullable: false)
+                    ReservationId = table.Column<Guid>(nullable: false)
                 },
                 constraints: table =>
                 {
@@ -41,11 +41,12 @@ namespace CarRental.Infrastructure.Migrations
                 {
                     MessageId = table.Column<string>(nullable: false),
                     Destination = table.Column<string>(nullable: false),
-                    Body = table.Column<byte[]>(nullable: false),
-                    StringifiedApplicationProperties = table.Column<string>(nullable: false),
-                    StringifiedMessage = table.Column<string>(nullable: false),
+                    MessageContext = table.Column<string>(nullable: false),
+                    MessageBody = table.Column<string>(nullable: false),
+                    MessageContentType = table.Column<string>(nullable: false),
                     SentToOutboxAtUtc = table.Column<DateTime>(nullable: false),
-                    ProcessedFromOutboxAtUtc = table.Column<DateTime>(nullable: true)
+                    ProcessedFromOutboxAtUtc = table.Column<DateTime>(nullable: true),
+                    BatchId = table.Column<Guid>(nullable: false)
                 },
                 constraints: table =>
                 {

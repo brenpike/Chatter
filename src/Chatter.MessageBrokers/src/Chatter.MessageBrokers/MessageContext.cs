@@ -1,6 +1,6 @@
 ﻿namespace Chatter.MessageBrokers
 {
-    public class ApplicationProperties
+    public class MessageContext
     {
         public static readonly string ChatterBaseHeader = "Chatter";
         private static readonly string TransactionBaseHeader = "Transaction";

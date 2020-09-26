@@ -23,7 +23,7 @@ namespace TravelBooking.Application.Sagas.TravelBooking
                     ? ConsoleColor.Magenta
                     : ConsoleColor.Green;
 
-                foreach (var prop in inbound.ApplicationProperties)
+                foreach (var prop in inbound.MessageContext)
                 {
                     Console.WriteLine("{0}={1},", prop.Key, prop.Value);
                 }

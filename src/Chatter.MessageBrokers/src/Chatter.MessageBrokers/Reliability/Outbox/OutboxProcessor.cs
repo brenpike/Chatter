@@ -28,10 +28,28 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
         public async Task Process(OutboxMessage message)
         {
-            var appProps = JsonConvert.DeserializeObject<IDictionary<string, object>>(message.StringifiedApplicationProperties);
-            appProps.TryGetValue(ApplicationProperties.ContentType, out var contentType);
+            IDictionary<string, object> messageContext = new Dictionary<string, object>();
+            if (!string.IsNullOrWhiteSpace(message.MessageContext))
+            {
+                messageContext = JsonConvert.DeserializeObject<IDictionary<string, object>>(message.MessageContext);
+            }
 
-            var outbound = message.AsOutboundBrokeredMessage(appProps, _bodyConverterFactory.CreateBodyConverter((string)contentType));
+            var contentType = message.MessageContentType;
+            if (string.IsNullOrWhiteSpace(message.MessageContentType))
+            {
+                contentType = (string)messageContext[MessageContext.ContentType];
+                _logger.LogTrace($"Outbox message did not contain content type. Retrieved from message context.");
+            }
+
+            if (string.IsNullOrWhiteSpace(contentType))
+            {
+                _logger.LogTrace($"No content type set in outbox message or message context. Unable to dispatch message.");
+                throw new ArgumentNullException(nameof(contentType), "A content type is required to serialize and send brokered message.");
+            }
+
+            var converter = _bodyConverterFactory.CreateBodyConverter(contentType);
+
+            var outbound = new OutboundBrokeredMessage(message.MessageId, converter.GetBytes(message.MessageBody), messageContext, message.Destination, converter);
             _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 
             await _brokeredMessageInfrastructureDispatcher.Dispatch(outbound, null);
