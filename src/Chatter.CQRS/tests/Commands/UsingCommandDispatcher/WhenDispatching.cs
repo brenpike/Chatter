@@ -83,8 +83,8 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
                    .WithMessage(_handlerInvokedLogMessage)
                    .IsCalled(Times.Once());
             _logger.ThatLogsTrace()
-                    .WithMessage(_commandBehaviorExecuteLogMessage)
-                    .IsCalled(Times.Never());
+                   .WithMessage(_commandBehaviorExecuteLogMessage)
+                   .IsCalled(Times.Never());
         }
 
         [Fact]

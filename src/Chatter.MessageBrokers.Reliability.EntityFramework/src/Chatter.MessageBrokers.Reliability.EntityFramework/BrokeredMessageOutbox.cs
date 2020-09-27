@@ -80,7 +80,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         private async Task SendToOutbox(DbSet<OutboxMessage> outbox, OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
         {
-            var currentTransaction = transactionContext?.Container.GetOrAdd<IPersistanceTransaction>();
+            var currentTransaction = transactionContext?.Container.GetOrDefault<IPersistanceTransaction>();
             Guid transactionId = currentTransaction?.TransactionId ?? Guid.Empty;
 
             var outboxMessage = new OutboxMessage

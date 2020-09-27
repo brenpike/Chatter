@@ -2,7 +2,6 @@
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Context;
-using Microsoft.Extensions.Logging;
 using System;
 using System.Threading.Tasks;
 
@@ -17,7 +16,7 @@ namespace Chatter.MessageBrokers.Reliability
 
         public async Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next)
         {
-            var transactionContext = messageHandlerContext.Container.GetOrAdd(() => new TransactionContext());
+            var transactionContext = messageHandlerContext.Container.GetOrNew<TransactionContext>();
             await _unitOfWork.ExecuteAsync(() => next(), transactionContext);
         }
     }
