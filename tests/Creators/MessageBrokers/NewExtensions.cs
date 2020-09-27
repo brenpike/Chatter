@@ -25,6 +25,11 @@
             {
                 return new OutboxMessageCreator(NewContext);
             }
+
+            public InboxMessageCreator InboxMessage()
+            {
+                return new InboxMessageCreator(NewContext);
+            }
         }
     }
 }

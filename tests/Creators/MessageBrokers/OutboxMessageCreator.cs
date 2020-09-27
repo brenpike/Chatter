@@ -15,6 +15,7 @@ namespace Chatter.Testing.Core.Creators.MessageBrokers
                 MessageId = Guid.NewGuid().ToString(),
                 ProcessedFromOutboxAtUtc = DateTime.Now,
                 MessageContext = "context",
+                MessageContentType = "content type",
                 Destination = "destination",
                 SentToOutboxAtUtc = DateTime.Now,
                 MessageBody = "body"
