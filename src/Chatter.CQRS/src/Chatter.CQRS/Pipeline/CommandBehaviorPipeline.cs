@@ -10,10 +10,8 @@ namespace Chatter.CQRS.Pipeline
     {
         private readonly IEnumerable<ICommandBehavior<TMessage>> _behaviors;
 
-        public CommandBehaviorPipeline(IEnumerable<ICommandBehavior<TMessage>> behaviors)
-        {
-            _behaviors = behaviors ?? throw new ArgumentNullException(nameof(behaviors));
-        }
+        public CommandBehaviorPipeline(IEnumerable<ICommandBehavior<TMessage>> behaviors) 
+            => _behaviors = behaviors ?? throw new ArgumentNullException(nameof(behaviors));
 
         public Task Execute(TMessage message, IMessageHandlerContext messageHandlerContext, IMessageHandler<TMessage> messageHandler)
         {
