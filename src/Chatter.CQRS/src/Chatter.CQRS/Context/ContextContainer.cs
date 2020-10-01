@@ -15,10 +15,8 @@ namespace Chatter.CQRS.Context
         /// Creates a new Context Container.
         /// </summary>
         /// <param name="inheritedContext">An optional <see cref="ContextContainer"/> which allows its contained context to be accessed via this container</param>
-        public ContextContainer(ContextContainer inheritedContext = null)
-        {
-            _inheritedContext = inheritedContext;
-        }
+        public ContextContainer(ContextContainer inheritedContext = null) 
+            => _inheritedContext = inheritedContext;
 
         /// <summary>
         /// Get context of <typeparamref name="T"/> from container.
@@ -27,10 +25,8 @@ namespace Chatter.CQRS.Context
         /// <exception cref="KeyNotFoundException">If no context of <typeparamref name="T"/> is found in the container</exception>
         /// <returns>The context of <typeparamref name="T"/> if found in the container</returns>
         /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
-        public T Get<T>()
-        {
-            return Get<T>(typeof(T).FullName);
-        }
+        public T Get<T>() 
+            => Get<T>(typeof(T).FullName);
 
         /// <summary>
         /// Get context of <typeparamref name="T"/> from container.
@@ -110,7 +106,7 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The type of context to get or add.</typeparam>
         /// <returns>The value retrieved from context or <see cref="default{T}"/>.</returns>
-        public T GetOrAdd<T>() 
+        public T GetOrDefault<T>()
             => GetOrAdd<T>(() => default);
 
         /// <summary>
@@ -130,5 +126,14 @@ namespace Chatter.CQRS.Context
             }
             return tryGetValue;
         }
+
+        /// <summary>
+        /// Gets context of type <typeparamref name="T"/> from the container. If it doesn't exist, creates a new instance
+        /// of <typeparamref name="T"/>, adds to the container and returns the value.
+        /// </summary>
+        /// <typeparam name="T">The type of context to get or add.</typeparam>
+        /// <returns>The value retrieved from context or a new instance of <typeparamref name="T"/>.</returns>
+        public T GetOrNew<T>() where T : class, new()
+            => GetOrAdd(() => new T());
     }
 }

@@ -1,6 +1,7 @@
 ﻿using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.EntityFrameworkCore;
+using System;
 
 namespace Chatter.Testing.Core.Creators.MessageBrokers
 {
@@ -9,7 +10,7 @@ namespace Chatter.Testing.Core.Creators.MessageBrokers
         public DbContextCreator(INewContext newContext, DbContext creation = null)
             : base(newContext, creation)
         {
-            var ob = new DbContextOptionsBuilder<FakeContext>().UseInMemoryDatabase("FakeDB").Options;
+            var ob = new DbContextOptionsBuilder<FakeContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
             Creation = new FakeContext(ob);
         }
 
@@ -38,6 +39,7 @@ namespace Chatter.Testing.Core.Creators.MessageBrokers
                         b.Property(t => t.SentToOutboxAtUtc).IsRequired();
                         b.Property(t => t.MessageBody).IsRequired();
                         b.Property(t => t.MessageContext).IsRequired();
+                        b.Property(t => t.MessageContentType).IsRequired();
                         b.Property(t => t.Destination).IsRequired();
                         b.Property(t => t.BatchId).IsRequired();
                     });
