@@ -4,6 +4,7 @@ using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Options;
+using Chatter.MessageBrokers.Sending;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
@@ -17,6 +18,8 @@ namespace Chatter.MessageBrokers.Context
         /// The message received by a <see cref="BrokeredMessageReceiver{TMessage}"/>
         /// </summary>
         InboundBrokeredMessage BrokeredMessage { get; }
+
+        IBrokeredMessageDispatcher BrokeredMessageDispatcher { get; }
 
         Task Publish<TMessage>(TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent;
         Task Publish<TMessage>(TMessage message, PublishOptions options = null) where TMessage : IEvent;

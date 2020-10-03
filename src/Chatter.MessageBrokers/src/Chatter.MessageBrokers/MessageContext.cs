@@ -72,7 +72,7 @@
         /// <summary>
         /// The routing slip as json that describes how a message will be routed
         /// </summary>
-        public static readonly string Slip = $"{ChatterBaseHeader}.{Routing}.Slip";
+        public static readonly string RoutingSlip = $"{ChatterBaseHeader}.{Routing}.Slip";
         /// <summary>
         /// The destination path of the message that invoked the current message broker receiver. Used to route a message to the same receiver(s).
         /// </summary>

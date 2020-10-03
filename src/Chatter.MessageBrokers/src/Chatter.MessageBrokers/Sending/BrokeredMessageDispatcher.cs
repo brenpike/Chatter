@@ -25,28 +25,20 @@ namespace Chatter.MessageBrokers.Sending
         }
 
         /// <inheritdoc/>
-        public Task Send<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand
-        {
-            return Dispatch(message, destinationPath, transactionContext, options ?? new SendOptions());
-        }
+        public Task Send<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand 
+            => Dispatch(message, destinationPath, transactionContext, options ?? new SendOptions());
 
         /// <inheritdoc/>
-        public Task Send<TMessage>(TMessage message, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand
-        {
-            return Dispatch(message, transactionContext, options ?? new SendOptions());
-        }
+        public Task Send<TMessage>(TMessage message, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand 
+            => Dispatch(message, transactionContext, options ?? new SendOptions());
 
         /// <inheritdoc/>
-        public Task Publish<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
-        {
-            return Dispatch(message, destinationPath, transactionContext, options ?? new PublishOptions());
-        }
+        public Task Publish<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent 
+            => Dispatch(message, destinationPath, transactionContext, options ?? new PublishOptions());
 
         /// <inheritdoc/>
-        public Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
-        {
-            return Dispatch(message, transactionContext, options ?? new PublishOptions());
-        }
+        public Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent 
+            => Dispatch(message, transactionContext, options ?? new PublishOptions());
 
         //TODO: add replytorequester that takes a TMessage and uses the ApplicationProperty RequesterPath to reply to
 

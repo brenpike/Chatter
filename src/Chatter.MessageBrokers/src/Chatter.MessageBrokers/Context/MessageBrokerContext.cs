@@ -38,7 +38,7 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         public InboundBrokeredMessage BrokeredMessage { get; private set; }
 
-        internal IBrokeredMessageDispatcher ExternalDispatcher { get; set; }
+        public IBrokeredMessageDispatcher BrokeredMessageDispatcher { get; internal set; }
 
         /// <summary>
         /// Adds contextual error information to the message broker context
@@ -53,15 +53,15 @@ namespace Chatter.MessageBrokers.Context
         }
 
         public Task Send<TMessage>(TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand 
-            => this.ExternalDispatcher.Send(message, destinationPath, this.GetTransactionContext(), options);
+            => this.BrokeredMessageDispatcher.Send(message, destinationPath, this.GetTransactionContext(), options);
 
         public Task Send<TMessage>(TMessage message, SendOptions options = null) where TMessage : ICommand 
-            => this.ExternalDispatcher.Send(message, this.GetTransactionContext(), options);
+            => this.BrokeredMessageDispatcher.Send(message, this.GetTransactionContext(), options);
 
         public Task Publish<TMessage>(TMessage message, PublishOptions options = null) where TMessage : IEvent 
-            => this.ExternalDispatcher.Publish(message, this.GetTransactionContext(), options);
+            => this.BrokeredMessageDispatcher.Publish(message, this.GetTransactionContext(), options);
 
         public Task Publish<TMessage>(TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent 
-            => this.ExternalDispatcher.Publish(message, destinationPath, this.GetTransactionContext(), options);
+            => this.BrokeredMessageDispatcher.Publish(message, destinationPath, this.GetTransactionContext(), options);
     }
 }
