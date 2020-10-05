@@ -30,10 +30,10 @@ namespace TravelBooking.Api
             services.AddChatterCqrs()
                 .AddMessageBrokers((options) =>
                  {
-                     options.AddReliabilityOptions(Configuration)
-                            .AddSagaOptions(Configuration);
+                     options.AddReliabilityOptions(Configuration);
+                            //.AddSagaOptions(Configuration);
                  }, typeof(BookTravelViaOrchestrationCommand))
-                .AddSagas()
+                //.AddSagas()
                 .AddAzureServiceBus(options =>
                 {
                     options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");

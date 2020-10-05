@@ -2,6 +2,7 @@
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Options;
 using System;
@@ -12,14 +13,17 @@ namespace Chatter.MessageBrokers.Sending
     class BrokeredMessageDispatcher : IBrokeredMessageDispatcher
     {
         private readonly IRouteBrokeredMessages _messageRouter;
+        private readonly IForwardMessages _forwarder;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
         private readonly IBodyConverterFactory _bodyConverterFactory;
 
         public BrokeredMessageDispatcher(IRouteBrokeredMessages messageRouter,
+                                         IForwardMessages forwarder,
                                          IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
                                          IBodyConverterFactory bodyConverterFactory)
         {
             _messageRouter = messageRouter ?? throw new ArgumentNullException(nameof(messageRouter));
+            _forwarder = forwarder ?? throw new ArgumentNullException(nameof(forwarder));
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
         }
@@ -39,6 +43,9 @@ namespace Chatter.MessageBrokers.Sending
         /// <inheritdoc/>
         public Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent 
             => Dispatch(message, transactionContext, options ?? new PublishOptions());
+
+        public Task Forward(InboundBrokeredMessage inboundBrokeredMessage, string forwardDestination, TransactionContext transactionContext) 
+            => _forwarder.Route(inboundBrokeredMessage, forwardDestination, transactionContext);
 
         //TODO: add replytorequester that takes a TMessage and uses the ApplicationProperty RequesterPath to reply to
 
@@ -72,7 +79,7 @@ namespace Chatter.MessageBrokers.Sending
 
             var converter = _bodyConverterFactory.CreateBodyConverter(options.ContentType);
 
-            var outbound = new OutboundBrokeredMessage(options.MessageId, message, options.ApplicationProperties, destinationPath, converter);
+            var outbound = new OutboundBrokeredMessage(options.MessageId, message, options.MessageContext, destinationPath, converter);
 
             return _messageRouter.Route(outbound, transactionContext);
         }

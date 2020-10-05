@@ -6,6 +6,7 @@ using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
 using Chatter.MessageBrokers.Reliability.EntityFramework;
 using Chatter.MessageBrokers.Reliability.Outbox;
+using Chatter.MessageBrokers.Routing.Slips;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -46,7 +47,7 @@ namespace CarRental.Api
                                //.WithUnitOfWorkBehavior<CarRentalContext>(services)
                                //.WithInboxBehavior<CarRentalContext>(services)
                                .WithOutboxProcessingBehavior<CarRentalContext>(services)
-                               .WithBehavior(typeof(AnotherLoggingBehavior<>));
+                               .WithRoutingSlipRoutingBehavior();
                     })
                     .AddMessageBrokers((options) =>
                     {

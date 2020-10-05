@@ -10,13 +10,13 @@ namespace Chatter.MessageBrokers.Routing.Options
         public RoutingOptions()
         { 
             Container = new ContextContainer();
-            ApplicationProperties = new Dictionary<string, object>();
+            MessageContext = new Dictionary<string, object>();
         }
 
         public string MessageId { get; set; }
         public string ContentType { get; set; } = DefaultContentType;
 
-        internal IDictionary<string, object> ApplicationProperties { get; }
+        internal IDictionary<string, object> MessageContext { get; }
 
         public void SetCorrelationId(string correlationId)
         {

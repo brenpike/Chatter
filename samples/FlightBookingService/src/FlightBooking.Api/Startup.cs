@@ -1,3 +1,4 @@
+using FlightBooking.Application.Commands;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -27,10 +28,14 @@ namespace FlightBooking.Api
             });
 
             services.AddChatterCqrs()
-                    .AddMessageBrokers()
+                    .AddCommandPipeline(builder =>
+                    {
+                        builder.WithRoutingSlipRoutingBehavior();
+                    })
+                    .AddMessageBrokers(typeof(BookFlightCommand))
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions(Configuration, "ServiceBus");
+                        options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
                     });
         }
 

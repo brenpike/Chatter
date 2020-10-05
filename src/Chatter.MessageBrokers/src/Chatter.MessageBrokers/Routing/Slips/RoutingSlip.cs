@@ -38,7 +38,7 @@ namespace Chatter.MessageBrokers.Routing.Slips
 
         public void Compensate()
         {
-            if (Route.All(r => string.IsNullOrWhiteSpace(r.CompensationPath)))
+            if (Visited.All(r => string.IsNullOrWhiteSpace(r.CompensationPath)))
             {
                 return;
             }

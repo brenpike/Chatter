@@ -28,11 +28,15 @@ namespace HotelBooking.Api
             });
 
             services.AddChatterCqrs()
-                    .AddMessageBrokers(typeof(RentalCarBookedEvent))
-                    .AddAzureServiceBus(options =>
-                    {
-                        options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
-                    });
+                .AddCommandPipeline(pb =>
+                {
+                    pb.WithRoutingSlipRoutingBehavior();
+                })
+                .AddMessageBrokers(typeof(RentalCarBookedEvent))
+                .AddAzureServiceBus(options =>
+                {
+                    options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
+                });
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

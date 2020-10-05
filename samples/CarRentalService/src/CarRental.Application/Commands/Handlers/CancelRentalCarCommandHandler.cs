@@ -1,20 +1,17 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using System;
+using System.Collections.Generic;
+using System.Text;
 using System.Threading.Tasks;
-using TravelBooking.Application.Sagas.TravelBooking.Commands;
 
-namespace TravelBooking.Application.Sagas.TravelBooking
+namespace CarRental.Application.Commands.Handlers
 {
-    public class CancelRentalCarStep : IMessageHandler<CancelCarRentalCommand>
+    public class CancelRentalCarCommandHandler : IMessageHandler<CancelRentalCarCommand>
     {
-        public CancelRentalCarStep()
+        public Task Handle(CancelRentalCarCommand message, IMessageHandlerContext context)
         {
-        }
-
-        public async Task Handle(CancelCarRentalCommand message, IMessageHandlerContext context)
-        {
-            var car = message.SagaData.Car;
+            var car = message.Car;
             if (car != null &&
                 car.ReservationId != Guid.Empty)
             {
@@ -33,7 +30,7 @@ namespace TravelBooking.Application.Sagas.TravelBooking
                 // reset the id
                 car.ReservationId = Guid.Empty;
             }
-            await Task.CompletedTask;
+            return Task.CompletedTask;
         }
     }
 }

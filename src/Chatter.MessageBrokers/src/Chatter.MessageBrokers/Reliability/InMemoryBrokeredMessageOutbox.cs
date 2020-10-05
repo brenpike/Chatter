@@ -39,7 +39,7 @@ namespace Chatter.MessageBrokers.Reliability
             if (transactionContext != null)
             {
                 transactionContext.Container.TryGet<IPersistanceTransaction>(out var transaction);
-                transactionId = transaction.TransactionId;
+                transactionId = transaction?.TransactionId ?? transactionId;
             }
 
             var outboxMessage = new OutboxMessage

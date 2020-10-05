@@ -10,13 +10,13 @@ namespace Chatter.MessageBrokers.Receiving
     /// </summary>
     public class InboundBrokeredMessage
     {
-        private readonly IDictionary<string, object> _messageContext;
+        internal IDictionary<string, object> MessageContextImpl { get; }
 
         internal InboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> messageContext, string messageReceiverPath, IBrokeredMessageBodyConverter bodyConverter)
         {
             MessageId = messageId ?? throw new ArgumentNullException(nameof(messageId));
             Body = body ?? throw new ArgumentNullException(nameof(body));
-            _messageContext = messageContext ?? new ConcurrentDictionary<string, object>();
+            MessageContextImpl = messageContext ?? new ConcurrentDictionary<string, object>();
             MessageReceiverPath = messageReceiverPath;
             BodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
             TransactionMode = GetTransactionMode();
@@ -34,7 +34,7 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// The application properties of the received message
         /// </summary>
-        public IReadOnlyDictionary<string, object> MessageContext => (IReadOnlyDictionary<string, object>)_messageContext;
+        public IReadOnlyDictionary<string, object> MessageContext => (IReadOnlyDictionary<string, object>)MessageContextImpl;
         /// <summary>
         /// The name of the message receiver that recieved this message
         /// </summary>
@@ -78,37 +78,37 @@ namespace Chatter.MessageBrokers.Receiving
         internal InboundBrokeredMessage UpdateVia(string via)
         {
             var key = MessageBrokers.MessageContext.Via;
-            if (_messageContext.ContainsKey(key))
+            if (MessageContextImpl.ContainsKey(key))
             {
                 var currentVia = (string)MessageContext[key];
                 if (!(string.IsNullOrWhiteSpace(via)))
                 {
                     currentVia += "," + via;
-                    _messageContext[key] = currentVia;
+                    MessageContextImpl[key] = currentVia;
                 }
             }
             else
             {
-                _messageContext[key] = via;
+                MessageContextImpl[key] = via;
             }
             return this;
         }
 
         private TransactionMode GetTransactionMode()
         {
-            if (_messageContext.TryGetValue(MessageBrokers.MessageContext.TransactionMode, out var transactionMode))
+            if (MessageContextImpl.TryGetValue(MessageBrokers.MessageContext.TransactionMode, out var transactionMode))
             {
                 return (TransactionMode)transactionMode;
             }
             else
             {
-                return TransactionMode.FullAtomicityViaInfrastructure;
+                return TransactionMode.ReceiveOnly;
             }
         }
 
         private T GetMessageContextByKey<T>(string key)
         {
-            if (_messageContext.TryGetValue(key, out var output))
+            if (MessageContextImpl.TryGetValue(key, out var output))
             {
                 return (T)output;
             }
@@ -120,39 +120,39 @@ namespace Chatter.MessageBrokers.Receiving
 
         internal InboundBrokeredMessage WithFailureDetails(string failureDetails)
         {
-            _messageContext[MessageBrokers.MessageContext.FailureDetails] = failureDetails;
+            MessageContextImpl[MessageBrokers.MessageContext.FailureDetails] = failureDetails;
             return this;
         }
 
         internal InboundBrokeredMessage WithFailureDescription(string failureDescription)
         {
-            _messageContext[MessageBrokers.MessageContext.FailureDescription] = failureDescription;
+            MessageContextImpl[MessageBrokers.MessageContext.FailureDescription] = failureDescription;
             return this;
         }
 
         internal InboundBrokeredMessage SetFailure()
         {
-            _messageContext[MessageBrokers.MessageContext.IsError] = true;
-            _messageContext[MessageBrokers.MessageContext.SagaStatus] = (byte)SagaStatusEnum.Failed;
+            MessageContextImpl[MessageBrokers.MessageContext.IsError] = true;
+            MessageContextImpl[MessageBrokers.MessageContext.SagaStatus] = (byte)SagaStatusEnum.Failed;
             return this;
         }
 
         internal InboundBrokeredMessage WithSagaStatus(SagaStatusEnum sagaStatus)
         {
-            _messageContext[MessageBrokers.MessageContext.SagaStatus] = (byte)sagaStatus;
+            MessageContextImpl[MessageBrokers.MessageContext.SagaStatus] = (byte)sagaStatus;
             return this;
         }
 
         internal InboundBrokeredMessage ClearReplyToProperties()
         {
-            _messageContext.Remove(MessageBrokers.MessageContext.ReplyToAddress);
-            _messageContext.Remove(MessageBrokers.MessageContext.ReplyToGroupId);
+            MessageContextImpl.Remove(MessageBrokers.MessageContext.ReplyToAddress);
+            MessageContextImpl.Remove(MessageBrokers.MessageContext.ReplyToGroupId);
             return this;
         }
 
         internal InboundBrokeredMessage WithRouteToSelfPath(string destinationPath)
         {
-            _messageContext[MessageBrokers.MessageContext.RouteToSelfPath] = destinationPath;
+            MessageContextImpl[MessageBrokers.MessageContext.RouteToSelfPath] = destinationPath;
             return this;
         }
     }

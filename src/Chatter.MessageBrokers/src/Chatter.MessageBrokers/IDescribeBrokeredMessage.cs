@@ -20,16 +20,6 @@ namespace Chatter.MessageBrokers
         public string DestinationPath { get; }
 
         /// <summary>
-        /// Gets the name of the next destination path.
-        /// </summary>
-        public string NextDestinationPath { get; }
-
-        /// <summary>
-        /// Gets the name of the <see cref="DestinationPath"/> of the compensating path.
-        /// </summary>
-        public string CompensateDestinationPath { get; }
-
-        /// <summary>
         /// Gets the name of the path to receive messages.
         /// </summary>
         public string MessageReceiverPath { get; }

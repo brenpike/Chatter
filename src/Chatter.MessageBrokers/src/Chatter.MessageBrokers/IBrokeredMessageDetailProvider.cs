@@ -10,8 +10,6 @@ namespace Chatter.MessageBrokers
         public string GetMessageName<T>();
         public string GetMessageName(Type type);
         public string GetReceiverName<T>();
-        public string GetNextMessageName<T>();
-        public string GetCompensatingMessageName<T>();
         public string GetBrokeredMessageDescription<T>();
         public bool AutoReceiveMessages<T>();
     }

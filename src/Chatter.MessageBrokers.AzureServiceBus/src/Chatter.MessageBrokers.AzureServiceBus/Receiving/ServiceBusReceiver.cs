@@ -46,8 +46,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// </summary>
         public ServiceBusConnection ServiceBusConnection { get; }
 
-        public bool AutoReceiveMessages => _brokeredMessageDetailProvider.AutoReceiveMessages<TMessage>();
-
         /// <summary>
         /// Describes the receiver pipeline. Used to track progress using the 'Via' user property of the <see cref="Message"/>./>
         /// </summary>
@@ -57,16 +55,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// Gets the name of the current destination path.
         /// </summary>
         public string DestinationPath => _brokeredMessageDetailProvider.GetMessageName<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the next destination path.
-        /// </summary>
-        public string NextDestinationPath => _brokeredMessageDetailProvider.GetNextMessageName<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the <see cref="DestinationPath"/> of the compensating path.
-        /// </summary>
-        public string CompensatingEntityPath => _brokeredMessageDetailProvider.GetCompensatingMessageName<TMessage>();
 
         /// <summary>
         /// Gets the name of the path to receive messages.

@@ -8,9 +8,9 @@ using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
-using Chatter.MessageBrokers.Routing.Slips;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Hosting;
+using Scrutor;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -25,10 +25,8 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         /// <param name="services"></param>
         /// <returns></returns>
-        public static MessageBrokerOptionsBuilder AddMessageBrokerOptions(this IServiceCollection services)
-        {
-            return new MessageBrokerOptionsBuilder(services);
-        }
+        public static MessageBrokerOptionsBuilder AddMessageBrokerOptions(this IServiceCollection services) 
+            => new MessageBrokerOptionsBuilder(services);
 
         /// <summary>
         /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
@@ -53,10 +51,8 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
         /// <param name="markerTypesForRequiredAssemblies">The <see cref="Type"/>s from assemblies that are required for registering receivers</param>
         /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
-        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, params Type[] markerTypesForRequiredAssemblies)
-        {
-            return AddMessageBrokers(builder, null, markerTypesForRequiredAssemblies);
-        }
+        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, params Type[] markerTypesForRequiredAssemblies) 
+            => AddMessageBrokers(builder, null, markerTypesForRequiredAssemblies);
 
         /// <summary>
         /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
@@ -96,8 +92,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 builder.Services.AddScoped<IRouteBrokeredMessages, BrokeredMessageRouter>();
             }
 
-            builder.Services.Decorate<IMessageDispatcher, RoutingSlipMessageDispatcherDecorator>(); //TODO: we'll only want to add this if routing slips are added
-            builder.AddReceivers(assemblies);
+            builder.AddAllReceivers(assemblies);
 
             builder.Services.AddScoped<IBodyConverterFactory, BodyConverterFactory>();
             builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonBodyConverter>();
@@ -133,37 +128,48 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Finds all class in all assemblies within the current app domain that are decorated with <see cref="BrokeredMessageAttribute"/> and have a non-null <see cref="BrokeredMessageAttribute.ReceiverName"/>.
         /// </summary>
         /// <returns>A read only list of classes that are decorated with <see cref="BrokeredMessageAttribute"/> and implement <see cref="IMessage"/>.</returns>
-        private static IReadOnlyList<Type> FindBrokeredMessagesWithReceiversInAssembliesByType(IEnumerable<Assembly> assemblies)
-        {
-            return assemblies.SelectMany(assemblies => assemblies.GetTypes()
-                    .Where(type => type.GetInterfaces()
-                        .Any(i => i == typeof(IMessage)))
-                    .Where(type => type.IsDefined(typeof(BrokeredMessageAttribute), false))
-                    .Where(type => type.TryGetBrokeredMessageAttribute()?.ReceiverName != null)
+        private static IReadOnlyList<Type> FindBrokeredMessagesWithReceiversInAssembliesByType(IEnumerable<Assembly> assemblies) 
+            => assemblies.SelectMany(assemblies => assemblies.GetTypes()
+                         .Where(type => type.GetInterfaces()
+                             .Any(i => i == typeof(IMessage)))
+                         .Where(type => type.IsDefined(typeof(BrokeredMessageAttribute), false))
+                         .Where(type => type.TryGetBrokeredMessageAttribute()?.ReceiverName != null)
                     ).ToList();
-        }
+
+        //public static IChatterBuilder AddReceiver<TMessage>(this IChatterBuilder builder) where TMessage : IMessage
+        //{
+        //    var concreteReceiverThatCloses = typeof(BrokeredMessageReceiver<>).MakeGenericType(typeof(TMessage));
+        //    var interfaceThatCloses = typeof(IBrokeredMessageReceiver<>).MakeGenericType(typeof(TMessage));
+        //    AddReceiver(builder, interfaceThatCloses, concreteReceiverThatCloses);
+        //    return builder;
+        //}
 
         /// <summary>
         /// Scans all assemblies for classes decorated with <see cref="BrokeredMessageAttribute"/> and have a non-null <see cref="BrokeredMessageAttribute.ReceiverName"/>. Registers:
         /// </summary>
         /// <param name="builder">The singleton <see cref="ChatterBuilder"/> instance used for registration.</param>
         /// <returns>The singleton <see cref="IChatterBuilder"/> instance.</returns>
-        private static IChatterBuilder AddReceivers(this IChatterBuilder builder, IEnumerable<Assembly> assemblies)
+        private static IChatterBuilder AddAllReceivers(this IChatterBuilder builder, IEnumerable<Assembly> assemblies)
         {
             var messages = FindBrokeredMessagesWithReceiversInAssembliesByType(assemblies);
             foreach (var receiverType in GetAllReceiverTypes(messages))
             {
-                builder.Services.AddScoped(receiverType.Item1, receiverType.Item2);
-                builder.Services.AddSingleton(typeof(IHostedService), sp => 
-                { 
-                    using var scope = sp.CreateScope();
-                    return scope.ServiceProvider.GetRequiredService(receiverType.Item1);
-                });
+                AddReceiver(builder, receiverType.Item1, receiverType.Item2);
             }
             return builder;
         }
 
-        private static IEnumerable<(Type, Type, bool)> GetAllReceiverTypes(IReadOnlyList<Type> messages)
+        private static void AddReceiver(IChatterBuilder builder, Type receiverInterfaceType, Type receiverConcreteType)
+        {
+            builder.Services.AddScoped(receiverInterfaceType, receiverConcreteType);
+            builder.Services.AddSingleton(typeof(IHostedService), sp =>
+            {
+                using var scope = sp.CreateScope();
+                return scope.ServiceProvider.GetRequiredService(receiverInterfaceType);
+            });
+        }
+
+        private static IEnumerable<(Type, Type)> GetAllReceiverTypes(IReadOnlyList<Type> messages)
         {
             foreach (var messageType in messages)
             {
@@ -183,7 +189,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 var concreteReceiverThatCloses = typeof(BrokeredMessageReceiver<>).MakeGenericType(messageType);
                 var interfaceThatCloses = typeof(IBrokeredMessageReceiver<>).MakeGenericType(messageType);
 
-                yield return (interfaceThatCloses, concreteReceiverThatCloses, attr.AutoReceiveMessages);
+                yield return (interfaceThatCloses, concreteReceiverThatCloses);
             }
         }
     }

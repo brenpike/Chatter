@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Options;
 using System.Threading.Tasks;
 
@@ -46,5 +47,7 @@ namespace Chatter.MessageBrokers.Sending
         /// <param name="options">The options to be used while publishing <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent;
+
+        Task Forward(InboundBrokeredMessage inboundBrokeredMessage, string forwardDestination, TransactionContext transactionContext);
     }
 }

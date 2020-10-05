@@ -98,7 +98,20 @@ namespace Chatter.MessageBrokers.Sending
 
         public TimeSpan? GetTimeToLive()
         {
-            return (TimeSpan?)GetMessageContextByKey(MessageBrokers.MessageContext.TimeToLive);
+            var ttl = GetMessageContextByKey(MessageBrokers.MessageContext.TimeToLive);
+            if (ttl == null)
+            {
+                return null;
+            }
+
+            if (ttl is TimeSpan ts)
+            {
+                return ts;
+            }
+            else
+            {
+                return TimeSpan.Parse((string)ttl);
+            }
         }
 
         public string GetCorrelationId()

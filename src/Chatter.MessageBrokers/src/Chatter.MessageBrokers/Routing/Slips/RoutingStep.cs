@@ -1,18 +1,14 @@
-﻿using System;
+﻿using Newtonsoft.Json;
 
 namespace Chatter.MessageBrokers.Routing.Slips
 {
     public class RoutingStep
     {
-        internal RoutingStep(string destinationPath)
-        {
-            if (string.IsNullOrWhiteSpace(destinationPath))
-            {
-                throw new ArgumentException("A destination is required for a step of a routing slip.", nameof(destinationPath));
-            }
+        [JsonConstructor]
+        private RoutingStep() { }
 
-            DestinationPath = destinationPath;
-        }
+        internal RoutingStep(string destinationPath) 
+            => DestinationPath = destinationPath;
 
         public string DestinationPath { get; set; }
     }

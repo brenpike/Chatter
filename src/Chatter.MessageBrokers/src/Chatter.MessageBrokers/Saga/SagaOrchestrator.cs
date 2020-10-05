@@ -36,7 +36,7 @@ namespace Chatter.MessageBrokers.Saga
                 await sagaStepHandler((TMessage)message, context).ConfigureAwait(false);
             }
 
-            if (context.Container.TryGet<ErrorContext>(out var errorContext))
+            if (context.Container.TryGet<FailureContext>(out var errorContext))
             {
                 saga.Fail(errorContext.ToString());
             }

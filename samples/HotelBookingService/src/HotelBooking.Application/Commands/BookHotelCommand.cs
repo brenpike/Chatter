@@ -1,8 +1,11 @@
-﻿using System;
+﻿using Chatter.CQRS.Commands;
+using Chatter.MessageBrokers;
+using System;
 
-namespace Samples.SharedKernel.Dtos
+namespace HotelBooking.Application.Commands
 {
-    public class HotelBooking
+    [BrokeredMessage("book-trip-saga/2/book-hotel", "book-trip-saga/2/book-hotel")]
+    public class BookHotelCommand : ICommand
     {
         public Guid Id { get; set; }
         public string Name { get; set; }

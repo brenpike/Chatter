@@ -19,10 +19,8 @@ namespace Chatter.MessageBrokers.Routing
         /// Creates a router for sending a brokered message to a brokered message receiver responsible for compensating a received message
         /// </summary>
         /// <param name="router">The strategy used to compensate the a received message</param>
-        public CompensateRouter(IRouteBrokeredMessages router)
-        {
-            _router = router ?? throw new ArgumentNullException(nameof(router));
-        }
+        public CompensateRouter(IRouteBrokeredMessages router) 
+            => _router = router ?? throw new ArgumentNullException(nameof(router));
 
         /// <summary>
         /// Routes a brokered message to a brokered message receiver responsible for compensating a received message

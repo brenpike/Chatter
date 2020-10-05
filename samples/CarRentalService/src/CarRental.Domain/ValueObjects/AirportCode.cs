@@ -18,7 +18,7 @@ namespace CarRental.Domain.ValueObjects
 
             if (code.Length != 3)
             {
-                throw new BusinessRuleException("An IATA airport code must be 3 characters long.");
+                //throw new BusinessRuleException("An IATA airport code must be 3 characters long.");
             }
 
             Code = code;

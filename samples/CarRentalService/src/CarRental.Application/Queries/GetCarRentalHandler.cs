@@ -6,17 +6,17 @@ using System.Threading.Tasks;
 
 namespace CarRental.Application.Queries
 {
-    public class GetCarRentalHandler : IQueryHandler<GetCarRental, CarRentalDTO>
+    public class GetCarRentalHandler : IQueryHandler<GetCarRental, CarRentalDto>
     {
         private readonly IRepository<Domain.Aggregates.CarRental, Guid> _repository;
 
         public GetCarRentalHandler(IRepository<Domain.Aggregates.CarRental, Guid> repository) 
             => _repository = repository ?? throw new ArgumentNullException(nameof(repository));
 
-        public async Task<CarRentalDTO> Handle(GetCarRental query)
+        public async Task<CarRentalDto> Handle(GetCarRental query)
         {
             var rental = await _repository.GetByIdAsync(query.Id);
-            var rentalDto = new CarRentalDTO
+            var rentalDto = new CarRentalDto
             {
                 Id = rental.Id,
                 Airport = rental.Airport,

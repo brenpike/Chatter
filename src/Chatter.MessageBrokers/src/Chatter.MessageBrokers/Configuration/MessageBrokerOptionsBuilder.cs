@@ -53,7 +53,7 @@ namespace Chatter.MessageBrokers.Configuration
 
                 if (!Enum.TryParse<TransactionMode>(option.DefaultTransactionMode, out var transactionMode))
                 {
-                    option.TransactionMode = TransactionMode.None;
+                    option.TransactionMode = TransactionMode.ReceiveOnly;
                 }
                 else
                 {

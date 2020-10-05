@@ -2,7 +2,6 @@
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Routing.Context;
-using Chatter.MessageBrokers.Saga;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -22,7 +21,6 @@ namespace Chatter.MessageBrokers.Receiving
         readonly object _syncLock;
         private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
         private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
-        private readonly IBrokeredMessageDispatcher _brokeredMessageDispatcher;
         private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
         private readonly IServiceScopeFactory _serviceFactory;
         TaskCompletionSource<bool> _completedReceivingSource = new TaskCompletionSource<bool>();
@@ -33,18 +31,16 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         /// <param name="infrastructureReceiver">The message broker infrastructure</param>
         /// <param name="brokeredMessageDetailProvider">Provides routing details to the brokered message receiver</param>
-        /// <param name="messageDispatcher">Dispatches messages of <typeparamref name="TMessage"/> to the appropriate <see cref="IMessageHandler{TMessage}"/></param>
+        /// <param name="serviceFactory">THe service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
         /// <param name="logger">Provides logging capability</param>
         public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
                                        IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
-                                       IBrokeredMessageDispatcher brokeredMessageDispatcher,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
                                        IServiceScopeFactory serviceFactory)
         {
             _syncLock = new object();
             _infrastructureReceiver = infrastructureReceiver ?? throw new ArgumentNullException(nameof(infrastructureReceiver));
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
-            _brokeredMessageDispatcher = brokeredMessageDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }
@@ -63,16 +59,6 @@ namespace Chatter.MessageBrokers.Receiving
         /// Gets the name of the current destination path.
         /// </summary>
         public string DestinationPath => _brokeredMessageDetailProvider.GetMessageName<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the next destination path.
-        /// </summary>
-        public string NextDestinationPath => _brokeredMessageDetailProvider.GetNextMessageName<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the <see cref="DestinationPath"/> for compensation.
-        /// </summary>
-        public string CompensateDestinationPath => _brokeredMessageDetailProvider.GetCompensatingMessageName<TMessage>();
 
         /// <summary>
         /// Gets the name of the path to receive messages.
@@ -165,13 +151,8 @@ namespace Chatter.MessageBrokers.Receiving
 
                 var inboundMessage = messageContext.BrokeredMessage;
 
-                messageContext.BrokeredMessageDispatcher = _brokeredMessageDispatcher;
-
                 CreateErrorContextFromHeaders(messageContext, inboundMessage);
-                CreateSagaContextFromHeaders(messageContext);
                 CreateReplyContextFromHeaders(messageContext, inboundMessage);
-                CreateNextDestinationContextFromHeaders(messageContext);
-                CreateCompensationContextFromHeaders(messageContext, inboundMessage);
 
                 inboundMessage.WithRouteToSelfPath(this.DestinationPath);
                 inboundMessage.UpdateVia(Description);
@@ -187,41 +168,31 @@ namespace Chatter.MessageBrokers.Receiving
 
                 using var scope = _serviceFactory.CreateScope();
                 var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
+                messageContext.BrokeredMessageDispatcher = scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>();
                 await dispatcher.Dispatch(brokeredMessagePayload, messageContext).ConfigureAwait(false);
 
                 inboundMessage.SuccessfullyReceived = true;
             }
-            catch (CompensationRoutingException cre)
-            {
-                var errorContext = new ErrorContext(
-                   $"Routing compensation message of type '{typeof(TMessage).Name}' to '{cre.RoutingContext.DestinationPath?.ToString()}' failed",
-                   $"Compensation reason: '{cre.RoutingContext?.ToString()}'\n" +
-                   $"Routing failure reason: '{cre.InnerException?.Message}'");
-
-                messageContext.SetFailure(errorContext);
-
-                throw new CriticalBrokeredMessageReceiverException(errorContext, cre);
-            }
             catch (Exception e)
             {
-                ErrorContext errorContext;
+                FailureContext failureContext;
 
                 if (messageContext is null)
                 {
-                    errorContext = new ErrorContext(
+                    failureContext = new FailureContext(
                         $"A brokered message was received with no {typeof(MessageBrokerContext).Name}",
                         $"{e.Message}");
 
-                    throw new CriticalBrokeredMessageReceiverException(errorContext, e);
+                    throw new CriticalBrokeredMessageReceiverException(failureContext, e);
                 }
 
-                errorContext = new ErrorContext(
+                failureContext = new FailureContext(
                     $"An error was encountered receiving message '{typeof(TMessage).Name}'",
                     $"{e.Message}");
 
-                messageContext.SetFailure(errorContext);
+                messageContext.SetFailure(failureContext);
 
-                throw new CriticalBrokeredMessageReceiverException(errorContext, e);
+                throw new CriticalBrokeredMessageReceiverException(failureContext, e);
             }
         }
 
@@ -231,27 +202,8 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDetails, out var reason);
                 inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDescription, out var description);
-                var errorContext = new ErrorContext((string)reason, (string)description);
+                var errorContext = new FailureContext((string)reason, (string)description);
                 messageContext.SetFailure(errorContext);
-            }
-        }
-
-        private void CreateSagaContextFromHeaders(MessageBrokerContext messageContext)
-        {
-            if (messageContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.SagaId, out var sagaId))
-            {
-                messageContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.SagaStatus, out var sagaStatus);
-                var sagaContext = new SagaContext((string)sagaId, MessageReceiverPath, NextDestinationPath, (SagaStatusEnum)sagaStatus, parentContainer: messageContext.Container);
-                messageContext.Container.Include(sagaContext);
-            }
-        }
-
-        private void CreateNextDestinationContextFromHeaders(MessageBrokerContext messageContext)
-        {
-            if (!string.IsNullOrWhiteSpace(NextDestinationPath))
-            {
-                var nextDestinationContext = new RoutingContext(NextDestinationPath, messageContext.Container);
-                messageContext.Container.Include(nextDestinationContext);
             }
         }
 
@@ -265,17 +217,6 @@ namespace Chatter.MessageBrokers.Receiving
                 var replyContext = new ReplyToRoutingContext((string)replyTo, (string)replyToSessionId, messageContext.Container);
                 messageContext.Container.Include(replyContext);
                 inboundMessage.ClearReplyToProperties();
-            }
-        }
-
-        private void CreateCompensationContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
-        {
-            if (!string.IsNullOrWhiteSpace(CompensateDestinationPath))
-            {
-                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDetails, out var detail);
-                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDescription, out var description);
-                var compensateContext = new CompensationRoutingContext(CompensateDestinationPath, (string)detail, (string)description, messageContext.Container);
-                messageContext.Container.Include(compensateContext);
             }
         }
     }

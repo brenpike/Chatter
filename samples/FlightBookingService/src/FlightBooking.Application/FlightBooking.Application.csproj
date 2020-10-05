@@ -10,8 +10,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Commands\" />
-    <Folder Include="DTO\" />
     <Folder Include="IntegrationEvents\" />
     <Folder Include="Exceptions\" />
     <Folder Include="Interfaces\" />

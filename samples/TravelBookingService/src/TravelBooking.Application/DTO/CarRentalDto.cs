@@ -1,8 +1,8 @@
 ﻿using System;
 
-namespace Samples.SharedKernel.Dtos
+namespace TravelBooking.Application.DTO
 {
-    public class CarRental
+    public class CarRentalDto
     {
         public Guid Id { get; set; }
         public string Vendor { get; set; }

@@ -31,7 +31,7 @@ namespace Chatter.MessageBrokers.Receiving
         public static int ExponentialDelay(int numberOfAttempts,
                                            int maxDelayInSeconds = 1024)
         {
-            var delayInSeconds = (int)((1d / 2d) * (Math.Pow(2d, numberOfAttempts) - 1d));
+            var delayInSeconds = (int)(1d / 2d * (Math.Pow(2d, numberOfAttempts) - 1d));
 
             return maxDelayInSeconds < delayInSeconds
                 ? maxDelayInSeconds

@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS.Pipeline;
+using Chatter.MessageBrokers.Routing.Slips;
 
-namespace Chatter.MessageBrokers.Routing.Slips
+namespace Microsoft.Extensions.DependencyInjection
 {
     public static class PipelineBuilderExtensions
     {

@@ -2,7 +2,7 @@
 
 namespace CarRental.Application.DTO
 {
-    public class CarRentalDTO
+    public class CarRentalDto
     {
         public Guid Id { get; set; }
         public string Vendor { get; set; }
