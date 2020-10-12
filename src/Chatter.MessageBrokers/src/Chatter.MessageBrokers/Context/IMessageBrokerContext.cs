@@ -10,12 +10,12 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.Context
 {
     /// <summary>
-    /// Used to pass contextual information of a <see cref="BrokeredMessageReceiver{TMessage}"/> to a <see cref="IMessageHandler{TMessage}"/>
+    /// Used to pass contextual information of a <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> to a <see cref="IMessageHandler{TMessage}"/>
     /// </summary>
     public interface IMessageBrokerContext : IMessageHandlerContext
     {
         /// <summary>
-        /// The message received by a <see cref="BrokeredMessageReceiver{TMessage}"/>
+        /// The message received by a <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/>
         /// </summary>
         InboundBrokeredMessage BrokeredMessage { get; }
 

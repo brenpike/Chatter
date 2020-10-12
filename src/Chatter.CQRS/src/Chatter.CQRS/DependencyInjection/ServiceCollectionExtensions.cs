@@ -6,7 +6,7 @@ namespace Chatter.CQRS.DependencyInjection
 {
     public static class ServiceCollectionExtensions
     {
-        public static IServiceCollection Replace<TService, TImplementation>(this IServiceCollection services,ServiceLifetime lifetime)
+        public static IServiceCollection Replace<TService, TImplementation>(this IServiceCollection services, ServiceLifetime lifetime)
             where TService : class
             where TImplementation : class, TService
         {

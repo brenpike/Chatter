@@ -1,10 +1,10 @@
 ﻿using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
+using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
-using Scrutor;
 using System;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -31,15 +31,9 @@ namespace Microsoft.Extensions.DependencyInjection
         private static IChatterBuilder AddAzureServiceBus(IChatterBuilder builder)
         {
             builder.Services.AddScoped<IBrokeredMessageDetailProvider, BrokeredMessageAttributeProvider>();
-            builder.Services.AddSingleton<IBrokeredMessageInfrastructureDispatcher, ServiceBusMessageSender>();
+            builder.Services.AddScoped<IMessagingInfrastructureDispatcher, ServiceBusMessageSender>();
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
-
-            builder.Services.Scan(s =>
-                        s.FromAssemblies(AppDomain.CurrentDomain.GetAssemblies())
-                            .AddClasses(c => c.AssignableTo(typeof(IMessagingInfrastructureReceiver<>)))
-                            .UsingRegistrationStrategy(RegistrationStrategy.Skip)
-                            .AsImplementedInterfaces()
-                            .WithScopedLifetime());
+            builder.Services.AddScoped<IMessagingInfrastructureReceiver, ServiceBusReceiver>();
 
             return builder;
         }

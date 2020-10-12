@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.Context
 {
     /// <summary>
-    /// Used to pass contextual information of a <see cref="BrokeredMessageReceiver{TMessage}"/> to a <see cref="IMessageHandler{TMessage}"/>
+    /// Used to pass contextual information of a <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> to a <see cref="IMessageHandler{TMessage}"/>
     /// </summary>
     public sealed class MessageBrokerContext : MessageHandlerContext, IMessageBrokerContext
     {

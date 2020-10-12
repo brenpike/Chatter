@@ -4,7 +4,6 @@ using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Threading;
@@ -16,11 +15,10 @@ namespace Chatter.MessageBrokers.Receiving
     /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
-    class BrokeredMessageReceiver<TMessage> : BackgroundService, IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
+    class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
     {
         readonly object _syncLock;
-        private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
-        private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
+        private readonly IMessagingInfrastructureReceiver _infrastructureReceiver;
         private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
         private readonly IServiceScopeFactory _serviceFactory;
         TaskCompletionSource<bool> _completedReceivingSource = new TaskCompletionSource<bool>();
@@ -30,58 +28,36 @@ namespace Chatter.MessageBrokers.Receiving
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
         /// </summary>
         /// <param name="infrastructureReceiver">The message broker infrastructure</param>
-        /// <param name="brokeredMessageDetailProvider">Provides routing details to the brokered message receiver</param>
         /// <param name="serviceFactory">THe service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
         /// <param name="logger">Provides logging capability</param>
-        public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
-                                       IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
+        public BrokeredMessageReceiver(string receiverPath,
+                                       string description,
+                                       IMessagingInfrastructureReceiver infrastructureReceiver,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
                                        IServiceScopeFactory serviceFactory)
         {
             _syncLock = new object();
+            MessageReceiverPath = receiverPath;
+            Description = description;
             _infrastructureReceiver = infrastructureReceiver ?? throw new ArgumentNullException(nameof(infrastructureReceiver));
-            _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }
 
         /// <summary>
-        /// The receiver should automatically receive brokered messages when the <see cref="BrokeredMessageReceiver{TMessage}"/> is created
-        /// </summary>
-        public bool AutoReceiveMessages => _brokeredMessageDetailProvider.AutoReceiveMessages<TMessage>();
-
-        /// <summary>
         /// Describes the receiver. Used to track progress using the 'Via' user property of the <see cref="InboundBrokeredMessage"/>./>
         /// </summary>
-        public string Description => _brokeredMessageDetailProvider.GetBrokeredMessageDescription<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the current destination path.
-        /// </summary>
-        public string DestinationPath => _brokeredMessageDetailProvider.GetMessageName<TMessage>();
+        public string Description { get; }
 
         /// <summary>
         /// Gets the name of the path to receive messages.
         /// </summary>
-        public string MessageReceiverPath => _brokeredMessageDetailProvider.GetReceiverName<TMessage>();
+        public string MessageReceiverPath { get; }
 
         /// <summary>
-        /// Indicates if the <see cref="BrokeredMessageReceiver{TMessage}"/> is currently receiving messages
+        /// Indicates if the <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> is currently receiving messages
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
-
-        ///<inheritdoc/>
-        protected override Task ExecuteAsync(CancellationToken stoppingToken)
-        {
-            if (AutoReceiveMessages)
-            {
-                return Start(stoppingToken);
-            }
-            else
-            {
-                return Task.CompletedTask;
-            }
-        }
 
         ///<inheritdoc/>
         public void StartReceiver()
@@ -130,7 +106,8 @@ namespace Chatter.MessageBrokers.Receiving
                         IsReceiving = false;
                     });
 
-                    _infrastructureReceiver.StartReceiver(ReceiveInboundBrokeredMessage,
+                    _infrastructureReceiver.StartReceiver(this.MessageReceiverPath,
+                                                          ReceiveInboundBrokeredMessage,
                                                           receiverTerminationToken);
                     IsReceiving = true;
                     _logger.LogInformation($"'{GetType().FullName}' has started receiving messages.");
@@ -154,7 +131,6 @@ namespace Chatter.MessageBrokers.Receiving
                 CreateErrorContextFromHeaders(messageContext, inboundMessage);
                 CreateReplyContextFromHeaders(messageContext, inboundMessage);
 
-                inboundMessage.WithRouteToSelfPath(this.DestinationPath);
                 inboundMessage.UpdateVia(Description);
 
                 if (transactionContext is null)

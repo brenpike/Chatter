@@ -10,7 +10,6 @@ using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Hosting;
-using Scrutor;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -30,7 +29,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         /// <summary>
         /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
-        /// Registers all <see cref="BrokeredMessageReceiver{TMessage}"/> and automatically starts receiving if configured to do so.
+        /// Registers all <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> and automatically starts receiving if configured to do so.
         /// Registers all routers.
         /// </summary>
         /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
@@ -45,7 +44,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         /// <summary>
         /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
-        /// Registers all <see cref="BrokeredMessageReceiver{TMessage}"/> and automatically starts receiving if configured to do so.
+        /// Registers all <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> and automatically starts receiving if configured to do so.
         /// Registers all routers.
         /// </summary>
         /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
@@ -56,7 +55,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         /// <summary>
         /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
-        /// Registers all <see cref="BrokeredMessageReceiver{TMessage}"/> and automatically starts receiving if configured to do so.
+        /// Registers all <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> and automatically starts receiving if configured to do so.
         /// Registers all routers.
         /// </summary>
         /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
@@ -67,6 +66,8 @@ namespace Microsoft.Extensions.DependencyInjection
             var messageBrokerOptionsBuilder = builder.Services.AddMessageBrokerOptions();
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
+
+            builder.Services.AddScoped<IBrokeredMessageReceiverFactory, BrokeredMessageReceiverFactory>();
 
             builder.Services.AddScoped<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
 
@@ -154,22 +155,22 @@ namespace Microsoft.Extensions.DependencyInjection
             var messages = FindBrokeredMessagesWithReceiversInAssembliesByType(assemblies);
             foreach (var receiverType in GetAllReceiverTypes(messages))
             {
-                AddReceiver(builder, receiverType.Item1, receiverType.Item2);
+                AddReceiver(builder, receiverType);
             }
             return builder;
         }
 
-        private static void AddReceiver(IChatterBuilder builder, Type receiverInterfaceType, Type receiverConcreteType)
+        private static void AddReceiver(IChatterBuilder builder, Type receiverConcreteType)
         {
-            builder.Services.AddScoped(receiverInterfaceType, receiverConcreteType);
+            builder.Services.AddScoped(receiverConcreteType);
             builder.Services.AddSingleton(typeof(IHostedService), sp =>
             {
                 using var scope = sp.CreateScope();
-                return scope.ServiceProvider.GetRequiredService(receiverInterfaceType);
+                return scope.ServiceProvider.GetRequiredService(receiverConcreteType);
             });
         }
 
-        private static IEnumerable<(Type, Type)> GetAllReceiverTypes(IReadOnlyList<Type> messages)
+        private static IEnumerable<Type> GetAllReceiverTypes(IReadOnlyList<Type> messages)
         {
             foreach (var messageType in messages)
             {
@@ -186,10 +187,9 @@ namespace Microsoft.Extensions.DependencyInjection
                     throw new ArgumentException($"Unable to start receiving messages. {messageType.Name} is not decorated with a { nameof(BrokeredMessageAttribute)}.");
                 }
 
-                var concreteReceiverThatCloses = typeof(BrokeredMessageReceiver<>).MakeGenericType(messageType);
-                var interfaceThatCloses = typeof(IBrokeredMessageReceiver<>).MakeGenericType(messageType);
+                var concreteReceiverThatCloses = typeof(BrokeredMessageReceiverBackgroundService<>).MakeGenericType(messageType);
 
-                yield return (interfaceThatCloses, concreteReceiverThatCloses);
+                yield return concreteReceiverThatCloses;
             }
         }
     }

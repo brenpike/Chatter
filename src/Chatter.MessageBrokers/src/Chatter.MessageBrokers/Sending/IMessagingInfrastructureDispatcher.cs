@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Sending
 {
-    public interface IBrokeredMessageInfrastructureDispatcher
+    public interface IMessagingInfrastructureDispatcher
     {
         Task Dispatch(IList<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext);
         Task Dispatch(OutboundBrokeredMessage brokeredMessage, TransactionContext transactionContext);

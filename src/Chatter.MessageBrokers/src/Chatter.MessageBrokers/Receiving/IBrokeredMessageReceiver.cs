@@ -8,7 +8,7 @@ namespace Chatter.MessageBrokers.Receiving
     /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
-    public interface IBrokeredMessageReceiver<TMessage> : IReceiveMessages, IDescribeBrokeredMessage where TMessage : class, IMessage
+    public interface IBrokeredMessageReceiver<TMessage> : IReceiveMessages where TMessage : class, IMessage
     {
         /// <summary>
         /// Start listening to messages of type <typeparamref name="TMessage"/>

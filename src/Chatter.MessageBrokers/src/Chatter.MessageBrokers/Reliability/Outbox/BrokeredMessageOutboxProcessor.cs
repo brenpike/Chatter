@@ -14,12 +14,12 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     internal sealed class BrokeredMessageOutboxProcessor : BackgroundService
     {
-        private readonly IBrokeredMessageInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
+        private readonly IMessagingInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
         private readonly ILogger<BrokeredMessageOutboxProcessor> _logger;
         private readonly ReliabilityOptions _reliabilityOptions;
         private readonly IServiceScopeFactory _serviceScopeFactory;
 
-        public BrokeredMessageOutboxProcessor(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher,
+        public BrokeredMessageOutboxProcessor(IMessagingInfrastructureDispatcher brokeredMessageInfrastructureDispatcher,
                                               ILogger<BrokeredMessageOutboxProcessor> logger,
                                               ReliabilityOptions reliabilityOptions,
                                               IServiceScopeFactory serviceScopeFactory)

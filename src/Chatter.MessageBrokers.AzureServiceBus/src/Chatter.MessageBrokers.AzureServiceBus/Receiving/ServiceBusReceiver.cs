@@ -1,5 +1,4 @@
-﻿using Chatter.CQRS;
-using Chatter.MessageBrokers.AzureServiceBus.Extensions;
+﻿using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
@@ -14,18 +13,16 @@ using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
-    public class ServiceBusReceiver<TMessage> : IMessagingInfrastructureReceiver<TMessage> where TMessage : class, IMessage
+    public class ServiceBusReceiver : IMessagingInfrastructureReceiver
     {
         readonly object _syncLock;
-        private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
-        private readonly ILogger<ServiceBusReceiver<TMessage>> _logger;
+        private readonly ILogger<ServiceBusReceiver> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly int _maxConcurrentCalls = 1;
         MessageReceiver _innerReceiver;
 
         public ServiceBusReceiver(ServiceBusOptions serviceBusConfiguration,
-                                  IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
-                                  ILogger<ServiceBusReceiver<TMessage>> logger,
+                                  ILogger<ServiceBusReceiver> logger,
                                   IBodyConverterFactory bodyConverterFactory)
         {
             if (serviceBusConfiguration is null)
@@ -35,7 +32,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             _syncLock = new object();
             ServiceBusConnection = new ServiceBusConnection(serviceBusConfiguration.ConnectionString, serviceBusConfiguration.Policy);
-            _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _maxConcurrentCalls = serviceBusConfiguration.MaxConcurrentCalls;
@@ -46,20 +42,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// </summary>
         public ServiceBusConnection ServiceBusConnection { get; }
 
-        /// <summary>
-        /// Describes the receiver pipeline. Used to track progress using the 'Via' user property of the <see cref="Message"/>./>
-        /// </summary>
-        public string Description => _brokeredMessageDetailProvider.GetBrokeredMessageDescription<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the current destination path.
-        /// </summary>
-        public string DestinationPath => _brokeredMessageDetailProvider.GetMessageName<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the path to receive messages.
-        /// </summary>
-        public string MessageReceiverPath => _brokeredMessageDetailProvider.GetReceiverName<TMessage>();
+        public string MessageReceiverPath { get; private set; }
 
         internal MessageReceiver InnerReceiver
         {
@@ -81,9 +64,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public void StartReceiver(Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler,
+        public void StartReceiver(string receiverPath,
+                                  Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler,
                                   CancellationToken receiverTerminationToken)
         {
+            this.MessageReceiverPath = receiverPath;
+
             receiverTerminationToken.Register(
             () =>
             {

@@ -6,7 +6,7 @@ using System.Collections.Generic;
 namespace Chatter.MessageBrokers.Receiving
 {
     /// <summary>
-    /// The message received by the <see cref="BrokeredMessageReceiver{TMessage}"/>
+    /// The message received by the <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/>
     /// </summary>
     public class InboundBrokeredMessage
     {

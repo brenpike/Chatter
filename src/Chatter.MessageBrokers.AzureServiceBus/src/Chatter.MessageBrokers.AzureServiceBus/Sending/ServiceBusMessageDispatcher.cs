@@ -9,7 +9,7 @@ using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
-    internal class ServiceBusMessageSender : IBrokeredMessageInfrastructureDispatcher
+    internal class ServiceBusMessageSender : IMessagingInfrastructureDispatcher
     {
         readonly BrokeredMessageSenderPool _pool;
 
@@ -38,6 +38,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
         {
             ServiceBusConnection connection = null;
             transactionContext?.Container.TryGet(out connection);
+            var sendViaPath = connection == null ? null : transactionContext?.TransactionReceiver;
 
             var dispatchTasks = new List<Task>(brokeredMessages.Count);
 
@@ -46,7 +47,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 
             foreach (var brokeredMessage in brokeredMessages)
             {
-                var sender = _pool.GetOrCreate(brokeredMessage.Destination, (connection, transactionContext?.TransactionReceiver));
+                var sender = _pool.GetOrCreate(brokeredMessage.Destination, (connection, sendViaPath));
                 try
                 {
                     var message = brokeredMessage?.AsAzureServiceBusMessage();

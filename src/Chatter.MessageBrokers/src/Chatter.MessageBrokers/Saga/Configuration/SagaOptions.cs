@@ -12,7 +12,7 @@ namespace Chatter.MessageBrokers.Saga.Configuration
         public string SagaDataContentType { get; set; } = SagaConfigurationConstants.DefaultSagaDataContentType;
         public string Description { get; set; } = SagaConfigurationConstants.DefaultDescription;
         [JsonIgnore]
-        public TransactionMode TransactionMode { get; internal set; } = TransactionMode.None;
+        public TransactionMode TransactionMode { get; internal set; } = TransactionMode.ReceiveOnly;
         public string DefaultTransactionMode { get; set; }
     }
 
