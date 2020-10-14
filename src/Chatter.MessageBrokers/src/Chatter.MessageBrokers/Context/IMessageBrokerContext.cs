@@ -5,6 +5,7 @@ using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
@@ -18,6 +19,11 @@ namespace Chatter.MessageBrokers.Context
         /// The message received by a <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/>
         /// </summary>
         InboundBrokeredMessage BrokeredMessage { get; }
+
+        /// <summary>
+        /// A cancellation token to cancel the receiver of the currently received <see cref="BrokeredMessage"/>
+        /// </summary>
+        CancellationToken ReceiverCancellationToken { get; }
 
         IBrokeredMessageDispatcher BrokeredMessageDispatcher { get; }
 

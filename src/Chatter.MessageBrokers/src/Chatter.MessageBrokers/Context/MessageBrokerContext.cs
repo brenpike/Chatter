@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
@@ -23,16 +24,18 @@ namespace Chatter.MessageBrokers.Context
         /// <param name="applicationProperties">The application properties of the received message</param>
         /// <param name="messageReceiverPath">The message receiver path</param>
         /// <param name="bodyConverter">Used to convert the message body to a strongly typed object</param>
-        public MessageBrokerContext(string messageId, byte[] body, IDictionary<string, object> applicationProperties, string messageReceiverPath, IBrokeredMessageBodyConverter bodyConverter)
-            => this.BrokeredMessage = new InboundBrokeredMessage(messageId, body, applicationProperties, messageReceiverPath, bodyConverter);
-
-        public MessageBrokerContext(InboundBrokeredMessage brokeredMessage)
-            => this.BrokeredMessage = brokeredMessage;
+        public MessageBrokerContext(string messageId, byte[] body, IDictionary<string, object> applicationProperties, string messageReceiverPath, CancellationToken receiverCancellationToken, IBrokeredMessageBodyConverter bodyConverter)
+        {
+            this.BrokeredMessage = new InboundBrokeredMessage(messageId, body, applicationProperties, messageReceiverPath, bodyConverter);
+            this.ReceiverCancellationToken = receiverCancellationToken;
+        }
 
         /// <summary>
         /// The received message
         /// </summary>
         public InboundBrokeredMessage BrokeredMessage { get; private set; }
+
+        public CancellationToken ReceiverCancellationToken { get; private set; }
 
         public IBrokeredMessageDispatcher BrokeredMessageDispatcher { get; internal set; }
 

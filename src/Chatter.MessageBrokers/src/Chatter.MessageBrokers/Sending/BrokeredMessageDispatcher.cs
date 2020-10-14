@@ -47,8 +47,6 @@ namespace Chatter.MessageBrokers.Sending
         public Task Forward(InboundBrokeredMessage inboundBrokeredMessage, string forwardDestination, TransactionContext transactionContext) 
             => _forwarder.Route(inboundBrokeredMessage, forwardDestination, transactionContext);
 
-        //TODO: add replytorequester that takes a TMessage and uses the ApplicationProperty RequesterPath to reply to
-
         Task Dispatch<TMessage, TOptions>(TMessage message, TransactionContext transactionContext, TOptions options)
             where TMessage : IMessage
             where TOptions : RoutingOptions, new()

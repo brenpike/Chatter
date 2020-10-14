@@ -13,16 +13,10 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// Start listening to messages of type <typeparamref name="TMessage"/>
         /// </summary>
-        void StartReceiver();
-        /// <summary>
-        /// Start listening to messages of type <typeparamref name="TMessage"/>
-        /// </summary>
         /// <param name="receiverTerminationToken">The <see cref="CancellationToken"/> that cancels receiving messages of type <typeparamref name="TMessage"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         Task StartReceiver(CancellationToken receiverTerminationToken);
-        /// <summary>
-        /// Stop listening to messages of type <typeparamref name="TMessage"/>
-        /// </summary>
-        void StopReceiver();
+
+        Task StopReceiver();
     }
 }

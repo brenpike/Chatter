@@ -19,6 +19,7 @@ namespace FlightBooking.Application.Commands.Handlers
                     Console.ResetColor();
                 }
 
+                //throw new Exception($"Fake business Logic not satisfied for booking flight.");
                 //if (DateTime.UtcNow.Second >= 1 && DateTime.UtcNow.Second <= 15)
                 //{
                 //    throw new Exception($"Fake business Logic not satisfied for booking flight.");

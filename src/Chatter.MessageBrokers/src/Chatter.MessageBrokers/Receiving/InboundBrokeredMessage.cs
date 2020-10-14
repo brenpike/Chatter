@@ -48,12 +48,6 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         public TransactionMode TransactionMode { get; }
         /// <summary>
-        /// Will be true once the <see cref="InboundBrokeredMessage"/> has been successfully received (completed). The message must be successfully handled 
-        /// and routed optionally to the next and reply destination(s).
-        /// NOTE: This can never be true in the received message handler.
-        /// </summary>
-        public bool SuccessfullyReceived { get; internal set; }
-        /// <summary>
         /// True if the inbound message has encountered an error while being received
         /// </summary>
         public bool IsError => GetMessageContextByKey<bool>(MessageBrokers.MessageContext.IsError);

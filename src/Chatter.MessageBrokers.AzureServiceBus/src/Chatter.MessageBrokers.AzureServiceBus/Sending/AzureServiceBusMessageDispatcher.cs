@@ -13,14 +13,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
     {
         readonly BrokeredMessageSenderPool _pool;
 
-        public ServiceBusMessageSender(BrokeredMessageSenderPool messageSenderPool)
-        {
-            _pool = messageSenderPool ?? throw new ArgumentNullException(nameof(messageSenderPool));
-        }
+        public ServiceBusMessageSender(BrokeredMessageSenderPool messageSenderPool) 
+            => _pool = messageSenderPool ?? throw new ArgumentNullException(nameof(messageSenderPool));
 
         public Task Dispatch(OutboundBrokeredMessage brokeredMessage, TransactionContext transactionContext)
         {
-
             if (brokeredMessage == null)
             {
                 throw new ArgumentNullException(nameof(brokeredMessage), $"An outgoing message is required.");

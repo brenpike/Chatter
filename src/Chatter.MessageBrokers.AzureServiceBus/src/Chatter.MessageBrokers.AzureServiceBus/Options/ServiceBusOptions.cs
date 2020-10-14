@@ -1,4 +1,5 @@
 ﻿using Microsoft.Azure.ServiceBus;
+using Microsoft.Azure.ServiceBus.Primitives;
 using Newtonsoft.Json;
 using System.ComponentModel.DataAnnotations;
 
@@ -11,19 +12,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
     {
         [Required(AllowEmptyStrings = false, ErrorMessage = "A service bus connection string is required.")]
         public string ConnectionString { get; set; }
-        public TransportType TransportType { get; set; } = TransportType.AmqpWebSockets;
-        public ReceiveMode ReceiveMode { get; set; } = ReceiveMode.PeekLock;
         public int MaxConcurrentCalls { get; set; } = 1;
-        public RetryPolicyConfiguation RetryPolicy { get; set; }
-
+        public int PrefetchCount { get; set; } = 0;
+        internal RetryPolicyConfiguation RetryPolicy { get; set; }
         [JsonIgnore]
         public RetryPolicy Policy { get; internal set; }
+        [JsonIgnore]
+        public ITokenProvider TokenProvider { get; internal set; }
     }
 
-    public class RetryPolicyConfiguation
+    internal class RetryPolicyConfiguation
     {
-        public int MinimumBackoff { get; set; } = 0;
-        public int MaximumBackoff { get; set; } = 0;
+        public double MinimumBackoffInSeconds { get; set; } = 0;
+        public double MaximumBackoffInSeconds { get; set; } = 0;
         public int MaximumRetryCount { get; set; } = 0;
+        public double DeltaBackoffInSeconds { get; set; } = 0;
     }
 }

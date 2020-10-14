@@ -1,6 +1,7 @@
 ﻿using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Core;
+using Microsoft.Azure.ServiceBus.Primitives;
 using System;
 using System.Collections.Concurrent;
 
@@ -11,6 +12,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
         readonly ServiceBusConnectionStringBuilder _connectionStringBuilder;
         readonly RetryPolicy _retryPolicy;
         readonly ConcurrentDictionary<(string entityPath, (ServiceBusConnection connnection, string viaEntityPath)), ConcurrentQueue<MessageSender>> _senders;
+        private readonly ITokenProvider _tokenProvider;
 
         public BrokeredMessageSenderPool(ServiceBusOptions serviceBusOptions)
         {
@@ -22,6 +24,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             _senders = new ConcurrentDictionary<(string, (ServiceBusConnection, string)), ConcurrentQueue<MessageSender>>();
             _retryPolicy = serviceBusOptions.Policy;
             _connectionStringBuilder = new ServiceBusConnectionStringBuilder(serviceBusOptions.ConnectionString);
+            _tokenProvider = serviceBusOptions.TokenProvider;
         }
 
         /// <summary>
@@ -42,7 +45,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
                 }
                 else
                 {
-                    sender = new MessageSender(_connectionStringBuilder.GetNamespaceConnectionString(), destinationEntityPath, _retryPolicy);
+                    if (_tokenProvider is NullTokenProvider)
+                    {
+                        sender = new MessageSender(_connectionStringBuilder.GetNamespaceConnectionString(), destinationEntityPath, _retryPolicy);
+                    }
+                    else
+                    {
+                        sender = new MessageSender(_connectionStringBuilder.Endpoint, destinationEntityPath, _tokenProvider, _connectionStringBuilder.TransportType, _retryPolicy);
+                    }
                 }
             }
 

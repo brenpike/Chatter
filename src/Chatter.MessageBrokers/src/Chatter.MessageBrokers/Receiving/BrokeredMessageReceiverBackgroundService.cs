@@ -20,10 +20,9 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
         /// </summary>
-        /// <param name="infrastructureReceiver">The message broker infrastructure</param>
         /// <param name="brokeredMessageDetailProvider">Provides routing details to the brokered message receiver</param>
-        /// <param name="serviceFactory">THe service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
         /// <param name="logger">Provides logging capability</param>
+        /// <param name="receiverFactory">Factory that creates <see cref="IBrokeredMessageReceiver"/> for messages of type <typeparamref name="TMessage"/>.</param>
         public BrokeredMessageReceiverBackgroundService(IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
                                                         ILogger<BrokeredMessageReceiverBackgroundService<TMessage>> logger,
                                                         IBrokeredMessageReceiverFactory receiverFactory)
@@ -32,11 +31,6 @@ namespace Chatter.MessageBrokers.Receiving
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _receiverFactory = receiverFactory ?? throw new ArgumentNullException(nameof(receiverFactory));
         }
-
-        /// <summary>
-        /// The receiver should automatically receive brokered messages when the <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> is created
-        /// </summary>
-        public bool AutoReceiveMessages => _brokeredMessageDetailProvider.AutoReceiveMessages<TMessage>();
 
         /// <summary>
         /// Describes the receiver. Used to track progress using the 'Via' user property of the <see cref="InboundBrokeredMessage"/>./>
@@ -51,15 +45,8 @@ namespace Chatter.MessageBrokers.Receiving
         ///<inheritdoc/>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            if (AutoReceiveMessages)
-            {
-                var receiver = _receiverFactory.Create<TMessage>(MessageReceiverPath, Description);
-                await receiver.StartReceiver(stoppingToken);
-            }
-            else
-            {
-                await Task.CompletedTask;
-            }
+            var receiver = _receiverFactory.Create<TMessage>(MessageReceiverPath, Description);
+            await receiver.StartReceiver(stoppingToken).ConfigureAwait(false);
         }
     }
 }
