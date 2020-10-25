@@ -14,6 +14,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -24,8 +25,19 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         /// <param name="services"></param>
         /// <returns></returns>
-        public static MessageBrokerOptionsBuilder AddMessageBrokerOptions(this IServiceCollection services) 
-            => new MessageBrokerOptionsBuilder(services);
+        public static MessageBrokerOptionsBuilder AddMessageBrokerOptions(this IServiceCollection services, IConfiguration configuration)
+            => new MessageBrokerOptionsBuilder(services, configuration);
+
+        /// <summary>
+        /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
+        /// Registers all <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> and automatically starts receiving if configured to do so.
+        /// Registers all routers.
+        /// </summary>
+        /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
+        /// <param name="markerTypesForRequiredAssemblies">The <see cref="Type"/>s from assemblies that are required for registering receivers</param>
+        /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
+        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, params Type[] markerTypesForRequiredAssemblies)
+            => AddMessageBrokers(builder, null, markerTypesForRequiredAssemblies);
 
         /// <summary>
         /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
@@ -48,22 +60,12 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Registers all routers.
         /// </summary>
         /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
-        /// <param name="markerTypesForRequiredAssemblies">The <see cref="Type"/>s from assemblies that are required for registering receivers</param>
-        /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
-        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, params Type[] markerTypesForRequiredAssemblies) 
-            => AddMessageBrokers(builder, null, markerTypesForRequiredAssemblies);
-
-        /// <summary>
-        /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
-        /// Registers all <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> and automatically starts receiving if configured to do so.
-        /// Registers all routers.
-        /// </summary>
-        /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
         /// <param name="assemblies">The assemblies that are required for registering receivers</param>
         /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
         public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, IEnumerable<Assembly> assemblies, Action<MessageBrokerOptionsBuilder> optionsBuilder = null)
         {
-            var messageBrokerOptionsBuilder = builder.Services.AddMessageBrokerOptions();
+            assemblies = assemblies.Union(builder.MarkerAssemblies);
+            var messageBrokerOptionsBuilder = builder.Services.AddMessageBrokerOptions(builder.Configuration);
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
 
@@ -79,18 +81,18 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
 
+            if (options?.Reliability?.EnableOutboxPollingProcessor ?? false)
+            {
+                builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
+            }
+
             if (options?.Reliability?.RouteMessagesToOutbox ?? false)
             {
-                builder.Services.AddScoped<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>();
-
-                if (options?.Reliability?.EnableOutboxPollingProcessor ?? false)
-                {
-                    builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();
-                }
+                builder.Services.AddIfNotRegistered<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
             }
             else
             {
-                builder.Services.AddScoped<IRouteBrokeredMessages, BrokeredMessageRouter>();
+                builder.Services.AddIfNotRegistered<IRouteBrokeredMessages, BrokeredMessageRouter>(ServiceLifetime.Scoped);
             }
 
             builder.AddAllReceivers(assemblies);
@@ -129,7 +131,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Finds all class in all assemblies within the current app domain that are decorated with <see cref="BrokeredMessageAttribute"/> and have a non-null <see cref="BrokeredMessageAttribute.ReceiverName"/>.
         /// </summary>
         /// <returns>A read only list of classes that are decorated with <see cref="BrokeredMessageAttribute"/> and implement <see cref="IMessage"/>.</returns>
-        private static IReadOnlyList<Type> FindBrokeredMessagesWithReceiversInAssembliesByType(IEnumerable<Assembly> assemblies) 
+        private static IReadOnlyList<Type> FindBrokeredMessagesWithReceiversInAssembliesByType(IEnumerable<Assembly> assemblies)
             => assemblies.SelectMany(assemblies => assemblies.GetTypes()
                          .Where(type => type.GetInterfaces()
                              .Any(i => i == typeof(IMessage)))

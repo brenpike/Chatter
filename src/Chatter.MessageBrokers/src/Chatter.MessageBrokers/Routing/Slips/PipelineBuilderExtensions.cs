@@ -5,7 +5,7 @@ namespace Microsoft.Extensions.DependencyInjection
 {
     public static class PipelineBuilderExtensions
     {
-        public static PipelineBuilder WithRoutingSlipRoutingBehavior(this PipelineBuilder pipelineBuilder)
+        public static PipelineBuilder WithRoutingSlipBehavior(this PipelineBuilder pipelineBuilder)
         {
             pipelineBuilder.WithBehavior(typeof(RoutingSlipBehavior<>));
             return pipelineBuilder;

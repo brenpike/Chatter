@@ -81,7 +81,7 @@ namespace Chatter.MessageBrokers.Saga
             var sendOptions = new SendOptions()
                 .WithSubject(options.Description)
                 .WithTimeToLiveInMinutes(options.MaxSagaDurationInMinutes)
-                .WithTransactionMode(options.TransactionMode)
+                //.WithTransactionMode(options.TransactionMode)
                 .WithSagaId(saga.SagaId)
                 .WithSagaStatus(saga.Status.Status);
 

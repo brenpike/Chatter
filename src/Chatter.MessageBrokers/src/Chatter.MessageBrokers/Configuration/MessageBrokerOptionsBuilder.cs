@@ -1,8 +1,8 @@
-﻿using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Reliability.Configuration;
+﻿using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Saga.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 
@@ -11,19 +11,38 @@ namespace Chatter.MessageBrokers.Configuration
     public class MessageBrokerOptionsBuilder
     {
         private readonly IServiceCollection _services;
+        private readonly IConfiguration _configuration;
+        private MessageBrokerOptions _messageBrokerOptions;
         private ReliabilityOptions _reliabilityOptions;
         private List<SagaOptions> _sagaOptions;
+        private Func<IServiceCollection> _optionConfigurator;
+        private const string _messageBrokerSectionName = "Chatter:MessageBrokers";
+        private const string _reliabilityOptionsSectionName = _messageBrokerSectionName + ":Reliability";
+        private const string _sagaOptionsSectionName = _messageBrokerSectionName + ":Sagas";
 
-        internal MessageBrokerOptionsBuilder(IServiceCollection services)
+        internal MessageBrokerOptionsBuilder(IServiceCollection services, IConfiguration configuration)
         {
             _services = services;
-            _reliabilityOptions = new ReliabilityOptions();
-            _sagaOptions = new List<SagaOptions>();
+            _configuration = configuration;
+            _messageBrokerOptions = new MessageBrokerOptions();
+            _optionConfigurator = () => _services.Configure<MessageBrokerOptions>(configuration.GetSection(_messageBrokerSectionName));
         }
 
-        public MessageBrokerOptionsBuilder AddReliabilityOptions(IConfiguration configuration, string reliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability")
+        public MessageBrokerOptionsBuilder AddMessageBrokerOptions(Action<MessageBrokerOptions> builder)
         {
-            var reliabilityOptions = configuration.GetSection(reliabilityOptionsSectionName).Get<ReliabilityOptions>();
+            _optionConfigurator = () => _services.Configure(builder);
+            return this;
+        }
+
+        public MessageBrokerOptionsBuilder AddMessageBrokerOptions(string messageBrokerSectionName = _messageBrokerSectionName)
+        {
+            _optionConfigurator = () => _services.Configure<MessageBrokerOptions>(_configuration.GetSection(messageBrokerSectionName));
+            return this;
+        }
+
+        public MessageBrokerOptionsBuilder AddReliabilityOptions(string reliabilityOptionsSectionName = _reliabilityOptionsSectionName)
+        {
+            var reliabilityOptions = _configuration.GetSection(reliabilityOptionsSectionName).Get<ReliabilityOptions>();
 
             if (reliabilityOptions is null)
             {
@@ -35,7 +54,7 @@ namespace Chatter.MessageBrokers.Configuration
             return this;
         }
 
-        public MessageBrokerOptionsBuilder AddSagaOptions(IConfiguration configuration, string sagaOptionsSectionName = "Chatter:MessageBrokers:Sagas")
+        public MessageBrokerOptionsBuilder AddSagaOptions(IConfiguration configuration, string sagaOptionsSectionName = _sagaOptionsSectionName)
         {
             var sagaOptions = configuration.GetSection(sagaOptionsSectionName).Get<List<SagaOptions>>();
 
@@ -50,15 +69,6 @@ namespace Chatter.MessageBrokers.Configuration
                 {
                     throw new ArgumentNullException(nameof(option.SagaDataType), "A saga data type is required to register saga specific options.");
                 }
-
-                if (!Enum.TryParse<TransactionMode>(option.DefaultTransactionMode, out var transactionMode))
-                {
-                    option.TransactionMode = TransactionMode.ReceiveOnly;
-                }
-                else
-                {
-                    option.TransactionMode = transactionMode;
-                }
             }
 
             _sagaOptions = sagaOptions;
@@ -66,19 +76,37 @@ namespace Chatter.MessageBrokers.Configuration
             return this;
         }
 
+        private void PostConfiguration(MessageBrokerOptions messageBrokerOptions)
+        {
+            if (_sagaOptions != null)
+            {
+                messageBrokerOptions.Sagas = _sagaOptions;
+            }
+
+            if (_reliabilityOptions != null)
+            {
+                messageBrokerOptions.Reliability = _reliabilityOptions;
+            }
+
+            _messageBrokerOptions = messageBrokerOptions;
+        }
+
         internal MessageBrokerOptions Build()
         {
-            var options = new MessageBrokerOptions()
-            {
-                Reliability = _reliabilityOptions ?? new ReliabilityOptions(),
-                Sagas = _sagaOptions ?? new List<SagaOptions>()
-            };
+            _services.AddOptions<MessageBrokerOptions>()
+                     .ValidateDataAnnotations()
+                     .PostConfigure(options =>
+                     {
+                         PostConfiguration(options);
+                     });
 
-            _services.AddSingleton(options.Reliability);
-            _services.AddSingleton(options.Sagas);
-            _services.AddSingleton(options);
+            _optionConfigurator?.Invoke();
 
-            return options;
+            _services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value);
+            _services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Reliability ?? new ReliabilityOptions());
+            _services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Sagas ?? new List<SagaOptions>());
+
+            return _messageBrokerOptions;
         }
     }
 }

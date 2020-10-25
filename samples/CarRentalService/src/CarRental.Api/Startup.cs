@@ -40,22 +40,19 @@ namespace CarRental.Api
             services.AddScoped<IRepository<Domain.Aggregates.CarRental, Guid>, CarRentalRepository>();
             services.AddDbContext<CarRentalContext>();
 
-            services.AddChatterCqrs(typeof(BookRentalCarCommand))
+            services.AddChatterCqrs(Configuration, typeof(BookRentalCarCommand))
                     .AddCommandPipeline(builder =>
                     {
                         builder.WithBehavior(typeof(LoggingBehavior<>))
                                //.WithUnitOfWorkBehavior<CarRentalContext>(services)
                                //.WithInboxBehavior<CarRentalContext>(services)
                                .WithOutboxProcessingBehavior<CarRentalContext>(services)
-                               .WithRoutingSlipRoutingBehavior();
+                               .WithRoutingSlipBehavior();
                     })
-                    .AddMessageBrokers((options) =>
-                    {
-                        options.AddReliabilityOptions(Configuration);
-                    }, typeof(BookRentalCarCommand))
+                    .AddMessageBrokers()
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
+                        options.AddServiceBusOptions("Chatter:ServiceBus");
                     });
         }
 

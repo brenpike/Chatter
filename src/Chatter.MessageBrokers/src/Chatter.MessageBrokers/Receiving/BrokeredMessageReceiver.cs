@@ -138,7 +138,7 @@ namespace Chatter.MessageBrokers.Receiving
                     //                                  
                     //                             });
                 }
-                catch (Exception)
+                catch (Exception retryException)
                 {
                     FailureContext failureContext;
 
@@ -148,7 +148,7 @@ namespace Chatter.MessageBrokers.Receiving
 
                     messageContext.SetFailure(failureContext);
 
-                    throw new CriticalBrokeredMessageReceiverException(failureContext, e);
+                    throw new CriticalBrokeredMessageReceiverException(failureContext, retryException);
                 }
             }
         }

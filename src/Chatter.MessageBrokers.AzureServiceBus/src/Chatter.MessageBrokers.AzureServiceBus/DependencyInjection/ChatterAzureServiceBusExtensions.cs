@@ -1,20 +1,19 @@
 ﻿using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
-using Chatter.MessageBrokers.AzureServiceBus;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
-using Microsoft.Azure.ServiceBus.Primitives;
+using Microsoft.Extensions.Configuration;
 using System;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
     public static class ChatterAzureServiceBusExtensions
     {
-        public static ServiceBusOptionsBuilder AddAzureServiceBus(this IServiceCollection services) 
-            => new ServiceBusOptionsBuilder(services);
+        public static ServiceBusOptionsBuilder AddAzureServiceBus(this IServiceCollection services, IConfiguration configuration)
+            => new ServiceBusOptionsBuilder(services, configuration);
 
         /// <summary>
         /// Adds registrations required for Azure Service Bus integration with Chatter.CQRS, including <see cref="ServiceBusOptions"/>, queue, topic and subscription factories and publishers.
@@ -24,8 +23,8 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <returns>The singleton <see cref="IChatterBuilder"/> instance.</returns>
         public static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, Action<ServiceBusOptionsBuilder> optionsBuilder)
         {
-            var optBuilder = builder.Services.AddAzureServiceBus();
-            optionsBuilder(optBuilder);
+            var optBuilder = builder.Services.AddAzureServiceBus(builder.Configuration);
+            optionsBuilder?.Invoke(optBuilder);
             optBuilder.Build();
 
             return AddAzureServiceBus(builder);

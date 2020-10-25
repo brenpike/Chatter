@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace Chatter.MessageBrokers.Reliability.Configuration
+﻿namespace Chatter.MessageBrokers.Reliability.Configuration
 {
     public class PersistanceOptions
     {

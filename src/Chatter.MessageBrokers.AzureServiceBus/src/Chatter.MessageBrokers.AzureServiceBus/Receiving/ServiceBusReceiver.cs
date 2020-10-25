@@ -1,5 +1,6 @@
 ﻿using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
@@ -23,12 +24,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly int _maxConcurrentCalls = 1;
         private readonly RetryPolicy _retryPolcy;
         private readonly int _prefetchCount;
+        private readonly MessageBrokerOptions _messageBrokerOptions;
+        private readonly ReceiveMode _receiveMode;
         MessageReceiver _innerReceiver;
         SemaphoreSlim _semaphore;
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
 
         public ServiceBusReceiver(ServiceBusOptions serviceBusConfiguration,
+                                  MessageBrokerOptions messageBrokerOptions,
                                   ILogger<ServiceBusReceiver> logger,
                                   IBodyConverterFactory bodyConverterFactory)
         {
@@ -45,8 +49,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _maxConcurrentCalls = serviceBusConfiguration.MaxConcurrentCalls;
             _retryPolcy = serviceBusConfiguration.Policy;
             _prefetchCount = serviceBusConfiguration.PrefetchCount;
+            _messageBrokerOptions = messageBrokerOptions;
+            _receiveMode = messageBrokerOptions?.TransactionMode == TransactionMode.None ? ReceiveMode.ReceiveAndDelete : ReceiveMode.PeekLock;
         }
-
         /// <summary>
         /// Connection object to the service bus namespace.
         /// </summary>
@@ -68,7 +73,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                             {
                                 _innerReceiver = new MessageReceiver(this.ServiceBusConnectionBuilder.GetNamespaceConnectionString(),
                                                                      this.MessageReceiverPath,
-                                                                     ReceiveMode.PeekLock,
+                                                                     _receiveMode,
                                                                      _retryPolcy,
                                                                      _prefetchCount);
                             }
@@ -78,7 +83,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                                      this.MessageReceiverPath,
                                                                      _tokenProvider,
                                                                      this.ServiceBusConnectionBuilder.TransportType,
-                                                                     ReceiveMode.PeekLock,
+                                                                     _receiveMode,
                                                                      _retryPolcy,
                                                                      _prefetchCount);
                             }
@@ -137,7 +142,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         {
                             using var receiverTokenSource = new CancellationTokenSource();
 
-                            var transactionMode = message.GetTransactionMode();
+                            var transactionMode = _messageBrokerOptions?.TransactionMode ?? TransactionMode.None;
 
                             MessageBrokerContext messageContext = null;
                             TransactionContext transactionContext = null;
@@ -170,7 +175,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
                             if (!receiverTokenSource.IsCancellationRequested)
                             {
-                                await this.InnerReceiver.CompleteAsync(message.SystemProperties.LockToken).ConfigureAwait(false);
+                                await CompleteAsync(message).ConfigureAwait(false);
                                 scope?.Complete();
                             }
                             else
@@ -182,9 +187,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         {
                             try
                             {
-                                await this.InnerReceiver.DeadLetterAsync(message.SystemProperties.LockToken,
-                                                                         pme.Message,
-                                                                         pme.InnerException?.Message).ConfigureAwait(false);
+                                await DeadLetterAsync(message, pme.Message, pme.InnerException?.Message).ConfigureAwait(false);
                             }
                             catch (Exception deadLetterException)
                             {
@@ -227,11 +230,41 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
+        private Task CompleteAsync(Message msg)
+        {
+            if (_messageBrokerOptions.TransactionMode == TransactionMode.None)
+            {
+                return Task.CompletedTask;
+            }
+
+            return this.InnerReceiver.CompleteAsync(msg.SystemProperties.LockToken);
+        }
+
+        private Task AbandonAsync(Message msg)
+        {
+            if (_messageBrokerOptions.TransactionMode == TransactionMode.None)
+            {
+                return Task.CompletedTask;
+            }
+
+            return this.InnerReceiver.AbandonAsync(msg.SystemProperties.LockToken, msg.UserProperties);
+        }
+
+        private Task DeadLetterAsync(Message msg, string deadLetterReason, string deadLetterErrorDescription)
+        {
+            if (_messageBrokerOptions.TransactionMode == TransactionMode.None)
+            {
+                return Task.CompletedTask;
+            }
+
+            return this.InnerReceiver.DeadLetterAsync(msg.SystemProperties.LockToken, deadLetterReason, deadLetterErrorDescription);
+        }
+
         private async Task AbandonWithExponentialDelayAsync(Message msg)
         {
             var secondsOfDelay = BrokeredMessageReceiverRetry.ExponentialDelay(msg.SystemProperties.DeliveryCount);
             await Task.Delay(secondsOfDelay * BrokeredMessageReceiverRetry.MillisecondsInASecond);
-            await this.InnerReceiver.AbandonAsync(msg.SystemProperties.LockToken, msg.UserProperties).ConfigureAwait(false);
+            await AbandonAsync(msg).ConfigureAwait(false);
         }
 
         TransactionScope CreateTransactionScope(TransactionMode transactionMode)

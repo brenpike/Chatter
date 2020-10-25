@@ -9,16 +9,17 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
     public static class CqrsExtensions
     {
-        public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
+        public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, params Type[] markerTypesForRequiredAssemblies)
         {
             IEnumerable<Assembly> assemblies = GetAssembliesFromMarkerTypes(markerTypesForRequiredAssemblies);
 
-            var builder = ChatterBuilder.Create(services);
+            var builder = ChatterBuilder.Create(services, configuration, assemblies);
 
             builder.Services.AddMessageHandlers(assemblies);
             builder.Services.AddQueryHandlers(assemblies);
@@ -27,17 +28,16 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.Services.AddInMemoryMessageDispatchers();
             builder.Services.AddInMemoryQueryDispatcher();
+
             return builder;
         }
 
-        public static PipelineBuilder CreatePipelineBuiler(this IServiceCollection services)
-        {
-            return new PipelineBuilder(services);
-        }
+        static PipelineBuilder CreatePipelineBuilder(this IServiceCollection services) 
+            => new PipelineBuilder(services);
 
         public static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<PipelineBuilder> pipelineBulder)
         {
-            var pipeline = chatterBuilder.Services.CreatePipelineBuiler();
+            var pipeline = chatterBuilder.Services.CreatePipelineBuilder();
 
             if (pipeline is null)
             {
@@ -45,7 +45,7 @@ namespace Microsoft.Extensions.DependencyInjection
             }
 
             chatterBuilder.Services.Scan(s =>
-                                s.FromApplicationDependencies() //TODO: do we need to use marker types?
+                                s.FromAssemblies(chatterBuilder.MarkerAssemblies)
                                 .AddClasses(c => c.AssignableTo(typeof(ICommandBehaviorPipeline<>)))
                                 .UsingRegistrationStrategy(RegistrationStrategy.Throw)
                                 .AsImplementedInterfaces()
@@ -56,13 +56,7 @@ namespace Microsoft.Extensions.DependencyInjection
             return chatterBuilder;
         }
 
-        public static IServiceCollection AddMessageHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
-        {
-            IEnumerable<Assembly> assemblies = markerTypesForRequiredAssemblies.GetAssembliesFromMarkerTypes();
-            return AddMessageHandlers(services, assemblies);
-        }
-
-        public static IServiceCollection AddMessageHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        static IServiceCollection AddMessageHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
         {
             AddCommandHandlers(services, assemblies);
             AddEventHandlers(services, assemblies);

@@ -27,15 +27,15 @@ namespace FlightBooking.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Flight Booking Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs()
+            services.AddChatterCqrs(Configuration, typeof(BookFlightCommand))
                     .AddCommandPipeline(builder =>
                     {
-                        builder.WithRoutingSlipRoutingBehavior();
+                        builder.WithRoutingSlipBehavior();
                     })
-                    .AddMessageBrokers(typeof(BookFlightCommand))
+                    .AddMessageBrokers()
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
+                        options.AddServiceBusOptions("Chatter:ServiceBus");
                     });
         }
 

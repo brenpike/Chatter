@@ -14,22 +14,27 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         private ServiceBusOptions _serviceBusOptions;
         private Func<IServiceCollection> _optionConfigurator;
         private ITokenProvider _tokenProvider;
+        private readonly IConfiguration _configuration;
+        private const string _azureServiceBusSectionName = "Chatter:Infrastructure:AzureServiceBus";
 
-        internal ServiceBusOptionsBuilder(IServiceCollection services)
+        internal ServiceBusOptionsBuilder(IServiceCollection services, IConfiguration configuration)
         {
             _services = services;
+            _configuration = configuration;
             _serviceBusOptions = new ServiceBusOptions();
             _tokenProvider = new NullTokenProvider();
+            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(configuration.GetSection(_azureServiceBusSectionName));
         }
 
-        public void AddServiceBusOptions(Action<ServiceBusOptions> builder)
+        public ServiceBusOptionsBuilder AddServiceBusOptions(Action<ServiceBusOptions> builder)
         {
             _optionConfigurator = () => _services.Configure(builder);
+            return this;
         }
 
-        public ServiceBusOptionsBuilder AddServiceBusOptions(IConfiguration configuration, string configSectionName = "Chatter:AzureServiceBus")
+        public ServiceBusOptionsBuilder AddServiceBusOptions(string configSectionName = _azureServiceBusSectionName)
         {
-            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(configuration.GetSection(configSectionName));
+            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(_configuration.GetSection(configSectionName));
             return this;
         }
 

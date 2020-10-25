@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Receiving;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using System.ComponentModel.DataAnnotations;
 
 namespace Chatter.MessageBrokers.Saga.Configuration
@@ -11,9 +10,6 @@ namespace Chatter.MessageBrokers.Saga.Configuration
         public int MaxSagaDurationInMinutes { get; set; } = SagaConfigurationConstants.DefaultMaxSagaDurationInMinutes;
         public string SagaDataContentType { get; set; } = SagaConfigurationConstants.DefaultSagaDataContentType;
         public string Description { get; set; } = SagaConfigurationConstants.DefaultDescription;
-        [JsonIgnore]
-        public TransactionMode TransactionMode { get; internal set; } = TransactionMode.ReceiveOnly;
-        public string DefaultTransactionMode { get; set; }
     }
 
     public class SagaConfigurationConstants

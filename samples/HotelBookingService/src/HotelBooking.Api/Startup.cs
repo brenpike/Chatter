@@ -1,4 +1,4 @@
-using HotelBooking.Application.IntegrationEvents;
+using HotelBooking.Application.Commands;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -27,15 +27,15 @@ namespace HotelBooking.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Hotel Booking Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs()
-                .AddCommandPipeline(pb =>
+            services.AddChatterCqrs(Configuration, typeof(BookHotelCommand))
+                .AddCommandPipeline(builder =>
                 {
-                    pb.WithRoutingSlipRoutingBehavior();
+                    builder.WithRoutingSlipBehavior();
                 })
-                .AddMessageBrokers(typeof(RentalCarBookedEvent))
+                .AddMessageBrokers()
                 .AddAzureServiceBus(options =>
                 {
-                    options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
+                    options.AddServiceBusOptions("Chatter:ServiceBus");
                 });
         }
 
