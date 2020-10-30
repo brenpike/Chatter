@@ -39,18 +39,6 @@ namespace Chatter.MessageBrokers.Context
 
         public IBrokeredMessageDispatcher BrokeredMessageDispatcher { get; internal set; }
 
-        /// <summary>
-        /// Adds contextual error information to the message broker context
-        /// </summary>
-        /// <param name="errorContext"></param>
-        public void SetFailure(FailureContext errorContext)
-        {
-            this.Container.Include(errorContext);
-            this.BrokeredMessage.SetFailure();
-            this.BrokeredMessage.WithFailureDetails(errorContext.ErrorDetails);
-            this.BrokeredMessage.WithFailureDescription(errorContext.ErrorDescription);
-        }
-
         public Task Send<TMessage>(TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand
             => this.BrokeredMessageDispatcher.Send(message, destinationPath, this.GetTransactionContext(), options);
 

@@ -18,36 +18,33 @@ namespace Chatter.MessageBrokers.Routing.Slips
 
         public async Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next)
         {
-            if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
-            {
-                if (!(messageBrokerContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.RoutingSlip, out var routingSlip)))
-                {
-                    _logger.LogTrace($"No routing slip found. Continuing pipeline execution.");
-                    await next().ConfigureAwait(false);
-                    return;
-                }
-
-                RoutingSlip theSlip = JsonConvert.DeserializeObject<RoutingSlip>((string)routingSlip);
-
-                messageBrokerContext.Container.Include(theSlip);
-
-                try
-                {
-                    await next().ConfigureAwait(false);
-
-                    await messageBrokerContext.Forward(theSlip).ConfigureAwait(false);
-                }
-                catch (Exception e)
-                {
-                    //TODO: we don't want to compensate right away do we? don't we want to retry a few times to rule out transient errors?
-                    theSlip.Compensate();
-                    _logger.LogTrace($"Error receiving message '{typeof(TMessage).Name}'. Compensating routing slip: {e.StackTrace}");
-                    throw;
-                }
-            }
-            else
+            if (!(messageHandlerContext is IMessageBrokerContext messageBrokerContext))
             {
                 await next().ConfigureAwait(false);
+                return;
+            }
+
+            if (!(messageBrokerContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.RoutingSlip, out var routingSlip)))
+            {
+                _logger.LogTrace($"No routing slip found. Continuing pipeline execution.");
+                await next().ConfigureAwait(false);
+                return;
+            }
+
+            RoutingSlip theSlip = JsonConvert.DeserializeObject<RoutingSlip>((string)routingSlip);
+
+            messageBrokerContext.Container.Include(theSlip);
+
+            await next().ConfigureAwait(false);
+
+            try
+            {
+                await messageBrokerContext.Forward(theSlip).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _logger.LogTrace($"Error forwarding message '{typeof(TMessage).Name}': {e.StackTrace}");
+                throw;
             }
         }
     }

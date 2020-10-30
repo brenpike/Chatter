@@ -20,9 +20,10 @@ namespace Chatter.MessageBrokers.Receiving
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }
 
-        public IBrokeredMessageReceiver<TMessage> Create<TMessage>(string receivingEntityPath, string description = null) where TMessage : class, IMessage 
+        public IBrokeredMessageReceiver<TMessage> Create<TMessage>(string receivingEntityPath, string errorQueuePath = null, string description = null) where TMessage : class, IMessage 
             => new BrokeredMessageReceiver<TMessage>(
                 receivingEntityPath,
+                errorQueuePath,
                 description ?? receivingEntityPath,
                 _infrastructureReceiver,
                 _logger.CreateLogger<BrokeredMessageReceiver<TMessage>>(),

@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS.Context;
+using Chatter.MessageBrokers.Receiving;
 using System;
 
 namespace Chatter.MessageBrokers.Context
@@ -13,7 +14,7 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         /// <param name="errorDetails">The details of the error</param>
         /// <param name="errorDescription">The description of the error</param>
-        public FailureContext(string errorDetails, string errorDescription)
+        public FailureContext(InboundBrokeredMessage inbound, string errorQueueName, string errorDetails, string errorDescription, int deliveryCount, TransactionContext transactionContext)
         {
             if (string.IsNullOrWhiteSpace(errorDetails))
             {
@@ -25,9 +26,16 @@ namespace Chatter.MessageBrokers.Context
                 throw new ArgumentException("An failure description is required when an error occurs.", nameof(errorDescription));
             }
 
+            Inbound = inbound;
+            ErrorQueueName = errorQueueName;
             ErrorDetails = errorDetails;
             ErrorDescription = errorDescription;
+            DeliveryCount = deliveryCount;
+            TransactionContext = transactionContext;
         }
+
+        public InboundBrokeredMessage Inbound { get; }
+        public string ErrorQueueName { get; }
 
         /// <summary>
         /// The details of the error
@@ -37,7 +45,8 @@ namespace Chatter.MessageBrokers.Context
         /// The description of the error
         /// </summary>
         public string ErrorDescription { get; }
-
+        public int DeliveryCount { get; }
+        public TransactionContext TransactionContext { get; }
         public ContextContainer Container { get; } = new ContextContainer();
 
         public override string ToString() => $"{ErrorDetails}:\n{ErrorDescription}";

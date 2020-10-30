@@ -22,5 +22,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\Chatter.MessageBrokers\src\Chatter.MessageBrokers\Chatter.MessageBrokers.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Recovery\" />
+  </ItemGroup>
   
 </Project>

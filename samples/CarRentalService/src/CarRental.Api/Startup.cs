@@ -4,6 +4,7 @@ using CarRental.Application.Services;
 using CarRental.Infrastructure.Repositories;
 using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Reliability.EntityFramework;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing.Slips;
@@ -49,7 +50,10 @@ namespace CarRental.Api
                                .WithOutboxProcessingBehavior<CarRentalContext>(services)
                                .WithRoutingSlipBehavior();
                     })
-                    .AddMessageBrokers()
+                    .AddMessageBrokers(builder =>
+                    {
+                        builder.UseExponentialDelayRecovery();
+                    })
                     .AddAzureServiceBus(options =>
                     {
                         options.AddServiceBusOptions("Chatter:ServiceBus");

@@ -10,6 +10,7 @@ namespace Chatter.MessageBrokers
     {
         public string MessageName { get; }
         public string ReceiverName { get; }
+        public string ErrorQueueName { get; }
         public string MessageDescription { get; }
 
         /// <summary>
@@ -18,7 +19,7 @@ namespace Chatter.MessageBrokers
         /// </summary>
         /// <param name="messageName">The name of the message broker message to send.</param>
         /// <param name="receiverName">he name of the message broker message to receive. Can be a queue or subscription, etc.</param>
-        public BrokeredMessageAttribute(string messageName, string receiverName = null)
+        public BrokeredMessageAttribute(string messageName, string receiverName = null, string errorQueueName = null)
         {
             if (string.IsNullOrWhiteSpace(messageName) && string.IsNullOrWhiteSpace(receiverName))
             {
@@ -27,6 +28,7 @@ namespace Chatter.MessageBrokers
 
             MessageName = messageName;
             ReceiverName = receiverName;
+            ErrorQueueName = errorQueueName;
         }
     }
 }

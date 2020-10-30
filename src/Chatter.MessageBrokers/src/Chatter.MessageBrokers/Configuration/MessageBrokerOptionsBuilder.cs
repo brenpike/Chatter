@@ -1,4 +1,5 @@
-﻿using Chatter.MessageBrokers.Reliability.Configuration;
+﻿using Chatter.MessageBrokers.Recovery.Options;
+using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Saga.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,33 +11,35 @@ namespace Chatter.MessageBrokers.Configuration
 {
     public class MessageBrokerOptionsBuilder
     {
-        private readonly IServiceCollection _services;
+        public IServiceCollection Services { get; }
         private readonly IConfiguration _configuration;
         private MessageBrokerOptions _messageBrokerOptions;
         private ReliabilityOptions _reliabilityOptions;
         private List<SagaOptions> _sagaOptions;
+        private RecoveryOptions _recoveryOptions;
         private Func<IServiceCollection> _optionConfigurator;
         private const string _messageBrokerSectionName = "Chatter:MessageBrokers";
         private const string _reliabilityOptionsSectionName = _messageBrokerSectionName + ":Reliability";
         private const string _sagaOptionsSectionName = _messageBrokerSectionName + ":Sagas";
+        private const string _recoveryOptionsSectionName = _messageBrokerSectionName + ":Recovery";
 
         internal MessageBrokerOptionsBuilder(IServiceCollection services, IConfiguration configuration)
         {
-            _services = services;
+            Services = services;
             _configuration = configuration;
             _messageBrokerOptions = new MessageBrokerOptions();
-            _optionConfigurator = () => _services.Configure<MessageBrokerOptions>(configuration.GetSection(_messageBrokerSectionName));
+            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(configuration.GetSection(_messageBrokerSectionName));
         }
 
         public MessageBrokerOptionsBuilder AddMessageBrokerOptions(Action<MessageBrokerOptions> builder)
         {
-            _optionConfigurator = () => _services.Configure(builder);
+            _optionConfigurator = () => Services.Configure(builder);
             return this;
         }
 
         public MessageBrokerOptionsBuilder AddMessageBrokerOptions(string messageBrokerSectionName = _messageBrokerSectionName)
         {
-            _optionConfigurator = () => _services.Configure<MessageBrokerOptions>(_configuration.GetSection(messageBrokerSectionName));
+            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(_configuration.GetSection(messageBrokerSectionName));
             return this;
         }
 
@@ -50,6 +53,20 @@ namespace Chatter.MessageBrokers.Configuration
             }
 
             _reliabilityOptions = reliabilityOptions;
+
+            return this;
+        }
+
+        public MessageBrokerOptionsBuilder AddRecoveryOptions(string recoveryOptionsSectionName = _recoveryOptionsSectionName)
+        {
+            var recoveryOptions = _configuration.GetSection(recoveryOptionsSectionName).Get<RecoveryOptions>();
+
+            if (recoveryOptions is null)
+            {
+                throw new ArgumentNullException(nameof(recoveryOptions), $"No recovery options found in section '{recoveryOptionsSectionName}'");
+            }
+
+            _recoveryOptions = recoveryOptions;
 
             return this;
         }
@@ -88,12 +105,18 @@ namespace Chatter.MessageBrokers.Configuration
                 messageBrokerOptions.Reliability = _reliabilityOptions;
             }
 
+            if (_recoveryOptions != null)
+            {
+                messageBrokerOptions.Recovery = _recoveryOptions;
+            }
+
             _messageBrokerOptions = messageBrokerOptions;
         }
 
         internal MessageBrokerOptions Build()
         {
-            _services.AddOptions<MessageBrokerOptions>()
+            //TODO: can split each section into it's own separate class and just use postconfigure in each to configure it's options after MEssageBrokerOptions is configured
+            Services.AddOptions<MessageBrokerOptions>()
                      .ValidateDataAnnotations()
                      .PostConfigure(options =>
                      {
@@ -102,9 +125,10 @@ namespace Chatter.MessageBrokers.Configuration
 
             _optionConfigurator?.Invoke();
 
-            _services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value);
-            _services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Reliability ?? new ReliabilityOptions());
-            _services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Sagas ?? new List<SagaOptions>());
+            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value);
+            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Reliability ?? new ReliabilityOptions());
+            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Recovery ?? new RecoveryOptions());
+            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Sagas ?? new List<SagaOptions>());
 
             return _messageBrokerOptions;
         }

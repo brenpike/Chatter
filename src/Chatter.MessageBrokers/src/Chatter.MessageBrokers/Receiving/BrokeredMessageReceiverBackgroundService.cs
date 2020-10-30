@@ -42,10 +42,12 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         public string MessageReceiverPath => _brokeredMessageDetailProvider.GetReceiverName<TMessage>();
 
+        public string ErrorQueuePath => _brokeredMessageDetailProvider.GetErrorQueueName<TMessage>();
+
         ///<inheritdoc/>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var receiver = _receiverFactory.Create<TMessage>(MessageReceiverPath, Description);
+            var receiver = _receiverFactory.Create<TMessage>(MessageReceiverPath, ErrorQueuePath, Description);
             await receiver.StartReceiver(stoppingToken).ConfigureAwait(false);
         }
     }

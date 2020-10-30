@@ -54,5 +54,8 @@ namespace Chatter.MessageBrokers
             var message = type.TryGetBrokeredMessageAttribute()?.MessageName;
             return message;
         }
+
+        public string GetErrorQueueName<T>() 
+            => typeof(T).TryGetBrokeredMessageAttribute()?.ErrorQueueName;
     }
 }

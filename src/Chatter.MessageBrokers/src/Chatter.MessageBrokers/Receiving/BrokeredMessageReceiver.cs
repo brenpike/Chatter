@@ -25,9 +25,10 @@ namespace Chatter.MessageBrokers.Receiving
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
         /// </summary>
         /// <param name="infrastructureReceiver">The message broker infrastructure</param>
-        /// <param name="serviceFactory">THe service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
+        /// <param name="serviceFactory">The service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
         /// <param name="logger">Provides logging capability</param>
         public BrokeredMessageReceiver(string receiverPath,
+                                       string errorQueuePath,
                                        string description,
                                        IMessagingInfrastructureReceiver infrastructureReceiver,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
@@ -41,7 +42,7 @@ namespace Chatter.MessageBrokers.Receiving
         }
 
         /// <summary>
-        /// Describes the receiver. Used to track progress using the 'Via' user property of the <see cref="InboundBrokeredMessage"/>./>
+        /// Describes the receiver. Used to track progress using the 'Via' user property of the <see cref="InboundBrokeredMessage"/>.
         /// </summary>
         public string Description { get; }
 
@@ -130,26 +131,7 @@ namespace Chatter.MessageBrokers.Receiving
             }
             catch (Exception e)
             {
-                try
-                {
-                    //TODO: execute retry policy?
-                    //      - IRetryPolicy.Execute(failureContext => 
-                    //                             {
-                    //                                  
-                    //                             });
-                }
-                catch (Exception retryException)
-                {
-                    FailureContext failureContext;
-
-                    failureContext = new FailureContext(
-                        $"An error was encountered receiving message '{typeof(TMessage).Name}'",
-                        $"{e.Message}");
-
-                    messageContext.SetFailure(failureContext);
-
-                    throw new CriticalBrokeredMessageReceiverException(failureContext, retryException);
-                }
+                throw new ReceiverMessageDispatchingException($"Error dispatching message '{typeof(TMessage).Name}' received by '{typeof(BrokeredMessageReceiver<>).Name}'", e);
             }
         }
     }

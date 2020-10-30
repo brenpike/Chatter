@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Microsoft.Extensions.Configuration;
+using Chatter.MessageBrokers.Recovery;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -70,11 +71,18 @@ namespace Microsoft.Extensions.DependencyInjection
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
 
             builder.Services.AddScoped<IBrokeredMessageReceiverFactory, BrokeredMessageReceiverFactory>();
-
             builder.Services.AddScoped<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
 
+            builder.Services.AddScoped<IFailedReceiveRecoverer, FailedReceiveRecoverer>();
+            builder.Services.AddIfNotRegistered<IRecoveryAction, FailureDispatcher>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IDelayedRecovery, NoDelayRecovery>(ServiceLifetime.Scoped);
+
+            //TODO: wire up IFailedReceiverRecoverer and all dependencies (RecoveryOptions, IRecoveryAction, IDelayedRecovery)
+            // add methods on recoveryoptionsbuilder to wire up various implementation of IDelatedRecovery 
+            //i.e. options.UseExpontentialDelay(), options.UseCOnstantDelay(2000), options.UseNoDelay()
+            //use AddIfNotRegistered
+
             builder.Services.AddScoped<IForwardMessages, ForwardingRouter>();
-            builder.Services.AddScoped<IRouteCompensationMessages, CompensateRouter>();
             builder.Services.AddScoped<IReplyRouter, ReplyRouter>();
 
             builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
