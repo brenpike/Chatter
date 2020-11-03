@@ -1,5 +1,4 @@
 ﻿using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Saga;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -143,26 +142,7 @@ namespace Chatter.MessageBrokers.Sending
         {
             return _bodyConverter.ContentType;
         }
-
-        internal OutboundBrokeredMessage WithFailureDetails(string failureDetails)
-        {
-            MessageContext[MessageBrokers.MessageContext.FailureDetails] = failureDetails;
-            return this;
-        }
-
-        internal OutboundBrokeredMessage WithFailureDescription(string failureDescription)
-        {
-            MessageContext[MessageBrokers.MessageContext.FailureDescription] = failureDescription;
-            return this;
-        }
-
-        internal OutboundBrokeredMessage SetFailure()
-        {
-            MessageContext[MessageBrokers.MessageContext.IsError] = true;
-            MessageContext[MessageBrokers.MessageContext.SagaStatus] = (byte)SagaStatusEnum.Failed;
-            return this;
-        }
-
+       
         internal OutboundBrokeredMessage ClearReplyToProperties()
         {
             MessageContext.Remove(MessageBrokers.MessageContext.ReplyToAddress);

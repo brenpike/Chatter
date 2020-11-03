@@ -20,13 +20,10 @@ namespace TravelBooking.Application.Commands.Handlers
         public Task Handle(BookTravelViaRoutingSlipCommand message, IMessageHandlerContext context)
         {
             var routingSlip = RoutingSlipBuilder.NewRoutingSlip(Guid.NewGuid())
-                                                .WithRoute(RoutingStepBuilder.WithStep("book-trip-saga/1/book-rental-car")
-                                                                             .WithCompensatingStep("book-trip-saga/1/cancel-rental-car"))
-                                                .WithRoute(RoutingStepBuilder.WithStep("book-trip-saga/2/book-hotel")
-                                                                             .WithCompensatingStep("book-trip-saga/2/cancel-hotel"))
-                                                .WithRoute(RoutingStepBuilder.WithStep("book-trip-saga/3/book-flight")
-                                                                             .WithCompensatingStep("book-trip-saga/3/cancel-flight"))
-                                                .WithRoute(RoutingStepBuilder.WithStep("book-trip-saga/result"))
+                                                .WithRoute("book-trip-saga/1/book-rental-car")
+                                                .WithRoute("book-trip-saga/2/book-hotel")
+                                                .WithRoute("book-trip-saga/3/book-flight")
+                                                .WithRoute("book-trip-saga/result")
                                                 .Build();
 
             return _dispatcher.Send(message, routingSlip);

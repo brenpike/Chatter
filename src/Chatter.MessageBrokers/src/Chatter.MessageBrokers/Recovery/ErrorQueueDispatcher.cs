@@ -4,11 +4,11 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery
 {
-    public class FailureDispatcher : IRecoveryAction
+    public class ErrorQueueDispatcher : IRecoveryAction
     {
         private readonly IForwardMessages _forwardMessages;
 
-        public FailureDispatcher(IForwardMessages forwardMessages)
+        public ErrorQueueDispatcher(IForwardMessages forwardMessages)
             => _forwardMessages = forwardMessages;
 
         public async Task<RecoveryState> Execute(FailureContext failureContext)

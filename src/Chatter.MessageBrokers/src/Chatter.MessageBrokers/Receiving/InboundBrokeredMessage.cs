@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Saga;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
@@ -121,19 +120,6 @@ namespace Chatter.MessageBrokers.Receiving
         internal InboundBrokeredMessage WithFailureDescription(string failureDescription)
         {
             MessageContextImpl[MessageBrokers.MessageContext.FailureDescription] = failureDescription;
-            return this;
-        }
-
-        internal InboundBrokeredMessage SetFailure()
-        {
-            MessageContextImpl[MessageBrokers.MessageContext.IsError] = true;
-            MessageContextImpl[MessageBrokers.MessageContext.SagaStatus] = (byte)SagaStatusEnum.Failed;
-            return this;
-        }
-
-        internal InboundBrokeredMessage WithSagaStatus(SagaStatusEnum sagaStatus)
-        {
-            MessageContextImpl[MessageBrokers.MessageContext.SagaStatus] = (byte)sagaStatus;
             return this;
         }
 

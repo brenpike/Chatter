@@ -4,18 +4,18 @@ using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Recovery;
 using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using Microsoft.Extensions.Configuration;
-using Chatter.MessageBrokers.Recovery;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -74,13 +74,9 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
 
             builder.Services.AddScoped<IFailedReceiveRecoverer, FailedReceiveRecoverer>();
-            builder.Services.AddIfNotRegistered<IRecoveryAction, FailureDispatcher>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IDelayedRecovery, NoDelayRecovery>(ServiceLifetime.Scoped);
-
-            //TODO: wire up IFailedReceiverRecoverer and all dependencies (RecoveryOptions, IRecoveryAction, IDelayedRecovery)
-            // add methods on recoveryoptionsbuilder to wire up various implementation of IDelatedRecovery 
-            //i.e. options.UseExpontentialDelay(), options.UseCOnstantDelay(2000), options.UseNoDelay()
-            //use AddIfNotRegistered
+            builder.Services.AddIfNotRegistered<ICriticalFailureNotifier, CriticalFailureEventDispatcher>(ServiceLifetime.Scoped);
 
             builder.Services.AddScoped<IForwardMessages, ForwardingRouter>();
             builder.Services.AddScoped<IReplyRouter, ReplyRouter>();

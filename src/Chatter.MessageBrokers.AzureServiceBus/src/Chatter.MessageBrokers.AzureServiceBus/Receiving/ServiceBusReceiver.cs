@@ -22,6 +22,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly ILogger<ServiceBusReceiver> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly IFailedReceiveRecoverer _failedReceiveRecoverer;
+        private readonly ICriticalFailureNotifier _criticalFailureNotifier;
         private readonly ITokenProvider _tokenProvider;
         private readonly int _maxConcurrentCalls = 1;
         private readonly RetryPolicy _retryPolcy;
@@ -37,7 +38,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                   MessageBrokerOptions messageBrokerOptions,
                                   ILogger<ServiceBusReceiver> logger,
                                   IBodyConverterFactory bodyConverterFactory,
-                                  IFailedReceiveRecoverer failedReceiveRecoverer)
+                                  IFailedReceiveRecoverer failedReceiveRecoverer,
+                                  ICriticalFailureNotifier criticalFailureNotifier)
         {
             if (serviceBusOptions is null)
             {
@@ -49,6 +51,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _failedReceiveRecoverer = failedReceiveRecoverer;
+            _criticalFailureNotifier = criticalFailureNotifier ?? throw new ArgumentNullException(nameof(criticalFailureNotifier));
             _tokenProvider = serviceBusOptions.TokenProvider;
             _maxConcurrentCalls = serviceBusOptions.MaxConcurrentCalls;
             _retryPolcy = serviceBusOptions.Policy;
@@ -242,18 +245,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                             }
                             catch (Exception onErrorException) when (onErrorException is MessageLockLostException || onErrorException is ServiceBusTimeoutException)
                             {
-                                _logger.LogDebug("Failed to execute recoverability.", onErrorException);
+                                _logger.LogDebug("Unable to recover from error that occurred during message receiving", onErrorException.StackTrace);
                             }
                             catch (Exception onErrorException)
                             {
+                                var aggEx = new AggregateException(e, onErrorException);
+
                                 _logger.LogError($"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'"
                                                + "\n"
-                                               + $"{e.StackTrace}");
+                                               + $"{aggEx}");
 
-                                // call ICriticalReceiverFailureExecutor
-                                // this could be implemented to (should only be able to do 1):
-                                // do nothing
-                                // send to error queue
+                                var failureContext = new FailureContext(messageContext.BrokeredMessage,
+                                                                        this.ErrorQueuePath,
+                                                                        "Unable to recover from error which occurred during message handling",
+                                                                        aggEx.ToString(),
+                                                                        message.SystemProperties.DeliveryCount,
+                                                                        transactionContext);
+
+                                await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);
 
                                 await DeadLetterAsync(message, $"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'", onErrorException.StackTrace).ConfigureAwait(false);
                             }

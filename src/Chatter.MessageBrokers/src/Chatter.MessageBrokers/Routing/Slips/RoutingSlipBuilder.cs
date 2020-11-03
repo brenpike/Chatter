@@ -6,12 +6,12 @@ namespace Chatter.MessageBrokers.Routing.Slips
     public class RoutingSlipBuilder
     {
         private readonly Guid _id;
-        private IList<CompensatingRoutingStep> _route;
+        private IList<RoutingStep> _route;
 
         private RoutingSlipBuilder(Guid id)
         {
             _id = id;
-            _route = new List<CompensatingRoutingStep>();
+            _route = new List<RoutingStep>();
         }
 
         public static RoutingSlipBuilder NewRoutingSlip(Guid id) 
@@ -20,9 +20,15 @@ namespace Chatter.MessageBrokers.Routing.Slips
         public RoutingSlipBuilder WithRoute(RoutingStepBuilder routingStepBuilder)
             => WithRoute(routingStepBuilder.Build());
 
-        public RoutingSlipBuilder WithRoute(CompensatingRoutingStep slip)
+        public RoutingSlipBuilder WithRoute(RoutingStep step)
         {
-            _route.Add(slip);
+            _route.Add(step);
+            return this;
+        }
+
+        public RoutingSlipBuilder WithRoute(string step)
+        {
+            _route.Add(new RoutingStep(step));
             return this;
         }
 

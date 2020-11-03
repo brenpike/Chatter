@@ -35,6 +35,7 @@ namespace Chatter.MessageBrokers.Receiving
                                        IServiceScopeFactory serviceFactory)
         {
             MessageReceiverPath = receiverPath;
+            ErrorQueuePath = errorQueuePath;
             Description = description;
             _infrastructureReceiver = infrastructureReceiver ?? throw new ArgumentNullException(nameof(infrastructureReceiver));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -50,6 +51,11 @@ namespace Chatter.MessageBrokers.Receiving
         /// Gets the name of the path to receive messages.
         /// </summary>
         public string MessageReceiverPath { get; }
+
+        /// <summary>
+        /// Gets the name of the path to send messages on error.
+        /// </summary>
+        public string ErrorQueuePath { get; }
 
         /// <summary>
         /// Indicates if the <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> is currently receiving messages
@@ -81,7 +87,8 @@ namespace Chatter.MessageBrokers.Receiving
             });
 
             var receiveTask = _infrastructureReceiver.StartReceiver(this.MessageReceiverPath,
-                                                                    ReceiveInboundBrokeredMessage);
+                                                                    ReceiveInboundBrokeredMessage,
+                                                                    this.ErrorQueuePath);
 
             _logger.LogInformation($"'{GetType().FullName}' has started receiving messages.");
 

@@ -30,16 +30,6 @@ namespace TravelBooking.Api.Controllers
             await _dispatcher.Dispatch(new DeleteTravelBookingTopologyCommand());
         }
 
-        [HttpPut("orchestration")]
-        public async Task BookTravelViaSagaOrchestration([FromBody] TravelBookingDto travelBooking)
-        {
-            var tbc = new BookTravelViaOrchestrationCommand()
-            {
-                SagaData = travelBooking
-            };
-            await _dispatcher.Dispatch(tbc);
-        }
-
         [HttpPut("routingslip")]
         public async Task BookTravelViaRoutingSlip([FromBody] TravelBookingDto travelBooking)
         {

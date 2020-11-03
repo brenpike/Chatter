@@ -27,7 +27,7 @@ namespace TravelBooking.Api
             });
 
             services.AddChatterCqrs(Configuration)
-                    .AddMessageBrokers(typeof(BookTravelViaOrchestrationCommand))
+                    .AddMessageBrokers(typeof(BookTravelViaRoutingSlipCommand))
                     .AddAzureServiceBus(options =>
                     {
                         options.AddServiceBusOptions("Chatter:ServiceBus");

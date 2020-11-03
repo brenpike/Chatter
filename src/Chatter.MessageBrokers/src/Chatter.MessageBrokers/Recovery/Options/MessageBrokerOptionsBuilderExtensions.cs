@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.Configuration
 
         public static MessageBrokerOptionsBuilder UseRouteToErrorQueueRecoveryAction(this MessageBrokerOptionsBuilder builder)
         {
-            builder.Services.Replace<IRecoveryAction, FailureDispatcher>(ServiceLifetime.Scoped);
+            builder.Services.Replace<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
             return builder;
         }
     }
