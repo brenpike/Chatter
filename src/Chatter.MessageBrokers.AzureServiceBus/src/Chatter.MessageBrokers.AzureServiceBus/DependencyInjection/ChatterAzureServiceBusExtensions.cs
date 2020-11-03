@@ -25,13 +25,8 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             var optBuilder = builder.Services.AddAzureServiceBus(builder.Configuration);
             optionsBuilder?.Invoke(optBuilder);
-            optBuilder.Build();
+            var options = optBuilder.Build();
 
-            return AddAzureServiceBus(builder);
-        }
-
-        private static IChatterBuilder AddAzureServiceBus(IChatterBuilder builder)
-        {
             builder.Services.AddScoped<IBrokeredMessageDetailProvider, BrokeredMessageAttributeProvider>();
             builder.Services.AddScoped<IMessagingInfrastructureDispatcher, ServiceBusMessageSender>();
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();

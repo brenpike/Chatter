@@ -84,7 +84,6 @@ namespace Chatter.MessageBrokers.Configuration
 
         internal MessageBrokerOptions Build()
         {
-            //TODO: can split each section into it's own separate class and just use postconfigure in each to configure it's options after MEssageBrokerOptions is configured
             Services.AddOptions<MessageBrokerOptions>()
                      .ValidateDataAnnotations()
                      .PostConfigure(options =>

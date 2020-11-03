@@ -4,10 +4,9 @@ using CarRental.Application.Services;
 using CarRental.Infrastructure.Repositories;
 using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
+using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.Configuration;
-using Chatter.MessageBrokers.Reliability.EntityFramework;
 using Chatter.MessageBrokers.Reliability.Outbox;
-using Chatter.MessageBrokers.Routing.Slips;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -45,9 +44,9 @@ namespace CarRental.Api
                     .AddCommandPipeline(builder =>
                     {
                         builder.WithBehavior(typeof(LoggingBehavior<>))
-                               //.WithUnitOfWorkBehavior<CarRentalContext>(services)
-                               //.WithInboxBehavior<CarRentalContext>(services)
-                               .WithOutboxProcessingBehavior<CarRentalContext>(services)
+                               //.WithUnitOfWorkBehavior<CarRentalContext>()
+                               //.WithInboxBehavior<CarRentalContext>()
+                               .WithOutboxProcessingBehavior<CarRentalContext>()
                                .WithRoutingSlipBehavior();
                     })
                     .AddMessageBrokers(builder =>

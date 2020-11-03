@@ -210,6 +210,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         {
                             try
                             {
+                                _logger.LogError($"Error handling recevied message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'"
+                                                    + "\n"
+                                                    + $"{e}");
+
                                 RecoveryState state = RecoveryState.Retrying;
 
                                 using (var scope = CreateTransactionScope(_messageBrokerOptions?.TransactionMode ?? TransactionMode.None))
@@ -253,7 +257,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
                                 _logger.LogError($"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'"
                                                + "\n"
-                                               + $"{aggEx}");
+                                               + $"{onErrorException.StackTrace}");
 
                                 var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                         this.ErrorQueuePath,

@@ -1,6 +1,5 @@
-﻿using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using Scrutor;
+﻿using Chatter.CQRS.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Linq;
 using System.Reflection;
@@ -9,14 +8,14 @@ namespace Chatter.CQRS.Pipeline
 {
     public class PipelineBuilder
     {
-        private readonly IServiceCollection _services;
+        public IServiceCollection Services { get; private set; }
 
         internal PipelineBuilder(IServiceCollection services)
         {
-            _services = services;
+            Services = services;
         }
 
-        public PipelineBuilder WithBehavior<TCommandBehavior>() 
+        public PipelineBuilder WithBehavior<TCommandBehavior>()
             => WithBehavior(typeof(TCommandBehavior));
 
         public PipelineBuilder WithBehavior(Type behaviorType)
@@ -28,18 +27,11 @@ namespace Chatter.CQRS.Pipeline
 
             if (behaviorType.IsGenericTypeDefinition)
             {
-                _services.Scan(s =>
-                        s.FromAssemblies(behaviorType.GetTypeInfo().Assembly)
-                            .AddClasses(c => c.AssignableTo(behaviorType))
-                            .UsingRegistrationStrategy(RegistrationStrategy.Replace(ReplacementBehavior.ImplementationType))
-                            .AsImplementedInterfaces()
-                            .WithTransientLifetime());
+                Services.RegisterBehaviorForAllCommands(behaviorType);
             }
             else
             {
-                var behaviorCommandType = behaviorType.GetGenericArguments().SingleOrDefault();
-                var closedCommandBehaviorInterface = typeof(ICommandBehavior<>).MakeGenericType(behaviorCommandType);
-                _services.Replace(ServiceDescriptor.Transient(closedCommandBehaviorInterface, behaviorType));
+                Services.RegisterBehaviorForCommand(behaviorType);
             }
 
             return this;

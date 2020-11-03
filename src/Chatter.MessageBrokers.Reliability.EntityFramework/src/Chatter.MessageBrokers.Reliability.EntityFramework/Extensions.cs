@@ -11,32 +11,32 @@ namespace Microsoft.Extensions.DependencyInjection
 {
     public static class Extensions
     {
-        public static PipelineBuilder WithUnitOfWorkBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) 
+        public static PipelineBuilder WithUnitOfWorkBehavior<TContext>(this PipelineBuilder pipelineBuilder) 
             where TContext : DbContext
         {
-            services.Replace<IUnitOfWork, UnitOfWork<TContext>>(ServiceLifetime.Scoped);
+            pipelineBuilder.Services.Replace<IUnitOfWork, UnitOfWork<TContext>>(ServiceLifetime.Scoped);
             pipelineBuilder.WithBehavior(typeof(UnitOfWorkBehavior<>));
 
             return pipelineBuilder;
         }
 
-        public static PipelineBuilder WithInboxBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services) 
+        public static PipelineBuilder WithInboxBehavior<TContext>(this PipelineBuilder pipelineBuilder) 
             where TContext : DbContext
         {
-            pipelineBuilder.WithUnitOfWorkBehavior<TContext>(services);
-            services.Replace<IBrokeredMessageInbox, BrokeredMessageInbox<TContext>>(ServiceLifetime.Scoped);
+            pipelineBuilder.WithUnitOfWorkBehavior<TContext>();
+            pipelineBuilder.Services.Replace<IBrokeredMessageInbox, BrokeredMessageInbox<TContext>>(ServiceLifetime.Scoped);
             pipelineBuilder.WithBehavior(typeof(InboxBehavior<>));
 
             return pipelineBuilder;
         }
 
-        public static PipelineBuilder WithOutboxProcessingBehavior<TContext>(this PipelineBuilder pipelineBuilder, IServiceCollection services)
+        public static PipelineBuilder WithOutboxProcessingBehavior<TContext>(this PipelineBuilder pipelineBuilder)
             where TContext : DbContext
         {
             pipelineBuilder.WithBehavior(typeof(OutboxProcessingBehavior<>));
-            services.Replace<IBrokeredMessageOutbox, BrokeredMessageOutbox<TContext>>(ServiceLifetime.Scoped);
-            services.Replace<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
-            pipelineBuilder.WithUnitOfWorkBehavior<TContext>(services);
+            pipelineBuilder.Services.Replace<IBrokeredMessageOutbox, BrokeredMessageOutbox<TContext>>(ServiceLifetime.Scoped);
+            pipelineBuilder.Services.Replace<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
+            pipelineBuilder.WithUnitOfWorkBehavior<TContext>();
 
             return pipelineBuilder;
         }

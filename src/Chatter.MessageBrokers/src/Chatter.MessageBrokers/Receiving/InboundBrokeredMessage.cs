@@ -45,7 +45,7 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// The mode of the transaction this message is participating in
         /// </summary>
-        public TransactionMode TransactionMode { get; }
+        public TransactionMode TransactionMode { get; } //TODO: remove this??
         /// <summary>
         /// True if the inbound message has encountered an error while being received
         /// </summary>
