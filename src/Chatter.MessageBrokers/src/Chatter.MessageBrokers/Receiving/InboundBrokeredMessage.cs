@@ -18,7 +18,6 @@ namespace Chatter.MessageBrokers.Receiving
             MessageContextImpl = messageContext ?? new ConcurrentDictionary<string, object>();
             MessageReceiverPath = messageReceiverPath;
             BodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
-            TransactionMode = GetTransactionMode();
             CorrelationId = GetMessageContextByKey<string>(MessageBrokers.MessageContext.CorrelationId);
         }
 
@@ -42,10 +41,6 @@ namespace Chatter.MessageBrokers.Receiving
         /// The correlation id of the received message
         /// </summary>
         public string CorrelationId { get; }
-        /// <summary>
-        /// The mode of the transaction this message is participating in
-        /// </summary>
-        public TransactionMode TransactionMode { get; } //TODO: remove this??
         /// <summary>
         /// True if the inbound message has encountered an error while being received
         /// </summary>
@@ -85,18 +80,6 @@ namespace Chatter.MessageBrokers.Receiving
                 MessageContextImpl[key] = via;
             }
             return this;
-        }
-
-        private TransactionMode GetTransactionMode()
-        {
-            if (MessageContextImpl.TryGetValue(MessageBrokers.MessageContext.TransactionMode, out var transactionMode))
-            {
-                return (TransactionMode)transactionMode;
-            }
-            else
-            {
-                return TransactionMode.ReceiveOnly;
-            }
         }
 
         private T GetMessageContextByKey<T>(string key)

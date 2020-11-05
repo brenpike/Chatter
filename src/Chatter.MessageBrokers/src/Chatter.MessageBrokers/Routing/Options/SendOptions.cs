@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Receiving;
-using System;
+﻿using System;
 
 namespace Chatter.MessageBrokers.Routing.Options
 {
@@ -7,12 +6,6 @@ namespace Chatter.MessageBrokers.Routing.Options
     {
         public SendOptions()
         {}
-
-        public SendOptions WithTransactionMode(TransactionMode transactionMode)
-        {
-            this.SetApplicationProperty(MessageBrokers.MessageContext.TransactionMode, (byte)transactionMode);
-            return this;
-        }
 
         public SendOptions WithSagaId(string sagaId)
         {

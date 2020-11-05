@@ -28,7 +28,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly RetryPolicy _retryPolcy;
         private readonly int _prefetchCount;
         private readonly MessageBrokerOptions _messageBrokerOptions;
-        private readonly ReceiveMode _receiveMode;
+        private ReceiveMode _receiveMode;
         MessageReceiver _innerReceiver;
         SemaphoreSlim _semaphore;
         CancellationTokenSource _messageReceiverLoopTokenSource;
@@ -103,12 +103,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public Task StartReceiver(string receiverPath,
-                                  Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler,
-                                  string errorQueue = null)
+        public Task StartReceiver(ReceiverOptions options,
+                                  Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler)
         {
-            this.MessageReceiverPath = receiverPath;
-            this.ErrorQueuePath = errorQueue;
+            this.MessageReceiverPath = options.MessageReceiverPath;
+            this.ErrorQueuePath = options.ErrorQueuePath;
+
+            if (options.TransactionMode != null)
+            {
+                _receiveMode = options.TransactionMode == TransactionMode.None ? ReceiveMode.ReceiveAndDelete : ReceiveMode.PeekLock;
+            }
 
             _semaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
             _messageReceiverLoopTokenSource = new CancellationTokenSource();
@@ -141,13 +145,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
                     var message = await this.InnerReceiver.ReceiveAsync();
 
-                    if (message == null || _messageReceiverLoopTokenSource.IsCancellationRequested)
-                    {
-                        return;
-                    }
-
                     try
                     {
+                        if (message == null || _messageReceiverLoopTokenSource.IsCancellationRequested)
+                        {
+                            continue;
+                        }
+
                         MessageBrokerContext messageContext = null;
                         TransactionContext transactionContext = null;
 
@@ -204,7 +208,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                 _logger?.LogError($"Error deadlettering message: {deadLetterException.StackTrace}");
                             }
 
-                            return;
+                            continue;
                         }
                         catch (Exception e)
                         {

@@ -24,7 +24,14 @@ namespace Chatter.MessageBrokers.Configuration
             Services = services;
             _configuration = configuration;
             _messageBrokerOptions = new MessageBrokerOptions();
-            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(configuration.GetSection(_messageBrokerSectionName));
+            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(GetMessageBrokerOptions(_messageBrokerSectionName));
+        }
+
+        private IConfigurationSection GetMessageBrokerOptions(string messageBrokerSectionName)
+        {
+            var messageBrokerOptionsSection = _configuration.GetSection(messageBrokerSectionName);
+            _messageBrokerOptions = messageBrokerOptionsSection.Get<MessageBrokerOptions>();
+            return messageBrokerOptionsSection;
         }
 
         public MessageBrokerOptionsBuilder AddMessageBrokerOptions(Action<MessageBrokerOptions> builder)
@@ -35,7 +42,7 @@ namespace Chatter.MessageBrokers.Configuration
 
         public MessageBrokerOptionsBuilder AddMessageBrokerOptions(string messageBrokerSectionName = _messageBrokerSectionName)
         {
-            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(_configuration.GetSection(messageBrokerSectionName));
+            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(GetMessageBrokerOptions(messageBrokerSectionName));
             return this;
         }
 
@@ -97,6 +104,7 @@ namespace Chatter.MessageBrokers.Configuration
             Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Reliability ?? new ReliabilityOptions());
             Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Recovery ?? new RecoveryOptions());
 
+            PostConfiguration(_messageBrokerOptions);
             return _messageBrokerOptions;
         }
     }

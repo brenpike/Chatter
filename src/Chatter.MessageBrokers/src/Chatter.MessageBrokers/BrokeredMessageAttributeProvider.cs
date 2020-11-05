@@ -1,5 +1,4 @@
-﻿using Microsoft.Azure.ServiceBus;
-using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.DependencyInjection;
 using System;
 
 namespace Chatter.MessageBrokers
@@ -7,8 +6,13 @@ namespace Chatter.MessageBrokers
     /// <summary>
     /// Provides details from the <see cref="BrokeredMessageAttribute"/> of a brokered message required for use with a message broker.
     /// </summary>
-    public class BrokeredMessageAttributeProvider : IBrokeredMessageDetailProvider
+    class BrokeredMessageAttributeProvider : IBrokeredMessageAttributeDetailProvider
     {
+        private readonly IBrokeredMessagePathBuilder _brokeredMessagePathBuilder;
+
+        public BrokeredMessageAttributeProvider(IBrokeredMessagePathBuilder brokeredMessagePathBuilder) 
+            => _brokeredMessagePathBuilder = brokeredMessagePathBuilder ?? throw new ArgumentNullException(nameof(brokeredMessagePathBuilder));
+
         public string GetBrokeredMessageDescription<T>()
         {
             var operationDescription = typeof(T).TryGetBrokeredMessageAttribute().MessageDescription;
@@ -20,7 +24,7 @@ namespace Chatter.MessageBrokers
         /// </summary>
         /// <typeparam name="T">A class decorated with a <see cref="BrokeredMessageAttribute"/></typeparam>
         /// <returns><see cref="BrokeredMessageAttribute.MessageName"/></returns>
-        public string GetMessageName<T>() 
+        public string GetMessageName<T>()
             => GetMessageName(typeof(T));
 
         /// <summary>
@@ -33,29 +37,16 @@ namespace Chatter.MessageBrokers
             var messageName = GetMessageName<T>();
             var receiverName = typeof(T).TryGetBrokeredMessageAttribute()?.ReceiverName;
 
-            if (receiverName == null)
-            {
-                return null;
-            }
-
-            if (messageName == receiverName)
-            {
-                return messageName;
-            }
-
-            return EntityNameHelper.FormatSubscriptionPath(messageName, receiverName);
+            return _brokeredMessagePathBuilder.GetMessageReceivingPath(messageName, receiverName);
         }
-
-        public bool AutoReceiveMessages<T>() 
-            => !string.IsNullOrWhiteSpace(GetReceiverName<T>());
 
         public string GetMessageName(Type type)
         {
             var message = type.TryGetBrokeredMessageAttribute()?.MessageName;
-            return message;
+            return _brokeredMessagePathBuilder.GetMessageSendingPath(message);
         }
 
-        public string GetErrorQueueName<T>() 
+        public string GetErrorQueueName<T>()
             => typeof(T).TryGetBrokeredMessageAttribute()?.ErrorQueueName;
     }
 }

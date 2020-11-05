@@ -13,9 +13,8 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// Starts receiving messages via the message broker infrastructure
         /// </summary>
-        Task StartReceiver(string receiverPath,
-                           Func<MessageBrokerContext, TransactionContext, Task> inboundMessageHandler,
-                           string errorQueue = null);
+        Task StartReceiver(ReceiverOptions options,
+                           Func<MessageBrokerContext, TransactionContext, Task> inboundMessageHandler);
 
         Task StopReceiver();
     }

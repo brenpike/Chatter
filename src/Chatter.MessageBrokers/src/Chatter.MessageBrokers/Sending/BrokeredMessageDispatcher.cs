@@ -14,12 +14,12 @@ namespace Chatter.MessageBrokers.Sending
     {
         private readonly IRouteBrokeredMessages _messageRouter;
         private readonly IForwardMessages _forwarder;
-        private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
+        private readonly IBrokeredMessageAttributeDetailProvider _brokeredMessageDetailProvider;
         private readonly IBodyConverterFactory _bodyConverterFactory;
 
         public BrokeredMessageDispatcher(IRouteBrokeredMessages messageRouter,
                                          IForwardMessages forwarder,
-                                         IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
+                                         IBrokeredMessageAttributeDetailProvider brokeredMessageDetailProvider,
                                          IBodyConverterFactory bodyConverterFactory)
         {
             _messageRouter = messageRouter ?? throw new ArgumentNullException(nameof(messageRouter));

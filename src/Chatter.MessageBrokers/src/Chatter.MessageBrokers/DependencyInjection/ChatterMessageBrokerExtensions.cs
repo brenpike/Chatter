@@ -72,6 +72,8 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.Services.AddScoped<IBrokeredMessageReceiverFactory, BrokeredMessageReceiverFactory>();
             builder.Services.AddScoped<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
+            builder.Services.AddIfNotRegistered<IBrokeredMessagePathBuilder, DefaultBrokeredMessagePathBuilder>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IBrokeredMessageAttributeDetailProvider, BrokeredMessageAttributeProvider>(ServiceLifetime.Scoped);
 
             builder.Services.AddScoped<IFailedReceiveRecoverer, FailedReceiveRecoverer>();
             builder.Services.AddIfNotRegistered<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
@@ -143,13 +145,24 @@ namespace Microsoft.Extensions.DependencyInjection
                          .Where(type => type.TryGetBrokeredMessageAttribute()?.ReceiverName != null)
                     ).ToList();
 
-        //public static IChatterBuilder AddReceiver<TMessage>(this IChatterBuilder builder) where TMessage : IMessage
-        //{
-        //    var concreteReceiverThatCloses = typeof(BrokeredMessageReceiver<>).MakeGenericType(typeof(TMessage));
-        //    var interfaceThatCloses = typeof(IBrokeredMessageReceiver<>).MakeGenericType(typeof(TMessage));
-        //    AddReceiver(builder, interfaceThatCloses, concreteReceiverThatCloses);
-        //    return builder;
-        //}
+        public static MessageBrokerOptionsBuilder AddReceiver<TMessage>(this MessageBrokerOptionsBuilder builder,
+                                                                        string receiverPath,
+                                                                        string errorQueuePath = null,
+                                                                        string description = null,
+                                                                        TransactionMode? transactionMode = null)
+            where TMessage : class, IMessage
+        {
+            var options = new ReceiverOptions()
+            {
+                MessageReceiverPath = receiverPath,
+                ErrorQueuePath = errorQueuePath,
+                Description = description,
+                TransactionMode = transactionMode
+            };
+
+            AddReceiver(builder.Services, typeof(TMessage), options);
+            return builder;
+        }
 
         /// <summary>
         /// Scans all assemblies for classes decorated with <see cref="BrokeredMessageAttribute"/> and have a non-null <see cref="BrokeredMessageAttribute.ReceiverName"/>. Registers:
@@ -161,22 +174,30 @@ namespace Microsoft.Extensions.DependencyInjection
             var messages = FindBrokeredMessagesWithReceiversInAssembliesByType(assemblies);
             foreach (var receiverType in GetAllReceiverTypes(messages))
             {
-                AddReceiver(builder, receiverType);
+                AddReceiver(builder.Services, receiverType.Item2, receiverType.Item1);
             }
             return builder;
         }
 
-        private static void AddReceiver(IChatterBuilder builder, Type receiverConcreteType)
+        private static void AddReceiver(IServiceCollection services, Type receiverConcreteType, ReceiverOptions options)
         {
-            builder.Services.AddScoped(receiverConcreteType);
-            builder.Services.AddSingleton(typeof(IHostedService), sp =>
+            var concreteReceiverThatCloses = typeof(BrokeredMessageReceiverBackgroundService<>).MakeGenericType(receiverConcreteType);
+            services.AddScoped(concreteReceiverThatCloses, sp =>
+            {
+                var factory = sp.GetRequiredService<IBrokeredMessageReceiverFactory>();
+                return Activator.CreateInstance(concreteReceiverThatCloses,
+                                                options,
+                                                factory);
+            });
+
+            services.AddSingleton(typeof(IHostedService), sp =>
             {
                 using var scope = sp.CreateScope();
-                return scope.ServiceProvider.GetRequiredService(receiverConcreteType);
+                return scope.ServiceProvider.GetRequiredService(concreteReceiverThatCloses);
             });
         }
 
-        private static IEnumerable<Type> GetAllReceiverTypes(IReadOnlyList<Type> messages)
+        private static IEnumerable<(ReceiverOptions, Type)> GetAllReceiverTypes(IReadOnlyList<Type> messages)
         {
             foreach (var messageType in messages)
             {
@@ -193,9 +214,16 @@ namespace Microsoft.Extensions.DependencyInjection
                     throw new ArgumentException($"Unable to start receiving messages. {messageType.Name} is not decorated with a { nameof(BrokeredMessageAttribute)}.");
                 }
 
-                var concreteReceiverThatCloses = typeof(BrokeredMessageReceiverBackgroundService<>).MakeGenericType(messageType);
+                var options = new ReceiverOptions()
+                {
+                    MessageReceiverPath = attr.ReceiverName,
+                    ErrorQueuePath = attr.ErrorQueueName,
+                    Description = attr.MessageDescription,
+                    TransactionMode = null,
+                    SendingPath = attr.MessageName
+                };
 
-                yield return concreteReceiverThatCloses;
+                yield return (options, messageType);
             }
         }
     }

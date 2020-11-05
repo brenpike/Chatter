@@ -4,7 +4,7 @@ using System;
 
 namespace HotelBooking.Application.Commands
 {
-    [BrokeredMessage("book-trip-saga/2/book-hotel", "book-trip-saga/2/book-hotel")]
+    //[BrokeredMessage("book-trip-saga/2/book-hotel", "book-trip-saga/2/book-hotel")]
     public class BookHotelCommand : ICommand
     {
         public Guid Id { get; set; }

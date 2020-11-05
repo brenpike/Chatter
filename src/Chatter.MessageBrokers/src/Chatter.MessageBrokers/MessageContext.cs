@@ -3,7 +3,6 @@
     public class MessageContext
     {
         public static readonly string ChatterBaseHeader = "Chatter";
-        private static readonly string TransactionBaseHeader = "Transaction";
         private static readonly string Saga = "Saga";
         private static readonly string Routing = "Routing";
 
@@ -19,13 +18,6 @@
         /// The description of the failure causing the message not to be received
         /// </summary>
         public static readonly string FailureDescription = $"{ChatterBaseHeader}.FailureDescription";
-        /// <summary>
-        /// The mode of the transaction this message is participating in
-        /// </summary>
-        /// <remarks>
-        /// The mode must be stored as a byte.
-        /// </remarks>
-        public static readonly string TransactionMode = $"{ChatterBaseHeader}.{TransactionBaseHeader}.Mode";
         /// <summary>
         /// The AMQP group this message is part of
         /// </summary>

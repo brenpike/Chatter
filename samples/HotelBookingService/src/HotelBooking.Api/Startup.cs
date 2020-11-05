@@ -1,3 +1,4 @@
+using Chatter.MessageBrokers.Receiving;
 using HotelBooking.Application.Commands;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -32,7 +33,10 @@ namespace HotelBooking.Api
                 {
                     builder.WithRoutingSlipBehavior();
                 })
-                .AddMessageBrokers()
+                .AddMessageBrokers(builder =>
+                {
+                    builder.AddReceiver<BookHotelCommand>("book-trip-saga/2/book-hotel", transactionMode: TransactionMode.FullAtomicityViaInfrastructure);
+                })
                 .AddAzureServiceBus(options =>
                 {
                     options.AddServiceBusOptions("Chatter:ServiceBus");

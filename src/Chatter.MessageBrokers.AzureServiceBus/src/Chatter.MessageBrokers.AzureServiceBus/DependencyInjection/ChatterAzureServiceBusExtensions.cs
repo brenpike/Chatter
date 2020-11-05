@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.AzureServiceBus;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
@@ -27,10 +28,10 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(optBuilder);
             var options = optBuilder.Build();
 
-            builder.Services.AddScoped<IBrokeredMessageDetailProvider, BrokeredMessageAttributeProvider>();
-            builder.Services.AddScoped<IMessagingInfrastructureDispatcher, ServiceBusMessageSender>();
+            builder.Services.Replace<IMessagingInfrastructureDispatcher, ServiceBusMessageSender>(ServiceLifetime.Scoped);
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
-            builder.Services.AddScoped<IMessagingInfrastructureReceiver, ServiceBusReceiver>();
+            builder.Services.Replace<IMessagingInfrastructureReceiver, ServiceBusReceiver>(ServiceLifetime.Scoped);
+            builder.Services.Replace<IBrokeredMessagePathBuilder, AzureServiceBusEntityPathBuilder>(ServiceLifetime.Scoped);
 
             return builder;
         }

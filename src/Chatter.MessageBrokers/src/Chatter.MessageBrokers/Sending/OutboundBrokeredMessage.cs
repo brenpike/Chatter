@@ -83,18 +83,6 @@ namespace Chatter.MessageBrokers.Sending
             return this;
         }
 
-        public TransactionMode GetTransactionMode()
-        {
-            if (MessageContext.TryGetValue(MessageBrokers.MessageContext.TransactionMode, out var transactionMode))
-            {
-                return (TransactionMode)transactionMode;
-            }
-            else
-            {
-                return TransactionMode.FullAtomicityViaInfrastructure;
-            }
-        }
-
         public TimeSpan? GetTimeToLive()
         {
             var ttl = GetMessageContextByKey(MessageBrokers.MessageContext.TimeToLive);

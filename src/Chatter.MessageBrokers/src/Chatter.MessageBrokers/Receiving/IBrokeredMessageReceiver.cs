@@ -17,6 +17,8 @@ namespace Chatter.MessageBrokers.Receiving
         /// <returns>An awaitable <see cref="Task"/></returns>
         Task StartReceiver(CancellationToken receiverTerminationToken);
 
+        Task StartReceiver();
+
         Task StopReceiver();
     }
 }
