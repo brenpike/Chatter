@@ -4,7 +4,7 @@ using System;
 
 namespace CarRental.Application.Queries
 {
-    public class GetCarRental : IQuery<CarRentalDTO>
+    public class GetCarRental : IQuery<CarRentalDto>
     {
         public Guid Id { get; set; }
     }

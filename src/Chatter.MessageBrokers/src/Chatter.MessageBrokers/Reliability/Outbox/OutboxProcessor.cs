@@ -10,12 +10,12 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     public class OutboxProcessor : IOutboxProcessor
     {
-        private readonly IBrokeredMessageInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
+        private readonly IMessagingInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
         private readonly ILogger<OutboxProcessor> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly IBrokeredMessageOutbox _brokeredMessageOutbox;
 
-        public OutboxProcessor(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher,
+        public OutboxProcessor(IMessagingInfrastructureDispatcher brokeredMessageInfrastructureDispatcher,
                                ILogger<OutboxProcessor> logger,
                                IBodyConverterFactory bodyConverterFactory,
                                IBrokeredMessageOutbox brokeredMessageOutbox)

@@ -4,7 +4,7 @@
     {
         public static RoutingOptions SetApplicationProperty(this RoutingOptions routingOptions, string key, object value)
         {
-            routingOptions.ApplicationProperties[key] = value;
+            routingOptions.MessageContext[key] = value;
             return routingOptions;
         }
     }

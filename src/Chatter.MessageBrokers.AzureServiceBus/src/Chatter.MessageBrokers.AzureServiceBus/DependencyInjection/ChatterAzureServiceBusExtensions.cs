@@ -1,20 +1,20 @@
 ﻿using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.AzureServiceBus;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
+using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
-using Scrutor;
+using Microsoft.Extensions.Configuration;
 using System;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
     public static class ChatterAzureServiceBusExtensions
     {
-        public static ServiceBusOptionsBuilder AddAzureServiceBus(this IServiceCollection services)
-        {
-            return new ServiceBusOptionsBuilder(services);
-        }
+        public static ServiceBusOptionsBuilder AddAzureServiceBus(this IServiceCollection services, IConfiguration configuration)
+            => new ServiceBusOptionsBuilder(services, configuration);
 
         /// <summary>
         /// Adds registrations required for Azure Service Bus integration with Chatter.CQRS, including <see cref="ServiceBusOptions"/>, queue, topic and subscription factories and publishers.
@@ -24,22 +24,14 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <returns>The singleton <see cref="IChatterBuilder"/> instance.</returns>
         public static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, Action<ServiceBusOptionsBuilder> optionsBuilder)
         {
-            optionsBuilder(builder.Services.AddAzureServiceBus());
-            return AddAzureServiceBus(builder);
-        }
+            var optBuilder = builder.Services.AddAzureServiceBus(builder.Configuration);
+            optionsBuilder?.Invoke(optBuilder);
+            var options = optBuilder.Build();
 
-        private static IChatterBuilder AddAzureServiceBus(IChatterBuilder builder)
-        {
-            builder.Services.AddScoped<IBrokeredMessageDetailProvider, BrokeredMessageAttributeProvider>();
-            builder.Services.AddSingleton<IBrokeredMessageInfrastructureDispatcher, ServiceBusMessageSender>();
+            builder.Services.Replace<IMessagingInfrastructureDispatcher, ServiceBusMessageSender>(ServiceLifetime.Scoped);
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
-
-            builder.Services.Scan(s =>
-                        s.FromAssemblies(AppDomain.CurrentDomain.GetAssemblies())
-                            .AddClasses(c => c.AssignableTo(typeof(IMessagingInfrastructureReceiver<>)))
-                            .UsingRegistrationStrategy(RegistrationStrategy.Skip)
-                            .AsImplementedInterfaces()
-                            .WithScopedLifetime());
+            builder.Services.Replace<IMessagingInfrastructureReceiver, ServiceBusReceiver>(ServiceLifetime.Scoped);
+            builder.Services.Replace<IBrokeredMessagePathBuilder, AzureServiceBusEntityPathBuilder>(ServiceLifetime.Scoped);
 
             return builder;
         }

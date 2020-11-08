@@ -10,7 +10,7 @@ namespace Chatter.MessageBrokers.Context
     public sealed class TransactionContext : IContainContext
     {
         public TransactionContext()
-            : this(null, TransactionMode.None)
+            : this(null, TransactionMode.ReceiveOnly)
         { }
 
         /// <summary>
@@ -19,7 +19,7 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         /// <param name="transactionReceiver">The message broker receiver</param>
         public TransactionContext(string transactionReceiver)
-            : this(transactionReceiver, TransactionMode.None)
+            : this(transactionReceiver, TransactionMode.ReceiveOnly)
         { }
 
         /// <summary>

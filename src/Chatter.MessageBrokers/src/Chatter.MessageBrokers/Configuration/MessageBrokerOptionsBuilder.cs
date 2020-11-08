@@ -1,29 +1,54 @@
-﻿using Chatter.MessageBrokers.Receiving;
+﻿using Chatter.MessageBrokers.Recovery.Options;
 using Chatter.MessageBrokers.Reliability.Configuration;
-using Chatter.MessageBrokers.Saga.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System;
-using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Configuration
 {
     public class MessageBrokerOptionsBuilder
     {
-        private readonly IServiceCollection _services;
+        public IServiceCollection Services { get; }
+        private readonly IConfiguration _configuration;
+        private MessageBrokerOptions _messageBrokerOptions;
         private ReliabilityOptions _reliabilityOptions;
-        private List<SagaOptions> _sagaOptions;
+        private RecoveryOptions _recoveryOptions;
+        private Func<IServiceCollection> _optionConfigurator;
+        private const string _messageBrokerSectionName = "Chatter:MessageBrokers";
+        private const string _reliabilityOptionsSectionName = _messageBrokerSectionName + ":Reliability";
+        private const string _recoveryOptionsSectionName = _messageBrokerSectionName + ":Recovery";
 
-        internal MessageBrokerOptionsBuilder(IServiceCollection services)
+        internal MessageBrokerOptionsBuilder(IServiceCollection services, IConfiguration configuration)
         {
-            _services = services;
-            _reliabilityOptions = new ReliabilityOptions();
-            _sagaOptions = new List<SagaOptions>();
+            Services = services;
+            _configuration = configuration;
+            _messageBrokerOptions = new MessageBrokerOptions();
+            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(GetMessageBrokerOptions(_messageBrokerSectionName));
         }
 
-        public MessageBrokerOptionsBuilder AddReliabilityOptions(IConfiguration configuration, string reliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability")
+        private IConfigurationSection GetMessageBrokerOptions(string messageBrokerSectionName)
         {
-            var reliabilityOptions = configuration.GetSection(reliabilityOptionsSectionName).Get<ReliabilityOptions>();
+            var messageBrokerOptionsSection = _configuration.GetSection(messageBrokerSectionName);
+            _messageBrokerOptions = messageBrokerOptionsSection.Get<MessageBrokerOptions>();
+            return messageBrokerOptionsSection;
+        }
+
+        public MessageBrokerOptionsBuilder AddMessageBrokerOptions(Action<MessageBrokerOptions> builder)
+        {
+            _optionConfigurator = () => Services.Configure(builder);
+            return this;
+        }
+
+        public MessageBrokerOptionsBuilder AddMessageBrokerOptions(string messageBrokerSectionName = _messageBrokerSectionName)
+        {
+            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(GetMessageBrokerOptions(messageBrokerSectionName));
+            return this;
+        }
+
+        public MessageBrokerOptionsBuilder AddReliabilityOptions(string reliabilityOptionsSectionName = _reliabilityOptionsSectionName)
+        {
+            var reliabilityOptions = _configuration.GetSection(reliabilityOptionsSectionName).Get<ReliabilityOptions>();
 
             if (reliabilityOptions is null)
             {
@@ -35,50 +60,52 @@ namespace Chatter.MessageBrokers.Configuration
             return this;
         }
 
-        public MessageBrokerOptionsBuilder AddSagaOptions(IConfiguration configuration, string sagaOptionsSectionName = "Chatter:MessageBrokers:Sagas")
+        public MessageBrokerOptionsBuilder AddRecoveryOptions(string recoveryOptionsSectionName = _recoveryOptionsSectionName)
         {
-            var sagaOptions = configuration.GetSection(sagaOptionsSectionName).Get<List<SagaOptions>>();
+            var recoveryOptions = _configuration.GetSection(recoveryOptionsSectionName).Get<RecoveryOptions>();
 
-            if (sagaOptions is null)
+            if (recoveryOptions is null)
             {
-                throw new ArgumentNullException(nameof(sagaOptions), $"No saga options found in section '{sagaOptionsSectionName}'");
+                throw new ArgumentNullException(nameof(recoveryOptions), $"No recovery options found in section '{recoveryOptionsSectionName}'");
             }
 
-            foreach (var option in sagaOptions)
-            {
-                if (string.IsNullOrWhiteSpace(option.SagaDataType))
-                {
-                    throw new ArgumentNullException(nameof(option.SagaDataType), "A saga data type is required to register saga specific options.");
-                }
-
-                if (!Enum.TryParse<TransactionMode>(option.DefaultTransactionMode, out var transactionMode))
-                {
-                    option.TransactionMode = TransactionMode.None;
-                }
-                else
-                {
-                    option.TransactionMode = transactionMode;
-                }
-            }
-
-            _sagaOptions = sagaOptions;
+            _recoveryOptions = recoveryOptions;
 
             return this;
         }
 
+        private void PostConfiguration(MessageBrokerOptions messageBrokerOptions)
+        {
+            if (_reliabilityOptions != null)
+            {
+                messageBrokerOptions.Reliability = _reliabilityOptions;
+            }
+
+            if (_recoveryOptions != null)
+            {
+                messageBrokerOptions.Recovery = _recoveryOptions;
+            }
+
+            _messageBrokerOptions = messageBrokerOptions;
+        }
+
         internal MessageBrokerOptions Build()
         {
-            var options = new MessageBrokerOptions()
-            {
-                Reliability = _reliabilityOptions ?? new ReliabilityOptions(),
-                Sagas = _sagaOptions ?? new List<SagaOptions>()
-            };
+            Services.AddOptions<MessageBrokerOptions>()
+                     .ValidateDataAnnotations()
+                     .PostConfigure(options =>
+                     {
+                         PostConfiguration(options);
+                     });
 
-            _services.AddSingleton(options.Reliability);
-            _services.AddSingleton(options.Sagas);
-            _services.AddSingleton(options);
+            _optionConfigurator?.Invoke();
 
-            return options;
+            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value);
+            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Reliability ?? new ReliabilityOptions());
+            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Recovery ?? new RecoveryOptions());
+
+            PostConfiguration(_messageBrokerOptions);
+            return _messageBrokerOptions;
         }
     }
 }

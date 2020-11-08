@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using System;
 using System.Threading.Tasks;
 using TravelBooking.Application.Commands;
-using tb = Samples.SharedKernel.Dtos;
+using TravelBooking.Application.DTO;
 
 namespace TravelBooking.Api.Controllers
 {
@@ -30,12 +30,15 @@ namespace TravelBooking.Api.Controllers
             await _dispatcher.Dispatch(new DeleteTravelBookingTopologyCommand());
         }
 
-        [HttpPut("orchestration")]
-        public async Task BookTravelViaSagaOrchestration([FromBody] tb.TravelBooking travelBooking)
+        [HttpPut("routingslip")]
+        public async Task BookTravelViaRoutingSlip([FromBody] TravelBookingDto travelBooking)
         {
-            var tbc = new BookTravelViaOrchestrationCommand()
+            var tbc = new BookTravelViaRoutingSlipCommand()
             {
-                SagaData = travelBooking
+                Id = travelBooking.Id,
+                Car = travelBooking.Car,
+                Hotel = travelBooking.Hotel,
+                Flight = travelBooking.Flight
             };
             await _dispatcher.Dispatch(tbc);
         }

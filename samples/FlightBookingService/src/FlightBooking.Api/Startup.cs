@@ -1,3 +1,4 @@
+using FlightBooking.Application.Commands;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -26,11 +27,15 @@ namespace FlightBooking.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Flight Booking Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs()
+            services.AddChatterCqrs(Configuration, typeof(BookFlightCommand))
+                    .AddCommandPipeline(builder =>
+                    {
+                        builder.WithRoutingSlipBehavior();
+                    })
                     .AddMessageBrokers()
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions(Configuration, "ServiceBus");
+                        options.AddServiceBusOptions("Chatter:ServiceBus");
                     });
         }
 

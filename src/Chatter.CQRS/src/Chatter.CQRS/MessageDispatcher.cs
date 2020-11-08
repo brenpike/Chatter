@@ -9,16 +9,12 @@ namespace Chatter.CQRS
     {
         private readonly IMessageDispatcherProvider _dispatcherProvider;
 
-        public MessageDispatcher(IMessageDispatcherProvider dispatcherProvider)
-        {
-            _dispatcherProvider = dispatcherProvider ?? throw new ArgumentNullException(nameof(dispatcherProvider));
-        }
+        public MessageDispatcher(IMessageDispatcherProvider dispatcherProvider) 
+            => _dispatcherProvider = dispatcherProvider ?? throw new ArgumentNullException(nameof(dispatcherProvider));
 
         ///<inheritdoc/>
-        public Task Dispatch<TMessage>(TMessage message) where TMessage : IMessage
-        {
-            return Dispatch(message, new MessageHandlerContext());
-        }
+        public Task Dispatch<TMessage>(TMessage message) where TMessage : IMessage 
+            => Dispatch(message, new MessageHandlerContext());
 
         ///<inheritdoc/>
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage

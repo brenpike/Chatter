@@ -6,12 +6,13 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
 {
     /// <summary>
-    /// Used to pass contextual information of a <see cref="BrokeredMessageReceiver{TMessage}"/> to a <see cref="IMessageHandler{TMessage}"/>
+    /// Used to pass contextual information of a <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> to a <see cref="IMessageHandler{TMessage}"/>
     /// </summary>
     public sealed class MessageBrokerContext : MessageHandlerContext, IMessageBrokerContext
     {
@@ -23,14 +24,10 @@ namespace Chatter.MessageBrokers.Context
         /// <param name="applicationProperties">The application properties of the received message</param>
         /// <param name="messageReceiverPath">The message receiver path</param>
         /// <param name="bodyConverter">Used to convert the message body to a strongly typed object</param>
-        public MessageBrokerContext(string messageId, byte[] body, IDictionary<string, object> applicationProperties, string messageReceiverPath, IBrokeredMessageBodyConverter bodyConverter)
+        public MessageBrokerContext(string messageId, byte[] body, IDictionary<string, object> applicationProperties, string messageReceiverPath, CancellationToken receiverCancellationToken, IBrokeredMessageBodyConverter bodyConverter)
         {
             this.BrokeredMessage = new InboundBrokeredMessage(messageId, body, applicationProperties, messageReceiverPath, bodyConverter);
-        }
-
-        public MessageBrokerContext(InboundBrokeredMessage brokeredMessage)
-        {
-            this.BrokeredMessage = brokeredMessage;
+            this.ReceiverCancellationToken = receiverCancellationToken;
         }
 
         /// <summary>
@@ -38,30 +35,20 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         public InboundBrokeredMessage BrokeredMessage { get; private set; }
 
-        internal IBrokeredMessageDispatcher ExternalDispatcher { get; set; }
+        public CancellationToken ReceiverCancellationToken { get; private set; }
 
-        /// <summary>
-        /// Adds contextual error information to the message broker context
-        /// </summary>
-        /// <param name="errorContext"></param>
-        public void SetFailure(ErrorContext errorContext)
-        {
-            this.Container.Include(errorContext);
-            this.BrokeredMessage.SetFailure();
-            this.BrokeredMessage.WithFailureDetails(errorContext.ErrorDetails);
-            this.BrokeredMessage.WithFailureDescription(errorContext.ErrorDescription);
-        }
+        public IBrokeredMessageDispatcher BrokeredMessageDispatcher { get; internal set; }
 
-        public Task Send<TMessage>(TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand 
-            => this.ExternalDispatcher.Send(message, destinationPath, this.GetTransactionContext(), options);
+        public Task Send<TMessage>(TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand
+            => this.BrokeredMessageDispatcher.Send(message, destinationPath, this.GetTransactionContext(), options);
 
-        public Task Send<TMessage>(TMessage message, SendOptions options = null) where TMessage : ICommand 
-            => this.ExternalDispatcher.Send(message, this.GetTransactionContext(), options);
+        public Task Send<TMessage>(TMessage message, SendOptions options = null) where TMessage : ICommand
+            => this.BrokeredMessageDispatcher.Send(message, this.GetTransactionContext(), options);
 
-        public Task Publish<TMessage>(TMessage message, PublishOptions options = null) where TMessage : IEvent 
-            => this.ExternalDispatcher.Publish(message, this.GetTransactionContext(), options);
+        public Task Publish<TMessage>(TMessage message, PublishOptions options = null) where TMessage : IEvent
+            => this.BrokeredMessageDispatcher.Publish(message, this.GetTransactionContext(), options);
 
-        public Task Publish<TMessage>(TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent 
-            => this.ExternalDispatcher.Publish(message, destinationPath, this.GetTransactionContext(), options);
+        public Task Publish<TMessage>(TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent
+            => this.BrokeredMessageDispatcher.Publish(message, destinationPath, this.GetTransactionContext(), options);
     }
 }

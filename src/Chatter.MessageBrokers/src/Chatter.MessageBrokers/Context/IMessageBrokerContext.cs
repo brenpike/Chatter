@@ -4,19 +4,28 @@ using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Options;
+using Chatter.MessageBrokers.Sending;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
 {
     /// <summary>
-    /// Used to pass contextual information of a <see cref="BrokeredMessageReceiver{TMessage}"/> to a <see cref="IMessageHandler{TMessage}"/>
+    /// Used to pass contextual information of a <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> to a <see cref="IMessageHandler{TMessage}"/>
     /// </summary>
     public interface IMessageBrokerContext : IMessageHandlerContext
     {
         /// <summary>
-        /// The message received by a <see cref="BrokeredMessageReceiver{TMessage}"/>
+        /// The message received by a <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/>
         /// </summary>
         InboundBrokeredMessage BrokeredMessage { get; }
+
+        /// <summary>
+        /// A cancellation token to cancel the receiver of the currently received <see cref="BrokeredMessage"/>
+        /// </summary>
+        CancellationToken ReceiverCancellationToken { get; }
+
+        IBrokeredMessageDispatcher BrokeredMessageDispatcher { get; }
 
         Task Publish<TMessage>(TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent;
         Task Publish<TMessage>(TMessage message, PublishOptions options = null) where TMessage : IEvent;

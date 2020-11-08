@@ -5,26 +5,30 @@ namespace Chatter.MessageBrokers.Routing.Slips
 {
     public class RoutingSlipBuilder
     {
-        private readonly string _id;
-        private IList<AtomicRoutingStep> _route;
+        private readonly Guid _id;
+        private IList<RoutingStep> _route;
 
         private RoutingSlipBuilder(Guid id)
         {
-            _id = id.ToString();
-            _route = new List<AtomicRoutingStep>();
+            _id = id;
+            _route = new List<RoutingStep>();
         }
 
-        public static RoutingSlipBuilder NewRoutingSlip(Guid id)
-        {
-            return new RoutingSlipBuilder(id);
-        }
+        public static RoutingSlipBuilder NewRoutingSlip(Guid id) 
+            => new RoutingSlipBuilder(id);
 
         public RoutingSlipBuilder WithRoute(RoutingStepBuilder routingStepBuilder)
             => WithRoute(routingStepBuilder.Build());
 
-        public RoutingSlipBuilder WithRoute(AtomicRoutingStep atomicRoutingStep)
+        public RoutingSlipBuilder WithRoute(RoutingStep step)
         {
-            _route.Add(atomicRoutingStep);
+            _route.Add(step);
+            return this;
+        }
+
+        public RoutingSlipBuilder WithRoute(string step)
+        {
+            _route.Add(new RoutingStep(step));
             return this;
         }
 

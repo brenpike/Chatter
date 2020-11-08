@@ -1,13 +1,11 @@
 ﻿using Chatter.CQRS;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
-using Chatter.MessageBrokers.Routing.Context;
-using Chatter.MessageBrokers.Saga;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -17,265 +15,114 @@ namespace Chatter.MessageBrokers.Receiving
     /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
-    class BrokeredMessageReceiver<TMessage> : BackgroundService, IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
+    class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
     {
-        readonly object _syncLock;
-        private readonly IMessagingInfrastructureReceiver<TMessage> _infrastructureReceiver;
-        private readonly IBrokeredMessageDetailProvider _brokeredMessageDetailProvider;
-        private readonly IBrokeredMessageDispatcher _brokeredMessageDispatcher;
+        private readonly IMessagingInfrastructureReceiver _infrastructureReceiver;
         private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
         private readonly IServiceScopeFactory _serviceFactory;
-        TaskCompletionSource<bool> _completedReceivingSource = new TaskCompletionSource<bool>();
-        private CancellationTokenSource _receiverCancellationSource;
+        private readonly ReceiverOptions _options;
 
         /// <summary>
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
         /// </summary>
         /// <param name="infrastructureReceiver">The message broker infrastructure</param>
-        /// <param name="brokeredMessageDetailProvider">Provides routing details to the brokered message receiver</param>
-        /// <param name="messageDispatcher">Dispatches messages of <typeparamref name="TMessage"/> to the appropriate <see cref="IMessageHandler{TMessage}"/></param>
+        /// <param name="serviceFactory">The service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
         /// <param name="logger">Provides logging capability</param>
-        public BrokeredMessageReceiver(IMessagingInfrastructureReceiver<TMessage> infrastructureReceiver,
-                                       IBrokeredMessageDetailProvider brokeredMessageDetailProvider,
-                                       IBrokeredMessageDispatcher brokeredMessageDispatcher,
+        public BrokeredMessageReceiver(ReceiverOptions options,
+                                       IMessagingInfrastructureReceiver infrastructureReceiver,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
-                                       IServiceScopeFactory serviceFactory)
+                                       IServiceScopeFactory serviceFactory,
+                                       IBrokeredMessagePathBuilder brokeredMessagePathBuilder)
         {
-            _syncLock = new object();
+            _options = options ?? throw new ArgumentNullException(nameof(options));
+            _options.MessageReceiverPath = brokeredMessagePathBuilder.GetMessageReceivingPath(options.SendingPath, options.MessageReceiverPath);
+            _options.Description = options.Description ?? _options.MessageReceiverPath;
             _infrastructureReceiver = infrastructureReceiver ?? throw new ArgumentNullException(nameof(infrastructureReceiver));
-            _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
-            _brokeredMessageDispatcher = brokeredMessageDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }
 
         /// <summary>
-        /// The receiver should automatically receive brokered messages when the <see cref="BrokeredMessageReceiver{TMessage}"/> is created
-        /// </summary>
-        public bool AutoReceiveMessages => _brokeredMessageDetailProvider.AutoReceiveMessages<TMessage>();
-
-        /// <summary>
-        /// Describes the receiver. Used to track progress using the 'Via' user property of the <see cref="InboundBrokeredMessage"/>./>
-        /// </summary>
-        public string Description => _brokeredMessageDetailProvider.GetBrokeredMessageDescription<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the current destination path.
-        /// </summary>
-        public string DestinationPath => _brokeredMessageDetailProvider.GetMessageName<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the next destination path.
-        /// </summary>
-        public string NextDestinationPath => _brokeredMessageDetailProvider.GetNextMessageName<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the <see cref="DestinationPath"/> for compensation.
-        /// </summary>
-        public string CompensateDestinationPath => _brokeredMessageDetailProvider.GetCompensatingMessageName<TMessage>();
-
-        /// <summary>
-        /// Gets the name of the path to receive messages.
-        /// </summary>
-        public string MessageReceiverPath => _brokeredMessageDetailProvider.GetReceiverName<TMessage>();
-
-        /// <summary>
-        /// Indicates if the <see cref="BrokeredMessageReceiver{TMessage}"/> is currently receiving messages
+        /// Indicates if the <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> is currently receiving messages
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
 
-        ///<inheritdoc/>
-        protected override Task ExecuteAsync(CancellationToken stoppingToken)
-        {
-            if (AutoReceiveMessages)
-            {
-                return Start(stoppingToken);
-            }
-            else
-            {
-                return Task.CompletedTask;
-            }
-        }
-
-        ///<inheritdoc/>
-        public void StartReceiver()
+        public Task StartReceiver()
             => Start(CancellationToken.None);
 
         ///<inheritdoc/>
         public Task StartReceiver(CancellationToken receiverTerminationToken)
             => Start(receiverTerminationToken);
 
-        ///<inheritdoc/>
-        public void StopReceiver()
-        {
-            try
-            {
-                _receiverCancellationSource?.Cancel();
-            }
-            finally
-            {
-                _receiverCancellationSource?.Dispose();
-            }
-        }
+        public Task StopReceiver()
+            => _infrastructureReceiver.StopReceiver();
 
         Task Start(CancellationToken receiverTerminationToken)
         {
-            lock (_syncLock)
+            if (receiverTerminationToken == null)
             {
-                if (!IsReceiving)
-                {
-                    _completedReceivingSource = new TaskCompletionSource<bool>();
-
-                    if (receiverTerminationToken == CancellationToken.None)
-                    {
-                        _receiverCancellationSource = new CancellationTokenSource();
-                        receiverTerminationToken = _receiverCancellationSource.Token;
-                    }
-
-                    if (receiverTerminationToken == null)
-                    {
-                        throw new ArgumentNullException(nameof(receiverTerminationToken), $"A {typeof(CancellationToken).Name} is required in order for the operation to terminate successfully.");
-                    }
-
-                    receiverTerminationToken.Register(
-                    () =>
-                    {
-                        _completedReceivingSource.SetResult(true);
-                        IsReceiving = false;
-                    });
-
-                    _infrastructureReceiver.StartReceiver(ReceiveInboundBrokeredMessage,
-                                                          receiverTerminationToken);
-                    IsReceiving = true;
-                    _logger.LogInformation($"'{GetType().FullName}' has started receiving messages.");
-                }
-                return _completedReceivingSource.Task;
+                throw new ArgumentNullException(nameof(receiverTerminationToken), $"A {typeof(CancellationToken).Name} is required in order for the operation to terminate successfully.");
             }
+
+            //using var reg = receiverTerminationToken.Register(async () =>
+            //{
+            //    _logger.LogTrace($"Stopping {nameof(BrokeredMessageReceiver<TMessage>)}...");
+            //    await StopReceiver();
+            //    _logger.LogInformation($"{nameof(BrokeredMessageReceiver<TMessage>)} stopped successfully.");
+            //});
+
+            var receiveTask = _infrastructureReceiver.StartReceiver(_options,
+                                                                    ReceiveInboundBrokeredMessage);
+
+            _logger.LogInformation($"'{GetType().FullName}' has started receiving messages.");
+
+            return receiveTask;
         }
 
-        async Task ReceiveInboundBrokeredMessage(MessageBrokerContext messageContext,
-                                                 TransactionContext transactionContext)
+        async Task ReceiveInboundBrokeredMessage([NotNull] MessageBrokerContext messageContext,
+                                                 [NotNull] TransactionContext transactionContext)
         {
             try
             {
-                if (messageContext is null)
+                TMessage brokeredMessagePayload = null;
+
+                try
                 {
-                    throw new ArgumentNullException(nameof(messageContext), $"A {typeof(MessageBrokerContext).Name} was not created by the messaging infrastructure.");
+                    if (messageContext is null)
+                    {
+                        throw new ArgumentNullException(nameof(messageContext), $"A {typeof(MessageBrokerContext).Name} was not created by the messaging infrastructure.");
+                    }
+
+                    var inboundMessage = messageContext.BrokeredMessage;
+
+                    inboundMessage.UpdateVia(_options.Description);
+
+                    if (transactionContext is null)
+                    {
+                        transactionContext = new TransactionContext(_options.MessageReceiverPath, _options.TransactionMode.Value);
+                    }
+
+                    messageContext.Container.Include(transactionContext);
+
+                    brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
                 }
-
-                var inboundMessage = messageContext.BrokeredMessage;
-
-                messageContext.ExternalDispatcher = _brokeredMessageDispatcher;
-
-                CreateErrorContextFromHeaders(messageContext, inboundMessage);
-                CreateSagaContextFromHeaders(messageContext);
-                CreateReplyContextFromHeaders(messageContext, inboundMessage);
-                CreateNextDestinationContextFromHeaders(messageContext);
-                CreateCompensationContextFromHeaders(messageContext, inboundMessage);
-
-                inboundMessage.WithRouteToSelfPath(this.DestinationPath);
-                inboundMessage.UpdateVia(Description);
-
-                if (transactionContext is null)
+                catch (Exception e)
                 {
-                    transactionContext = new TransactionContext(MessageReceiverPath, inboundMessage.TransactionMode);
+                    throw new PoisonedMessageException($"Unable to build {typeof(MessageBrokerContext).Name} due to poisoned message", e);
                 }
-
-                messageContext.Container.Include(transactionContext);
-
-                var brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
 
                 using var scope = _serviceFactory.CreateScope();
                 var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
+                messageContext.BrokeredMessageDispatcher = scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>();
                 await dispatcher.Dispatch(brokeredMessagePayload, messageContext).ConfigureAwait(false);
-
-                inboundMessage.SuccessfullyReceived = true;
             }
-            catch (CompensationRoutingException cre)
+            catch (PoisonedMessageException)
             {
-                var errorContext = new ErrorContext(
-                   $"Routing compensation message of type '{typeof(TMessage).Name}' to '{cre.RoutingContext.DestinationPath?.ToString()}' failed",
-                   $"Compensation reason: '{cre.RoutingContext?.ToString()}'\n" +
-                   $"Routing failure reason: '{cre.InnerException?.Message}'");
-
-                messageContext.SetFailure(errorContext);
-
-                throw new CriticalBrokeredMessageReceiverException(errorContext, cre);
+                throw;
             }
             catch (Exception e)
             {
-                ErrorContext errorContext;
-
-                if (messageContext is null)
-                {
-                    errorContext = new ErrorContext(
-                        $"A brokered message was received with no {typeof(MessageBrokerContext).Name}",
-                        $"{e.Message}");
-
-                    throw new CriticalBrokeredMessageReceiverException(errorContext, e);
-                }
-
-                errorContext = new ErrorContext(
-                    $"An error was encountered receiving message '{typeof(TMessage).Name}'",
-                    $"{e.Message}");
-
-                messageContext.SetFailure(errorContext);
-
-                throw new CriticalBrokeredMessageReceiverException(errorContext, e);
-            }
-        }
-
-        private static void CreateErrorContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
-        {
-            if (inboundMessage.IsError)
-            {
-                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDetails, out var reason);
-                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDescription, out var description);
-                var errorContext = new ErrorContext((string)reason, (string)description);
-                messageContext.SetFailure(errorContext);
-            }
-        }
-
-        private void CreateSagaContextFromHeaders(MessageBrokerContext messageContext)
-        {
-            if (messageContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.SagaId, out var sagaId))
-            {
-                messageContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.SagaStatus, out var sagaStatus);
-                var sagaContext = new SagaContext((string)sagaId, MessageReceiverPath, NextDestinationPath, (SagaStatusEnum)sagaStatus, parentContainer: messageContext.Container);
-                messageContext.Container.Include(sagaContext);
-            }
-        }
-
-        private void CreateNextDestinationContextFromHeaders(MessageBrokerContext messageContext)
-        {
-            if (!string.IsNullOrWhiteSpace(NextDestinationPath))
-            {
-                var nextDestinationContext = new RoutingContext(NextDestinationPath, messageContext.Container);
-                messageContext.Container.Include(nextDestinationContext);
-            }
-        }
-
-        private static void CreateReplyContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
-        {
-            if (inboundMessage.MessageContext.TryGetValue(MessageContext.ReplyToAddress, out var replyTo))
-            {
-                inboundMessage.MessageContext.TryGetValue(MessageContext.ReplyToGroupId, out var replyToSessionId);
-                inboundMessage.MessageContext.TryGetValue(MessageContext.GroupId, out var groupId);
-                replyToSessionId = !string.IsNullOrWhiteSpace((string)replyToSessionId) ? (string)replyToSessionId : (string)groupId;
-                var replyContext = new ReplyToRoutingContext((string)replyTo, (string)replyToSessionId, messageContext.Container);
-                messageContext.Container.Include(replyContext);
-                inboundMessage.ClearReplyToProperties();
-            }
-        }
-
-        private void CreateCompensationContextFromHeaders(MessageBrokerContext messageContext, InboundBrokeredMessage inboundMessage)
-        {
-            if (!string.IsNullOrWhiteSpace(CompensateDestinationPath))
-            {
-                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDetails, out var detail);
-                inboundMessage.MessageContext.TryGetValue(MessageContext.FailureDescription, out var description);
-                var compensateContext = new CompensationRoutingContext(CompensateDestinationPath, (string)detail, (string)description, messageContext.Container);
-                messageContext.Container.Include(compensateContext);
+                throw new ReceiverMessageDispatchingException($"Error dispatching message '{typeof(TMessage).Name}' received by '{typeof(BrokeredMessageReceiver<>).Name}'", e);
             }
         }
     }

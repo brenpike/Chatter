@@ -5,7 +5,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
 using TravelBooking.Application.Commands;
-using TravelBooking.Infrastructure.Commands.Handlers;
 
 namespace TravelBooking.Api
 {
@@ -27,17 +26,12 @@ namespace TravelBooking.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Travel Booking Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs()
-                .AddMessageBrokers((options) =>
-                 {
-                     options.AddReliabilityOptions(Configuration)
-                            .AddSagaOptions(Configuration);
-                 }, typeof(BookTravelViaOrchestrationCommand))
-                .AddSagas()
-                .AddAzureServiceBus(options =>
-                {
-                    options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
-                });
+            services.AddChatterCqrs(Configuration)
+                    .AddMessageBrokers(typeof(BookTravelViaRoutingSlipCommand))
+                    .AddAzureServiceBus(options =>
+                    {
+                        options.AddServiceBusOptions("Chatter:ServiceBus");
+                    });
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)

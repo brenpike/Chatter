@@ -4,7 +4,8 @@ using CarRental.Application.Services;
 using CarRental.Infrastructure.Repositories;
 using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
-using Chatter.MessageBrokers.Reliability.EntityFramework;
+using Chatter.MessageBrokers.AzureServiceBus.Receiving;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -39,22 +40,22 @@ namespace CarRental.Api
             services.AddScoped<IRepository<Domain.Aggregates.CarRental, Guid>, CarRentalRepository>();
             services.AddDbContext<CarRentalContext>();
 
-            services.AddChatterCqrs(typeof(BookRentalCarCommand))
+            services.AddChatterCqrs(Configuration, typeof(BookRentalCarCommand))
                     .AddCommandPipeline(builder =>
                     {
                         builder.WithBehavior(typeof(LoggingBehavior<>))
-                               //.WithUnitOfWorkBehavior<CarRentalContext>(services)
-                               //.WithInboxBehavior<CarRentalContext>(services)
-                               .WithOutboxProcessingBehavior<CarRentalContext>(services)
-                               .WithBehavior(typeof(AnotherLoggingBehavior<>));
+                               //.WithUnitOfWorkBehavior<CarRentalContext>()
+                               //.WithInboxBehavior<CarRentalContext>()
+                               .WithOutboxProcessingBehavior<CarRentalContext>()
+                               .WithRoutingSlipBehavior();
                     })
-                    .AddMessageBrokers((options) =>
+                    .AddMessageBrokers(builder =>
                     {
-                        options.AddReliabilityOptions(Configuration);
-                    }, typeof(BookRentalCarCommand))
+                        builder.UseExponentialDelayRecovery();
+                    })
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
+                        options.AddServiceBusOptions("Chatter:ServiceBus");
                     });
         }
 

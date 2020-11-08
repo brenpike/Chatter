@@ -1,4 +1,5 @@
-using HotelBooking.Application.IntegrationEvents;
+using Chatter.MessageBrokers.Receiving;
+using HotelBooking.Application.Commands;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -27,12 +28,19 @@ namespace HotelBooking.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Hotel Booking Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs()
-                    .AddMessageBrokers(typeof(RentalCarBookedEvent))
-                    .AddAzureServiceBus(options =>
-                    {
-                        options.AddServiceBusOptions(Configuration, "Chatter:ServiceBus");
-                    });
+            services.AddChatterCqrs(Configuration, typeof(BookHotelCommand))
+                .AddCommandPipeline(builder =>
+                {
+                    builder.WithRoutingSlipBehavior();
+                })
+                .AddMessageBrokers(builder =>
+                {
+                    builder.AddReceiver<BookHotelCommand>("book-trip-saga/2/book-hotel", transactionMode: TransactionMode.FullAtomicityViaInfrastructure);
+                })
+                .AddAzureServiceBus(options =>
+                {
+                    options.AddServiceBusOptions("Chatter:ServiceBus");
+                });
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

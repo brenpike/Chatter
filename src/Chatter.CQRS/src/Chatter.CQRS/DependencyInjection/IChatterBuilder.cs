@@ -1,4 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+using System.Reflection;
+using System.Collections.Generic;
 
 namespace Chatter.CQRS.DependencyInjection
 {
@@ -11,5 +14,7 @@ namespace Chatter.CQRS.DependencyInjection
         /// An <see cref="IServiceCollection"/> containing all Chatter.CQRS dependency registrations.
         /// </summary>
         IServiceCollection Services { get; }
+        IConfiguration Configuration { get; }
+        IEnumerable<Assembly> MarkerAssemblies { get; }
     }
 }

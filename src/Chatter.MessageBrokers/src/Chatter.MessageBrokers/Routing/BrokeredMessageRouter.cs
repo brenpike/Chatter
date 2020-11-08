@@ -8,9 +8,9 @@ namespace Chatter.MessageBrokers.Routing
 {
     public sealed class BrokeredMessageRouter : IRouteBrokeredMessages
     {
-        private readonly IBrokeredMessageInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
+        private readonly IMessagingInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
 
-        public BrokeredMessageRouter(IBrokeredMessageInfrastructureDispatcher brokeredMessageInfrastructureDispatcher)
+        public BrokeredMessageRouter(IMessagingInfrastructureDispatcher brokeredMessageInfrastructureDispatcher)
         {
             _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
         }

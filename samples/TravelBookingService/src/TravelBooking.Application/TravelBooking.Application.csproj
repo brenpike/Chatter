@@ -14,9 +14,7 @@
     <Folder Include="IntegrationEvents\" />
     <Folder Include="Exceptions\" />
     <Folder Include="Interfaces\" />
-    <Folder Include="DTO\" />
     <Folder Include="Queries\" />
-    <Folder Include="Sagas\TravelBooking\Commands\" />
     <Folder Include="Services\" />
   </ItemGroup>
 

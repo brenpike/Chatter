@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Receiving;
-using Microsoft.Azure.ServiceBus;
+﻿using Microsoft.Azure.ServiceBus;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
@@ -33,18 +32,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Extensions
                 message.UserProperties[kvp.Key] = kvp.Value;
             }
             return message;
-        }
-
-        public static TransactionMode GetTransactionMode(this Message message)
-        {
-            if (message.UserProperties.ContainsKey(MessageContext.TransactionMode))
-            {
-                return (TransactionMode)message.UserProperties[MessageContext.TransactionMode];
-            }
-            else
-            {
-                return TransactionMode.None;
-            }
         }
 
         public static Message AddUserProperty(this Message message, string name, object value)
