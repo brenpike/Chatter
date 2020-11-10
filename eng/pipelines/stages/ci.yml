@@ -25,7 +25,7 @@ stages:
         displayName: 'Execute Tests'
         inputs:
           command: 'test'
-          projects: '**/*tests/*.csproj'
+          projects: 'src/${{ parameters.ProjectName }}/tests/*.csproj'
 
       - task: DotNetCoreCLI@2
         displayName: 'Dotnet Pack ${{ parameters.ProjectName }}'
