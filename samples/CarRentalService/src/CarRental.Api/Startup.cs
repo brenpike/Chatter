@@ -53,10 +53,7 @@ namespace CarRental.Api
                     {
                         builder.UseExponentialDelayRecovery();
                     })
-                    .AddAzureServiceBus(options =>
-                    {
-                        options.AddServiceBusOptions("Chatter:ServiceBus");
-                    });
+                    .AddAzureServiceBus();
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)

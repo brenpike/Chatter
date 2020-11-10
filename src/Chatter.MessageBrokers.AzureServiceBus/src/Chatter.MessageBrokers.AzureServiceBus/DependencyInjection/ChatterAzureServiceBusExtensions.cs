@@ -22,7 +22,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <param name="builder">The singleton <see cref="ChatterBuilder"/> instance used for registration.</param>
         /// <param name="configSectionName">The configuration section name containing Azure Service Bus configuration values used to build a <see cref="ServiceBusOptions"/> instance. 'ServiceBus' is the default value.</param>
         /// <returns>The singleton <see cref="IChatterBuilder"/> instance.</returns>
-        public static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, Action<ServiceBusOptionsBuilder> optionsBuilder)
+        public static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, Action<ServiceBusOptionsBuilder> optionsBuilder = null)
         {
             var optBuilder = builder.Services.AddAzureServiceBus(builder.Configuration);
             optionsBuilder?.Invoke(optBuilder);

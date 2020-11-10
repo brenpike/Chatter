@@ -11,6 +11,25 @@ namespace Chatter.CQRS.DependencyInjection
 {
     public static class ServiceCollectionExtensions
     {
+        public static IServiceCollection AddPipelineBehavior(this IServiceCollection services, Type behaviorType)
+        {
+            if (!behaviorType.GetTypeInfo().ImplementedInterfaces.Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommandBehavior<>)))
+            {
+                throw new ArgumentException($"The supplied type must implement {typeof(ICommandBehavior<>).Name}", nameof(behaviorType));
+            }
+
+            if (behaviorType.IsGenericTypeDefinition)
+            {
+                services.RegisterBehaviorForAllCommands(behaviorType);
+            }
+            else
+            {
+                services.RegisterBehaviorForCommand(behaviorType);
+            }
+
+            return services;
+        }
+
         public static IServiceCollection InsertServiceBefore(this IServiceCollection services, Type serviceToInsert, Type serviceToInsertBefore)
         {
             var serviceToPrepend = services.Where(sd =>

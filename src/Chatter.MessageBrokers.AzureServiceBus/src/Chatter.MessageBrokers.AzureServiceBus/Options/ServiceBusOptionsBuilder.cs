@@ -23,7 +23,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             _configuration = configuration;
             _serviceBusOptions = new ServiceBusOptions();
             _tokenProvider = new NullTokenProvider();
-            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(configuration.GetSection(_azureServiceBusSectionName));
+            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(GetServiceBusOptions(_azureServiceBusSectionName));
+        }
+
+        private IConfigurationSection GetServiceBusOptions(string configSectionName)
+        {
+            var serviceBusOptionsSection = _configuration.GetSection(configSectionName);
+            _serviceBusOptions = serviceBusOptionsSection.Get<ServiceBusOptions>();
+            return serviceBusOptionsSection;
         }
 
         public ServiceBusOptionsBuilder AddServiceBusOptions(Action<ServiceBusOptions> builder)
@@ -34,7 +41,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         public ServiceBusOptionsBuilder AddServiceBusOptions(string configSectionName = _azureServiceBusSectionName)
         {
-            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(_configuration.GetSection(configSectionName));
+            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(GetServiceBusOptions(configSectionName));
             return this;
         }
 
@@ -46,6 +53,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         private void PostConfiguration(ServiceBusOptions serviceBusConfig)
         {
+            if (serviceBusConfig == null)
+            {
+                return;
+            }
+
             if (serviceBusConfig.RetryPolicy == null)
             {
                 serviceBusConfig.Policy = RetryPolicy.Default;
@@ -84,6 +96,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
             _services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<ServiceBusOptions>>().Value);
 
+            PostConfiguration(_serviceBusOptions);
             return _serviceBusOptions;
         }
     }
