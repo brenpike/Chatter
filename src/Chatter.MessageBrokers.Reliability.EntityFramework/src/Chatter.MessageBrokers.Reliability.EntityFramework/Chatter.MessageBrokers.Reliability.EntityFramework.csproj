@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <PackageId>Chatter.MessageBrokers.Reliability.EntityFramework</PackageId>
-    <Version>0.0.3</Version>
+    <Version>0.0.4</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>An implementation of the Chatter.MessageBrokers.Reliability adapter library which leverages EF Core for transactions, units of work, inbox and outbox</Description>
