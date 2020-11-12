@@ -23,6 +23,11 @@ namespace Chatter.CQRS
         ///<inheritdoc/>
         public IDispatchMessages GetDispatcher<TMessage>() where TMessage : IMessage
         {
+            if (_dispatchers.TryGetValue(typeof(TMessage), out var self))
+            {
+                return self;
+            }
+
             var interfaces = typeof(TMessage).GetTypeInfo().ImplementedInterfaces;
 
             foreach (var i in interfaces)
