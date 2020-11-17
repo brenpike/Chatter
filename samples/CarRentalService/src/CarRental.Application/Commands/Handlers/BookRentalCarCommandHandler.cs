@@ -3,7 +3,6 @@ using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Routing.Options;
-using Chatter.MessageBrokers.Sending;
 using Newtonsoft.Json;
 using Samples.SharedKernel.Interfaces;
 using System;
@@ -13,13 +12,11 @@ namespace CarRental.Application.Commands.Handlers
 {
     public class BookRentalCarCommandHandler : IMessageHandler<BookRentalCarCommand>
     {
-        private readonly IBrokeredMessageDispatcher _brokeredMessageDispatcher;
         private readonly IRepository<Domain.Aggregates.CarRental, Guid> _repository;
         private readonly IEventMapper _eventMapper;
 
-        public BookRentalCarCommandHandler(IBrokeredMessageDispatcher brokeredMessageDispatcher, IRepository<Domain.Aggregates.CarRental, Guid> repository, IEventMapper eventMapper)
+        public BookRentalCarCommandHandler(IRepository<Domain.Aggregates.CarRental, Guid> repository, IEventMapper eventMapper)
         {
-            _brokeredMessageDispatcher = brokeredMessageDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageDispatcher));
             _repository = repository ?? throw new ArgumentNullException(nameof(repository));
             _eventMapper = eventMapper ?? throw new ArgumentNullException(nameof(eventMapper));
         }
@@ -57,7 +54,7 @@ namespace CarRental.Application.Commands.Handlers
                     MessageId = Guid.NewGuid().ToString()
                 };
 
-                await _brokeredMessageDispatcher.Publish(ie, context.GetTransactionContext(), options: options);
+                await context.Publish(ie, options);
 
                 lock (Console.Out)
                 {
