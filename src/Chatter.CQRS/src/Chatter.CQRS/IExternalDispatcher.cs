@@ -1,6 +1,6 @@
 ﻿namespace Chatter.CQRS
 {
-    //Marker
+    //Marker - all behavior exposed via extension methods
     public interface IExternalDispatcher
     {
     }
