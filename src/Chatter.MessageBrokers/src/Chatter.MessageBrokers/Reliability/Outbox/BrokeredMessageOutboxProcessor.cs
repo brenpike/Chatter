@@ -1,11 +1,8 @@
 ﻿using Chatter.MessageBrokers.Reliability.Configuration;
-using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,17 +11,14 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     internal sealed class BrokeredMessageOutboxProcessor : BackgroundService
     {
-        private readonly IMessagingInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
         private readonly ILogger<BrokeredMessageOutboxProcessor> _logger;
         private readonly ReliabilityOptions _reliabilityOptions;
         private readonly IServiceScopeFactory _serviceScopeFactory;
 
-        public BrokeredMessageOutboxProcessor(IMessagingInfrastructureDispatcher brokeredMessageInfrastructureDispatcher,
-                                              ILogger<BrokeredMessageOutboxProcessor> logger,
+        public BrokeredMessageOutboxProcessor(ILogger<BrokeredMessageOutboxProcessor> logger,
                                               ReliabilityOptions reliabilityOptions,
                                               IServiceScopeFactory serviceScopeFactory)
         {
-            _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
             _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
