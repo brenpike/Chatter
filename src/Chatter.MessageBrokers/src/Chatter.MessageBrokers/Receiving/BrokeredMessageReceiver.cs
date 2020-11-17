@@ -113,7 +113,7 @@ namespace Chatter.MessageBrokers.Receiving
 
                 using var scope = _serviceFactory.CreateScope();
                 var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
-                messageContext.BrokeredMessageDispatcher = scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>();
+                messageContext.ExternalDispatcher = scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>();
                 await dispatcher.Dispatch(brokeredMessagePayload, messageContext).ConfigureAwait(false);
             }
             catch (PoisonedMessageException)

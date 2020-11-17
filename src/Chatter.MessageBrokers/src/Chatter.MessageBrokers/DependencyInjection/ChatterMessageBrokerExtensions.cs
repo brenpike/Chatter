@@ -72,6 +72,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.Services.AddScoped<IBrokeredMessageReceiverFactory, BrokeredMessageReceiverFactory>();
             builder.Services.AddScoped<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
+            builder.Services.AddScoped<IExternalDispatcher, BrokeredMessageDispatcher>();
             builder.Services.AddIfNotRegistered<IBrokeredMessagePathBuilder, DefaultBrokeredMessagePathBuilder>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessageAttributeDetailProvider, BrokeredMessageAttributeProvider>(ServiceLifetime.Scoped);
 

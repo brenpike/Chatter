@@ -1,12 +1,7 @@
 ﻿using Chatter.CQRS;
-using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
-using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Routing.Options;
-using Chatter.MessageBrokers.Sending;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
 {
@@ -24,12 +19,5 @@ namespace Chatter.MessageBrokers.Context
         /// A cancellation token to cancel the receiver of the currently received <see cref="BrokeredMessage"/>
         /// </summary>
         CancellationToken ReceiverCancellationToken { get; }
-
-        IBrokeredMessageDispatcher BrokeredMessageDispatcher { get; }
-
-        Task Publish<TMessage>(TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent;
-        Task Publish<TMessage>(TMessage message, PublishOptions options = null) where TMessage : IEvent;
-        Task Send<TMessage>(TMessage message, SendOptions options = null) where TMessage : ICommand;
-        Task Send<TMessage>(TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand;
     }
 }
