@@ -91,9 +91,9 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             return handler.GetTypeInfo().ImplementedInterfaces
                 .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IMessageHandler<>))
-                    .SingleOrDefault().GetGenericArguments()
+                    .Any(mhi => mhi.GetGenericArguments()
                         .SingleOrDefault().GetTypeInfo().ImplementedInterfaces
-                            .Any(t => t == filterType);
+                            .Any(t => t == filterType));
         }
 
         public static IServiceCollection AddQueryHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
