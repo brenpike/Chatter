@@ -5,18 +5,17 @@
     /// </summary>
     public class MessageHandlerContext : IMessageHandlerContext
     {
-        public MessageHandlerContext()
-            : this(new ContextContainer())
-        { }
-
-        public MessageHandlerContext(ContextContainer container)
+        public MessageHandlerContext(IExternalDispatcher externalDispatcher)
         {
-            Container = container;
+            Container = new ContextContainer();
+            ExternalDispatcher = externalDispatcher;
         }
 
         /// <summary>
         /// A context container that support extensibility by holding additional context
         /// </summary>
         public ContextContainer Container { get; private set; }
+
+        public IExternalDispatcher ExternalDispatcher { get; set; }
     }
 }

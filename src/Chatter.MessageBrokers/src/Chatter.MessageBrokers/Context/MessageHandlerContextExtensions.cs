@@ -1,20 +1,72 @@
-﻿using Chatter.CQRS.Context;
+﻿using Chatter.CQRS.Commands;
+using Chatter.CQRS.Context;
+using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Routing.Context;
+using Chatter.MessageBrokers.Routing.Options;
+using Chatter.MessageBrokers.Sending;
+using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Context
 {
     public static class MessageHandlerContextExtensions
     {
+        public static Task Send<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand
+        {
+            if (messageHandlerContext.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            {
+                return brokeredMessageDispatcher.Send(message, destinationPath, messageHandlerContext?.GetTransactionContext(), options);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public static Task Send<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, SendOptions options = null) where TMessage : ICommand
+        {
+            if (messageHandlerContext.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            {
+                return brokeredMessageDispatcher.Send(message, messageHandlerContext?.GetTransactionContext(), options);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public static Task Publish<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent
+        {
+            if (messageHandlerContext.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            {
+                return brokeredMessageDispatcher.Publish(message, destinationPath, messageHandlerContext?.GetTransactionContext(), options);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public static Task Publish<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, PublishOptions options = null) where TMessage : IEvent
+        {
+            if (messageHandlerContext.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            {
+                return brokeredMessageDispatcher.Publish(message, messageHandlerContext?.GetTransactionContext(), options);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public static Task Forward(this IMessageHandlerContext context, string forwardDestination)
+        {
+            if (context.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            {
+                return brokeredMessageDispatcher.Forward(context.GetInboundBrokeredMessage(), forwardDestination, context?.GetTransactionContext());
+            }
+
+            return Task.CompletedTask;
+        }
+
         /// <summary>
         /// Gets contextual information about a message broker from message handler context
         /// </summary>
         /// <param name="messageHandlerContext">The message handler context</param>
         /// <returns>The message broker context</returns>
         public static MessageBrokerContext AsMessageBrokerContext(this IMessageHandlerContext messageHandlerContext)
-        {
-            return messageHandlerContext as MessageBrokerContext;
-        }
+            => messageHandlerContext as MessageBrokerContext;
 
         /// <summary>
         /// Gets contextual information about the transaction the message broker is a part of
@@ -22,39 +74,7 @@ namespace Chatter.MessageBrokers.Context
         /// <param name="messageHandlerContext">The message handler context</param>
         /// <returns>The transaction context</returns>
         public static TransactionContext GetTransactionContext(this IMessageHandlerContext messageHandlerContext)
-        {
-            return messageHandlerContext.Get<TransactionContext>();
-        }
-
-        /// <summary>
-        /// Gets contextual information about the reply destination
-        /// </summary>
-        /// <param name="messageHandlerContext">The message handler context</param>
-        /// <returns>The reply destination context</returns>
-        public static ReplyToRoutingContext GetReplyContext(this IMessageHandlerContext messageHandlerContext)
-        {
-            return messageHandlerContext.Get<ReplyToRoutingContext>();
-        }
-
-        /// <summary>
-        /// Gets contextual information about the next destination
-        /// </summary>
-        /// <param name="messageHandlerContext">The message handler context</param>
-        /// <returns>The next destination context</returns>
-        public static RoutingContext GetNextDestinationContext(this IMessageHandlerContext messageHandlerContext)
-        {
-            return messageHandlerContext.Get<RoutingContext>();
-        }
-
-        /// <summary>
-        /// Gets contextual information about the compensation destination
-        /// </summary>
-        /// <param name="messageHandlerContext">The message handler context</param>
-        /// <returns>The compensation destination context</returns>
-        public static CompensationRoutingContext GetCompensationContext(this IMessageHandlerContext messageHandlerContext)
-        {
-            return messageHandlerContext.Get<CompensationRoutingContext>();
-        }
+            => messageHandlerContext.Get<TransactionContext>();
 
         /// <summary>
         /// Gets the inbound brokered message from the message handler context or null if the message handler context
