@@ -17,8 +17,12 @@ namespace Chatter.CQRS
         }
 
         ///<inheritdoc/>
-        public Task Dispatch<TMessage>(TMessage message) where TMessage : IMessage 
-            => Dispatch(message, new MessageHandlerContext(_externalDispatcher));
+        public Task Dispatch<TMessage>(TMessage message) where TMessage : IMessage
+        {
+            var context = new MessageHandlerContext();
+            context.Container.Include(_externalDispatcher);
+            return Dispatch(message, context);
+        }
 
         ///<inheritdoc/>
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage

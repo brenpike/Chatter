@@ -5,6 +5,5 @@
     /// </summary>
     public interface IMessageHandlerContext : IContainContext
     {
-        IExternalDispatcher ExternalDispatcher { get; }
     }
 }
