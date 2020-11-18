@@ -20,7 +20,6 @@ namespace Chatter.MessageBrokers.Context
         /// <param name="messageReceiverPath">The message receiver path</param>
         /// <param name="bodyConverter">Used to convert the message body to a strongly typed object</param>
         public MessageBrokerContext(string messageId, byte[] body, IDictionary<string, object> applicationProperties, string messageReceiverPath, CancellationToken receiverCancellationToken, IBrokeredMessageBodyConverter bodyConverter)
-            : base(null)
         {
             this.BrokeredMessage = new InboundBrokeredMessage(messageId, body, applicationProperties, messageReceiverPath, bodyConverter);
             this.ReceiverCancellationToken = receiverCancellationToken;

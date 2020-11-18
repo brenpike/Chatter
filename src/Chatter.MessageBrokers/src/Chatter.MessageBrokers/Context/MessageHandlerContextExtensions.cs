@@ -1,4 +1,5 @@
-﻿using Chatter.CQRS.Commands;
+﻿using Chatter.CQRS;
+using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Receiving;
@@ -10,9 +11,24 @@ namespace Chatter.MessageBrokers.Context
 {
     public static class MessageHandlerContextExtensions
     {
+        public static bool TryGetExternalDispatcher(this IMessageHandlerContext context, out IBrokeredMessageDispatcher brokeredMessageDispatcher)
+        {
+            if (context.Container.TryGet<IExternalDispatcher>(out var ed))
+            {
+                if (ed is IBrokeredMessageDispatcher dispatcher)
+                {
+                    brokeredMessageDispatcher = dispatcher;
+                    return true;
+                }
+            }
+
+            brokeredMessageDispatcher = null;
+            return false;
+        }
+
         public static Task Send<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand
         {
-            if (messageHandlerContext.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
                 return brokeredMessageDispatcher.Send(message, destinationPath, messageHandlerContext?.GetTransactionContext(), options);
             }
@@ -22,7 +38,7 @@ namespace Chatter.MessageBrokers.Context
 
         public static Task Send<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, SendOptions options = null) where TMessage : ICommand
         {
-            if (messageHandlerContext.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
                 return brokeredMessageDispatcher.Send(message, messageHandlerContext?.GetTransactionContext(), options);
             }
@@ -32,7 +48,7 @@ namespace Chatter.MessageBrokers.Context
 
         public static Task Publish<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent
         {
-            if (messageHandlerContext.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
                 return brokeredMessageDispatcher.Publish(message, destinationPath, messageHandlerContext?.GetTransactionContext(), options);
             }
@@ -42,7 +58,7 @@ namespace Chatter.MessageBrokers.Context
 
         public static Task Publish<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, PublishOptions options = null) where TMessage : IEvent
         {
-            if (messageHandlerContext.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
                 return brokeredMessageDispatcher.Publish(message, messageHandlerContext?.GetTransactionContext(), options);
             }
@@ -52,7 +68,7 @@ namespace Chatter.MessageBrokers.Context
 
         public static Task Forward(this IMessageHandlerContext context, string forwardDestination)
         {
-            if (context.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            if (context.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
                 return brokeredMessageDispatcher.Forward(context.GetInboundBrokeredMessage(), forwardDestination, context?.GetTransactionContext());
             }

@@ -2,7 +2,6 @@
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Routing.Options;
-using Chatter.MessageBrokers.Sending;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -15,17 +14,16 @@ namespace Chatter.MessageBrokers.Routing.Slips
                             RoutingSlip slip,
                             SendOptions options = null) where TMessage : ICommand
         {
-            if (context.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            if (context.TryGetExternalDispatcher(out var bmd))
             {
-                return brokeredMessageDispatcher.Send(message, slip, context.GetTransactionContext(), options);
+                return bmd.Send(message, slip, context.GetTransactionContext(), options);
             }
-
             return Task.CompletedTask;
         }
 
         public static Task Forward(this IMessageHandlerContext context, RoutingSlip slip)
         {
-            if (context.ExternalDispatcher is IBrokeredMessageDispatcher brokeredMessageDispatcher)
+            if (context.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
                 var destination = slip.Route.FirstOrDefault()?.DestinationPath;
                 if (!string.IsNullOrWhiteSpace(destination))
