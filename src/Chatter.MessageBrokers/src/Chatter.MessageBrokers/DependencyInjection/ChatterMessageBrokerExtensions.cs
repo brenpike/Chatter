@@ -72,7 +72,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.Services.AddScoped<IBrokeredMessageReceiverFactory, BrokeredMessageReceiverFactory>();
             builder.Services.AddScoped<IBrokeredMessageDispatcher, BrokeredMessageDispatcher>();
-            builder.Services.AddScoped<IExternalDispatcher, BrokeredMessageDispatcher>();
+            builder.Services.Replace<IExternalDispatcher, BrokeredMessageDispatcher>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessagePathBuilder, DefaultBrokeredMessagePathBuilder>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessageAttributeDetailProvider, BrokeredMessageAttributeProvider>(ServiceLifetime.Scoped);
 
@@ -80,6 +80,8 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddIfNotRegistered<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IDelayedRecovery, NoDelayRecovery>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<ICriticalFailureNotifier, CriticalFailureEventDispatcher>(ServiceLifetime.Scoped);
+
+            builder.Services.AddIfNotRegistered<IMessageIdGenerator, GuidIdGenerator>(ServiceLifetime.Scoped);
 
             builder.Services.AddScoped<IForwardMessages, ForwardingRouter>();
             builder.Services.AddScoped<IReplyRouter, ReplyRouter>();

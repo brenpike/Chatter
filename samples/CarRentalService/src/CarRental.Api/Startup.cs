@@ -51,7 +51,8 @@ namespace CarRental.Api
                     })
                     .AddMessageBrokers(builder =>
                     {
-                        builder.UseExponentialDelayRecovery();
+                        builder.UseExponentialDelayRecovery()
+                               .UseCombGuidMessageIdGenerator();
                     })
                     .AddAzureServiceBus();
         }

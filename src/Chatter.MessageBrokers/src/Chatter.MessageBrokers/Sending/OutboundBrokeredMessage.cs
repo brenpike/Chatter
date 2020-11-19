@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Receiving;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
@@ -30,27 +29,21 @@ namespace Chatter.MessageBrokers.Sending
             }
         }
 
-        public OutboundBrokeredMessage(byte[] body, IDictionary<string, object> messageContext, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(null, body, messageContext, destination, bodyConverter) {}
+        public OutboundBrokeredMessage(IMessageIdGenerator messageIdGenerator, byte[] body, IDictionary<string, object> messageContext, string destination, IBrokeredMessageBodyConverter bodyConverter)
+            : this(messageIdGenerator?.GenerateId(body).ToString(), body, messageContext, destination, bodyConverter) { }
 
         public OutboundBrokeredMessage(string messageId, object message, IDictionary<string, object> messageContext, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(messageId, bodyConverter.Convert(message), messageContext, destination, bodyConverter) {}
+            : this(messageId, bodyConverter.Convert(message), messageContext, destination, bodyConverter) { }
 
-        public OutboundBrokeredMessage(string messageId, object message, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(messageId, bodyConverter.Convert(message), new Dictionary<string, object>(), destination, bodyConverter) {}
-
-        public OutboundBrokeredMessage(object message, string destination, IBrokeredMessageBodyConverter bodyConverter)
-            : this(bodyConverter.Convert(message), new Dictionary<string, object>(), destination, bodyConverter) {}
+        public OutboundBrokeredMessage(IMessageIdGenerator messageIdGenerator, object message, IDictionary<string, object> messageContext, string destination, IBrokeredMessageBodyConverter bodyConverter)
+            : this(messageIdGenerator, bodyConverter.Convert(message), messageContext, destination, bodyConverter) { }
 
         public string MessageId { get; }
         public string Destination { get; }
         public byte[] Body { get; }
         public IDictionary<string, object> MessageContext { get; }
 
-        public static OutboundBrokeredMessage Forward(InboundBrokeredMessage messageToForward, string forwardDestination) 
-            => new OutboundBrokeredMessage(Guid.NewGuid().ToString(), messageToForward.Body, (IDictionary<string, object>)messageToForward.MessageContext, forwardDestination, messageToForward.BodyConverter);
-
-        public string Stringify() 
+        public string Stringify()
             => _bodyConverter.Stringify(Body);
 
         public OutboundBrokeredMessage WithTimeToLive(TimeSpan timeToLive)
@@ -130,7 +123,7 @@ namespace Chatter.MessageBrokers.Sending
         {
             return _bodyConverter.ContentType;
         }
-       
+
         internal OutboundBrokeredMessage ClearReplyToProperties()
         {
             MessageContext.Remove(MessageBrokers.MessageContext.ReplyToAddress);
