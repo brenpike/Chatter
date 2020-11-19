@@ -16,16 +16,19 @@ namespace Chatter.MessageBrokers.Sending
         private readonly IForwardMessages _forwarder;
         private readonly IBrokeredMessageAttributeDetailProvider _brokeredMessageDetailProvider;
         private readonly IBodyConverterFactory _bodyConverterFactory;
+        private readonly IMessageIdGenerator _messageIdGenerator;
 
         public BrokeredMessageDispatcher(IRouteBrokeredMessages messageRouter,
                                          IForwardMessages forwarder,
                                          IBrokeredMessageAttributeDetailProvider brokeredMessageDetailProvider,
-                                         IBodyConverterFactory bodyConverterFactory)
+                                         IBodyConverterFactory bodyConverterFactory,
+                                         IMessageIdGenerator messageIdGenerator)
         {
             _messageRouter = messageRouter ?? throw new ArgumentNullException(nameof(messageRouter));
             _forwarder = forwarder ?? throw new ArgumentNullException(nameof(forwarder));
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
+            _messageIdGenerator = messageIdGenerator ?? throw new ArgumentNullException(nameof(messageIdGenerator));
         }
 
         /// <inheritdoc/>
@@ -77,7 +80,16 @@ namespace Chatter.MessageBrokers.Sending
 
             var converter = _bodyConverterFactory.CreateBodyConverter(options.ContentType);
 
-            var outbound = new OutboundBrokeredMessage(options.MessageId, message, options.MessageContext, destinationPath, converter);
+            OutboundBrokeredMessage outbound;
+
+            if (string.IsNullOrWhiteSpace(options.MessageId))
+            {
+                outbound = new OutboundBrokeredMessage(_messageIdGenerator, message, options.MessageContext, destinationPath, converter);
+            }
+            else
+            {
+                outbound = new OutboundBrokeredMessage(options.MessageId, message, options.MessageContext, destinationPath, converter);
+            }
 
             return _messageRouter.Route(outbound, transactionContext);
         }

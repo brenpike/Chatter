@@ -29,6 +29,8 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddInMemoryMessageDispatchers();
             builder.Services.AddInMemoryQueryDispatcher();
 
+            builder.Services.AddIfNotRegistered<IExternalDispatcher, NoOpExternalDispatcher>(ServiceLifetime.Scoped);
+
             return builder;
         }
 

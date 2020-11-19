@@ -49,12 +49,7 @@ namespace CarRental.Application.Commands.Handlers
 
             foreach (var ie in integrationEvents)
             {
-                var options = new PublishOptions()
-                {
-                    MessageId = Guid.NewGuid().ToString()
-                };
-
-                await context.Publish(ie, options);
+                await context.Publish(ie);
 
                 lock (Console.Out)
                 {

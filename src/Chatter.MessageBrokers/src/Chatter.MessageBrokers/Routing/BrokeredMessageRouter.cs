@@ -10,10 +10,8 @@ namespace Chatter.MessageBrokers.Routing
     {
         private readonly IMessagingInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
 
-        public BrokeredMessageRouter(IMessagingInfrastructureDispatcher brokeredMessageInfrastructureDispatcher)
-        {
-            _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
-        }
+        public BrokeredMessageRouter(IMessagingInfrastructureDispatcher brokeredMessageInfrastructureDispatcher) 
+            => _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
 
         /// <summary>
         /// Routes an <see cref="OutboundBrokeredMessage"/> to the receiver via the message broker infrastructure.

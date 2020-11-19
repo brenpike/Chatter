@@ -2,6 +2,7 @@
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
@@ -9,10 +10,12 @@ namespace Chatter.MessageBrokers.Routing
     class ForwardingRouter : IForwardMessages
     {
         private readonly IRouteBrokeredMessages _router;
+        private readonly IMessageIdGenerator _messageIdGenerator;
 
-        public ForwardingRouter(IRouteBrokeredMessages router)
+        public ForwardingRouter(IRouteBrokeredMessages router, IMessageIdGenerator messageIdGenerator)
         {
             _router = router ?? throw new ArgumentNullException(nameof(router));
+            _messageIdGenerator = messageIdGenerator ?? throw new ArgumentNullException(nameof(messageIdGenerator));
         }
 
         /// <summary>
@@ -34,7 +37,12 @@ namespace Chatter.MessageBrokers.Routing
                 return Task.CompletedTask;
             }
 
-            var outboundMessage = OutboundBrokeredMessage.Forward(inboundBrokeredMessage, forwardDestination);
+            var outboundMessage = new OutboundBrokeredMessage(_messageIdGenerator?.GenerateId(inboundBrokeredMessage.Body).ToString(),
+                                                              inboundBrokeredMessage.Body,
+                                                              (IDictionary<string, object>)inboundBrokeredMessage.MessageContext,
+                                                              forwardDestination,
+                                                              inboundBrokeredMessage.BodyConverter);
+
             return _router.Route(outboundMessage, transactionContext);
         }
     }

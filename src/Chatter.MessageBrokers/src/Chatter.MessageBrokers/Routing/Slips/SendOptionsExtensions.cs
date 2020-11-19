@@ -8,7 +8,7 @@ namespace Chatter.MessageBrokers.Routing.Slips
         public static SendOptions WithRoutingSlip(this SendOptions options, RoutingSlip slip)
         {
             var serializedRoutingSlip = JsonConvert.SerializeObject(slip);
-            options.SetApplicationProperty(MessageContext.RoutingSlip, serializedRoutingSlip);
+            options.WithMessageContext(MessageContext.RoutingSlip, serializedRoutingSlip);
             return options;
         }
     }

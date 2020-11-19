@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Chatter.MessageBrokers.Configuration
 {
-    public static class MessageBrokerOptionsBuilderExtensions
+    public static partial class MessageBrokerOptionsBuilderExtensions
     {
         public static MessageBrokerOptionsBuilder UseNoDelayRecovery(this MessageBrokerOptionsBuilder builder)
         {

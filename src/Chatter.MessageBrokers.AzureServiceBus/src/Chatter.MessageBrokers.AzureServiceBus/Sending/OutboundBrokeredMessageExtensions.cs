@@ -12,6 +12,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
         {
             var message = new Message(brokeredMessage.Body)
             {
+                MessageId = string.IsNullOrWhiteSpace(brokeredMessage.MessageId) ? Guid.NewGuid().ToString() : brokeredMessage.MessageId,
                 CorrelationId = brokeredMessage.GetCorrelationId(),
                 ContentType = brokeredMessage.GetContentType(),
                 Label = brokeredMessage.GetSubject(),
@@ -22,7 +23,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
                 ViaPartitionKey = brokeredMessage.GetViaPartitionKey(),
                 To = brokeredMessage.GetToAddress()
             }
-            .WithHashedBodyMessageId(brokeredMessage.MessageId)
             .WithUserProperties(brokeredMessage.MessageContext);
 
             if (brokeredMessage.GetTimeToLive() != null)
