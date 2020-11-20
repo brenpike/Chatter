@@ -2,13 +2,14 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace CarRental.Infrastructure.Repositories.Configurations
+namespace Chatter.MessageBrokers.Reliability.EntityFramework
 {
     public class OutboxMessageConfiguration : IEntityTypeConfiguration<OutboxMessage>
     {
         public void Configure(EntityTypeBuilder<OutboxMessage> builder)
         {
-            builder.HasKey(t => t.MessageId);
+            builder.HasKey(t => t.Id);
+            builder.Property(t => t.Id).IsRequired().ValueGeneratedOnAdd();
             builder.Property(t => t.MessageId).IsRequired();
             builder.Property(t => t.ProcessedFromOutboxAtUtc);
             builder.Property(t => t.SentToOutboxAtUtc).IsRequired();

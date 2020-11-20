@@ -1,6 +1,6 @@
 ﻿using Chatter.MessageBrokers.Reliability.Configuration;
+using Chatter.MessageBrokers.Reliability.EntityFramework;
 using Chatter.MessageBrokers.Reliability.Inbox;
-using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.EntityFrameworkCore;
 using System;
 using System.Reflection;
@@ -15,10 +15,6 @@ namespace CarRental.Infrastructure.Repositories.Contexts
         {
             _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
         }
-
-        DbSet<Domain.Aggregates.CarRental> CarRentals { get; set; }
-        DbSet<OutboxMessage> OutboxMessages { get; set; }
-        DbSet<InboxMessage> InboxMessages { get; set; }
 
         /// <inheritdoc />
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -46,7 +42,9 @@ namespace CarRental.Infrastructure.Repositories.Contexts
         /// <param name="modelBuilder">The model builder.</param>
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+            modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly())
+                        .ApplyConfigurationsFromAssembly(typeof(OutboxMessageConfiguration).Assembly);
+
             base.OnModelCreating(modelBuilder);
         }
     }

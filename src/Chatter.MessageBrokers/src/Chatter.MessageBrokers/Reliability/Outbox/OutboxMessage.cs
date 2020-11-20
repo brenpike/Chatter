@@ -4,6 +4,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     public sealed class OutboxMessage
     {
+        public int Id { get; set; }
         public string MessageId { get; set; }
         public string Destination { get; set; }
         public string MessageContext { get; set; }

@@ -3,12 +3,12 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace CarRental.Infrastructure.Migrations
 {
-    public partial class Create : Migration
+    public partial class InitialMigration : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
-                name: "CarRentals",
+                name: "CarRental",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(nullable: false),
@@ -20,11 +20,11 @@ namespace CarRental.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_CarRentals", x => x.Id);
+                    table.PrimaryKey("PK_CarRental", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
-                name: "InboxMessages",
+                name: "InboxMessage",
                 columns: table => new
                 {
                     MessageId = table.Column<string>(nullable: false),
@@ -32,13 +32,15 @@ namespace CarRental.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_InboxMessages", x => x.MessageId);
+                    table.PrimaryKey("PK_InboxMessage", x => x.MessageId);
                 });
 
             migrationBuilder.CreateTable(
-                name: "OutboxMessages",
+                name: "OutboxMessage",
                 columns: table => new
                 {
+                    Id = table.Column<int>(nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
                     MessageId = table.Column<string>(nullable: false),
                     Destination = table.Column<string>(nullable: false),
                     MessageContext = table.Column<string>(nullable: false),
@@ -50,20 +52,20 @@ namespace CarRental.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_OutboxMessages", x => x.MessageId);
+                    table.PrimaryKey("PK_OutboxMessage", x => x.Id);
                 });
         }
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "CarRentals");
+                name: "CarRental");
 
             migrationBuilder.DropTable(
-                name: "InboxMessages");
+                name: "InboxMessage");
 
             migrationBuilder.DropTable(
-                name: "OutboxMessages");
+                name: "OutboxMessage");
         }
     }
 }
