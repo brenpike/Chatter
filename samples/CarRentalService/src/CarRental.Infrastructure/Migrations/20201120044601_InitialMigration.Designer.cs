@@ -10,14 +10,14 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CarRental.Infrastructure.Migrations
 {
     [DbContext(typeof(CarRentalContext))]
-    [Migration("20200926043018_Create")]
-    partial class Create
+    [Migration("20201120044601_InitialMigration")]
+    partial class InitialMigration
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "3.1.8")
+                .HasAnnotation("ProductVersion", "3.1.9")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128)
                 .HasAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.IdentityColumn);
 
@@ -46,7 +46,7 @@ namespace CarRental.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("CarRentals");
+                    b.ToTable("CarRental");
                 });
 
             modelBuilder.Entity("Chatter.MessageBrokers.Reliability.Inbox.InboxMessage", b =>
@@ -59,13 +59,15 @@ namespace CarRental.Infrastructure.Migrations
 
                     b.HasKey("MessageId");
 
-                    b.ToTable("InboxMessages");
+                    b.ToTable("InboxMessage");
                 });
 
             modelBuilder.Entity("Chatter.MessageBrokers.Reliability.Outbox.OutboxMessage", b =>
                 {
-                    b.Property<string>("MessageId")
-                        .HasColumnType("nvarchar(450)");
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.IdentityColumn);
 
                     b.Property<Guid>("BatchId")
                         .HasColumnType("uniqueidentifier");
@@ -86,15 +88,19 @@ namespace CarRental.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("MessageId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<DateTime?>("ProcessedFromOutboxAtUtc")
                         .HasColumnType("datetime2");
 
                     b.Property<DateTime>("SentToOutboxAtUtc")
                         .HasColumnType("datetime2");
 
-                    b.HasKey("MessageId");
+                    b.HasKey("Id");
 
-                    b.ToTable("OutboxMessages");
+                    b.ToTable("OutboxMessage");
                 });
 #pragma warning restore 612, 618
         }

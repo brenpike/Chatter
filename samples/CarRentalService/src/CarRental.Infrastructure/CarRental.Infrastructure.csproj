@@ -6,12 +6,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers.AzureServiceBus\src\Chatter.MessageBrokers.AzureServiceBus\Chatter.MessageBrokers.AzureServiceBus.csproj" />
+    <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers.Reliability.EntityFramework\src\Chatter.MessageBrokers.Reliability.EntityFramework\Chatter.MessageBrokers.Reliability.EntityFramework.csproj" />
     <ProjectReference Include="..\CarRental.Application\CarRental.Application.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <Folder Include="Mappers\" />
-    <Folder Include="Migrations\" />
     <Folder Include="QueryHandlers\" />
     <Folder Include="Repositories\" />
   </ItemGroup>

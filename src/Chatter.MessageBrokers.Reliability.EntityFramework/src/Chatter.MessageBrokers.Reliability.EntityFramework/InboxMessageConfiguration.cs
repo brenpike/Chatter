@@ -2,7 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace CarRental.Infrastructure.Repositories.Configurations
+namespace Chatter.MessageBrokers.Reliability.EntityFramework
 {
     public class InboxMessageConfiguration : IEntityTypeConfiguration<InboxMessage>
     {

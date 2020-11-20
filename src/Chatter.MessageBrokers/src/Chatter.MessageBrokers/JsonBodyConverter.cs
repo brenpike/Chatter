@@ -11,7 +11,7 @@ namespace Chatter.MessageBrokers
             => JsonConvert.DeserializeObject<TBody>(Stringify(body));
 
         public byte[] Convert(object body)
-            => Encoding.UTF8.GetBytes(Stringify(body));
+            => GetBytes(Stringify(body));
 
         public string Stringify(byte[] body)
             => Encoding.UTF8.GetString(body);
