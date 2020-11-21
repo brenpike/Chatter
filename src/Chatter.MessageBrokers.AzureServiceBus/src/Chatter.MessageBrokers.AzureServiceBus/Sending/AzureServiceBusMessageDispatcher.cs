@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Sending;
 using Microsoft.Azure.ServiceBus;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Transactions;
 
@@ -31,13 +32,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             return Dispatch(new[] { brokeredMessage }, transactionContext);
         }
 
-        public Task Dispatch(IList<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext)
+        public Task Dispatch(IEnumerable<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext)
         {
             ServiceBusConnection connection = null;
             transactionContext?.Container.TryGet(out connection);
             var sendViaPath = connection == null ? null : transactionContext?.TransactionReceiver;
 
-            var dispatchTasks = new List<Task>(brokeredMessages.Count);
+            var dispatchTasks = new List<Task>(brokeredMessages.Count());
 
             //TODO: this won't work if leveraging partitioning - won't be able to send messages to multiple partitions in one transactionscope...
             using var scope = CreateTransactionScope(transactionContext?.TransactionMode ?? TransactionMode.None);
