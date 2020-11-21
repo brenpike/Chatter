@@ -2,7 +2,6 @@
 using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Routing.Options;
 using Newtonsoft.Json;
 using Samples.SharedKernel.Interfaces;
 using System;
@@ -47,16 +46,13 @@ namespace CarRental.Application.Commands.Handlers
 
             //throw new Exception("without using the outbox, we're in a bad state. aggregate has been saved, integration events will never be published.");
 
-            foreach (var ie in integrationEvents)
-            {
-                await context.Publish(ie);
+            await context.Publish(integrationEvents);
 
-                lock (Console.Out)
-                {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"Dispatched domain event: {JsonConvert.SerializeObject(ie)}");
-                    Console.ResetColor();
-                }
+            lock (Console.Out)
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"Dispatched domain events: {JsonConvert.SerializeObject(integrationEvents)}");
+                Console.ResetColor();
             }
         }
     }

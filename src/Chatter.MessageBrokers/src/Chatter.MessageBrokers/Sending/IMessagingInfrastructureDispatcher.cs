@@ -6,7 +6,7 @@ namespace Chatter.MessageBrokers.Sending
 {
     public interface IMessagingInfrastructureDispatcher
     {
-        Task Dispatch(IList<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext);
+        Task Dispatch(IEnumerable<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext);
         Task Dispatch(OutboundBrokeredMessage brokeredMessage, TransactionContext transactionContext);
     }
 }

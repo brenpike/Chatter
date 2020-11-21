@@ -35,7 +35,7 @@ namespace Chatter.MessageBrokers.Routing
         /// <param name="outboundBrokeredMessages">The outbound brokered messages to be routed to the destination receivers</param>
         /// <param name="transactionContext">The contextual transaction information to be used while routing the message to its destination</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public Task Route(IList<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
+        public Task Route(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
             => _brokeredMessageInfrastructureDispatcher.Dispatch(outboundBrokeredMessages, transactionContext);
     }
 }

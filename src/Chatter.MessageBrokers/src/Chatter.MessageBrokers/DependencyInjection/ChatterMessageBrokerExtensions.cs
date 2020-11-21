@@ -107,7 +107,7 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.AddAllReceivers(assemblies);
 
             builder.Services.AddScoped<IBodyConverterFactory, BodyConverterFactory>();
-            builder.Services.AddScoped<IBrokeredMessageBodyConverter, TextBodyConverter>();
+            builder.Services.AddScoped<IBrokeredMessageBodyConverter, TextPlainBodyConverter>();
             builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonBodyConverter>();
 
             return builder;

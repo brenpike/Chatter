@@ -3,12 +3,12 @@ using System.Text;
 
 namespace Chatter.MessageBrokers
 {
-    public class TextBodyConverter : IBrokeredMessageBodyConverter
+    public class TextPlainBodyConverter : IBrokeredMessageBodyConverter
     {
         private const string _stronglyTypedConversionFailureMessage = "A strongly typed body is required. Consider using a content type like application/json.";
         private readonly JsonBodyConverter _jsonBodyConverter;
 
-        public TextBodyConverter()
+        public TextPlainBodyConverter()
         {
             _jsonBodyConverter = new JsonBodyConverter();
         }

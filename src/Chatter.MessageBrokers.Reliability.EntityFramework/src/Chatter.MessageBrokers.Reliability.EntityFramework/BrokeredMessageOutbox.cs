@@ -64,7 +64,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             _logger.LogTrace($"Outbox message added to outbox. Id: '{outboundBrokeredMessage.MessageId}'");
         }
 
-        public async Task SendToOutbox(IList<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
+        public async Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
         {
             var outbox = _context.Set<OutboxMessage>();
 
@@ -75,7 +75,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             var numMessagesSavedToOutbox = await _context.SaveChangesAsync();
 
-            _logger.LogTrace($"{numMessagesSavedToOutbox} outbox message added to outbox.");
+            _logger.LogTrace($"'{numMessagesSavedToOutbox}' outbox message(s) added to outbox.");
         }
 
         private async Task SendToOutbox(DbSet<OutboxMessage> outbox, OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)

@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Options;
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Sending
@@ -32,39 +33,37 @@ namespace Chatter.MessageBrokers.Sending
         }
 
         /// <inheritdoc/>
-        public Task Send<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand 
-            => Dispatch(message, destinationPath, transactionContext, options ?? new SendOptions());
+        public Task Send<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand
+            => Dispatch(new[] { message }, transactionContext, options ?? new SendOptions(), destinationPath);
 
         /// <inheritdoc/>
-        public Task Send<TMessage>(TMessage message, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand 
-            => Dispatch(message, transactionContext, options ?? new SendOptions());
+        public Task Send<TMessage>(TMessage message, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand
+            => Dispatch(new[] { message }, transactionContext, options ?? new SendOptions());
 
         /// <inheritdoc/>
-        public Task Publish<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent 
-            => Dispatch(message, destinationPath, transactionContext, options ?? new PublishOptions());
+        public Task Publish<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
+            => Dispatch(new[] { message }, transactionContext, options ?? new PublishOptions(), destinationPath);
 
         /// <inheritdoc/>
-        public Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent 
-            => Dispatch(message, transactionContext, options ?? new PublishOptions());
+        public Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
+            => Dispatch(new[] { message }, transactionContext, options ?? new PublishOptions());
 
-        public Task Forward(InboundBrokeredMessage inboundBrokeredMessage, string forwardDestination, TransactionContext transactionContext) 
+        /// <inheritdoc/>
+        public Task Publish<TMessage>(IEnumerable<TMessage> messages, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
+            => Dispatch(messages, transactionContext, options ?? new PublishOptions());
+
+        public Task Forward(InboundBrokeredMessage inboundBrokeredMessage, string forwardDestination, TransactionContext transactionContext)
             => _forwarder.Route(inboundBrokeredMessage, forwardDestination, transactionContext);
 
-        Task Dispatch<TMessage, TOptions>(TMessage message, TransactionContext transactionContext, TOptions options)
-            where TMessage : IMessage
-            where TOptions : RoutingOptions, new()
+        Task Dispatch<TMessage, TOptions>(IEnumerable<TMessage> messages, TransactionContext transactionContext, TOptions options, string destinationPath = null)
+        where TMessage : IMessage
+        where TOptions : RoutingOptions, new()
         {
-            var destination = _brokeredMessageDetailProvider.GetMessageName(message.GetType());
-
-            if (string.IsNullOrWhiteSpace(destination))
-            {
-                throw new ArgumentNullException(nameof(destination), $"Routing destination is required. Use {typeof(BrokeredMessageAttribute).Name} or overload that accepts 'destinationPath'");
-            }
-
-            return this.Dispatch(message, destination, transactionContext, options);
+            var outbounds = Dispatch(messages, destinationPath, options);
+            return _messageRouter.Route(outbounds, transactionContext);
         }
 
-        Task Dispatch<TMessage, TOptions>(TMessage message, string destinationPath, TransactionContext transactionContext, TOptions options)
+        IEnumerable<OutboundBrokeredMessage> Dispatch<TMessage, TOptions>(IEnumerable<TMessage> messages, string destinationPath, TOptions options)
         where TMessage : IMessage
         where TOptions : RoutingOptions, new()
         {
@@ -80,18 +79,30 @@ namespace Chatter.MessageBrokers.Sending
 
             var converter = _bodyConverterFactory.CreateBodyConverter(options.ContentType);
 
-            OutboundBrokeredMessage outbound;
-
-            if (string.IsNullOrWhiteSpace(options.MessageId))
+            foreach (var message in messages)
             {
-                outbound = new OutboundBrokeredMessage(_messageIdGenerator, message, options.MessageContext, destinationPath, converter);
-            }
-            else
-            {
-                outbound = new OutboundBrokeredMessage(options.MessageId, message, options.MessageContext, destinationPath, converter);
-            }
+                var destination = string.IsNullOrWhiteSpace(destinationPath)
+                    ? _brokeredMessageDetailProvider.GetMessageName(message.GetType())
+                    : destinationPath;
 
-            return _messageRouter.Route(outbound, transactionContext);
+                if (string.IsNullOrWhiteSpace(destination))
+                {
+                    throw new ArgumentNullException(nameof(destination), $"Routing destination is required. Use {typeof(BrokeredMessageAttribute).Name} or overload that accepts 'destinationPath'");
+                }
+
+                OutboundBrokeredMessage outbound;
+
+                if (string.IsNullOrWhiteSpace(options.MessageId))
+                {
+                    outbound = new OutboundBrokeredMessage(_messageIdGenerator, message, options.MessageContext, destination, converter);
+                }
+                else
+                {
+                    outbound = new OutboundBrokeredMessage(options.MessageId, message, options.MessageContext, destination, converter);
+                }
+
+                yield return outbound;
+            }
         }
     }
 }
