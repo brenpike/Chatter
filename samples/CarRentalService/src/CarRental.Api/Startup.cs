@@ -1,12 +1,11 @@
 using CarRental.Application.Behaviors;
 using CarRental.Application.Commands;
+using CarRental.Application.Events;
 using CarRental.Application.Services;
 using CarRental.Infrastructure.Repositories;
 using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
-using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.Configuration;
-using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -48,6 +47,18 @@ namespace CarRental.Api
                                //.WithInboxBehavior<CarRentalContext>()
                                .WithOutboxProcessingBehavior<CarRentalContext>()
                                .WithRoutingSlipBehavior();
+                    })
+                    .AddSqlServiceBroker<OutboxChangedEvent>(builder =>
+                    {
+                        builder.AddOptions(Configuration.GetValue<string>("Chatter:MessageBrokers:Reliability:Persistance:ConnectionString"),
+                                           "CarRentals",
+                                           "OutboxMessage");
+                    })
+                    .AddSqlServiceBroker<CarRentalAggregateChangedEvent>(builder =>
+                    {
+                        builder.AddOptions(Configuration.GetValue<string>("Chatter:MessageBrokers:Reliability:Persistance:ConnectionString"),
+                                           "CarRentals",
+                                           "CarRental");
                     })
                     .AddMessageBrokers(builder =>
                     {
