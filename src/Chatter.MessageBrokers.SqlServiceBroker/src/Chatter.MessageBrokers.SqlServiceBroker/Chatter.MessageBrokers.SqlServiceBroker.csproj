@@ -29,7 +29,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj" />
+    <ProjectReference Include="..\..\..\Chatter.MessageBrokers\src\Chatter.MessageBrokers\Chatter.MessageBrokers.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Receiving\" />
+    <Folder Include="Sending\" />
   </ItemGroup>
 
 </Project>

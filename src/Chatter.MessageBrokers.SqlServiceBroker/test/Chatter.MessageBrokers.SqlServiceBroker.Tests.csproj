@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <TargetFrameworks>netcoreapp3.1;net5.0</TargetFrameworks>
+    <AssemblyName>Chatter.MessageBrokers.SqlServiceBroker.Tests</AssemblyName>
+    <RootNamespace>Chatter.MessageBrokers.SqlServiceBroker.Tests</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup Condition=" '$(TargetFramework)' == 'net5.0' ">
