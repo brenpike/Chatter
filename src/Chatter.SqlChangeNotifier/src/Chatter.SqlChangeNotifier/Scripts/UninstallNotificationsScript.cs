@@ -1,11 +1,11 @@
-﻿using Chatter.SqlChangeNotifier.Configuration;
-using Chatter.SqlChangeNotifier.Scripts.Misc;
-using Chatter.SqlChangeNotifier.Scripts.ServiceBroker;
-using Chatter.SqlChangeNotifier.Scripts.StoredProcedures;
-using Chatter.SqlChangeNotifier.Scripts.Triggers;
+﻿using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.Misc;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.StoredProcedures;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.Triggers;
 using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
 {
     public class UninstallNotificationsScript : ExecutableSqlScript
     {

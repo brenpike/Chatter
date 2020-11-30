@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Text;
 
-namespace Chatter.SqlChangeNotifier.Scripts.Triggers
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.Triggers
 {
     /// <summary>
     /// Creates the trigger on the target table that will send changes to a SQL Service Broker CONVERSATION
@@ -13,7 +13,6 @@ namespace Chatter.SqlChangeNotifier.Scripts.Triggers
         private readonly string _notificationTriggeredBy;
         private readonly string _conversationServiceName;
         private readonly string _schemaName;
-        private readonly string _detailedChangesTrackingMode;
 
         /// <summary>
         /// Creates the trigger on the target table that will send
@@ -23,13 +22,11 @@ namespace Chatter.SqlChangeNotifier.Scripts.Triggers
         /// <param name="triggerRaiseByTypes">The criteria that will raise the trigger</param>
         /// <param name="conversationServiceName">The SQL Service Broker SERVICE that will be part of the COVERSATION</param>
         /// <param name="schemaName">The schema</param>
-        /// <param name="detailedChangesTrackingMode"></param>
         public CreateNotificationTrigger(string monitorableTableName,
                                          string notificationTriggerName,
                                          NotificationTypes triggerRaiseByTypes,
                                          string conversationServiceName,
-                                         string schemaName,
-                                         string detailedChangesTrackingMode = @"")
+                                         string schemaName)
         {
             if (string.IsNullOrWhiteSpace(monitorableTableName))
             {
@@ -55,7 +52,6 @@ namespace Chatter.SqlChangeNotifier.Scripts.Triggers
             _notificationTriggerName = notificationTriggerName;
             _conversationServiceName = conversationServiceName;
             _schemaName = schemaName;
-            _detailedChangesTrackingMode = detailedChangesTrackingMode;
             _notificationTriggeredBy = GetTriggerAfterStatementCriteria(triggerRaiseByTypes);
         }
 
@@ -77,7 +73,7 @@ namespace Chatter.SqlChangeNotifier.Scripts.Triggers
         {
             return string.Format(@"
                 CREATE TRIGGER [{1}]
-                ON {5}.[{0}]
+                ON {4}.[{0}]
                 AFTER {2} 
                 AS
 
@@ -88,21 +84,18 @@ namespace Chatter.SqlChangeNotifier.Scripts.Triggers
                     DECLARE @message NVARCHAR(MAX)
                     SET @message = N''
 
-                    IF ({4} EXISTS(SELECT 1))
-                    BEGIN
-                        DECLARE @InsertedJSON NVARCHAR(MAX) 
-                        DECLARE @DeletedJSON NVARCHAR(MAX) 
-
-                        %inserted_select_statement%
-
-                        %deleted_select_statement% 
-
-                        IF (COALESCE(@DeletedJSON, N'') = N'') SET @message = @InsertedJSON
-                        ELSE
-                        	IF (COALESCE(@InsertedJSON, N'') = N'') SET @message = @DeletedJSON
-                        ELSE
-                        	SET @message = CONCAT(SUBSTRING(@InsertedJSON,1,LEN(@InsertedJSON) - 1), N',', SUBSTRING(@DeletedJSON,2,LEN(@DeletedJSON)-1))
-                    END
+                    DECLARE @InsertedJSON NVARCHAR(MAX) 
+                    DECLARE @DeletedJSON NVARCHAR(MAX) 
+                    
+                    %inserted_select_statement%
+                    
+                    %deleted_select_statement% 
+                    
+                    IF (COALESCE(@DeletedJSON, N'') = N'') SET @message = @InsertedJSON
+                    ELSE
+                    	IF (COALESCE(@InsertedJSON, N'') = N'') SET @message = @DeletedJSON
+                    ELSE
+                    	SET @message = CONCAT(SUBSTRING(@InsertedJSON,1,LEN(@InsertedJSON) - 1), N',', SUBSTRING(@DeletedJSON,2,LEN(@DeletedJSON)-1))
 
                     SET @message = compress(@message)                    
 
@@ -115,7 +108,7 @@ namespace Chatter.SqlChangeNotifier.Scripts.Triggers
 
                  END CONVERSATION @ConvHandle;
                 END
-            ", _monitorableTableName, _notificationTriggerName, _notificationTriggeredBy, _conversationServiceName, _detailedChangesTrackingMode, _schemaName);
+            ", _monitorableTableName, _notificationTriggerName, _notificationTriggeredBy, _conversationServiceName, _schemaName);
         }
     }
 }

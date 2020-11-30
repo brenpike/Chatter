@@ -1,11 +1,10 @@
-﻿using Chatter.SqlChangeNotifier.Scripts;
-using Chatter.SqlChangeNotifier.Scripts.ServiceBroker;
+﻿using Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
 
-namespace Chatter.SqlChangeNotifier
+namespace Chatter.MessageBrokers.SqlServiceBroker
 {
     public class NotificationManager
     {

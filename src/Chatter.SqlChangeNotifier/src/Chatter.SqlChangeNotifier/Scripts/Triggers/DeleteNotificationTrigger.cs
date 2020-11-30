@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.Triggers
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.Triggers
 {
     /// <summary>
     /// Deletes the notification trigger

@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.ServiceBroker
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker
 {
     /// <summary>
     /// Enables and configures SQL Service Broker for use in the notification process. Creates the appropriate

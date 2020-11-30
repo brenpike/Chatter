@@ -1,4 +1,4 @@
-﻿namespace Chatter.SqlChangeNotifier
+﻿namespace Chatter.MessageBrokers.SqlServiceBroker
 {
     public enum ChangeType
     {

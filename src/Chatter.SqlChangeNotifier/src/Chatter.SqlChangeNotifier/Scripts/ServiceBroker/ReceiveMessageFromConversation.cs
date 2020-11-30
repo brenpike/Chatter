@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.ServiceBroker
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker
 {
     /// <summary>
     /// When executed, waits for messages on the specified QUEUE and receives them

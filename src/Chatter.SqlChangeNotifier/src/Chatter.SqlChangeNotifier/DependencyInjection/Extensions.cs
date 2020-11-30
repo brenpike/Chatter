@@ -1,8 +1,8 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.CQRS.Events;
-using Chatter.SqlChangeNotifier;
-using Chatter.SqlChangeNotifier.Configuration;
+using Chatter.MessageBrokers.SqlServiceBroker;
+using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
 
@@ -13,7 +13,7 @@ namespace Microsoft.Extensions.DependencyInjection
         public static SqlServiceBrokerOptionsBuilder AddSqlServiceBrokerOptions(this IServiceCollection services)
             => new SqlServiceBrokerOptionsBuilder(services);
 
-        public static IChatterBuilder AddSqlChangeNotifier<TNotificationData>(this IChatterBuilder chatterBuilder, Action<SqlServiceBrokerOptionsBuilder> optionsBuilder)
+        public static IChatterBuilder AddSqlServiceBroker<TNotificationData>(this IChatterBuilder chatterBuilder, Action<SqlServiceBrokerOptionsBuilder> optionsBuilder)
             where TNotificationData : class, IEvent
         {
             var builder = chatterBuilder.Services.AddSqlServiceBrokerOptions();

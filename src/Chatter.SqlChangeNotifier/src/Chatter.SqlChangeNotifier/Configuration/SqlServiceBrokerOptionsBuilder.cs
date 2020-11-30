@@ -1,7 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using System;
 
-namespace Chatter.SqlChangeNotifier.Configuration
+namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
 {
     public class SqlServiceBrokerOptionsBuilder
     {
@@ -33,7 +33,7 @@ namespace Chatter.SqlChangeNotifier.Configuration
                                                                     NotificationTypes.Insert | NotificationTypes.Update | NotificationTypes.Delete,
                                                          bool receiveDetails = true)
         {
-            _sqlServiceBrokerOptions = new SqlServiceBrokerOptions(connectionString, databaseName, tableName, schemaName, listenerType, receiveDetails);
+            _sqlServiceBrokerOptions = new SqlServiceBrokerOptions(connectionString, databaseName, tableName, schemaName, listenerType);
             return this;
         }
 

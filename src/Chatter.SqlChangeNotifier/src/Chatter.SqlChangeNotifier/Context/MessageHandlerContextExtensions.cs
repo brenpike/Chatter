@@ -1,5 +1,5 @@
 ﻿using Chatter.CQRS.Events;
-using Chatter.SqlChangeNotifier.Context;
+using Chatter.MessageBrokers.SqlServiceBroker.Context;
 
 namespace Chatter.CQRS.Context
 {

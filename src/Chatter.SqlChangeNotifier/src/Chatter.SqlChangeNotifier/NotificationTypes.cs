@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier
+namespace Chatter.MessageBrokers.SqlServiceBroker
 {
     [Flags]
     public enum NotificationTypes

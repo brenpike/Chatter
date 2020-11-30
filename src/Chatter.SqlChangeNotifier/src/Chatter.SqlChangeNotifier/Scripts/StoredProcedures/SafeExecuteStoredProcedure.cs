@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.StoredProcedures
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.StoredProcedures
 {
     /// <summary>
     /// Ensures stored procedures existence before executing

@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Chatter.SqlChangeNotifier
+namespace Chatter.MessageBrokers.SqlServiceBroker
 {
     public class SqlMessageEnvelope<TMessageData> where TMessageData : IEvent
     {

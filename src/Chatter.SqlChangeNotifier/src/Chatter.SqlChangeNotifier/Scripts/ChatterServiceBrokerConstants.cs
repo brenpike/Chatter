@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace Chatter.SqlChangeNotifier.Scripts
+﻿namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
 {
     internal class ChatterServiceBrokerConstants
     {

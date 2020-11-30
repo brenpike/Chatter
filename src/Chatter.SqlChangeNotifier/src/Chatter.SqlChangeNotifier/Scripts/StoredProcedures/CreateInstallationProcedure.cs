@@ -1,9 +1,9 @@
-﻿using Chatter.SqlChangeNotifier.Scripts.Misc;
-using Chatter.SqlChangeNotifier.Scripts.ServiceBroker;
-using Chatter.SqlChangeNotifier.Scripts.Triggers;
+﻿using Chatter.MessageBrokers.SqlServiceBroker.Scripts.Misc;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.Triggers;
 using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.StoredProcedures
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.StoredProcedures
 {
     /// <summary>
     /// Creates the stored procedure that will create necessary database objects needed for notifications

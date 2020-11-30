@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.Triggers
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.Triggers
 {
     /// <summary>
     /// Checks for the existence of the notification trigger

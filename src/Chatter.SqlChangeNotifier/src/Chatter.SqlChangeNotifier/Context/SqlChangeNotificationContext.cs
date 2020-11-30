@@ -1,6 +1,6 @@
 ﻿using Chatter.CQRS.Events;
 
-namespace Chatter.SqlChangeNotifier.Context
+namespace Chatter.MessageBrokers.SqlServiceBroker.Context
 {
     public class SqlChangeNotificationContext<TOldValue> where TOldValue : class, IEvent
     {

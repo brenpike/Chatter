@@ -1,5 +1,4 @@
 ﻿using Chatter.CQRS.Events;
-using Chatter.SqlChangeNotifier.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -7,7 +6,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Chatter.SqlChangeNotifier
+namespace Chatter.MessageBrokers.SqlServiceBroker
 {
     public class TableWatcher<TMessageData> : BackgroundService where TMessageData : class, IEvent
     {

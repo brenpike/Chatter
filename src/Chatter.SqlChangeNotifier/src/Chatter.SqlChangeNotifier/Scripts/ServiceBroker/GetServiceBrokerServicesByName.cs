@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.ServiceBroker
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker
 {
     /// <summary>
     /// Gets all SQL service broker SERVICES that are currently installed

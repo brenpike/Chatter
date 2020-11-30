@@ -1,4 +1,4 @@
-﻿namespace Chatter.SqlChangeNotifier.Scripts.Misc
+﻿namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.Misc
 {
     /// <summary>
     /// Displays SQL permissions the user account will require to install and configure notifications

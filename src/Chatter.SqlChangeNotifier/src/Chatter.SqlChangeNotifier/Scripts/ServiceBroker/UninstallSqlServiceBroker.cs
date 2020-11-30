@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.ServiceBroker
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker
 {
     /// <summary>
     /// Removes all SQL Service Broker QUEUES, SERVICES and CONVERSATIONS for the specified SERVICE

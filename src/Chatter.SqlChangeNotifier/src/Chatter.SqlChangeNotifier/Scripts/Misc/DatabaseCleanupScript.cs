@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts.Misc
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.Misc
 {
     /// <summary>
     /// Uninstalls and removes all database entities that were created upon installation of Chatter Sql Service Broker Receivers.

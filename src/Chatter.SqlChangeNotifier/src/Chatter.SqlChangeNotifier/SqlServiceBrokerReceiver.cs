@@ -1,12 +1,12 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
-using Chatter.SqlChangeNotifier.Configuration;
-using Chatter.SqlChangeNotifier.Context;
-using Chatter.SqlChangeNotifier.Scripts;
-using Chatter.SqlChangeNotifier.Scripts.Misc;
-using Chatter.SqlChangeNotifier.Scripts.ServiceBroker;
-using Chatter.SqlChangeNotifier.Scripts.StoredProcedures;
+using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
+using Chatter.MessageBrokers.SqlServiceBroker.Context;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.Misc;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.StoredProcedures;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Data;
@@ -16,7 +16,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Chatter.SqlChangeNotifier
+namespace Chatter.MessageBrokers.SqlServiceBroker
 {
     public class SqlServiceBrokerReceiver<TMessageData> : IDisposable where TMessageData : class, IEvent
     {
@@ -25,6 +25,7 @@ namespace Chatter.SqlChangeNotifier
         private readonly IMessageDispatcher _dispatcher;
         private readonly ILogger<SqlServiceBrokerReceiver<TMessageData>> _logger;
         private CancellationTokenSource _cancellationSource;
+        private readonly string _receiverName;
 
         public SqlServiceBrokerReceiver(SqlServiceBrokerOptions options,
                                         IMessageDispatcher dispatcher,
@@ -32,39 +33,20 @@ namespace Chatter.SqlChangeNotifier
         {
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _logger = logger;
-            Identity = typeof(TMessageData).Name;
+            _receiverName = typeof(TMessageData).Name;
             _options = options ?? throw new ArgumentNullException(nameof(options));
         }
-    
-        public string ConversationQueueName => $"{ChatterServiceBrokerConstants.ChatterQueuePrefix}{this.Identity}";
 
-        public string ConversationServiceName => $"{ChatterServiceBrokerConstants.ChatterServicePrefix}{this.Identity}";
-
-        public string ConversationTriggerName => $"{ChatterServiceBrokerConstants.ChatterTriggerPrefix}{this.Identity}";
-
-        public string InstallNotificationsStoredProcName => $"{ChatterServiceBrokerConstants.ChatterInstallNotificationsPrefix}{this.Identity}";
-
-        public string UninstallNotificationsStoredProcName => $"{ChatterServiceBrokerConstants.ChatterUninstallNotificationsPrefix}{this.Identity}";
-
+        public string ConversationQueueName => $"{ChatterServiceBrokerConstants.ChatterQueuePrefix}{_receiverName}";
+        public string ConversationServiceName => $"{ChatterServiceBrokerConstants.ChatterServicePrefix}{_receiverName}";
+        public string ConversationTriggerName => $"{ChatterServiceBrokerConstants.ChatterTriggerPrefix}{_receiverName}";
+        public string InstallNotificationsStoredProcName => $"{ChatterServiceBrokerConstants.ChatterInstallNotificationsPrefix}{_receiverName}";
+        public string UninstallNotificationsStoredProcName => $"{ChatterServiceBrokerConstants.ChatterUninstallNotificationsPrefix}{_receiverName}";
         public string ConnectionString => _options?.ConnectionString;
-
         public string DatabaseName => _options?.DatabaseName;
-
         public string TableName => _options?.TableName;
-
         public string SchemaName => _options?.SchemaName;
-
-        public NotificationTypes NotificaionTypes => _options.NotificationsToReceive;
-
-        public bool DetailsIncluded => _options.ReceiveDetails;
-
-        public string Identity
-        {
-            get;
-            private set;
-        }
-
-        public event EventHandler NotificationProcessStopped;
+        public NotificationTypes NotificationTypesToReceive => _options.NotificationsToReceive;
 
         public async Task<IDisposable> Start()
         {
@@ -88,7 +70,7 @@ namespace Chatter.SqlChangeNotifier
 
         private void Cancel()
         {
-            if ((_cancellationSource == null) || (_cancellationSource.Token.IsCancellationRequested))
+            if (_cancellationSource == null || _cancellationSource.Token.IsCancellationRequested)
             {
                 return;
             }
@@ -143,6 +125,8 @@ namespace Chatter.SqlChangeNotifier
                     dynamic @event = null;
                     SqlChangeNotificationContext<TMessageData> context = null;
 
+                    //TODO: clean this up/refactor
+
                     if (chgType == ChangeType.Update)
                     {
                         @event = envelop.Inserted?.FirstOrDefault();
@@ -171,8 +155,8 @@ namespace Chatter.SqlChangeNotifier
             }
             finally
             {
-                OnNotificationProcessStopped();
-                _logger.LogInformation($"");
+                //TODO: cleanup? raise event?
+                _logger.LogInformation($"{nameof(ReceiveLoop)} stopped.");
             }
         }
 
@@ -182,7 +166,7 @@ namespace Chatter.SqlChangeNotifier
                 new ReceiveMessageFromConversation(
                 _options.ConnectionString,
                 _options.DatabaseName,
-                this.ConversationQueueName,
+                ConversationQueueName,
                 _receiveTimeoutInMilliseconds / 2,
                 _options.SchemaName).ToString();
 
@@ -207,7 +191,7 @@ namespace Chatter.SqlChangeNotifier
                 new SafeExecuteStoredProcedure(
                 _options.ConnectionString,
                 _options.DatabaseName,
-                this.UninstallNotificationsStoredProcName,
+                UninstallNotificationsStoredProcName,
                 _options.SchemaName);
 
             execUninstallationProcedureScript.Execute();
@@ -218,35 +202,27 @@ namespace Chatter.SqlChangeNotifier
             var execInstallationProcedureScript
                 = new SafeExecuteStoredProcedure(_options.ConnectionString,
                                                  _options.DatabaseName,
-                                                 this.InstallNotificationsStoredProcName,
+                                                 InstallNotificationsStoredProcName,
                                                  _options.SchemaName);
 
             var installNotificationScript
                 = new InstallNotificationsScript(_options,
-                                                 this.InstallNotificationsStoredProcName,
-                                                 this.ConversationQueueName,
-                                                 this.ConversationServiceName,
-                                                 this.ConversationTriggerName);
+                                                 InstallNotificationsStoredProcName,
+                                                 ConversationQueueName,
+                                                 ConversationServiceName,
+                                                 ConversationTriggerName);
 
             var uninstallNotificationScript
                 = new UninstallNotificationsScript(_options,
-                                                   this.UninstallNotificationsStoredProcName,
-                                                   this.ConversationQueueName,
-                                                   this.ConversationServiceName,
-                                                   this.ConversationTriggerName,
-                                                   this.InstallNotificationsStoredProcName);
+                                                   UninstallNotificationsStoredProcName,
+                                                   ConversationQueueName,
+                                                   ConversationServiceName,
+                                                   ConversationTriggerName,
+                                                   InstallNotificationsStoredProcName);
 
             installNotificationScript.Execute();
             uninstallNotificationScript.Execute();
             execInstallationProcedureScript.Execute();
-        }
-
-        private void OnNotificationProcessStopped()
-        {
-            var evnt = NotificationProcessStopped;
-            if (evnt == null) return;
-
-            evnt.BeginInvoke(this, EventArgs.Empty, null, null);
         }
     }
 }

@@ -48,13 +48,13 @@ namespace CarRental.Api
                                .WithOutboxProcessingBehavior<CarRentalContext>()
                                .WithRoutingSlipBehavior();
                     })
-                    .AddSqlChangeNotifier<OutboxChangedEvent>(builder =>
+                    .AddSqlServiceBroker<OutboxChangedEvent>(builder =>
                     {
                         builder.AddOptions(Configuration.GetValue<string>("Chatter:MessageBrokers:Reliability:Persistance:ConnectionString"),
                                            "CarRentals",
                                            "OutboxMessage");
                     })
-                    .AddSqlChangeNotifier<CarRentalAggregateChangedEvent>(builder =>
+                    .AddSqlServiceBroker<CarRentalAggregateChangedEvent>(builder =>
                     {
                         builder.AddOptions(Configuration.GetValue<string>("Chatter:MessageBrokers:Reliability:Persistance:ConnectionString"),
                                            "CarRentals",

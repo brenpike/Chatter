@@ -1,11 +1,11 @@
-﻿using Chatter.SqlChangeNotifier.Configuration;
-using Chatter.SqlChangeNotifier.Scripts.Misc;
-using Chatter.SqlChangeNotifier.Scripts.ServiceBroker;
-using Chatter.SqlChangeNotifier.Scripts.StoredProcedures;
-using Chatter.SqlChangeNotifier.Scripts.Triggers;
+﻿using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.Misc;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.StoredProcedures;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts.Triggers;
 using System;
 
-namespace Chatter.SqlChangeNotifier.Scripts
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
 {
     public class InstallNotificationsScript : ExecutableSqlScript
     {
@@ -60,29 +60,25 @@ namespace Chatter.SqlChangeNotifier.Scripts
                     _options.SchemaName);
 
             var installNotificationTriggerScript =
-                new CreateNotificationTrigger(
-                    _options.TableName,
-                    _conversationTriggerName,
-                    _options.NotificationsToReceive,
-                    _conversationServiceName,
-                    _options.SchemaName,
-                    _options.ReceiveDetails ? string.Empty : @"NOT");
+                new CreateNotificationTrigger(_options.TableName,
+                                              _conversationTriggerName,
+                                              _options.NotificationsToReceive,
+                                              _conversationServiceName,
+                                              _options.SchemaName);
 
             var checkNotificationTriggerScript =
-                new CheckIfNotificationTriggerExists(
-                    _conversationTriggerName,
-                    _options.SchemaName);
+                new CheckIfNotificationTriggerExists(_conversationTriggerName,
+                                                     _options.SchemaName);
 
-            return new CreateInstallationProcedure(
-                    _options.ConnectionString,
-                    new PermissionInfoDisplayScript(_options.ConnectionString),
-                    _options.DatabaseName,
-                    _installationProcedureName,
-                    installServiceBrokerNotificationScript,
-                    installNotificationTriggerScript,
-                    checkNotificationTriggerScript,
-                    _options.TableName,
-                    _options.SchemaName).ToString();
+            return new CreateInstallationProcedure(_options.ConnectionString,
+                                                   new PermissionInfoDisplayScript(_options.ConnectionString),
+                                                   _options.DatabaseName,
+                                                   _installationProcedureName,
+                                                   installServiceBrokerNotificationScript,
+                                                   installNotificationTriggerScript,
+                                                   checkNotificationTriggerScript,
+                                                   _options.TableName,
+                                                   _options.SchemaName).ToString();
         }
     }
 }

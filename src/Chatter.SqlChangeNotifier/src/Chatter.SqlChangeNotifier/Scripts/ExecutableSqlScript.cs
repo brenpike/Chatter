@@ -3,7 +3,7 @@ using System.Data;
 using System.Data.SqlClient;
 using System.Threading.Tasks;
 
-namespace Chatter.SqlChangeNotifier.Scripts
+namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
 {
     public abstract class ExecutableSqlScript
     {
@@ -22,7 +22,7 @@ namespace Chatter.SqlChangeNotifier.Scripts
         public virtual void Execute()
         {
             using SqlConnection conn = new SqlConnection(_connectionString);
-            using SqlCommand command = new SqlCommand(this.ToString(), conn);
+            using SqlCommand command = new SqlCommand(ToString(), conn);
             conn.Open();
             command.CommandType = CommandType.Text;
             command.ExecuteNonQuery();
