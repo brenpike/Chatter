@@ -21,5 +21,5 @@ pr:
 extends:
   template: ../../../eng/pipelines/stages/chatter-ci-cd.yml
   parameters:
-    ProjectName: Chatter.SqlChangeNotifier
+    ProjectName: Chatter.MessageBrokers.SqlServiceBroker
     ArtifactName: packages
