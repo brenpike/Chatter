@@ -87,7 +87,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.Azur
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlChangeNotifier.Tests", "src\Chatter.SqlChangeNotifier\test\Chatter.SqlChangeNotifier.Tests.csproj", "{126E32E6-34EB-4B69-A055-A5DD69DD261D}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlChangeNotifier", "src\Chatter.SqlChangeNotifier\src\Chatter.SqlChangeNotifier\Chatter.SqlChangeNotifier.csproj", "{5DE35021-D8EA-49B2-A053-798EFEC28B7C}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.SqlServiceBroker", "src\Chatter.SqlChangeNotifier\src\Chatter.SqlChangeNotifier\Chatter.MessageBrokers.SqlServiceBroker.csproj", "{5DE35021-D8EA-49B2-A053-798EFEC28B7C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
