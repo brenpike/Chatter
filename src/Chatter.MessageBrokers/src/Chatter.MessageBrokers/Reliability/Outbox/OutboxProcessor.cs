@@ -52,20 +52,20 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             var outbound = new OutboundBrokeredMessage(message.MessageId, converter.GetBytes(message.MessageBody), messageContext, message.Destination, converter);
             _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 
-            await _brokeredMessageInfrastructureDispatcher.Dispatch(outbound, null);
+            await _brokeredMessageInfrastructureDispatcher.Dispatch(outbound, null).ConfigureAwait(false);
             _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
 
-            await _brokeredMessageOutbox.UpdateProcessedDate(message);
+            await _brokeredMessageOutbox.UpdateProcessedDate(message).ConfigureAwait(false);
         }
 
         public async Task ProcessBatch(Guid batchId)
         {
-            var messages = await _brokeredMessageOutbox.GetUnprocessedBatch(batchId);
+            var messages = await _brokeredMessageOutbox.GetUnprocessedBatch(batchId).ConfigureAwait(false);
             _logger.LogTrace($"Processing '{messages.Count()}' messages for batch '{batchId}'.");
 
             foreach (var message in messages)
             {
-                await Process(message);
+                await Process(message).ConfigureAwait(false);
             }
         }
     }

@@ -54,15 +54,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             outbox.Update(outboxMessage);
         }
 
-        public async Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
-        {
-            var outbox = _context.Set<OutboxMessage>();
-
-            await SendToOutbox(outbox, outboundBrokeredMessage, transactionContext);
-            await _context.SaveChangesAsync();
-
-            _logger.LogTrace($"Outbox message added to outbox. Id: '{outboundBrokeredMessage.MessageId}'");
-        }
+        public Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
+            => SendToOutbox(new[] { outboundBrokeredMessage }, transactionContext);
 
         public async Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
         {
@@ -70,12 +63,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             foreach (var obm in outboundBrokeredMessages)
             {
-                await SendToOutbox(outbox, obm, transactionContext);
+                await SendToOutbox(outbox, obm, transactionContext).ConfigureAwait(false);
             }
 
-            var numMessagesSavedToOutbox = await _context.SaveChangesAsync();
+            var numMessagesSavedToOutbox = await _context.SaveChangesAsync().ConfigureAwait(false);
 
-            _logger.LogTrace($"'{numMessagesSavedToOutbox}' outbox message(s) added to outbox.");
+            _logger.LogTrace($"'{numMessagesSavedToOutbox}' outbox message(s) saved to outbox.");
         }
 
         private async Task SendToOutbox(DbSet<OutboxMessage> outbox, OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
@@ -95,9 +88,11 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 BatchId = transactionId
             };
 
-            _logger.LogTrace($"Outbox message created for message with id: '{outboxMessage.MessageId}'");
+            _logger.LogTrace($"Outbox message created. MessageId: '{outboxMessage.MessageId}', BatchId: {outboxMessage.BatchId}");
 
-            await outbox.AddAsync(outboxMessage);
+            await outbox.AddAsync(outboxMessage).ConfigureAwait(false);
+
+            _logger.LogTrace($"Outbox message added to outbox. MessageId: '{outboxMessage.MessageId}', BatchId: {outboxMessage.BatchId}");
         }
 
         public async Task<IEnumerable<OutboxMessage>> GetUnprocessedBatch(Guid batchId)
