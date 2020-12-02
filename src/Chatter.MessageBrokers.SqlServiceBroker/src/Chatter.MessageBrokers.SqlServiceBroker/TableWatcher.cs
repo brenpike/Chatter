@@ -24,7 +24,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
             using var scope = _serviceScopeFactory.CreateScope();
             var serviceBrokerReceiver = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerReceiver<TMessageData>>();
             _logger.LogInformation("Starting sql table notifier.");
-            using var _ = await serviceBrokerReceiver.Start();
+            await using var receiver = await serviceBrokerReceiver.Start();
             _logger.LogInformation("Stopping sql table notifier.");
         }
     }

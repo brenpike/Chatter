@@ -27,5 +27,16 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
             command.CommandType = CommandType.Text;
             command.ExecuteNonQuery();
         }
+
+        public virtual async Task ExecuteAsync()
+        {
+            using SqlConnection conn = new SqlConnection(_connectionString);
+            using (SqlCommand command = new SqlCommand(ToString(), conn))
+            {
+                conn.Open();
+                command.CommandType = CommandType.Text;
+                await command.ExecuteNonQueryAsync();
+            }
+        }
     }
 }

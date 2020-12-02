@@ -18,7 +18,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker
 {
-    public class SqlServiceBrokerReceiver<TMessageData> : IDisposable where TMessageData : class, IEvent
+    public class SqlServiceBrokerReceiver<TMessageData> : IDisposable, IAsyncDisposable where TMessageData : class, IEvent
     {
         private const int _receiveTimeoutInMilliseconds = 60000;
         private readonly SqlServiceBrokerOptions _options;
@@ -48,13 +48,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
         public string SchemaName => _options?.SchemaName;
         public NotificationTypes NotificationTypesToReceive => _options.NotificationsToReceive;
 
-        public async Task<IDisposable> Start()
+        public async Task<IAsyncDisposable> Start()
         {
             try
             {
-                UninstallNotification();
+                await UninstallNotification().ConfigureAwait(false);
 
-                InstallNotification();
+                await InstallNotification().ConfigureAwait(false);
 
                 _cancellationSource = new CancellationTokenSource();
 
@@ -90,6 +90,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
             GC.SuppressFinalize(this);
         }
 
+        public async ValueTask DisposeAsync()
+        {
+            await UninstallNotification().ConfigureAwait(false);
+            Cancel();
+            Dispose(disposing: false);
+            GC.SuppressFinalize(this);
+        }
+
         protected virtual void Dispose(bool disposing)
         {
             if (disposing)
@@ -101,10 +109,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
             _cancellationSource = null;
         }
 
-        public void CleanDatabase()
+        public Task CleanDatabase()
         {
             var cleanup = new DatabaseCleanupScript(_options.ConnectionString, _options.DatabaseName);
-            cleanup.Execute();
+            return cleanup.ExecuteAsync();
         }
 
         private async Task ReceiveLoop(CancellationToken cancellationToken)
@@ -185,7 +193,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
             return reader.GetString(0);
         }
 
-        private void UninstallNotification()
+        private Task UninstallNotification()
         {
             var execUninstallationProcedureScript =
                 new SafeExecuteStoredProcedure(
@@ -194,10 +202,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
                 UninstallNotificationsStoredProcName,
                 _options.SchemaName);
 
-            execUninstallationProcedureScript.Execute();
+            return execUninstallationProcedureScript.ExecuteAsync();
         }
 
-        private void InstallNotification()
+        private async Task InstallNotification()
         {
             var execInstallationProcedureScript
                 = new SafeExecuteStoredProcedure(_options.ConnectionString,
@@ -220,9 +228,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
                                                    ConversationTriggerName,
                                                    InstallNotificationsStoredProcName);
 
-            installNotificationScript.Execute();
-            uninstallNotificationScript.Execute();
-            execInstallationProcedureScript.Execute();
+            await installNotificationScript.ExecuteAsync().ConfigureAwait(false);
+            await uninstallNotificationScript.ExecuteAsync().ConfigureAwait(false);
+            await execInstallationProcedureScript.ExecuteAsync().ConfigureAwait(false);
         }
     }
 }

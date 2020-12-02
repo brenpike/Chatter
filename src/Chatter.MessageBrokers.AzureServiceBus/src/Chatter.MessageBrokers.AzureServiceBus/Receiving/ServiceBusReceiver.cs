@@ -33,6 +33,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         SemaphoreSlim _semaphore;
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
+        private bool _disposedValue;
 
         public ServiceBusReceiver(ServiceBusOptions serviceBusOptions,
                                   MessageBrokerOptions messageBrokerOptions,
@@ -103,8 +104,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public Task StartReceiver(ReceiverOptions options,
-                                  Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler)
+        public async Task StartReceiver(ReceiverOptions options,
+                                        Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler)
         {
             this.MessageReceiverPath = options.MessageReceiverPath;
             this.ErrorQueuePath = options.ErrorQueuePath;
@@ -117,18 +118,29 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _semaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
             _messageReceiverLoopTokenSource = new CancellationTokenSource();
 
-            _messageReceiverLoop = MessageReceiverLoop(brokeredMessageHandler);
-
-            return _messageReceiverLoop;
+            try
+            {
+                _messageReceiverLoop = MessageReceiverLoop(brokeredMessageHandler);
+                await _messageReceiverLoop.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _logger.LogCritical($"Critical error occured curing {nameof(MessageReceiverLoop)}: {e.Message}{Environment.NewLine}{e.StackTrace}");
+            }
         }
 
         public async Task StopReceiver()
         {
             _messageReceiverLoopTokenSource?.Cancel();
 
-            if (_messageReceiverLoop != null)
+            if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
             {
                 await _messageReceiverLoop.ConfigureAwait(false);
+            }
+
+            if (_innerReceiver != null)
+            {
+                await _innerReceiver.CloseAsync().ConfigureAwait(false);
             }
 
             _semaphore?.Dispose();
@@ -143,7 +155,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 {
                     await _semaphore.WaitAsync(_messageReceiverLoopTokenSource.Token).ConfigureAwait(false);
 
-                    var message = await this.InnerReceiver.ReceiveAsync();
+                    Message message = null;
+
+                    try
+                    {
+                        message = await this.InnerReceiver.ReceiveAsync();
+                    }
+                    catch (ServiceBusException sbe) when (sbe.IsTransient)
+                    {
+                    }
+                    catch (Exception e)
+                    {
+                        _logger.LogError($"Failure to receive message from Azure Serivce Bus: {e.Message}{Environment.NewLine}{e.StackTrace}");
+                    }
 
                     try
                     {
@@ -337,6 +361,37 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 return new TransactionScope(TransactionScopeAsyncFlowOption.Enabled);
             }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await StopReceiver().ConfigureAwait(false);
+
+            Dispose(disposing: false);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposedValue)
+            {
+                if (disposing)
+                {
+                    _messageReceiverLoopTokenSource?.Cancel();
+                    _innerReceiver?.CloseAsync();
+                    _semaphore?.Dispose();
+                    _messageReceiverLoopTokenSource?.Dispose();
+                }
+
+                _innerReceiver = null;
+                _disposedValue = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
         }
     }
 }

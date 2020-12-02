@@ -8,7 +8,7 @@ namespace Chatter.MessageBrokers.Receiving
     /// <summary>
     /// The message broker infrastructure used to receive messages
     /// </summary>
-    public interface IMessagingInfrastructureReceiver
+    public interface IMessagingInfrastructureReceiver : IAsyncDisposable, IDisposable
     {
         /// <summary>
         /// Starts receiving messages via the message broker infrastructure

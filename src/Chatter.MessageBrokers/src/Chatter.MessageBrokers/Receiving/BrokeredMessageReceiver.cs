@@ -17,10 +17,11 @@ namespace Chatter.MessageBrokers.Receiving
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
     class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
     {
-        private readonly IMessagingInfrastructureReceiver _infrastructureReceiver;
+        private IMessagingInfrastructureReceiver _infrastructureReceiver;
         private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
         private readonly IServiceScopeFactory _serviceFactory;
         private readonly ReceiverOptions _options;
+        private bool _disposedValue;
 
         /// <summary>
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
@@ -47,12 +48,15 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
 
-        public Task StartReceiver()
-            => Start(CancellationToken.None);
+        public Task<IAsyncDisposable> StartReceiver()
+            => StartReceiver(CancellationToken.None);
 
         ///<inheritdoc/>
-        public Task StartReceiver(CancellationToken receiverTerminationToken)
-            => Start(receiverTerminationToken);
+        public async Task<IAsyncDisposable> StartReceiver(CancellationToken receiverTerminationToken)
+        {
+            await Start(receiverTerminationToken).ConfigureAwait(false);
+            return this;
+        }
 
         public Task StopReceiver()
             => _infrastructureReceiver.StopReceiver();
@@ -63,13 +67,6 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 throw new ArgumentNullException(nameof(receiverTerminationToken), $"A {typeof(CancellationToken).Name} is required in order for the operation to terminate successfully.");
             }
-
-            //using var reg = receiverTerminationToken.Register(async () =>
-            //{
-            //    _logger.LogTrace($"Stopping {nameof(BrokeredMessageReceiver<TMessage>)}...");
-            //    await StopReceiver();
-            //    _logger.LogInformation($"{nameof(BrokeredMessageReceiver<TMessage>)} stopped successfully.");
-            //});
 
             var receiveTask = _infrastructureReceiver.StartReceiver(_options,
                                                                     ReceiveInboundBrokeredMessage);
@@ -124,6 +121,34 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 throw new ReceiverMessageDispatchingException($"Error dispatching message '{typeof(TMessage).Name}' received by '{typeof(BrokeredMessageReceiver<>).Name}'", e);
             }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _infrastructureReceiver.DisposeAsync().ConfigureAwait(false);
+
+            Dispose(disposing: false);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposedValue)
+            {
+                if (disposing)
+                {
+                    _infrastructureReceiver?.Dispose();
+                }
+
+                _infrastructureReceiver = null;
+                _disposedValue = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
         }
     }
 }
