@@ -18,18 +18,18 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker
 {
-    public class SqlServiceBrokerReceiver<TMessageData> : IDisposable, IAsyncDisposable where TMessageData : class, IEvent
+    public class SqlTableWatcherReceiver<TMessageData> : IDisposable, IAsyncDisposable where TMessageData : class, IEvent
     {
         private const int _receiveTimeoutInMilliseconds = 60000;
         private readonly SqlServiceBrokerOptions _options;
         private readonly IMessageDispatcher _dispatcher;
-        private readonly ILogger<SqlServiceBrokerReceiver<TMessageData>> _logger;
+        private readonly ILogger<SqlTableWatcherReceiver<TMessageData>> _logger;
         private CancellationTokenSource _cancellationSource;
         private readonly string _receiverName;
 
-        public SqlServiceBrokerReceiver(SqlServiceBrokerOptions options,
+        public SqlTableWatcherReceiver(SqlServiceBrokerOptions options,
                                         IMessageDispatcher dispatcher,
-                                        ILogger<SqlServiceBrokerReceiver<TMessageData>> logger)
+                                        ILogger<SqlTableWatcherReceiver<TMessageData>> logger)
         {
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _logger = logger;

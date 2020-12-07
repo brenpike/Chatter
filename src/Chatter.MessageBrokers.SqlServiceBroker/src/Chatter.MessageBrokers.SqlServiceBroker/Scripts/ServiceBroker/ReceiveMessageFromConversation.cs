@@ -57,10 +57,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker
                 DECLARE @message VARBINARY(MAX)
                 USE [{0}]
                 WAITFOR (RECEIVE TOP(1) @ConvHandle=Conversation_Handle
-                            , @message=message_body FROM {3}.[{1}]), TIMEOUT {2};
+                            ,@message=message_body FROM {3}.[{1}]), TIMEOUT {2};
 	            BEGIN TRY END CONVERSATION @ConvHandle; END TRY BEGIN CATCH END CATCH
-
-                SELECT CAST(decompress(@message) AS NVARCHAR(MAX)) 
+                
+                IF SUBSTRING(@message, 1, 2) = 0x1F8B
+                    SELECT CAST(decompress(@message) AS VARBINARY(MAX)), @ConvHandle
+                ELSE
+                    SELECT @message, @ConvHandle
             ", _databaseName, _conversationQueueName, _timeoutInMilliseconds, _schemaName);
         }
     }

@@ -22,7 +22,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             using var scope = _serviceScopeFactory.CreateScope();
-            var serviceBrokerReceiver = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerReceiver<TMessageData>>();
+            var serviceBrokerReceiver = scope.ServiceProvider.GetRequiredService<SqlTableWatcherReceiver<TMessageData>>();
             _logger.LogInformation("Starting sql table notifier.");
             await using var receiver = await serviceBrokerReceiver.Start();
             _logger.LogInformation("Stopping sql table notifier.");
