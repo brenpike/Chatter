@@ -34,47 +34,31 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker.Core
 
         public async Task<ReceivedMessage> ExecuteAsync(CancellationToken cancellationToken = default)
         {
-            using (var receiveCommand = _connection.CreateCommand())
+            using var receiveCommand = Create();
+            await using var reader = await receiveCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!reader.Read() || reader.IsDBNull(0))
             {
-                receiveCommand.Transaction = _transaction;
-                receiveCommand.CommandText = ToString();
-                receiveCommand.Connection = _connection;
-                receiveCommand.CommandType = CommandType.Text;
-
-                if (_conversationHandle != default)
-                {
-                    receiveCommand.Parameters.Add(new SqlParameter("@conversationHandle", _conversationHandle));
-                }
-
-                if (_timeout > 0)
-                {
-                    receiveCommand.Parameters.Add(new SqlParameter("@timeoutInSeconds", _timeout));
-                    receiveCommand.CommandTimeout = 0;
-                }
-
-                await using (var reader = await receiveCommand.ExecuteReaderAsync(cancellationToken))
-                {
-                    if (!reader.Read() || reader.IsDBNull(0))
-                    {
-                        return null;
-                    }
-
-                    return new ReceivedMessage(
-                        reader.GetGuid(0),
-                        reader.GetGuid(1),
-                        reader.GetInt64(2),
-                        reader.GetString(3),
-                        reader.GetString(4),
-                        reader.GetString(5),
-                        reader.GetSqlBytes(6).Buffer
-                    );
-                }
+                return null;
             }
+
+            return new ReceivedMessage(
+                reader.GetGuid(0),
+                reader.GetGuid(1),
+                reader.GetInt64(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5),
+                reader.GetSqlBytes(6).Buffer
+            );
         }
 
-        public override string ToString()
+        public SqlCommand Create()
         {
             var query = new StringBuilder();
+            var receiveCommand = _connection.CreateCommand();
+            receiveCommand.Transaction = _transaction;
+            receiveCommand.Connection = _connection;
+            receiveCommand.CommandType = CommandType.Text;
 
             query.Append("WAITFOR (RECEIVE TOP(1) " +
                          "conversation_group_id, conversation_handle, " +
@@ -88,15 +72,20 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker.Core
             if (_conversationHandle != default)
             {
                 query.Append(" WHERE conversation_handle = @conversationHandle");
+                receiveCommand.Parameters.Add(new SqlParameter("@conversationHandle", _conversationHandle));
             }
 
             query.Append(")");
             if (_timeout > 0)
             {
                 query.Append(", TIMEOUT @timeoutInSeconds");
+                receiveCommand.Parameters.Add(new SqlParameter("@timeoutInSeconds", _timeout));
+                receiveCommand.CommandTimeout = 0;
             }
 
-            return query.ToString();
+            receiveCommand.CommandText = query.ToString();
+
+            return receiveCommand;
         }
     }
 }

@@ -1,64 +1,88 @@
 ﻿using System;
 using System.Data;
+using System.Data.SqlClient;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker.Core
 {
     public class BeginDialogConversationCommand
     {
-        private readonly IDbTransaction transaction;
-        private string initiatorServiceName;
-        private string targetServiceName;
-        private readonly string messageContractName;
-        private readonly int lifetime;
-        private readonly bool encryption;
-        private readonly Guid relatedConversationGroupId;
-        private readonly Guid relatedConversationId;
+        private readonly SqlConnection _connection;
+        private readonly SqlTransaction _transaction = null;
+        public string _targetServiceName;
+        private string _initiatorServiceName;
+        private readonly string _serviceContractName;
+        private readonly int _lifetime;
+        private readonly bool _encryption;
+        private readonly Guid _relatedConversationGroupId;
+        private readonly Guid _relatedConversationId;
 
-        public BeginDialogConversationCommand(IDbTransaction transaction,
-                                       string initiatorServiceName,
-                                       string targetServiceName,
-                                       string messageContractName,
-                                       int lifetime = 0,
-                                       bool encryption = false,
-                                       Guid relatedConversationGroupId = default,
-                                       Guid relatedConversationId = default)
+        public BeginDialogConversationCommand(SqlConnection connection,
+                                              string targetServiceName,
+                                              string initiatorServiceName = "",
+                                              string serviceContractName = "",
+                                              int lifetime = 0,
+                                              bool encryption = false,
+                                              Guid relatedConversationGroupId = default,
+                                              Guid relatedConversationId = default,
+                                              SqlTransaction transaction = null)
         {
-            this.transaction = transaction;
-            this.initiatorServiceName = initiatorServiceName;
-            this.targetServiceName = targetServiceName;
-            this.messageContractName = messageContractName;
-            this.lifetime = lifetime;
-            this.encryption = encryption;
-            this.relatedConversationGroupId = relatedConversationGroupId;
-            this.relatedConversationId = relatedConversationId;
+            if (string.IsNullOrWhiteSpace(initiatorServiceName))
+            {
+                initiatorServiceName = targetServiceName;
+            }
+
+            _connection = connection;
+            _transaction = transaction;
+            _targetServiceName = targetServiceName;
+            _initiatorServiceName = initiatorServiceName;
+            _serviceContractName = serviceContractName;
+            _lifetime = lifetime;
+            _encryption = encryption;
+            _relatedConversationGroupId = relatedConversationGroupId;
+            _relatedConversationId = relatedConversationId;
         }
 
-        public override string ToString()
+        public async Task<Guid> ExecuteAsync(CancellationToken cancellationToken = default)
         {
-            if (!initiatorServiceName.StartsWith("["))
+            using var beginConvoCommand = Create();
+            await beginConvoCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            var convoHandle = beginConvoCommand.Parameters["@conversationHandle"];
+            return (Guid)convoHandle.Value;
+        }
+
+        public SqlCommand Create()
+        {
+            var beginConvoCommand = _connection.CreateCommand();
+            beginConvoCommand.Transaction = _transaction;
+            beginConvoCommand.Connection = _connection;
+            beginConvoCommand.CommandType = CommandType.Text;
+
+            if (!_initiatorServiceName.StartsWith("["))
             {
-                initiatorServiceName = "[" + initiatorServiceName + "]";
+                _initiatorServiceName = "[" + _initiatorServiceName + "]";
             }
 
-            targetServiceName = targetServiceName.Replace("]", "").Replace("[", "");
+            _targetServiceName = _targetServiceName.Replace("]", "").Replace("[", "");
 
-            var query = new StringBuilder();
+            var query = new StringBuilder($"BEGIN DIALOG @conversationHandle " +
+                                          $"FROM SERVICE {_initiatorServiceName} " +
+                                          $"TO SERVICE @targetService ");
 
-            query.Append($"BEGIN DIALOG @conversationHandle FROM SERVICE {initiatorServiceName} TO SERVICE '@targetService' ON CONTRACT");
-
-            if (messageContractName != null)
+            if (!string.IsNullOrWhiteSpace(_serviceContractName))
             {
-                query.Append(" @contractName");
-            }
-            else
-            {
-                query.Append(" [DEFAULT]");
+                query.Append("ON CONTRACT @contractName ");
+                beginConvoCommand.Parameters.Add(new SqlParameter("@contractName", _serviceContractName));
             }
 
-            query.Append($" WITH ENCRYPTION = ");
+            beginConvoCommand.Parameters.Add(new SqlParameter("@targetService", _targetServiceName));
+            beginConvoCommand.Parameters.Add("@conversationHandle", SqlDbType.UniqueIdentifier).Direction = ParameterDirection.Output;
 
-            if (encryption)
+            query.Append($"WITH ENCRYPTION = ");
+
+            if (_encryption)
             {
                 query.Append("ON ");
             }
@@ -67,22 +91,27 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker.Core
                 query.Append("OFF ");
             }
 
-            if (relatedConversationGroupId != default)
+            if (_relatedConversationGroupId != default)
             {
                 query.Append("WITH RELATED_CONVERSATION_GROUP = @conversationGroupId ");
+                beginConvoCommand.Parameters.Add(new SqlParameter("@conversationGroupId", _relatedConversationGroupId));
             }
 
-            if (relatedConversationId != default)
+            if (_relatedConversationId != default)
             {
                 query.Append("WITH RELATED_CONVERSATION = @conversationId ");
+                beginConvoCommand.Parameters.Add(new SqlParameter("@conversationId", _relatedConversationId));
             }
 
-            if (lifetime > 0)
+            if (_lifetime > 0)
             {
-                query.Append($" LIFETIME = {lifetime} ;");
+                query.Append($"LIFETIME = @lifetime");
+                beginConvoCommand.Parameters.Add(new SqlParameter("@lifetime", _lifetime));
             }
 
-            return query.ToString();
+            query.Append(";");
+            beginConvoCommand.CommandText = query.ToString();
+            return beginConvoCommand;
         }
     }
 }

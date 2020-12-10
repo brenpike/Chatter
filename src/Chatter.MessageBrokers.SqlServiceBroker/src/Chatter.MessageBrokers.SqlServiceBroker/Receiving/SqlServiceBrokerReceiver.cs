@@ -30,11 +30,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private readonly ConcurrentDictionary<Guid, int> _localReceiverDeliveryAttempts;
 
         public SqlServiceBrokerReceiver(SqlServiceBrokerOptions options,
-                        MessageBrokerOptions messageBrokerOptions,
-                        ILogger<SqlServiceBrokerReceiver> logger,
-                        IBodyConverterFactory bodyConverterFactory,
-                        IFailedReceiveRecoverer failedReceiveRecoverer,
-                        ICriticalFailureNotifier criticalFailureNotifier)
+                                        MessageBrokerOptions messageBrokerOptions,
+                                        ILogger<SqlServiceBrokerReceiver> logger,
+                                        IBodyConverterFactory bodyConverterFactory,
+                                        IFailedReceiveRecoverer failedReceiveRecoverer,
+                                        ICriticalFailureNotifier criticalFailureNotifier)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _logger = logger;
@@ -46,8 +46,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             _localReceiverDeliveryAttempts = new ConcurrentDictionary<Guid, int>();
         }
 
-        public string QueueName { get; private set; }
         public string TargetServiceName { get; private set; }
+        public string QueueName { get; private set; }
         public string ErrorQueueName { get; private set; }
 
         public const int _poisonMessageDeadletterErrorCode = 100;
@@ -59,8 +59,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         {
             try
             {
-                this.QueueName = options.SendingPath;
-                this.TargetServiceName = options.MessageReceiverPath;
+                this.TargetServiceName = options.SendingPath;
+                this.QueueName = options.MessageReceiverPath;
                 this.ErrorQueueName = options.ErrorQueuePath;
                 if (options.TransactionMode != null)
                 {
@@ -107,7 +107,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                              _receiveTimeoutInMilliseconds / 2,
                                              transaction: transaction);
 
-            var message = await receiveMessageFromQueue.ExecuteAsync(_cancellationSource.Token);
+            var message = await receiveMessageFromQueue.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
 
             if (message == null || _cancellationSource.IsCancellationRequested)
             {
@@ -125,7 +125,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 {
                     using SqlConnection connection = new SqlConnection(_options.ConnectionString);
                     await connection.OpenAsync();
-                    SqlTransaction transaction = await CreateTransaction(connection).ConfigureAwait(false);
+                    using SqlTransaction transaction = await CreateTransaction(connection).ConfigureAwait(false);
 
                     ReceivedMessage message = null;
 
@@ -168,10 +168,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                     [SSBMessageContext.MessageTypeName] = message.MessageTypeName
                                 };
 
-                                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Message, headers, this.TargetServiceName, receiverTokenSource.Token, bodyConverter);
+                                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Message, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);
                                 messageContext.Container.Include(message);
 
-                                transactionContext = new TransactionContext(this.TargetServiceName, _transactionMode);
+                                transactionContext = new TransactionContext(this.QueueName, _transactionMode);
 
                                 if (_transactionMode == TransactionMode.FullAtomicityViaInfrastructure && transaction != null)
                                 {
@@ -296,10 +296,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             try
             {
                 var edc = new EndDialogConversationCommand(connection,
+                                                           message.ConvHandle,
                                                            errorCode,
                                                            errorDescription,
                                                            transaction: (SqlTransaction)transaction);
-                await edc.ExecuteAsync(message.ConvHandle, _cancellationSource.Token).ConfigureAwait(false);
+                await edc.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
                 transaction?.Commit();
                 _localReceiverDeliveryAttempts.TryRemove(message.ConvHandle, out var _);
             }
