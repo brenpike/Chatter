@@ -1,11 +1,12 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Routing.Options
 {
     public class SendOptions : RoutingOptions
     {
-        public SendOptions()
-        {}
+        public SendOptions() { }
+        public SendOptions(IDictionary<string, object> messageContext) : base(messageContext) { }
 
         public SendOptions WithSagaId(string sagaId)
         {

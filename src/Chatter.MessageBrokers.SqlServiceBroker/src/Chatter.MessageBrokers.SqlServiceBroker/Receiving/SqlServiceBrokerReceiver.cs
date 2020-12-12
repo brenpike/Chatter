@@ -73,7 +73,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
             catch (Exception e)
             {
-                _logger.LogCritical($"Receiver stopped due to critical error: {e.Message}{Environment.NewLine}{e.StackTrace}");
+                _logger.LogCritical(e, $"Receiver stopped due to critical error");
             }
         }
 
@@ -135,148 +135,146 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                     }
                     catch (Exception e)
                     {
-                        //TODO: circuit breaker - if receive fails (i.e. poison message handling is enabled and queue can be auto disabled, receive will fail forever)
-                        //                        if circuit breaker triggers, we want to deadletter (Deadletterto end convo with error message type. use _circuitBreakerDeadletterErrorCode
-                        //                        POSSIBLY ADD CIRCUIT BREAKER TO ABANDONASYNC???
-                        _logger.LogError($"Error receiving sql service broker message from queue '{this.QueueName}': {e.Message}{Environment.NewLine}{e.StackTrace}");
+                        _logger.LogError(e, $"Error receiving sql service broker message from queue '{this.QueueName}'");
+                        throw;
                     }
+
+                    //TODO: do we want to check message.MessageTypeName? maybe configure what types of message types can be received via options?
+                    //      if option is empty it will accept any message types. make it a string[] so it can accept many types
+                    //      if message type doesn't match what do we do? we've already started a transaction and received a message.
+
+                    //TODO: can we potentially use MessageTypeName for ContentType?
+
+                    if (message?.Body == null || _cancellationSource.IsCancellationRequested)
+                    {
+                        //TODO: if body is null, do we commit transaction (CompleteASync)? If not, infinite loop...message will be received over and over again
+                        await CompleteAsync(connection, transaction, message);
+                        continue;
+                    }
+
+                    MessageBrokerContext messageContext = null;
+                    TransactionContext transactionContext = null;
 
                     try
                     {
-                        if (message?.Message == null || _cancellationSource.IsCancellationRequested)
-                        {
-                            continue;
-                        }
-
-                        MessageBrokerContext messageContext = null;
-                        TransactionContext transactionContext = null;
-
+                        using var receiverTokenSource = new CancellationTokenSource();
                         try
                         {
-                            using var receiverTokenSource = new CancellationTokenSource();
-                            try
+                            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_contentType);
+
+                            var headers = new Dictionary<string, object>
                             {
-                                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_contentType);
+                                [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
+                                [SSBMessageContext.ConversationHandle] = message.ConvHandle,
+                                [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
+                                [SSBMessageContext.ServiceName] = message.ServiceName,
+                                [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
+                                [SSBMessageContext.MessageTypeName] = message.MessageTypeName
+                            };
 
-                                var headers = new Dictionary<string, object>
-                                {
-                                    [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
-                                    [SSBMessageContext.ConversationHandle] = message.ConvHandle,
-                                    [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
-                                    [SSBMessageContext.ServiceName] = message.ServiceName,
-                                    [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
-                                    [SSBMessageContext.MessageTypeName] = message.MessageTypeName
-                                };
+                            messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);
+                            messageContext.Container.Include(message);
 
-                                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Message, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);
-                                messageContext.Container.Include(message);
+                            transactionContext = new TransactionContext(this.QueueName, _transactionMode);
 
-                                transactionContext = new TransactionContext(this.QueueName, _transactionMode);
-
-                                if (_transactionMode == TransactionMode.FullAtomicityViaInfrastructure && transaction != null)
-                                {
-                                    transactionContext.Container.Include<IDbTransaction>(transaction);
-                                }
-                            }
-                            catch (Exception e)
+                            if (_transactionMode == TransactionMode.FullAtomicityViaInfrastructure && transaction != null)
                             {
-                                throw new PoisonedMessageException($"Unable to build {typeof(MessageBrokerContext).Name} due to poisoned message", e);
+                                transactionContext.Container.Include<IDbTransaction>(transaction);
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            throw new PoisonedMessageException($"Unable to build {typeof(MessageBrokerContext).Name} due to poisoned message", e);
+                        }
+
+                        await brokeredMessageHandler(messageContext, transactionContext).ConfigureAwait(false);
+
+                        if (!receiverTokenSource.IsCancellationRequested)
+                        {
+                            await CompleteAsync(connection, transaction, message).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await AbandonAsync(transaction, message).ConfigureAwait(false);
+                        }
+                    }
+                    catch (PoisonedMessageException pme)
+                    {
+                        _logger?.LogError(pme, "Poisoned message received");
+                        try
+                        {
+                            await DeadLetterAsync(connection, transaction, message, _poisonMessageDeadletterErrorCode,
+                                                  $"Poisoned message received from queue: '{this.QueueName}' (target service: {this.TargetServiceName}) but was not handled.",
+                                                  pme.Message).ConfigureAwait(false);
+                        }
+                        catch (Exception deadLetterException)
+                        {
+                            _logger?.LogError(deadLetterException, "Error deadlettering message");
+                        }
+
+                        //TODO: circuit breaker
+
+                        continue;
+                    }
+                    catch (Exception e)
+                    {
+                        try
+                        {
+                            _logger.LogError(e, "Error handling recevied message. Attempting recovery.");
+
+                            RecoveryState state = RecoveryState.Retrying;
+
+                            var failureContext = new FailureContext(messageContext.BrokeredMessage,
+                                                                    this.ErrorQueueName,
+                                                                    "Unable to handle received message",
+                                                                    e.StackTrace,
+                                                                    _localReceiverDeliveryAttempts[message.ConvHandle],
+                                                                    transactionContext);
+
+                            state = await _failedReceiveRecoverer.Execute(failureContext).ConfigureAwait(false);
+
+                            if (state == RecoveryState.DeadLetter)
+                            {
+                                await DeadLetterAsync(connection, transaction, message, _recoveryActionDeadletterErrorCode,
+                                                      $"Deadlettering message by request of recovery action.",
+                                                      $"Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'").ConfigureAwait(false);
                             }
 
-                            await brokeredMessageHandler(messageContext, transactionContext).ConfigureAwait(false);
-
-                            if (!receiverTokenSource.IsCancellationRequested)
+                            if (state == RecoveryState.RecoveryActionExecuted)
                             {
                                 await CompleteAsync(connection, transaction, message).ConfigureAwait(false);
                             }
-                            else
+
+                            if (state == RecoveryState.Retrying)
                             {
                                 await AbandonAsync(transaction, message).ConfigureAwait(false);
                             }
                         }
-                        catch (PoisonedMessageException pme)
+                        catch (Exception onErrorException)
                         {
-                            try
-                            {
-                                await DeadLetterAsync(connection, transaction, message, _poisonMessageDeadletterErrorCode,
-                                                      $"Poisoned message received from queue: '{this.QueueName}' (target service: {this.TargetServiceName}) but was not handled.",
-                                                      pme.Message).ConfigureAwait(false);
-                            }
-                            catch (Exception deadLetterException)
-                            {
-                                _logger?.LogError($"Error deadlettering message: {pme.Message}{Environment.NewLine}{deadLetterException.StackTrace}");
-                            }
+                            var aggEx = new AggregateException(e, onErrorException);
 
-                            continue;
+                            _logger.LogError(onErrorException, $"Recovery was unsuccessful. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'");
+
+                            var failureContext = new FailureContext(messageContext.BrokeredMessage,
+                                                                    this.ErrorQueueName,
+                                                                    "Unable to recover from error which occurred during message handling",
+                                                                    aggEx.ToString(),
+                                                                    _localReceiverDeliveryAttempts[message.ConvHandle],
+                                                                    transactionContext);
+
+                            await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);
+
+                            await DeadLetterAsync(connection, transaction, message, _failedRecoveryDeadletterErrorCode,
+                                                  $"Critical error encountered receiving message. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'",
+                                                  aggEx.ToString()).ConfigureAwait(false);
                         }
-                        catch (Exception e)
-                        {
-                            try
-                            {
-                                _logger.LogError($"Error handling recevied message. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'"
-                                                    + "\n"
-                                                    + $"{e}");
-
-                                RecoveryState state = RecoveryState.Retrying;
-
-                                var failureContext = new FailureContext(messageContext.BrokeredMessage,
-                                                                        this.ErrorQueueName,
-                                                                        "Unable to handle received message",
-                                                                        e.StackTrace,
-                                                                        _localReceiverDeliveryAttempts[message.ConvHandle],
-                                                                        transactionContext);
-
-                                state = await _failedReceiveRecoverer.Execute(failureContext).ConfigureAwait(false);
-
-                                if (state == RecoveryState.DeadLetter)
-                                {
-                                    await DeadLetterAsync(connection, transaction, message, _recoveryActionDeadletterErrorCode,
-                                                          $"Deadlettering message by request of recovery action.",
-                                                          $"Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'").ConfigureAwait(false);
-                                }
-
-                                if (state == RecoveryState.RecoveryActionExecuted)
-                                {
-                                    await CompleteAsync(connection, transaction, message).ConfigureAwait(false);
-                                }
-
-                                if (state == RecoveryState.Retrying)
-                                {
-                                    await AbandonAsync(transaction, message).ConfigureAwait(false);
-                                }
-                            }
-                            catch (Exception onErrorException)
-                            {
-                                var aggEx = new AggregateException(e, onErrorException);
-
-                                _logger.LogError($"Critical error encountered receiving message. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'"
-                                               + "\n"
-                                               + $"{onErrorException.StackTrace}");
-
-                                var failureContext = new FailureContext(messageContext.BrokeredMessage,
-                                                                        this.ErrorQueueName,
-                                                                        "Unable to recover from error which occurred during message handling",
-                                                                        aggEx.ToString(),
-                                                                        _localReceiverDeliveryAttempts[message.ConvHandle],
-                                                                        transactionContext);
-
-                                await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);
-
-                                await DeadLetterAsync(connection, transaction, message, _failedRecoveryDeadletterErrorCode,
-                                                      $"Critical error encountered receiving message. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'",
-                                                      onErrorException.StackTrace).ConfigureAwait(false);
-                            }
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        _logger.LogCritical($"Error processing {typeof(ReceivedMessage).Name} with conversation handle '{message.ConvHandle}' and conversation group id '{message.ConvGroupHandle}': {e.StackTrace}");
                     }
                 }
                 catch (Exception e)
                 {
-                    //TODO: circuit breaker - invalid connection string could cause infinite loop
-                    _logger.LogError($"Unable to create/open {typeof(SqlConnection).Name}: {e.Message}{Environment.NewLine}{e.StackTrace}");
+                    //TODO: CIRCUIT BREAKER
+                    _logger.LogError(e, "Error receiving and handling sql service broker message");
                 }
             }
         }
@@ -307,7 +305,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             catch (Exception e)
             {
                 await AbandonAsync(transaction, message).ConfigureAwait(false);
-                _logger.LogError($"Unable to complete receive operation: {e.Message}{Environment.NewLine}{e.StackTrace}");
+                _logger.LogError(e, "Unable to complete receive operation");
             }
         }
 
@@ -315,7 +313,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         {
             var errorDescription = reason + Environment.NewLine + description;
             await CompleteAsync(connection, transaction, message, errorCode, errorDescription).ConfigureAwait(false);
-            _logger.LogCritical(errorDescription);
+            _logger.LogError(errorDescription);
         }
 
         public void Dispose()

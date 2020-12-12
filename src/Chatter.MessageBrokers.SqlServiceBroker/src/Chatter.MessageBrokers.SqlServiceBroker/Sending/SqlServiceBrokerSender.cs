@@ -1,4 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker.Core;
@@ -25,115 +26,92 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
 
         public async Task Dispatch(IEnumerable<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext)
         {
-            IDbTransaction receiverTransaction = null;
-            transactionContext?.Container.TryGet(out receiverTransaction);
+            _logger.LogInformation("Sending sql service broker message(s)");
+            IDbTransaction contextTransaction = null;
+            transactionContext?.Container.TryGet(out contextTransaction);
+            var contextTransactionMode = transactionContext?.TransactionMode ?? TransactionMode.None;
+            var useContextTransaction = contextTransactionMode == TransactionMode.FullAtomicityViaInfrastructure && contextTransaction != null;
 
-            SqlConnection connection = (SqlConnection)receiverTransaction?.Connection ?? new SqlConnection(_options.ConnectionString);
+            SqlConnection connection = useContextTransaction
+                                            ? (SqlConnection)contextTransaction.Connection
+                                            : new SqlConnection(_options.ConnectionString);
+
             if (connection.State != ConnectionState.Open)
             {
                 await connection.OpenAsync();
+                _logger.LogTrace("Sql connection opened.");
             }
 
-            var transaction = (SqlTransaction)receiverTransaction ?? (SqlTransaction)await connection.BeginTransactionAsync();
-            Guid conversationHandle = default;
+            var transaction = useContextTransaction
+                                    ? (SqlTransaction)contextTransaction
+                                    : (SqlTransaction)await connection.BeginTransactionAsync();
 
             try
             {
                 foreach (var brokeredMessage in brokeredMessages)
                 {
-                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ConversationGroupId, out var convGroupHandle);
-                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ConversationHandle, out var convHandle);
-                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ServiceName, out var initiatorService);
-                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ServiceContractName, out var serviceContractName);
-                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.MessageTypeName, out var messageTypeName);
+                    _logger.LogDebug($"Sending brokered message to '{brokeredMessage.Destination}'");
+                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ConversationGroupId, out var contextConversationGroupId);
+                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ConversationHandle, out var contextConversationHandle);
+                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ServiceName, out var contextInitiatorService);
+                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ServiceContractName, out var contextServiceContractName);
+                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.MessageTypeName, out var contextMessageTypeName);
 
-                    Guid cgh = default;
-                    if (convGroupHandle != null)
-                    {
-                        cgh = (Guid)convGroupHandle;
-                    }
+                    Guid conversationGroupId = contextConversationGroupId != null ? (Guid)contextConversationGroupId : default;
+                    Guid conversationHandle = contextConversationHandle != null ? (Guid)contextConversationHandle : default;
 
-                    if (convHandle != null)
-                    {
-                        conversationHandle = (Guid)convHandle;
-                    }
+                    conversationHandle = await BeginConversation(connection, transaction, brokeredMessage, contextInitiatorService, contextServiceContractName).ConfigureAwait(false);
+                    _logger.LogDebug("Dialog conversation has begun.");
+                    _logger.LogTrace($"Conversation Handle: '{conversationHandle}', Initiator Service: '{contextInitiatorService}', Service Contract Name: '{contextServiceContractName}'");
 
-                    Guid newConvHandle = await BeginConvo(connection, transaction, conversationHandle, brokeredMessage, initiatorService, serviceContractName, cgh).ConfigureAwait(false);
+                    await SendMessageOnConversation(connection, transaction, brokeredMessage, (string)contextMessageTypeName, conversationHandle).ConfigureAwait(false);
+                    _logger.LogDebug("Message sent on conversation.");
+                    _logger.LogTrace($"Conversation Handle: '{conversationHandle}', Message Type Name: '{contextMessageTypeName}'");
 
-                    await SendMessageOnConvo(connection, transaction, brokeredMessage, (string)messageTypeName, newConvHandle).ConfigureAwait(false);
-
-                    await EndConvo(connection, transaction, conversationHandle, newConvHandle).ConfigureAwait(false);
+                    await EndConversation(connection, transaction, conversationHandle).ConfigureAwait(false);
+                    _logger.LogDebug("Conversation ended.");
+                    _logger.LogTrace($"Conversation Handle: '{conversationHandle}'");
                 }
-                if (conversationHandle == default)
+
+                if (!useContextTransaction)
                 {
                     transaction?.Commit();
+                    _logger.LogDebug("Sending sql transaction committed");
                 }
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                if (conversationHandle == default)
+                _logger.LogError(e, "Error sending sql service broker message");
+
+                if (!useContextTransaction)
                 {
                     transaction?.Rollback();
+                    _logger.LogDebug("Rolled back message sending transaction");
                 }
+
                 throw;
             }
             finally
             {
-                if (conversationHandle == default)
+                if (!useContextTransaction)
                 {
                     transaction?.Dispose();
                     connection.Dispose();
+                    _logger.LogDebug("Sending sql connection and sql transaction disposed.");
                 }
+
+                _logger.LogInformation("Sending sql service broker message complete.");
             }
         }
 
-        private static async Task EndConvo(SqlConnection connection, SqlTransaction transaction, Guid conversationHandle, Guid newConvHandle)
-        {
-            var edcc = new EndDialogConversationCommand(connection,
-                                                        newConvHandle,
-                                                        transaction: transaction);
+        private Task EndConversation(SqlConnection connection, SqlTransaction transaction, Guid conversationHandle)
+            => new EndDialogConversationCommand(connection, conversationHandle, transaction: transaction).ExecuteAsync();
 
-            if (conversationHandle == default)
-            {
-                await edcc.ExecuteAsync().ConfigureAwait(false);
-            }
-        }
+        private Task SendMessageOnConversation(SqlConnection connection, SqlTransaction transaction, OutboundBrokeredMessage brokeredMessage, string messageTypeName, Guid newConvHandle)
+            => new SendOnConversationCommand(connection, newConvHandle, brokeredMessage.Body, transaction, false, messageTypeName).ExecuteAsync();
 
-        private static async Task SendMessageOnConvo(SqlConnection connection,
-                                                     SqlTransaction transaction,
-                                                     OutboundBrokeredMessage brokeredMessage,
-                                                     string messageTypeName,
-                                                     Guid newConvHandle)
-        {
-            var socc = new SendOnConversationCommand(connection,
-                                                     newConvHandle,
-                                                     brokeredMessage.Body,
-                                                     transaction,
-                                                     false,
-                                                     messageTypeName);
-
-            await socc.ExecuteAsync().ConfigureAwait(false);
-        }
-
-        private static async Task<Guid> BeginConvo(SqlConnection connection,
-                                                   SqlTransaction transaction,
-                                                   Guid conversationHandle,
-                                                   OutboundBrokeredMessage brokeredMessage,
-                                                   object initiatorService,
-                                                   object serviceContractName,
-                                                   Guid relatedConversationGroupId)
-        {
-            var bdc = new BeginDialogConversationCommand(connection,
-                                                         brokeredMessage.Destination,
-                                                         (string)initiatorService,
-                                                         (string)serviceContractName,
-                                                         0,
-                                                         relatedConversationGroupId: relatedConversationGroupId,
-                                                         relatedConversationId: conversationHandle,
-                                                         transaction: transaction);
-
-            return conversationHandle == default ? await bdc.ExecuteAsync().ConfigureAwait(false) : conversationHandle;
-        }
+        private Task<Guid> BeginConversation(SqlConnection connection, SqlTransaction transaction, OutboundBrokeredMessage brokeredMessage, object initiatorService, object serviceContractName)
+            => new BeginDialogConversationCommand(connection, brokeredMessage.Destination, (string)initiatorService, (string)serviceContractName, 0, transaction: transaction).ExecuteAsync();
 
         public Task Dispatch(OutboundBrokeredMessage brokeredMessage, TransactionContext transactionContext)
             => Dispatch(new[] { brokeredMessage }, transactionContext);

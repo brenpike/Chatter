@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace Chatter.MessageBrokers.SqlServiceBroker
+﻿namespace Chatter.MessageBrokers.SqlServiceBroker
 {
     public static class SSBMessageContext
     {

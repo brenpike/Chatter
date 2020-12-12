@@ -39,7 +39,7 @@ namespace Chatter.MessageBrokers.Context
         {
             if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
-                return brokeredMessageDispatcher.Send(message, destinationPath, messageHandlerContext?.GetTransactionContext(), options);
+                return brokeredMessageDispatcher.Send(message, destinationPath, messageHandlerContext?.GetTransactionContext(), CreateSendOptionsWithMessageContext(messageHandlerContext, options));
             }
 
             return Task.CompletedTask;
@@ -56,7 +56,7 @@ namespace Chatter.MessageBrokers.Context
         {
             if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
-                return brokeredMessageDispatcher.Send(message, messageHandlerContext?.GetTransactionContext(), options);
+                return brokeredMessageDispatcher.Send(message, messageHandlerContext?.GetTransactionContext(), CreateSendOptionsWithMessageContext(messageHandlerContext, options));
             }
 
             return Task.CompletedTask;
@@ -74,7 +74,7 @@ namespace Chatter.MessageBrokers.Context
         {
             if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
-                return brokeredMessageDispatcher.Publish(message, destinationPath, messageHandlerContext?.GetTransactionContext(), options);
+                return brokeredMessageDispatcher.Publish(message, destinationPath, messageHandlerContext?.GetTransactionContext(), CreatePublishOptionsWithMessageContext(messageHandlerContext, options));
             }
 
             return Task.CompletedTask;
@@ -91,7 +91,7 @@ namespace Chatter.MessageBrokers.Context
         {
             if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
-                return brokeredMessageDispatcher.Publish(message, messageHandlerContext?.GetTransactionContext(), options);
+                return brokeredMessageDispatcher.Publish(message, messageHandlerContext?.GetTransactionContext(), CreatePublishOptionsWithMessageContext(messageHandlerContext, options));
             }
 
             return Task.CompletedTask;
@@ -108,7 +108,7 @@ namespace Chatter.MessageBrokers.Context
         {
             if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
             {
-                return brokeredMessageDispatcher.Publish(messages, messageHandlerContext?.GetTransactionContext(), options);
+                return brokeredMessageDispatcher.Publish(messages, messageHandlerContext?.GetTransactionContext(), CreatePublishOptionsWithMessageContext(messageHandlerContext, options));
             }
 
             return Task.CompletedTask;
@@ -160,6 +160,12 @@ namespace Chatter.MessageBrokers.Context
 
             return default;
         }
+
+        private static SendOptions CreateSendOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, SendOptions options)
+            => options ?? new SendOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
+
+        private static PublishOptions CreatePublishOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, PublishOptions options)
+            => options ?? new PublishOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
 
         private static T Get<T>(this IMessageHandlerContext messageHandlerContext)
         {

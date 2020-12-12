@@ -10,7 +10,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         public string ServiceName { get; }
         public string ServiceContractName { get; }
         public string MessageTypeName { get; }
-        public byte[] Message { get; }
+        public byte[] Body { get; }
 
         public ReceivedMessage(Guid convGroupHandle,
                                Guid convHandle,
@@ -18,7 +18,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                string serviceName,
                                string serviceContractName,
                                string messageTypeName,
-                               byte[] message)
+                               byte[] body)
         {
             ConvGroupHandle = convGroupHandle;
             ConvHandle = convHandle;
@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             ServiceName = serviceName;
             ServiceContractName = serviceContractName;
             MessageTypeName = messageTypeName;
-            Message = message;
+            Body = body;
         }
     }
 }
