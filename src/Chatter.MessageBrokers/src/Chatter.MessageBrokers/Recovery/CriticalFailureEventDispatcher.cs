@@ -29,6 +29,10 @@ namespace Chatter.MessageBrokers.Recovery
                 await dispatcher.Dispatch(new CriticalFailureEvent() { Context = failureContext }).ConfigureAwait(false);
                 _logger.LogTrace($"Dispatched '{nameof(CriticalFailureEvent)}'.");
             }
+            else
+            {
+                _logger.LogTrace($"{nameof(CriticalFailureEvent)} not dispatched. No {nameof(IMessageDispatcher)} registered.");
+            }
         }
     }
 }

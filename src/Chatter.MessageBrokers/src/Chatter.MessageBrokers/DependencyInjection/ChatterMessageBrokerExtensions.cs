@@ -5,6 +5,7 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery;
+using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
@@ -75,6 +76,10 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.Replace<IExternalDispatcher, BrokeredMessageDispatcher>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessagePathBuilder, DefaultBrokeredMessagePathBuilder>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessageAttributeDetailProvider, BrokeredMessageAttributeProvider>(ServiceLifetime.Scoped);
+
+            builder.Services.AddIfNotRegistered<ICircuitBreaker, CircuitBreaker>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<ICircuitBreakerStateStore, InMemoryCircuitBreakerStateStore>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered(ServiceLifetime.Scoped, sp => options?.Recovery?.CircuitBreakerOptions); //TODO: this isn't ideal
 
             builder.Services.AddScoped<IFailedReceiveRecoverer, FailedReceiveRecoverer>();
             builder.Services.AddIfNotRegistered<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);

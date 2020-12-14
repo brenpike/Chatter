@@ -156,23 +156,25 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 {
                     await _semaphore.WaitAsync(_messageReceiverLoopTokenSource.Token).ConfigureAwait(false);
 
-                    Message message = null;
-
                     try
                     {
-                        message = await this.InnerReceiver.ReceiveAsync();
-                    }
-                    catch (ServiceBusException sbe) when (sbe.IsTransient)
-                    {
-                    }
-                    catch (Exception e)
-                    {
-                        //TODO: circuit breaker - this could be infinite loop
-                        _logger.LogError($"Failure to receive message from Azure Serivce Bus: {e.Message}{Environment.NewLine}{e.StackTrace}");
-                    }
+                        Message message = null;
 
-                    try
-                    {
+                        try
+                        {
+                            message = await this.InnerReceiver.ReceiveAsync();
+                        }
+                        catch (ServiceBusException sbe) when (sbe.IsTransient)
+                        {
+                            //TODO: throw? do something special?
+                        }
+                        catch (Exception)
+                        {
+                            //TODO: log critical and return ending loop???
+                            _logger.LogError("Failure to receive message from Azure Serivce Bus");
+                            throw;
+                        }
+
                         if (message == null || _messageReceiverLoopTokenSource.IsCancellationRequested)
                         {
                             continue;
@@ -223,13 +225,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         }
                         catch (PoisonedMessageException pme)
                         {
+                            _logger?.LogError(pme, "Poisoned message received");
                             try
                             {
                                 await DeadLetterAsync(message, pme.Message, pme.InnerException?.Message).ConfigureAwait(false);
                             }
-                            catch (Exception deadLetterException)
+                            catch (Exception)
                             {
-                                _logger?.LogError($"Error deadlettering message: {deadLetterException.StackTrace}");
+                                _logger?.LogError("Error deadlettering poisoned message");
+                                throw;
                             }
 
                             continue;
@@ -238,9 +242,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         {
                             try
                             {
-                                _logger.LogError($"Error handling recevied message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'"
-                                                    + "\n"
-                                                    + $"{e}");
+                                _logger.LogError(e, "Error handling recevied message. Attempting recovery. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'");
 
                                 RecoveryState state = RecoveryState.Retrying;
 
@@ -277,15 +279,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                             }
                             catch (Exception onErrorException) when (onErrorException is MessageLockLostException || onErrorException is ServiceBusTimeoutException)
                             {
-                                _logger.LogDebug("Unable to recover from error that occurred during message receiving", onErrorException.StackTrace);
+                                _logger.LogError(onErrorException, "Unable to recover from error that occurred during message receiving");
                             }
                             catch (Exception onErrorException)
                             {
                                 var aggEx = new AggregateException(e, onErrorException);
 
-                                _logger.LogError($"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'"
-                                               + "\n"
-                                               + $"{onErrorException.StackTrace}");
+                                _logger.LogError(aggEx, $"Recovery was unsuccessful. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'");
 
                                 var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                         this.ErrorQueuePath,
@@ -296,13 +296,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
                                 await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);
 
-                                await DeadLetterAsync(message, $"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'", onErrorException.StackTrace).ConfigureAwait(false);
+                                await DeadLetterAsync(message,
+                                                      $"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'",
+                                                      aggEx.ToString()).ConfigureAwait(false);
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogCritical($"Error processing {typeof(Message).Name} with id '{message.MessageId}' and correlation id '{message.CorrelationId}': {ex.StackTrace}");
+                        //TODO: circuit breaker
+                        _logger.LogError(ex, "Error receiving and handling azure service bus message");
                     }
                     finally
                     {
