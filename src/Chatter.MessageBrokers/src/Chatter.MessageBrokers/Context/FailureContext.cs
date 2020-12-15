@@ -14,22 +14,17 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         /// <param name="failureDescription">The details of the error</param>
         /// <param name="failureDetail">The description of the error</param>
-        public FailureContext(InboundBrokeredMessage inbound, string errorQueueName, string failureDescription, string failureDetail, int deliveryCount, TransactionContext transactionContext)
+        public FailureContext(InboundBrokeredMessage inbound, string errorQueueName, string failureDescription, Exception failure, int deliveryCount, TransactionContext transactionContext)
         {
             if (string.IsNullOrWhiteSpace(failureDescription))
             {
                 throw new ArgumentException("A failure description is required when a failure occurs.", nameof(failureDescription));
             }
 
-            if (string.IsNullOrWhiteSpace(failureDetail))
-            {
-                throw new ArgumentException("Failure detail is required when a failure occurs.", nameof(failureDetail));
-            }
-
             Inbound = inbound;
             ErrorQueueName = errorQueueName;
             FailureDescription = failureDescription;
-            FailureDetail = failureDetail;
+            Failure = failure;
             DeliveryCount = deliveryCount;
             TransactionContext = transactionContext;
         }
@@ -44,11 +39,11 @@ namespace Chatter.MessageBrokers.Context
         /// <summary>
         /// The description of the error
         /// </summary>
-        public string FailureDetail { get; }
+        public Exception Failure { get; }
         public int DeliveryCount { get; }
         public TransactionContext TransactionContext { get; }
         public ContextContainer Container { get; } = new ContextContainer();
 
-        public override string ToString() => $"{FailureDescription}:\n{FailureDetail}";
+        public override string ToString() => $"{FailureDescription}:\n{Failure.Message} -> {Failure.StackTrace}";
     }
 }

@@ -14,5 +14,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         Task HalfOpen();
         bool IsClosed { get; }
         CircuitBreakerState State { get; }
+        int FailureCount { get; }
+        int SuccessCount { get; }
     }
 }

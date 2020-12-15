@@ -20,18 +20,18 @@ namespace Chatter.MessageBrokers.Recovery
 
         public async Task Notify(FailureContext failureContext)
         {
-            _logger.LogTrace($"Dispatching '{nameof(CriticalFailureEvent)}'. MessageId: '{failureContext.Inbound.MessageId}', CorrelationId: '{failureContext.Inbound.CorrelationId}'");
+            _logger.LogDebug($"Dispatching '{nameof(CriticalFailureEvent)}'.");
             using var scope = _scopeFactory.CreateScope();
             var dispatcher = scope.ServiceProvider.GetService<IMessageDispatcher>();
 
             if (dispatcher != null)
             {
                 await dispatcher.Dispatch(new CriticalFailureEvent() { Context = failureContext }).ConfigureAwait(false);
-                _logger.LogTrace($"Dispatched '{nameof(CriticalFailureEvent)}'.");
+                _logger.LogDebug($"Dispatched '{nameof(CriticalFailureEvent)}'.");
             }
             else
             {
-                _logger.LogTrace($"{nameof(CriticalFailureEvent)} not dispatched. No {nameof(IMessageDispatcher)} registered.");
+                _logger.LogDebug($"{nameof(CriticalFailureEvent)} not dispatched. No {nameof(IMessageDispatcher)} registered.");
             }
         }
     }

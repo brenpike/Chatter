@@ -224,7 +224,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                 var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                         this.ErrorQueueName,
                                                                         "Unable to handle received message",
-                                                                        e.StackTrace,
+                                                                        e,
                                                                         _localReceiverDeliveryAttempts[message.ConvHandle],
                                                                         transactionContext);
 
@@ -256,7 +256,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                 var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                         this.ErrorQueueName,
                                                                         "Unable to recover from error which occurred during message handling",
-                                                                        aggEx.ToString(),
+                                                                        aggEx,
                                                                         _localReceiverDeliveryAttempts[message.ConvHandle],
                                                                         transactionContext);
 

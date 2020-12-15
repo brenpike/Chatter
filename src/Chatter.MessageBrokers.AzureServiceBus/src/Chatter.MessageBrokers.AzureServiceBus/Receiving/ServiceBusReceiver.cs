@@ -251,7 +251,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                     var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                             this.ErrorQueuePath,
                                                                             "Unable to handle received message",
-                                                                            e.StackTrace,
+                                                                            e,
                                                                             message.SystemProperties.DeliveryCount,
                                                                             transactionContext);
 
@@ -290,7 +290,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                 var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                         this.ErrorQueuePath,
                                                                         "Unable to recover from error which occurred during message handling",
-                                                                        aggEx.ToString(),
+                                                                        aggEx,
                                                                         message.SystemProperties.DeliveryCount,
                                                                         transactionContext);
 
