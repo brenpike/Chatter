@@ -5,7 +5,7 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
-using Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker.Core;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
@@ -19,14 +19,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 {
     public class SqlServiceBrokerReceiver : IMessagingInfrastructureReceiver
     {
-        private const int _receiveTimeoutInMilliseconds = 60000;
         private readonly SqlServiceBrokerOptions _options;
         private readonly ILogger<SqlServiceBrokerReceiver> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly IFailedReceiveRecoverer _failedReceiveRecoverer;
         private readonly ICriticalFailureNotifier _criticalFailureNotifier;
         private CancellationTokenSource _cancellationSource;
-        private readonly string _contentType;
         private TransactionMode _transactionMode;
         private readonly ConcurrentDictionary<Guid, int> _localReceiverDeliveryAttempts;
         private readonly ICircuitBreaker _circuitBreaker;
@@ -44,7 +42,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             _bodyConverterFactory = bodyConverterFactory;
             _failedReceiveRecoverer = failedReceiveRecoverer;
             _criticalFailureNotifier = criticalFailureNotifier;
-            _contentType = "application/json"; //TODO: move this to SqlServiceBrokerOptions
             _transactionMode = messageBrokerOptions?.TransactionMode ?? TransactionMode.None;
             _localReceiverDeliveryAttempts = new ConcurrentDictionary<Guid, int>();
             _circuitBreaker = circuitBreaker;
@@ -108,8 +105,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         {
             var receiveMessageFromQueue = new ReceiveMessageFromQueueCommand(connection,
                                              this.QueueName,
-                                             _options.SchemaName,
-                                             _receiveTimeoutInMilliseconds / 2, //TODO: how to handle timeouts
+                                             _options.ReceiverTimeoutInMilliseconds,
                                              transaction: transaction);
 
             return await receiveMessageFromQueue.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
@@ -158,7 +154,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                             using var receiverTokenSource = new CancellationTokenSource();
                             try
                             {
-                                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_contentType);
+                                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_options.MessageBodyType);
 
                                 var headers = new Dictionary<string, object>
                                 {
@@ -299,6 +295,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                                            message.ConvHandle,
                                                            errorCode,
                                                            errorDescription,
+                                                           _options.CleanupOnEndConversation,
                                                            transaction: (SqlTransaction)transaction);
                 await edc.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
                 transaction?.Commit();

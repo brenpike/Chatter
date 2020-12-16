@@ -2,7 +2,7 @@
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
-using Chatter.MessageBrokers.SqlServiceBroker.Scripts.ServiceBroker.Core;
+using Chatter.MessageBrokers.SqlServiceBroker.Scripts;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -105,13 +105,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
         }
 
         private Task EndConversation(SqlConnection connection, SqlTransaction transaction, Guid conversationHandle)
-            => new EndDialogConversationCommand(connection, conversationHandle, transaction: transaction).ExecuteAsync();
+            => new EndDialogConversationCommand(connection, conversationHandle, enableCleanup: _options.CleanupOnEndConversation, transaction: transaction).ExecuteAsync();
 
         private Task SendMessageOnConversation(SqlConnection connection, SqlTransaction transaction, OutboundBrokeredMessage brokeredMessage, string messageTypeName, Guid newConvHandle)
-            => new SendOnConversationCommand(connection, newConvHandle, brokeredMessage.Body, transaction, false, messageTypeName).ExecuteAsync();
+            => new SendOnConversationCommand(connection, newConvHandle, brokeredMessage.Body, transaction, _options.CompressMessageBody, messageTypeName).ExecuteAsync();
 
         private Task<Guid> BeginConversation(SqlConnection connection, SqlTransaction transaction, OutboundBrokeredMessage brokeredMessage, object initiatorService, object serviceContractName)
-            => new BeginDialogConversationCommand(connection, brokeredMessage.Destination, (string)initiatorService, (string)serviceContractName, 0, transaction: transaction).ExecuteAsync();
+            => new BeginDialogConversationCommand(connection, brokeredMessage.Destination, (string)initiatorService, (string)serviceContractName, _options.ConversationLifetimeInSeconds, transaction: transaction).ExecuteAsync();
 
         public Task Dispatch(OutboundBrokeredMessage brokeredMessage, TransactionContext transactionContext)
             => Dispatch(new[] { brokeredMessage }, transactionContext);
