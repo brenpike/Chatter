@@ -8,15 +8,20 @@ namespace Chatter.MessageBrokers.Routing.Options
         public const string DefaultContentType = "application/json";
 
         public RoutingOptions()
+            : this(new Dictionary<string, object>())
         {
             Container = new ContextContainer();
-            MessageContext = new Dictionary<string, object>();
         }
 
         public RoutingOptions(IDictionary<string, object> context)
         {
             Container = new ContextContainer();
             MessageContext = context;
+
+            if (MessageContext.TryGetValue(MessageBrokers.MessageContext.ContentType, out var contentType))
+            {
+                ContentType = (string)contentType;
+            }
         }
 
         public string MessageId { get; set; }

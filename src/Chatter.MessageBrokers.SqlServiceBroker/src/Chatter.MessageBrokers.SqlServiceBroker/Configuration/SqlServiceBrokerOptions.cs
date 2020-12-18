@@ -9,7 +9,7 @@
         /// <summary>
         /// The content type of the message body. The default is application/json.
         /// </summary>
-        public string MessageBodyType { get; set; } = "application/json";
+        public string MessageBodyType { get; set; } = "application/json; charset=utf-16";
         /// <summary>
         /// Specifies the amount of time, in milliseconds, for the statement to wait for a message. 
         /// This clause can only be used with the WAITFOR clause. If this clause is not specified, or the time-out is -1, the wait time is unlimited. 

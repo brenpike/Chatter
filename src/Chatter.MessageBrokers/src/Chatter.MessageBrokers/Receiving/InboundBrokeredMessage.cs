@@ -19,6 +19,7 @@ namespace Chatter.MessageBrokers.Receiving
             MessageReceiverPath = messageReceiverPath;
             BodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
             CorrelationId = GetMessageContextByKey<string>(MessageBrokers.MessageContext.CorrelationId);
+            MessageContextImpl[MessageBrokers.MessageContext.ContentType] = bodyConverter.ContentType;
         }
 
         /// <summary>

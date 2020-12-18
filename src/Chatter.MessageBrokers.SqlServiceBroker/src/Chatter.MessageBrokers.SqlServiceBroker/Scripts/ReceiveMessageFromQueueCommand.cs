@@ -56,6 +56,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
             receiveCommand.Transaction = _transaction;
             receiveCommand.Connection = _connection;
             receiveCommand.CommandType = CommandType.Text;
+            receiveCommand.CommandTimeout = 0;
 
             query.Append("WAITFOR (RECEIVE TOP(1) " +
                          "conversation_group_id, conversation_handle, " +
@@ -77,7 +78,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
             {
                 query.Append(", TIMEOUT @timeoutInSeconds");
                 receiveCommand.Parameters.Add(new SqlParameter("@timeoutInSeconds", _timeout));
-                receiveCommand.CommandTimeout = 0;
             }
 
             receiveCommand.CommandText = query.ToString();

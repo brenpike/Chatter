@@ -22,7 +22,7 @@ namespace Microsoft.Extensions.DependencyInjection
             var options = optBuilder.Build();
 
             chatterBuilder.Services.Replace<IMessagingInfrastructureDispatcher, SqlServiceBrokerSender>(ServiceLifetime.Scoped);
-            chatterBuilder.Services.Replace<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>(ServiceLifetime.Scoped);
+            chatterBuilder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
             chatterBuilder.Services.AddSingleton(options);
             chatterBuilder.Services.Replace<IMessagingInfrastructureReceiver, SqlServiceBrokerReceiver>(ServiceLifetime.Scoped);
 

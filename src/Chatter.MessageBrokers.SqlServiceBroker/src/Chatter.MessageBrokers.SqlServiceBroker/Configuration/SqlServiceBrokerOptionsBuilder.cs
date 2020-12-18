@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         }
 
         public SqlServiceBrokerOptionsBuilder AddSqlServiceBrokerOptions(string connectionString,
-                                                                         string messageBodyType = "application/json",
+                                                                         string messageBodyType = "application/json; charset=utf-16",
                                                                          int receiverTimeoutInMilliseconds = -1,
                                                                          int conversationLifetimeInSeconds = 0,
                                                                          bool coversationEncryption = false,

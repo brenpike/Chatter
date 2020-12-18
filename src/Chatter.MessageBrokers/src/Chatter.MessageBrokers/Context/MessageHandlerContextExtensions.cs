@@ -162,10 +162,28 @@ namespace Chatter.MessageBrokers.Context
         }
 
         private static SendOptions CreateSendOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, SendOptions options)
-            => options ?? new SendOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
+        {
+            if (options != null)
+            {
+                foreach (var key in options.MessageContext.Keys)
+                {
+                    messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl[key] = options.MessageContext[key];
+                }
+            }
+            return new SendOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
+        }
 
         private static PublishOptions CreatePublishOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, PublishOptions options)
-            => options ?? new PublishOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
+        {
+            if (options != null)
+            {
+                foreach (var key in options.MessageContext.Keys)
+                {
+                    messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl[key] = options.MessageContext[key];
+                }
+            }
+            return new PublishOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
+        }
 
         private static T Get<T>(this IMessageHandlerContext messageHandlerContext)
         {
