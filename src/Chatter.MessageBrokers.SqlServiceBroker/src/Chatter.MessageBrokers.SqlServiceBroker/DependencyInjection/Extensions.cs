@@ -21,10 +21,21 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(optBuilder);
             var options = optBuilder.Build();
 
-            chatterBuilder.Services.Replace<IMessagingInfrastructureDispatcher, SqlServiceBrokerSender>(ServiceLifetime.Scoped);
+            chatterBuilder.Services.AddScoped<SqlServiceBrokerReceiver>();
+            chatterBuilder.Services.AddSingleton<IMessagingInfrastructureDispatcherFactory, SqlServiceBrokerSenderFactory>();
+
+            chatterBuilder.Services.AddScoped<SqlServiceBrokerSender>();
+            chatterBuilder.Services.AddSingleton<IMessagingInfrastructureReceiverFactory, SqlServiceBrokerReceiverFactory>();
+
+            chatterBuilder.Services.AddScoped<IMessagingInfrastructure>(sp =>
+            {
+                var sender = sp.GetRequiredService<IMessagingInfrastructureDispatcherFactory>();
+                var receiver = sp.GetRequiredService<IMessagingInfrastructureReceiverFactory>();
+                return new MessagingInfrastructure(SSBMessageContext.InfrastructureType, receiver, sender);
+            });
+
             chatterBuilder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
             chatterBuilder.Services.AddSingleton(options);
-            chatterBuilder.Services.Replace<IMessagingInfrastructureReceiver, SqlServiceBrokerReceiver>(ServiceLifetime.Scoped);
 
             return chatterBuilder;
         }

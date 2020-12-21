@@ -20,10 +20,10 @@ namespace Chatter.MessageBrokers
         }
 
         /// <summary>
-        /// Get the <see cref="BrokeredMessageAttribute.MessageName"/> from a class decorated with a <see cref="BrokeredMessageAttribute"/>.
+        /// Get the <see cref="BrokeredMessageAttribute.SendingPath"/> from a class decorated with a <see cref="BrokeredMessageAttribute"/>.
         /// </summary>
         /// <typeparam name="T">A class decorated with a <see cref="BrokeredMessageAttribute"/></typeparam>
-        /// <returns><see cref="BrokeredMessageAttribute.MessageName"/></returns>
+        /// <returns><see cref="BrokeredMessageAttribute.SendingPath"/></returns>
         public string GetMessageName<T>()
             => GetMessageName(typeof(T));
 
@@ -42,7 +42,7 @@ namespace Chatter.MessageBrokers
 
         public string GetMessageName(Type type)
         {
-            var message = type.TryGetBrokeredMessageAttribute()?.MessageName;
+            var message = type.TryGetBrokeredMessageAttribute()?.SendingPath;
             return _brokeredMessagePathBuilder.GetMessageSendingPath(message);
         }
 

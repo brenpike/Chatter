@@ -3,24 +3,24 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     public class OutboxProcessor : IOutboxProcessor
     {
-        private readonly IMessagingInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
+        private readonly IMessagingInfrastructureProvider _infrastructureProvider;
         private readonly ILogger<OutboxProcessor> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly IBrokeredMessageOutbox _brokeredMessageOutbox;
 
-        public OutboxProcessor(IMessagingInfrastructureDispatcher brokeredMessageInfrastructureDispatcher,
+        public OutboxProcessor(IMessagingInfrastructureProvider infrastructureProvider,
                                ILogger<OutboxProcessor> logger,
                                IBodyConverterFactory bodyConverterFactory,
                                IBrokeredMessageOutbox brokeredMessageOutbox)
         {
-            _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
+            _infrastructureProvider = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _brokeredMessageOutbox = brokeredMessageOutbox ?? throw new ArgumentNullException(nameof(brokeredMessageOutbox));
@@ -41,6 +41,9 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 _logger.LogTrace($"Outbox message did not contain content type. Retrieved from message context.");
             }
 
+            messageContext.TryGetValue(MessageContext.InfrastructureType, out var infra);
+            var dispatcherInfrastructure = _infrastructureProvider.GetDispatcher((string)infra);
+
             if (string.IsNullOrWhiteSpace(contentType))
             {
                 _logger.LogTrace($"No content type set in outbox message or message context. Unable to dispatch message.");
@@ -52,7 +55,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             var outbound = new OutboundBrokeredMessage(message.MessageId, converter.GetBytes(message.MessageBody), messageContext, message.Destination, converter);
             _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 
-            await _brokeredMessageInfrastructureDispatcher.Dispatch(outbound, null).ConfigureAwait(false);
+            await dispatcherInfrastructure.Dispatch(outbound, null).ConfigureAwait(false);
             _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
 
             await _brokeredMessageOutbox.UpdateProcessedDate(message).ConfigureAwait(false);

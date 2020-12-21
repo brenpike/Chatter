@@ -54,7 +54,6 @@ namespace Chatter.MessageBrokers.Receiving
         /// The receivers visited by the inbound message prior to the most recent message receiver
         /// </summary>
         public string Via => GetMessageContextByKey<string>(MessageBrokers.MessageContext.Via);
-        internal IBrokeredMessageBodyConverter BodyConverter { get; }
 
         /// <summary>
         /// Gets a message of type <typeparamref name="TBody"/> from the message body
@@ -63,6 +62,14 @@ namespace Chatter.MessageBrokers.Receiving
         /// <returns>The strongly typed message payload</returns>
         public TBody GetMessageFromBody<TBody>()
             => this.BodyConverter.Convert<TBody>(this.Body);
+
+        public InboundBrokeredMessage UseMessagingInfrastructure(Func<InfrastructureTypes, string> infrastructureSelector)
+        {
+            MessageContextImpl[MessageBrokers.MessageContext.InfrastructureType] = infrastructureSelector(new InfrastructureTypes());
+            return this;
+        }
+
+        internal IBrokeredMessageBodyConverter BodyConverter { get; }
 
         internal InboundBrokeredMessage UpdateVia(string via)
         {

@@ -4,12 +4,12 @@ using Chatter.CQRS.DependencyInjection;
 using Chatter.CQRS.Events;
 using Chatter.CQRS.Pipeline;
 using Chatter.CQRS.Queries;
+using Microsoft.Extensions.Configuration;
 using Scrutor;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using Microsoft.Extensions.Configuration;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -34,7 +34,7 @@ namespace Microsoft.Extensions.DependencyInjection
             return builder;
         }
 
-        static PipelineBuilder CreatePipelineBuilder(this IServiceCollection services) 
+        static PipelineBuilder CreatePipelineBuilder(this IServiceCollection services)
             => new PipelineBuilder(services);
 
         public static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<PipelineBuilder> pipelineBulder)

@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Commands;
+using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
@@ -37,30 +38,54 @@ namespace Chatter.MessageBrokers.Sending
             => Dispatch(new[] { message }, transactionContext, options ?? new SendOptions(), destinationPath);
 
         /// <inheritdoc/>
+        public Task Send<TMessage>(TMessage message, string destinationPath, IMessageHandlerContext messageHandlerContext, SendOptions options = null) where TMessage : ICommand
+           => Send(message, destinationPath, messageHandlerContext?.GetTransactionContext(), MergeSendOptionsWithMessageContext(messageHandlerContext, options));
+
+        /// <inheritdoc/>
         public Task Send<TMessage>(TMessage message, TransactionContext transactionContext = null, SendOptions options = null) where TMessage : ICommand
             => Dispatch(new[] { message }, transactionContext, options ?? new SendOptions());
+
+        /// <inheritdoc/>
+        public Task Send<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext, SendOptions options = null) where TMessage : ICommand
+            => Send(message, messageHandlerContext?.GetTransactionContext(), MergeSendOptionsWithMessageContext(messageHandlerContext, options));
 
         /// <inheritdoc/>
         public Task Publish<TMessage>(TMessage message, string destinationPath, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
             => Dispatch(new[] { message }, transactionContext, options ?? new PublishOptions(), destinationPath);
 
         /// <inheritdoc/>
+        public Task Publish<TMessage>(TMessage message, string destinationPath, IMessageHandlerContext messageHandlerContext, PublishOptions options = null) where TMessage : IEvent
+            => Publish(message, destinationPath, messageHandlerContext?.GetTransactionContext(), MergePublishOptionsWithMessageContext(messageHandlerContext, options));
+
+        /// <inheritdoc/>
         public Task Publish<TMessage>(TMessage message, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
             => Dispatch(new[] { message }, transactionContext, options ?? new PublishOptions());
+
+        /// <inheritdoc/>
+        public Task Publish<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext, PublishOptions options = null) where TMessage : IEvent
+            => Publish(message, messageHandlerContext?.GetTransactionContext(), MergePublishOptionsWithMessageContext(messageHandlerContext, options));
 
         /// <inheritdoc/>
         public Task Publish<TMessage>(IEnumerable<TMessage> messages, TransactionContext transactionContext = null, PublishOptions options = null) where TMessage : IEvent
             => Dispatch(messages, transactionContext, options ?? new PublishOptions());
 
+        /// <inheritdoc/>
+        public Task Publish<TMessage>(IEnumerable<TMessage> messages, IMessageHandlerContext messageHandlerContext, PublishOptions options = null) where TMessage : IEvent
+            => Publish(messages, messageHandlerContext?.GetTransactionContext(), MergePublishOptionsWithMessageContext(messageHandlerContext, options));
+
         public Task Forward(InboundBrokeredMessage inboundBrokeredMessage, string forwardDestination, TransactionContext transactionContext)
             => _forwarder.Route(inboundBrokeredMessage, forwardDestination, transactionContext);
+
+        public Task Forward(string forwardDestination, IMessageBrokerContext context)
+            => Forward(context.BrokeredMessage, forwardDestination, context?.GetTransactionContext());
 
         Task Dispatch<TMessage, TOptions>(IEnumerable<TMessage> messages, TransactionContext transactionContext, TOptions options, string destinationPath = null)
         where TMessage : IMessage
         where TOptions : RoutingOptions, new()
         {
             var outbounds = Dispatch(messages, destinationPath, options);
-            return _messageRouter.Route(outbounds, transactionContext);
+            options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
+            return _messageRouter.Route(outbounds, transactionContext, (string)infraType);
         }
 
         IEnumerable<OutboundBrokeredMessage> Dispatch<TMessage, TOptions>(IEnumerable<TMessage> messages, string destinationPath, TOptions options)
@@ -102,6 +127,29 @@ namespace Chatter.MessageBrokers.Sending
                 }
 
                 yield return outbound;
+            }
+        }
+
+        private SendOptions MergeSendOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, SendOptions options)
+        {
+            Merge(messageHandlerContext, options);
+            return new SendOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
+        }
+
+        private PublishOptions MergePublishOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, PublishOptions options)
+        {
+            Merge(messageHandlerContext, options);
+            return new PublishOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
+        }
+
+        private void Merge<TOptions>(IMessageHandlerContext messageHandlerContext, TOptions options) where TOptions : RoutingOptions, new()
+        {
+            if (options != null)
+            {
+                foreach (var key in options.MessageContext.Keys)
+                {
+                    messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl[key] = options.MessageContext[key];
+                }
             }
         }
     }

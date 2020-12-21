@@ -48,7 +48,7 @@ namespace Chatter.MessageBrokers.Reliability
                 MessageContext = JsonConvert.SerializeObject(outboundBrokeredMessage.MessageContext),
                 Destination = outboundBrokeredMessage.Destination,
                 MessageBody = outboundBrokeredMessage.Stringify(),
-                MessageContentType = outboundBrokeredMessage.GetContentType(),
+                MessageContentType = outboundBrokeredMessage.ContentType,
                 SentToOutboxAtUtc = DateTime.UtcNow,
                 ProcessedFromOutboxAtUtc = null,
                 BatchId = transactionId

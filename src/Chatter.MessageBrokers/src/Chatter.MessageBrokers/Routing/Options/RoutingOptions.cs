@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS.Context;
+using System;
 using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Routing.Options
@@ -30,9 +31,10 @@ namespace Chatter.MessageBrokers.Routing.Options
         internal IDictionary<string, object> MessageContext { get; }
 
         public void SetCorrelationId(string correlationId)
-        {
-            this.WithMessageContext(MessageBrokers.MessageContext.CorrelationId, correlationId);
-        }
+            => this.WithMessageContext(MessageBrokers.MessageContext.CorrelationId, correlationId);
+
+        public void UseMessagingInfrastructure(Func<InfrastructureTypes, string> infrastructureSelector)
+            => this.WithMessageContext(MessageBrokers.MessageContext.InfrastructureType, infrastructureSelector(new InfrastructureTypes()));
 
         public ContextContainer Container { get; }
     }

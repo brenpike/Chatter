@@ -1,18 +1,17 @@
-﻿using Chatter.CQRS;
-using Chatter.CQRS.Commands;
-using Chatter.CQRS.Context;
+﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Events;
+using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
-namespace Chatter.MessageBrokers.Context
+namespace Chatter.CQRS.Context
 {
     public static class MessageHandlerContextExtensions
     {
-        public static bool TryGetExternalDispatcher(this IMessageHandlerContext context, out IBrokeredMessageDispatcher brokeredMessageDispatcher)
+        public static bool TryGetBrokeredMessageDispatcher(this IMessageHandlerContext context, out IBrokeredMessageDispatcher brokeredMessageDispatcher)
         {
             if (context.Container.TryGet<IExternalDispatcher>(out var ed))
             {
@@ -28,106 +27,82 @@ namespace Chatter.MessageBrokers.Context
         }
 
         /// <summary>
-        /// Sends a command to an external receiver via a message broker specified by <paramref name="destinationPath"/>.
+        /// Sends a command to the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
+        /// If <see cref="BrokeredMessageReceiver{TMessage}"/> did not trigger the <see cref="IMessageHandler{TMessage}"/> this will be a no op.
+        /// Target Messaging Infrastructure can be overridden by setting <see cref="MessageContext.InfrastructureType"/> via <paramref name="options"/>, <see cref="BrokeredMessageAttribute.InfrastructureType"/> or infrastructure specific Send overload (if available).
+        /// Destination must be configured using <paramref name="destinationPath"/>.
         /// </summary>
         /// <typeparam name="TMessage">The type of message to send.</typeparam>
         /// <param name="message">The message to be sent.</param>
         /// <param name="destinationPath">The destination path of the receiver that will receive this message.</param>
         /// <param name="options">The options to be used while sending <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public static Task Send<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand
-        {
-            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
-            {
-                return brokeredMessageDispatcher.Send(message, destinationPath, messageHandlerContext?.GetTransactionContext(), CreateSendOptionsWithMessageContext(messageHandlerContext, options));
-            }
-
-            return Task.CompletedTask;
-        }
+        public static Task Send<TMessage>(this IMessageHandlerContext context, TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand
+             => context.AsMessageBrokerContext()?.Send(message, destinationPath, options);
 
         /// <summary>
-        /// Sends a command to an external receiver via a message broker. Destination must be configured using <see cref="BrokeredMessageAttribute"/>.
+        /// Sends a command to the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
+        /// If <see cref="BrokeredMessageReceiver{TMessage}"/> did not trigger the <see cref="IMessageHandler{TMessage}"/> this will be a no op.
+        /// Target Messaging Infrastructure can be overridden by setting <see cref="MessageContext.InfrastructureType"/> via <paramref name="options"/>, <see cref="BrokeredMessageAttribute.InfrastructureType"/> or infrastructure specific Send overload (if available).
+        /// Destination must be configured using <see cref="BrokeredMessageAttribute"/>.
         /// </summary>
         /// <typeparam name="TMessage">The type of command to send.</typeparam>
         /// <param name="message">The command to be sent.</param>
         /// <param name="options">The options to be used while sending <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public static Task Send<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, SendOptions options = null) where TMessage : ICommand
-        {
-            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
-            {
-                return brokeredMessageDispatcher.Send(message, messageHandlerContext?.GetTransactionContext(), CreateSendOptionsWithMessageContext(messageHandlerContext, options));
-            }
-
-            return Task.CompletedTask;
-        }
+        public static Task Send<TMessage>(this IMessageHandlerContext context, TMessage message, SendOptions options = null) where TMessage : ICommand
+             => context.AsMessageBrokerContext()?.Send(message, options);
 
         /// <summary>
-        /// Publishes an event to all external receivers which are subscribed. Requires the publishing path to be specified by <paramref name="destinationPath"/>.
+        /// Publishes an event to all external receivers which are subscribed via the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
+        /// If <see cref="BrokeredMessageReceiver{TMessage}"/> did not trigger the <see cref="IMessageHandler{TMessage}"/> this will be a no op.
+        /// Target Messaging Infrastructure can be overridden by setting <see cref="MessageContext.InfrastructureType"/> via <paramref name="options"/>, <see cref="BrokeredMessageAttribute.InfrastructureType"/> or infrastructure specific Publish overload (if available).
+        /// Destination must be configured using <paramref name="destinationPath"/>.
         /// </summary>
         /// <typeparam name="TMessage">The type of event to publish.</typeparam>
         /// <param name="message">The event to be publish.</param>
         /// <param name="destinationPath">The destination path that <paramref name="message"/> will be published to.</param>
         /// <param name="options">The options to be used while publishing <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public static Task Publish<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent
-        {
-            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
-            {
-                return brokeredMessageDispatcher.Publish(message, destinationPath, messageHandlerContext?.GetTransactionContext(), CreatePublishOptionsWithMessageContext(messageHandlerContext, options));
-            }
-
-            return Task.CompletedTask;
-        }
+        public static Task Publish<TMessage>(this IMessageHandlerContext context, TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent
+            => context.AsMessageBrokerContext()?.Publish(message, destinationPath, options);
 
         /// <summary>
-        /// Publishes an event to all external receivers which are subscribed. Publisher path must be configured using <see cref="BrokeredMessageAttribute"/>.
+        /// Publishes an event to all external receivers which are subscribed via the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
+        /// If <see cref="BrokeredMessageReceiver{TMessage}"/> did not trigger the <see cref="IMessageHandler{TMessage}"/> this will be a no op.
+        /// Target Messaging Infrastructure can be overridden by setting <see cref="MessageContext.InfrastructureType"/> via <paramref name="options"/>, <see cref="BrokeredMessageAttribute.InfrastructureType"/> or infrastructure specific Publish overload (if available).
+        /// Destination must be configured using <see cref="BrokeredMessageAttribute"/>.
         /// </summary>
         /// <typeparam name="TMessage">The type of event to publish.</typeparam>
         /// <param name="message">The event to be publish.</param>
         /// <param name="options">The options to be used while publishing <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public static Task Publish<TMessage>(this IMessageHandlerContext messageHandlerContext, TMessage message, PublishOptions options = null) where TMessage : IEvent
-        {
-            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
-            {
-                return brokeredMessageDispatcher.Publish(message, messageHandlerContext?.GetTransactionContext(), CreatePublishOptionsWithMessageContext(messageHandlerContext, options));
-            }
-
-            return Task.CompletedTask;
-        }
+        public static Task Publish<TMessage>(this IMessageHandlerContext context, TMessage message, PublishOptions options = null) where TMessage : IEvent
+            => context.AsMessageBrokerContext()?.Publish(message, options);
 
         /// <summary>
-        /// Publishes a batch of events to all external receivers which are subscribed. Publisher path must be configured using <see cref="BrokeredMessageAttribute"/>.
+        /// Publishes a batch of events to all external receivers which are subscribed via the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
+        /// If <see cref="BrokeredMessageReceiver{TMessage}"/> did not trigger the <see cref="IMessageHandler{TMessage}"/> this will be a no op.
+        /// Target Messaging Infrastructure can be overridden by setting <see cref="MessageContext.InfrastructureType"/> via <paramref name="options"/>, <see cref="BrokeredMessageAttribute.InfrastructureType"/> or infrastructure specific Publish overload (if available).
+        /// Destination must be configured using <see cref="BrokeredMessageAttribute"/>.
         /// </summary>
         /// <typeparam name="TMessage">The type of event to publish.</typeparam>
         /// <param name="messages">The batch of events to be puublished.</param>
         /// <param name="options">The options to be used while publishing <paramref name="messages"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public static Task Publish<TMessage>(this IMessageHandlerContext messageHandlerContext, IEnumerable<TMessage> messages, PublishOptions options = null) where TMessage : IEvent
-        {
-            if (messageHandlerContext.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
-            {
-                return brokeredMessageDispatcher.Publish(messages, messageHandlerContext?.GetTransactionContext(), CreatePublishOptionsWithMessageContext(messageHandlerContext, options));
-            }
-
-            return Task.CompletedTask;
-        }
+        public static Task Publish<TMessage>(this IMessageHandlerContext context, IEnumerable<TMessage> messages, PublishOptions options = null) where TMessage : IEvent
+            => context.AsMessageBrokerContext()?.Publish(messages, options);
 
         /// <summary>
-        /// Forwards a message received from a message broker to a new destination
+        /// Forwards a message to the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
+        /// If <see cref="BrokeredMessageReceiver{TMessage}"/> did not trigger the <see cref="IMessageHandler{TMessage}"/> this will be a no op.
+        /// Target Messaging Infrastructure can be overridden by using the infrastructure specific Forward overload (if available).
+        /// Destination must be configured using <paramref name="forwardDestination"/>.
         /// </summary>
         /// <param name="forwardDestination">The destination to forward the message to.</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         public static Task Forward(this IMessageHandlerContext context, string forwardDestination)
-        {
-            if (context.TryGetExternalDispatcher(out var brokeredMessageDispatcher))
-            {
-                return brokeredMessageDispatcher.Forward(context.GetInboundBrokeredMessage(), forwardDestination, context?.GetTransactionContext());
-            }
-
-            return Task.CompletedTask;
-        }
+            => context.AsMessageBrokerContext()?.Forward(forwardDestination);
 
         /// <summary>
         /// Gets contextual information about a message broker from message handler context
@@ -159,30 +134,6 @@ namespace Chatter.MessageBrokers.Context
             }
 
             return default;
-        }
-
-        private static SendOptions CreateSendOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, SendOptions options)
-        {
-            if (options != null)
-            {
-                foreach (var key in options.MessageContext.Keys)
-                {
-                    messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl[key] = options.MessageContext[key];
-                }
-            }
-            return new SendOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
-        }
-
-        private static PublishOptions CreatePublishOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, PublishOptions options)
-        {
-            if (options != null)
-            {
-                foreach (var key in options.MessageContext.Keys)
-                {
-                    messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl[key] = options.MessageContext[key];
-                }
-            }
-            return new PublishOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
         }
 
         private static T Get<T>(this IMessageHandlerContext messageHandlerContext)

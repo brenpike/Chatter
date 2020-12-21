@@ -30,15 +30,21 @@ namespace Chatter.MessageBrokers.Receiving
         /// <param name="serviceFactory">The service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
         /// <param name="logger">Provides logging capability</param>
         public BrokeredMessageReceiver(ReceiverOptions options,
-                                       IMessagingInfrastructureReceiver infrastructureReceiver,
+                                       IMessagingInfrastructureProvider infrastructureReceiver,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
                                        IServiceScopeFactory serviceFactory,
                                        IBrokeredMessagePathBuilder brokeredMessagePathBuilder)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
+
+            if (infrastructureReceiver is null)
+            {
+                throw new ArgumentNullException(nameof(infrastructureReceiver));
+            }
+
             _options.MessageReceiverPath = brokeredMessagePathBuilder.GetMessageReceivingPath(options.SendingPath, options.MessageReceiverPath);
             _options.Description = options.Description ?? _options.MessageReceiverPath;
-            _infrastructureReceiver = infrastructureReceiver ?? throw new ArgumentNullException(nameof(infrastructureReceiver));
+            _infrastructureReceiver = infrastructureReceiver.GetReceiver(options.InfrastructureType);
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }

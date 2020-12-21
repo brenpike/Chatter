@@ -163,7 +163,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                     [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
                                     [SSBMessageContext.ServiceName] = message.ServiceName,
                                     [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
-                                    [SSBMessageContext.MessageTypeName] = message.MessageTypeName
+                                    [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
+                                    [SSBMessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType
                                 };
 
                                 messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);

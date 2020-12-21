@@ -191,6 +191,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                             {
                                 message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
                                 message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
+                                message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
 
                                 var bodyConverter = _bodyConverterFactory.CreateBodyConverter(message.ContentType);
 

@@ -28,9 +28,21 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(optBuilder);
             var options = optBuilder.Build();
 
-            builder.Services.Replace<IMessagingInfrastructureDispatcher, ServiceBusMessageSender>(ServiceLifetime.Scoped);
+            builder.Services.AddScoped<ServiceBusReceiver>();
+            builder.Services.AddSingleton<IMessagingInfrastructureReceiverFactory, ServiceBusReceiverFactory>();
+
+            builder.Services.AddScoped<ServiceBusMessageSender>();
+            builder.Services.AddSingleton<IMessagingInfrastructureDispatcherFactory, ServiceBusMessageSenderFactory>();
+
+            builder.Services.AddScoped<IMessagingInfrastructure>(sp =>
+            {
+                var sender = sp.GetRequiredService<IMessagingInfrastructureDispatcherFactory>();
+                var receiver = sp.GetRequiredService<IMessagingInfrastructureReceiverFactory>();
+                return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, receiver, sender);
+            });
+
+
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
-            builder.Services.Replace<IMessagingInfrastructureReceiver, ServiceBusReceiver>(ServiceLifetime.Scoped);
             builder.Services.Replace<IBrokeredMessagePathBuilder, AzureServiceBusEntityPathBuilder>(ServiceLifetime.Scoped);
 
             return builder;

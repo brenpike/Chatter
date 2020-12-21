@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.AzureServiceBus.Core;
-using Chatter.MessageBrokers.AzureServiceBus.Extensions;
+﻿using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Azure.ServiceBus;
 using System;
@@ -13,12 +12,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             var message = new Message(brokeredMessage.Body)
             {
                 MessageId = string.IsNullOrWhiteSpace(brokeredMessage.MessageId) ? Guid.NewGuid().ToString() : brokeredMessage.MessageId,
-                CorrelationId = brokeredMessage.GetCorrelationId(),
-                ContentType = brokeredMessage.GetContentType(),
-                Label = brokeredMessage.GetSubject(),
-                ReplyTo = brokeredMessage.GetReplyToAddress(),
-                ReplyToSessionId = brokeredMessage.GetReplyToGroupId(),
-                SessionId = brokeredMessage.GetGroupId(),
+                CorrelationId = brokeredMessage.CorrelationId,
+                ContentType = brokeredMessage.ContentType,
+                Label = brokeredMessage.Subject,
+                ReplyTo = brokeredMessage.ReplyToAddress,
+                ReplyToSessionId = brokeredMessage.ReplyToGroupId,
+                SessionId = brokeredMessage.GroupId,
                 PartitionKey = brokeredMessage.GetPartitionKey(),
                 ViaPartitionKey = brokeredMessage.GetViaPartitionKey(),
                 To = brokeredMessage.GetToAddress()
@@ -40,46 +39,46 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 
         public static OutboundBrokeredMessage WithScheduledEnqueueTimeUtc(this OutboundBrokeredMessage outboundBrokeredMessage, DateTime scheduledEnqueueTimeUtc)
         {
-            outboundBrokeredMessage.MessageContext[ASBHeaders.ScheduledEnqueueTimeUtc] = scheduledEnqueueTimeUtc;
+            outboundBrokeredMessage.MessageContext[ASBMessageContext.ScheduledEnqueueTimeUtc] = scheduledEnqueueTimeUtc;
             return outboundBrokeredMessage;
         }
 
         public static DateTime? GetScheduledEnqueueTimeUtc(this OutboundBrokeredMessage outboundBrokeredMessage)
         {
-            return (DateTime?)outboundBrokeredMessage.GetMessageContextByKey(ASBHeaders.ScheduledEnqueueTimeUtc);
+            return (DateTime?)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.ScheduledEnqueueTimeUtc);
         }
 
         public static OutboundBrokeredMessage WithTo(this OutboundBrokeredMessage outboundBrokeredMessage, string to)
         {
-            outboundBrokeredMessage.MessageContext[ASBHeaders.To] = to;
+            outboundBrokeredMessage.MessageContext[ASBMessageContext.To] = to;
             return outboundBrokeredMessage;
         }
 
         public static string GetToAddress(this OutboundBrokeredMessage outboundBrokeredMessage)
         {
-            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBHeaders.To);
+            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.To);
         }
 
         public static OutboundBrokeredMessage WithViaPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage, string viaPartitionKey)
         {
-            outboundBrokeredMessage.MessageContext[ASBHeaders.ViaPartitionKey] = viaPartitionKey;
+            outboundBrokeredMessage.MessageContext[ASBMessageContext.ViaPartitionKey] = viaPartitionKey;
             return outboundBrokeredMessage;
         }
 
         public static string GetViaPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage)
         {
-            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBHeaders.ViaPartitionKey);
+            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.ViaPartitionKey);
         }
 
         public static OutboundBrokeredMessage WithPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage, string partitionKey)
         {
-            outboundBrokeredMessage.MessageContext[ASBHeaders.PartitionKey] = partitionKey;
+            outboundBrokeredMessage.MessageContext[ASBMessageContext.PartitionKey] = partitionKey;
             return outboundBrokeredMessage;
         }
 
         public static string GetPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage)
         {
-            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBHeaders.PartitionKey);
+            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.PartitionKey);
         }
 
         public static object GetApplicationPropertyByKey(this OutboundBrokeredMessage outboundBrokeredMessage, string key)
