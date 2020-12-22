@@ -8,5 +8,6 @@ namespace Chatter.MessageBrokers
         string Type { get; }
         IMessagingInfrastructureReceiver ReceiveInfrastructure { get; }
         IMessagingInfrastructureDispatcher DispatchInfrastructure { get; }
+        IBrokeredMessagePathBuilder PathBuilder { get; }
     }
 }

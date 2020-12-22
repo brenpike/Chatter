@@ -8,11 +8,6 @@ namespace Chatter.MessageBrokers
     /// </summary>
     class BrokeredMessageAttributeProvider : IBrokeredMessageAttributeDetailProvider
     {
-        private readonly IBrokeredMessagePathBuilder _brokeredMessagePathBuilder;
-
-        public BrokeredMessageAttributeProvider(IBrokeredMessagePathBuilder brokeredMessagePathBuilder) 
-            => _brokeredMessagePathBuilder = brokeredMessagePathBuilder ?? throw new ArgumentNullException(nameof(brokeredMessagePathBuilder));
-
         public string GetBrokeredMessageDescription<T>()
         {
             var operationDescription = typeof(T).TryGetBrokeredMessageAttribute().MessageDescription;
@@ -33,20 +28,15 @@ namespace Chatter.MessageBrokers
         /// <typeparam name="T">A class decorated with a <see cref="BrokeredMessageAttribute"/></typeparam>
         /// <returns><see cref="BrokeredMessageAttribute.ReceiverName"/></returns>
         public string GetReceiverName<T>()
-        {
-            var messageName = GetMessageName<T>();
-            var receiverName = typeof(T).TryGetBrokeredMessageAttribute()?.ReceiverName;
-
-            return _brokeredMessagePathBuilder.GetMessageReceivingPath(messageName, receiverName);
-        }
+            => typeof(T).TryGetBrokeredMessageAttribute()?.ReceiverName;
 
         public string GetMessageName(Type type)
-        {
-            var message = type.TryGetBrokeredMessageAttribute()?.SendingPath;
-            return _brokeredMessagePathBuilder.GetMessageSendingPath(message);
-        }
+            => type.TryGetBrokeredMessageAttribute()?.SendingPath;
 
         public string GetErrorQueueName<T>()
             => typeof(T).TryGetBrokeredMessageAttribute()?.ErrorQueueName;
+
+        public string GetInfrastructureType<T>()
+            => typeof(T).TryGetBrokeredMessageAttribute()?.InfrastructureType;
     }
 }

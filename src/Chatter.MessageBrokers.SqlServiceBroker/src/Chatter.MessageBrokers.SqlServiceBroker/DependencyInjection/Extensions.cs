@@ -1,7 +1,5 @@
 ﻿using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
-using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.SqlServiceBroker;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Chatter.MessageBrokers.SqlServiceBroker.Receiving;
@@ -15,29 +13,29 @@ namespace Microsoft.Extensions.DependencyInjection
         public static SqlServiceBrokerOptionsBuilder AddSqlServiceBrokerOptions(this IServiceCollection services)
             => new SqlServiceBrokerOptionsBuilder(services);
 
-        public static IChatterBuilder AddSqlServiceBroker(this IChatterBuilder chatterBuilder, Action<SqlServiceBrokerOptionsBuilder> optionsBuilder = null)
+        public static IChatterBuilder AddSqlServiceBroker(this IChatterBuilder builder, Action<SqlServiceBrokerOptionsBuilder> optionsBuilder = null)
         {
-            var optBuilder = chatterBuilder.Services.AddSqlServiceBrokerOptions();
+            var optBuilder = builder.Services.AddSqlServiceBrokerOptions();
             optionsBuilder?.Invoke(optBuilder);
             var options = optBuilder.Build();
 
-            chatterBuilder.Services.AddScoped<SqlServiceBrokerReceiver>();
-            chatterBuilder.Services.AddSingleton<IMessagingInfrastructureDispatcherFactory, SqlServiceBrokerSenderFactory>();
+            builder.Services.AddScoped<SqlServiceBrokerReceiver>();
+            builder.Services.AddSingleton<SqlServiceBrokerSenderFactory>();
 
-            chatterBuilder.Services.AddScoped<SqlServiceBrokerSender>();
-            chatterBuilder.Services.AddSingleton<IMessagingInfrastructureReceiverFactory, SqlServiceBrokerReceiverFactory>();
+            builder.Services.AddScoped<SqlServiceBrokerSender>();
+            builder.Services.AddSingleton<SqlServiceBrokerReceiverFactory>();
 
-            chatterBuilder.Services.AddScoped<IMessagingInfrastructure>(sp =>
+            builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
-                var sender = sp.GetRequiredService<IMessagingInfrastructureDispatcherFactory>();
-                var receiver = sp.GetRequiredService<IMessagingInfrastructureReceiverFactory>();
+                var sender = sp.GetRequiredService<SqlServiceBrokerSenderFactory>();
+                var receiver = sp.GetRequiredService<SqlServiceBrokerReceiverFactory>();
                 return new MessagingInfrastructure(SSBMessageContext.InfrastructureType, receiver, sender);
             });
 
-            chatterBuilder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
-            chatterBuilder.Services.AddSingleton(options);
+            builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
+            builder.Services.AddSingleton(options);
 
-            return chatterBuilder;
+            return builder;
         }
     }
 }

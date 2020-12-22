@@ -1,6 +1,6 @@
 ﻿namespace Chatter.MessageBrokers.Sending
 {
-    public interface IMessagingInfrastructureDispatcherFactory //TODO: need default impl. in messagebroker library
+    public interface IMessagingInfrastructureDispatcherFactory
     {
         IMessagingInfrastructureDispatcher Create();
     }

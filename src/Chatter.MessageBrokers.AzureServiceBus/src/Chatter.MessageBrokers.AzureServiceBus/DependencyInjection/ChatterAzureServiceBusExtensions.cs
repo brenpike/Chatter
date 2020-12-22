@@ -4,8 +4,6 @@ using Chatter.MessageBrokers.AzureServiceBus;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
-using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Configuration;
 using System;
 
@@ -29,21 +27,21 @@ namespace Microsoft.Extensions.DependencyInjection
             var options = optBuilder.Build();
 
             builder.Services.AddScoped<ServiceBusReceiver>();
-            builder.Services.AddSingleton<IMessagingInfrastructureReceiverFactory, ServiceBusReceiverFactory>();
+            builder.Services.AddSingleton<ServiceBusReceiverFactory>();
 
             builder.Services.AddScoped<ServiceBusMessageSender>();
-            builder.Services.AddSingleton<IMessagingInfrastructureDispatcherFactory, ServiceBusMessageSenderFactory>();
-
-            builder.Services.AddScoped<IMessagingInfrastructure>(sp =>
-            {
-                var sender = sp.GetRequiredService<IMessagingInfrastructureDispatcherFactory>();
-                var receiver = sp.GetRequiredService<IMessagingInfrastructureReceiverFactory>();
-                return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, receiver, sender);
-            });
-
+            builder.Services.AddSingleton<ServiceBusMessageSenderFactory>();
 
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
-            builder.Services.Replace<IBrokeredMessagePathBuilder, AzureServiceBusEntityPathBuilder>(ServiceLifetime.Scoped);
+            builder.Services.AddSingleton<AzureServiceBusEntityPathBuilder>();
+
+            builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
+            {
+                var sender = sp.GetRequiredService<ServiceBusMessageSenderFactory>();
+                var receiver = sp.GetRequiredService<ServiceBusReceiverFactory>();
+                var pathBuilder = sp.GetRequiredService<AzureServiceBusEntityPathBuilder>();
+                return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, receiver, sender, pathBuilder);
+            });
 
             return builder;
         }

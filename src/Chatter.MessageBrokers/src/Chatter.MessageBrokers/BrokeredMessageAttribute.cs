@@ -16,7 +16,7 @@ namespace Chatter.MessageBrokers
 
         /// <summary>
         /// Creates a brokered message that can send and receive on different exchanges/entity paths (i.e., queues/topics).
-        /// Chatter will automatically begin receiving messages for <paramref name="receivingPath"/> if a non-null and non-whitespace value is supplied.
+        /// Chatter will automatically begin receiving messages for <paramref name="receivingPath"/> if a non-null o non-whitespace value is supplied.
         /// </summary>
         /// <param name="sendingPath">The name of the message broker message to send.</param>
         /// <param name="receivingPath">The name of the message broker message to receive. Can be a queue or subscription, etc.</param>

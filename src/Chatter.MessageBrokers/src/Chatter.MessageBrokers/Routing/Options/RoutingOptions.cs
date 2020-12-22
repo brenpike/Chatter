@@ -18,15 +18,27 @@ namespace Chatter.MessageBrokers.Routing.Options
         {
             Container = new ContextContainer();
             MessageContext = context;
-
-            if (MessageContext.TryGetValue(MessageBrokers.MessageContext.ContentType, out var contentType))
-            {
-                ContentType = (string)contentType;
-            }
         }
 
         public string MessageId { get; set; }
-        public string ContentType { get; set; } = DefaultContentType;
+        public string ContentType
+        {
+            get
+            {
+                if (MessageContext.TryGetValue(MessageBrokers.MessageContext.ContentType, out var contentType))
+                {
+                    return (string)contentType;
+                }
+                else
+                {
+                    return DefaultContentType;
+                }
+            }
+            set
+            {
+                this.WithMessageContext(MessageBrokers.MessageContext.ContentType, value);
+            }
+        }
 
         internal IDictionary<string, object> MessageContext { get; }
 

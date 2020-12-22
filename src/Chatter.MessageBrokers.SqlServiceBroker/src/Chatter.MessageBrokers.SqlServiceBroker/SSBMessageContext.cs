@@ -3,7 +3,7 @@
     public static class SSBMessageContext
     {
         public static readonly string SqlServiceBrokerBaseHeader = $"{MessageContext.ChatterBaseHeader}.SqlServiceBroker";
-        public static readonly string InfrastructureType = $"{MessageContext.ChatterBaseHeader}.SqlServiceBroker";
+        public static readonly string InfrastructureType = $"{MessageContext.ChatterBaseHeader}.Infrastructure.SqlServiceBroker";
 
         public static readonly string ConversationGroupId = $"{SqlServiceBrokerBaseHeader}.ConversationGroupId";
         public static readonly string ConversationHandle = $"{SqlServiceBrokerBaseHeader}.ConversationHandle";

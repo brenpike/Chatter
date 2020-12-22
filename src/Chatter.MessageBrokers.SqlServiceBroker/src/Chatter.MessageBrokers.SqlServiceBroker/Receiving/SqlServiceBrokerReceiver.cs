@@ -164,7 +164,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                     [SSBMessageContext.ServiceName] = message.ServiceName,
                                     [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
                                     [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
-                                    [SSBMessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType
+                                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType
                                 };
 
                                 messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);

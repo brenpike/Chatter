@@ -26,25 +26,24 @@ namespace Chatter.MessageBrokers.Receiving
         /// <summary>
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
         /// </summary>
-        /// <param name="infrastructureReceiver">The message broker infrastructure</param>
+        /// <param name="infrastructureProvider">The message broker infrastructure</param>
         /// <param name="serviceFactory">The service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
         /// <param name="logger">Provides logging capability</param>
         public BrokeredMessageReceiver(ReceiverOptions options,
-                                       IMessagingInfrastructureProvider infrastructureReceiver,
+                                       IMessagingInfrastructureProvider infrastructureProvider,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
-                                       IServiceScopeFactory serviceFactory,
-                                       IBrokeredMessagePathBuilder brokeredMessagePathBuilder)
+                                       IServiceScopeFactory serviceFactory)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
 
-            if (infrastructureReceiver is null)
+            if (infrastructureProvider is null)
             {
-                throw new ArgumentNullException(nameof(infrastructureReceiver));
+                throw new ArgumentNullException(nameof(infrastructureProvider));
             }
 
-            _options.MessageReceiverPath = brokeredMessagePathBuilder.GetMessageReceivingPath(options.SendingPath, options.MessageReceiverPath);
             _options.Description = options.Description ?? _options.MessageReceiverPath;
-            _infrastructureReceiver = infrastructureReceiver.GetReceiver(options.InfrastructureType);
+            _infrastructureReceiver = infrastructureProvider.GetReceiver(options.InfrastructureType);
+            _options.MessageReceiverPath = infrastructureProvider.GetInfrastructure(options.InfrastructureType).PathBuilder.GetMessageReceivingPath(options.SendingPath, options.MessageReceiverPath);
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }

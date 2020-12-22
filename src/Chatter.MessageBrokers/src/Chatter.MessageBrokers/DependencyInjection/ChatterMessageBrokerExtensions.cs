@@ -71,7 +71,7 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
 
-            builder.Services.AddScoped<IMessagingInfrastructureProvider, MessagingInfrastructureProvider>();
+            builder.Services.AddSingleton<IMessagingInfrastructureProvider, MessagingInfrastructureProvider>();
 
             builder.Services.Replace<IExternalDispatcher, BrokeredMessageDispatcher>(ServiceLifetime.Scoped);
             builder.Services.AddScoped<IBrokeredMessageReceiverFactory, BrokeredMessageReceiverFactory>();
