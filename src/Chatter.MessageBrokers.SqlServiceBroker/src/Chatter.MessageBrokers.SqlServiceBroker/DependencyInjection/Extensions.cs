@@ -1,5 +1,7 @@
-﻿using Chatter.CQRS.DependencyInjection;
+﻿using Chatter.CQRS;
+using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.SqlServiceBroker;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Chatter.MessageBrokers.SqlServiceBroker.Receiving;
@@ -35,6 +37,17 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
             builder.Services.AddSingleton(options);
 
+            return builder;
+        }
+
+        public static SqlServiceBrokerOptionsBuilder AddQueueReceiver<TMessage>(this SqlServiceBrokerOptionsBuilder builder,
+                                                                                string queueName,
+                                                                                string errorQueuePath = null,
+                                                                                string description = null,
+                                                                                TransactionMode? transactionMode = null)
+            where TMessage : class, IMessage
+        {
+            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, SSBMessageContext.InfrastructureType);
             return builder;
         }
     }

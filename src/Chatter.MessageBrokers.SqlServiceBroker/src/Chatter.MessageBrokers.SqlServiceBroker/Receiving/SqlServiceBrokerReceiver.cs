@@ -218,11 +218,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
                                 RecoveryState state = RecoveryState.Retrying;
 
+                                _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
+
                                 var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                         this.ErrorQueueName,
                                                                         "Unable to handle received message",
                                                                         e,
-                                                                        _localReceiverDeliveryAttempts[message.ConvHandle],
+                                                                        deliveryAttempts,
                                                                         transactionContext);
 
                                 state = await _failedReceiveRecoverer.Execute(failureContext).ConfigureAwait(false);
@@ -250,11 +252,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
                                 _logger.LogError(aggEx, $"Recovery was unsuccessful. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'");
 
+                                _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
+
                                 var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                         this.ErrorQueueName,
                                                                         "Unable to recover from error which occurred during message handling",
                                                                         aggEx,
-                                                                        _localReceiverDeliveryAttempts[message.ConvHandle],
+                                                                        deliveryAttempts,
                                                                         transactionContext);
 
                                 await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);

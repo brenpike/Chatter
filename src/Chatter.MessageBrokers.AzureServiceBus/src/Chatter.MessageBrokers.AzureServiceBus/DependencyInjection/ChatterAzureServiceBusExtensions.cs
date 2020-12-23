@@ -1,9 +1,12 @@
-﻿using Chatter.CQRS.DependencyInjection;
+﻿using Chatter.CQRS.Commands;
+using Chatter.CQRS.DependencyInjection;
+using Chatter.CQRS.Events;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.AzureServiceBus;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
+using Chatter.MessageBrokers.Receiving;
 using Microsoft.Extensions.Configuration;
 using System;
 
@@ -43,6 +46,29 @@ namespace Microsoft.Extensions.DependencyInjection
                 return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, receiver, sender, pathBuilder);
             });
 
+            return builder;
+        }
+
+        public static ServiceBusOptionsBuilder AddTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                              string topicName,
+                                                                              string subscriptionName,
+                                                                              string errorQueuePath = null,
+                                                                              string description = null,
+                                                                              TransactionMode? transactionMode = null)
+            where TMessage : class, IEvent
+        {
+            builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType);
+            return builder;
+        }
+
+        public static ServiceBusOptionsBuilder AddQueueReceiver<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                          string queueName,
+                                                                          string errorQueuePath = null,
+                                                                          string description = null,
+                                                                          TransactionMode? transactionMode = null)
+            where TMessage : class, ICommand
+        {
+            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType);
             return builder;
         }
     }

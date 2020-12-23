@@ -160,20 +160,12 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                         string receiverPath,
                                                                         string errorQueuePath = null,
                                                                         string description = null,
+                                                                        string senderPath = null,
                                                                         TransactionMode? transactionMode = null,
                                                                         string infrastructureType = "")
             where TMessage : class, IMessage
         {
-            var options = new ReceiverOptions()
-            {
-                MessageReceiverPath = receiverPath,
-                ErrorQueuePath = errorQueuePath,
-                Description = description,
-                TransactionMode = transactionMode,
-                InfrastructureType = infrastructureType
-            };
-
-            AddReceiver(builder.Services, typeof(TMessage), options);
+            builder.Services.AddReceiver<TMessage>(receiverPath, errorQueuePath, description, senderPath, transactionMode, infrastructureType);
             return builder;
         }
 
@@ -187,12 +179,43 @@ namespace Microsoft.Extensions.DependencyInjection
             var messages = FindBrokeredMessagesWithReceiversInAssembliesByType(assemblies);
             foreach (var receiverType in GetAllReceiverTypes(messages))
             {
-                AddReceiver(builder.Services, receiverType.Item2, receiverType.Item1);
+                builder.Services.AddReceiverImpl(receiverType.Item2, receiverType.Item1);
             }
             return builder;
         }
 
-        private static void AddReceiver(IServiceCollection services, Type receiverConcreteType, ReceiverOptions options)
+        public static IServiceCollection AddReceiver<TMessage>(this IServiceCollection services,
+                                                               string receiverPath,
+                                                               string errorQueuePath = null,
+                                                               string description = null,
+                                                               string senderPath = null,
+                                                               TransactionMode? transactionMode = null,
+                                                               string infrastructureType = "")
+            where TMessage : class, IMessage
+        {
+            var messageType = typeof(TMessage);
+            var attr = messageType.TryGetBrokeredMessageAttribute();
+
+            if (attr != null)
+            {
+                throw new InvalidOperationException($"Receiver for {messageType.Name} has already been registered via {nameof(BrokeredMessageAttribute)}");
+            }
+
+            var options = new ReceiverOptions()
+            {
+                SendingPath = senderPath,
+                MessageReceiverPath = receiverPath,
+                ErrorQueuePath = errorQueuePath,
+                Description = description,
+                TransactionMode = transactionMode,
+                InfrastructureType = infrastructureType
+            };
+
+            services.AddReceiverImpl(typeof(TMessage), options);
+            return services;
+        }
+
+        private static void AddReceiverImpl(this IServiceCollection services, Type receiverConcreteType, ReceiverOptions options)
         {
             var concreteReceiverThatCloses = typeof(BrokeredMessageReceiverBackgroundService<>).MakeGenericType(receiverConcreteType);
             services.AddScoped(concreteReceiverThatCloses, sp =>

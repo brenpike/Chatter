@@ -1,4 +1,5 @@
-﻿using Chatter.CQRS.Commands;
+﻿using Chatter.CQRS;
+using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers.Routing.Options;
 using System.Threading.Tasks;
 

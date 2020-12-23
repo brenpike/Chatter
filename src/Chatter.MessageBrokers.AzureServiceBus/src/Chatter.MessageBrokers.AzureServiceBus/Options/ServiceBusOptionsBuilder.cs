@@ -9,7 +9,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 {
     public class ServiceBusOptionsBuilder
     {
-        private readonly IServiceCollection _services;
+        public IServiceCollection Services { get; private set; }
 
         private ServiceBusOptions _serviceBusOptions;
         private Func<IServiceCollection> _optionConfigurator;
@@ -19,11 +19,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         internal ServiceBusOptionsBuilder(IServiceCollection services, IConfiguration configuration)
         {
-            _services = services;
+            Services = services;
             _configuration = configuration;
             _serviceBusOptions = new ServiceBusOptions();
             _tokenProvider = new NullTokenProvider();
-            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(GetServiceBusOptions(_azureServiceBusSectionName));
+            _optionConfigurator = () => Services.Configure<ServiceBusOptions>(GetServiceBusOptions(_azureServiceBusSectionName));
         }
 
         private IConfigurationSection GetServiceBusOptions(string configSectionName)
@@ -35,13 +35,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         public ServiceBusOptionsBuilder AddServiceBusOptions(Action<ServiceBusOptions> builder)
         {
-            _optionConfigurator = () => _services.Configure(builder);
+            _optionConfigurator = () => Services.Configure(builder);
             return this;
         }
 
         public ServiceBusOptionsBuilder AddServiceBusOptions(string configSectionName = _azureServiceBusSectionName)
         {
-            _optionConfigurator = () => _services.Configure<ServiceBusOptions>(GetServiceBusOptions(configSectionName));
+            _optionConfigurator = () => Services.Configure<ServiceBusOptions>(GetServiceBusOptions(configSectionName));
             return this;
         }
 
@@ -85,7 +85,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         internal ServiceBusOptions Build()
         {
-            _services.AddOptions<ServiceBusOptions>()
+            Services.AddOptions<ServiceBusOptions>()
                      .ValidateDataAnnotations()
                      .PostConfigure(options =>
                      {
@@ -94,7 +94,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
             _optionConfigurator?.Invoke();
 
-            _services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<ServiceBusOptions>>().Value);
+            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<ServiceBusOptions>>().Value);
 
             PostConfiguration(_serviceBusOptions);
             return _serviceBusOptions;

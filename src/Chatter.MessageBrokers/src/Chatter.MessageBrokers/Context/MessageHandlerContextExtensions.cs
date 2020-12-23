@@ -27,6 +27,21 @@ namespace Chatter.CQRS.Context
         }
 
         /// <summary>
+        /// Gets an <see cref="IMessageDispatcher"/> to dispatch
+        /// </summary>
+        /// <param name="context"></param>
+        /// <returns></returns>
+        public static IMessageDispatcher InMemory(this IMessageHandlerContext context)
+        {
+            if (context.Container.TryGet<IMessageDispatcher>(out var messageDispatcher))
+            {
+                return messageDispatcher;
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// Sends a command to the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
         /// If <see cref="BrokeredMessageReceiver{TMessage}"/> did not trigger the <see cref="IMessageHandler{TMessage}"/> this will be a no op.
         /// Target Messaging Infrastructure can be overridden by setting <see cref="MessageContext.InfrastructureType"/> via <paramref name="options"/>, <see cref="BrokeredMessageAttribute.InfrastructureType"/> or infrastructure specific Send overload (if available).
