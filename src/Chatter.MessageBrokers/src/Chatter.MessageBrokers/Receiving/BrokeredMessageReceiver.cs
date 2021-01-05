@@ -5,7 +5,6 @@ using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -15,12 +14,13 @@ namespace Chatter.MessageBrokers.Receiving
     /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
-    class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
+    public class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
     {
         private IMessagingInfrastructureReceiver _infrastructureReceiver;
-        private readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
-        private readonly IServiceScopeFactory _serviceFactory;
-        private readonly ReceiverOptions _options;
+        private readonly IMessagingInfrastructureProvider _infrastructureProvider;
+        protected readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
+        protected readonly IServiceScopeFactory _serviceFactory;
+        protected ReceiverOptions _options;
         private bool _disposedValue;
 
         /// <summary>
@@ -29,21 +29,16 @@ namespace Chatter.MessageBrokers.Receiving
         /// <param name="infrastructureProvider">The message broker infrastructure</param>
         /// <param name="serviceFactory">The service scope factory used to create a new scope when a message is received from the messaging infrastructure.</param>
         /// <param name="logger">Provides logging capability</param>
-        public BrokeredMessageReceiver(ReceiverOptions options,
-                                       IMessagingInfrastructureProvider infrastructureProvider,
+        public BrokeredMessageReceiver(IMessagingInfrastructureProvider infrastructureProvider,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
                                        IServiceScopeFactory serviceFactory)
         {
-            _options = options ?? throw new ArgumentNullException(nameof(options));
-
             if (infrastructureProvider is null)
             {
                 throw new ArgumentNullException(nameof(infrastructureProvider));
             }
 
-            _options.Description = options.Description ?? _options.MessageReceiverPath;
-            _infrastructureReceiver = infrastructureProvider.GetReceiver(options.InfrastructureType);
-            _options.MessageReceiverPath = infrastructureProvider.GetInfrastructure(options.InfrastructureType).PathBuilder.GetMessageReceivingPath(options.SendingPath, options.MessageReceiverPath);
+            _infrastructureProvider = infrastructureProvider;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }
@@ -53,27 +48,33 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
 
-        public Task<IAsyncDisposable> StartReceiver()
-            => StartReceiver(CancellationToken.None);
+        public Task<IAsyncDisposable> StartReceiver(ReceiverOptions options)
+            => StartReceiver(options, CancellationToken.None);
 
         ///<inheritdoc/>
-        public async Task<IAsyncDisposable> StartReceiver(CancellationToken receiverTerminationToken)
+        public async Task<IAsyncDisposable> StartReceiver(ReceiverOptions options, CancellationToken receiverTerminationToken)
         {
-            await Start(receiverTerminationToken).ConfigureAwait(false);
+            await Start(options, receiverTerminationToken).ConfigureAwait(false);
             return this;
         }
 
         public Task StopReceiver()
             => _infrastructureReceiver.StopReceiver();
 
-        Task Start(CancellationToken receiverTerminationToken)
+        Task Start(ReceiverOptions options, CancellationToken receiverTerminationToken)
         {
             if (receiverTerminationToken == null)
             {
                 throw new ArgumentNullException(nameof(receiverTerminationToken), $"A {typeof(CancellationToken).Name} is required in order for the operation to terminate successfully.");
             }
 
-            var receiveTask = _infrastructureReceiver.StartReceiver(_options,
+            options.Description ??= options.MessageReceiverPath;
+            _infrastructureReceiver = _infrastructureProvider.GetReceiver(options.InfrastructureType);
+            options.MessageReceiverPath = _infrastructureProvider.GetInfrastructure(options.InfrastructureType).PathBuilder.GetMessageReceivingPath(options.SendingPath, options.MessageReceiverPath);
+
+            _options = options;
+
+            var receiveTask = _infrastructureReceiver.StartReceiver(options,
                                                                     ReceiveInboundBrokeredMessage);
 
             _logger.LogInformation($"'{GetType().FullName}' has started receiving messages.");
@@ -81,8 +82,8 @@ namespace Chatter.MessageBrokers.Receiving
             return receiveTask;
         }
 
-        async Task ReceiveInboundBrokeredMessage([NotNull] MessageBrokerContext messageContext,
-                                                 [NotNull] TransactionContext transactionContext)
+        public virtual async Task ReceiveInboundBrokeredMessage(MessageBrokerContext messageContext,
+                                                                TransactionContext transactionContext)
         {
             try
             {

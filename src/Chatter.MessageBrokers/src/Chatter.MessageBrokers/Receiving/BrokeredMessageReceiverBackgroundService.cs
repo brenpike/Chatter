@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System;
 using System.Threading;
@@ -12,26 +13,26 @@ namespace Chatter.MessageBrokers.Receiving
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
     class BrokeredMessageReceiverBackgroundService<TMessage> : BackgroundService where TMessage : class, IMessage
     {
-        private readonly IBrokeredMessageReceiverFactory _receiverFactory;
+        private readonly IServiceProvider _serviceScopeFactory;
         private readonly ReceiverOptions _options;
+        private readonly IBrokeredMessageReceiver<TMessage> _receiver;
 
         /// <summary>
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
         /// </summary>
-        /// <param name="brokeredMessageDetailProvider">Provides routing details to the brokered message receiver</param>
         /// <param name="receiverFactory">Factory that creates <see cref="IBrokeredMessageReceiver"/> for messages of type <typeparamref name="TMessage"/>.</param>
         public BrokeredMessageReceiverBackgroundService(ReceiverOptions options,
-                                                        IBrokeredMessageReceiverFactory receiverFactory)
+                                                        IServiceProvider serviceScopeFactory)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
-            _receiverFactory = receiverFactory ?? throw new ArgumentNullException(nameof(receiverFactory));
+            _serviceScopeFactory = serviceScopeFactory;
+            _receiver = _serviceScopeFactory.GetRequiredService<IBrokeredMessageReceiver<TMessage>>();
         }
 
         ///<inheritdoc/>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var receiver = _receiverFactory.Create<TMessage>(_options);
-            await using var _ = await receiver.StartReceiver(stoppingToken).ConfigureAwait(false);
+            await using var _ = await _receiver.StartReceiver(_options, stoppingToken).ConfigureAwait(false);
         }
     }
 }

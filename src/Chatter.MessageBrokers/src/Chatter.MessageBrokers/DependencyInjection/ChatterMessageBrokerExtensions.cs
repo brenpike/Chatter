@@ -211,26 +211,41 @@ namespace Microsoft.Extensions.DependencyInjection
                 InfrastructureType = infrastructureType
             };
 
-            services.AddReceiverImpl(typeof(TMessage), options);
+            services.AddReceiverImpl<TMessage>(options);
             return services;
         }
 
-        private static void AddReceiverImpl(this IServiceCollection services, Type receiverConcreteType, ReceiverOptions options)
+        private static void AddReceiverImpl(this IServiceCollection services, ReceiverOptions options, Type closedBrokeredMessageReceiverInterface, Type closedConcreteBrokeredMessageReceiver, Type closedConcreteReceiverBackgroundService)
         {
-            var concreteReceiverThatCloses = typeof(BrokeredMessageReceiverBackgroundService<>).MakeGenericType(receiverConcreteType);
-            services.AddScoped(concreteReceiverThatCloses, sp =>
+            services.AddScoped(closedBrokeredMessageReceiverInterface, closedConcreteBrokeredMessageReceiver);
+            services.AddScoped(closedConcreteReceiverBackgroundService, sp =>
             {
-                var factory = sp.GetRequiredService<IBrokeredMessageReceiverFactory>();
-                return Activator.CreateInstance(concreteReceiverThatCloses,
+                return Activator.CreateInstance(closedConcreteReceiverBackgroundService,
                                                 options,
-                                                factory);
+                                                sp);
             });
-
             services.AddSingleton(typeof(IHostedService), sp =>
             {
                 using var scope = sp.CreateScope();
-                return scope.ServiceProvider.GetRequiredService(concreteReceiverThatCloses);
+                return scope.ServiceProvider.GetRequiredService(closedConcreteReceiverBackgroundService);
             });
+        }
+
+        private static void AddReceiverImpl(this IServiceCollection services, Type messageTypeToReceive, ReceiverOptions options)
+        {
+            var closedBrokeredMessageReceiverInterface = typeof(IBrokeredMessageReceiver<>).MakeGenericType(messageTypeToReceive);
+            var closedConcreteBrokeredMessageReceiver = typeof(BrokeredMessageReceiver<>).MakeGenericType(messageTypeToReceive);
+            var closedConcreteReceiverBackgroundService = typeof(BrokeredMessageReceiverBackgroundService<>).MakeGenericType(messageTypeToReceive);
+            services.AddReceiverImpl(options, closedBrokeredMessageReceiverInterface, closedConcreteBrokeredMessageReceiver, closedConcreteReceiverBackgroundService);
+        }
+
+        private static void AddReceiverImpl<TMessage>(this IServiceCollection services, ReceiverOptions options)
+            where TMessage : class, IMessage
+        {
+            var closedBrokeredMessageReceiverInterface = typeof(IBrokeredMessageReceiver<TMessage>);
+            var closedConcreteBrokeredMessageReceiver = typeof(BrokeredMessageReceiver<TMessage>);
+            var closedConcreteReceiverBackgroundService = typeof(BrokeredMessageReceiverBackgroundService<TMessage>);
+            services.AddReceiverImpl(options, closedBrokeredMessageReceiverInterface, closedConcreteBrokeredMessageReceiver, closedConcreteReceiverBackgroundService);
         }
 
         private static IEnumerable<(ReceiverOptions, Type)> GetAllReceiverTypes(IReadOnlyList<Type> messages)

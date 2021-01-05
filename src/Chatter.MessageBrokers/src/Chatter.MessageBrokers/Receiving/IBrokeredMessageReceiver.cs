@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS;
+using Chatter.MessageBrokers.Context;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,10 +17,9 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         /// <param name="receiverTerminationToken">The <see cref="CancellationToken"/> that cancels receiving messages of type <typeparamref name="TMessage"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        Task<IAsyncDisposable> StartReceiver(CancellationToken receiverTerminationToken);
-
-        Task<IAsyncDisposable> StartReceiver();
-
+        Task<IAsyncDisposable> StartReceiver(ReceiverOptions options, CancellationToken receiverTerminationToken);
+        Task<IAsyncDisposable> StartReceiver(ReceiverOptions options);
         Task StopReceiver();
+        Task ReceiveInboundBrokeredMessage(MessageBrokerContext messageContext, TransactionContext transactionContext);
     }
 }

@@ -35,7 +35,7 @@ namespace Chatter.CQRS.Context
         {
             if (context.Container.TryGet<IMessageDispatcher>(out var messageDispatcher))
             {
-                return messageDispatcher;
+                return messageDispatcher; //TODO: InMemory() can't return IMessageDispatcher becuase then .Dispatch(msg), will create new context. we need to use the current context
             }
 
             return null;

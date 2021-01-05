@@ -4,6 +4,6 @@ namespace Chatter.MessageBrokers.Receiving
 {
     public interface IBrokeredMessageReceiverFactory
     {
-        IBrokeredMessageReceiver<TMessage> Create<TMessage>(ReceiverOptions options) where TMessage : class, IMessage;
+        IBrokeredMessageReceiver<TMessage> Create<TMessage>() where TMessage : class, IMessage;
     }
 }
