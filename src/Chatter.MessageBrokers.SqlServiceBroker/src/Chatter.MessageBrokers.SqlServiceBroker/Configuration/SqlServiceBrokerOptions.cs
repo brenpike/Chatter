@@ -24,7 +24,7 @@
         /// Specifies whether or not messages sent and received on this dialog must be encrypted when they
         /// are sent outside of an instance of Microsoft SQL Server.
         /// </summary>
-        public bool CoversationEncryption { get; set; } = false;
+        public bool ConversationEncryption { get; set; } = false;
         /// <summary>
         /// Specifies whether or not messages sent should be compressed (gzip). 
         /// </summary>
@@ -49,7 +49,7 @@
             MessageBodyType = messageBodyType;
             ReceiverTimeoutInMilliseconds = receiverTimeoutInMilliseconds;
             ConversationLifetimeInSeconds = conversationLifetimeInSeconds;
-            CoversationEncryption = coversationEncryption;
+            ConversationEncryption = coversationEncryption;
             CompressMessageBody = compressMessageBody;
             CleanupOnEndConversation = cleanupOnEndConversation;
         }

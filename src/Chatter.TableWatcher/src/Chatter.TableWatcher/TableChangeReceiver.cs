@@ -14,7 +14,7 @@ namespace Chatter.TableWatcher
 {
     class TableChangeReceiver<TProcessorCommand, TRowChangeData> : BrokeredMessageReceiver<TProcessorCommand>
         where TRowChangeData : class, IMessage
-        where TProcessorCommand : ProcessRowChangeCommand<TRowChangeData>
+        where TProcessorCommand : ProcessTableChangesCommand<TRowChangeData>
     {
 
         public TableChangeReceiver(IMessagingInfrastructureProvider infrastructureProvider,
@@ -73,7 +73,7 @@ namespace Chatter.TableWatcher
 
             if (message.Inserted is null && message.Deleted is null)
             {
-                _logger.LogDebug($"No inserted or deleted records specified by {nameof(ProcessRowChangeCommand<TRowChangeData>)}");
+                _logger.LogDebug($"No inserted or deleted records specified by {nameof(ProcessTableChangesCommand<TRowChangeData>)}");
                 return;
             }
 

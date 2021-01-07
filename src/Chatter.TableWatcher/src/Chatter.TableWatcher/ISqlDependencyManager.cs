@@ -1,14 +1,11 @@
-﻿using Chatter.SqlTableWatcher.Configuration;
-using System.Threading.Tasks;
+﻿using System.Threading.Tasks;
 
 namespace Chatter.TableWatcher
 {
     public interface ISqlDependencyManager
     {
-        Task UninstallSqlDependencies(SqlTableWatcherOptions options,
-                                      string uninstallationProcedureName = "");
-        Task InstallSqlDependencies(SqlTableWatcherOptions options,
-                                    string installationProcedureName = "",
+        Task UninstallSqlDependencies(string uninstallationProcedureName = "");
+        Task InstallSqlDependencies(string installationProcedureName = "",
                                     string uninstallationProcedureName = "",
                                     string conversationQueueName = "",
                                     string conversationServiceName = "",

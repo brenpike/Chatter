@@ -7,50 +7,57 @@ namespace Chatter.TableWatcher
 {
     public class SqlDependencyManager : ISqlDependencyManager
     {
-        public async Task InstallSqlDependencies(SqlTableWatcherOptions options,
-                                                 string installationProcedureName = "",
-                                                 string uninstallationProcedureName = "",
-                                                 string conversationQueueName = "",
-                                                 string conversationServiceName = "",
-                                                 string conversationTriggerName = "")
+        private readonly SqlTableWatcherOptions _options;
+
+        public SqlDependencyManager(SqlTableWatcherOptions options)
+            => _options = options;
+
+        public Task InstallSqlDependencies(string installationProcedureName = "",
+                                           string uninstallationProcedureName = "",
+                                           string conversationQueueName = "",
+                                           string conversationServiceName = "",
+                                           string conversationTriggerName = "")
         {
             var execInstallationProcedureScript
-                = new SafeExecuteStoredProcedure(options.ConnectionString,
-                                                 options.DatabaseName,
+                = new SafeExecuteStoredProcedure(_options.ConnectionString,
+                                                 _options.DatabaseName,
                                                  installationProcedureName,
-                                                 options.SchemaName);
+                                                 _options.SchemaName);
 
             var installNotificationScript
-                = new InstallNotificationsScript(options,
+                = new InstallNotificationsScript(_options,
                                                  installationProcedureName,
                                                  conversationQueueName,
                                                  conversationServiceName,
                                                  conversationTriggerName);
 
             var uninstallNotificationScript
-                = new UninstallNotificationsScript(options,
+                = new UninstallNotificationsScript(_options,
                                                    uninstallationProcedureName,
                                                    conversationQueueName,
                                                    conversationServiceName,
                                                    conversationTriggerName,
                                                    installationProcedureName);
 
-            await installNotificationScript.ExecuteAsync().ConfigureAwait(false);
-            await uninstallNotificationScript.ExecuteAsync().ConfigureAwait(false);
-            await execInstallationProcedureScript.ExecuteAsync().ConfigureAwait(false);
+            installNotificationScript.Execute();
+            uninstallNotificationScript.Execute();
+            execInstallationProcedureScript.Execute();
+
+            return Task.CompletedTask;
         }
 
-        public Task UninstallSqlDependencies(SqlTableWatcherOptions options,
-                                             string uninstallationProcedureName = "")
+        public Task UninstallSqlDependencies(string uninstallationProcedureName = "")
         {
             var execUninstallationProcedureScript =
                 new SafeExecuteStoredProcedure(
-                options.ConnectionString,
-                options.DatabaseName,
+                _options.ConnectionString,
+                _options.DatabaseName,
                 uninstallationProcedureName,
-                options.SchemaName);
+                _options.SchemaName);
 
-            return execUninstallationProcedureScript.ExecuteAsync();
+            execUninstallationProcedureScript.Execute();
+
+            return Task.CompletedTask;
         }
     }
 }

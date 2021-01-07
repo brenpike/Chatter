@@ -24,7 +24,7 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
         /// <param name="schemaName">The schema</param>
         public CreateNotificationTrigger(string monitorableTableName,
                                          string notificationTriggerName,
-                                         NotificationTypes triggerRaiseByTypes,
+                                         ChangeTypes triggerRaiseByTypes,
                                          string conversationServiceName,
                                          string schemaName)
         {
@@ -55,14 +55,14 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
             _notificationTriggeredBy = GetTriggerAfterStatementCriteria(triggerRaiseByTypes);
         }
 
-        private string GetTriggerAfterStatementCriteria(NotificationTypes types)
+        private string GetTriggerAfterStatementCriteria(ChangeTypes types)
         {
             StringBuilder result = new StringBuilder();
-            if (types.HasFlag(NotificationTypes.Insert))
+            if (types.HasFlag(ChangeTypes.Insert))
                 result.Append("INSERT");
-            if (types.HasFlag(NotificationTypes.Update))
+            if (types.HasFlag(ChangeTypes.Update))
                 result.Append(result.Length == 0 ? "UPDATE" : ", UPDATE");
-            if (types.HasFlag(NotificationTypes.Delete))
+            if (types.HasFlag(ChangeTypes.Delete))
                 result.Append(result.Length == 0 ? "DELETE" : ", DELETE");
             if (result.Length == 0) result.Append("INSERT");
 

@@ -6,7 +6,7 @@ using System.Collections.Generic;
 
 namespace FlightBooking.Application.Commands
 {
-    [BrokeredMessage("book-trip-saga/3/cancel-flight", "book-trip-saga/3/cancel-flight")]
+    //[BrokeredMessage("book-trip-saga/3/cancel-flight", "book-trip-saga/3/cancel-flight")]
     public class CancelFlightBookingCommand : ICommand
     {
         public Guid Id { get; set; }

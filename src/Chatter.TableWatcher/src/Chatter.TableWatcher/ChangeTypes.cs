@@ -3,7 +3,7 @@
 namespace Chatter.SqlTableWatcher
 {
     [Flags]
-    public enum NotificationTypes
+    public enum ChangeTypes
     {
         None = 0,
         Insert = 1 << 1,

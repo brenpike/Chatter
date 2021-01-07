@@ -1,39 +1,13 @@
-﻿using Chatter.MessageBrokers.Reliability.Configuration;
-using Chatter.MessageBrokers.Reliability.EntityFramework;
-using Chatter.MessageBrokers.Reliability.Inbox;
+﻿using Chatter.MessageBrokers.Reliability.EntityFramework;
 using Microsoft.EntityFrameworkCore;
-using System;
 using System.Reflection;
 
 namespace CarRental.Infrastructure.Repositories.Contexts
 {
     public class CarRentalContext : DbContext
     {
-        private readonly ReliabilityOptions _reliabilityOptions;
-
-        public CarRentalContext(DbContextOptions<CarRentalContext> options, ReliabilityOptions reliabilityOptions) : base(options)
+        public CarRentalContext(DbContextOptions<CarRentalContext> options) : base(options)
         {
-            _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
-        }
-
-        /// <inheritdoc />
-        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-        {
-            if (optionsBuilder.IsConfigured)
-            {
-                return;
-            }
-
-            var connStr = _reliabilityOptions.Persistance?.ConnectionString;
-            if (string.IsNullOrWhiteSpace(connStr))
-            {
-                throw new ArgumentNullException(nameof(connStr), "A connection string is required. Consider adding 'Chatter:MessageBrokers:Reliability:ConnectionString'.");
-            }
-
-            optionsBuilder.UseSqlServer(
-                connStr,
-                b => b.MigrationsAssembly(typeof(CarRentalContext).Assembly.FullName).EnableRetryOnFailure(5));
-            base.OnConfiguring(optionsBuilder);
         }
 
         /// <summary>

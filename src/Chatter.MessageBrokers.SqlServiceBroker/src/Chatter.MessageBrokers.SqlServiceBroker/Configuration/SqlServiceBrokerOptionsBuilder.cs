@@ -7,8 +7,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
     {
         public IServiceCollection Services { get; }
         private SqlServiceBrokerOptions _sqlServiceBrokerOptions;
+        private const string _defaultMessageBodyType = "application/json; charset=utf-16";
 
-        internal SqlServiceBrokerOptionsBuilder(IServiceCollection services)
+        public SqlServiceBrokerOptionsBuilder(IServiceCollection services)
         {
             Services = services ?? throw new ArgumentNullException(nameof(services));
         }
@@ -26,7 +27,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         }
 
         public SqlServiceBrokerOptionsBuilder AddSqlServiceBrokerOptions(string connectionString,
-                                                                         string messageBodyType = "application/json; charset=utf-16",
+                                                                         string messageBodyType = _defaultMessageBodyType,
                                                                          int receiverTimeoutInMilliseconds = -1,
                                                                          int conversationLifetimeInSeconds = 0,
                                                                          bool coversationEncryption = false,
@@ -72,7 +73,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// </summary>
         public SqlServiceBrokerOptionsBuilder WithJsonBodyType()
         {
-            _sqlServiceBrokerOptions.MessageBodyType = "application/json";
+            _sqlServiceBrokerOptions.MessageBodyType = _defaultMessageBodyType;
             return this;
         }
 
@@ -104,7 +105,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// </summary>
         public SqlServiceBrokerOptionsBuilder UseConversationEncryption()
         {
-            _sqlServiceBrokerOptions.CoversationEncryption = true;
+            _sqlServiceBrokerOptions.ConversationEncryption = true;
             return this;
         }
 
@@ -129,7 +130,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
             return this;
         }
 
-        internal SqlServiceBrokerOptions Build()
+        public SqlServiceBrokerOptions Build()
         {
             if (_sqlServiceBrokerOptions is null)
             {
