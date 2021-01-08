@@ -27,19 +27,12 @@ namespace Chatter.CQRS.Context
         }
 
         /// <summary>
-        /// Gets an <see cref="IMessageDispatcher"/> to dispatch
+        /// Returns an <see cref="IInMemoryDispatcher"/> used to dispatch messages within the same process
         /// </summary>
-        /// <param name="context"></param>
-        /// <returns></returns>
-        public static IMessageDispatcher InMemory(this IMessageHandlerContext context)
-        {
-            if (context.Container.TryGet<IMessageDispatcher>(out var messageDispatcher))
-            {
-                return messageDispatcher; //TODO: InMemory() can't return IMessageDispatcher becuase then .Dispatch(msg), will create new context. we need to use the current context
-            }
-
-            return null;
-        }
+        /// <param name="context">The context of the message handler</param>
+        /// <returns>An <see cref="IInMemoryDispatcher"/></returns>
+        public static IInMemoryDispatcher InMemory(this IMessageHandlerContext context) 
+            => new InMemoryDispatcher(context);
 
         /// <summary>
         /// Sends a command to the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
