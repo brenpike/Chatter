@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
-    <PackageId>Chatter.TableWatcher</PackageId>
+    <PackageId>Chatter.SqlTableWatcher</PackageId>
     <Version>0.1.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
@@ -12,8 +12,8 @@
     <PackageTags>.net;Core;SQL;Service;Broker;Chatter</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IsPackable>true</IsPackable>
-    <AssemblyName>Chatter.TableWatcher</AssemblyName>
-    <RootNamespace>Chatter.TableWatcher</RootNamespace>
+    <AssemblyName>Chatter.SqlTableWatcher</AssemblyName>
+    <RootNamespace>Chatter.SqlTableWatcher</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

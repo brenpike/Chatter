@@ -89,9 +89,9 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.SqlS
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.SqlServiceBroker.Tests", "src\Chatter.MessageBrokers.SqlServiceBroker\tests\Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj", "{4D6FF957-BE51-4AA2-A0C9-7FF5E34DB483}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlTableWatcher.Tests", "src\Chatter.TableWatcher\tests\Chatter.SqlTableWatcher.Tests.csproj", "{4232BF32-390A-4A0A-8826-433E22319D43}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlTableWatcher.Tests", "src\Chatter.SqlTableWatcher\tests\Chatter.SqlTableWatcher.Tests.csproj", "{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlTableWatcher", "src\Chatter.TableWatcher\src\Chatter.TableWatcher\Chatter.SqlTableWatcher.csproj", "{61525974-A82C-4A2A-9A24-F5268A76836E}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlTableWatcher", "src\Chatter.SqlTableWatcher\src\Chatter.SqlTableWatcher\Chatter.SqlTableWatcher.csproj", "{4527EF9B-808D-4D10-A314-6587BD3F35B1}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -211,14 +211,14 @@ Global
 		{4D6FF957-BE51-4AA2-A0C9-7FF5E34DB483}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4D6FF957-BE51-4AA2-A0C9-7FF5E34DB483}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4D6FF957-BE51-4AA2-A0C9-7FF5E34DB483}.Release|Any CPU.Build.0 = Release|Any CPU
-		{4232BF32-390A-4A0A-8826-433E22319D43}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{4232BF32-390A-4A0A-8826-433E22319D43}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{4232BF32-390A-4A0A-8826-433E22319D43}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{4232BF32-390A-4A0A-8826-433E22319D43}.Release|Any CPU.Build.0 = Release|Any CPU
-		{61525974-A82C-4A2A-9A24-F5268A76836E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{61525974-A82C-4A2A-9A24-F5268A76836E}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{61525974-A82C-4A2A-9A24-F5268A76836E}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{61525974-A82C-4A2A-9A24-F5268A76836E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4527EF9B-808D-4D10-A314-6587BD3F35B1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4527EF9B-808D-4D10-A314-6587BD3F35B1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4527EF9B-808D-4D10-A314-6587BD3F35B1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4527EF9B-808D-4D10-A314-6587BD3F35B1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -252,7 +252,7 @@ Global
 		{B3F3E6DD-3A26-4F91-A459-26A8E00232C9} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
 		{C06DBA84-2312-4251-B513-30F26622DC43} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
 		{4D6FF957-BE51-4AA2-A0C9-7FF5E34DB483} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
-		{4232BF32-390A-4A0A-8826-433E22319D43} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
+		{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {F965FABA-DDDB-4C95-9C89-CA3860B984F7}
