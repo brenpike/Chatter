@@ -12,8 +12,8 @@
     <PackageTags>.net;Core;SQL;Service;Broker;Chatter</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IsPackable>true</IsPackable>
-    <AssemblyName>Chatter.TableWatcher</AssemblyName>
-    <RootNamespace>Chatter.TableWatcher</RootNamespace>
+    <AssemblyName>Chatter.SqlTableWatcher</AssemblyName>
+    <RootNamespace>Chatter.SqlTableWatcher</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

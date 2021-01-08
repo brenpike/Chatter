@@ -8,7 +8,7 @@
     <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers.AzureServiceBus\src\Chatter.MessageBrokers.AzureServiceBus\Chatter.MessageBrokers.AzureServiceBus.csproj" />
     <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers.SqlServiceBroker\src\Chatter.MessageBrokers.SqlServiceBroker\Chatter.MessageBrokers.SqlServiceBroker.csproj" />
     <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers\src\Chatter.MessageBrokers\Chatter.MessageBrokers.csproj" />
-    <ProjectReference Include="..\..\..\..\src\Chatter.TableWatcher\src\Chatter.TableWatcher\Chatter.SqlTableWatcher.csproj" />
+    <ProjectReference Include="..\..\..\..\src\Chatter.SqlTableWatcher\src\Chatter.SqlTableWatcher\Chatter.SqlTableWatcher.csproj" />
     <ProjectReference Include="..\..\..\Samples.SharedKernel\Samples.SharedKernel.csproj" />
     <ProjectReference Include="..\CarRental.Domain\CarRental.Domain.csproj" />
   </ItemGroup>
