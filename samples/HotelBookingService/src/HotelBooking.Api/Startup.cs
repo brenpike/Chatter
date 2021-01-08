@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.Receiving;
 using HotelBooking.Application.Commands;
+using HotelBooking.Application.IntegrationEvents;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -39,7 +40,8 @@ namespace HotelBooking.Api
                 })
                 .AddAzureServiceBus(options =>
                 {
-                    options.AddServiceBusOptions("Chatter:ServiceBus");
+                    options.AddServiceBusOptions("Chatter:ServiceBus")
+                           .AddTopicSubscription<RentalCarBookedEvent>("book-trip-saga/rental-car-booked", "hotel");
                 });
         }
 

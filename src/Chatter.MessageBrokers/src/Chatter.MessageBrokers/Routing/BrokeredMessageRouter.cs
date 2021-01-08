@@ -6,12 +6,12 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
 {
-    public sealed class BrokeredMessageRouter : IRouteBrokeredMessages
+    sealed class BrokeredMessageRouter : IRouteBrokeredMessages
     {
-        private readonly IMessagingInfrastructureDispatcher _brokeredMessageInfrastructureDispatcher;
+        private readonly IMessagingInfrastructureProvider _messagingInfrastructureProvider;
 
-        public BrokeredMessageRouter(IMessagingInfrastructureDispatcher brokeredMessageInfrastructureDispatcher) 
-            => _brokeredMessageInfrastructureDispatcher = brokeredMessageInfrastructureDispatcher ?? throw new ArgumentNullException(nameof(brokeredMessageInfrastructureDispatcher));
+        public BrokeredMessageRouter(IMessagingInfrastructureProvider messagingInfrastructureProvider)
+            => _messagingInfrastructureProvider = messagingInfrastructureProvider ?? throw new ArgumentNullException(nameof(messagingInfrastructureProvider));
 
         /// <summary>
         /// Routes an <see cref="OutboundBrokeredMessage"/> to the receiver via the message broker infrastructure.
@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.Routing
                 throw new ArgumentNullException(nameof(outboundBrokeredMessage.Destination), $"Unable to route message with no destination path specified");
             }
 
-            return _brokeredMessageInfrastructureDispatcher.Dispatch(outboundBrokeredMessage, transactionContext);
+            return _messagingInfrastructureProvider.GetDispatcher(outboundBrokeredMessage.InfrastructureType).Dispatch(outboundBrokeredMessage, transactionContext);
         }
 
         /// <summary>
@@ -35,7 +35,7 @@ namespace Chatter.MessageBrokers.Routing
         /// <param name="outboundBrokeredMessages">The outbound brokered messages to be routed to the destination receivers</param>
         /// <param name="transactionContext">The contextual transaction information to be used while routing the message to its destination</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        public Task Route(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
-            => _brokeredMessageInfrastructureDispatcher.Dispatch(outboundBrokeredMessages, transactionContext);
+        public Task Route(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext, string infrastructureType = "")
+            => _messagingInfrastructureProvider.GetDispatcher(infrastructureType).Dispatch(outboundBrokeredMessages, transactionContext);
     }
 }

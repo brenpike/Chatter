@@ -25,7 +25,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus
             return EntityNameHelper.FormatSubscriptionPath(messageSendingPath, messageReceiverPath);
         }
 
-        string IBrokeredMessagePathBuilder.GetMessageRecevingRulePath(string messageSendingPath, string messageReceiverPath, string ruleName) 
+        string IBrokeredMessagePathBuilder.GetMessageReceivingRulePath(string messageSendingPath, string messageReceiverPath, string ruleName) 
             => EntityNameHelper.FormatRulePath(messageSendingPath, messageReceiverPath, ruleName);
 
         string IBrokeredMessagePathBuilder.GetMessageSendingPath(string messageSendingPath) 

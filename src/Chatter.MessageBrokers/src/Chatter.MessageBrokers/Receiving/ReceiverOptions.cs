@@ -2,7 +2,7 @@
 {
     public class ReceiverOptions
     {
-        public string Description { get; set;  }
+        public string Description { get; set; }
 
         /// <summary>
         /// Gets the name of the path to receive messages.
@@ -17,5 +17,7 @@
         public string ErrorQueuePath { get; set; }
 
         public TransactionMode? TransactionMode { get; set; }
+
+        public string InfrastructureType { get; set; } = "";
     }
 }

@@ -1,9 +1,11 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.DependencyInjection;
-using Chatter.CQRS.Events;
+using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.SqlServiceBroker;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
-using Microsoft.Extensions.Logging;
+using Chatter.MessageBrokers.SqlServiceBroker.Receiving;
+using Chatter.MessageBrokers.SqlServiceBroker.Sending;
 using System;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -13,23 +15,40 @@ namespace Microsoft.Extensions.DependencyInjection
         public static SqlServiceBrokerOptionsBuilder AddSqlServiceBrokerOptions(this IServiceCollection services)
             => new SqlServiceBrokerOptionsBuilder(services);
 
-        public static IChatterBuilder AddSqlServiceBroker<TNotificationData>(this IChatterBuilder chatterBuilder, Action<SqlServiceBrokerOptionsBuilder> optionsBuilder)
-            where TNotificationData : class, IEvent
+        public static IChatterBuilder AddSqlServiceBroker(this IChatterBuilder builder, Action<SqlServiceBrokerOptionsBuilder> optionsBuilder = null)
         {
-            var builder = chatterBuilder.Services.AddSqlServiceBrokerOptions();
-            optionsBuilder?.Invoke(builder);
-            SqlServiceBrokerOptions options = builder.Build();
+            var optBuilder = builder.Services.AddSqlServiceBrokerOptions();
+            optionsBuilder?.Invoke(optBuilder);
+            var options = optBuilder.Build();
 
-            chatterBuilder.Services.AddScoped(sp =>
+            builder.Services.AddScoped<SqlServiceBrokerReceiver>();
+            builder.Services.AddSingleton<SqlServiceBrokerSenderFactory>();
+
+            builder.Services.AddScoped<SqlServiceBrokerSender>();
+            builder.Services.AddSingleton<SqlServiceBrokerReceiverFactory>();
+
+            builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
-                var md = sp.GetRequiredService<IMessageDispatcher>();
-                var logger = sp.GetRequiredService<ILogger<SqlServiceBrokerReceiver<TNotificationData>>>();
-                return new SqlServiceBrokerReceiver<TNotificationData>(options, md, logger);
+                var sender = sp.GetRequiredService<SqlServiceBrokerSenderFactory>();
+                var receiver = sp.GetRequiredService<SqlServiceBrokerReceiverFactory>();
+                return new MessagingInfrastructure(SSBMessageContext.InfrastructureType, receiver, sender);
             });
 
-            chatterBuilder.Services.AddHostedService<TableWatcher<TNotificationData>>();
+            builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
+            builder.Services.AddSingleton(options);
 
-            return chatterBuilder;
+            return builder;
+        }
+
+        public static SqlServiceBrokerOptionsBuilder AddQueueReceiver<TMessage>(this SqlServiceBrokerOptionsBuilder builder,
+                                                                                string queueName,
+                                                                                string errorQueuePath = null,
+                                                                                string description = null,
+                                                                                TransactionMode? transactionMode = null)
+            where TMessage : class, IMessage
+        {
+            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, SSBMessageContext.InfrastructureType);
+            return builder;
         }
     }
 }

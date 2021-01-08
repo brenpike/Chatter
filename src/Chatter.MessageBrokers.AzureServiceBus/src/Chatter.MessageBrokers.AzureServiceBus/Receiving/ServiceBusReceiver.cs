@@ -27,12 +27,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly int _maxConcurrentCalls = 1;
         private readonly RetryPolicy _retryPolcy;
         private readonly int _prefetchCount;
-        private readonly MessageBrokerOptions _messageBrokerOptions;
         private ReceiveMode _receiveMode;
         MessageReceiver _innerReceiver;
         SemaphoreSlim _semaphore;
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
+        private bool _disposedValue;
+        private TransactionMode _transactionMode;
 
         public ServiceBusReceiver(ServiceBusOptions serviceBusOptions,
                                   MessageBrokerOptions messageBrokerOptions,
@@ -56,7 +57,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _maxConcurrentCalls = serviceBusOptions.MaxConcurrentCalls;
             _retryPolcy = serviceBusOptions.Policy;
             _prefetchCount = serviceBusOptions.PrefetchCount;
-            _messageBrokerOptions = messageBrokerOptions;
+            _transactionMode = messageBrokerOptions?.TransactionMode ?? TransactionMode.None;
             _receiveMode = messageBrokerOptions?.TransactionMode == TransactionMode.None ? ReceiveMode.ReceiveAndDelete : ReceiveMode.PeekLock;
         }
         /// <summary>
@@ -103,32 +104,44 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public Task StartReceiver(ReceiverOptions options,
-                                  Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler)
+        public async Task StartReceiver(ReceiverOptions options,
+                                        Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler)
         {
             this.MessageReceiverPath = options.MessageReceiverPath;
             this.ErrorQueuePath = options.ErrorQueuePath;
 
             if (options.TransactionMode != null)
             {
-                _receiveMode = options.TransactionMode == TransactionMode.None ? ReceiveMode.ReceiveAndDelete : ReceiveMode.PeekLock;
+                _transactionMode = options.TransactionMode ?? TransactionMode.None;
+                _receiveMode = _transactionMode == TransactionMode.None ? ReceiveMode.ReceiveAndDelete : ReceiveMode.PeekLock;
             }
 
             _semaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
             _messageReceiverLoopTokenSource = new CancellationTokenSource();
 
-            _messageReceiverLoop = MessageReceiverLoop(brokeredMessageHandler);
-
-            return _messageReceiverLoop;
+            try
+            {
+                _messageReceiverLoop = MessageReceiverLoop(brokeredMessageHandler);
+                await _messageReceiverLoop.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _logger.LogCritical($"Critical error occured curing {nameof(MessageReceiverLoop)}: {e.Message}{Environment.NewLine}{e.StackTrace}");
+            }
         }
 
         public async Task StopReceiver()
         {
             _messageReceiverLoopTokenSource?.Cancel();
 
-            if (_messageReceiverLoop != null)
+            if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
             {
                 await _messageReceiverLoop.ConfigureAwait(false);
+            }
+
+            if (_innerReceiver != null)
+            {
+                await _innerReceiver.CloseAsync().ConfigureAwait(false);
             }
 
             _semaphore?.Dispose();
@@ -143,10 +156,25 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 {
                     await _semaphore.WaitAsync(_messageReceiverLoopTokenSource.Token).ConfigureAwait(false);
 
-                    var message = await this.InnerReceiver.ReceiveAsync();
-
                     try
                     {
+                        Message message = null;
+
+                        try
+                        {
+                            message = await this.InnerReceiver.ReceiveAsync();
+                        }
+                        catch (ServiceBusException sbe) when (sbe.IsTransient)
+                        {
+                            //TODO: throw? do something special?
+                        }
+                        catch (Exception)
+                        {
+                            //TODO: log critical and return ending loop???
+                            _logger.LogError("Failure to receive message from Azure Serivce Bus");
+                            throw;
+                        }
+
                         if (message == null || _messageReceiverLoopTokenSource.IsCancellationRequested)
                         {
                             continue;
@@ -159,22 +187,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         {
                             using var receiverTokenSource = new CancellationTokenSource();
 
-                            var transactionMode = _messageBrokerOptions?.TransactionMode ?? TransactionMode.None;
-
                             try
                             {
                                 message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
                                 message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
+                                message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
 
                                 var bodyConverter = _bodyConverterFactory.CreateBodyConverter(message.ContentType);
 
                                 messageContext = new MessageBrokerContext(message.MessageId, message.Body, message.UserProperties, this.MessageReceiverPath, receiverTokenSource.Token, bodyConverter);
                                 messageContext.Container.Include(message);
 
-                                transactionContext = new TransactionContext(this.MessageReceiverPath, transactionMode);
+                                transactionContext = new TransactionContext(this.MessageReceiverPath, _transactionMode);
                                 transactionContext.Container.Include(this.InnerReceiver);
 
-                                if (transactionMode == TransactionMode.FullAtomicityViaInfrastructure)
+                                if (_transactionMode == TransactionMode.FullAtomicityViaInfrastructure)
                                 {
                                     transactionContext.Container.Include(this.InnerReceiver.ServiceBusConnection);
                                 }
@@ -184,7 +211,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                 throw new PoisonedMessageException($"Unable to build {typeof(MessageBrokerContext).Name} due to poisoned message", e);
                             }
 
-                            using var scope = CreateTransactionScope(transactionMode);
+                            using var scope = CreateTransactionScope(_transactionMode);
                             await brokeredMessageHandler(messageContext, transactionContext).ConfigureAwait(false);
 
                             if (!receiverTokenSource.IsCancellationRequested)
@@ -199,13 +226,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         }
                         catch (PoisonedMessageException pme)
                         {
+                            _logger?.LogError(pme, "Poisoned message received");
                             try
                             {
                                 await DeadLetterAsync(message, pme.Message, pme.InnerException?.Message).ConfigureAwait(false);
                             }
-                            catch (Exception deadLetterException)
+                            catch (Exception)
                             {
-                                _logger?.LogError($"Error deadlettering message: {deadLetterException.StackTrace}");
+                                _logger?.LogError("Error deadlettering poisoned message");
+                                throw;
                             }
 
                             continue;
@@ -214,18 +243,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         {
                             try
                             {
-                                _logger.LogError($"Error handling recevied message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'"
-                                                    + "\n"
-                                                    + $"{e}");
+                                _logger.LogError(e, "Error handling recevied message. Attempting recovery. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'");
 
                                 RecoveryState state = RecoveryState.Retrying;
 
-                                using (var scope = CreateTransactionScope(_messageBrokerOptions?.TransactionMode ?? TransactionMode.None))
+                                using (var scope = CreateTransactionScope(_transactionMode))
                                 {
                                     var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                             this.ErrorQueuePath,
                                                                             "Unable to handle received message",
-                                                                            e.StackTrace,
+                                                                            e,
                                                                             message.SystemProperties.DeliveryCount,
                                                                             transactionContext);
 
@@ -253,32 +280,33 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                             }
                             catch (Exception onErrorException) when (onErrorException is MessageLockLostException || onErrorException is ServiceBusTimeoutException)
                             {
-                                _logger.LogDebug("Unable to recover from error that occurred during message receiving", onErrorException.StackTrace);
+                                _logger.LogError(onErrorException, "Unable to recover from error that occurred during message receiving");
                             }
                             catch (Exception onErrorException)
                             {
                                 var aggEx = new AggregateException(e, onErrorException);
 
-                                _logger.LogError($"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'"
-                                               + "\n"
-                                               + $"{onErrorException.StackTrace}");
+                                _logger.LogError(aggEx, $"Recovery was unsuccessful. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'");
 
                                 var failureContext = new FailureContext(messageContext.BrokeredMessage,
                                                                         this.ErrorQueuePath,
                                                                         "Unable to recover from error which occurred during message handling",
-                                                                        aggEx.ToString(),
+                                                                        aggEx,
                                                                         message.SystemProperties.DeliveryCount,
                                                                         transactionContext);
 
                                 await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);
 
-                                await DeadLetterAsync(message, $"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'", onErrorException.StackTrace).ConfigureAwait(false);
+                                await DeadLetterAsync(message,
+                                                      $"Critical error encountered receiving message. MessageId: '{message.MessageId}, CorrelationId: '{message.CorrelationId}'",
+                                                      aggEx.ToString()).ConfigureAwait(false);
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError($"Error processing {typeof(Message).Name} with id '{message.MessageId}' and correlation id '{message.CorrelationId}': {ex.StackTrace}");
+                        //TODO: circuit breaker
+                        _logger.LogError(ex, "Error receiving and handling azure service bus message");
                     }
                     finally
                     {
@@ -299,7 +327,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         private Task CompleteAsync(Message msg)
         {
-            if (_messageBrokerOptions.TransactionMode == TransactionMode.None)
+            if (_transactionMode == TransactionMode.None)
             {
                 return Task.CompletedTask;
             }
@@ -309,7 +337,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         private Task AbandonAsync(Message msg)
         {
-            if (_messageBrokerOptions.TransactionMode == TransactionMode.None)
+            if (_transactionMode == TransactionMode.None)
             {
                 return Task.CompletedTask;
             }
@@ -319,7 +347,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         private Task DeadLetterAsync(Message msg, string deadLetterReason, string deadLetterErrorDescription)
         {
-            if (_messageBrokerOptions.TransactionMode == TransactionMode.None)
+            if (_transactionMode == TransactionMode.None)
             {
                 return Task.CompletedTask;
             }
@@ -337,6 +365,37 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 return new TransactionScope(TransactionScopeAsyncFlowOption.Enabled);
             }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await StopReceiver().ConfigureAwait(false);
+
+            Dispose(disposing: false);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposedValue)
+            {
+                if (disposing)
+                {
+                    _messageReceiverLoopTokenSource?.Cancel();
+                    _innerReceiver?.CloseAsync();
+                    _semaphore?.Dispose();
+                    _messageReceiverLoopTokenSource?.Dispose();
+                }
+
+                _innerReceiver = null;
+                _disposedValue = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
         }
     }
 }

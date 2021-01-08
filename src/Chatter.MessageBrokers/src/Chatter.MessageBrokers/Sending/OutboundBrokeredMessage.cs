@@ -23,7 +23,7 @@ namespace Chatter.MessageBrokers.Sending
             _bodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
             MessageContext[MessageBrokers.MessageContext.ContentType] = _bodyConverter.ContentType;
 
-            if (string.IsNullOrWhiteSpace(GetCorrelationId()))
+            if (string.IsNullOrWhiteSpace(CorrelationId))
             {
                 WithCorrelationId(Guid.NewGuid().ToString());
             }
@@ -51,6 +51,14 @@ namespace Chatter.MessageBrokers.Sending
             MessageContext[MessageBrokers.MessageContext.TimeToLive] = timeToLive;
             return this;
         }
+
+        public string CorrelationId => (string)GetMessageContextByKey(MessageBrokers.MessageContext.CorrelationId);
+        public string ReplyToAddress => (string)GetMessageContextByKey(MessageBrokers.MessageContext.ReplyToAddress);
+        public string ReplyToGroupId => (string)GetMessageContextByKey(MessageBrokers.MessageContext.ReplyToGroupId);
+        public string GroupId => (string)GetMessageContextByKey(MessageBrokers.MessageContext.GroupId);
+        public string Subject => (string)GetMessageContextByKey(MessageBrokers.MessageContext.Subject);
+        public string ContentType => _bodyConverter.ContentType;
+        public string InfrastructureType => (string)GetMessageContextByKey(MessageBrokers.MessageContext.InfrastructureType);
 
         public OutboundBrokeredMessage RefreshTimeToLive()
         {
@@ -92,36 +100,6 @@ namespace Chatter.MessageBrokers.Sending
             {
                 return TimeSpan.Parse((string)ttl);
             }
-        }
-
-        public string GetCorrelationId()
-        {
-            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.CorrelationId);
-        }
-
-        public string GetReplyToAddress()
-        {
-            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.ReplyToAddress);
-        }
-
-        public string GetReplyToGroupId()
-        {
-            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.ReplyToGroupId);
-        }
-
-        public string GetGroupId()
-        {
-            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.GroupId);
-        }
-
-        public string GetSubject()
-        {
-            return (string)GetMessageContextByKey(MessageBrokers.MessageContext.Subject);
-        }
-
-        public string GetContentType()
-        {
-            return _bodyConverter.ContentType;
         }
 
         internal OutboundBrokeredMessage ClearReplyToProperties()

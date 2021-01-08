@@ -27,6 +27,7 @@ namespace Chatter.CQRS
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
             messageHandlerContext.Container.GetOrAdd(() => _externalDispatcher);
+            messageHandlerContext.Container.GetOrAdd<IMessageDispatcher>(() => this);
             var dispatcher = _dispatcherProvider.GetDispatcher<TMessage>();
             return dispatcher.Dispatch(message, messageHandlerContext);
         }

@@ -1,8 +1,10 @@
 ﻿using Chatter.CQRS.Events;
+using Chatter.MessageBrokers;
 using System;
 
 namespace CarRental.Application.Events
 {
+    //[BrokeredMessage("Chatter_ConversationService_OutboxChangedEvent", "Chatter_ConversationQueue_OutboxChangedEvent", infrastructureType: "Chatter.Infrastructure.SqlServiceBroker")]
     public class OutboxChangedEvent : IEvent
     {
         public int Id { get; set; }

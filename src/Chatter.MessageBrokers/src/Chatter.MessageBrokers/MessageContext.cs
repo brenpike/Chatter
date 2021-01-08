@@ -5,6 +5,7 @@
         public static readonly string ChatterBaseHeader = "Chatter";
         private static readonly string Saga = "Saga";
         private static readonly string Routing = "Routing";
+        private static readonly string Infrastructure = "Infrastructure";
 
         /// <summary>
         /// The receivers visited by the inbound message prior to the most recent message receiver
@@ -80,6 +81,10 @@
         /// Also known as a session in some messaging infrastructure implementations
         /// </remarks>
         public static readonly string ReplyToGroupId = $"{ChatterBaseHeader}.{Routing}.ReplyToGroupId";
+        /// <summary>
+        /// The type of brokered message infrastructure the message is being sent or received on
+        /// </summary>
+        public static readonly string InfrastructureType = $"{ChatterBaseHeader}.{Infrastructure}.Type";
 
     }
 }

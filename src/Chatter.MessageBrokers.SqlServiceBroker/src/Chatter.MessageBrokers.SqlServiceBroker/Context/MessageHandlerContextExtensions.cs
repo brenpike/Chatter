@@ -1,15 +1,15 @@
-﻿using Chatter.CQRS.Events;
-using Chatter.MessageBrokers.SqlServiceBroker.Context;
+﻿using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.SqlServiceBroker.Sending;
 
 namespace Chatter.CQRS.Context
 {
     public static class MessageHandlerContextExtensions
     {
-        public static SqlChangeNotificationContext<TEvent> ChangeNotificationContext<TEvent>(this IMessageHandlerContext messageHandlerContext) where TEvent : class, IEvent
+        public static ISqlServiceBrokerContextDispatcher SqlServiceBroker(this IMessageHandlerContext context)
         {
-            if (messageHandlerContext.Container.TryGet<SqlChangeNotificationContext<TEvent>>(out var context))
+            if (context is IMessageBrokerContext mbc)
             {
-                return context;
+                return new SqlServiceBrokerContextDispatcher(mbc);
             }
 
             return null;

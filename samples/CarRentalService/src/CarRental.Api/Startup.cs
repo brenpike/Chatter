@@ -8,6 +8,7 @@ using CarRental.Infrastructure.Services;
 using Chatter.MessageBrokers.Configuration;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -37,7 +38,8 @@ namespace CarRental.Api
 
             services.AddScoped<IEventMapper, EventMapper>();
             services.AddScoped<IRepository<Domain.Aggregates.CarRental, Guid>, CarRentalRepository>();
-            services.AddDbContext<CarRentalContext>();
+            services.AddDbContext<CarRentalContext>(o => o.UseSqlServer(Configuration.GetValue<string>("ConnectionStrings:CarRentals"),
+                b => b.MigrationsAssembly(typeof(CarRentalContext).Assembly.FullName).EnableRetryOnFailure(5)));
 
             services.AddChatterCqrs(Configuration, typeof(BookRentalCarCommand))
                     .AddCommandPipeline(builder =>
@@ -48,24 +50,23 @@ namespace CarRental.Api
                                .WithOutboxProcessingBehavior<CarRentalContext>()
                                .WithRoutingSlipBehavior();
                     })
-                    .AddSqlServiceBroker<OutboxChangedEvent>(builder =>
-                    {
-                        builder.AddOptions(Configuration.GetValue<string>("Chatter:MessageBrokers:Reliability:Persistance:ConnectionString"),
-                                           "CarRentals",
-                                           "OutboxMessage");
-                    })
-                    .AddSqlServiceBroker<CarRentalAggregateChangedEvent>(builder =>
-                    {
-                        builder.AddOptions(Configuration.GetValue<string>("Chatter:MessageBrokers:Reliability:Persistance:ConnectionString"),
-                                           "CarRentals",
-                                           "CarRental");
-                    })
                     .AddMessageBrokers(builder =>
                     {
                         builder.UseExponentialDelayRecovery()
                                .UseCombGuidMessageIdGenerator();
                     })
-                    .AddAzureServiceBus();
+                    .AddAzureServiceBus()
+                    .AddSqlTableWatcher<OutboxChangedEvent>(builder =>
+                    {
+                        builder.AddOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"),
+                                           "CarRentals",
+                                           "OutboxMessage");
+                    })
+                    .AddSqlServiceBroker(builder =>
+                    {
+                        builder.AddSqlServiceBrokerOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"))
+                               .AddQueueReceiver<CarRentalAggregateChangedEvent>("Chatter_ConversationQueue_CarRentalAggregateChangedEvent");
+                    });
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
@@ -73,6 +74,7 @@ namespace CarRental.Api
             if (env.IsDevelopment())
             {
                 app.UseDeveloperExceptionPage();
+                app.UseTableWatcherSqlMigrations<OutboxChangedEvent>();
             }
 
             app.UseSwagger();

@@ -12,5 +12,6 @@ namespace Chatter.MessageBrokers
         public string GetReceiverName<T>();
         public string GetErrorQueueName<T>();
         public string GetBrokeredMessageDescription<T>();
+        public string GetInfrastructureType<T>();
     }
 }
