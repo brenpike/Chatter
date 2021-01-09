@@ -117,7 +117,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             {
                 try
                 {
-                    await _circuitBreaker.Execute(async cbState =>
+                    await _circuitBreaker.Execute(async _ =>
                     {
                         using SqlConnection connection = new SqlConnection(_options.ConnectionString);
                         await connection.OpenAsync();

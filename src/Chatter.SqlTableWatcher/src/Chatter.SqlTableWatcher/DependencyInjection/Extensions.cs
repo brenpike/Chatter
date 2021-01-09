@@ -62,7 +62,6 @@ namespace Microsoft.Extensions.DependencyInjection
             var installNotificationsStoredProcName = $"{ChatterServiceBrokerConstants.ChatterInstallNotificationsPrefix}{receiverName}";
             var uninstallNotificationsStoredProcName = $"{ChatterServiceBrokerConstants.ChatterUninstallNotificationsPrefix}{receiverName}";
 
-            sdm.UninstallSqlDependencies(uninstallNotificationsStoredProcName);
             sdm.InstallSqlDependencies(installNotificationsStoredProcName, uninstallNotificationsStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName);
 
             return applicationBuilder;
