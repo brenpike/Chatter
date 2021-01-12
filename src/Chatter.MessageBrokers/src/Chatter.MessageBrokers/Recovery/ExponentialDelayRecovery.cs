@@ -1,5 +1,4 @@
 ﻿using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Recovery.Options;
 using System;
 using System.Threading.Tasks;
 
@@ -10,10 +9,10 @@ namespace Chatter.MessageBrokers.Recovery
         private const int _milliSecondsInASecond = 1000;
         private readonly int _maxDelayInMilliseconds = 1024;
 
-        public ExponentialDelayRecovery(RecoveryOptions options) 
-            => _maxDelayInMilliseconds = GetDelayTimeInMillisecondsFromRetryAttempts(options.MaxRetryAttempts);
+        public ExponentialDelayRecovery(int maxRetryAttempts)
+            => _maxDelayInMilliseconds = GetDelayTimeInMillisecondsFromRetryAttempts(maxRetryAttempts);
 
-        int GetDelayTimeInMillisecondsFromRetryAttempts(int retryAttempts) 
+        int GetDelayTimeInMillisecondsFromRetryAttempts(int retryAttempts)
             => (int)(1d / 2d * (Math.Pow(2d, retryAttempts) - 1d)) * _milliSecondsInASecond;
 
         /// <summary>

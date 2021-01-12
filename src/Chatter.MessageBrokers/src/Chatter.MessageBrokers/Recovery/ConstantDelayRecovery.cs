@@ -1,17 +1,16 @@
 ﻿using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Recovery.Options;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery
 {
     class ConstantDelayRecovery : IDelayedRecovery
     {
-        private readonly RecoveryOptions _options;
+        private readonly int _constantDelayInMilliseconds;
 
-        public ConstantDelayRecovery(RecoveryOptions options) 
-            => _options = options;
+        public ConstantDelayRecovery(int constantDelayInMilliseconds)
+            => _constantDelayInMilliseconds = constantDelayInMilliseconds;
 
-        public Task Delay(FailureContext failureContext) 
-            => Task.Delay(_options.ConstantDelayInMilliseconds);
+        public Task Delay(FailureContext failureContext)
+            => Task.Delay(_constantDelayInMilliseconds);
     }
 }

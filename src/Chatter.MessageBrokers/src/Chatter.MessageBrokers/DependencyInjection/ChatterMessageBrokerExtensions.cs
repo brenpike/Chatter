@@ -70,7 +70,6 @@ namespace Microsoft.Extensions.DependencyInjection
             var messageBrokerOptionsBuilder = builder.Services.AddMessageBrokerOptions(builder.Configuration);
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
-            builder.Services.AddIfNotRegistered(ServiceLifetime.Scoped, sp => options?.Recovery?.CircuitBreakerOptions ?? new CircuitBreakerOptions()); //TODO: this is temporary. fix this garbage
 
             builder.Services.AddSingleton<IMessagingInfrastructureProvider, MessagingInfrastructureProvider>();
 
