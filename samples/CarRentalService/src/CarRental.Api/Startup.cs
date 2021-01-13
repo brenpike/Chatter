@@ -57,7 +57,8 @@ namespace CarRental.Api
                             r.UseExponentialDelayRecovery(5)
                              .WithCircuitBreaker(cb =>
                              {
-                                 cb.SetNumberOfFailuresBeforeOpen(999);
+                                 cb.SetNumberOfFailuresBeforeOpen(3)
+                                   .SetOpenToHalfOpenWaitTime(15);
                              });
                         })
                         .UseCombGuidMessageIdGenerator();

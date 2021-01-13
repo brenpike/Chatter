@@ -15,7 +15,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
         private readonly IServiceCollection _services;
         private readonly IConfigurationSection _recoveryOptionsSection;
 
-        private int _maxRetryAttempts = 3;
+        private int _maxRetryAttempts = 5;
 
         private RecoveryOptionsBuilder(IServiceCollection services) : this(services, null, null) { }
         private RecoveryOptionsBuilder(IServiceCollection services, IConfiguration configuration, IConfigurationSection section)
@@ -47,6 +47,11 @@ namespace Chatter.MessageBrokers.Recovery.Options
             return builder.Build();
         }
 
+        /// <summary>
+        /// Allows <see cref="CircuitBreaker"/> configuration
+        /// </summary>
+        /// <param name="builder">The <see cref="CircuitBreakerOptionsBuilder"/></param>
+        /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder WithCircuitBreaker(Action<CircuitBreakerOptionsBuilder> builder)
         {
             var b = CircuitBreakerOptionsBuilder.Create(_services);
@@ -55,37 +60,83 @@ namespace Chatter.MessageBrokers.Recovery.Options
             return this;
         }
 
+        /// <summary>
+        /// Configures the message broker infrastructure to use <see cref="NoDelayRecovery"/> as its <see cref="IDelayedRecoveryStrategy"/>.
+        /// The <see cref="IDelayedRecoveryStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
+        /// </summary>
+        /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseNoDelayRecovery()
         {
-            _services.Replace<IDelayedRecovery, NoDelayRecovery>(ServiceLifetime.Scoped);
+            _services.Replace<IDelayedRecoveryStrategy, NoDelayRecovery>(ServiceLifetime.Scoped);
             return this;
         }
 
+        /// <summary>
+        /// Sets the maximum number of retries that will be attempted when message broker infrastructure fails to handle a received message.
+        /// The default is 5.
+        /// </summary>
+        /// <param name="maxRetryAttempts">The maximum number of retry attempts</param>
+        /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder WithMaxRetryAttempts(int maxRetryAttempts)
         {
             _maxRetryAttempts = maxRetryAttempts;
             return this;
         }
 
+        /// <summary>
+        /// Configures message broker infrastructure to use <see cref="ExponentialDelayRecovery"/> (exponential backoff) as its <see cref="IDelayedRecoveryStrategy"/>. 
+        /// The <see cref="IDelayedRecoveryStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
+        /// </summary>
+        /// <param name="maxRetryAttempts">The maximum number of exponentially backed-off retry attemps</param>
+        /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
+        /// <remarks>
+        /// Exponential delay per attempt:
+        ///<br>Attempt #1  - 0s</br>
+        ///<br>Attempt #2  - 2s</br>
+        ///<br>Attempt #3  - 4s</br>
+        ///<br>Attempt #4  - 8s</br>
+        ///<br>Attempt #5  - 16s</br>
+        ///<br>Attempt #6  - 32s</br>
+        ///<br>Attempt #7  - 1m 4s</br>
+        ///<br>Attempt #8  - 2m 8s</br>
+        ///<br>Attempt #9  - 4m 16s</br>
+        ///<br>Attempt #10 - 8m 32s</br>
+        ///<br>Attempt #11 - 17m 4s</br>
+        ///<br>Attempt #12 - 34m 8s</br>
+        ///<br>Attempt #13 - 1h 8m 16s</br>
+        ///<br>Attempt #14 - 2h 16m 32s</br>
+        ///<br>Attempt #15 - 4h 33m 4s</br>
+        /// </remarks>
         public RecoveryOptionsBuilder UseExponentialDelayRecovery(int maxRetryAttempts)
         {
             _maxRetryAttempts = maxRetryAttempts;
-            _services.Replace<IDelayedRecovery>(ServiceLifetime.Scoped, sp =>
+            _services.Replace<IDelayedRecoveryStrategy>(ServiceLifetime.Scoped, sp =>
             {
                 return new ExponentialDelayRecovery(maxRetryAttempts);
             });
             return this;
         }
 
+        /// <summary>
+        /// Configures message broker infrastructure to use <see cref="ConstantDelayRecovery"/> as its <see cref="IDelayedRecoveryStrategy"/>. 
+        /// The <see cref="IDelayedRecoveryStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
+        /// </summary>
+        /// <param name="constantDelayInMilliseconds">The constant time in milliseconds to wait before the next retry attempt</param>
+        /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseConstantDelayRecovery(int constantDelayInMilliseconds)
         {
-            _services.Replace<IDelayedRecovery>(ServiceLifetime.Scoped, sp =>
+            _services.Replace<IDelayedRecoveryStrategy>(ServiceLifetime.Scoped, sp =>
             {
                 return new ConstantDelayRecovery(constantDelayInMilliseconds);
             });
             return this;
         }
 
+        /// <summary>
+        /// Registers <see cref="ErrorQueueDispatcher"/> as the <see cref="IRecoveryAction"/> that will be used after message broker infrastructure fails
+        /// to handle a message after <see cref="IDelayedRecoveryStrategy"/> has executed
+        /// </summary>
+        /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseRouteToErrorQueueRecoveryAction()
         {
             _services.Replace<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);

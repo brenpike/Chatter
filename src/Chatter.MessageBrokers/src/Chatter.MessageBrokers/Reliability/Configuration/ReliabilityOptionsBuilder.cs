@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using Chatter.MessageBrokers.Reliability.Outbox;
 
 namespace Chatter.MessageBrokers.Reliability.Configuration
 {
@@ -34,18 +35,36 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
             return builder.Build();
         }
 
+        /// <summary>
+        /// Enables routing of messages to an outbox, rather than directly to messaging infrastructure. Using <see cref="OutboxProcessingBehavior{TMessage}"/>
+        /// automatically enables outbox routing.
+        /// </summary>
+        /// <returns><see cref="ReliabilityOptionsBuilder"/></returns>
         public ReliabilityOptionsBuilder WithOutboxRouting()
         {
             _routeMessagesToOutbox = true;
             return this;
         }
 
+        /// <summary>
+        /// Defines how long outbox messages will live within the <see cref="InMemoryBrokeredMessageOutbox"/>. The <see cref="InMemoryBrokeredMessageOutbox"/>
+        /// is registered by Chatter by default if no other persistance strategy is used. Default value is 10.
+        /// </summary>
+        /// <param name="timeToLiveInMinutes">The time messages will be maintained within the <see cref="InMemoryBrokeredMessageOutbox"/> before being purged.</param>
+        /// <returns><see cref="ReliabilityOptionsBuilder"/></returns>
         public ReliabilityOptionsBuilder WithInMemoryOutboxTimeToLive(double timeToLiveInMinutes)
         {
             _minutesToLiveInMemory = timeToLiveInMinutes;
             return this;
         }
 
+        /// <summary>
+        /// Enables the <see cref="BrokeredMessageOutboxProcessor"/> which processes messages from the outbox and sends them to messaging infrastructure 
+        /// at a timed interval. The default polling interval is 5000 milliseconds. This does not enable sending of messages to the outbox by default which
+        /// must be done by calling <see cref="WithOutboxRouting"/> or by using <see cref="OutboxProcessingBehavior{TMessage}"/>.
+        /// </summary>
+        /// <param name="outboxProcessingIntervalInMilliseconds">The interval to wait before the outbox is checked for brokered messages</param>
+        /// <returns><see cref="ReliabilityOptionsBuilder"/></returns>
         public ReliabilityOptionsBuilder WithOutboxPollingProcessor(int outboxProcessingIntervalInMilliseconds = 5000)
         {
             _enableOutboxPollingProcessor = true;

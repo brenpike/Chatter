@@ -3,14 +3,14 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery
 {
-    class ConstantDelayRecovery : IDelayedRecovery
+    class ConstantDelayRecovery : IDelayedRecoveryStrategy
     {
         private readonly int _constantDelayInMilliseconds;
 
         public ConstantDelayRecovery(int constantDelayInMilliseconds)
             => _constantDelayInMilliseconds = constantDelayInMilliseconds;
 
-        public Task Delay(FailureContext failureContext)
+        public Task Execute(FailureContext failureContext)
             => Task.Delay(_constantDelayInMilliseconds);
     }
 }

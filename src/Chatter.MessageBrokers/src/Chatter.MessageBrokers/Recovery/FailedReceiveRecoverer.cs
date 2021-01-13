@@ -8,10 +8,10 @@ namespace Chatter.MessageBrokers.Recovery
     public class FailedReceiveRecoverer : IFailedReceiveRecoverer
     {
         private readonly RecoveryOptions _options;
-        private readonly IDelayedRecovery _delayedRecovery;
+        private readonly IDelayedRecoveryStrategy _delayedRecovery;
         private readonly IRecoveryAction _recoveryAction;
 
-        public FailedReceiveRecoverer(RecoveryOptions options, IDelayedRecovery delayedRecovery, IRecoveryAction recoveryAction)
+        public FailedReceiveRecoverer(RecoveryOptions options, IDelayedRecoveryStrategy delayedRecovery, IRecoveryAction recoveryAction)
         {
             _options = options;
             _delayedRecovery = delayedRecovery;
@@ -20,7 +20,7 @@ namespace Chatter.MessageBrokers.Recovery
 
         public async Task<RecoveryState> Execute(FailureContext failureContext)
         {
-            await _delayedRecovery.Delay(failureContext).ConfigureAwait(false);
+            await _delayedRecovery.Execute(failureContext).ConfigureAwait(false);
 
             if (failureContext.DeliveryCount >= _options.MaxRetryAttempts)
             {
