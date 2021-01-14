@@ -61,9 +61,7 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
                 IF EXISTS (SELECT * FROM sys.databases 
                                     WHERE name = '{0}' AND is_broker_enabled = 0) 
                 BEGIN
-                    ALTER DATABASE [{0}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE
                     ALTER DATABASE [{0}] SET ENABLE_BROKER; 
-                    ALTER DATABASE [{0}] SET MULTI_USER WITH ROLLBACK IMMEDIATE
 
                     -- SQL Express
                     ALTER AUTHORIZATION ON DATABASE::[{0}] TO [sa]

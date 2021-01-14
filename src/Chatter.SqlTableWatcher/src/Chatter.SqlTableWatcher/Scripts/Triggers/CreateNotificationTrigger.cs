@@ -74,6 +74,7 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
             return string.Format(@"
                 CREATE TRIGGER [{1}]
                 ON {4}.[{0}]
+                WITH EXECUTE AS OWNER
                 AFTER {2} 
                 AS
 
