@@ -1,9 +1,9 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.SqlTableWatcher;
 using Chatter.SqlTableWatcher.Configuration;
 using Chatter.SqlTableWatcher.Scripts;
-using Chatter.TableWatcher;
 using Microsoft.AspNetCore.Builder;
 using System;
 

@@ -10,7 +10,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace Chatter.TableWatcher
+namespace Chatter.SqlTableWatcher
 {
     class TableChangeReceiver<TProcessorCommand, TRowChangeData> : BrokeredMessageReceiver<TProcessorCommand>
         where TRowChangeData : class, IMessage

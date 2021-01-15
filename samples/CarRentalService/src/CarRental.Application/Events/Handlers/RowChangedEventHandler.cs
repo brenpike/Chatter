@@ -1,6 +1,6 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
-using Chatter.TableWatcher;
+using Chatter.SqlTableWatcher;
 using System.Threading.Tasks;
 
 namespace CarRental.Application.Events.Handlers

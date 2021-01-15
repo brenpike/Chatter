@@ -1,6 +1,6 @@
 ﻿using System.Threading.Tasks;
 
-namespace Chatter.TableWatcher
+namespace Chatter.SqlTableWatcher
 {
     public interface ISqlDependencyManager
     {

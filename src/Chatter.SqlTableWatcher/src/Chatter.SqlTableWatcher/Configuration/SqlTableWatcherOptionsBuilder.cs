@@ -1,5 +1,4 @@
 ﻿using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
-using Chatter.TableWatcher;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 

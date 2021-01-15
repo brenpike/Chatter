@@ -1,6 +1,5 @@
 ﻿using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
-using Chatter.TableWatcher;
 
 namespace Chatter.SqlTableWatcher.Configuration
 {
