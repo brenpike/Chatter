@@ -3,7 +3,7 @@ using Chatter.SqlTableWatcher.Scripts;
 using Chatter.SqlTableWatcher.Scripts.StoredProcedures;
 using System.Threading.Tasks;
 
-namespace Chatter.TableWatcher
+namespace Chatter.SqlTableWatcher
 {
     public class SqlDependencyManager : ISqlDependencyManager
     {
