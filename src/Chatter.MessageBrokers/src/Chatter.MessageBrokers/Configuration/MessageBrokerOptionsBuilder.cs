@@ -1,8 +1,8 @@
-﻿using Chatter.MessageBrokers.Recovery.Options;
+﻿using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Recovery.Options;
 using Chatter.MessageBrokers.Reliability.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using System;
 
 namespace Chatter.MessageBrokers.Configuration
@@ -11,101 +11,84 @@ namespace Chatter.MessageBrokers.Configuration
     {
         public IServiceCollection Services { get; }
         private readonly IConfiguration _configuration;
-        private MessageBrokerOptions _messageBrokerOptions;
-        private ReliabilityOptions _reliabilityOptions;
-        private RecoveryOptions _recoveryOptions;
-        private Func<IServiceCollection> _optionConfigurator;
-        private const string _messageBrokerSectionName = "Chatter:MessageBrokers";
-        private const string _reliabilityOptionsSectionName = _messageBrokerSectionName + ":Reliability";
-        private const string _recoveryOptionsSectionName = _messageBrokerSectionName + ":Recovery";
+        private TransactionMode _transactionMode = TransactionMode.ReceiveOnly;
+        private ReliabilityOptions _reliabilityOptions = null;
+        private RecoveryOptions _recoveryOptions = null;
+        private readonly IConfigurationSection _messageBrokerOptionsSection = null;
 
-        internal MessageBrokerOptionsBuilder(IServiceCollection services, IConfiguration configuration)
+        public const string MessageBrokerSectionName = "Chatter:MessageBrokers";
+
+        public static MessageBrokerOptionsBuilder Create(IServiceCollection services)
+            => new MessageBrokerOptionsBuilder(services);
+
+        private MessageBrokerOptionsBuilder(IServiceCollection services) : this(services, null, null) { }
+        internal MessageBrokerOptionsBuilder(IServiceCollection services, IConfiguration configuration, IConfigurationSection section = null)
         {
             Services = services;
             _configuration = configuration;
-            _messageBrokerOptions = new MessageBrokerOptions();
-            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(GetMessageBrokerOptions(_messageBrokerSectionName));
+            _messageBrokerOptionsSection = section;
         }
 
-        private IConfigurationSection GetMessageBrokerOptions(string messageBrokerSectionName)
+        public MessageBrokerOptionsBuilder WithTransactionMode(TransactionMode transactionMode)
         {
-            var messageBrokerOptionsSection = _configuration.GetSection(messageBrokerSectionName);
-            _messageBrokerOptions = messageBrokerOptionsSection.Get<MessageBrokerOptions>();
-            return messageBrokerOptionsSection;
-        }
-
-        public MessageBrokerOptionsBuilder AddMessageBrokerOptions(Action<MessageBrokerOptions> builder)
-        {
-            _optionConfigurator = () => Services.Configure(builder);
+            _transactionMode = transactionMode;
             return this;
         }
 
-        public MessageBrokerOptionsBuilder AddMessageBrokerOptions(string messageBrokerSectionName = _messageBrokerSectionName)
+        public MessageBrokerOptions FromConfig(string messageBrokerSectionName = MessageBrokerSectionName)
+            => FromConfig(Services, _configuration, messageBrokerSectionName);
+
+        public static MessageBrokerOptions FromConfig(IServiceCollection services, IConfiguration configuration, string messageBrokerSectionName = MessageBrokerSectionName)
         {
-            _optionConfigurator = () => Services.Configure<MessageBrokerOptions>(GetMessageBrokerOptions(messageBrokerSectionName));
+            var section = configuration?.GetSection(messageBrokerSectionName);
+            var builder = new MessageBrokerOptionsBuilder(services, configuration, section);
+            return builder.Build();
+        }
+
+        public MessageBrokerOptionsBuilder AddReliabilityOptions(Action<ReliabilityOptionsBuilder> builder)
+        {
+            var b = ReliabilityOptionsBuilder.Create(Services);
+            builder?.Invoke(b);
+            _reliabilityOptions = b.Build();
             return this;
         }
 
-        public MessageBrokerOptionsBuilder AddReliabilityOptions(string reliabilityOptionsSectionName = _reliabilityOptionsSectionName)
+        public MessageBrokerOptionsBuilder AddRecoveryOptions(Action<RecoveryOptionsBuilder> builder)
         {
-            var reliabilityOptions = _configuration.GetSection(reliabilityOptionsSectionName).Get<ReliabilityOptions>();
-
-            if (reliabilityOptions is null)
-            {
-                throw new ArgumentNullException(nameof(reliabilityOptions), $"No reliability options found in section '{reliabilityOptionsSectionName}'");
-            }
-
-            _reliabilityOptions = reliabilityOptions;
-
+            var b = RecoveryOptionsBuilder.Create(Services);
+            builder?.Invoke(b);
+            _recoveryOptions = b.Build();
             return this;
-        }
-
-        public MessageBrokerOptionsBuilder AddRecoveryOptions(string recoveryOptionsSectionName = _recoveryOptionsSectionName)
-        {
-            var recoveryOptions = _configuration.GetSection(recoveryOptionsSectionName).Get<RecoveryOptions>();
-
-            if (recoveryOptions is null)
-            {
-                throw new ArgumentNullException(nameof(recoveryOptions), $"No recovery options found in section '{recoveryOptionsSectionName}'");
-            }
-
-            _recoveryOptions = recoveryOptions;
-
-            return this;
-        }
-
-        private void PostConfiguration(MessageBrokerOptions messageBrokerOptions)
-        {
-            if (_reliabilityOptions != null)
-            {
-                messageBrokerOptions.Reliability = _reliabilityOptions;
-            }
-
-            if (_recoveryOptions != null)
-            {
-                messageBrokerOptions.Recovery = _recoveryOptions;
-            }
-
-            _messageBrokerOptions = messageBrokerOptions;
         }
 
         internal MessageBrokerOptions Build()
         {
-            Services.AddOptions<MessageBrokerOptions>()
-                     .ValidateDataAnnotations()
-                     .PostConfigure(options =>
-                     {
-                         PostConfiguration(options);
-                     });
+            var messageBrokerOptions = new MessageBrokerOptions();
+            if (_messageBrokerOptionsSection != null && _messageBrokerOptionsSection.Exists())
+            {
+                messageBrokerOptions = _messageBrokerOptionsSection.Get<MessageBrokerOptions>();
+                Services.Configure<MessageBrokerOptions>(_messageBrokerOptionsSection);
+            }
+            else
+            {
+                messageBrokerOptions.Reliability = _reliabilityOptions;
+                messageBrokerOptions.Recovery = _recoveryOptions;
+                messageBrokerOptions.TransactionMode = _transactionMode;
+            }
 
-            _optionConfigurator?.Invoke();
+            if (messageBrokerOptions.Reliability is null)
+            {
+                messageBrokerOptions.Reliability = ReliabilityOptionsBuilder.Create(Services).Build();
+            }
 
-            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value);
-            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Reliability ?? new ReliabilityOptions());
-            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<MessageBrokerOptions>>().Value?.Recovery ?? new RecoveryOptions());
+            if (messageBrokerOptions.Recovery is null)
+            {
+                messageBrokerOptions.Recovery = RecoveryOptionsBuilder.Create(Services).Build();
+            }
 
-            PostConfiguration(_messageBrokerOptions);
-            return _messageBrokerOptions;
+            Services.AddSingleton(messageBrokerOptions);
+
+            return messageBrokerOptions;
         }
     }
 }

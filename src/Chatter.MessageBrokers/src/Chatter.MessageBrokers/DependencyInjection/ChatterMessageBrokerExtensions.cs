@@ -70,7 +70,6 @@ namespace Microsoft.Extensions.DependencyInjection
             var messageBrokerOptionsBuilder = builder.Services.AddMessageBrokerOptions(builder.Configuration);
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();
-            builder.Services.AddIfNotRegistered(ServiceLifetime.Scoped, sp => options?.Recovery?.CircuitBreakerOptions ?? new CircuitBreakerOptions()); //TODO: this is temporary. fix this garbage
 
             builder.Services.AddSingleton<IMessagingInfrastructureProvider, MessagingInfrastructureProvider>();
 
@@ -85,7 +84,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.Services.AddScoped<IFailedReceiveRecoverer, FailedReceiveRecoverer>();
             builder.Services.AddIfNotRegistered<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
-            builder.Services.AddIfNotRegistered<IDelayedRecovery, NoDelayRecovery>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IDelayedRecoveryStrategy, NoDelayRecovery>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<ICriticalFailureNotifier, CriticalFailureEventDispatcher>(ServiceLifetime.Scoped);
 
             builder.Services.AddIfNotRegistered<IMessageIdGenerator, GuidIdGenerator>(ServiceLifetime.Scoped);

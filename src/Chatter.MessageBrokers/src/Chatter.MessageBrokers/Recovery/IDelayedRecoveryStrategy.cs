@@ -3,8 +3,8 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery
 {
-    public interface IDelayedRecovery
+    public interface IDelayedRecoveryStrategy
     {
-        Task Delay(FailureContext failureContext);
+        Task Execute(FailureContext failureContext);
     }
 }

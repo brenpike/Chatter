@@ -52,8 +52,16 @@ namespace CarRental.Api
                     })
                     .AddMessageBrokers(builder =>
                     {
-                        builder.UseExponentialDelayRecovery()
-                               .UseCombGuidMessageIdGenerator();
+                        builder.AddRecoveryOptions(r =>
+                        {
+                            r.UseExponentialDelayRecovery(5)
+                             .WithCircuitBreaker(cb =>
+                             {
+                                 cb.SetNumberOfFailuresBeforeOpen(3)
+                                   .SetOpenToHalfOpenWaitTime(15);
+                             });
+                        })
+                        .UseCombGuidMessageIdGenerator();
                     })
                     .AddAzureServiceBus()
                     .AddSqlTableWatcher<OutboxChangedEvent>(builder =>
