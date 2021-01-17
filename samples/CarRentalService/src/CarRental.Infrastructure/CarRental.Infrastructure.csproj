@@ -5,6 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers.AzureServiceBus.Auth\src\Chatter.MessageBrokers.AzureServiceBus.Auth\Chatter.MessageBrokers.AzureServiceBus.Auth.csproj" />
     <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers.AzureServiceBus\src\Chatter.MessageBrokers.AzureServiceBus\Chatter.MessageBrokers.AzureServiceBus.csproj" />
     <ProjectReference Include="..\..\..\..\src\Chatter.MessageBrokers.Reliability.EntityFramework\src\Chatter.MessageBrokers.Reliability.EntityFramework\Chatter.MessageBrokers.Reliability.EntityFramework.csproj" />
     <ProjectReference Include="..\CarRental.Application\CarRental.Application.csproj" />

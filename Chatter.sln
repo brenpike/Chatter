@@ -93,6 +93,10 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlTableWatcher.Tes
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlTableWatcher", "src\Chatter.SqlTableWatcher\src\Chatter.SqlTableWatcher\Chatter.SqlTableWatcher.csproj", "{4527EF9B-808D-4D10-A314-6587BD3F35B1}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.AzureServiceBus.Auth.Tests", "src\Chatter.MessageBrokers.AzureServiceBus.Auth\tests\Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.csproj", "{A86858EF-AACE-43A1-BF80-F0474FB65246}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.AzureServiceBus.Auth", "src\Chatter.MessageBrokers.AzureServiceBus.Auth\src\Chatter.MessageBrokers.AzureServiceBus.Auth\Chatter.MessageBrokers.AzureServiceBus.Auth.csproj", "{5D30B1F9-D8D1-4D62-AD0B-B2EBD4C1C39D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -219,6 +223,14 @@ Global
 		{4527EF9B-808D-4D10-A314-6587BD3F35B1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4527EF9B-808D-4D10-A314-6587BD3F35B1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4527EF9B-808D-4D10-A314-6587BD3F35B1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A86858EF-AACE-43A1-BF80-F0474FB65246}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A86858EF-AACE-43A1-BF80-F0474FB65246}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A86858EF-AACE-43A1-BF80-F0474FB65246}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A86858EF-AACE-43A1-BF80-F0474FB65246}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5D30B1F9-D8D1-4D62-AD0B-B2EBD4C1C39D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5D30B1F9-D8D1-4D62-AD0B-B2EBD4C1C39D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5D30B1F9-D8D1-4D62-AD0B-B2EBD4C1C39D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5D30B1F9-D8D1-4D62-AD0B-B2EBD4C1C39D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -253,6 +265,7 @@ Global
 		{C06DBA84-2312-4251-B513-30F26622DC43} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
 		{4D6FF957-BE51-4AA2-A0C9-7FF5E34DB483} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
 		{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
+		{A86858EF-AACE-43A1-BF80-F0474FB65246} = {0E358B7D-919F-4453-9F50-D5F2307F45E5}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {F965FABA-DDDB-4C95-9C89-CA3860B984F7}

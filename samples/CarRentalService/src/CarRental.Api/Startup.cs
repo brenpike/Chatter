@@ -54,16 +54,17 @@ namespace CarRental.Api
                     {
                         builder.AddRecoveryOptions(r =>
                         {
-                            r.UseExponentialDelayRecovery(5)
-                             .WithCircuitBreaker(cb =>
-                             {
-                                 cb.SetNumberOfFailuresBeforeOpen(3)
-                                   .SetOpenToHalfOpenWaitTime(15);
-                             });
+                            r.UseExponentialDelayRecovery(5);
                         })
                         .UseCombGuidMessageIdGenerator();
                     })
                     .AddAzureServiceBus()
+                    //builder =>
+                    //{
+                    //    builder.UseAadTokenProviderWithSecret(Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientId"),
+                    //                                          Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
+                    //                                          Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
+                    //})
                     .AddSqlTableWatcher<OutboxChangedEvent>(builder =>
                     {
                         builder.AddOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"),
