@@ -8,7 +8,7 @@ namespace Chatter.SqlTableWatcher.Configuration
     {
         public IServiceCollection Services { get; }
         private SqlTableWatcherOptions _sqlTableWatcherOptions;
-        private SqlServiceBrokerOptions _sqlServiceBrokerOptions;
+        //private SqlServiceBrokerOptions _sqlServiceBrokerOptions;
         private const string _defaultMessageBodyType = "application/json; charset=utf-16";
 
         internal SqlTableWatcherOptionsBuilder(IServiceCollection services)

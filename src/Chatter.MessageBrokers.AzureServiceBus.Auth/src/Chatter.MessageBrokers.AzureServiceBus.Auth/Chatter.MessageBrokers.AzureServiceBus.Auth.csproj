@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.24.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Chatter.MessageBrokers.AzureServiceBus\src\Chatter.MessageBrokers.AzureServiceBus\Chatter.MessageBrokers.AzureServiceBus.csproj" />
+  </ItemGroup>
+
+</Project>
