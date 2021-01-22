@@ -2,52 +2,80 @@
 using Microsoft.Azure.ServiceBus.Primitives;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using System;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Options
 {
-    public class ServiceBusOptionsBuilder
+    public partial class ServiceBusOptionsBuilder
     {
         public IServiceCollection Services { get; private set; }
-
-        private ServiceBusOptions _serviceBusOptions;
-        private Func<IServiceCollection> _optionConfigurator;
         private ITokenProvider _tokenProvider;
-        private readonly IConfiguration _configuration;
-        private const string _azureServiceBusSectionName = "Chatter:Infrastructure:AzureServiceBus";
+        private const string _defaultAzureServiceBusSectionName = "Chatter:Infrastructure:AzureServiceBus";
+        private string _connectionString = null;
+        private string _azureServiceBusSectionName = null;
+        private IConfiguration _configuration;
+        private int _maxConcurrentCalls = _defaultMaxConcurrentCalls;
+        private int _prefetchCount = _defaultPrefetchCount;
+        private RetryPolicy _retryPolicy = RetryPolicy.Default;
+        private IConfigurationSection _serviceBusOptionsSection = null;
 
-        internal ServiceBusOptionsBuilder(IServiceCollection services, IConfiguration configuration)
+        private const int _defaultMaxConcurrentCalls = 1;
+        private const int _defaultPrefetchCount = 0;
+
+        public static ServiceBusOptionsBuilder Create(IServiceCollection services, IConfiguration configuration)
+            => new ServiceBusOptionsBuilder(services, configuration);
+
+        private ServiceBusOptionsBuilder(IServiceCollection services, IConfiguration configuration)
         {
-            Services = services;
             _configuration = configuration;
-            _serviceBusOptions = new ServiceBusOptions();
+            Services = services;
             _tokenProvider = new NullTokenProvider();
-            _optionConfigurator = () => Services.Configure<ServiceBusOptions>(GetServiceBusOptions(_azureServiceBusSectionName));
-        }
-
-        private IConfigurationSection GetServiceBusOptions(string configSectionName)
-        {
-            var serviceBusOptionsSection = _configuration.GetSection(configSectionName);
-            _serviceBusOptions = serviceBusOptionsSection.Get<ServiceBusOptions>();
-            return serviceBusOptionsSection;
-        }
-
-        public ServiceBusOptionsBuilder AddServiceBusOptions(Action<ServiceBusOptions> builder)
-        {
-            _optionConfigurator = () => Services.Configure(builder);
-            return this;
-        }
-
-        public ServiceBusOptionsBuilder AddServiceBusOptions(string configSectionName = _azureServiceBusSectionName)
-        {
-            _optionConfigurator = () => Services.Configure<ServiceBusOptions>(GetServiceBusOptions(configSectionName));
-            return this;
+            UseConfig();
         }
 
         public ServiceBusOptionsBuilder AddTokenProvider(Func<ITokenProvider> tokenProviderFactory)
         {
             _tokenProvider = tokenProviderFactory?.Invoke() ?? new NullTokenProvider();
+            return this;
+        }
+
+        public ServiceBusOptionsBuilder UseConfig(string configSectionName = _defaultAzureServiceBusSectionName)
+        {
+            _azureServiceBusSectionName = configSectionName;
+            _serviceBusOptionsSection = _configuration.GetSection(configSectionName);
+            return this;
+        }
+
+        public ServiceBusOptionsBuilder WithConnectionString(string connectionString)
+        {
+            _connectionString = connectionString;
+            return this;
+        }
+
+        public ServiceBusOptionsBuilder WithMaxConcurrentCalls(int maxConcurrentCalls)
+        {
+            _maxConcurrentCalls = maxConcurrentCalls;
+            return this;
+        }
+
+        public ServiceBusOptionsBuilder WithPrefetchCount(int count)
+        {
+            _prefetchCount = count;
+            return this;
+        }
+
+        public ServiceBusOptionsBuilder WithNoDelay()
+        {
+            _retryPolicy = RetryPolicy.NoRetry;
+            return this;
+        }
+
+        public ServiceBusOptionsBuilder WithExponentialDelay(int maximumRetryCount, double maximumBackoffInSeconds, double minimumBackoffInSeconds, double deltaBackoffInSeconds)
+        {
+            _retryPolicy = new RetryExponential(TimeSpan.FromSeconds(minimumBackoffInSeconds),
+                            TimeSpan.FromSeconds(maximumBackoffInSeconds),
+                            TimeSpan.FromSeconds(deltaBackoffInSeconds),
+                            maximumRetryCount);
             return this;
         }
 
@@ -79,25 +107,50 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             }
 
             serviceBusConfig.TokenProvider = _tokenProvider;
-
-            _serviceBusOptions = serviceBusConfig;
         }
 
         internal ServiceBusOptions Build()
         {
-            Services.AddOptions<ServiceBusOptions>()
-                     .ValidateDataAnnotations()
-                     .PostConfigure(options =>
-                     {
-                         PostConfiguration(options);
-                     });
+            var options = new ServiceBusOptions();
+            if (_azureServiceBusSectionName != null && _serviceBusOptionsSection.Exists())
+            {
+                options = _serviceBusOptionsSection.Get<ServiceBusOptions>();
+                PostConfiguration(options);
+            }
 
-            _optionConfigurator?.Invoke();
+            if (string.IsNullOrWhiteSpace(_connectionString) && string.IsNullOrWhiteSpace(options.ConnectionString))
+            {
+                throw new Exception("A connection string is required.");
+            }
 
-            Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<ServiceBusOptions>>().Value);
+            if (!string.IsNullOrWhiteSpace(_connectionString))
+            {
+                options.ConnectionString = _connectionString;
+            }
 
-            PostConfiguration(_serviceBusOptions);
-            return _serviceBusOptions;
+            if (_retryPolicy != RetryPolicy.Default)
+            {
+                options.Policy = _retryPolicy;
+            }
+
+            if (!(_tokenProvider is NullTokenProvider))
+            {
+                options.TokenProvider = _tokenProvider;
+            }
+
+            if (_maxConcurrentCalls != _defaultMaxConcurrentCalls)
+            {
+                options.MaxConcurrentCalls = _maxConcurrentCalls;
+            }
+
+            if (_prefetchCount != _defaultPrefetchCount)
+            {
+                options.PrefetchCount = _prefetchCount;
+            }
+
+            Services.AddSingleton(options);
+
+            return options;
         }
     }
 }

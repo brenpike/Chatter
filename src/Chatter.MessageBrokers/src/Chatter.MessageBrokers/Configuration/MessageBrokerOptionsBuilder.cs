@@ -67,7 +67,6 @@ namespace Chatter.MessageBrokers.Configuration
             if (_messageBrokerOptionsSection != null && _messageBrokerOptionsSection.Exists())
             {
                 messageBrokerOptions = _messageBrokerOptionsSection.Get<MessageBrokerOptions>();
-                Services.Configure<MessageBrokerOptions>(_messageBrokerOptionsSection);
             }
             else
             {

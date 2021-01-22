@@ -1,4 +1,5 @@
-﻿using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
+﻿using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 
@@ -7,91 +8,181 @@ namespace Chatter.SqlTableWatcher.Configuration
     public class SqlTableWatcherOptionsBuilder
     {
         public IServiceCollection Services { get; }
-        private SqlTableWatcherOptions _sqlTableWatcherOptions;
-        //private SqlServiceBrokerOptions _sqlServiceBrokerOptions;
-        private const string _defaultMessageBodyType = "application/json; charset=utf-16";
 
-        internal SqlTableWatcherOptionsBuilder(IServiceCollection services)
+        private readonly string _connectionString;
+        private string _databaseName;
+        private readonly string _tableName;
+        private string _schemaName = "dbo";
+        private ChangeTypes _changeTypes = ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete;
+        private bool _processTableChangesViaChatter = true;
+        private string _messageBodyType = "application/json; charset=utf-16";
+        private int _receiverTimeoutInMilliseconds = -1;
+        private int _conversationLifetimeInSeconds = int.MaxValue;
+        private bool _coversationEncryption = false;
+        private bool _compressMessageBody = true;
+        private string _tableWatcherQueueName = null;
+        private string _errorQueueName = null;
+        private TransactionMode _transactionMode = TransactionMode.ReceiveOnly;
+
+        internal SqlTableWatcherOptionsBuilder(IServiceCollection services, string connectionString, string databaseName, string tableName)
         {
             Services = services ?? throw new ArgumentNullException(nameof(services));
+
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new ArgumentNullException(nameof(connectionString), "A connection string is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(tableName))
+            {
+                throw new ArgumentNullException(nameof(tableName), "The name of a table is required.");
+            }
+
+            _connectionString = connectionString;
+            _tableName = tableName;
+            _databaseName = databaseName;
         }
 
-        public SqlTableWatcherOptionsBuilder AddOptions(SqlTableWatcherOptions options)
+        /// <summary>
+        /// Sets the database to watch for changes.
+        /// </summary>
+        /// <param name="databaseName"></param>
+        /// <param name="schemaName"></param>
+        /// <returns></returns>
+        public SqlTableWatcherOptionsBuilder WithNameOfDatabaseToWatch(string databaseName, string schemaName = "dbo")
         {
-            _sqlTableWatcherOptions = options;
-            return this;
-        }
-
-        public SqlTableWatcherOptionsBuilder AddOptions(Func<SqlTableWatcherOptions> optionsBuidler)
-        {
-            _sqlTableWatcherOptions = optionsBuidler();
+            _databaseName = databaseName;
+            _schemaName = schemaName;
             return this;
         }
 
         /// <summary>
-        /// 
+        /// Sets the types of table changes to watch for. By default it watches for inserts, updates and deletes.
         /// </summary>
-        /// <param name="connectionString">The connection string of the table to be watched.</param>
-        /// <param name="databaseName">The name of the database containing the table to be watched.</param>
-        /// <param name="tableName">The table to watch.</param>
-        /// <param name="schemaName">The schema of the table to watch. The default is "dbo".</param>
-        /// <param name="listenerType">The types of table changes to watch for. By default it listens to inserts, updates and deletes.</param>
-        /// <param name="processTableChangesViaChatter">
-        /// When true, inserts, updates and deletes made to <see cref="TableName"/> will be processed by Chatter. The consumer will be required to handle
-        /// <see cref="RowInsertedEvent{TRowChangeData}"/>, <see cref="RowUpdatedEvent{TRowChangeData}"/>, and <see cref="RowDeletedEvent{TRowChangeData}"/> to receive table changes.
-        /// Otherwise, the consumer must handle <see cref="ProcessTableChangesCommand{TRowChangeData}"/> and process the table changes manually.
-        /// Defaulted to true.
-        /// </param>
-        public SqlTableWatcherOptionsBuilder AddOptions(string connectionString,
-                                                        string databaseName,
-                                                        string tableName,
-                                                        string schemaName = "dbo",
-                                                        ChangeTypes listenerType =
-                                                                   ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete,
-                                                        bool processTableChangesViaChatter = true,
-                                                        string messageBodyType = _defaultMessageBodyType,
-                                                        int receiverTimeoutInMilliseconds = -1,
-                                                        int conversationLifetimeInSeconds = int.MaxValue,
-                                                        bool coversationEncryption = false,
-                                                        bool compressMessageBody = true,
-                                                        bool cleanupOnEndConversation = false)
+        /// <param name="changeTypes">Any combination of insert, update and/or delete</param>
+        /// <returns></returns>
+        public SqlTableWatcherOptionsBuilder WithTypesOfChangesToWatch(ChangeTypes changeTypes)
         {
-            _sqlTableWatcherOptions = new SqlTableWatcherOptions(connectionString, databaseName, tableName, schemaName, listenerType, processTableChangesViaChatter)
-            {
-                ServiceBrokerOptions = new SqlServiceBrokerOptions(connectionString, messageBodyType, receiverTimeoutInMilliseconds, conversationLifetimeInSeconds, coversationEncryption, compressMessageBody, cleanupOnEndConversation)
-            };
+            _changeTypes = changeTypes;
+            return this;
+        }
+
+        /// <summary>    
+        /// Configured change types made to table being watched will be processed by Chatter. The consumer will be required to handle <see cref="RowInsertedEvent{TRowChangeData}"/>, 
+        /// <see cref="RowUpdatedEvent{TRowChangeData}"/>, and <see cref="RowDeletedEvent{TRowChangeData}"/> to receive table changes.
+        /// </summary>
+        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
+        public SqlTableWatcherOptionsBuilder EmitRowChangeEvents()
+        {
+            _processTableChangesViaChatter = true;
+            return this;
+        }
+
+        /// <summary>
+        /// The consumer must handle <see cref="ProcessTableChangesCommand{TRowChangeData}"/> and process the table changes manually.
+        /// </summary>
+        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
+        public SqlTableWatcherOptionsBuilder ProcessTableChangesManually()
+        {
+            _processTableChangesViaChatter = false;
+            return this;
+        }
+
+        public SqlTableWatcherOptionsBuilder WithApplicationJsonUtf16CharsetMessageBodyType()
+        {
+            _messageBodyType = "application/json; charset=utf-16";
+            return this;
+        }
+
+        public SqlTableWatcherOptionsBuilder WithMessageBodyType(string messageBodyType)
+        {
+            _messageBodyType = messageBodyType;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the amount of milliseconds the sql service broker receiver will wait to receive a table change message before timing out
+        /// and re-issuing a wait and receive command. Default is -1 (unlimited).
+        /// </summary>
+        /// <param name="receiverTimeoutInMilliseconds">The receiver timeout in milliseconds</param>
+        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
+        public SqlTableWatcherOptionsBuilder WithReceiverTimeoutInMilliseconds(int receiverTimeoutInMilliseconds)
+        {
+            _receiverTimeoutInMilliseconds = receiverTimeoutInMilliseconds;
+            return this;
+        }
+
+        public SqlTableWatcherOptionsBuilder WithConversationLifetimeInSeconds(int conversationLifetimeInSeconds = int.MaxValue)
+        {
+            _conversationLifetimeInSeconds = conversationLifetimeInSeconds;
+            return this;
+        }
+
+        public SqlTableWatcherOptionsBuilder EnableConversationEncryption()
+        {
+            _coversationEncryption = true;
+            return this;
+        }
+
+        public SqlTableWatcherOptionsBuilder DisableConversationEncryption()
+        {
+            _coversationEncryption = false;
+            return this;
+        }
+
+        public SqlTableWatcherOptionsBuilder WithCompressedMessageBody()
+        {
+            _compressMessageBody = true;
+            return this;
+        }
+
+        public SqlTableWatcherOptionsBuilder WithUncompressedMessageBody()
+        {
+            _compressMessageBody = false;
+            return this;
+        }
+
+        /// <summary>
+        /// Set the name of the queue that the underlying sql service broker will use to propogate table changes to the Chatter framework. If not set, a
+        /// default queue name will be set by Chatter.
+        /// </summary>
+        /// <param name="tableWatcherQueueName">The queue name</param>
+        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
+        public SqlTableWatcherOptionsBuilder WithTableWatcherQueueName(string tableWatcherQueueName)
+        {
+            _tableWatcherQueueName = tableWatcherQueueName;
+            return this;
+        }
+
+        /// <summary>
+        /// Set the name of the queue to send messages to if sql service broker is unable to receive a queue message
+        /// </summary>
+        /// <param name="errorQueueName">The name of the queue to send messages to</param>
+        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
+        public SqlTableWatcherOptionsBuilder WithErrorQueueName(string errorQueueName)
+        {
+            _errorQueueName = errorQueueName;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the atomicity of the receiver responsible for receving the table change notification. <see cref="TransactionMode.ReceiveOnly"/> is the default.
+        /// </summary>
+        /// <param name="transactionMode">The <see cref="TransactionMode"/> to use</param>
+        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
+        public SqlTableWatcherOptionsBuilder WithTransactionMode(TransactionMode transactionMode)
+        {
+            _transactionMode = transactionMode;
             return this;
         }
 
         internal SqlTableWatcherOptions Build()
         {
-            if (_sqlTableWatcherOptions is null)
+            return new SqlTableWatcherOptions(_connectionString, _databaseName, _tableName, _schemaName, _changeTypes, _processTableChangesViaChatter, _tableWatcherQueueName)
             {
-                throw new ArgumentNullException(nameof(_sqlTableWatcherOptions),
-                    $"Use an overload of {nameof(AddOptions)} to configure {typeof(SqlTableWatcherOptions).Name}");
-            }
-
-            if (string.IsNullOrWhiteSpace(_sqlTableWatcherOptions.ConnectionString))
-            {
-                throw new ArgumentNullException(nameof(_sqlTableWatcherOptions.ConnectionString), "A connection string is required.");
-            }
-
-            if (string.IsNullOrWhiteSpace(_sqlTableWatcherOptions.DatabaseName))
-            {
-                throw new ArgumentNullException(nameof(_sqlTableWatcherOptions.DatabaseName), "A database is required.");
-            }
-
-            if (string.IsNullOrWhiteSpace(_sqlTableWatcherOptions.TableName))
-            {
-                throw new ArgumentNullException(nameof(_sqlTableWatcherOptions.TableName), "The name of a table is required.");
-            }
-
-            if (string.IsNullOrWhiteSpace(_sqlTableWatcherOptions.SchemaName))
-            {
-                throw new ArgumentNullException(nameof(_sqlTableWatcherOptions.SchemaName), "A schema is required for database objects.");
-            }
-
-            return _sqlTableWatcherOptions;
+                ServiceBrokerOptions = new SqlServiceBrokerOptions(_connectionString, _messageBodyType, _receiverTimeoutInMilliseconds, _conversationLifetimeInSeconds, _coversationEncryption, _compressMessageBody, false),
+                ReceiverOptions = new ReceiverOptions() { ErrorQueuePath = _errorQueueName, TransactionMode = _transactionMode }
+            };
         }
     }
 }

@@ -10,6 +10,8 @@ namespace Chatter.SqlTableWatcher.Configuration
         public string TableName { get; set; }
         public string SchemaName { get; set; } = "dbo";
         public ChangeTypes NotificationsToReceive { get; set; } = ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete;
+        public string TableWatcherQueueName { get; set; }
+
         /// <summary>
         /// When true, inserts, updates and deletes made to <see cref="TableName"/> will be processed by Chatter. The consumer will be required to handle
         /// <see cref="RowInsertedEvent{TRowChangeData}"/>, <see cref="RowUpdatedEvent{TRowChangeData}"/>, and <see cref="RowDeletedEvent{TRowChangeData}"/> to receive table changes.
@@ -26,7 +28,8 @@ namespace Chatter.SqlTableWatcher.Configuration
                                         string schemaName = "dbo",
                                         ChangeTypes changesToWatch =
                                             ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete,
-                                        bool processTableChangesViaChatter = true)
+                                        bool processTableChangesViaChatter = true,
+                                        string tableWatcherQueueName = null)
         {
             ConnectionString = connectionString;
             DatabaseName = databaseName;
@@ -34,6 +37,7 @@ namespace Chatter.SqlTableWatcher.Configuration
             SchemaName = schemaName;
             NotificationsToReceive = changesToWatch;
             ProcessTableChangesViaChatter = processTableChangesViaChatter;
+            TableWatcherQueueName = tableWatcherQueueName;
         }
     }
 }

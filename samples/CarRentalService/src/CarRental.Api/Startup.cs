@@ -58,19 +58,13 @@ namespace CarRental.Api
                         })
                         .UseCombGuidMessageIdGenerator();
                     })
-                    .AddAzureServiceBus()
-                    //builder =>
-                    //{
-                    //    builder.UseAadTokenProviderWithSecret(Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientId"),
-                    //                                          Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
-                    //                                          Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
-                    //})
-                    .AddSqlTableWatcher<OutboxChangedEvent>(builder =>
+                    .AddAzureServiceBus(builder =>
                     {
-                        builder.AddOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"),
-                                           "CarRentals",
-                                           "OutboxMessage");
+                        builder.UseAadTokenProviderWithSecret(Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientId"),
+                                                              Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
+                                                              Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
                     })
+                    .AddSqlTableWatcher<OutboxChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "OutboxMessage")
                     .AddSqlServiceBroker(builder =>
                     {
                         builder.AddSqlServiceBrokerOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"))
