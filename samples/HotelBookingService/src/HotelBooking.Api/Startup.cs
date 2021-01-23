@@ -38,10 +38,9 @@ namespace HotelBooking.Api
                 {
                     builder.AddReceiver<BookHotelCommand>("book-trip-saga/2/book-hotel", transactionMode: TransactionMode.FullAtomicityViaInfrastructure);
                 })
-                .AddAzureServiceBus(options =>
+                .AddAzureServiceBus(builder =>
                 {
-                    options.AddServiceBusOptions("Chatter:ServiceBus")
-                           .AddTopicSubscription<RentalCarBookedEvent>("book-trip-saga/rental-car-booked", "hotel");
+                    builder.AddTopicSubscription<RentalCarBookedEvent>("book-trip-saga/rental-car-booked", "hotel");
                 });
         }
 

@@ -7,28 +7,28 @@ using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
 using Chatter.MessageBrokers.Receiving;
-using Microsoft.Extensions.Configuration;
 using System;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
     public static class ChatterAzureServiceBusExtensions
     {
-        public static ServiceBusOptionsBuilder AddAzureServiceBus(this IServiceCollection services, IConfiguration configuration)
-            => new ServiceBusOptionsBuilder(services, configuration);
-
         /// <summary>
-        /// Adds registrations required for Azure Service Bus integration with Chatter.CQRS, including <see cref="ServiceBusOptions"/>, queue, topic and subscription factories and publishers.
+        /// Adds Azure Service Bus as messaging infrastructure for Chatter.MessageBrokers. <see cref="ServiceBusOptions"/> configured via configuration.
         /// </summary>
-        /// <param name="builder">The singleton <see cref="ChatterBuilder"/> instance used for registration.</param>
-        /// <param name="configSectionName">The configuration section name containing Azure Service Bus configuration values used to build a <see cref="ServiceBusOptions"/> instance. 'ServiceBus' is the default value.</param>
-        /// <returns>The singleton <see cref="IChatterBuilder"/> instance.</returns>
+        /// <param name="builder"></param>
+        /// <param name="configSectionName"></param>
+        /// <returns></returns>
         public static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, Action<ServiceBusOptionsBuilder> optionsBuilder = null)
         {
-            var optBuilder = builder.Services.AddAzureServiceBus(builder.Configuration);
+            var optBuilder = ServiceBusOptionsBuilder.Create(builder.Services, builder.Configuration);
             optionsBuilder?.Invoke(optBuilder);
             var options = optBuilder.Build();
+            return AddAzureServiceBus(builder, options);
+        }
 
+        private static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, ServiceBusOptions options)
+        {
             builder.Services.AddScoped<ServiceBusReceiver>();
             builder.Services.AddSingleton<ServiceBusReceiverFactory>();
 
@@ -48,6 +48,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             return builder;
         }
+
 
         public static ServiceBusOptionsBuilder AddTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
                                                                               string topicName,

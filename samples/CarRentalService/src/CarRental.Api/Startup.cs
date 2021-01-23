@@ -5,7 +5,6 @@ using CarRental.Application.Services;
 using CarRental.Infrastructure.Repositories;
 using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
-using Chatter.MessageBrokers.Configuration;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
@@ -55,22 +54,15 @@ namespace CarRental.Api
                         builder.AddRecoveryOptions(r =>
                         {
                             r.UseExponentialDelayRecovery(5);
-                        })
-                        .UseCombGuidMessageIdGenerator();
+                        });
                     })
-                    .AddAzureServiceBus()
-                    //builder =>
-                    //{
-                    //    builder.UseAadTokenProviderWithSecret(Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientId"),
-                    //                                          Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
-                    //                                          Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
-                    //})
-                    .AddSqlTableWatcher<OutboxChangedEvent>(builder =>
+                    .AddAzureServiceBus(builder =>
                     {
-                        builder.AddOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"),
-                                           "CarRentals",
-                                           "OutboxMessage");
+                        builder.UseAadTokenProviderWithSecret(Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientId"),
+                                                              Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
+                                                              Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
                     })
+                    .AddSqlTableWatcher<OutboxChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "OutboxMessage")
                     .AddSqlServiceBroker(builder =>
                     {
                         builder.AddSqlServiceBrokerOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"))
