@@ -5,7 +5,6 @@ using CarRental.Application.Services;
 using CarRental.Infrastructure.Repositories;
 using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
-using Chatter.MessageBrokers.Configuration;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
@@ -55,8 +54,7 @@ namespace CarRental.Api
                         builder.AddRecoveryOptions(r =>
                         {
                             r.UseExponentialDelayRecovery(5);
-                        })
-                        .UseCombGuidMessageIdGenerator();
+                        });
                     })
                     .AddAzureServiceBus(builder =>
                     {

@@ -64,7 +64,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             return this;
         }
 
-        public ServiceBusOptionsBuilder WithNoDelay()
+        public ServiceBusOptionsBuilder WithNoRetry()
         {
             _retryPolicy = RetryPolicy.NoRetry;
             return this;
