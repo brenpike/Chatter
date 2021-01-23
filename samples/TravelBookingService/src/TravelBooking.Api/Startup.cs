@@ -31,7 +31,7 @@ namespace TravelBooking.Api
                     .AddMessageBrokers()
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions("Chatter:ServiceBus");
+                        options.UseConfig("Chatter:ServiceBus");
                     });
         }
 

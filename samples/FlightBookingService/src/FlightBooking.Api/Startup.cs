@@ -35,7 +35,7 @@ namespace FlightBooking.Api
                     .AddMessageBrokers()
                     .AddAzureServiceBus(options =>
                     {
-                        options.AddServiceBusOptions("Chatter:ServiceBus")
+                        options.UseConfig("Chatter:ServiceBus")
                                .AddQueueReceiver<CancelFlightBookingCommand>("book-trip-saga/3/cancel-flight");
                     });
         }
