@@ -38,12 +38,19 @@ namespace Chatter.MessageBrokers.Routing.Slips
 
             messageBrokerContext.Container.Include(theSlip);
 
+            if (theSlip.Route?.FirstOrDefault() == null)
+            {
+                _logger.LogTrace($"No routes left in routing slip. Continuing pipeline execution.");
+                await next().ConfigureAwait(false);
+                return;
+            }
+
             _logger.LogDebug("Continuing pipeline execution.");
             await next().ConfigureAwait(false);
 
             try
             {
-                _logger.LogTrace($"Sending message to '{theSlip.Route?.FirstOrDefault().DestinationPath}'");
+                _logger.LogTrace($"Sending message to '{theSlip.Route?.FirstOrDefault()?.DestinationPath}'");
                 await messageHandlerContext.Send(message, theSlip).ConfigureAwait(false);
                 _logger.LogDebug("Sent message to next routing slip destination");
 

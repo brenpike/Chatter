@@ -22,7 +22,12 @@ namespace Chatter.MessageBrokers.Routing.Slips
 
         public string RouteToNextStep()
         {
-            var currentStep = Route.First();
+            var currentStep = Route.FirstOrDefault();
+
+            if (currentStep == null)
+            {
+                return null;
+            }
 
             _visited.Add(currentStep);
 
