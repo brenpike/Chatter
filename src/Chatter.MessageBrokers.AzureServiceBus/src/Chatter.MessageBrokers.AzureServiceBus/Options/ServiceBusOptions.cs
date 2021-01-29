@@ -18,7 +18,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         [JsonIgnore]
         public RetryPolicy Policy { get; internal set; }
         [JsonIgnore]
-        public ITokenProvider TokenProvider { get; internal set; }
+        public ITokenProvider TokenProvider { get; internal set; } = new NullTokenProvider();
     }
 
     internal class RetryPolicyConfiguation

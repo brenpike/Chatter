@@ -68,7 +68,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             var numMessagesSavedToOutbox = await _context.SaveChangesAsync().ConfigureAwait(false);
 
-            _logger.LogTrace($"'{numMessagesSavedToOutbox}' outbox message(s) saved to outbox.");
+            _logger.LogTrace($"{numMessagesSavedToOutbox} outbox message(s) saved to outbox.");
         }
 
         private async Task SendToOutbox(DbSet<OutboxMessage> outbox, OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)

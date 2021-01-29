@@ -3,7 +3,6 @@ using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Context;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -27,14 +26,12 @@ namespace Chatter.MessageBrokers.Routing.Slips
                 return;
             }
 
-            if (!(messageBrokerContext.BrokeredMessage.MessageContext.TryGetValue(MessageContext.RoutingSlip, out var routingSlip)))
+            if (!(messageBrokerContext.TryGetRoutingSlip(out var theSlip)))
             {
                 _logger.LogTrace($"No routing slip found. Continuing pipeline execution.");
                 await next().ConfigureAwait(false);
                 return;
             }
-
-            RoutingSlip theSlip = JsonConvert.DeserializeObject<RoutingSlip>((string)routingSlip);
 
             messageBrokerContext.Container.Include(theSlip);
 
