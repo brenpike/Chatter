@@ -2,6 +2,16 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
+    <PackageId>Chatter.MessageBrokers.AzureServiceBus.Auth</PackageId>
+    <Version>1.0.1</Version>
+    <Authors>Brennan Pike</Authors>
+    <Owners>Brennan Pike</Owners>
+    <Description>Provides TokenProvider implementations for Chatter.MessageBrokers.AzureServiceProvider.</Description>
+    <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>Messaging,.NET,Azure,ServiceBus,TokenProvider,Authentication</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>

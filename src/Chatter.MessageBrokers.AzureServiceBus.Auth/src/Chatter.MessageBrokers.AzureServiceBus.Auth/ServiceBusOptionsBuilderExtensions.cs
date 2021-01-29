@@ -13,7 +13,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         public static ServiceBusOptionsBuilder UseAadTokenProviderWithCert(this ServiceBusOptionsBuilder builder, string clientId, string thumbPrint, string authority, object state = null)
         {
-            builder.AddTokenProvider(() => AadTokenProviderFactory.Create(clientId).WithSecret(thumbPrint, authority, state));
+            builder.AddTokenProvider(() => AadTokenProviderFactory.Create(clientId).WithCert(thumbPrint, authority, state));
             return builder;
         }
 
