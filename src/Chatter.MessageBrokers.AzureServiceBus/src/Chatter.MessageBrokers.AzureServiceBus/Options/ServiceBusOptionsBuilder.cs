@@ -33,6 +33,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             UseConfig();
         }
 
+        public ServiceBusOptionsBuilder AddTokenProvider(ITokenProvider tokenProvider)
+        {
+            _tokenProvider = tokenProvider;
+            return this;
+        }
+
         public ServiceBusOptionsBuilder AddTokenProvider(Func<ITokenProvider> tokenProviderFactory)
         {
             _tokenProvider = tokenProviderFactory?.Invoke() ?? new NullTokenProvider();
@@ -105,8 +111,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                                             serviceBusConfig.RetryPolicy.MaximumRetryCount);
                 serviceBusConfig.Policy = retryExponential;
             }
-
-            serviceBusConfig.TokenProvider = _tokenProvider;
         }
 
         internal ServiceBusOptions Build()
@@ -135,7 +139,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
             if (!(_tokenProvider is NullTokenProvider))
             {
-                options.TokenProvider = _tokenProvider;
+                var connStringBuilder = new ServiceBusConnectionStringBuilder(options.ConnectionString);
+                if (string.IsNullOrWhiteSpace(connStringBuilder.SasToken))
+                {
+                    options.TokenProvider = _tokenProvider;
+                }
             }
 
             if (_maxConcurrentCalls != _defaultMaxConcurrentCalls)

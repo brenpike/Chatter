@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
+using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Routing.Options;
 using System.Linq;
 using System.Threading.Tasks;
@@ -8,6 +9,25 @@ namespace Chatter.MessageBrokers.Routing.Slips
 {
     public static class MessageHandlerContextExtensions
     {
+        public static void AddRoutingSlip(this IMessageHandlerContext mhc, RoutingSlip routingSlip)
+        {
+            mhc.Container.Include(routingSlip);
+        }
+
+        public static bool TryGetRoutingSlip(this IMessageHandlerContext mhc, out RoutingSlip routingSlip)
+        {
+            if (mhc is IMessageBrokerContext mbc)
+            {
+                if (mbc.TryGetRoutingSlip(out var rs))
+                {
+                    routingSlip = rs;
+                    return true;
+                }
+            }
+            routingSlip = null;
+            return false;
+        }
+
         public static Task Send<TMessage>(this IMessageHandlerContext context,
                             TMessage message,
                             RoutingSlip slip,

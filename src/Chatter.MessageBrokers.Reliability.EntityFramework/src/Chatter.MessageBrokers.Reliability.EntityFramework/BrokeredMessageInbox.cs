@@ -36,13 +36,14 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         public async Task ReceiveViaInbox<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> handler)
         {
             var messageId = messageBrokerContext?.BrokeredMessage?.MessageId;
-
-            _logger.LogTrace($"Checking inbox for brokered message with message id '{messageId}'.");
-
             if (string.IsNullOrWhiteSpace(messageId))
             {
-                throw new ArgumentException("Message id to be processed cannot be empty.", nameof(messageId));
+                _logger.LogDebug("Unable to receve message using inbox because message id is null or whitespace. Executing handler.");
+                await handler();
+                return;
             }
+
+            _logger.LogTrace($"Checking inbox for brokered message with message id '{messageId}'.");
 
             var inbox = _context.Set<InboxMessage>();
 
@@ -54,6 +55,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             try
             {
+                _logger.LogDebug("Executing message handler from inbox");
                 await handler();
                 var inboxMessage = new InboxMessage()
                 {
@@ -61,8 +63,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                     ReceivedByInboxAtUtc = DateTime.UtcNow
                 };
 
-                _logger.LogTrace($"Handler executed successfully. Adding inbox message with id '{inboxMessage.MessageId}' and date received '{inboxMessage.ReceivedByInboxAtUtc}'.");
-
+                _logger.LogDebug("Message handler executed successfully from inbox");
+                _logger.LogTrace($"Adding inbox message with id '{inboxMessage.MessageId}' and date received '{inboxMessage.ReceivedByInboxAtUtc}'.");
                 await inbox.AddAsync(inboxMessage);
                 _logger.LogTrace($"Message with id '{messageId}' added to inbox.");
             }
