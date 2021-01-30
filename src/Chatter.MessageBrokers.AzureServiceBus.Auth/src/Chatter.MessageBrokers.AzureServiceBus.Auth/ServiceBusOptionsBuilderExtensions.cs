@@ -11,9 +11,9 @@ namespace Microsoft.Extensions.DependencyInjection
             return builder;
         }
 
-        public static ServiceBusOptionsBuilder UseAadTokenProviderWithCert(this ServiceBusOptionsBuilder builder, string clientId, string thumbPrint, string authority, object state = null)
+        public static ServiceBusOptionsBuilder UseAadTokenProviderWithCert(this ServiceBusOptionsBuilder builder, string clientId, string thumbPrint, string authority, bool validCertsOnly = true, object state = null)
         {
-            builder.AddTokenProvider(() => AadTokenProviderFactory.Create(clientId).WithCert(thumbPrint, authority, state));
+            builder.AddTokenProvider(() => AadTokenProviderFactory.Create(clientId).WithCert(thumbPrint, authority, validCertsOnly, state));
             return builder;
         }
 
