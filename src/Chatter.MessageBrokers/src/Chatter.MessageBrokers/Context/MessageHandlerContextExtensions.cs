@@ -31,7 +31,7 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <param name="context">The context of the message handler</param>
         /// <returns>An <see cref="IInMemoryDispatcher"/></returns>
-        public static IInMemoryDispatcher InMemory(this IMessageHandlerContext context) 
+        public static IInMemoryDispatcher InMemory(this IMessageHandlerContext context)
             => new InMemoryDispatcher(context);
 
         /// <summary>
@@ -46,7 +46,14 @@ namespace Chatter.CQRS.Context
         /// <param name="options">The options to be used while sending <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         public static Task Send<TMessage>(this IMessageHandlerContext context, TMessage message, string destinationPath, SendOptions options = null) where TMessage : ICommand
-             => context.AsMessageBrokerContext()?.Send(message, destinationPath, options);
+        {
+            if (context.TryGetBrokeredMessageDispatcher(out var bmd))
+            {
+                return bmd.Send(message, destinationPath, context, options);
+            }
+
+            return Task.CompletedTask;
+        }
 
         /// <summary>
         /// Sends a command to the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
@@ -59,7 +66,14 @@ namespace Chatter.CQRS.Context
         /// <param name="options">The options to be used while sending <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         public static Task Send<TMessage>(this IMessageHandlerContext context, TMessage message, SendOptions options = null) where TMessage : ICommand
-             => context.AsMessageBrokerContext()?.Send(message, options);
+        {
+            if (context.TryGetBrokeredMessageDispatcher(out var bmd))
+            {
+                return bmd.Send(message, context, options);
+            }
+
+            return Task.CompletedTask;
+        }
 
         /// <summary>
         /// Publishes an event to all external receivers which are subscribed via the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
@@ -73,7 +87,14 @@ namespace Chatter.CQRS.Context
         /// <param name="options">The options to be used while publishing <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         public static Task Publish<TMessage>(this IMessageHandlerContext context, TMessage message, string destinationPath, PublishOptions options = null) where TMessage : IEvent
-            => context.AsMessageBrokerContext()?.Publish(message, destinationPath, options);
+        {
+            if (context.TryGetBrokeredMessageDispatcher(out var bmd))
+            {
+                return bmd.Publish(message, destinationPath, context, options);
+            }
+
+            return Task.CompletedTask;
+        }
 
         /// <summary>
         /// Publishes an event to all external receivers which are subscribed via the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
@@ -86,7 +107,14 @@ namespace Chatter.CQRS.Context
         /// <param name="options">The options to be used while publishing <paramref name="message"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         public static Task Publish<TMessage>(this IMessageHandlerContext context, TMessage message, PublishOptions options = null) where TMessage : IEvent
-            => context.AsMessageBrokerContext()?.Publish(message, options);
+        {
+            if (context.TryGetBrokeredMessageDispatcher(out var bmd))
+            {
+                return bmd.Publish(message, context, options);
+            }
+
+            return Task.CompletedTask;
+        }
 
         /// <summary>
         /// Publishes a batch of events to all external receivers which are subscribed via the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
@@ -99,26 +127,22 @@ namespace Chatter.CQRS.Context
         /// <param name="options">The options to be used while publishing <paramref name="messages"/></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         public static Task Publish<TMessage>(this IMessageHandlerContext context, IEnumerable<TMessage> messages, PublishOptions options = null) where TMessage : IEvent
-            => context.AsMessageBrokerContext()?.Publish(messages, options);
+        {
+            if (context.TryGetBrokeredMessageDispatcher(out var bmd))
+            {
+                return bmd.Publish(messages, context, options);
+            }
 
-        /// <summary>
-        /// Forwards a message to the messaging infrastructure that triggered the <see cref="IMessageHandler{TMessage}"/>.
-        /// If <see cref="BrokeredMessageReceiver{TMessage}"/> did not trigger the <see cref="IMessageHandler{TMessage}"/> this will be a no op.
-        /// Target Messaging Infrastructure can be overridden by using the infrastructure specific Forward overload (if available).
-        /// Destination must be configured using <paramref name="forwardDestination"/>.
-        /// </summary>
-        /// <param name="forwardDestination">The destination to forward the message to.</param>
-        /// <returns>An awaitable <see cref="Task"/></returns>
-        public static Task Forward(this IMessageHandlerContext context, string forwardDestination)
-            => context.AsMessageBrokerContext()?.Forward(forwardDestination);
+            return Task.CompletedTask;
+        }
 
-        /// <summary>
-        /// Gets contextual information about a message broker from message handler context
-        /// </summary>
-        /// <param name="messageHandlerContext">The message handler context</param>
-        /// <returns>The message broker context</returns>
-        public static MessageBrokerContext AsMessageBrokerContext(this IMessageHandlerContext messageHandlerContext)
-            => messageHandlerContext as MessageBrokerContext;
+        ///// <summary>
+        ///// Gets contextual information about a message broker from message handler context
+        ///// </summary>
+        ///// <param name="messageHandlerContext">The message handler context</param>
+        ///// <returns>The message broker context</returns>
+        //public static MessageBrokerContext AsMessageBrokerContext(this IMessageHandlerContext messageHandlerContext)
+        //    => messageHandlerContext as MessageBrokerContext;
 
         /// <summary>
         /// Gets contextual information about the transaction the message broker is a part of
