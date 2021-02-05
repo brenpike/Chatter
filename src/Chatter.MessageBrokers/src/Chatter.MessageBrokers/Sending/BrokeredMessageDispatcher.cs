@@ -131,26 +131,9 @@ namespace Chatter.MessageBrokers.Sending
         }
 
         private SendOptions MergeSendOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, SendOptions options)
-        {
-            Merge(messageHandlerContext, options);
-            return new SendOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
-        }
+            => SendOptions.Create(messageHandlerContext?.GetInboundBrokeredMessage()?.MessageContextImpl).Merge(options);
 
         private PublishOptions MergePublishOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, PublishOptions options)
-        {
-            Merge(messageHandlerContext, options);
-            return new PublishOptions(messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl);
-        }
-
-        private void Merge<TOptions>(IMessageHandlerContext messageHandlerContext, TOptions options) where TOptions : RoutingOptions, new()
-        {
-            if (options != null)
-            {
-                foreach (var key in options.MessageContext.Keys)
-                {
-                    messageHandlerContext.GetInboundBrokeredMessage().MessageContextImpl[key] = options.MessageContext[key];
-                }
-            }
-        }
+            => PublishOptions.Create(messageHandlerContext?.GetInboundBrokeredMessage()?.MessageContextImpl).Merge(options);
     }
 }

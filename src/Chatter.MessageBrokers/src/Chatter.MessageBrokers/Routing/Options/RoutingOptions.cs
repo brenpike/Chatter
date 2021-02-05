@@ -1,5 +1,4 @@
-﻿using Chatter.CQRS.Context;
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Routing.Options
@@ -9,16 +8,13 @@ namespace Chatter.MessageBrokers.Routing.Options
         public const string DefaultContentType = "application/json";
 
         public RoutingOptions()
-            : this(new Dictionary<string, object>())
-        {
-            Container = new ContextContainer();
-        }
+            : this(new Dictionary<string, object>()) { }
 
         public RoutingOptions(IDictionary<string, object> context)
-        {
-            Container = new ContextContainer();
-            MessageContext = context;
-        }
+            => MessageContext = context ?? new Dictionary<string, object>();
+
+        public RoutingOptions(RoutingOptions optionsToMerge)
+            : this(optionsToMerge?.MessageContext) { }
 
         public string MessageId { get; set; }
         public string ContentType
@@ -48,6 +44,19 @@ namespace Chatter.MessageBrokers.Routing.Options
         public void UseMessagingInfrastructure(Func<InfrastructureTypes, string> infrastructureSelector)
             => this.WithMessageContext(MessageBrokers.MessageContext.InfrastructureType, infrastructureSelector(new InfrastructureTypes()));
 
-        public ContextContainer Container { get; }
+        internal virtual RoutingOptions Merge(IDictionary<string, object> contextToMerge)
+        {
+            if (contextToMerge is null)
+            {
+                return this;
+            }
+
+            foreach (var kvp in contextToMerge)
+            {
+                MessageContext[kvp.Key] = kvp.Value;
+            }
+
+            return this;
+        }
     }
 }

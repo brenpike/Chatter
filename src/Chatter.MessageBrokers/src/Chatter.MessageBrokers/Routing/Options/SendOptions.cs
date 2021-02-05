@@ -6,13 +6,10 @@ namespace Chatter.MessageBrokers.Routing.Options
     public class SendOptions : RoutingOptions
     {
         public SendOptions() { }
-        public SendOptions(IDictionary<string, object> messageContext) : base(messageContext) { }
-
-        public SendOptions WithSagaId(string sagaId)
-        {
-            this.WithMessageContext(MessageBrokers.MessageContext.SagaId, sagaId);
-            return this;
-        }
+        private SendOptions(IDictionary<string, object> messageContext) : base(messageContext) { }
+        internal static SendOptions Create(IDictionary<string, object> messageContext) => new SendOptions(messageContext);
+        
+        public SendOptions Merge(SendOptions optionsToMerge) => Merge(optionsToMerge?.MessageContext) as SendOptions;
 
         public SendOptions WithSubject(string subject)
         {
