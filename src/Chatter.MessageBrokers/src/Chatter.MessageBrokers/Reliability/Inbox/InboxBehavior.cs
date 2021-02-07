@@ -1,4 +1,4 @@
-﻿using Chatter.CQRS;
+﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Context;
@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.Inbox
 {
-    public class InboxBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : IMessage
+    public class InboxBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
     {
         private readonly IBrokeredMessageInbox _brokeredMessageInbox;
         private readonly ILogger<InboxBehavior<TMessage>> _logger;

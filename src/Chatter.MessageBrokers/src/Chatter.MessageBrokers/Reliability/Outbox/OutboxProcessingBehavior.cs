@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS;
+using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Context;
@@ -8,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.Outbox
 {
-    public sealed class OutboxProcessingBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : IMessage
+    public sealed class OutboxProcessingBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
     {
         private readonly IOutboxProcessor _outboxProcessor;
         private readonly ILogger<OutboxProcessingBehavior<TMessage>> _logger;

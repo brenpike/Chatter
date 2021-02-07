@@ -36,6 +36,10 @@
         /// in the service queue. Administrators can use this option to remove conversations which cannot complete normally
         /// </summary>
         public bool CleanupOnEndConversation { get; set; } = false;
+        /// <summary>
+        /// Turned off by default. When true, will END CONVERSATION after a message has been dispatched via <see cref="Sending.SqlServiceBrokerSender"/>.
+        /// </summary>
+        public bool EndConversationAfterDispatch { get; set; } = false;
 
         public SqlServiceBrokerOptions(string connectionString,
                                        string messageBodyType,
@@ -43,7 +47,8 @@
                                        int conversationLifetimeInSeconds = int.MaxValue,
                                        bool coversationEncryption = false,
                                        bool compressMessageBody = true,
-                                       bool cleanupOnEndConversation = false)
+                                       bool cleanupOnEndConversation = false,
+                                       bool endConversationAfterDispatch = false)
         {
             ConnectionString = connectionString;
             MessageBodyType = messageBodyType;
@@ -52,6 +57,7 @@
             ConversationEncryption = coversationEncryption;
             CompressMessageBody = compressMessageBody;
             CleanupOnEndConversation = cleanupOnEndConversation;
+            EndConversationAfterDispatch = endConversationAfterDispatch;
         }
     }
 }

@@ -42,7 +42,7 @@ namespace Chatter.CQRS.Events
                 foreach (var handler in handlers)
                 {
                     await handler.Handle(message, messageHandlerContext).ConfigureAwait(false);
-                    _logger.LogTrace($"Invoked handler for '{typeof(TMessage)}'.");
+                    _logger.LogTrace($"Invoked event handler for '{typeof(TMessage)}'.");
                 }
             }
             catch (Exception e)

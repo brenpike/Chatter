@@ -140,9 +140,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                             return;
                         }
 
-                        if (message?.Body == null || _cancellationSource.IsCancellationRequested)
+                        if (message?.Body == null)
                         {
-                            await CompleteAsync(connection, transaction, message); //TODO: do we really want to complete this? what are our options?
+                            await CompleteAsync(connection, transaction, message).ConfigureAwait(false);
                             return;
                         }
 
@@ -151,6 +151,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
                         try
                         {
+
+
                             using var receiverTokenSource = new CancellationTokenSource();
                             try
                             {
@@ -199,7 +201,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                             try
                             {
                                 await DeadLetterAsync(connection, transaction, message, _poisonMessageDeadletterErrorCode,
-                                                      $"Poisoned message received from queue '{this.QueueName}' but was not handled.",
+                                                      $"Poisoned message received from queue '{this.QueueName}' cannot be handled.",
                                                       pme.Message).ConfigureAwait(false);
                             }
                             catch (Exception)
@@ -292,15 +294,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             return Task.CompletedTask;
         }
 
-        private async Task CompleteAsync(SqlConnection connection, IDbTransaction transaction, ReceivedMessage message, int errorCode = 0, string errorDescription = "")
+        private async Task CompleteAsync(SqlConnection connection, IDbTransaction transaction, ReceivedMessage message)
         {
             try
             {
                 var edc = new EndDialogConversationCommand(connection,
                                                            message.ConvHandle,
-                                                           errorCode,
-                                                           errorDescription,
-                                                           _options.CleanupOnEndConversation,
+                                                           enableCleanup: _options.CleanupOnEndConversation,
                                                            transaction: (SqlTransaction)transaction);
                 await edc.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
                 transaction?.Commit();
@@ -315,9 +315,24 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
         private async Task DeadLetterAsync(SqlConnection connection, IDbTransaction transaction, ReceivedMessage message, int errorCode, string reason, string description)
         {
-            //TOOO: Error Messages not going to queue? Need to set message type to Error?
             var errorDescription = reason + Environment.NewLine + description;
-            await CompleteAsync(connection, transaction, message, errorCode, errorDescription).ConfigureAwait(false);
+            try
+            {
+                transaction?.Rollback();
+                var edc = new EndDialogConversationCommand(connection,
+                                                           message.ConvHandle,
+                                                           errorCode,
+                                                           errorDescription,
+                                                           enableCleanup: _options.CleanupOnEndConversation);
+                await edc.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
+                _localReceiverDeliveryAttempts.TryRemove(message.ConvHandle, out var _);
+            }
+            catch (Exception e)
+            {
+                await AbandonAsync(transaction, message).ConfigureAwait(false);
+                _logger.LogError(e, "Unable to complete receive operation");
+            }
+
             _logger.LogError(errorDescription);
         }
 

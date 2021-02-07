@@ -1,4 +1,5 @@
-﻿using Chatter.CQRS.Context;
+﻿using Chatter.CQRS.Commands;
+using Chatter.CQRS.Context;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -6,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.CQRS.Pipeline
 {
-    internal class CommandBehaviorPipeline<TMessage> : ICommandBehaviorPipeline<TMessage> where TMessage : IMessage
+    internal class CommandBehaviorPipeline<TMessage> : ICommandBehaviorPipeline<TMessage> where TMessage : ICommand
     {
         private readonly IEnumerable<ICommandBehavior<TMessage>> _behaviors;
 

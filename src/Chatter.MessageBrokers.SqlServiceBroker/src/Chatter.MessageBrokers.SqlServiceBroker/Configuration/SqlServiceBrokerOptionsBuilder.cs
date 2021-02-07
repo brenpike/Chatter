@@ -20,9 +20,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
             return this;
         }
 
-        public SqlServiceBrokerOptionsBuilder AddSqlServiceBrokerOptions(Func<SqlServiceBrokerOptions> optionsBuidler)
+        public SqlServiceBrokerOptionsBuilder AddSqlServiceBrokerOptions(Func<SqlServiceBrokerOptions> optionsBuilder)
         {
-            _sqlServiceBrokerOptions = optionsBuidler();
+            _sqlServiceBrokerOptions = optionsBuilder();
             return this;
         }
 
@@ -32,7 +32,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
                                                                          int conversationLifetimeInSeconds = 0,
                                                                          bool coversationEncryption = false,
                                                                          bool compressMessageBody = true,
-                                                                         bool cleanupOnEndConversation = false)
+                                                                         bool cleanupOnEndConversation = false,
+                                                                         bool endConversationAfterDispatch = false)
         {
             _sqlServiceBrokerOptions = new SqlServiceBrokerOptions(connectionString,
                                                                    messageBodyType,
@@ -40,7 +41,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
                                                                    conversationLifetimeInSeconds,
                                                                    coversationEncryption,
                                                                    compressMessageBody,
-                                                                   cleanupOnEndConversation);
+                                                                   cleanupOnEndConversation,
+                                                                   endConversationAfterDispatch);
             return this;
         }
 
@@ -127,6 +129,15 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         public SqlServiceBrokerOptionsBuilder WithConversationCleanup()
         {
             _sqlServiceBrokerOptions.CleanupOnEndConversation = true;
+            return this;
+        }
+
+        /// <summary>
+        /// Configures <see cref="Sending.SqlServiceBrokerSender"/> to END CONVERSATION after a message has been dispatched
+        /// </summary>
+        public SqlServiceBrokerOptionsBuilder EndConversationAfterDispatch()
+        {
+            _sqlServiceBrokerOptions.EndConversationAfterDispatch = true;
             return this;
         }
 
