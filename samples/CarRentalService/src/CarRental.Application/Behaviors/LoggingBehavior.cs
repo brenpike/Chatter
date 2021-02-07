@@ -1,4 +1,4 @@
-﻿using Chatter.CQRS;
+﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Microsoft.Extensions.Logging;
@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace CarRental.Application.Behaviors
 {
-    public class LoggingBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : IMessage
+    public class LoggingBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
     {
         private readonly ILogger<LoggingBehavior<TMessage>> _logger;
 

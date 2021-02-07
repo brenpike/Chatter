@@ -68,9 +68,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
                     _logger.LogDebug("Message sent on conversation.");
                     _logger.LogTrace($"Conversation Handle: '{conversationHandle}', Message Type Name: '{contextMessageTypeName}'");
 
-                    await EndConversation(connection, transaction, conversationHandle).ConfigureAwait(false);
-                    _logger.LogDebug("Conversation ended.");
-                    _logger.LogTrace($"Conversation Handle: '{conversationHandle}'");
+                    if (_options.EndConversationAfterDispatch)
+                    {
+                        await EndConversation(connection, transaction, conversationHandle).ConfigureAwait(false);
+                        _logger.LogDebug("Conversation ended.");
+                        _logger.LogTrace($"Conversation Handle: '{conversationHandle}'");
+                    }
                 }
 
                 if (!useContextTransaction)

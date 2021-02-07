@@ -19,7 +19,7 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         private readonly LoggerCreator<EventDispatcher> _logger;
         private readonly EventDispatcher _sut;
 
-        private static string _eventHandlerInvokedLogMessage = $"Invoked handler for '{typeof(IMessage)}'.";
+        private static string _eventHandlerInvokedLogMessage = $"Invoked event handler for '{typeof(IMessage)}'.";
 
         public WhenDispatching()
         {

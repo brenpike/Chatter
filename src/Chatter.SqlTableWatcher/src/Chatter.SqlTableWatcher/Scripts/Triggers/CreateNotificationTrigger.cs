@@ -106,8 +106,6 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
                         FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [DEFAULT] WITH ENCRYPTION=OFF, LIFETIME = 60; 
 
                  SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (@message);
-
-                 END CONVERSATION @ConvHandle;
                 END
             ", _monitorableTableName, _notificationTriggerName, _notificationTriggeredBy, _conversationServiceName, _schemaName);
         }
