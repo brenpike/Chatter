@@ -140,7 +140,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             if (!(_tokenProvider is NullTokenProvider))
             {
                 var connStringBuilder = new ServiceBusConnectionStringBuilder(options.ConnectionString);
-                if (string.IsNullOrWhiteSpace(connStringBuilder.SasToken))
+                if (string.IsNullOrWhiteSpace(connStringBuilder.SasToken) && string.IsNullOrWhiteSpace(connStringBuilder.SasKey))
                 {
                     options.TokenProvider = _tokenProvider;
                 }
