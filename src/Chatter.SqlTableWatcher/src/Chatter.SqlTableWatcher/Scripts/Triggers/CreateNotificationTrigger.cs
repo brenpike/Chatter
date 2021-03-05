@@ -103,7 +103,7 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
                 	DECLARE @ConvHandle UNIQUEIDENTIFIER
 
                 	BEGIN DIALOG @ConvHandle 
-                        FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [DEFAULT] WITH ENCRYPTION=OFF, LIFETIME = 60; 
+                        FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [DEFAULT] WITH ENCRYPTION=OFF; 
 
                  SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (@message);
                 END
