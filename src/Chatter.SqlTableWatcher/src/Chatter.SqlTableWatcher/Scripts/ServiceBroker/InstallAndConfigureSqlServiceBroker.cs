@@ -68,7 +68,7 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
                 END
 
                 IF NOT EXISTS (SELECT * FROM sys.service_queues WHERE name = '{1}')
-	                CREATE QUEUE {3}.[{1}]
+	                CREATE QUEUE {3}.[{1}] WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
 
                 IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{2}')
 	                CREATE SERVICE [{2}] ON QUEUE {3}.[{1}] ([DEFAULT]) 
