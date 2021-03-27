@@ -98,14 +98,17 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
                     ELSE
                     	SET @message = CONCAT(SUBSTRING(@InsertedJSON,1,LEN(@InsertedJSON) - 1), N',', SUBSTRING(@DeletedJSON,2,LEN(@DeletedJSON)-1))
 
-                    SET @message = compress(@message)                    
+                    IF @message IS NOT NULL
+					BEGIN
+                        SET @message = compress(@message)                    
 
-                	DECLARE @ConvHandle UNIQUEIDENTIFIER
+                	    DECLARE @ConvHandle UNIQUEIDENTIFIER
 
-                	BEGIN DIALOG @ConvHandle 
-                        FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [DEFAULT] WITH ENCRYPTION=OFF; 
+                	    BEGIN DIALOG @ConvHandle 
+                            FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [DEFAULT] WITH ENCRYPTION=OFF; 
 
-                 SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (@message);
+                        SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (@message);
+                    END
                 END
             ", _monitorableTableName, _notificationTriggerName, _notificationTriggeredBy, _conversationServiceName, _schemaName);
         }

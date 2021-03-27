@@ -74,6 +74,7 @@ namespace CarRental.Api
             if (env.IsDevelopment())
             {
                 app.UseDeveloperExceptionPage();
+                app.UseTableWatcherSqlMigrations<CarRentalAggregateChangedEvent>();
                 app.UseTableWatcherSqlMigrations<OutboxChangedEvent>();
             }
 
