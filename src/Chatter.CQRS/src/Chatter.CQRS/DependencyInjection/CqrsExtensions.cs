@@ -83,7 +83,7 @@ namespace Microsoft.Extensions.DependencyInjection
                s.FromAssemblies(assemblies)
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
                         .Where(handler => FilterMessageHandlerByType(handler, typeof(ICommand))))
-                   .UsingRegistrationStrategy(RegistrationStrategy.Throw)
+                   .UsingRegistrationStrategy(RegistrationStrategy.Replace())
                    .AsImplementedInterfaces()
                    .WithTransientLifetime());
             return services;
