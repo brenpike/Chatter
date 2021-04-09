@@ -91,11 +91,12 @@ namespace Microsoft.Extensions.DependencyInjection
 
         static bool FilterMessageHandlerByType(Type handler, Type filterType)
         {
-            return handler.GetTypeInfo().ImplementedInterfaces
-                .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IMessageHandler<>))
-                    .Any(mhi => mhi.GetGenericArguments()
-                        .SingleOrDefault().GetTypeInfo().ImplementedInterfaces
-                            .Any(t => t == filterType));
+            return (!handler.IsGenericType || handler.IsGenericType && handler.GetGenericArguments().All(a => !a.IsGenericParameter)) 
+                    && handler.GetTypeInfo().ImplementedInterfaces
+                        .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IMessageHandler<>))
+                            .Any(mhi => mhi.GetGenericArguments()
+                                .SingleOrDefault().GetTypeInfo().ImplementedInterfaces
+                                    .Any(t => t == filterType));
         }
 
         public static IServiceCollection AddQueryHandlers(this IServiceCollection services, params Type[] markerTypesForRequiredAssemblies)
