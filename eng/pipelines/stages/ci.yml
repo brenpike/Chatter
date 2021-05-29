@@ -18,7 +18,7 @@ stages:
         inputs:
           command: 'build'
           projects: 'src/${{ parameters.ProjectName }}/**/${{ parameters.ProjectName }}.csproj'
-          arguments: -c $(BuildConfiguration) -o $(Build.ArtifactStagingDirectory)
+          arguments: -c $(BuildConfiguration)
 
       - task: DotNetCoreCLI@2
         displayName: 'Execute Tests'
