@@ -14,12 +14,11 @@ stages:
         vmImage: 'ubuntu-latest'
       steps:
       - task: DotNetCoreCLI@2
-        displayName: 'Dotnet Publish ${{parameters.ProjectName}}'
+        displayName: 'Dotnet Build ${{parameters.ProjectName}}'
         inputs:
-          command: 'publish'
-          publishWebProjects: false
+          command: 'build'
           projects: 'src/${{ parameters.ProjectName }}/**/${{ parameters.ProjectName }}.csproj'
-          arguments: -c $(BuildConfiguration) -o $(Build.ArtifactStagingDirectory)
+          arguments: -c $(BuildConfiguration)
 
       - task: DotNetCoreCLI@2
         displayName: 'Execute Tests'
