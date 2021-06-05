@@ -67,4 +67,5 @@ namespace Chatter.CQRS.Tests.Context.UsingContextContainer
 
     public class FakeContext { }
     public class ReallyFakeContext { }
+    public class AnotherFakeContext { }
 }

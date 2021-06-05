@@ -15,13 +15,6 @@ namespace Chatter.CQRS.Tests.Context.UsingContextContainer
             _sut = new ContextContainer();
         }
 
-        //public void Include<T>(T t)
-        //    => Include(typeof(T).FullName, t);
-
-        //public void Include<T>(string fullQualifiedNamespaceOfType, T t)
-        //    => _context[fullQualifiedNamespaceOfType] = t;
-
-
         [Fact]
         public void MustContainContextAfterInclude()
         {
