@@ -27,17 +27,16 @@ namespace FlightBooking.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Flight Booking Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs(Configuration, typeof(BookFlightCommand))
-                    .AddCommandPipeline(builder =>
-                    {
-                        builder.WithRoutingSlipBehavior();
-                    })
-                    .AddMessageBrokers()
-                    .AddAzureServiceBus(options =>
-                    {
-                        options.UseConfig("Chatter:ServiceBus")
-                               .AddQueueReceiver<CancelFlightBookingCommand>("book-trip-saga/3/cancel-flight");
-                    });
+            services.AddChatterCqrs(Configuration, builder =>
+            {
+                builder.WithRoutingSlipBehavior();
+            }, typeof(BookFlightCommand))
+            .AddMessageBrokers()
+            .AddAzureServiceBus(options =>
+            {
+                options.UseConfig("Chatter:ServiceBus")
+                       .AddQueueReceiver<CancelFlightBookingCommand>("book-trip-saga/3/cancel-flight");
+            });
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
