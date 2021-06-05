@@ -3,9 +3,9 @@ using Chatter.MessageBrokers.Routing.Slips;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
-    public static class PipelineBuilderExtensions
+    public static class CommandPipelineBuilderExtensions
     {
-        public static PipelineBuilder WithRoutingSlipBehavior(this PipelineBuilder pipelineBuilder)
+        public static CommandPipelineBuilder WithRoutingSlipBehavior(this CommandPipelineBuilder pipelineBuilder)
         {
             pipelineBuilder.WithBehavior(typeof(RoutingSlipBehavior<>));
             return pipelineBuilder;

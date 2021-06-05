@@ -40,33 +40,33 @@ namespace CarRental.Api
             services.AddDbContext<CarRentalContext>(o => o.UseSqlServer(Configuration.GetValue<string>("ConnectionStrings:CarRentals"),
                 b => b.MigrationsAssembly(typeof(CarRentalContext).Assembly.FullName).EnableRetryOnFailure(5)));
 
-            services.AddChatterCqrs(Configuration, typeof(BookRentalCarCommand))
-                    .AddCommandPipeline(builder =>
-                    {
-                        builder.WithBehavior(typeof(LoggingBehavior<>))
-                               .WithOutboxProcessingBehavior<CarRentalContext>()
-                               .WithInboxBehavior<CarRentalContext>()
-                               .WithRoutingSlipBehavior();
-                    })
-                    .AddMessageBrokers(builder =>
-                    {
-                        builder.AddRecoveryOptions(r =>
-                        {
-                            r.UseExponentialDelayRecovery(5);
-                        });
-                    })
-                    .AddAzureServiceBus(builder =>
-                    {
-                        builder.UseAadTokenProviderWithSecret(Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientId"),
-                                                              Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
-                                                              Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
-                    })
-                    .AddSqlTableWatcher<OutboxChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "OutboxMessage")
-                    .AddSqlServiceBroker(builder =>
-                    {
-                        builder.AddSqlServiceBrokerOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"))
-                               .AddQueueReceiver<CarRentalAggregateChangedEvent>("Chatter_ConversationQueue_CarRentalAggregateChangedEvent");
-                    });
+            services.AddChatterCqrs(Configuration, builder =>
+            {
+                builder.WithBehavior(typeof(LoggingBehavior<>))
+                       .WithOutboxProcessingBehavior<CarRentalContext>()
+                       .WithInboxBehavior<CarRentalContext>()
+                       .WithRoutingSlipBehavior();
+            },
+            typeof(BookRentalCarCommand))
+            .AddMessageBrokers(builder =>
+            {
+                builder.AddRecoveryOptions(r =>
+                {
+                    r.UseExponentialDelayRecovery(5);
+                });
+            })
+            .AddAzureServiceBus(builder =>
+            {
+                builder.UseAadTokenProviderWithSecret(Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientId"),
+                                                      Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
+                                                      Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
+            })
+            .AddSqlTableWatcher<OutboxChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "OutboxMessage")
+            .AddSqlServiceBroker(builder =>
+            {
+                builder.AddSqlServiceBrokerOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"))
+                       .AddQueueReceiver<CarRentalAggregateChangedEvent>("Chatter_ConversationQueue_CarRentalAggregateChangedEvent");
+            });
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)

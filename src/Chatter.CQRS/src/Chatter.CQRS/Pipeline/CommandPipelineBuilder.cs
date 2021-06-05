@@ -4,19 +4,19 @@ using System;
 
 namespace Chatter.CQRS.Pipeline
 {
-    public class PipelineBuilder
+    public class CommandPipelineBuilder
     {
         public IServiceCollection Services { get; private set; }
 
-        internal PipelineBuilder(IServiceCollection services)
+        internal CommandPipelineBuilder(IServiceCollection services)
         {
             Services = services;
         }
 
-        public PipelineBuilder WithBehavior<TCommandBehavior>()
+        public CommandPipelineBuilder WithBehavior<TCommandBehavior>()
             => WithBehavior(typeof(TCommandBehavior));
 
-        public PipelineBuilder WithBehavior(Type behaviorType)
+        public CommandPipelineBuilder WithBehavior(Type behaviorType)
         {
             Services.AddPipelineBehavior(behaviorType);
             return this;

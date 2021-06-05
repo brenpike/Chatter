@@ -4,9 +4,9 @@ using Chatter.MessageBrokers.Reliability.Outbox;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
-    public static class PipelineBuilderExtensions
+    public static class CommandPipelineBuilderExtensions
     {
-        public static PipelineBuilder WithTransactionScopeSupressionBehavior(this PipelineBuilder pipelineBuilder)
+        public static CommandPipelineBuilder WithTransactionScopeSupressionBehavior(this CommandPipelineBuilder pipelineBuilder)
         {
             pipelineBuilder.WithBehavior(typeof(TransactionScopeSupressionBehavior<>));
 

@@ -11,7 +11,7 @@ namespace Microsoft.Extensions.DependencyInjection
 {
     public static class Extensions
     {
-        public static PipelineBuilder WithUnitOfWorkBehavior<TContext>(this PipelineBuilder pipelineBuilder) 
+        public static CommandPipelineBuilder WithUnitOfWorkBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder) 
             where TContext : DbContext
         {
             pipelineBuilder.Services.Replace<IUnitOfWork, UnitOfWork<TContext>>(ServiceLifetime.Scoped);
@@ -20,7 +20,7 @@ namespace Microsoft.Extensions.DependencyInjection
             return pipelineBuilder;
         }
 
-        public static PipelineBuilder WithInboxBehavior<TContext>(this PipelineBuilder pipelineBuilder) 
+        public static CommandPipelineBuilder WithInboxBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder) 
             where TContext : DbContext
         {
             pipelineBuilder.WithUnitOfWorkBehavior<TContext>();
@@ -30,7 +30,7 @@ namespace Microsoft.Extensions.DependencyInjection
             return pipelineBuilder;
         }
 
-        public static PipelineBuilder WithOutboxProcessingBehavior<TContext>(this PipelineBuilder pipelineBuilder)
+        public static CommandPipelineBuilder WithOutboxProcessingBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder)
             where TContext : DbContext
         {
             pipelineBuilder.WithBehavior(typeof(OutboxProcessingBehavior<>));

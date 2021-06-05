@@ -15,6 +15,12 @@ namespace Microsoft.Extensions.DependencyInjection
 {
     public static class CqrsExtensions
     {
+        public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, Action<CommandPipelineBuilder> pipelineBulder = null, params Type[] markerTypesForRequiredAssemblies)
+        {
+            var chatterBuilder = AddChatterCqrs(services, configuration, markerTypesForRequiredAssemblies);
+            return AddCommandPipeline(chatterBuilder, pipelineBulder);
+        }
+
         public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, params Type[] markerTypesForRequiredAssemblies)
         {
             IEnumerable<Assembly> assemblies = GetAssembliesFromMarkerTypes(markerTypesForRequiredAssemblies);
@@ -34,10 +40,10 @@ namespace Microsoft.Extensions.DependencyInjection
             return builder;
         }
 
-        static PipelineBuilder CreatePipelineBuilder(this IServiceCollection services)
-            => new PipelineBuilder(services);
+        static CommandPipelineBuilder CreatePipelineBuilder(this IServiceCollection services)
+            => new CommandPipelineBuilder(services);
 
-        public static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<PipelineBuilder> pipelineBulder)
+        internal static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<CommandPipelineBuilder> pipelineBulder)
         {
             var pipeline = chatterBuilder.Services.CreatePipelineBuilder();
 
@@ -91,7 +97,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         static bool FilterMessageHandlerByType(Type handler, Type filterType)
         {
-            return (!handler.IsGenericType || handler.IsGenericType && handler.GetGenericArguments().All(a => !a.IsGenericParameter)) 
+            return (!handler.IsGenericType || handler.IsGenericType && handler.GetGenericArguments().All(a => !a.IsGenericParameter))
                     && handler.GetTypeInfo().ImplementedInterfaces
                         .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IMessageHandler<>))
                             .Any(mhi => mhi.GetGenericArguments()
