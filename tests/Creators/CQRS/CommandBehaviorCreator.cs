@@ -2,24 +2,40 @@
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Moq;
+using System;
+using System.Threading.Tasks;
 
 namespace Chatter.Testing.Core.Creators.CQRS
 {
-    public class CommandBehaviorCreator : Creator<ICommandBehavior<ICommand>>
+    public class CommandBehaviorCreator<TCommand> : Creator<ICommandBehavior<TCommand>> where TCommand : ICommand
     {
-        private readonly Mock<ICommandBehavior<ICommand>> _commandBehavior = new Mock<ICommandBehavior<ICommand>>();
-
-        public CommandBehaviorCreator(INewContext newContext, ICommandBehavior<ICommand> creation = null)
+        public CommandBehaviorCreator(INewContext newContext, ICommandBehavior<TCommand> creation = null)
             : base(newContext, creation)
         {
-            _commandBehavior.Setup(cb => cb.Handle(It.IsAny<ICommand>(), It.IsAny<IMessageHandlerContext>(), It.IsAny<CommandHandlerDelegate>()));
-            Creation = _commandBehavior.Object;
+            Creation = new Mock<ICommandBehavior<TCommand>>().Object;
+
         }
 
-        public CommandBehaviorCreator ThatWrapsCommandHandler(CommandHandlerDelegate @delegate)
+        private class StandardCommandBehavior1<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
         {
-            _commandBehavior.Setup(cb => cb.Handle(It.IsAny<ICommand>(), It.IsAny<IMessageHandlerContext>(), @delegate));
-            return this;
+            public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) => throw new NotImplementedException();
         }
+
+        private class StandardCommandBehavior2<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
+        {
+            public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) => throw new NotImplementedException();
+        }
+
+        private class StandardCommandBehavior3<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
+        {
+            public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) => throw new NotImplementedException();
+        }
+
+        private class CommandBehaviorWithMultipleTypeParams<TMessage, TFake> : ICommandBehavior<TMessage> where TMessage : ICommand
+        {
+            public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) => throw new NotImplementedException();
+        }
+
+        private class FakeCommandBehavior3<TMessage> { }
     }
 }

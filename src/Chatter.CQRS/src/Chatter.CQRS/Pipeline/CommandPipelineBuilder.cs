@@ -9,9 +9,7 @@ namespace Chatter.CQRS.Pipeline
         public IServiceCollection Services { get; private set; }
 
         internal CommandPipelineBuilder(IServiceCollection services)
-        {
-            Services = services;
-        }
+            => Services = services ?? throw new ArgumentNullException(nameof(services));
 
         public CommandPipelineBuilder WithBehavior<TCommandBehavior>()
             => WithBehavior(typeof(TCommandBehavior));

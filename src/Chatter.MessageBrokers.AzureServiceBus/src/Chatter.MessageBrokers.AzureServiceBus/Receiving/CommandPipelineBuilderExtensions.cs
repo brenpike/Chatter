@@ -10,7 +10,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         {
             pipelineBuilder.WithBehavior(typeof(TransactionScopeSupressionBehavior<>));
 
-            pipelineBuilder.Services.InsertServiceBefore(typeof(TransactionScopeSupressionBehavior<>), typeof(OutboxProcessingBehavior<>));
+            pipelineBuilder.Services.MoveServiceDescriptorBefore(typeof(TransactionScopeSupressionBehavior<>), typeof(OutboxProcessingBehavior<>));
 
             return pipelineBuilder;
         }

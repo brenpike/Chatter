@@ -1,9 +1,9 @@
-﻿using Chatter.CQRS.Commands;
-using Chatter.CQRS.Pipeline;
+﻿using Chatter.CQRS.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Scrutor;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
@@ -13,7 +13,10 @@ namespace Chatter.CQRS.DependencyInjection
     {
         public static IServiceCollection AddPipelineBehavior(this IServiceCollection services, Type behaviorType)
         {
-            if (!behaviorType.GetTypeInfo().ImplementedInterfaces.Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommandBehavior<>)))
+            _ = behaviorType ?? throw new ArgumentNullException(nameof(behaviorType), "Cannot add null behavior type to command pipeline.");
+            var ii = behaviorType.GetTypeInfo()?.ImplementedInterfaces ?? throw new NullReferenceException($"Unable to get implemented interfaces for '{behaviorType.Name}'.");
+
+            if (!ii.Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommandBehavior<>)))
             {
                 throw new ArgumentException($"The supplied type must implement {typeof(ICommandBehavior<>).Name}", nameof(behaviorType));
             }
@@ -30,37 +33,50 @@ namespace Chatter.CQRS.DependencyInjection
             return services;
         }
 
-        public static IServiceCollection InsertServiceBefore(this IServiceCollection services, Type serviceToInsert, Type serviceToInsertBefore)
+        public static IEnumerable<ServiceDescriptor> GetServiceDescriptorsByImplementationType(this IServiceCollection services, Type implementationType)
         {
-            var serviceToPrepend = services.Where(sd =>
+            return services.Where(sd =>
                             sd.ImplementationType != null &&
-                            ((sd.ImplementationType.IsGenericTypeDefinition && sd.ImplementationType.GetGenericTypeDefinition() == serviceToInsertBefore) ||
-                            (!sd.ImplementationType.IsGenericTypeDefinition && sd.ImplementationType == serviceToInsertBefore))).FirstOrDefault();
+                            ((sd.ImplementationType.IsGenericTypeDefinition && sd.ImplementationType.GetGenericTypeDefinition() == implementationType) ||
+                            (!sd.ImplementationType.IsGenericTypeDefinition && sd.ImplementationType == implementationType)));
+        }
 
-            if (serviceToPrepend == null)
+        /// <summary>
+        /// Move all <see cref="ServiceDescriptor"/> whose <see cref="ServiceDescriptor.ImplementationType"/> matches type <paramref name="typeOfServiceToMove"/> before <see cref="ServiceDescriptor"/> with <see cref="ServiceDescriptor.ImplementationType"/> of type <paramref name="typeOfServiceToInsertBefore"/> in the <see cref="ServiceCollection"/>
+        /// </summary>
+        /// <param name="services">The <see cref="ServiceCollection"/> in which types will be moved</param>
+        /// <param name="typeOfServiceToMove">The type of the <see cref="ServiceDescriptor"/> to be moved within the <see cref="ServiceCollection"/></param>
+        /// <param name="typeOfServiceToInsertBefore">The type of <see cref="ServiceDescriptor"/> that <paramref name="typeOfServiceToMove"/> should be inserted before in the <see cref="ServiceCollection"/></param>
+        /// <returns><see cref="IServiceCollection"/></returns>
+        public static IServiceCollection MoveServiceDescriptorBefore(this IServiceCollection services, Type typeOfServiceToMove, Type typeOfServiceToInsertBefore)
+        {
+            _ = typeOfServiceToMove ?? throw new ArgumentNullException(nameof(typeOfServiceToMove), $"The type of {nameof(ServiceDescriptor)} to move cannot be null");
+            _ = typeOfServiceToInsertBefore ?? throw new ArgumentNullException(nameof(typeOfServiceToInsertBefore), $"The type of {nameof(ServiceDescriptor)} to move services of type {nameof(typeOfServiceToMove)} before cannot be null");
+
+            var serviceToInsertBefore = services.GetServiceDescriptorsByImplementationType(typeOfServiceToInsertBefore).FirstOrDefault();
+
+            if (serviceToInsertBefore == null)
             {
                 return services;
             }
 
-            var indexOfServiceToInsertBefore = services.IndexOf(serviceToPrepend);
+            var indexOfServiceToInsertBefore = services.IndexOf(serviceToInsertBefore);
+            var serviceDescriptorsToMove = services.GetServiceDescriptorsByImplementationType(typeOfServiceToMove);
 
-            var behaviorsToMove = services.Where(sd =>
-                            sd.ImplementationType != null &&
-                            ((sd.ImplementationType.IsGenericTypeDefinition && sd.ImplementationType.GetGenericTypeDefinition() == serviceToInsert) ||
-                            (!sd.ImplementationType.IsGenericTypeDefinition && sd.ImplementationType == serviceToInsert))).ToList();
-
-
-            var indexOfServiceToInsert = services.IndexOf(behaviorsToMove.FirstOrDefault());
-            if (indexOfServiceToInsert == -1 || indexOfServiceToInsert < indexOfServiceToInsertBefore)
+            if (serviceDescriptorsToMove.All(sd => services.IndexOf(sd) < indexOfServiceToInsertBefore))
             {
                 return services;
             }
 
-            foreach (var item in behaviorsToMove)
+            for (int i = 0; i < serviceDescriptorsToMove.Count(); i++)
             {
-                services.Remove(item);
-                services.Insert(indexOfServiceToInsertBefore, item);
-                indexOfServiceToInsertBefore++;
+                var move = serviceDescriptorsToMove.ElementAt(i);
+                if (services.IndexOf(move) > indexOfServiceToInsertBefore)
+                {
+                    services.Remove(move);
+                    services.Insert(indexOfServiceToInsertBefore, move);
+                    indexOfServiceToInsertBefore = services.IndexOf(serviceToInsertBefore);
+                }
             }
 
             return services;
@@ -68,13 +84,20 @@ namespace Chatter.CQRS.DependencyInjection
 
         public static IServiceCollection RegisterBehaviorForAllCommands(this IServiceCollection services, Type openGenericBehaviorType)
         {
+            _ = openGenericBehaviorType ?? throw new ArgumentNullException(nameof(openGenericBehaviorType), "A non-null command behavior type is required");
+
             if (!openGenericBehaviorType.IsGenericTypeDefinition)
             {
                 throw new ArgumentException($"An open generic behavior type is required, but a closed generic was supplied: '{openGenericBehaviorType.Name}'", nameof(openGenericBehaviorType));
             }
 
+            if (!openGenericBehaviorType.GetInterfaces().Any(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(ICommandBehavior<>)))
+            {
+                throw new ArgumentException($"Generic type definition must be {typeof(ICommandBehavior<>).Name}", nameof(openGenericBehaviorType));
+            }
+
             services.Scan(s =>
-                   s.FromAssemblies(openGenericBehaviorType.GetTypeInfo().Assembly)
+                   s.FromAssemblies(openGenericBehaviorType.Assembly)
                        .AddClasses(c => c.AssignableTo(openGenericBehaviorType))
                        .UsingRegistrationStrategy(RegistrationStrategy.Replace(ReplacementBehavior.ImplementationType))
                        .AsImplementedInterfaces()
@@ -85,20 +108,24 @@ namespace Chatter.CQRS.DependencyInjection
 
         public static IServiceCollection RegisterBehaviorForCommand(this IServiceCollection services, Type closedGenericBehaviorType)
         {
+            var commandBehaviorType = typeof(ICommandBehavior<>);
+
+            _ = closedGenericBehaviorType ?? throw new ArgumentNullException(nameof(closedGenericBehaviorType), "A non-null command behavior type is required");
+
             if (closedGenericBehaviorType.IsGenericTypeDefinition)
             {
                 throw new ArgumentException($"A closed generic behavior type is required, but an open generic was supplied: '{closedGenericBehaviorType.Name}'", nameof(closedGenericBehaviorType));
             }
 
-            var behaviorCommandType = closedGenericBehaviorType.GetGenericArguments().SingleOrDefault();
-
-            if (!(behaviorCommandType is ICommand))
+            if (!closedGenericBehaviorType.GetInterfaces().Any(t => t.IsGenericType && t.GetGenericTypeDefinition() == commandBehaviorType))
             {
-                throw new ArgumentException($"Generic type argument for '{closedGenericBehaviorType.Name}' is not of type '{typeof(ICommand).Name}'", nameof(closedGenericBehaviorType));
+                throw new ArgumentException($"Generic type definition must be {commandBehaviorType.Name}", nameof(closedGenericBehaviorType));
             }
 
-            var closedCommandBehaviorInterface = typeof(ICommandBehavior<>).MakeGenericType(behaviorCommandType);
-            services.Replace(ServiceDescriptor.Transient(closedCommandBehaviorInterface, closedGenericBehaviorType));
+            var behaviorCommandType = closedGenericBehaviorType.GetGenericArguments().Single();
+
+            var closedCommandBehaviorInterface = commandBehaviorType.MakeGenericType(behaviorCommandType);
+            services.AddTransient(closedCommandBehaviorInterface, closedGenericBehaviorType);
 
             return services;
         }

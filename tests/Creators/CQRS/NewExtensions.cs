@@ -1,4 +1,6 @@
-﻿namespace Chatter.Testing.Core.Creators.CQRS
+﻿using Chatter.CQRS.Commands;
+
+namespace Chatter.Testing.Core.Creators.CQRS
 {
     public static class NewExtensions
     {
@@ -11,15 +13,8 @@
         {
             private INewContext NewContext { get; }
 
-            public NewCqrs(INewContext context)
-            {
-                NewContext = context;
-            }
-
-            public CommandBehaviorCreator CommandBehavior()
-            {
-                return new CommandBehaviorCreator(NewContext);
-            }
+            public NewCqrs(INewContext context) => NewContext = context;
+            public CommandBehaviorCreator<TCommand> CommandBehavior<TCommand>() where TCommand : ICommand => new CommandBehaviorCreator<TCommand>(NewContext);
         }
     }
 }
