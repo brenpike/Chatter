@@ -1,5 +1,6 @@
-﻿using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 
@@ -22,10 +23,10 @@ namespace Chatter.CQRS.DependencyInjection
         IEnumerable<Assembly> IChatterBuilder.MarkerAssemblies => _markerAssemblies;
 
         private ChatterBuilder(IServiceCollection services, IConfiguration configuration, IEnumerable<Assembly> markerAssemblies)
-        { 
-            _services = services;
-            _configuration = configuration;
-            _markerAssemblies = markerAssemblies;
+        {
+            _services = services ?? throw new ArgumentNullException(nameof(services));
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _markerAssemblies = markerAssemblies ?? throw new ArgumentNullException(nameof(markerAssemblies));
         }
 
         /// <summary>
