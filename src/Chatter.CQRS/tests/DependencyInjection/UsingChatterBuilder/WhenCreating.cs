@@ -25,7 +25,6 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingChatterBuilder
         [Fact]
         public void MustReturnNewChatterBuilderInstance()
             => FluentActions.Invoking(()
-                => ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, _markerAssemblies.Object))
-            .Should().NotThrow().And.NotBeNull().And.BeOfType(typeof(IChatterBuilder));
+                => ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, _markerAssemblies.Object)).Should().NotThrow();
     }
 }

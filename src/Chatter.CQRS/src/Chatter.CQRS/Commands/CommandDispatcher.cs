@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 namespace Chatter.CQRS.Commands
 {
     /// <summary>
-    /// An <see cref="IMessageDispatcher"/> implementation to dispatch <see cref="ICommand"/> messages.
+    /// An <see cref="IDispatchMessages"/> implementation to dispatch <see cref="ICommand"/> messages.
     /// </summary>
     internal sealed class CommandDispatcher : IDispatchMessages
     {
