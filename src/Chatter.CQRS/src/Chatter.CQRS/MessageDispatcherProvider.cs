@@ -14,8 +14,15 @@ namespace Chatter.CQRS
 
         public MessageDispatcherProvider(IEnumerable<IDispatchMessages> providers)
         {
+            _ = providers ?? throw new ArgumentNullException(nameof(providers), $"Enumerable of {nameof(IDispatchMessages)} cannot be null");
+
             foreach (var prov in providers)
             {
+                if (prov.DispatchType is null)
+                {
+                    throw new ArgumentNullException(nameof(prov.DispatchType), $"A non-null dispatch type is required");
+                }
+
                 _dispatchers[prov.DispatchType] = prov;
             }
         }
