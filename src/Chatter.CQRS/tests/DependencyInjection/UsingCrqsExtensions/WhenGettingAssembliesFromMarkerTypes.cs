@@ -10,9 +10,6 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
 {
     public class WhenGettingAssembliesFromMarkerTypes
     {
-        public WhenGettingAssembliesFromMarkerTypes()
-        { }
-
         [Fact]
         public void MustReturnUnionOfMarkerTypesAndCurrentAppDomainAssemblies()
         {

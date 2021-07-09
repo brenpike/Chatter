@@ -1,11 +1,12 @@
 ﻿using Chatter.CQRS.Queries;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using System;
 using Xunit;
 
-namespace Chatter.CQRS.Tests.Queries.UsingQueryDIspatcher
+namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
 {
     public class WhenInitializing : Testing.Core.Context
     {
@@ -42,6 +43,29 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDIspatcher
         {
             Action ctor = () => new QueryDispatcher(null, null);
             ctor.Should().Throw<ArgumentNullException>();
+        }
+
+        [Fact]
+        public void MustThrowIfLoggerHasNotBeenRegisteredWithServiceCollection()
+        {
+            var sc = new ServiceCollection();
+            sc.AddScoped<IQueryDispatcher, QueryDispatcher>();
+
+            var sp = sc.BuildServiceProvider();
+            FluentActions.Invoking(() => sp.GetRequiredService<IQueryDispatcher>()).Should().ThrowExactly<InvalidOperationException>()
+                .WithMessage("Unable to resolve service for type 'Microsoft.Extensions.Logging.ILogger*");
+        }
+
+        [Fact]
+        public void MustResolveQueryDispatcherIfLoggingDependencyIsRegistered()
+        {
+            var sc = new ServiceCollection();
+            sc.AddLogging();
+            sc.AddScoped<IQueryDispatcher, QueryDispatcher>();
+
+            var sp = sc.BuildServiceProvider();
+            var concrete = sp.GetRequiredService<IQueryDispatcher>();
+            concrete.Should().BeOfType(typeof(QueryDispatcher));
         }
     }
 }

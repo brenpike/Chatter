@@ -73,8 +73,15 @@ namespace Chatter.CQRS.Tests.UsingMessageDispatcherProvider
             dispatcher.Should().BeSameAs(_anotherEventDispatcher.Object);
         }
 
+        [Fact]
+        public void MustThrowIfNoMatchingDispatchTypeMatchingImplementedInterfaces()
+            => FluentActions.Invoking(() => _sut.GetDispatcher<ClassWithMultipleImplementedInterfaces>()).Should().ThrowExactly<KeyNotFoundException>();
+
         private class FakeEvent : IEvent { }
+        private class ClassWithMultipleImplementedInterfaces : IMessage, IFakeInterface2, IFakeInterface3 { }
         private class FakeEventThatImplementsMany : IFakeInterface, IEvent { }
         private interface IFakeInterface { }
+        private interface IFakeInterface2 { }
+        private interface IFakeInterface3 { }
     }
 }
