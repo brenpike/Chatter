@@ -32,4 +32,8 @@
     <ProjectReference Include="..\src\Chatter.CQRS\Chatter.CQRS.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="DependencyInjection\UsingAssemblySourceFilter\" />
+  </ItemGroup>
+
 </Project>
