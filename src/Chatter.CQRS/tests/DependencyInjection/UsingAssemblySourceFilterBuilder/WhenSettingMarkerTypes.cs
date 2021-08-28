@@ -15,7 +15,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceFilterBuilde
         [Fact]
         public void MustReturnBuilder()
         {
-            var retVal = _sut.WithMarkerTypes(It.IsAny<Type>());
+            var retVal = _sut.WithMarkerTypes(typeof(WhenSettingMarkerTypes));
             Assert.IsType<AssemblySourceFilterBuilder>(retVal);
             Assert.Same(retVal, _sut);
         }
