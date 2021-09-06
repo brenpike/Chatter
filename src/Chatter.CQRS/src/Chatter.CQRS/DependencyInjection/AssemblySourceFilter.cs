@@ -8,11 +8,11 @@ namespace Chatter.CQRS.DependencyInjection
 {
     public class AssemblySourceFilter
     {
-        public IAssemblySourceProvider AssemblySourceProvider { get; }
+        public IAssemblyFilterSourceProvider AssemblySourceProvider { get; }
         public string NamespaceSelector { get; }
         public IEnumerable<Assembly> ExplictAssemblies { get; }
 
-        internal AssemblySourceFilter(IAssemblySourceProvider assemblySourceProvider, string namespaceSelector, IEnumerable<Assembly> explictAssemblies)
+        internal AssemblySourceFilter(IAssemblyFilterSourceProvider assemblySourceProvider, string namespaceSelector, IEnumerable<Assembly> explictAssemblies)
         {
             AssemblySourceProvider = assemblySourceProvider ?? throw new ArgumentNullException(nameof(assemblySourceProvider));
             NamespaceSelector = namespaceSelector;
@@ -23,18 +23,12 @@ namespace Chatter.CQRS.DependencyInjection
         /// Gets the assemblies which match filter criteria.
         /// </summary>
         /// <returns>The enumerable of assemblies</returns>
-        public IEnumerable<Assembly> Filter()
+        public IEnumerable<Assembly> Apply()
             => ExplictAssemblies.Union(GetAssembliesThatMatchNamespaceSelector());
 
         private IEnumerable<Assembly> GetAssembliesThatMatchNamespaceSelector()
-            => AssemblySourceProvider.GetSourceAssemblies().Where(f => f.GetTypes()
-                .Any(t => DoesTypeHaveMatchingNamespace(t) || DoesTypeHaveMatchingAssemblyName(t)));
-
-        private bool DoesTypeHaveMatchingNamespace(Type t)
-            => IsMatchingNamespaceSelector(t.Namespace);
-
-        private bool DoesTypeHaveMatchingAssemblyName(Type t)
-            => IsMatchingNamespaceSelector(t.Assembly?.FullName);
+            => AssemblySourceProvider.GetSourceAssemblies().Where(assembly => assembly.GetTypes()
+                .Any(type => IsMatchingNamespaceSelector(type.Namespace)) || IsMatchingNamespaceSelector(assembly.FullName));
 
         private bool IsMatchingNamespaceSelector(string comparator)
             => string.IsNullOrWhiteSpace(NamespaceSelector)

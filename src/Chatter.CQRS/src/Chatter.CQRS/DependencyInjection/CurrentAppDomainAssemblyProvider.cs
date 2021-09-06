@@ -4,7 +4,7 @@ using System.Reflection;
 
 namespace Chatter.CQRS.DependencyInjection
 {
-    internal class CurrentAppDomainAssemblyProvider : IAssemblySourceProvider
+    internal class CurrentAppDomainAssemblyProvider : IAssemblyFilterSourceProvider
     {
         private CurrentAppDomainAssemblyProvider() {}
 

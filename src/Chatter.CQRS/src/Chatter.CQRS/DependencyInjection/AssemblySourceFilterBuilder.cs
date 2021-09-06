@@ -7,12 +7,12 @@ namespace Chatter.CQRS.DependencyInjection
 {
     public class AssemblySourceFilterBuilder
     {
-        private IAssemblySourceProvider _searchAssemblyProvider;
+        private IAssemblyFilterSourceProvider _searchAssemblyProvider;
         private string _namespaceSelector;
         private List<Assembly> _explicitAssemblies = new List<Assembly>();
 
         private AssemblySourceFilterBuilder() { }
-        private AssemblySourceFilterBuilder(IAssemblySourceProvider searchAssemblyProvider) => _searchAssemblyProvider = searchAssemblyProvider;
+        private AssemblySourceFilterBuilder(IAssemblyFilterSourceProvider searchAssemblyProvider) => _searchAssemblyProvider = searchAssemblyProvider;
 
         public static AssemblySourceFilterBuilder New() => new AssemblySourceFilterBuilder();
 
@@ -20,7 +20,7 @@ namespace Chatter.CQRS.DependencyInjection
         /// Sets the provider that returns the base set of assemblies to be filtered by the <see cref="AssemblySourceFilter"/>. <see cref="CurrentAppDomainAssemblyProvider"/> is used by default.
         /// </summary>
         /// <param name="assemblySourceProvider">The assembly provider</param>
-        public static AssemblySourceFilterBuilder WithAssemblySourceProvider(IAssemblySourceProvider assemblySourceProvider)
+        public static AssemblySourceFilterBuilder WithAssemblySourceProvider(IAssemblyFilterSourceProvider assemblySourceProvider)
         {
             _ = assemblySourceProvider ?? throw new ArgumentNullException(nameof(assemblySourceProvider));
             return new AssemblySourceFilterBuilder(assemblySourceProvider);

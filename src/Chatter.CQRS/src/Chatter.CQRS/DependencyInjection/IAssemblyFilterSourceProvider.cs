@@ -4,7 +4,7 @@ using System.Reflection;
 
 namespace Chatter.CQRS.DependencyInjection
 {
-    public interface IAssemblySourceProvider
+    public interface IAssemblyFilterSourceProvider
     {
         IEnumerable<Assembly> GetSourceAssemblies();
     }

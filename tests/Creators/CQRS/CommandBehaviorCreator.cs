@@ -13,7 +13,6 @@ namespace Chatter.Testing.Core.Creators.CQRS
             : base(newContext, creation)
         {
             Creation = new Mock<ICommandBehavior<TCommand>>().Object;
-
         }
 
         private class StandardCommandBehavior1<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand

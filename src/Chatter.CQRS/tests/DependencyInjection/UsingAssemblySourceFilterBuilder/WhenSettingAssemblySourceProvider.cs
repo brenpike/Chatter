@@ -9,12 +9,12 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceFilterBuilde
 {
     public class WhenSettingAssemblySourceProvider
     {
-        private readonly Mock<IAssemblySourceProvider> _mockAssemblySourceProvider;
+        private readonly Mock<IAssemblyFilterSourceProvider> _mockAssemblySourceProvider;
         private readonly Mock<Assembly> _mockAssembly;
 
         public WhenSettingAssemblySourceProvider()
         {
-            _mockAssemblySourceProvider = new Mock<IAssemblySourceProvider>();
+            _mockAssemblySourceProvider = new Mock<IAssemblyFilterSourceProvider>();
             _mockAssembly = new Mock<Assembly>();
             _mockAssemblySourceProvider.Setup(g => g.GetSourceAssemblies()).Returns(new Assembly[] { _mockAssembly.Object });
         }
