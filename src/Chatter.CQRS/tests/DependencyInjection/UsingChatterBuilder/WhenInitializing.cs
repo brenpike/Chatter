@@ -4,8 +4,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using System;
-using System.Collections.Generic;
-using System.Reflection;
 using Xunit;
 
 namespace Chatter.CQRS.Tests.DependencyInjection.UsingChatterBuilder
@@ -14,44 +12,34 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingChatterBuilder
     {
         private readonly Mock<IServiceCollection> _serviceCollection;
         private readonly Mock<IConfiguration> _configuration;
-        private readonly Mock<IEnumerable<Assembly>> _markerAssemblies;
+        private readonly Mock<IAssemblySourceFilter> _assemblySourceFilter;
 
         public WhenInitializing()
         {
             _serviceCollection = new Mock<IServiceCollection>();
             _configuration = new Mock<IConfiguration>();
-            _markerAssemblies = new Mock<IEnumerable<Assembly>>();
+            _assemblySourceFilter = new Mock<IAssemblySourceFilter>();
         }
 
         [Fact]
         public void MustThrowWhenServiceCollectionIsNull()
             => FluentActions.Invoking(()
-                => ChatterBuilder.Create(null, _configuration.Object, _markerAssemblies.Object))
+                => ChatterBuilder.Create(null, _configuration.Object, _assemblySourceFilter.Object))
             .Should()
             .ThrowExactly<ArgumentNullException>();
 
         [Fact]
         public void MustThrowWhenConfigurationIsNull()
             => FluentActions.Invoking(()
-                => ChatterBuilder.Create(_serviceCollection.Object, null, _markerAssemblies.Object))
+                => ChatterBuilder.Create(_serviceCollection.Object, null, _assemblySourceFilter.Object))
             .Should()
             .ThrowExactly<ArgumentNullException>();
 
         [Fact]
-        public void MustThrowWhenEnumerableOfMarkerAssembliesIsNull()
+        public void MustThrowWhenAssemblySourceFilterIsNull()
             => FluentActions.Invoking(()
                 => ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, null))
             .Should()
             .ThrowExactly<ArgumentNullException>();
-
-        [Fact]
-        public void MustNotThrowIfMarkerAssembliesAreEmpty()
-        {
-            _markerAssemblies.Setup(m => m.GetEnumerator()).Returns(new List<Assembly>().GetEnumerator());
-            FluentActions.Invoking(()
-                           => ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, _markerAssemblies.Object))
-                       .Should()
-                       .NotThrow();
-        }
     }
 }

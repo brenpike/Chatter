@@ -31,42 +31,62 @@ namespace Microsoft.Extensions.DependencyInjection
             => new MessageBrokerOptionsBuilder(services, configuration);
 
         /// <summary>
-        /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
-        /// Registers all <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> and automatically starts receiving if configured to do so.
-        /// Registers all routers.
+        /// Adds and configured Chatter message broker related capabilities
         /// </summary>
-        /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
-        /// <param name="markerTypesForRequiredAssemblies">The <see cref="Type"/>s from assemblies that are required for registering receivers</param>
-        /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
+        /// <param name="builder">A <see cref="IChatterBuilder"/> used for registration and setup</param>
+        /// <param name="markerTypesForRequiredAssemblies">Marker types whose parent assemblies will be used to find <see cref="IBrokeredMessageReceiver{TMessage}"/> for registration.</param>
+        /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
         public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, params Type[] markerTypesForRequiredAssemblies)
             => AddMessageBrokers(builder, null, markerTypesForRequiredAssemblies);
 
         /// <summary>
-        /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
-        /// Registers all <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> and automatically starts receiving if configured to do so.
-        /// Registers all routers.
+        /// Adds and configured Chatter message broker related capabilities
         /// </summary>
-        /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
-        /// <param name="markerTypesForRequiredAssemblies">The <see cref="Type"/>s from assemblies that are required for registering receivers</param>
+        /// <param name="builder">A <see cref="IChatterBuilder"/> used for registration and setup</param>
         /// <param name="messageBrokerOptionsBuilder">A delegate that uses a <see cref="MessageBrokerOptionsBuilder"/> to construct <see cref="MessageBrokerOptions"/></param>
-        /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
+        /// <param name="markerTypesForRequiredAssemblies">Marker types whose parent assemblies will be used to find <see cref="IBrokeredMessageReceiver{TMessage}"/> for registration. Will override any assemblies located via <see cref="AssemblySourceFilter"/> created during Chatter cqrs configuration.</param>
+        /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
         public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, Action<MessageBrokerOptionsBuilder> messageBrokerOptionsBuilder = null, params Type[] markerTypesForRequiredAssemblies)
-        {
-            var assemblies = markerTypesForRequiredAssemblies.GetAssembliesFromMarkerTypes();
-            return AddMessageBrokers(builder, assemblies, messageBrokerOptionsBuilder);
-        }
+            => AddMessageBrokers(builder, messageBrokerOptionsBuilder, b => b.WithMarkerTypes(markerTypesForRequiredAssemblies));
 
         /// <summary>
-        /// Initializes a <see cref="ChatterBuilder"/> and registers all dependencies.
-        /// Registers all <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> and automatically starts receiving if configured to do so.
-        /// Registers all routers.
+        /// Adds and configured Chatter message broker related capabilities
         /// </summary>
-        /// <param name="builder">A <see cref="IChatterBuilder"/> used registration and setup</param>
-        /// <param name="assemblies">The assemblies that are required for registering receivers</param>
-        /// <returns>An instance of <see cref="IChatterBuilder"/>.</returns>
-        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, IEnumerable<Assembly> assemblies, Action<MessageBrokerOptionsBuilder> optionsBuilder = null)
+        /// <param name="builder">A <see cref="IChatterBuilder"/> used for registration and setup</param>
+        /// <param name="messageBrokerOptionsBuilder">A delegate that uses a <see cref="MessageBrokerOptionsBuilder"/> to construct <see cref="MessageBrokerOptions"/></param>
+        /// <param name="receiverAssemblies">Assemblies that will be used to find <see cref="IBrokeredMessageReceiver{TMessage}"/> for registration. Will override any assemblies located via <see cref="AssemblySourceFilter"/> created during Chatter cqrs configuration.</param>
+        /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
+        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, Action<MessageBrokerOptionsBuilder> messageBrokerOptionsBuilder = null, params Assembly[] receiverAssemblies)
+            => AddMessageBrokers(builder, messageBrokerOptionsBuilder, b => b.WithExplicitAssemblies(receiverAssemblies));
+
+        /// <summary>
+        /// Adds and configured Chatter message broker related capabilities
+        /// </summary>
+        /// <param name="builder">A <see cref="IChatterBuilder"/> used for registration and setup</param>
+        /// <param name="receiverNamespaceSelector">A namespace selector used to find assemblies containing types with matching namespaces or assemblies with matching FullName. Supports '*' and '?' wildcard values. Matching assemblies used to find <see cref="IBrokeredMessageReceiver{TMessage}"/> for registration. Will override any assemblies located via <see cref="AssemblySourceFilter"/> created during Chatter cqrs configuration.</param>
+        /// <param name="messageBrokerOptionsBuilder">A delegate that uses a <see cref="MessageBrokerOptionsBuilder"/> to construct <see cref="MessageBrokerOptions"/></param>
+        /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
+        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, string receiverNamespaceSelector, Action<MessageBrokerOptionsBuilder> messageBrokerOptionsBuilder = null)
+            => AddMessageBrokers(builder, messageBrokerOptionsBuilder, b => b.WithNamespaceSelector(receiverNamespaceSelector));
+
+        /// <summary>
+        /// Adds and configured Chatter message broker related capabilities
+        /// </summary>
+        /// <param name="builder">A <see cref="IChatterBuilder"/> used for registration and setup</param>
+        /// <param name="receiverHandlerSourceBuilder">An optional builder used to define an <see cref="AssemblySourceFilter"/>. Assemblies will be used to find <see cref="IBrokeredMessageReceiver{TMessage}"/> for registration. Will override any assemblies located via <see cref="AssemblySourceFilter"/> created during Chatter cqrs configuration.</param>
+        /// <param name="optionsBuilder">A delegate that uses a <see cref="MessageBrokerOptionsBuilder"/> to construct <see cref="MessageBrokerOptions"/></param>
+        /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
+        public static IChatterBuilder AddMessageBrokers(this IChatterBuilder builder, Action<MessageBrokerOptionsBuilder> optionsBuilder = null, Action<AssemblySourceFilterBuilder> receiverHandlerSourceBuilder = null)
         {
-            assemblies = assemblies.Union(builder.MarkerAssemblies);
+            var filter = builder.AssemblySourceFilter;
+            if (receiverHandlerSourceBuilder != null)
+            {
+                var filterBuilder = AssemblySourceFilterBuilder.New();
+                receiverHandlerSourceBuilder(filterBuilder);
+                filter = filterBuilder.Build();
+            }
+            var assemblies = filter.Apply();
+
             var messageBrokerOptionsBuilder = builder.Services.AddMessageBrokerOptions(builder.Configuration);
             optionsBuilder?.Invoke(messageBrokerOptionsBuilder);
             MessageBrokerOptions options = messageBrokerOptionsBuilder.Build();

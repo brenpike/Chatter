@@ -13,15 +13,15 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingChatterBuilder
     {
         private readonly Mock<IServiceCollection> _serviceCollection;
         private readonly Mock<IConfiguration> _configuration;
-        private readonly Mock<IEnumerable<Assembly>> _markerAssemblies;
+        private readonly Mock<IAssemblySourceFilter> _assemblySourceFilterMock;
         private readonly IChatterBuilder _sut;
 
         public WhenGettingProperties()
         {
             _serviceCollection = new Mock<IServiceCollection>();
             _configuration = new Mock<IConfiguration>();
-            _markerAssemblies = new Mock<IEnumerable<Assembly>>();
-            _sut = ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, _markerAssemblies.Object);
+            _assemblySourceFilterMock = new Mock<IAssemblySourceFilter>();
+            _sut = ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, _assemblySourceFilterMock.Object);
         }
 
         [Fact]
@@ -34,6 +34,6 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingChatterBuilder
 
         [Fact]
         public void MustGetMarkerAssemblies()
-            => _sut.MarkerAssemblies.Should().NotBeNull().And.BeSameAs(_markerAssemblies.Object);
+            => _sut.AssemblySourceFilter.Should().NotBeNull().And.BeSameAs(_assemblySourceFilterMock.Object);
     }
 }

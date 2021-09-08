@@ -3,8 +3,6 @@ using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
-using System.Collections.Generic;
-using System.Reflection;
 using Xunit;
 
 namespace Chatter.CQRS.Tests.DependencyInjection.UsingChatterBuilder
@@ -13,18 +11,18 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingChatterBuilder
     {
         private readonly Mock<IServiceCollection> _serviceCollection;
         private readonly Mock<IConfiguration> _configuration;
-        private readonly Mock<IEnumerable<Assembly>> _markerAssemblies;
+        private readonly Mock<IAssemblySourceFilter> _assemblySourceFilterMock;
 
         public WhenCreating()
         {
             _serviceCollection = new Mock<IServiceCollection>();
             _configuration = new Mock<IConfiguration>();
-            _markerAssemblies = new Mock<IEnumerable<Assembly>>();
+            _assemblySourceFilterMock = new Mock<IAssemblySourceFilter>();
         }
 
         [Fact]
         public void MustReturnNewChatterBuilderInstance()
             => FluentActions.Invoking(()
-                => ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, _markerAssemblies.Object)).Should().NotThrow();
+                => ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, _assemblySourceFilterMock.Object)).Should().NotThrow();
     }
 }

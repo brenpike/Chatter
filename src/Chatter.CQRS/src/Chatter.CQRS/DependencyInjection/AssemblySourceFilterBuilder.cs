@@ -27,7 +27,7 @@ namespace Chatter.CQRS.DependencyInjection
         }
 
         /// <summary>
-        /// Sets a namespace selector which is used to filter assemblies by types with matching namespaces or assemblies with matching names.
+        /// Sets a namespace selector which is used to filter assemblies containing types with matching namespaces or assemblies with matching names.
         /// Supports '*' and '?' wildcard values.
         /// </summary>
         /// <param name="namespaceSelector">The namespace filter value</param>
@@ -70,6 +70,10 @@ namespace Chatter.CQRS.DependencyInjection
             return this;
         }
 
+        /// <summary>
+        /// Builds the <see cref="AssemblySourceFilter"/> using the provided build configuration. <see cref="CurrentAppDomainAssemblyProvider"/> is used if not <see cref="IAssemblyFilterSourceProvider"/> is configured.
+        /// </summary>
+        /// <returns>The <see cref="AssemblySourceFilter"/></returns>
         public AssemblySourceFilter Build()
         {
             _searchAssemblyProvider ??= CurrentAppDomainAssemblyProvider.Default;
