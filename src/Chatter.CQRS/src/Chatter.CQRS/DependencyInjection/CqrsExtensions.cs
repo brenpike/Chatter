@@ -8,7 +8,6 @@ using Microsoft.Extensions.Configuration;
 using Scrutor;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -112,48 +111,42 @@ namespace Microsoft.Extensions.DependencyInjection
             return chatterBuilder;
         }
 
-        static IServiceCollection AddMessageHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        internal static IServiceCollection AddMessageHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
         {
             AddCommandHandlers(services, assemblies);
             AddEventHandlers(services, assemblies);
             return services;
         }
 
-        static IServiceCollection AddEventHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        internal static IServiceCollection AddEventHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
-                        .Where(handler => FilterMessageHandlerByType(handler, typeof(IEvent))))
+                        .Where(handler => IsValidMessageHandler(handler, typeof(IEvent))))
                    .UsingRegistrationStrategy(RegistrationStrategy.Append)
                    .AsImplementedInterfaces()
                    .WithTransientLifetime());
             return services;
         }
 
-        static IServiceCollection AddCommandHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        internal static IServiceCollection AddCommandHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
-                        .Where(handler => FilterMessageHandlerByType(handler, typeof(ICommand))))
+                        .Where(handler => IsValidMessageHandler(handler, typeof(ICommand))))
                    .UsingRegistrationStrategy(RegistrationStrategy.Replace())
                    .AsImplementedInterfaces()
                    .WithTransientLifetime());
             return services;
         }
 
-        static bool FilterMessageHandlerByType(Type handler, Type filterType)
-        {
-            return (!handler.IsGenericType || handler.IsGenericType && handler.GetGenericArguments().All(a => !a.IsGenericParameter))
-                    && handler.GetTypeInfo().ImplementedInterfaces
-                        .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IMessageHandler<>))
-                            .Any(mhi => mhi.GetGenericArguments()
-                                .SingleOrDefault().GetTypeInfo().ImplementedInterfaces
-                                    .Any(t => t == filterType));
-        }
+        internal static bool IsValidMessageHandler(this Type type, Type genericParameterMatchType)
+            => (!type.IsGenericType || type.IsGenericTypeWithNonGenericTypeParameters())
+                && type.IsImplementingOpenGenericTypeWithMatchingTypeParameter(typeof(IMessageHandler<>), genericParameterMatchType);
 
-        static IServiceCollection AddQueryHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+        internal static IServiceCollection AddQueryHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
         {
             services.Scan(s =>
                    s.FromAssemblies(assemblies)

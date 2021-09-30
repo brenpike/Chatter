@@ -2,30 +2,52 @@
 using Chatter.CQRS.Events;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using System;
+using System.Linq;
 using Xunit;
 
 namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
 {
     public class WhenAddingInMemoryMessageDispatchers
     {
+
         [Fact]
-        public void MustAddScopedDispatchers()
+        public void MustAddScopedMessageDispatcherToServiceCollection()
         {
             var sc = new ServiceCollection();
             sc.AddInMemoryMessageDispatchers();
 
-            sc.Should().HaveCount(3);
-            sc[0].Lifetime.Should().Be(ServiceLifetime.Scoped);
-            sc[0].ServiceType.Should().Be(typeof(IMessageDispatcher));
-            sc[0].ImplementationType.Should().Be(typeof(MessageDispatcher));
+            var sd = sc.GetServiceDescriptorByImplementationType(typeof(MessageDispatcher));
 
-            sc[1].Lifetime.Should().Be(ServiceLifetime.Scoped);
-            sc[1].ServiceType.Should().Be(typeof(IDispatchMessages));
-            sc[1].ImplementationType.Should().Be(typeof(CommandDispatcher));
+            sd.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            sd.ServiceType.Should().Be(typeof(IMessageDispatcher));
+            sd.ImplementationType.Should().Be(typeof(MessageDispatcher));
+        }
 
-            sc[2].Lifetime.Should().Be(ServiceLifetime.Scoped);
-            sc[2].ServiceType.Should().Be(typeof(IDispatchMessages));
-            sc[2].ImplementationType.Should().Be(typeof(EventDispatcher));
+        [Fact]
+        public void MustAddScopedCommandDispatcherToServiceCollection()
+        {
+            var sc = new ServiceCollection();
+            sc.AddInMemoryMessageDispatchers();
+
+            var sd = sc.GetServiceDescriptorByImplementationType(typeof(CommandDispatcher));
+
+            sd.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            sd.ServiceType.Should().Be(typeof(IDispatchMessages));
+            sd.ImplementationType.Should().Be(typeof(CommandDispatcher));
+        }
+
+        [Fact]
+        public void MustAddScopedEventDispatcherToServiceCollection()
+        {
+            var sc = new ServiceCollection();
+            sc.AddInMemoryMessageDispatchers();
+
+            var sd = sc.GetServiceDescriptorByImplementationType(typeof(EventDispatcher));
+
+            sd.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            sd.ServiceType.Should().Be(typeof(IDispatchMessages));
+            sd.ImplementationType.Should().Be(typeof(EventDispatcher));
         }
 
         [Fact]

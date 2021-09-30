@@ -8,15 +8,16 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
     public class WhenAddingInMemoryQueryDispatcher
     {
         [Fact]
-        public void MustAddScopedQueryDispatcher()
+        public void MustAddScopedQueryDispatcherToServiceCollection()
         {
             var sc = new ServiceCollection();
             sc.AddInMemoryQueryDispatcher();
 
-            sc.Should().HaveCount(1);
-            sc[0].Lifetime.Should().Be(ServiceLifetime.Scoped);
-            sc[0].ServiceType.Should().Be(typeof(IQueryDispatcher));
-            sc[0].ImplementationType.Should().Be(typeof(QueryDispatcher));
+            var sd = sc.GetServiceDescriptorByImplementationType(typeof(QueryDispatcher));
+
+            sd.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            sd.ServiceType.Should().Be(typeof(IQueryDispatcher));
+            sd.ImplementationType.Should().Be(typeof(QueryDispatcher));
         }
 
         [Fact]

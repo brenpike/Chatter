@@ -1,5 +1,6 @@
 ﻿using Moq;
 using System;
+using System.Linq;
 using System.Reflection;
 
 namespace Chatter.Testing.Core.Creators.Common
@@ -23,6 +24,8 @@ namespace Chatter.Testing.Core.Creators.Common
         public AssemblyCreator WithTypes(params Type[] types)
         {
             _assemblyMock.Setup(a => a.GetTypes()).Returns(types);
+            _assemblyMock.SetupGet(a => a.ExportedTypes).Returns(types);
+            _assemblyMock.SetupGet(a => a.DefinedTypes).Returns(types.Cast<TypeInfo>());
             return this;
         }
 
