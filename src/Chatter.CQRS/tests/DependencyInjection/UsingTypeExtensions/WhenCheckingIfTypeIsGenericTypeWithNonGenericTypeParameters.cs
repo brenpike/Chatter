@@ -30,10 +30,12 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingTypeExtensions
         [Fact]
         public void MustReturnFalseWhenAtLeastOneTypeParameterIsGeneric()
         {
-            var genericTypeParameter = New.Common().Type.AsGeneric().Creation;
-            var genericType = New.Common().Type
+            var genericTypeParameter = New.Common().Type
                 .AsGeneric()
                 .AsGenericTypeParameter()
+                .Creation;
+            var genericType = New.Common().Type
+                .AsGeneric()
                 .WithGenericArguments(genericTypeParameter).Creation;
 
             var result = TypeExtensions.IsGenericTypeWithNonGenericTypeParameters(genericType);

@@ -44,7 +44,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             chatterBuilder.Services.AddIfNotRegistered<IExternalDispatcher, NoOpExternalDispatcher>(ServiceLifetime.Scoped);
 
-            return AddCommandPipeline(chatterBuilder, pipelineBuilder, assemblies);
+            return AddCommandPipeline(chatterBuilder, pipelineBuilder);
         }
 
         /// <summary>
@@ -88,7 +88,7 @@ namespace Microsoft.Extensions.DependencyInjection
         public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, string handlerNamespaceSelector)
             => services.AddChatterCqrs(configuration, null, b => b.WithNamespaceSelector(handlerNamespaceSelector));
 
-        internal static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<CommandPipelineBuilder> pipelineBuilder, IEnumerable<Assembly> assemblies = null)
+        internal static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<CommandPipelineBuilder> pipelineBuilder)
         {
             var pipeline = chatterBuilder.Services.CreatePipelineBuilder();
 
@@ -97,14 +97,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 return chatterBuilder;
             }
 
-            assemblies ??= chatterBuilder.AssemblySourceFilter.Apply();
-
-            chatterBuilder.Services.Scan(s =>
-                                s.FromAssemblies(assemblies)
-                                .AddClasses(c => c.AssignableTo(typeof(ICommandBehaviorPipeline<>)))
-                                .UsingRegistrationStrategy(RegistrationStrategy.Replace())
-                                .AsImplementedInterfaces()
-                                .WithTransientLifetime());
+            chatterBuilder.Services.AddTransient(typeof(ICommandBehaviorPipeline<>), typeof(CommandBehaviorPipeline<>));
 
             pipelineBuilder?.Invoke(pipeline);
 

@@ -70,6 +70,6 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingTypeExtensions
 
         [Fact]
         public void MustThrowIfTypeIsNull()
-            => Assert.Throws<NullReferenceException>(() => TypeExtensions.GetImplementedInterfacesThatMatchOpenGenericType(null, typeof(IEnumerable<>)));
+            => Assert.Throws<ArgumentNullException>(() => TypeExtensions.GetImplementedInterfacesThatMatchOpenGenericType(null, typeof(IEnumerable<>)));
     }
 }
