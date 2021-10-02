@@ -2,7 +2,6 @@
 using Chatter.CQRS.Events;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
-using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Collections.Generic;
@@ -28,6 +27,10 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
             _logger = New.Common().Logger<EventDispatcher>();
             _sut = new EventDispatcher(_serviceProvider.Object, _logger.Creation);
         }
+
+        [Fact]
+        public void MustGetDispatchType()
+            => _sut.DispatchType.Should().BeSameAs(typeof(IEvent));
 
         [Fact]
         public async Task MustGetMessageHandler()

@@ -1,7 +1,5 @@
-﻿using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Configuration;
-using System.Reflection;
-using System.Collections.Generic;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Chatter.CQRS.DependencyInjection
 {
@@ -15,6 +13,6 @@ namespace Chatter.CQRS.DependencyInjection
         /// </summary>
         IServiceCollection Services { get; }
         IConfiguration Configuration { get; }
-        IEnumerable<Assembly> MarkerAssemblies { get; }
+        IAssemblySourceFilter AssemblySourceFilter { get; }
     }
 }

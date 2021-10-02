@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 namespace Chatter.CQRS.Events
 {
     /// <summary>
-    /// An <see cref="IMessageDispatcher"/> implementation to dispatch <see cref="IEvent"/> messages.
+    /// An <see cref="IDispatchMessages"/> implementation to dispatch <see cref="IEvent"/> messages.
     /// </summary>
     internal sealed class EventDispatcher : IDispatchMessages
     {

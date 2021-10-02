@@ -1,7 +1,6 @@
-﻿using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Configuration;
-using System.Collections.Generic;
-using System.Reflection;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using System;
 
 namespace Chatter.CQRS.DependencyInjection
 {
@@ -12,20 +11,20 @@ namespace Chatter.CQRS.DependencyInjection
     {
         private readonly IServiceCollection _services;
         private readonly IConfiguration _configuration;
-        private readonly IEnumerable<Assembly> _markerAssemblies;
+        private readonly IAssemblySourceFilter _assemblySourceFilter;
 
         ///<inheritdoc/>
         IServiceCollection IChatterBuilder.Services => _services;
         ///<inheritdoc/>
         IConfiguration IChatterBuilder.Configuration => _configuration;
         ///<inheritdoc/>
-        IEnumerable<Assembly> IChatterBuilder.MarkerAssemblies => _markerAssemblies;
+        IAssemblySourceFilter IChatterBuilder.AssemblySourceFilter => _assemblySourceFilter;
 
-        private ChatterBuilder(IServiceCollection services, IConfiguration configuration, IEnumerable<Assembly> markerAssemblies)
-        { 
-            _services = services;
-            _configuration = configuration;
-            _markerAssemblies = markerAssemblies;
+        private ChatterBuilder(IServiceCollection services, IConfiguration configuration, IAssemblySourceFilter filter)
+        {
+            _services = services ?? throw new ArgumentNullException(nameof(services));
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _assemblySourceFilter = filter ?? throw new ArgumentNullException(nameof(filter));
         }
 
         /// <summary>
@@ -33,7 +32,7 @@ namespace Chatter.CQRS.DependencyInjection
         /// </summary>
         /// <param name="services"></param>
         /// <returns></returns>
-        public static IChatterBuilder Create(IServiceCollection services, IConfiguration configuration, IEnumerable<Assembly> markerAssemblies)
-            => new ChatterBuilder(services, configuration, markerAssemblies);
+        public static IChatterBuilder Create(IServiceCollection services, IConfiguration configuration, IAssemblySourceFilter filter)
+            => new ChatterBuilder(services, configuration, filter);
     }
 }

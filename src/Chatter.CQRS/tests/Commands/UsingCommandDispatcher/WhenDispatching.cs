@@ -32,6 +32,10 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
         }
 
         [Fact]
+        public void MustGetDispatchType()
+            => _sut.DispatchType.Should().BeSameAs(typeof(ICommand));
+
+        [Fact]
         public async Task MustGetMessageHandler()
         {
             await _sut.Dispatch<IMessage>(null, null);
