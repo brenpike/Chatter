@@ -2,6 +2,7 @@
 using Chatter.CQRS.Events;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Collections.Generic;
@@ -54,9 +55,9 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
             var listOfRegisteredHandlers = new[] { _handler.Object, _handler.Object, _handler.Object }.TakeWhile(_ => true);
             _serviceProvider.Setup(p => p.GetService(typeof(IEnumerable<IMessageHandler<IMessage>>))).Returns(listOfRegisteredHandlers);
             await _sut.Dispatch<IMessage>(null, null);
-            _logger.ThatLogsTrace()
-                   .WithMessage(_eventHandlerInvokedLogMessage)
-                   .IsCalled(Times.Exactly(3));
+            _logger.VerifyWasCalled(LogLevel.Trace,
+                   _eventHandlerInvokedLogMessage,
+                   Times.Exactly(3));
         }
 
         [Fact]
@@ -64,8 +65,8 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         {
             _serviceProvider.Setup(p => p.GetService(typeof(IEnumerable<IMessageHandler<IMessage>>))).Throws<Exception>();
             await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, null)).Should().ThrowAsync<Exception>();
-            _logger.ThatLogsError()
-                   .IsCalled(Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, null,
+                   Times.Once());
         }
 
         [Fact]

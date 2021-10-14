@@ -3,6 +3,7 @@ using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Threading.Tasks;
@@ -61,12 +62,8 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
         public async Task MustLogTraceWhenCommandBehaviorPipelineIsExecuted()
         {
             await _sut.Dispatch<IMessage>(null, null);
-            _logger.ThatLogsTrace()
-                   .WithMessage(_commandBehaviorExecuteLogMessage)
-                   .IsCalled(Times.Once());
-            _logger.ThatLogsTrace()
-                   .WithMessage(_handlerInvokedLogMessage)
-                   .IsCalled(Times.Never());
+            _logger.VerifyWasCalled(LogLevel.Trace, _commandBehaviorExecuteLogMessage, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Trace, _handlerInvokedLogMessage, Times.Never());
         }
 
         [Fact]
@@ -83,12 +80,8 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
         {
             _serviceProvider.Setup(p => p.GetService(typeof(ICommandBehaviorPipeline<IMessage>))).Returns(null);
             await _sut.Dispatch<IMessage>(null, null);
-            _logger.ThatLogsTrace()
-                   .WithMessage(_handlerInvokedLogMessage)
-                   .IsCalled(Times.Once());
-            _logger.ThatLogsTrace()
-                   .WithMessage(_commandBehaviorExecuteLogMessage)
-                   .IsCalled(Times.Never());
+            _logger.VerifyWasCalled(LogLevel.Trace, _handlerInvokedLogMessage, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Trace, _commandBehaviorExecuteLogMessage, Times.Never());
         }
 
         [Fact]
@@ -96,8 +89,7 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
         {
             _serviceProvider.Setup(p => p.GetService(typeof(ICommandBehaviorPipeline<IMessage>))).Throws<Exception>();
             await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, null)).Should().ThrowAsync<Exception>();
-            _logger.ThatLogsError()
-                   .IsCalled(Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, times: Times.Once());
         }
 
         [Fact]
