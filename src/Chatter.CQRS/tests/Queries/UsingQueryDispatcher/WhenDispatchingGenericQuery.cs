@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS.Queries;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Threading.Tasks;
@@ -58,8 +59,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         {
             _serviceProvider.Setup(p => p.GetService(typeof(IQueryHandler<IQuery<string>, string>))).Throws<Exception>();
             await FluentActions.Invoking(async () => await _sut.Query<IQuery<string>, string>(_query)).Should().ThrowAsync<Exception>();
-            _logger.ThatLogsError()
-                   .IsCalled(Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, times: Times.Once());
         }
 
         [Fact]

@@ -19,7 +19,9 @@ stages:
       steps:
       - download: 'current'
         artifact: '${{ parameters.ArtifactName }}'
-        
+      - task: NuGetToolInstaller@1
+        inputs:
+          versionSpec: 5.8
       - task: NuGetCommand@2
         displayName: 'Push ${{ parameters.ProjectName }} to NuGet'
         inputs:
