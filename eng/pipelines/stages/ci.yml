@@ -19,6 +19,13 @@ stages:
           packageType: 'sdk'
           version: '6.0.x'
           includePreviewVersions: true
+          
+      - task: DotNetCoreCLI@2
+        displayName: 'Dotnet Restore ${{parameters.ProjectName}}'
+        inputs:
+          command: 'restore'
+          projects: 'src/${{ parameters.ProjectName }}/**/${{ parameters.ProjectName }}.csproj'
+          arguments: '-c $(BuildConfiguration) --force'
 
       - task: DotNetCoreCLI@2
         displayName: 'Dotnet Build ${{parameters.ProjectName}}'
