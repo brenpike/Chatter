@@ -24,6 +24,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\tests\Chatter.Testing.Core.csproj" />
+    <ProjectReference Include="..\src\Chatter.SqlTableWatcher\Chatter.SqlTableWatcher.csproj" />
   </ItemGroup>
 
 </Project>

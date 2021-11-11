@@ -1,4 +1,5 @@
-﻿using System.Threading.Tasks;
+﻿using Chatter.CQRS;
+using System.Threading.Tasks;
 
 namespace Chatter.SqlTableWatcher
 {
@@ -11,4 +12,6 @@ namespace Chatter.SqlTableWatcher
                                     string conversationServiceName = "",
                                     string conversationTriggerName = "");
     }
+
+    public interface ISqlDependencyManager<TRowChangedData> : ISqlDependencyManager where TRowChangedData : class, IMessage, new() { }
 }
