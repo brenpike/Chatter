@@ -101,7 +101,7 @@ namespace Chatter.SqlTableWatcher
                 _logger.LogDebug("Processing table DELETES");
                 for (int i = 0; i < message.Deleted.Count(); i++)
                 {
-                    _logger.LogTrace($"DELETE {i + 1} of {message.Inserted.Count()}");
+                    _logger.LogTrace($"DELETE {i + 1} of {message.Deleted.Count()}");
                     await dispatcher.Dispatch(new RowDeletedEvent<TRowChangeData>(message.Deleted.ElementAt(i)), context).ConfigureAwait(false);
                 }
             }
