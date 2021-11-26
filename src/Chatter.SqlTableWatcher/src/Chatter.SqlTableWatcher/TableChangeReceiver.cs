@@ -73,42 +73,41 @@ namespace Chatter.SqlTableWatcher
 
             if (message.Inserted is null && message.Deleted is null)
             {
-                _logger.LogDebug($"No inserted or deleted records specified by {nameof(ProcessTableChangesCommand<TRowChangeData>)}");
+                _logger.LogDebug($"No inserted or deleted records contained in {nameof(ProcessTableChangesCommand<TRowChangeData>)}");
                 return;
             }
 
             if (message.Inserted?.Count() > 0 && message.Deleted?.Count() > 0)
             {
-                _logger.LogDebug("Processing table UPDATES");
+                _logger.LogTrace("Processing table UPDATES");
                 for (int i = 0; i < message.Inserted.Count(); i++)
                 {
-                    _logger.LogTrace($"UPDATE {i + 1} of {message.Inserted.Count()}");
+                    _logger.LogDebug($"UPDATE {i + 1} of {message.Inserted.Count()}");
                     var updated = new RowUpdatedEvent<TRowChangeData>(message.Inserted.ElementAt(i), message.Deleted.ElementAt(i));
                     await dispatcher.Dispatch(updated, context).ConfigureAwait(false);
                 }
             }
             else if (message.Inserted?.Count() > 0 && message.Deleted?.Count() == 0)
             {
-                _logger.LogDebug("Processing table INSERTS");
+                _logger.LogTrace("Processing table INSERTS");
                 for (int i = 0; i < message.Inserted.Count(); i++)
                 {
-                    _logger.LogTrace($"INSERT {i + 1} of {message.Inserted.Count()}");
+                    _logger.LogDebug($"INSERT {i + 1} of {message.Inserted.Count()}");
                     await dispatcher.Dispatch(new RowInsertedEvent<TRowChangeData>(message.Inserted.ElementAt(i)), context).ConfigureAwait(false);
                 }
             }
             else if (message.Inserted?.Count() == 0 && message.Deleted?.Count() > 0)
             {
-                _logger.LogDebug("Processing table DELETES");
+                _logger.LogTrace("Processing table DELETES");
                 for (int i = 0; i < message.Deleted.Count(); i++)
                 {
-                    _logger.LogTrace($"DELETE {i + 1} of {message.Deleted.Count()}");
+                    _logger.LogDebug($"DELETE {i + 1} of {message.Deleted.Count()}");
                     await dispatcher.Dispatch(new RowDeletedEvent<TRowChangeData>(message.Deleted.ElementAt(i)), context).ConfigureAwait(false);
                 }
             }
             else
             {
-                var e = new Exception("No table changes we found.");
-                _logger.LogError(e, "");
+                _logger.LogWarning("No table changes were found.");
             }
         }
     }
