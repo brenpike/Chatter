@@ -100,10 +100,29 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         /// <param name="applicationBuilder">The application builder</param>
         /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
-        /// <returns></returns>
         public static IApplicationBuilder UseTableWatcherSqlMigrations(this IApplicationBuilder applicationBuilder, Type rowChangedDataType)
         {
-            using var scope = applicationBuilder.ApplicationServices.CreateScope();
+            applicationBuilder.ApplicationServices.UseTableWatcherSqlMigrations(rowChangedDataType);
+            return applicationBuilder;
+        }
+
+        /// <summary>
+        /// Deploys the SQL and SQL Service Broker dependencies required for table changes to be emitted
+        /// </summary>
+        /// <typeparam name="TRowChangedData">The row type to use Sql migrations for</typeparam>
+        /// <param name="provider">The service provider</param>
+        /// <returns></returns>
+        public static IServiceProvider UseTableWatcherSqlMigrations<TRowChangedData>(this IServiceProvider provider)
+            => provider.UseTableWatcherSqlMigrations(typeof(TRowChangedData));
+
+        /// <summary>
+        /// Deploys the SQL and SQL Service Broker dependencies required for table changes to be emitted
+        /// </summary>
+        /// <param name="provider">The service provider</param>
+        /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
+        public static IServiceProvider UseTableWatcherSqlMigrations(this IServiceProvider provider, Type rowChangedDataType)
+        {
+            using var scope = provider.CreateScope();
             var sdm = (ISqlDependencyManager)scope.ServiceProvider.GetRequiredService(typeof(ISqlDependencyManager<>).MakeGenericType(rowChangedDataType));
 
             var receiverName = rowChangedDataType.Name;
@@ -115,7 +134,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             sdm.InstallSqlDependencies(installNotificationsStoredProcName, uninstallNotificationsStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName);
 
-            return applicationBuilder;
+            return provider;
         }
     }
 }
