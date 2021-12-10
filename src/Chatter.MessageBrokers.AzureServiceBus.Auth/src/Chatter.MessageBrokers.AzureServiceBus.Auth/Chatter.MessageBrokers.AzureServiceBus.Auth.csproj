@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>netstandard2.1;net5.0;net6.0</TargetFrameworks>
     <PackageId>Chatter.MessageBrokers.AzureServiceBus.Auth</PackageId>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>Provides TokenProvider implementations for Chatter.MessageBrokers.AzureServiceProvider.</Description>
@@ -24,7 +24,8 @@
   </ItemGroup>
   
   <ItemGroup>
-    <PackageReference Include="Microsoft.Identity.Client" Version="4.37.0" />
+    <PackageReference Include="Azure.Identity" Version="1.5.0" />
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.39.0" />
   </ItemGroup>
 
   <ItemGroup>
