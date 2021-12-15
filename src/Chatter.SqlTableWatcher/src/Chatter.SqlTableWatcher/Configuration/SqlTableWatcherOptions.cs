@@ -5,10 +5,22 @@ namespace Chatter.SqlTableWatcher.Configuration
 {
     public class SqlTableWatcherOptions
     {
+        /// <summary>
+        /// The connection string use to connect to the SQL Service with table(s) to watch for changes
+        /// </summary>
         public string ConnectionString { get; set; }
+        /// <summary>
+        /// Optional. The database containing the table to watch for changes specified by <see cref="NotificationsToReceive"/>
+        /// </summary>
         public string DatabaseName { get; set; }
+        /// <summary>
+        /// The table to watch for changes specified by <see cref="NotificationsToReceive"/>
+        /// </summary>
         public string TableName { get; set; }
         public string SchemaName { get; set; } = "dbo";
+        /// <summary>
+        /// The types of changes to watch for on <see cref="TableName"/>
+        /// </summary>
         public ChangeTypes NotificationsToReceive { get; set; } = ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete;
         public string TableWatcherQueueName { get; set; }
 
@@ -22,14 +34,14 @@ namespace Chatter.SqlTableWatcher.Configuration
         internal SqlServiceBrokerOptions ServiceBrokerOptions { get; set; }
         internal ReceiverOptions ReceiverOptions { get; set; }
 
-        public SqlTableWatcherOptions(string connectionString,
-                                        string databaseName,
-                                        string tableName,
-                                        string schemaName = "dbo",
-                                        ChangeTypes changesToWatch =
-                                            ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete,
-                                        bool processTableChangesViaChatter = true,
-                                        string tableWatcherQueueName = null)
+        internal SqlTableWatcherOptions(string connectionString,
+                                      string databaseName,
+                                      string tableName,
+                                      string schemaName = "dbo",
+                                      ChangeTypes changesToWatch =
+                                          ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete,
+                                      bool processTableChangesViaChatter = true,
+                                      string tableWatcherQueueName = null)
         {
             ConnectionString = connectionString;
             DatabaseName = databaseName;

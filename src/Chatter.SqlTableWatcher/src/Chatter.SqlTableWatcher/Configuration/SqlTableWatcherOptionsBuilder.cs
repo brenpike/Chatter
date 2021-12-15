@@ -2,6 +2,7 @@
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Data.SqlClient;
 
 namespace Chatter.SqlTableWatcher.Configuration
 {
@@ -178,6 +179,18 @@ namespace Chatter.SqlTableWatcher.Configuration
 
         internal SqlTableWatcherOptions Build()
         {
+            var connStrBuilder = new SqlConnectionStringBuilder(_connectionString);
+
+            if (string.IsNullOrWhiteSpace(connStrBuilder.InitialCatalog) && string.IsNullOrWhiteSpace(_databaseName))
+            {
+                throw new InvalidOperationException($"Cannot build {nameof(SqlTableWatcherOptions)} if a database is not specified via {nameof(_connectionString)} or {_databaseName}");
+            }
+
+            if (string.IsNullOrWhiteSpace(_databaseName))
+            {
+                _databaseName = connStrBuilder.InitialCatalog;
+            }
+
             return new SqlTableWatcherOptions(_connectionString, _databaseName, _tableName, _schemaName, _changeTypes, _processTableChangesViaChatter, _tableWatcherQueueName)
             {
                 ServiceBrokerOptions = new SqlServiceBrokerOptions(_connectionString, _messageBodyType, _receiverTimeoutInMilliseconds, _conversationLifetimeInSeconds, _coversationEncryption, _compressMessageBody, false),

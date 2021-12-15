@@ -20,8 +20,8 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Configures a watcher to monitor a sql table for changes
         /// </summary>
         /// <param name="rowChangedDataType">A type implementing <see cref="IMessage"/> that maps to a row that changed in the target database</param>
-        /// <param name="connectionString">The connection string of the database containing the table to watch for changes</param>
-        /// <param name="databaseName">The database containing the table to watch</param>
+        /// <param name="connectionString">The connection string for the sql server with the database and table to watch for changes</param>
+        /// <param name="databaseName">Optional. The database containing the table to watch. If not specified, Database or InitialCatalog of the connectionString will be used.</param>
         /// <param name="tableName">The name of the table to watch</param>
         /// <param name="optionsBuilder">An optional builder allowing more complex table watcher configuration</param>
         public static IChatterBuilder AddSqlTableWatcher(this IChatterBuilder builder,
@@ -45,8 +45,8 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Configures a watcher to monitor a sql table for changes
         /// </summary>
         /// <typeparam name="TRowChangedData">The <see cref="IMessage"/> representing the state of a changed row in the table being watched</typeparam>
-        /// <param name="connectionString">The connection string of the database containing the table to watch for changes</param>
-        /// <param name="databaseName">The database containing the table to watch</param>
+        /// <param name="connectionString">The connection string for the sql server with the database and table to watch for changes</param>
+        /// <param name="databaseName">Optional. The database containing the table to watch. If not specified, Database or InitialCatalog of the connectionString will be used.</param>
         /// <param name="tableName">The name of the table to watch</param>
         /// <param name="optionsBuilder">An optional builder allowing more complex table watcher configuration</param>
         /// <returns><see cref="IChatterBuilder"/></returns>
