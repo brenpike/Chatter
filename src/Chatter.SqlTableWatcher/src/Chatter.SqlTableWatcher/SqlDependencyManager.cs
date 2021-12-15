@@ -8,10 +8,10 @@ namespace Chatter.SqlTableWatcher
 {
     public class SqlDependencyManager<TRowChangedData> : ISqlDependencyManager<TRowChangedData> where TRowChangedData : class, IMessage, new()
     {
-        private readonly SqlTableWatcherOptions _options;
+        public SqlTableWatcherOptions Options { get; }
 
         public SqlDependencyManager(SqlTableWatcherOptions options)
-            => _options = options;
+            => Options = options;
 
         public Task InstallSqlDependencies(string installationProcedureName = "",
                                            string uninstallationProcedureName = "",
@@ -20,20 +20,20 @@ namespace Chatter.SqlTableWatcher
                                            string conversationTriggerName = "")
         {
             var execInstallationProcedureScript
-                = new SafeExecuteStoredProcedure(_options.ConnectionString,
-                                                 _options.DatabaseName,
+                = new SafeExecuteStoredProcedure(Options.ConnectionString,
+                                                 Options.DatabaseName,
                                                  installationProcedureName,
-                                                 _options.SchemaName);
+                                                 Options.SchemaName);
 
             var installNotificationScript
-                = new InstallNotificationsScript(_options,
+                = new InstallNotificationsScript(Options,
                                                  installationProcedureName,
                                                  conversationQueueName,
                                                  conversationServiceName,
                                                  conversationTriggerName);
 
             var uninstallNotificationScript
-                = new UninstallNotificationsScript(_options,
+                = new UninstallNotificationsScript(Options,
                                                    uninstallationProcedureName,
                                                    conversationQueueName,
                                                    conversationServiceName,
@@ -51,10 +51,10 @@ namespace Chatter.SqlTableWatcher
         {
             var execUninstallationProcedureScript =
                 new SafeExecuteStoredProcedure(
-                _options.ConnectionString,
-                _options.DatabaseName,
+                Options.ConnectionString,
+                Options.DatabaseName,
                 uninstallationProcedureName,
-                _options.SchemaName);
+                Options.SchemaName);
 
             execUninstallationProcedureScript.Execute();
 
