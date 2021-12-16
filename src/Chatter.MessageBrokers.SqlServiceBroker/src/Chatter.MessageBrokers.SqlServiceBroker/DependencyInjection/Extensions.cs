@@ -21,11 +21,11 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(optBuilder);
             var options = optBuilder.Build();
 
-            builder.Services.AddScoped<SqlServiceBrokerReceiver>();
-            builder.Services.AddSingleton<SqlServiceBrokerSenderFactory>();
+            builder.Services.AddIfNotRegistered<SqlServiceBrokerReceiver>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<SqlServiceBrokerSenderFactory>(ServiceLifetime.Singleton);
 
-            builder.Services.AddScoped<SqlServiceBrokerSender>();
-            builder.Services.AddSingleton<SqlServiceBrokerReceiverFactory>();
+            builder.Services.AddIfNotRegistered<SqlServiceBrokerSender>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<SqlServiceBrokerReceiverFactory>(ServiceLifetime.Singleton);
 
             builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {

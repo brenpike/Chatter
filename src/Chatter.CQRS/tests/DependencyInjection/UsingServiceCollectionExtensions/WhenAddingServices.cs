@@ -39,6 +39,19 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingServiceCollectionExtension
         }
 
         [Fact]
+        public void MustAddServiceDescriptorForServiceTypeIfNotAlreadyRegistered()
+        {
+            var sc = new ServiceCollection();
+            sc.AddIfNotRegistered<TransientClass>(ServiceLifetime.Transient);
+
+            sc.Should().HaveCount(1);
+            sc[0].Lifetime.Should().Be(ServiceLifetime.Transient);
+            sc[0].ImplementationFactory.Should().BeNull();
+            sc[0].ImplementationType.Should().Be(typeof(TransientClass));
+            sc[0].ServiceType.Should().Be(typeof(TransientClass));
+        }
+
+        [Fact]
         public void MustNotAddServiceDescriptorForSpecifiedFactoryIfNotAlreadyRegistered()
         {
             var sc = new ServiceCollection();
