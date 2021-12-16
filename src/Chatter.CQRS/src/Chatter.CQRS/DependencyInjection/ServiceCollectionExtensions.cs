@@ -185,5 +185,9 @@ namespace Chatter.CQRS.DependencyInjection
 
             return services;
         }
+
+        public static IServiceCollection AddIfNotRegistered<TService>(this IServiceCollection services, ServiceLifetime lifetime)
+            where TService : class
+            => services.AddIfNotRegistered<TService, TService>(lifetime);
     }
 }
