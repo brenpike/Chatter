@@ -2,9 +2,9 @@
 {
     public class ReliabilityOptions
     {
-        public bool RouteMessagesToOutbox { get; internal set; }
-        public double MinutesToLiveInMemory { get; internal set; }
-        public bool EnableOutboxPollingProcessor { get; internal set; }
-        public int OutboxProcessingIntervalInMilliseconds { get; internal set; }
+        public bool RouteMessagesToOutbox { get; set; }
+        public double MinutesToLiveInMemory { get; set; }
+        public bool EnableOutboxPollingProcessor { get; set; }
+        public int OutboxProcessingIntervalInMilliseconds { get; set; }
     }
 }
