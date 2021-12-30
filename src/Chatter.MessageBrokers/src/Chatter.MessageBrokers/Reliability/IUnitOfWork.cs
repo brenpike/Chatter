@@ -1,5 +1,6 @@
 ﻿using Chatter.MessageBrokers.Context;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
@@ -9,8 +10,6 @@ namespace Chatter.MessageBrokers.Reliability
         IPersistanceTransaction CurrentTransaction { get; }
         bool HasActiveTransaction { get; }
 
-        ValueTask<IPersistanceTransaction> BeginAsync();
-        Task ExecuteAsync(Func<Task> operation, TransactionContext transactionContext);
-        Task CompleteAsync();
+        Task ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken = default);
     }
 }

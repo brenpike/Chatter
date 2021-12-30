@@ -8,6 +8,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
@@ -25,15 +26,15 @@ namespace Chatter.MessageBrokers.Reliability
             _reliabilityOptions = reliabilityOptions ?? throw new ArgumentNullException(nameof(reliabilityOptions));
         }
 
-        public async Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext)
+        public async Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext, CancellationToken cancellationToken = default)
         {
             foreach (var outboundBrokeredMessage in outboundBrokeredMessages)
             {
-                await SendToOutbox(outboundBrokeredMessage, transactionContext).ConfigureAwait(false);
+                await SendToOutbox(outboundBrokeredMessage, transactionContext, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        public Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext)
+        public Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext, CancellationToken cancellationToken = default)
         {
             Guid transactionId = Guid.NewGuid();
             if (transactionContext != null)
@@ -68,12 +69,12 @@ namespace Chatter.MessageBrokers.Reliability
             return Task.CompletedTask;
         }
 
-        public Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox()
+        public Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default)
                 => Task.FromResult<IEnumerable<OutboxMessage>>(_outbox.Values
                         .Where(m => m.ProcessedFromOutboxAtUtc is null)
                         .ToList());
 
-        public Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages)
+        public Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages, CancellationToken cancellationToken = default)
         {
             foreach (var outboxMessage in outboxMessages)
             {
@@ -83,7 +84,7 @@ namespace Chatter.MessageBrokers.Reliability
             return Task.CompletedTask;
         }
 
-        public Task UpdateProcessedDate(OutboxMessage outboxMessage)
+        public Task UpdateProcessedDate(OutboxMessage outboxMessage, CancellationToken cancellationToken = default)
         {
             outboxMessage.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
             RemoveExpiredFromInboxOutbox();
@@ -115,7 +116,7 @@ namespace Chatter.MessageBrokers.Reliability
             }
         }
 
-        public Task<IEnumerable<OutboxMessage>> GetUnprocessedBatch(Guid transactionId)
+        public Task<IEnumerable<OutboxMessage>> GetUnprocessedBatch(Guid transactionId, CancellationToken cancellationToken = default)
                 => Task.FromResult<IEnumerable<OutboxMessage>>(_outbox.Values
                         .Where(m => m.ProcessedFromOutboxAtUtc is null && m.BatchId == transactionId)
                         .ToList());

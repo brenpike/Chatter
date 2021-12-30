@@ -1,5 +1,4 @@
-﻿using Chatter.CQRS;
-using Chatter.CQRS.Commands;
+﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Context;
@@ -18,7 +17,7 @@ namespace Chatter.MessageBrokers.Reliability
         public async Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next)
         {
             var transactionContext = messageHandlerContext.Container.GetOrNew<TransactionContext>();
-            await _unitOfWork.ExecuteAsync(() => next(), transactionContext);
+            await _unitOfWork.ExecuteAsync(_ => next(), transactionContext, messageHandlerContext?.CancellationToken ?? default);
         }
     }
 }
