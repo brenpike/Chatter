@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Reliability.Configuration;
-using Chatter.Testing.Core.Creators.MessageBrokers;
+﻿using Chatter.Testing.Core.Creators.MessageBrokers;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -19,7 +18,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         {
             _context = New.MessageBrokers().DbContext();
             _logger = new Mock<ILogger<BrokeredMessageOutbox<DbContext>>>();
-            _sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object, new ReliabilityOptions());
+            _sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object);
         }
 
         [Fact]

@@ -1,5 +1,4 @@
-﻿using Chatter.CQRS;
-using Chatter.CQRS.Commands;
+﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Context;
@@ -28,7 +27,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             {
                 transactionContext.Container.TryGet<Guid>("CurrentTransactionId", out var persistanceTransactionId);
                 _logger.LogTrace($"Retrieved transaction id '{persistanceTransactionId}' from {nameof(TransactionContext)}.");
-                await _outboxProcessor.ProcessBatch(persistanceTransactionId);
+                await _outboxProcessor.ProcessBatch(persistanceTransactionId, messageHandlerContext?.CancellationToken ?? default);
             }
             else
             {

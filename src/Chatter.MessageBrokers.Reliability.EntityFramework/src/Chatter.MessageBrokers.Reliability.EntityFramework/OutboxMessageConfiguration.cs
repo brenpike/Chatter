@@ -11,7 +11,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             builder.HasKey(t => t.Id);
             builder.Property(t => t.Id).IsRequired().ValueGeneratedOnAdd();
             builder.Property(t => t.MessageId).IsRequired();
-            builder.Property(t => t.ProcessedFromOutboxAtUtc);
+            builder.Property(t => t.ProcessedFromOutboxAtUtc).IsConcurrencyToken();
             builder.Property(t => t.SentToOutboxAtUtc).IsRequired();
             builder.Property(t => t.MessageBody).IsRequired();
             builder.Property(t => t.MessageContext).IsRequired();

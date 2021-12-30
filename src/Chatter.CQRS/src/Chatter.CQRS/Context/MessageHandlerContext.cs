@@ -10,11 +10,11 @@ namespace Chatter.CQRS.Context
         public MessageHandlerContext(CancellationToken cancellationToken)
         {
             Container = new ContextContainer();
-            this.CancellationToken = cancellationToken;
+            CancellationToken = cancellationToken;
         }
 
         public MessageHandlerContext()
-            : this(CancellationToken.None)
+            : this(default)
         { }
 
         /// <summary>

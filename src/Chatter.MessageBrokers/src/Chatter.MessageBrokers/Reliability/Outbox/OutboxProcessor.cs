@@ -4,6 +4,7 @@ using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.Outbox
@@ -26,7 +27,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             _brokeredMessageOutbox = brokeredMessageOutbox ?? throw new ArgumentNullException(nameof(brokeredMessageOutbox));
         }
 
-        public async Task Process(OutboxMessage message)
+        public async Task Process(OutboxMessage message, CancellationToken cancellationToken = default)
         {
             IDictionary<string, object> messageContext = new Dictionary<string, object>();
             if (!string.IsNullOrWhiteSpace(message.MessageContext))
@@ -58,17 +59,17 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             await dispatcherInfrastructure.Dispatch(outbound, null).ConfigureAwait(false);
             _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
 
-            await _brokeredMessageOutbox.UpdateProcessedDate(message).ConfigureAwait(false);
+            await _brokeredMessageOutbox.UpdateProcessedDate(message, cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task ProcessBatch(Guid batchId)
+        public async Task ProcessBatch(Guid batchId, CancellationToken cancellationToken = default)
         {
-            var messages = await _brokeredMessageOutbox.GetUnprocessedBatch(batchId).ConfigureAwait(false);
+            var messages = await _brokeredMessageOutbox.GetUnprocessedBatch(batchId, cancellationToken).ConfigureAwait(false);
             _logger.LogTrace($"Processing '{messages.Count()}' messages for batch '{batchId}'.");
 
             foreach (var message in messages)
             {
-                await Process(message).ConfigureAwait(false);
+                await Process(message, cancellationToken).ConfigureAwait(false);
             }
         }
     }

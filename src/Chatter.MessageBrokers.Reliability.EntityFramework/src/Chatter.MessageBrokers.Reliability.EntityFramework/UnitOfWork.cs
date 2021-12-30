@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Data;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework
@@ -22,7 +23,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         public bool HasActiveTransaction => _context?.Database?.CurrentTransaction != null;
 
-        public async Task CompleteAsync()
+        public async Task CompleteAsync(CancellationToken cancellationToken = default)
         {
             if (!HasActiveTransaction)
             {
@@ -31,13 +32,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             }
 
             var transaction = CurrentTransaction;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
             _logger.LogTrace($"Change saved for context '{typeof(TContext).Name}'. Transaction id '{transaction.TransactionId}'.");
-            await transaction.CommitAsync();
+            await transaction.CommitAsync(cancellationToken);
             _logger.LogTrace($"Transaction committed for context '{typeof(TContext).Name}'. Transaction id '{transaction.TransactionId}'.");
         }
 
-        public async ValueTask<IPersistanceTransaction> BeginAsync()
+        public async ValueTask<IPersistanceTransaction> BeginAsync(CancellationToken cancellationToken = default)
         {
             if (HasActiveTransaction)
             {
@@ -45,33 +46,33 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 return CurrentTransaction;
             }
 
-            var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted).ConfigureAwait(false);
+            var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
             _logger.LogTrace($"Unit of work created for context '{typeof(TContext).Name}' with transaction id '{transaction.TransactionId}'");
             return CurrentTransaction;
         }
 
-        public async Task ExecuteAsync(Func<Task> operation, TransactionContext transactionContext)
+        public Task ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken = default)
         {
             var strategy = _context.Database.CreateExecutionStrategy();
-            await strategy.ExecuteAsync(async () =>
+            return strategy.ExecuteAsync(async ct =>
             {
-                await using var transaction = await BeginAsync();
+                await using var transaction = await BeginAsync(ct);
                 try
                 {
                     transactionContext?.Container.Include(transaction);
                     transactionContext?.Container.Include("CurrentTransactionId", transaction.TransactionId);
 
-                    await operation();
-                    await CompleteAsync();
+                    await operation(ct);
+                    await CompleteAsync(ct);
                     _logger.LogTrace($"Unit of work completed successfully.");
                 }
                 catch (Exception ex)
                 {
-                    await transaction.RollbackAsync();
-                    _logger.LogTrace($"Error occurred during unit of work: {ex.Message}");
+                    await transaction.RollbackAsync(ct);
+                    _logger.LogError(ex, "Error occurred during unit of work");
                     throw;
                 }
-            });
+            }, cancellationToken);
         }
     }
 }

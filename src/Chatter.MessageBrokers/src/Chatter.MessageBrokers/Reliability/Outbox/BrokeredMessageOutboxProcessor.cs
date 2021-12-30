@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            _logger.LogDebug($"BrokeredMessageOutboxProcessor is starting.");
+            _logger.LogInformation($"BrokeredMessageOutboxProcessor is starting.");
 
             stoppingToken.Register(() =>
                 _logger.LogDebug($" BrokeredMessageOutboxProcessor background task is stopping."));
@@ -35,20 +35,20 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             {
                 _logger.LogTrace($"BrokeredMessageOutboxProcessor is now processing messages...");
 
-                await SendOutboxMessagesAsync();
+                await SendOutboxMessagesAsync(stoppingToken);
 
                 await Task.Delay(_reliabilityOptions.OutboxProcessingIntervalInMilliseconds, stoppingToken);
             }
 
-            _logger.LogDebug($"BrokeredMessageOutboxProcessor background task is stopping.");
+            _logger.LogInformation($"BrokeredMessageOutboxProcessor background task is stopping.");
         }
 
-        private async Task SendOutboxMessagesAsync()
+        private async Task SendOutboxMessagesAsync(CancellationToken cancellationToken = default)
         {
             using var scope = _serviceScopeFactory.CreateScope();
             var outbox = scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
             var processor = scope.ServiceProvider.GetRequiredService<IOutboxProcessor>();
-            var messages = await outbox.GetUnprocessedMessagesFromOutbox();
+            var messages = await outbox.GetUnprocessedMessagesFromOutbox(cancellationToken);
 
             if (!messages.Any())
             {
@@ -60,7 +60,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
             foreach (var message in messages.OrderBy(m => m.SentToOutboxAtUtc))
             {
-                await processor.Process(message).ConfigureAwait(false);
+                await processor.Process(message, cancellationToken).ConfigureAwait(false);
             }
         }
     }
