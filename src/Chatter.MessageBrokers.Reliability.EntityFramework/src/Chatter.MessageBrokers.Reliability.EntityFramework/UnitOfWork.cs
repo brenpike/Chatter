@@ -23,34 +23,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         public bool HasActiveTransaction => _context?.Database?.CurrentTransaction != null;
 
-        public async Task CompleteAsync(CancellationToken cancellationToken = default)
-        {
-            if (!HasActiveTransaction)
-            {
-                _logger.LogTrace($"Cannot complete unit of work. There is no active transaction.");
-                return;
-            }
-
-            var transaction = CurrentTransaction;
-            await _context.SaveChangesAsync(cancellationToken);
-            _logger.LogTrace($"Change saved for context '{typeof(TContext).Name}'. Transaction id '{transaction.TransactionId}'.");
-            await transaction.CommitAsync(cancellationToken);
-            _logger.LogTrace($"Transaction committed for context '{typeof(TContext).Name}'. Transaction id '{transaction.TransactionId}'.");
-        }
-
-        public async ValueTask<IPersistanceTransaction> BeginAsync(CancellationToken cancellationToken = default)
-        {
-            if (HasActiveTransaction)
-            {
-                _logger.LogTrace($"Cannot create new unit of work as a the current unit of work has not completed.");
-                return CurrentTransaction;
-            }
-
-            var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
-            _logger.LogTrace($"Unit of work created for context '{typeof(TContext).Name}' with transaction id '{transaction.TransactionId}'");
-            return CurrentTransaction;
-        }
-
         public Task ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken = default)
         {
             var strategy = _context.Database.CreateExecutionStrategy();
@@ -68,11 +40,53 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 }
                 catch (Exception ex)
                 {
-                    await transaction.RollbackAsync(ct);
+                    await RollbackAsync(ct);
                     _logger.LogError(ex, "Error occurred during unit of work");
                     throw;
                 }
             }, cancellationToken);
+        }
+
+        private async Task CompleteAsync(CancellationToken cancellationToken = default)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogTrace($"Change(s) saved for context '{typeof(TContext).Name}'.");
+
+            if (!HasActiveTransaction)
+            {
+                _logger.LogTrace($"There is no active transaction to commit. Skipping.");
+                return;
+            }
+
+            _logger.LogTrace($"Committing transaction id '{CurrentTransaction.TransactionId}'.");
+            await CurrentTransaction.CommitAsync(cancellationToken);
+            _logger.LogTrace($"Transaction committed for context '{typeof(TContext).Name}'.");
+        }
+
+        private async ValueTask<IPersistanceTransaction> BeginAsync(CancellationToken cancellationToken = default)
+        {
+            if (HasActiveTransaction)
+            {
+                _logger.LogTrace($"Cannot create new transaction as the unit of work is already part of transaction id '{CurrentTransaction.TransactionId}'.");
+                return CurrentTransaction;
+            }
+
+            var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
+            _logger.LogTrace($"Transaction created for context '{typeof(TContext).Name}' with transaction id '{transaction.TransactionId}'");
+            return CurrentTransaction;
+        }
+
+        private async Task RollbackAsync(CancellationToken cancellationToken = default)
+        {
+            if (!HasActiveTransaction)
+            {
+                _logger.LogTrace($"There is no active transaction - unable to rollback.");
+                return;
+            }
+
+            _logger.LogTrace($"Rolling back transaction id '{CurrentTransaction.TransactionId}'.");
+            await CurrentTransaction.RollbackAsync(cancellationToken);
+            _logger.LogTrace($"Transaction rolled back for context '{typeof(TContext).Name}'.");
         }
     }
 }

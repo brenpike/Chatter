@@ -29,37 +29,48 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
         public async Task Process(OutboxMessage message, CancellationToken cancellationToken = default)
         {
-            IDictionary<string, object> messageContext = new Dictionary<string, object>();
-            if (!string.IsNullOrWhiteSpace(message.MessageContext))
+            try
             {
-                messageContext = JsonConvert.DeserializeObject<IDictionary<string, object>>(message.MessageContext);
-            }
+                IDictionary<string, object> messageContext = new Dictionary<string, object>();
+                if (!string.IsNullOrWhiteSpace(message.MessageContext))
+                {
+                    messageContext = JsonConvert.DeserializeObject<IDictionary<string, object>>(message.MessageContext);
+                }
 
-            var contentType = message.MessageContentType;
-            if (string.IsNullOrWhiteSpace(message.MessageContentType))
+                var contentType = message.MessageContentType;
+                if (string.IsNullOrWhiteSpace(message.MessageContentType))
+                {
+                    contentType = (string)messageContext[MessageContext.ContentType];
+                    _logger.LogTrace($"Outbox message did not contain content type. Retrieved from message context.");
+                }
+
+                messageContext.TryGetValue(MessageContext.InfrastructureType, out var infra);
+                var dispatcherInfrastructure = _infrastructureProvider.GetDispatcher((string)infra);
+
+                if (string.IsNullOrWhiteSpace(contentType))
+                {
+                    _logger.LogTrace($"No content type set in outbox message or message context. Unable to dispatch message.");
+                    throw new ArgumentNullException(nameof(contentType), "A content type is required to serialize and send brokered message.");
+                }
+
+                var converter = _bodyConverterFactory.CreateBodyConverter(contentType);
+
+                var outbound = new OutboundBrokeredMessage(message.MessageId, converter.GetBytes(message.MessageBody), messageContext, message.Destination, converter);
+                _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
+
+                await ((IUnitOfWork)_brokeredMessageOutbox).ExecuteAsync(async ct =>
+                {
+                    await _brokeredMessageOutbox.UpdateProcessedDate(message, ct);
+
+                    await dispatcherInfrastructure.Dispatch(outbound, null);
+                    _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
+
+                }, null, cancellationToken);
+            }
+            catch (Exception e)
             {
-                contentType = (string)messageContext[MessageContext.ContentType];
-                _logger.LogTrace($"Outbox message did not contain content type. Retrieved from message context.");
+                _logger.LogError(e, $"Unable to process outbox message with id '{message.Id}'");
             }
-
-            messageContext.TryGetValue(MessageContext.InfrastructureType, out var infra);
-            var dispatcherInfrastructure = _infrastructureProvider.GetDispatcher((string)infra);
-
-            if (string.IsNullOrWhiteSpace(contentType))
-            {
-                _logger.LogTrace($"No content type set in outbox message or message context. Unable to dispatch message.");
-                throw new ArgumentNullException(nameof(contentType), "A content type is required to serialize and send brokered message.");
-            }
-
-            var converter = _bodyConverterFactory.CreateBodyConverter(contentType);
-
-            var outbound = new OutboundBrokeredMessage(message.MessageId, converter.GetBytes(message.MessageBody), messageContext, message.Destination, converter);
-            _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
-
-            await dispatcherInfrastructure.Dispatch(outbound, null).ConfigureAwait(false);
-            _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
-
-            await _brokeredMessageOutbox.UpdateProcessedDate(message, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task ProcessBatch(Guid batchId, CancellationToken cancellationToken = default)

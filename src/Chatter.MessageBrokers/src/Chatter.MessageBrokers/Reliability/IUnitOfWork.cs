@@ -10,8 +10,6 @@ namespace Chatter.MessageBrokers.Reliability
         IPersistanceTransaction CurrentTransaction { get; }
         bool HasActiveTransaction { get; }
 
-        ValueTask<IPersistanceTransaction> BeginAsync(CancellationToken cancellationToken = default);
         Task ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken = default);
-        Task CompleteAsync(CancellationToken cancellationToken = default);
     }
 }

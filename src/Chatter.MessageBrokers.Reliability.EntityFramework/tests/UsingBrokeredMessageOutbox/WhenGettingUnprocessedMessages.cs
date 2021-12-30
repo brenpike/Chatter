@@ -12,12 +12,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
     {
         private DbContextCreator _context;
         private readonly BrokeredMessageOutbox<DbContext> _sut;
-        private readonly Mock<ILogger<BrokeredMessageOutbox<DbContext>>> _logger;
+        private readonly Mock<ILoggerFactory> _logger;
 
         public WhenGettingUnprocessedMessages()
         {
             _context = New.MessageBrokers().DbContext();
-            _logger = new Mock<ILogger<BrokeredMessageOutbox<DbContext>>>();
+            _logger = new Mock<ILoggerFactory>();
             _sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object);
         }
 

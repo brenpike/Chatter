@@ -45,22 +45,29 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
         private async Task SendOutboxMessagesAsync(CancellationToken cancellationToken = default)
         {
-            using var scope = _serviceScopeFactory.CreateScope();
-            var outbox = scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
-            var processor = scope.ServiceProvider.GetRequiredService<IOutboxProcessor>();
-            var messages = await outbox.GetUnprocessedMessagesFromOutbox(cancellationToken);
-
-            if (!messages.Any())
+            try
             {
-                _logger.LogTrace($"No messages available for processing in outbox.");
-                return;
+                using var scope = _serviceScopeFactory.CreateScope();
+                var outbox = scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
+                var processor = scope.ServiceProvider.GetRequiredService<IOutboxProcessor>();
+                var messages = await outbox.GetUnprocessedMessagesFromOutbox(cancellationToken);
+
+                if (!messages.Any())
+                {
+                    _logger.LogTrace($"No messages available for processing in outbox.");
+                    return;
+                }
+
+                _logger.LogTrace($"{messages.Count()} messages available for processing in outbox.");
+
+                foreach (var message in messages.OrderBy(m => m.SentToOutboxAtUtc))
+                {
+                    await processor.Process(message, cancellationToken);
+                }
             }
-
-            _logger.LogTrace($"{messages.Count()} messages available for processing in outbox.");
-
-            foreach (var message in messages.OrderBy(m => m.SentToOutboxAtUtc))
+            catch (Exception e)
             {
-                await processor.Process(message, cancellationToken).ConfigureAwait(false);
+                _logger.LogError(e, "Error sending outbox messages");
             }
         }
     }

@@ -17,10 +17,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         public Guid TransactionId => _dbContextTransaction?.TransactionId ?? Guid.Empty;
 
-        public Task CommitAsync(CancellationToken cancellationToken = default)
-        {
-            return _dbContextTransaction.CommitAsync(cancellationToken);
-        }
+        public Task CommitAsync(CancellationToken cancellationToken = default) 
+            => _dbContextTransaction.CommitAsync(cancellationToken);
 
         public Task RollbackAsync(CancellationToken cancellationToken = default) 
             => _dbContextTransaction.RollbackAsync(cancellationToken);

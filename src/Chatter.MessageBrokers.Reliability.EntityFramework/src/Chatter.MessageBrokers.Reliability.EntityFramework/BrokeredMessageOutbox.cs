@@ -12,15 +12,22 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework
 {
-    public class BrokeredMessageOutbox<TContext> : IBrokeredMessageOutbox where TContext : DbContext
+    public class BrokeredMessageOutbox<TContext> : IBrokeredMessageOutbox, IUnitOfWork where TContext : DbContext
     {
         private readonly TContext _context;
         private readonly ILogger<BrokeredMessageOutbox<TContext>> _logger;
+        private readonly UnitOfWork<TContext> _unitOfWork;
 
-        public BrokeredMessageOutbox(TContext context, ILogger<BrokeredMessageOutbox<TContext>> logger)
+        IPersistanceTransaction IUnitOfWork.CurrentTransaction => _unitOfWork.CurrentTransaction;
+        bool IUnitOfWork.HasActiveTransaction => _unitOfWork.HasActiveTransaction;
+
+        public BrokeredMessageOutbox(TContext context, ILoggerFactory loggerFactory)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _ = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+
+            _logger = loggerFactory.CreateLogger<BrokeredMessageOutbox<TContext>>();
+            _unitOfWork = new UnitOfWork<TContext>(context, loggerFactory.CreateLogger<UnitOfWork<TContext>>());
         }
 
         public async Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default)
@@ -58,9 +65,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             outbox.Update(outboxMessage);
         }
 
-        public Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext, CancellationToken cancellationToken = default)
-            => SendToOutbox(new[] { outboundBrokeredMessage }, transactionContext, cancellationToken);
-
         public async Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext, CancellationToken cancellationToken = default)
         {
             var outbox = _context.Set<OutboxMessage>();
@@ -70,16 +74,16 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 await SendToOutboxImpl(outbox, obm, transactionContext, cancellationToken).ConfigureAwait(false);
             }
 
-            var numMessagesSavedToOutbox = await SaveOutboxAsync(cancellationToken);
-
-            _logger.LogTrace($"{numMessagesSavedToOutbox} outbox message(s) saved to outbox.");
+            await SaveOutboxAsync(cancellationToken);
         }
 
         public async Task<int> SaveOutboxAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                return await _context.SaveChangesAsync(cancellationToken);
+                var rowCnt = await _context.SaveChangesAsync(cancellationToken);
+                _logger.LogTrace($"'{rowCnt}' outbox message(s) saved.");
+                return rowCnt;
             }
             catch (DbUpdateConcurrencyException ce)
             {
@@ -89,11 +93,16 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                     {
                         var dbVal = await entry.GetDatabaseValuesAsync(cancellationToken);
                         var processedTime = dbVal[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)];
-                        _logger.LogWarning(ce, $"Outbox message was already processed at {processedTime}");
+                        var messageId = dbVal[nameof(OutboxMessage.Id)];
+
+                        _logger.LogWarning(ce, $"Outbox message with id '{messageId}' was already processed at '{processedTime}'");
+
+                        entry.OriginalValues.SetValues(dbVal);
+                        entry.State = EntityState.Unchanged;
                     }
                 }
 
-                return 0;
+                throw;
             }
         }
 
@@ -120,5 +129,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             _logger.LogTrace($"Outbox message added to outbox. MessageId: '{outboxMessage.MessageId}', BatchId: {outboxMessage.BatchId}");
         }
+
+        Task IUnitOfWork.ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken)
+            => _unitOfWork.ExecuteAsync(cf => operation(cf), transactionContext, cancellationToken);
     }
 }
