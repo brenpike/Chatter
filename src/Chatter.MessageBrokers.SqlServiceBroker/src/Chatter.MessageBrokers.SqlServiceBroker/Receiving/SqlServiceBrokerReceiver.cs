@@ -177,7 +177,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                 messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);
                                 messageContext.Container.Include(message);
 
-                                throw new Exception("fake");
+                                //throw new Exception("fake");
                             }
                             catch (Exception e)
                             {
@@ -342,13 +342,17 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 await edc.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
 
                 using var scope = _serviceFactory.CreateScope();
-                var brokeredMessageDispatcher = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>();
+                var ssbSender = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>();
                 var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_options.MessageBodyType);
-                var headers = CreateHeaders(message);
-                headers[SSBMessageContext.ServiceName] = null;
-                headers[MessageContext.FailureDescription] = errorDescription;
-                headers[MessageContext.FailureDetails] = $"{reason} (code: {errorCode})";
-                await brokeredMessageDispatcher.Dispatch(new OutboundBrokeredMessage(Guid.NewGuid().ToString(), message.Body, headers, this.DeadLetterQueueName, bodyConverter), transactionContext);
+                var headers = new Dictionary<string, object>()
+                {
+                    [SSBMessageContext.ServiceName] = null,
+                    [MessageContext.FailureDescription] = errorDescription,
+                    [MessageContext.FailureDetails] = $"{reason} (code: {errorCode})",
+                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType
+                };
+
+                await ssbSender.Dispatch(new OutboundBrokeredMessage(Guid.NewGuid().ToString(), message.Body, headers, this.DeadLetterQueueName, bodyConverter), transactionContext);
 
                 if (contextTransactionMode != TransactionMode.None && transaction != null)
                 {
@@ -362,7 +366,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
 
             _localReceiverDeliveryAttempts.TryRemove(message.ConvHandle, out var _);
-            _logger.LogError(errorDescription);
+            _logger.LogError("Message successfully deadlettered:" + errorDescription + Environment.NewLine + $"{reason} (code: {errorCode})");
         }
 
         public void Dispose()
