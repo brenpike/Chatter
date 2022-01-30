@@ -12,6 +12,8 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
         private readonly string _conversationQueueName;
         private readonly string _conversationServiceName;
         private readonly string _schemaName;
+        private readonly string _deadLetterQueueName;
+        private readonly string _deadLetterServiceName;
 
         /// <summary>
         /// Enables and configures SQL Service Broker for use in the notification process. Creates the appropriate
@@ -26,7 +28,9 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
                                                    string databaseName,
                                                    string conversationQueueName,
                                                    string conversationServiceName,
-                                                   string schemaName)
+                                                   string schemaName,
+                                                   string deadLetterQueueName,
+                                                   string deadLetterServiceName)
             : base(connectionString)
         {
             if (string.IsNullOrWhiteSpace(databaseName))
@@ -53,6 +57,8 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
             _conversationQueueName = conversationQueueName;
             _conversationServiceName = conversationServiceName;
             _schemaName = schemaName;
+            _deadLetterQueueName = deadLetterQueueName;
+            _deadLetterServiceName = deadLetterServiceName;
         }
 
         public override string ToString()
@@ -71,8 +77,14 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
 	                CREATE QUEUE {3}.[{1}] WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
 
                 IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{2}')
-	                CREATE SERVICE [{2}] ON QUEUE {3}.[{1}] ([DEFAULT]) 
-            ", _databaseName, _conversationQueueName, _conversationServiceName, _schemaName);
+	                CREATE SERVICE [{2}] ON QUEUE {3}.[{1}] ([DEFAULT])
+
+                IF NOT EXISTS (SELECT * FROM sys.service_queues WHERE name = '{4}')
+	                CREATE QUEUE {3}.[{4}] WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
+
+                IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{5}')
+	                CREATE SERVICE [{5}] ON QUEUE {3}.[{4}] ([DEFAULT]) 
+            ", _databaseName, _conversationQueueName, _conversationServiceName, _schemaName, _deadLetterQueueName, _deadLetterServiceName);
         }
     }
 }

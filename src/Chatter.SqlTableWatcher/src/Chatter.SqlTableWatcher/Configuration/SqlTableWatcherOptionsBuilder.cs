@@ -23,7 +23,8 @@ namespace Chatter.SqlTableWatcher.Configuration
         private bool _compressMessageBody = true;
         private string _tableWatcherQueueName = null;
         private string _errorQueueName = null;
-        private TransactionMode _transactionMode = TransactionMode.ReceiveOnly;
+        private TransactionMode _transactionMode = TransactionMode.FullAtomicityViaInfrastructure;
+        private string _tableWatcherDeadLetterServiceName;
 
         internal SqlTableWatcherOptionsBuilder(IServiceCollection services, string connectionString, string databaseName, string tableName)
         {
@@ -156,6 +157,18 @@ namespace Chatter.SqlTableWatcher.Configuration
         }
 
         /// <summary>
+        /// Set the name of the service that the underlying sql service broker will use to store dead letter messages. If not set, a
+        /// default service will be set by Chatter.
+        /// </summary>
+        /// <param name="tableWatcherDeadLetterServiceName">The service name</param>
+        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
+        public SqlTableWatcherOptionsBuilder WithTableWatcherDeadLetterServiceName(string tableWatcherDeadLetterServiceName)
+        {
+            _tableWatcherDeadLetterServiceName = tableWatcherDeadLetterServiceName;
+            return this;
+        }
+
+        /// <summary>
         /// Set the name of the queue to send messages to if sql service broker is unable to receive a queue message
         /// </summary>
         /// <param name="errorQueueName">The name of the queue to send messages to</param>
@@ -194,7 +207,7 @@ namespace Chatter.SqlTableWatcher.Configuration
             return new SqlTableWatcherOptions(_connectionString, _databaseName, _tableName, _schemaName, _changeTypes, _processTableChangesViaChatter, _tableWatcherQueueName)
             {
                 ServiceBrokerOptions = new SqlServiceBrokerOptions(_connectionString, _messageBodyType, _receiverTimeoutInMilliseconds, _conversationLifetimeInSeconds, _coversationEncryption, _compressMessageBody, false),
-                ReceiverOptions = new ReceiverOptions() { ErrorQueuePath = _errorQueueName, TransactionMode = _transactionMode }
+                ReceiverOptions = new ReceiverOptions() { ErrorQueuePath = _errorQueueName, TransactionMode = _transactionMode, DeadLetterQueuePath = _tableWatcherDeadLetterServiceName }
             };
         }
     }

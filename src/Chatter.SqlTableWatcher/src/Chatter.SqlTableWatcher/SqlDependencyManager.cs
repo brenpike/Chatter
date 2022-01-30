@@ -17,7 +17,9 @@ namespace Chatter.SqlTableWatcher
                                            string uninstallationProcedureName = "",
                                            string conversationQueueName = "",
                                            string conversationServiceName = "",
-                                           string conversationTriggerName = "")
+                                           string conversationTriggerName = "",
+                                           string deadLetterQueueName = "",
+                                           string deadLetterServiceName = "")
         {
             var execInstallationProcedureScript
                 = new SafeExecuteStoredProcedure(Options.ConnectionString,
@@ -30,7 +32,9 @@ namespace Chatter.SqlTableWatcher
                                                  installationProcedureName,
                                                  conversationQueueName,
                                                  conversationServiceName,
-                                                 conversationTriggerName);
+                                                 conversationTriggerName,
+                                                 deadLetterQueueName,
+                                                 deadLetterServiceName);
 
             var uninstallNotificationScript
                 = new UninstallNotificationsScript(Options,
@@ -38,7 +42,9 @@ namespace Chatter.SqlTableWatcher
                                                    conversationQueueName,
                                                    conversationServiceName,
                                                    conversationTriggerName,
-                                                   installationProcedureName);
+                                                   installationProcedureName,
+                                                   deadLetterQueueName,
+                                                   deadLetterServiceName);
 
             installNotificationScript.Execute();
             uninstallNotificationScript.Execute();

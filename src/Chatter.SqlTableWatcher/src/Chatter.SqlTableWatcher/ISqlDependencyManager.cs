@@ -10,7 +10,9 @@ namespace Chatter.SqlTableWatcher
                                     string uninstallationProcedureName = "",
                                     string conversationQueueName = "",
                                     string conversationServiceName = "",
-                                    string conversationTriggerName = "");
+                                    string conversationTriggerName = "",
+                                    string deadLetterQueueName = "",
+                                    string deadLetterServiceName = "");
     }
 
     public interface ISqlDependencyManager<TRowChangedData> : ISqlDependencyManager where TRowChangedData : class, IMessage, new() { }

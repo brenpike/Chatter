@@ -181,10 +181,11 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                         string description = null,
                                                                         string senderPath = null,
                                                                         TransactionMode? transactionMode = null,
-                                                                        string infrastructureType = "")
+                                                                        string infrastructureType = "",
+                                                                        string deadletterQueuePath = null)
             where TMessage : class, IMessage
         {
-            builder.Services.AddReceiver<TMessage>(receiverPath, errorQueuePath, description, senderPath, transactionMode, infrastructureType);
+            builder.Services.AddReceiver<TMessage>(receiverPath, errorQueuePath, description, senderPath, transactionMode, infrastructureType, deadletterQueuePath);
             return builder;
         }
 
@@ -209,7 +210,8 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                string description = null,
                                                                string senderPath = null,
                                                                TransactionMode? transactionMode = null,
-                                                               string infrastructureType = "")
+                                                               string infrastructureType = "",
+                                                               string deadletterQueuePath = null)
             where TMessage : class, IMessage
         {
             var messageType = typeof(TMessage);
@@ -227,7 +229,8 @@ namespace Microsoft.Extensions.DependencyInjection
                 ErrorQueuePath = errorQueuePath,
                 Description = description,
                 TransactionMode = transactionMode,
-                InfrastructureType = infrastructureType
+                InfrastructureType = infrastructureType,
+                DeadLetterQueuePath = deadletterQueuePath
             };
 
             services.AddReceiverImpl<TMessage>(options);
@@ -291,7 +294,8 @@ namespace Microsoft.Extensions.DependencyInjection
                     Description = attr.MessageDescription,
                     TransactionMode = null,
                     SendingPath = attr.SendingPath,
-                    InfrastructureType = attr.InfrastructureType
+                    InfrastructureType = attr.InfrastructureType,
+                    DeadLetterQueuePath = attr.DeadletterQueueName
                 };
 
                 yield return (options, messageType);

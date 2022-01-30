@@ -4,8 +4,11 @@ using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Chatter.MessageBrokers.SqlServiceBroker.Scripts;
+using Chatter.MessageBrokers.SqlServiceBroker.Sending;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
@@ -28,6 +31,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private TransactionMode _transactionMode;
         private readonly ConcurrentDictionary<Guid, int> _localReceiverDeliveryAttempts;
         private readonly ICircuitBreaker _circuitBreaker;
+        private readonly IServiceScopeFactory _serviceFactory;
 
         public SqlServiceBrokerReceiver(SqlServiceBrokerOptions options,
                                         MessageBrokerOptions messageBrokerOptions,
@@ -35,7 +39,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                         IBodyConverterFactory bodyConverterFactory,
                                         IFailedReceiveRecoverer failedReceiveRecoverer,
                                         ICriticalFailureNotifier criticalFailureNotifier,
-                                        ICircuitBreaker circuitBreaker)
+                                        ICircuitBreaker circuitBreaker,
+                                        IServiceScopeFactory serviceFactory)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _logger = logger;
@@ -45,11 +50,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             _transactionMode = messageBrokerOptions?.TransactionMode ?? TransactionMode.None;
             _localReceiverDeliveryAttempts = new ConcurrentDictionary<Guid, int>();
             _circuitBreaker = circuitBreaker;
+            _serviceFactory = serviceFactory;
         }
 
         public string TargetServiceName { get; private set; }
         public string QueueName { get; private set; }
         public string ErrorQueueName { get; private set; }
+        public string DeadLetterQueueName { get; private set; }
 
         //TODO: move error codes elsewhere
         public const int _poisonMessageDeadletterErrorCode = 100;
@@ -64,6 +71,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 this.TargetServiceName = options.SendingPath;
                 this.QueueName = options.MessageReceiverPath;
                 this.ErrorQueueName = options.ErrorQueuePath;
+                this.DeadLetterQueueName = options.DeadLetterQueuePath;
                 if (options.TransactionMode != null)
                 {
                     _transactionMode = options.TransactionMode ?? TransactionMode.None;
@@ -140,6 +148,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                             return;
                         }
 
+                        //check all message types and handle appropriately
+
                         if (message?.Body == null)
                         {
                             await CompleteAsync(connection, transaction, message).ConfigureAwait(false);
@@ -151,33 +161,23 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
                         try
                         {
-
-
                             using var receiverTokenSource = new CancellationTokenSource();
                             try
                             {
                                 var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_options.MessageBodyType);
+                                var headers = CreateHeaders(message);
 
-                                var headers = new Dictionary<string, object>
+                                transactionContext = new TransactionContext(this.QueueName, _transactionMode);
+
+                                if (_transactionMode != TransactionMode.None && transaction != null)
                                 {
-                                    [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
-                                    [SSBMessageContext.ConversationHandle] = message.ConvHandle,
-                                    [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
-                                    [SSBMessageContext.ServiceName] = message.ServiceName,
-                                    [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
-                                    [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
-                                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType
-                                };
+                                    transactionContext.Container.Include<IDbTransaction>(transaction);
+                                }
 
                                 messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);
                                 messageContext.Container.Include(message);
 
-                                transactionContext = new TransactionContext(this.QueueName, _transactionMode);
-
-                                if (_transactionMode == TransactionMode.FullAtomicityViaInfrastructure && transaction != null)
-                                {
-                                    transactionContext.Container.Include<IDbTransaction>(transaction);
-                                }
+                                throw new Exception("fake");
                             }
                             catch (Exception e)
                             {
@@ -200,7 +200,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                             _logger?.LogError(pme, "Poisoned message received");
                             try
                             {
-                                await DeadLetterAsync(connection, transaction, message, _poisonMessageDeadletterErrorCode,
+                                await DeadLetterAsync(connection, messageContext, transactionContext, message, _poisonMessageDeadletterErrorCode,
                                                       $"Poisoned message received from queue '{this.QueueName}' cannot be handled.",
                                                       pme.Message).ConfigureAwait(false);
                             }
@@ -233,7 +233,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
                                 if (state == RecoveryState.DeadLetter)
                                 {
-                                    await DeadLetterAsync(connection, transaction, message, _recoveryActionDeadletterErrorCode,
+                                    await DeadLetterAsync(connection, messageContext, transactionContext, message, _recoveryActionDeadletterErrorCode,
                                                           $"Deadlettering message by request of recovery action.",
                                                           $"Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'").ConfigureAwait(false);
                                 }
@@ -265,7 +265,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
                                 await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);
 
-                                await DeadLetterAsync(connection, transaction, message, _failedRecoveryDeadletterErrorCode,
+                                await DeadLetterAsync(connection, messageContext, transactionContext, message, _failedRecoveryDeadletterErrorCode,
                                                       $"Critical error encountered receiving message. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'",
                                                       aggEx.ToString()).ConfigureAwait(false);
                             }
@@ -282,6 +282,20 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                     _logger.LogError(e, $"Error occurred in {nameof(MessageReceiverLoop)}.");
                 }
             }
+        }
+
+        private IDictionary<string, object> CreateHeaders(ReceivedMessage message)
+        {
+            return new Dictionary<string, object>
+            {
+                [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
+                [SSBMessageContext.ConversationHandle] = message.ConvHandle,
+                [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
+                [SSBMessageContext.ServiceName] = message.ServiceName,
+                [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
+                [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
+                [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType
+            };
         }
 
         private async Task<SqlTransaction> CreateTransaction(SqlConnection connection)
@@ -313,19 +327,33 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
         }
 
-        private async Task DeadLetterAsync(SqlConnection connection, IDbTransaction transaction, ReceivedMessage message, int errorCode, string reason, string description)
+        private async Task DeadLetterAsync(SqlConnection connection, MessageBrokerContext messageContext, TransactionContext transactionContext, ReceivedMessage message, int errorCode, string reason, string description)
         {
             var errorDescription = reason + Environment.NewLine + description;
+            var contextTransactionMode = transactionContext?.TransactionMode ?? TransactionMode.None;
+            IDbTransaction transaction = null;
+            transactionContext?.Container.TryGet(out transaction);
             try
             {
-                transaction?.Rollback();
                 var edc = new EndDialogConversationCommand(connection,
                                                            message.ConvHandle,
-                                                           errorCode,
-                                                           errorDescription,
-                                                           enableCleanup: _options.CleanupOnEndConversation);
+                                                           enableCleanup: _options.CleanupOnEndConversation,
+                                                           transaction: (SqlTransaction)transaction);
                 await edc.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
-                _localReceiverDeliveryAttempts.TryRemove(message.ConvHandle, out var _);
+
+                using var scope = _serviceFactory.CreateScope();
+                var brokeredMessageDispatcher = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>();
+                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_options.MessageBodyType);
+                var headers = CreateHeaders(message);
+                headers[SSBMessageContext.ServiceName] = null;
+                headers[MessageContext.FailureDescription] = errorDescription;
+                headers[MessageContext.FailureDetails] = $"{reason} (code: {errorCode})";
+                await brokeredMessageDispatcher.Dispatch(new OutboundBrokeredMessage(Guid.NewGuid().ToString(), message.Body, headers, this.DeadLetterQueueName, bodyConverter), transactionContext);
+
+                if (contextTransactionMode != TransactionMode.None && transaction != null)
+                {
+                    transaction?.Commit();
+                }
             }
             catch (Exception e)
             {
@@ -333,6 +361,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 _logger.LogError(e, "Unable to complete receive operation");
             }
 
+            _localReceiverDeliveryAttempts.TryRemove(message.ConvHandle, out var _);
             _logger.LogError(errorDescription);
         }
 

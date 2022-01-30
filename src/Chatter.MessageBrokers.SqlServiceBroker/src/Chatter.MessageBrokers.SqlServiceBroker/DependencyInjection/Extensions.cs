@@ -44,10 +44,11 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                 string queueName,
                                                                                 string errorQueuePath = null,
                                                                                 string description = null,
-                                                                                TransactionMode? transactionMode = null)
+                                                                                TransactionMode? transactionMode = null,
+                                                                                string deadLetterServicePath = null)
             where TMessage : class, IMessage
         {
-            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, SSBMessageContext.InfrastructureType);
+            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, SSBMessageContext.InfrastructureType, deadLetterServicePath);
             return builder;
         }
     }

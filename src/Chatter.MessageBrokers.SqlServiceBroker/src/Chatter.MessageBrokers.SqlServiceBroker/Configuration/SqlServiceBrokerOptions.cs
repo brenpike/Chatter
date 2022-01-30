@@ -37,9 +37,9 @@
         /// </summary>
         public bool CleanupOnEndConversation { get; set; } = false;
         /// <summary>
-        /// Turned off by default. When true, will END CONVERSATION after a message has been dispatched via <see cref="Sending.SqlServiceBrokerSender"/>.
+        /// Turned on by default. When true, will END CONVERSATION after a message has been dispatched via <see cref="Sending.SqlServiceBrokerSender"/> which will add a message of type http://schemas.microsoft.com/SQL/ServiceBroker/EndDialog to the queue.}.
         /// </summary>
-        public bool EndConversationAfterDispatch { get; set; } = false;
+        public bool EndConversationAfterDispatch { get; set; } = true;
 
         public SqlServiceBrokerOptions(string connectionString,
                                        string messageBodyType,

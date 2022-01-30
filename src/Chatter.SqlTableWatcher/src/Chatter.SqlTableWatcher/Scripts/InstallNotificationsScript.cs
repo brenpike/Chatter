@@ -14,12 +14,16 @@ namespace Chatter.SqlTableWatcher.Scripts
         private readonly string _conversationQueueName;
         private readonly string _conversationServiceName;
         private readonly string _conversationTriggerName;
+        private readonly string _deadLetterQueueName;
+        private readonly string _deadLetterServiceName;
 
         public InstallNotificationsScript(SqlTableWatcherOptions options,
                                           string installationProcedureName,
                                           string conversationQueueName,
                                           string conversationServiceName,
-                                          string conversationTriggerName)
+                                          string conversationTriggerName,
+                                          string deadLetterQueueName,
+                                          string deadLetterServiceName)
             : base(options?.ConnectionString)
         {
             if (string.IsNullOrWhiteSpace(installationProcedureName))
@@ -47,6 +51,8 @@ namespace Chatter.SqlTableWatcher.Scripts
             _conversationQueueName = conversationQueueName;
             _conversationServiceName = conversationServiceName;
             _conversationTriggerName = conversationTriggerName;
+            _deadLetterQueueName = deadLetterQueueName;
+            _deadLetterServiceName = deadLetterServiceName;
         }
 
         public override string ToString()
@@ -57,7 +63,9 @@ namespace Chatter.SqlTableWatcher.Scripts
                     _options.DatabaseName,
                     _conversationQueueName,
                     _conversationServiceName,
-                    _options.SchemaName);
+                    _options.SchemaName,
+                    _deadLetterQueueName,
+                    _deadLetterServiceName);
 
             var installNotificationTriggerScript =
                 new CreateNotificationTrigger(_options.TableName,

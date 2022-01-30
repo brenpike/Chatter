@@ -16,9 +16,8 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         ReceiveOnly = 1,
         /// <summary>
-        /// The message broker infrastructure creates a <see cref="TransactionScope"/> that all message broker infrastructure operations will be a part of.
-        /// The receiver and all operations that occur during the message receiving process are considered an atomic operation. Any operations such as database
-        /// operations that cannot be part of this transaction must be supressed via <see cref="TransactionScopeOption.Suppress"/>.
+        /// The message broker infrastructure creates a transaction that all message broker infrastructure operations will be a part of.
+        /// The receiver and all operations that occur during the message receiving process are considered an atomic operation.
         /// </summary>
         FullAtomicityViaInfrastructure = 2,
     }

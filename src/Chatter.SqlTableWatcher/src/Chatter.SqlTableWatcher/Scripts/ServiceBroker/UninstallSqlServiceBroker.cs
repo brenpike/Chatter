@@ -10,6 +10,8 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
         private readonly string _conversationQueueName;
         private readonly string _conversationServiceName;
         private readonly string _schemaName;
+        private readonly string _deadLetterQueueName;
+        private readonly string _deadLetterServiceName;
 
         /// <summary>
         /// Removes all SQL Service Broker QUEUES, SERVICES and CONVERSATIONS for the specified SERVICE
@@ -21,7 +23,9 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
         public UninstallSqlServiceBroker(string connectionString,
                                          string conversationQueueName,
                                          string conversationServiceName,
-                                         string schemaName)
+                                         string schemaName,
+                                         string deadLetterQueueName,
+                                         string deadLetterServiceName)
             : base(connectionString)
         {
             if (string.IsNullOrWhiteSpace(conversationQueueName))
@@ -42,34 +46,43 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
             _conversationQueueName = conversationQueueName;
             _conversationServiceName = conversationServiceName;
             _schemaName = schemaName;
+            _deadLetterQueueName = deadLetterQueueName;
+            _deadLetterServiceName = deadLetterServiceName;
         }
 
-        public override string ToString()
+        private string Uninstall(string queueName, string serviceName, string schemaName)
         {
             return string.Format(@"
-                DECLARE @serviceId INT
-                SELECT @serviceId = service_id FROM sys.services 
+                DECLARE @{1}_Id INT
+                SELECT @{1}_Id = service_id FROM sys.services 
                 WHERE sys.services.name = '{1}'
 
-                DECLARE @ConvHandle uniqueidentifier
+                DECLARE @{1}_CovHandle uniqueidentifier
                 DECLARE Conv CURSOR FOR
                 SELECT CEP.conversation_handle FROM sys.conversation_endpoints CEP
-                WHERE CEP.service_id = @serviceId AND ([state] != 'CD' OR [lifetime] > GETDATE() + 1)
+                WHERE CEP.service_id = @{1}_Id AND ([state] != 'CD' OR [lifetime] > GETDATE() + 1)
 
                 OPEN Conv;
-                FETCH NEXT FROM Conv INTO @ConvHandle;
+                FETCH NEXT FROM Conv INTO @{1}_CovHandle;
                 WHILE (@@FETCH_STATUS = 0) BEGIN
-    	            END CONVERSATION @ConvHandle WITH CLEANUP;
-                    FETCH NEXT FROM Conv INTO @ConvHandle;
+    	            END CONVERSATION @{1}_CovHandle WITH CLEANUP;
+                    FETCH NEXT FROM Conv INTO @{1}_CovHandle;
                 END
                 CLOSE Conv;
                 DEALLOCATE Conv;
 
-                IF (@serviceId IS NOT NULL)
+                IF (@{1}_Id IS NOT NULL)
                     DROP SERVICE [{1}];
                 IF OBJECT_ID ('{2}.{0}', 'SQ') IS NOT NULL
 	                DROP QUEUE {2}.[{0}];
-            ", _conversationQueueName, _conversationServiceName, _schemaName);
+            ", queueName, serviceName, schemaName);
+        }
+
+        public override string ToString()
+        {
+            return $"{Uninstall(_conversationQueueName, _conversationServiceName, _schemaName)}" +
+                   $"{Environment.NewLine}" +
+                   $"{Uninstall(_deadLetterQueueName, _deadLetterServiceName, _schemaName)}";
         }
     }
 }

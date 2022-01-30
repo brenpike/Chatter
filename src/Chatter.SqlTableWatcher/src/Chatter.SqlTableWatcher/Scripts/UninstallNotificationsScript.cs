@@ -15,13 +15,17 @@ namespace Chatter.SqlTableWatcher.Scripts
         private readonly string _conversationServiceName;
         private readonly string _conversationTriggerName;
         private readonly string _installationProcedureName;
+        private readonly string _deadLetterQueueName;
+        private readonly string _deadLetterServiceName;
 
         public UninstallNotificationsScript(SqlTableWatcherOptions options,
                                           string uninstallationProcedureName,
                                           string conversationQueueName,
                                           string conversationServiceName,
                                           string conversationTriggerName,
-                                          string installationProcedureName)
+                                          string installationProcedureName,
+                                          string deadLetterQueueName,
+                                          string deadLetterServiceName)
             : base(options?.ConnectionString)
         {
             if (string.IsNullOrWhiteSpace(uninstallationProcedureName))
@@ -55,6 +59,8 @@ namespace Chatter.SqlTableWatcher.Scripts
             _conversationServiceName = conversationServiceName;
             _conversationTriggerName = conversationTriggerName;
             _installationProcedureName = installationProcedureName;
+            _deadLetterQueueName = deadLetterQueueName;
+            _deadLetterServiceName = deadLetterServiceName;
         }
 
         public override string ToString()
@@ -64,7 +70,9 @@ namespace Chatter.SqlTableWatcher.Scripts
                 _options.ConnectionString,
                 _conversationQueueName,
                 _conversationServiceName,
-                _options.SchemaName);
+                _options.SchemaName,
+                _deadLetterQueueName,
+                _deadLetterServiceName);
 
             var uninstallNotificationTriggerScript =
                 new DeleteNotificationTrigger(

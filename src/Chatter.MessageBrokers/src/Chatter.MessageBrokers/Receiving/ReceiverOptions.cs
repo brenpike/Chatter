@@ -17,9 +17,15 @@
         public string SendingPath { get; set; }
 
         /// <summary>
-        /// Gets the name of the path to send messages on error.
+        /// Gets the name of the path to send messages on error. Used by <see cref="IRecoveryAction"/>
         /// </summary>
         public string ErrorQueuePath { get; set; }
+
+        /// <summary>
+        /// The path of the deadletter queue. Messages will be forwarded to this queue if they are unable to be received after max configured retries, failed IRecoveryAction or if they are poisoned.
+        /// This property may be ignored by message broker infrastructure which have their own DLQ implementation.
+        /// </summary>
+        public string DeadLetterQueuePath { get; set; }
 
         /// <summary>
         /// The type of transactionality the message will be part of while being received by the messaging infrastructure

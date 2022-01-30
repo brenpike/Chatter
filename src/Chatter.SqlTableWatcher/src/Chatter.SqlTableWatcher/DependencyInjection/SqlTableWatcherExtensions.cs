@@ -69,13 +69,17 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.AddSqlServiceBroker(ssbBuilder =>
             {
                 var receiver = string.IsNullOrWhiteSpace(options.TableWatcherQueueName) ? $"{ChatterServiceBrokerConstants.ChatterQueuePrefix}{typeof(TRowChangedData).Name}" : options.TableWatcherQueueName;
+                var dlq = string.IsNullOrWhiteSpace(options.TableWatcherDeadLetterServiceName) ? $"{ChatterServiceBrokerConstants.ChatterDeadLetterServicePrefix}{typeof(TRowChangedData).Name}" : options.TableWatcherDeadLetterServiceName;
                 ssbBuilder.AddSqlServiceBrokerOptions(options.ConnectionString,
                                                       options.ServiceBrokerOptions.MessageBodyType,
                                                       options.ServiceBrokerOptions.ReceiverTimeoutInMilliseconds,
                                                       options.ServiceBrokerOptions.ConversationLifetimeInSeconds,
                                                       options.ServiceBrokerOptions.ConversationEncryption,
                                                       options.ServiceBrokerOptions.CleanupOnEndConversation)
-                          .AddQueueReceiver<ProcessTableChangesCommand<TRowChangedData>>(receiver, errorQueuePath: options.ReceiverOptions.ErrorQueuePath, transactionMode: options.ReceiverOptions.TransactionMode);
+                          .AddQueueReceiver<ProcessTableChangesCommand<TRowChangedData>>(receiver,
+                                                                                         errorQueuePath: options.ReceiverOptions.ErrorQueuePath,
+                                                                                         transactionMode: options.ReceiverOptions.TransactionMode,
+                                                                                         deadLetterServicePath: dlq);
             });
 
             if (options.ProcessTableChangesViaChatter)
@@ -125,14 +129,17 @@ namespace Microsoft.Extensions.DependencyInjection
             using var scope = provider.CreateScope();
             var sdm = (ISqlDependencyManager)scope.ServiceProvider.GetRequiredService(typeof(ISqlDependencyManager<>).MakeGenericType(rowChangedDataType));
 
+
             var receiverName = rowChangedDataType.Name;
             var conversationQueueName = $"{ChatterServiceBrokerConstants.ChatterQueuePrefix}{receiverName}";
             var conversationServiceName = $"{ChatterServiceBrokerConstants.ChatterServicePrefix}{receiverName}";
+            var conversationDeadLetterQueueName = $"{ChatterServiceBrokerConstants.ChatterDeadLetterQueuePrefix}{receiverName}";
+            var conversationDeadLetterServiceName = $"{ChatterServiceBrokerConstants.ChatterDeadLetterServicePrefix}{receiverName}";
             var conversationTriggerName = $"{ChatterServiceBrokerConstants.ChatterTriggerPrefix}{receiverName}";
             var installNotificationsStoredProcName = $"{ChatterServiceBrokerConstants.ChatterInstallNotificationsPrefix}{receiverName}";
             var uninstallNotificationsStoredProcName = $"{ChatterServiceBrokerConstants.ChatterUninstallNotificationsPrefix}{receiverName}";
 
-            sdm.InstallSqlDependencies(installNotificationsStoredProcName, uninstallNotificationsStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName);
+            sdm.InstallSqlDependencies(installNotificationsStoredProcName, uninstallNotificationsStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName, conversationDeadLetterQueueName, conversationDeadLetterServiceName);
 
             return provider;
         }
