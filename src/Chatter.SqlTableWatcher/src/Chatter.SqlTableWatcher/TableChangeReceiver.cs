@@ -3,6 +3,8 @@ using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Recovery;
+using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -19,12 +21,15 @@ namespace Chatter.SqlTableWatcher
 
         public TableChangeReceiver(IMessagingInfrastructureProvider infrastructureProvider,
                                    ILogger<BrokeredMessageReceiver<TProcessorCommand>> logger,
-                                   IServiceScopeFactory serviceFactory)
-            : base(infrastructureProvider, logger, serviceFactory)
+                                   IServiceScopeFactory serviceFactory,
+                                   IFailedReceiveRecoverer failedReceiveRecoverer,
+                                   ICriticalFailureNotifier criticalFailureNotifier,
+                                   ICircuitBreaker circuitBreaker)
+            : base(infrastructureProvider, logger, serviceFactory, failedReceiveRecoverer, criticalFailureNotifier, circuitBreaker)
         {
         }
 
-        public override async Task ReceiveInboundBrokeredMessage(MessageBrokerContext context, TransactionContext transactionContext)
+        public override async Task HandleInboundBrokeredMessage(MessageBrokerContext context, TransactionContext transactionContext)
         {
             try
             {

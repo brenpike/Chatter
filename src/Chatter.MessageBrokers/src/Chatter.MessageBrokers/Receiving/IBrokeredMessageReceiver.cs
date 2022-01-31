@@ -20,6 +20,6 @@ namespace Chatter.MessageBrokers.Receiving
         Task<IAsyncDisposable> StartReceiver(ReceiverOptions options, CancellationToken receiverTerminationToken);
         Task<IAsyncDisposable> StartReceiver(ReceiverOptions options);
         Task StopReceiver();
-        Task ReceiveInboundBrokeredMessage(MessageBrokerContext messageContext, TransactionContext transactionContext);
+        Task HandleInboundBrokeredMessage(MessageBrokerContext messageContext, TransactionContext transactionContext);
     }
 }

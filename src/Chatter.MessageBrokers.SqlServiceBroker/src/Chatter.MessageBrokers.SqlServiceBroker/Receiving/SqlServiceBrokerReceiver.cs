@@ -53,8 +53,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             _serviceFactory = serviceFactory;
         }
 
-        public string TargetServiceName { get; private set; }
-        public string QueueName { get; private set; }
+        public string SendingPath { get; private set; }
+        public string MessageReceiverPath { get; private set; }
         public string ErrorQueueName { get; private set; }
         public string DeadLetterQueueName { get; private set; }
 
@@ -68,13 +68,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         {
             try
             {
-                this.TargetServiceName = options.SendingPath;
-                this.QueueName = options.MessageReceiverPath;
+                this.SendingPath = options.SendingPath;
+                this.MessageReceiverPath = options.MessageReceiverPath;
                 this.ErrorQueueName = options.ErrorQueuePath;
                 this.DeadLetterQueueName = options.DeadLetterQueuePath;
+
                 if (options.TransactionMode != null)
                 {
-                    _transactionMode = options.TransactionMode ?? TransactionMode.None;
+                    _transactionMode = options.TransactionMode ?? TransactionMode.ReceiveOnly;
                 }
 
                 _cancellationSource = new CancellationTokenSource();
@@ -112,7 +113,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private async Task<ReceivedMessage> ReceiveAsync(SqlConnection connection, SqlTransaction transaction)
         {
             var receiveMessageFromQueue = new ReceiveMessageFromQueueCommand(connection,
-                                             this.QueueName,
+                                             this.MessageReceiverPath,
                                              _options.ReceiverTimeoutInMilliseconds,
                                              transaction: transaction);
 
@@ -139,7 +140,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                         }
                         catch (Exception)
                         {
-                            _logger.LogError($"Error receiving sql service broker message from queue '{this.QueueName}'");
+                            _logger.LogError($"Error receiving sql service broker message from queue '{this.MessageReceiverPath}'");
                             throw;
                         }
 
@@ -167,14 +168,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                 var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_options.MessageBodyType);
                                 var headers = CreateHeaders(message);
 
-                                transactionContext = new TransactionContext(this.QueueName, _transactionMode);
+                                transactionContext = new TransactionContext(this.MessageReceiverPath, _transactionMode);
 
                                 if (_transactionMode != TransactionMode.None && transaction != null)
                                 {
                                     transactionContext.Container.Include<IDbTransaction>(transaction);
                                 }
 
-                                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);
+                                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, this.MessageReceiverPath, receiverTokenSource.Token, bodyConverter);
                                 messageContext.Container.Include(message);
 
                                 //throw new Exception("fake");
@@ -201,7 +202,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                             try
                             {
                                 await DeadLetterAsync(connection, messageContext, transactionContext, message, _poisonMessageDeadletterErrorCode,
-                                                      $"Poisoned message received from queue '{this.QueueName}' cannot be handled.",
+                                                      $"Poisoned message received from queue '{this.MessageReceiverPath}' cannot be handled.",
                                                       pme.Message).ConfigureAwait(false);
                             }
                             catch (Exception)
@@ -369,6 +370,52 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             _logger.LogError("Message successfully deadlettered:" + errorDescription + Environment.NewLine + $"{reason} (code: {errorCode})");
         }
 
+        public Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public IDisposable BeginTransaction(TransactionContext transactionContext)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void RollbackTransaction(TransactionContext transactionContext)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void CompleteTransaction(TransactionContext transactionContext)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<int> CurrentMessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+
         public void Dispose()
         {
             Dispose(disposing: true);
@@ -392,5 +439,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             _cancellationSource = null;
         }
+
     }
 }
