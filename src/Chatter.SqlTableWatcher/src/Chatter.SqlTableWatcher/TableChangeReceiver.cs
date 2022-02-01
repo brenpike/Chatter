@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS;
 using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
@@ -20,12 +21,13 @@ namespace Chatter.SqlTableWatcher
     {
 
         public TableChangeReceiver(IMessagingInfrastructureProvider infrastructureProvider,
+                                   MessageBrokerOptions messageBrokerOptions,
                                    ILogger<BrokeredMessageReceiver<TProcessorCommand>> logger,
                                    IServiceScopeFactory serviceFactory,
                                    IFailedReceiveRecoverer failedReceiveRecoverer,
                                    ICriticalFailureNotifier criticalFailureNotifier,
                                    ICircuitBreaker circuitBreaker)
-            : base(infrastructureProvider, logger, serviceFactory, failedReceiveRecoverer, criticalFailureNotifier, circuitBreaker)
+            : base(infrastructureProvider, messageBrokerOptions, logger, serviceFactory, failedReceiveRecoverer, criticalFailureNotifier, circuitBreaker)
         {
         }
 

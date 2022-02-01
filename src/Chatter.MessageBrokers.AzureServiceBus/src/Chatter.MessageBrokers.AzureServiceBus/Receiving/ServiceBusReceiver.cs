@@ -11,7 +11,6 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
@@ -160,47 +159,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public void RollbackTransaction(TransactionContext transactionContext)
-        {
-            if (transactionContext.Container.TryGet<TransactionScope>(out var transactionScope))
-            {
-                transactionScope?.Dispose();
-            }
-        }
-
-        public void CompleteTransaction(TransactionContext transactionContext)
-        {
-            if (transactionContext.Container.TryGet<TransactionScope>(out var transactionScope))
-            {
-                transactionScope?.Complete();
-            }
-        }
-
-        public IDisposable BeginTransaction(TransactionContext transactionContext)
-        {
-            var transactionMode = transactionContext.TransactionMode;
-            if (transactionMode == TransactionMode.None || transactionMode == TransactionMode.ReceiveOnly)
-            {
-                return null;
-            }
-            else
-            {
-                var transactionScope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled);
-                transactionContext.Container.Include(transactionScope);
-                return transactionScope;
-            }
-        }
-
         public Task AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            if (transactionContext.TransactionMode == TransactionMode.None)
-            {
-                return Task.CompletedTask;
-            }
-
             if (!context.Container.TryGet<Message>(out var msg))
             {
-                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to acknowledge message.)");
+                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to acknowledge message.");
                 return Task.CompletedTask;
             }
 
@@ -209,14 +172,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         public Task NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            if (transactionContext.TransactionMode == TransactionMode.None)
-            {
-                return Task.CompletedTask;
-            }
-
             if (!context.Container.TryGet<Message>(out var msg))
             {
-                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to negative acknowledge message.)");
+                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to negative acknowledge message.");
                 return Task.CompletedTask;
             }
 
@@ -225,14 +183,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         public Task DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
-            if (transactionContext.TransactionMode == TransactionMode.None)
-            {
-                return Task.CompletedTask;
-            }
-
             if (!context.Container.TryGet<Message>(out var msg))
             {
-                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to dead letter message.)");
+                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to dead letter message.");
                 return Task.CompletedTask;
             }
 

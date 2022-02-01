@@ -23,10 +23,6 @@ namespace Chatter.MessageBrokers.Receiving
         Task NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken);
         Task DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken);
 
-        IDisposable BeginTransaction(TransactionContext transactionContext);
-        void RollbackTransaction(TransactionContext transactionContext);
-        void CompleteTransaction(TransactionContext transactionContext);
-
         Task<int> CurrentMessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken);
     }
 }

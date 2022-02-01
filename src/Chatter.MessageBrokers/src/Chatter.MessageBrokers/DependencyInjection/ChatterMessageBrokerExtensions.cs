@@ -242,9 +242,8 @@ namespace Microsoft.Extensions.DependencyInjection
             services.AddScoped(closedBrokeredMessageReceiverInterface, closedConcreteBrokeredMessageReceiver);
             services.AddScoped(closedConcreteReceiverBackgroundService, sp =>
             {
-                return Activator.CreateInstance(closedConcreteReceiverBackgroundService,
-                                                options,
-                                                sp);
+                var br = ActivatorUtilities.CreateInstance(sp, closedConcreteReceiverBackgroundService, options);
+                return br;
             });
             services.AddSingleton(typeof(IHostedService), sp =>
             {
