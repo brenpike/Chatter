@@ -25,6 +25,7 @@ namespace Chatter.SqlTableWatcher.Configuration
         private string _errorQueueName = null;
         private TransactionMode _transactionMode = TransactionMode.FullAtomicityViaInfrastructure;
         private string _tableWatcherDeadLetterServiceName;
+        private int _maxReceiveAttempts = 10;
 
         internal SqlTableWatcherOptionsBuilder(IServiceCollection services, string connectionString, string databaseName, string tableName)
         {
@@ -190,6 +191,12 @@ namespace Chatter.SqlTableWatcher.Configuration
             return this;
         }
 
+        public SqlTableWatcherOptionsBuilder WithMaxReceiveAttempts(int maxReceiveAttempts)
+        {
+            _maxReceiveAttempts = maxReceiveAttempts;
+            return this;
+        }
+
         internal SqlTableWatcherOptions Build()
         {
             var connStrBuilder = new SqlConnectionStringBuilder(_connectionString);
@@ -207,7 +214,7 @@ namespace Chatter.SqlTableWatcher.Configuration
             return new SqlTableWatcherOptions(_connectionString, _databaseName, _tableName, _schemaName, _changeTypes, _processTableChangesViaChatter, _tableWatcherQueueName)
             {
                 ServiceBrokerOptions = new SqlServiceBrokerOptions(_connectionString, _messageBodyType, _receiverTimeoutInMilliseconds, _conversationLifetimeInSeconds, _coversationEncryption, _compressMessageBody, false),
-                ReceiverOptions = new ReceiverOptions() { ErrorQueuePath = _errorQueueName, TransactionMode = _transactionMode, DeadLetterQueuePath = _tableWatcherDeadLetterServiceName }
+                ReceiverOptions = new ReceiverOptions() { ErrorQueuePath = _errorQueueName, TransactionMode = _transactionMode, DeadLetterQueuePath = _tableWatcherDeadLetterServiceName, MaxReceiveAttempts = _maxReceiveAttempts }
             };
         }
     }

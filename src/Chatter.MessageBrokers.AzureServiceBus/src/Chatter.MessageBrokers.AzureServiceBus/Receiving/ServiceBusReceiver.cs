@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
@@ -103,7 +104,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         {
             if (_innerReceiver != null)
             {
-                await _innerReceiver.CloseAsync().ConfigureAwait(false);
+                await _innerReceiver.CloseAsync();
             }
         }
 
@@ -114,19 +115,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             try
             {
                 message = await this.InnerReceiver.ReceiveAsync();
+                //todo: add catch blocks for non-transient exceptions which can never be recovered (critical error), i.e., invalid connection string, etc.
+                //throw new CriticalReceiverException(ae);
             }
             catch (ServiceBusException sbe) when (sbe.IsTransient)
             {
-                _logger.LogError("Failure to receive message from Azure Service Bus due to transient error");
-                return null;
+                _logger.LogWarning(sbe, "Failure to receive message from Azure Service Bus due to transient error");
+                throw;
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                _logger.LogError("Failure to receive message from Azure Serivce Bus");
+                _logger.LogError(e, "Failure to receive message from Azure Serivce Bus");
                 throw;
             }
 
-            if (message == null)
+            if (message is null)
             {
                 return null;
             }
@@ -138,6 +141,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
                 message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
                 message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
+                message.AddUserProperty(MessageContext.ReceiveAttempts, message.SystemProperties.DeliveryCount);
 
                 var bodyConverter = _bodyConverterFactory.CreateBodyConverter(message.ContentType);
 
@@ -159,48 +163,67 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public Task AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public async Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            if (!context.Container.TryGet<Message>(out var msg))
+            if (_receiveMode != ReceiveMode.PeekLock)
             {
-                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to acknowledge message.");
-                return Task.CompletedTask;
+                return false;
             }
 
-            return this.InnerReceiver.CompleteAsync(msg.SystemProperties.LockToken);
+            if (!context.Container.TryGet<Message>(out var msg))
+            {
+                _logger.LogWarning($"Unable to acknowledge message. No {nameof(Message)} contained in {nameof(context)}.");
+                return false;
+            }
+
+            await this.InnerReceiver.CompleteAsync(msg.SystemProperties.LockToken);
+            return true;
         }
 
-        public Task NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public async Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            if (!context.Container.TryGet<Message>(out var msg))
+            if (_receiveMode != ReceiveMode.PeekLock)
             {
-                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to negative acknowledge message.");
-                return Task.CompletedTask;
+                return false;
             }
 
-            return this.InnerReceiver.AbandonAsync(msg.SystemProperties.LockToken, msg.UserProperties);
+            if (!context.Container.TryGet<Message>(out var msg))
+            {
+                _logger.LogWarning($"Unable to negative acknowledge message.  No {nameof(Message)} contained in {nameof(context)}.");
+                return false;
+            }
+
+            await this.InnerReceiver.AbandonAsync(msg.SystemProperties.LockToken, msg.UserProperties);
+            return true;
         }
 
-        public Task DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+        public async Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
-            if (!context.Container.TryGet<Message>(out var msg))
+            if (_receiveMode != ReceiveMode.PeekLock)
             {
-                _logger.LogWarning($"{nameof(transactionContext.TransactionMode)} was set but no {nameof(Message)} was found in {nameof(context)}. Unable to dead letter message.");
-                return Task.CompletedTask;
+                return false;
             }
 
-            return this.InnerReceiver.DeadLetterAsync(msg.SystemProperties.LockToken, deadLetterReason, deadLetterErrorDescription);
+            if (!context.Container.TryGet<Message>(out var msg))
+            {
+                _logger.LogWarning($"Unable to deadletter message.  No {nameof(Message)} contained in {nameof(context)}.");
+                return false;
+            }
+
+            await this.InnerReceiver.DeadLetterAsync(msg.SystemProperties.LockToken, deadLetterReason, deadLetterErrorDescription);
+            return true;
         }
 
-        public Task<int> CurrentMessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken)
+        public TransactionScope CreateLocalTransaction(TransactionContext context)
         {
-            if (!context.Container.TryGet<Message>(out var msg))
+            if (context.TransactionMode == TransactionMode.None || context.TransactionMode == TransactionMode.ReceiveOnly)
             {
-                _logger.LogWarning($"No {nameof(Message)} was found in {nameof(context)}. Unable to fetch delivery count message.");
-                return Task.FromResult(999);
+                return null;
             }
-
-            return Task.FromResult(msg.SystemProperties.DeliveryCount);
+            else
+            {
+                return new TransactionScope(TransactionScopeAsyncFlowOption.Enabled);
+            }
         }
 
         public async ValueTask DisposeAsync()

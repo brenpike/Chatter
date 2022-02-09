@@ -37,5 +37,13 @@
         /// during startup will be used.
         /// </summary>
         public string InfrastructureType { get; set; } = "";
+
+        /// <summary>
+        /// The max number of attempts that will be made to receive a message from a queue/subscription before the message is deadlettered.
+        /// Messaging infrastructure implementation will take precedence. If this value is set to 11 but the messaging infrastructure's
+        /// "max delivery count" is set to 10, the message will only be attemped to be received 10 times and thus any application logic triggered by
+        /// comparing actual receive attempts to the max will not execute.
+        /// </summary>
+        public int MaxReceiveAttempts { get; set; }
     }
 }

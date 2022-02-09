@@ -27,13 +27,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
         public async Task Dispatch(IEnumerable<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext)
         {
             _logger.LogInformation("Sending sql service broker message(s)");
-            IDbTransaction contextTransaction = null;
+            SqlTransaction contextTransaction = null;
             transactionContext?.Container.TryGet(out contextTransaction);
             var contextTransactionMode = transactionContext?.TransactionMode ?? TransactionMode.None;
             var useContextTransaction = contextTransactionMode == TransactionMode.FullAtomicityViaInfrastructure && contextTransaction != null;
 
             SqlConnection connection = useContextTransaction
-                                            ? (SqlConnection)contextTransaction.Connection
+                                            ? contextTransaction.Connection
                                             : new SqlConnection(_options.ConnectionString);
 
             if (connection.State != ConnectionState.Open)
@@ -43,7 +43,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
             }
 
             var transaction = useContextTransaction
-                                    ? (SqlTransaction)contextTransaction
+                                    ? contextTransaction
                                     : (SqlTransaction)await connection.BeginTransactionAsync();
 
             try

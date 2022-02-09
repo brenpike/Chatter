@@ -3,8 +3,8 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery
 {
-    public interface IRecoveryAction
+    public interface IMaxReceivesExceededAction
     {
-        Task<RecoveryState> Execute(FailureContext failureContext);
+        Task ExecuteAsync(FailureContext failureContext);
     }
 }

@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Recovery;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Recovery.Retry;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -29,10 +30,11 @@ namespace Chatter.MessageBrokers.Receiving
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
         private readonly int _maxConcurrentCalls = 1;
-        private TransactionMode _transactionMode;
         private readonly ICircuitBreaker _circuitBreaker;
         private readonly MessageBrokerOptions _messageBrokerOptions;
-        private readonly IFailedReceiveRecoverer _failedReceiveRecoverer;
+        private readonly IRetryStrategy _retryRecovery;
+        private readonly IRecoveryStrategy _recoveryStrategy;
+        private readonly IMaxReceivesExceededAction _recoveryAction;
         private readonly ICriticalFailureNotifier _criticalFailureNotifier;
 
         /// <summary>
@@ -45,9 +47,9 @@ namespace Chatter.MessageBrokers.Receiving
                                        MessageBrokerOptions messageBrokerOptions,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
                                        IServiceScopeFactory serviceFactory,
-                                       IFailedReceiveRecoverer failedReceiveRecoverer,
+                                       IMaxReceivesExceededAction recoveryAction,
                                        ICriticalFailureNotifier criticalFailureNotifier,
-                                       ICircuitBreaker circuitBreaker)
+                                       IRecoveryStrategy recoveryStrategy)
         {
             if (infrastructureProvider is null)
             {
@@ -57,11 +59,11 @@ namespace Chatter.MessageBrokers.Receiving
             _infrastructureProvider = infrastructureProvider;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
-            _failedReceiveRecoverer = failedReceiveRecoverer;
+            _recoveryAction = recoveryAction;
             _criticalFailureNotifier = criticalFailureNotifier ?? throw new ArgumentNullException(nameof(criticalFailureNotifier));
-            _circuitBreaker = circuitBreaker ?? throw new ArgumentNullException(nameof(circuitBreaker));
-            _messageBrokerOptions = messageBrokerOptions;
-            _transactionMode = _messageBrokerOptions?.TransactionMode ?? TransactionMode.ReceiveOnly;
+            _messageBrokerOptions = messageBrokerOptions ?? throw new ArgumentNullException(nameof(messageBrokerOptions));
+            _recoveryStrategy = recoveryStrategy ?? throw new ArgumentNullException(nameof(recoveryStrategy));
+            //add configuration for maxconcurrentcalls to messagebrokeroptions and/or receiveroptions
         }
 
         /// <summary>
@@ -82,7 +84,7 @@ namespace Chatter.MessageBrokers.Receiving
         {
             try
             {
-                await Start(options, receiverTerminationToken);
+                await InitAsync(options, receiverTerminationToken);
             }
             catch (Exception e)
             {
@@ -92,7 +94,7 @@ namespace Chatter.MessageBrokers.Receiving
             return this;
         }
 
-        async Task Start(ReceiverOptions options, CancellationToken receiverTerminationToken)
+        async Task InitAsync(ReceiverOptions options, CancellationToken receiverTerminationToken)
         {
             options.Description ??= options.MessageReceiverPath;
             _infrastructureReceiver = _infrastructureProvider.GetReceiver(options.InfrastructureType);
@@ -103,10 +105,7 @@ namespace Chatter.MessageBrokers.Receiving
             this.ErrorQueueName = options.ErrorQueuePath;
             this.DeadLetterQueueName = options.DeadLetterQueuePath;
 
-            if (options.TransactionMode != null)
-            {
-                _transactionMode = options.TransactionMode ?? TransactionMode.ReceiveOnly;
-            }
+            options.TransactionMode ??= _messageBrokerOptions.TransactionMode;
 
             _options = options;
 
@@ -130,13 +129,40 @@ namespace Chatter.MessageBrokers.Receiving
                 {
                     await _semaphore.WaitAsync(_messageReceiverLoopTokenSource.Token);
 
+                    MessageBrokerContext messageContext = null;
+                    TransactionContext transactionContext = new TransactionContext(this.MessageReceiverPath, _options.TransactionMode.Value);
                     try
                     {
-                        await _circuitBreaker.Execute(async _ =>
+                        using var receiverTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_messageReceiverLoopTokenSource.Token);
+                        messageContext = await ReceiveMessage(transactionContext, receiverTokenSource.Token);
+
+                        if (messageContext != null)
                         {
-                            using var receiverTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_messageReceiverLoopTokenSource.Token);
-                            await ReceiveMessage(receiverTokenSource);
-                        }, _messageReceiverLoopTokenSource.Token);
+                            await HandleMessage(messageContext, transactionContext, receiverTokenSource.Token);
+                        }
+                    }
+                    catch (CriticalReceiverException)
+                    {
+                        throw;
+                    }
+                    catch (Exception e) when (messageContext != null)
+                    {
+                        if (await _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, _messageReceiverLoopTokenSource.Token) >= _options.MaxReceiveAttempts)
+                        {
+                            await _recoveryStrategy.ExecuteAsync(
+                                    () => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Max message receive attempts exceeded", e.ToString(), _messageReceiverLoopTokenSource.Token),
+                                    _messageReceiverLoopTokenSource.Token
+                                );
+                            //TODO: execute recovery action
+                        }
+                        else
+                        {
+                            await _recoveryStrategy.ExecuteAsync(
+                                    () => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, _messageReceiverLoopTokenSource.Token),
+                                    _messageReceiverLoopTokenSource.Token
+                                );
+                        }
+                        _logger.LogError(e, "Error receiving and handling brokered message");
                     }
                     catch (Exception e)
                     {
@@ -146,7 +172,7 @@ namespace Chatter.MessageBrokers.Receiving
                     {
                         try
                         {
-                            _semaphore.Release();
+                            _semaphore?.Release();
                         }
                         catch (ObjectDisposedException)
                         {
@@ -154,7 +180,15 @@ namespace Chatter.MessageBrokers.Receiving
                     }
                 }
             }
+            catch (CriticalReceiverException e)
+            {
+                _logger.LogCritical(e, "Receiver is unable continue due to critical error");
+                //_criticalFailureNotifier.Notify(...);
+            }
             catch (OperationCanceledException) when (_messageReceiverLoopTokenSource.IsCancellationRequested)
+            {
+            }
+            catch (ObjectDisposedException) when (_messageReceiverLoopTokenSource.IsCancellationRequested)
             {
             }
         }
@@ -165,121 +199,103 @@ namespace Chatter.MessageBrokers.Receiving
         /// <param name="receiverTokenSource"></param>
         /// <returns>An awaitable <see cref="Task"/></returns>
         /// <remarks>
-        /// If <see cref="ReceiveMessage(CancellationTokenSource)"/> returns, the <see cref="ICircuitBreaker"/> will not be triggered.
+        /// If <see cref="ReceiveMessage(CancellationToken)"/> returns, the <see cref="ICircuitBreaker"/> will not be triggered.
         /// If an <see cref="Exception"/> is thrown, the circuit breaker will be triggered.
         /// </remarks>
-        async Task ReceiveMessage(CancellationTokenSource receiverTokenSource)
+        async Task<MessageBrokerContext> ReceiveMessage(TransactionContext transactionContext, CancellationToken receiverTokenSource)
         {
-            TransactionContext transactionContext = null;
-            MessageBrokerContext messageContext = null;
+            receiverTokenSource.ThrowIfCancellationRequested();
+
+            MessageBrokerContext messageContext;
 
             try
             {
-                transactionContext = new TransactionContext(this.MessageReceiverPath, _transactionMode);
+                messageContext = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.ReceiveMessageAsync(transactionContext, receiverTokenSource), receiverTokenSource);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Failed to receive message from infrastructure");
+                throw;
+            }
+
+            return messageContext;
+        }
+
+        public virtual Task DispatchReceivedMessage(TMessage payload, MessageBrokerContext messageContext, CancellationToken receiverTokenSource)
+        {
+            receiverTokenSource.ThrowIfCancellationRequested();
+
+            try
+            {
+                using var scope = _serviceFactory.CreateScope();
+                var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
+                messageContext.Container.Include((IExternalDispatcher)scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>());
+                return dispatcher.Dispatch(payload, messageContext);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Error dispatching brokered message to handler(s)");
+                throw;
+            }
+        }
+
+        async Task HandleMessage(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+        {
+            receiverTokenSource.ThrowIfCancellationRequested();
+
+            try
+            {
+                using var ts = _infrastructureReceiver.CreateLocalTransaction(transactionContext);
+
+                TMessage brokeredMessagePayload = null;
 
                 try
                 {
-                    messageContext = await _infrastructureReceiver.ReceiveMessageAsync(transactionContext, receiverTokenSource.Token);
+                    if (messageContext is null)
+                    {
+                        throw new ArgumentNullException(nameof(messageContext), $"A {typeof(MessageBrokerContext).Name} was not created by the messaging infrastructure.");
+                    }
+
+                    var inboundMessage = messageContext.BrokeredMessage;
+
+                    if (transactionContext is null)
+                    {
+                        transactionContext = new TransactionContext(_options.MessageReceiverPath, _options.TransactionMode.Value);
+                    }
+
+                    messageContext.Container.GetOrAdd(() => transactionContext);
+
+                    brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
                 }
-                catch (Exception e) //how to tell if transient?
+                catch (Exception e)
                 {
-                    _logger.LogError(e, "Failed to receive message from infrastructure");
-                    throw;
+                    throw new PoisonedMessageException($"Unable to construct {nameof(InboundBrokeredMessage)} due to poisoned message", e);
                 }
 
-                if (messageContext == null || _messageReceiverLoopTokenSource.IsCancellationRequested)
-                {
-                    return;
-                }
-
-                await HandleInboundBrokeredMessage(messageContext, transactionContext);
+                await DispatchReceivedMessage(brokeredMessagePayload, messageContext, receiverTokenSource);
 
                 if (!receiverTokenSource.IsCancellationRequested)
                 {
-                    await _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource.Token);
+                    await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
+                    ts?.Complete();
                 }
                 else
                 {
-                    await _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource.Token);
+                    await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
                 }
-
             }
             catch (PoisonedMessageException pme)
             {
-                _logger?.LogError(pme, "Poisoned message received");
                 try
                 {
-                    await _infrastructureReceiver.DeadletterMessageAsync(messageContext,
-                                                                         transactionContext,
-                                                                         pme.Message,
-                                                                         pme.InnerException?.Message,
-                                                                         receiverTokenSource.Token);
+                    var msg = "Poisoned message was received by brokered message receiver";
+                    await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, msg, pme.ToString(), receiverTokenSource), receiverTokenSource);
+                    _logger?.LogError(pme, msg);
                 }
                 catch (Exception e)
                 {
                     _logger?.LogError(e, "Error deadlettering poisoned message");
                     throw;
-                }
-
-                return;
-            }
-            catch (Exception e)
-            {
-                try
-                {
-                    _logger.LogError(e, $"Error handling recevied message. Attempting recovery. MessageId: '{messageContext.BrokeredMessage.MessageId}, CorrelationId: '{messageContext.BrokeredMessage.CorrelationId}'");
-
-                    RecoveryState state = RecoveryState.Retrying;
-
-                    var failureContext = new FailureContext(messageContext.BrokeredMessage,
-                                                            this.ErrorQueueName,
-                                                            "Unable to handle received message",
-                                                            e,
-                                                            await _infrastructureReceiver.CurrentMessageDeliveryCountAsync(messageContext, receiverTokenSource.Token),
-                                                            transactionContext);
-
-                    state = await _failedReceiveRecoverer.Execute(failureContext);
-
-                    switch (state)
-                    {
-                        case RecoveryState.Retrying:
-                            await _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource.Token);
-                            break;
-                        case RecoveryState.RecoveryActionExecuted:
-                            await _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource.Token);
-                            break;
-                        case RecoveryState.DeadLetter:
-                            await _infrastructureReceiver.DeadletterMessageAsync(messageContext,
-                                transactionContext,
-                                $"Deadlettering message by request of recovery action.",
-                                $"MessageId: '{messageContext.BrokeredMessage.MessageId}, CorrelationId: '{messageContext.BrokeredMessage.CorrelationId}'",
-                                receiverTokenSource.Token);
-                            break;
-                        default:
-                            _logger.LogWarning("Unknown recovery state.");
-                            break;
-                    }
-                }
-                catch (Exception onErrorException)
-                {
-                    var aggEx = new AggregateException(e, onErrorException);
-
-                    _logger.LogError(aggEx, $"Recovery was unsuccessful. MessageId: '{messageContext.BrokeredMessage.MessageId}, CorrelationId: '{messageContext.BrokeredMessage.CorrelationId}'");
-
-                    var failureContext = new FailureContext(messageContext.BrokeredMessage,
-                                                            this.ErrorQueueName,
-                                                            "Unable to recover from error which occurred during message handling",
-                                                            aggEx,
-                                                            await _infrastructureReceiver.CurrentMessageDeliveryCountAsync(messageContext, receiverTokenSource.Token),
-                                                            transactionContext);
-
-                    await _criticalFailureNotifier.Notify(failureContext);
-
-                    await _infrastructureReceiver.DeadletterMessageAsync(messageContext,
-                                                                         transactionContext,
-                                                                         $"Critical error encountered receiving message. MessageId: '{messageContext.BrokeredMessage.MessageId}, CorrelationId: '{messageContext.BrokeredMessage.MessageId}'",
-                                                                         aggEx.ToString(),
-                                                                         receiverTokenSource.Token);
                 }
             }
         }
@@ -297,50 +313,6 @@ namespace Chatter.MessageBrokers.Receiving
 
             _semaphore?.Dispose();
             _messageReceiverLoopTokenSource?.Dispose();
-        }
-
-        public virtual async Task HandleInboundBrokeredMessage(MessageBrokerContext messageContext, TransactionContext transactionContext)
-        {
-            try
-            {
-                TMessage brokeredMessagePayload = null;
-
-                try
-                {
-                    if (messageContext is null)
-                    {
-                        throw new ArgumentNullException(nameof(messageContext), $"A {typeof(MessageBrokerContext).Name} was not created by the messaging infrastructure.");
-                    }
-
-                    var inboundMessage = messageContext.BrokeredMessage;
-
-                    if (transactionContext is null)
-                    {
-                        transactionContext = new TransactionContext(_options.MessageReceiverPath, _options.TransactionMode.Value);
-                    }
-
-                    messageContext.Container.Include(transactionContext);
-
-                    brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
-                }
-                catch (Exception e)
-                {
-                    throw new PoisonedMessageException($"Unable to construct {nameof(InboundBrokeredMessage)} due to poisoned message", e);
-                }
-
-                using var scope = _serviceFactory.CreateScope();
-                var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
-                messageContext.Container.Include((IExternalDispatcher)scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>());
-                await dispatcher.Dispatch(brokeredMessagePayload, messageContext);
-            }
-            catch (PoisonedMessageException)
-            {
-                throw;
-            }
-            catch (Exception e)
-            {
-                throw new ReceiverMessageDispatchingException($"Error dispatching message '{typeof(TMessage).Name}' received by '{typeof(BrokeredMessageReceiver<>).Name}'", e);
-            }
         }
 
         public async ValueTask DisposeAsync()

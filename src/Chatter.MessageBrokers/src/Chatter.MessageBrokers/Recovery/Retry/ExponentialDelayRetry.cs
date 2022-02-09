@@ -2,14 +2,14 @@
 using System;
 using System.Threading.Tasks;
 
-namespace Chatter.MessageBrokers.Recovery
+namespace Chatter.MessageBrokers.Recovery.Retry
 {
-    class ExponentialDelayRecovery : IDelayedRecoveryStrategy
+    class ExponentialDelayRetry : IRetryDelayStrategy
     {
         private const int _milliSecondsInASecond = 1000;
         private readonly int _maxDelayInMilliseconds = 1024;
 
-        public ExponentialDelayRecovery(int maxRetryAttempts)
+        public ExponentialDelayRetry(int maxRetryAttempts)
             => _maxDelayInMilliseconds = GetDelayTimeInMillisecondsFromRetryAttempts(maxRetryAttempts);
 
         int GetDelayTimeInMillisecondsFromRetryAttempts(int retryAttempts)
@@ -37,9 +37,15 @@ namespace Chatter.MessageBrokers.Recovery
         ///<br>Attempt #14 - 2h 16m 32s</br>
         ///<br>Attempt #15 - 4h 33m 4s</br>
         /// </remarks>
-        public Task Execute(FailureContext failureContext)
+        public Task ExecuteAsync(FailureContext failureContext)
         {
-            var delayInMilliseconds = GetDelayTimeInMillisecondsFromRetryAttempts(failureContext.DeliveryCount);
+            _ = failureContext ?? throw new ArgumentNullException(nameof(failureContext));
+            return ExecuteAsync(failureContext.DeliveryCount);
+        }
+
+        public Task ExecuteAsync(int deliveryCount)
+        {
+            var delayInMilliseconds = GetDelayTimeInMillisecondsFromRetryAttempts(deliveryCount);
 
             return Task.Delay(_maxDelayInMilliseconds < delayInMilliseconds
                 ? _maxDelayInMilliseconds

@@ -4,23 +4,16 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery
 {
-    public class ErrorQueueDispatcher : IRecoveryAction
+    public class ErrorQueueDispatcher : IMaxReceivesExceededAction
     {
         private readonly IForwardMessages _forwardMessages;
 
         public ErrorQueueDispatcher(IForwardMessages forwardMessages)
             => _forwardMessages = forwardMessages;
 
-        public async Task<RecoveryState> Execute(FailureContext failureContext)
+        public async Task ExecuteAsync(FailureContext failureContext)
         {
-            if (string.IsNullOrWhiteSpace(failureContext.ErrorQueueName))
-            {
-                return RecoveryState.DeadLetter;
-            }
-
-            await _forwardMessages.Route(failureContext.Inbound, failureContext.ErrorQueueName, failureContext.TransactionContext).ConfigureAwait(false);
-
-            return RecoveryState.RecoveryActionExecuted;
+            await _forwardMessages.Route(failureContext.Inbound, failureContext.ErrorQueueName, failureContext.TransactionContext);
         }
     }
 }

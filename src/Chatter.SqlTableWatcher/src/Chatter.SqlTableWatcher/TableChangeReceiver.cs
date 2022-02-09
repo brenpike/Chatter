@@ -2,15 +2,13 @@
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery;
-using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.SqlTableWatcher
@@ -24,56 +22,17 @@ namespace Chatter.SqlTableWatcher
                                    MessageBrokerOptions messageBrokerOptions,
                                    ILogger<BrokeredMessageReceiver<TProcessorCommand>> logger,
                                    IServiceScopeFactory serviceFactory,
-                                   IFailedReceiveRecoverer failedReceiveRecoverer,
+                                   IMaxReceivesExceededAction recoveryAction,
                                    ICriticalFailureNotifier criticalFailureNotifier,
-                                   ICircuitBreaker circuitBreaker)
-            : base(infrastructureProvider, messageBrokerOptions, logger, serviceFactory, failedReceiveRecoverer, criticalFailureNotifier, circuitBreaker)
+                                   IRecoveryStrategy recoveryStrategy)
+            : base(infrastructureProvider, messageBrokerOptions, logger, serviceFactory, recoveryAction, criticalFailureNotifier, recoveryStrategy)
         {
         }
 
-        public override async Task HandleInboundBrokeredMessage(MessageBrokerContext context, TransactionContext transactionContext)
+        public override async Task DispatchReceivedMessage(TProcessorCommand message, MessageBrokerContext context, CancellationToken receiverTokenSource)
         {
-            try
-            {
-                TProcessorCommand message = null;
+            receiverTokenSource.ThrowIfCancellationRequested();
 
-                try
-                {
-                    if (context is null)
-                    {
-                        throw new ArgumentNullException(nameof(context), $"A {typeof(MessageBrokerContext).Name} was not created by the messaging infrastructure.");
-                    }
-
-                    var inboundMessage = context.BrokeredMessage;
-
-                    if (transactionContext is null)
-                    {
-                        transactionContext = new TransactionContext(_options.MessageReceiverPath, _options.TransactionMode.Value);
-                    }
-
-                    context.Container.Include(transactionContext);
-
-                    message = inboundMessage.GetMessageFromBody<TProcessorCommand>();
-                }
-                catch (Exception e)
-                {
-                    throw new PoisonedMessageException($"Unable to build {typeof(MessageBrokerContext).Name} due to poisoned message", e);
-                }
-
-                await ProcessSqlTableChanges(message, context).ConfigureAwait(false);
-            }
-            catch (PoisonedMessageException)
-            {
-                throw;
-            }
-            catch (Exception e)
-            {
-                throw new ReceiverMessageDispatchingException($"Error processing sql table changes '{typeof(TRowChangeData).Name}' received by '{typeof(TableChangeReceiver<,>).Name}'", e);
-            }
-        }
-
-        async Task ProcessSqlTableChanges(TProcessorCommand message, MessageBrokerContext context)
-        {
             using var scope = _serviceFactory.CreateScope();
             var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
             context.Container.Include((IExternalDispatcher)scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>());

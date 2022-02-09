@@ -48,7 +48,7 @@
                                        bool coversationEncryption = false,
                                        bool compressMessageBody = true,
                                        bool cleanupOnEndConversation = false,
-                                       bool endConversationAfterDispatch = false)
+                                       bool endConversationAfterDispatch = true)
         {
             ConnectionString = connectionString;
             MessageBodyType = messageBodyType;
