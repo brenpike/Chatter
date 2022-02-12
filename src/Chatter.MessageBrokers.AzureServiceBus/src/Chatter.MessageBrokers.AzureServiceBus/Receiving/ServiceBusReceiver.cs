@@ -115,13 +115,27 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             try
             {
                 message = await this.InnerReceiver.ReceiveAsync();
-                //todo: add catch blocks for non-transient exceptions which can never be recovered (critical error), i.e., invalid connection string, etc.
-                //throw new CriticalReceiverException(ae);
             }
             catch (ServiceBusException sbe) when (sbe.IsTransient)
             {
                 _logger.LogWarning(sbe, "Failure to receive message from Azure Service Bus due to transient error");
                 throw;
+            }
+            catch (ObjectDisposedException e) when (!cancellationToken.IsCancellationRequested)
+            {
+                lock (_syncLock)
+                {
+                    _innerReceiver = null;
+                }
+
+                _logger.LogWarning(e, "Service Bus receiver connection was closed. Attempting to establish new recever connection.");
+
+                return null;
+            }
+            catch (ArgumentException e)
+            {
+                _logger.LogCritical(e, $"Error connecting to service bus receiver");
+                throw new CriticalReceiverException("Error connecting to service bus receiver", e);
             }
             catch (Exception e)
             {
@@ -206,7 +220,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             if (!context.Container.TryGet<Message>(out var msg))
             {
-                _logger.LogWarning($"Unable to deadletter message.  No {nameof(Message)} contained in {nameof(context)}.");
+                _logger.LogWarning($"Unable to deadletter message. No {nameof(Message)} contained in {nameof(context)}.");
                 return false;
             }
 

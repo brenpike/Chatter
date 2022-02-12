@@ -10,15 +10,14 @@ namespace Chatter.MessageBrokers.Recovery.Retry
         public IEnumerable<Predicate<Exception>> GetExceptionPredicates()
         {
             yield return new Predicate<Exception>(e => e.GetType() == typeof(BrokeredMessageReceiverException) && ((BrokeredMessageReceiverException)e).IsTransient);
-            yield return new Predicate<Exception>(e => e.GetType() == typeof(TimeoutException));
-            yield return new Predicate<Exception>(e => e.ToString().ToLowerInvariant().Contains("retry"));
-            yield return new Predicate<Exception>(e => e.ToString().ToLowerInvariant().Contains("timeout"));
-            yield return new Predicate<Exception>(e => e.ToString().ToLowerInvariant().Contains("time out"));
-            yield return new Predicate<Exception>(e => e.ToString().ToLowerInvariant().Contains("rerun"));
-            yield return new Predicate<Exception>(e => e.ToString().ToLowerInvariant().Contains("internal server error"));
-            yield return new Predicate<Exception>(e => e.ToString().ToLowerInvariant().Contains("waiting"));
-            yield return new Predicate<Exception>(e => e.ToString().ToLowerInvariant().Contains("wait until"));
-            yield return new Predicate<Exception>(e => e.ToString().ToLowerInvariant().Contains("service unavailable"));
+            yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("retry"));
+            yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("timeout"));
+            yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("time out"));
+            yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("rerun"));
+            yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("internal server error"));
+            yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("waiting"));
+            yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("wait until"));
+            yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("service unavailable"));
         }
     }
 }
