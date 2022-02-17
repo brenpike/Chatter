@@ -122,7 +122,6 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IRetryStrategy, RetryStrategy>();
             builder.Services.AddScoped<IRecoveryStrategy, RetryWithCircuitBreakerStrategy>();
 
-
             if (options?.Reliability?.EnableOutboxPollingProcessor ?? false)
             {
                 builder.Services.AddHostedService<BrokeredMessageOutboxProcessor>();

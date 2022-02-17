@@ -9,7 +9,7 @@ namespace Chatter.MessageBrokers.Recovery.Retry
     {
         public IEnumerable<Predicate<Exception>> GetExceptionPredicates()
         {
-            yield return new Predicate<Exception>(e => e.GetType() == typeof(BrokeredMessageReceiverException) && ((BrokeredMessageReceiverException)e).IsTransient);
+            yield return new Predicate<Exception>(e => e is BrokeredMessageReceiverException exception && exception.IsTransient);
             yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("retry"));
             yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("timeout"));
             yield return new Predicate<Exception>(e => e.Message.ToLowerInvariant().Contains("time out"));

@@ -44,6 +44,6 @@
         /// "max delivery count" is set to 10, the message will only be attemped to be received 10 times and thus any application logic triggered by
         /// comparing actual receive attempts to the max will not execute.
         /// </summary>
-        public int MaxReceiveAttempts { get; set; }
+        public int MaxReceiveAttempts { get; set; } = 10;
     }
 }

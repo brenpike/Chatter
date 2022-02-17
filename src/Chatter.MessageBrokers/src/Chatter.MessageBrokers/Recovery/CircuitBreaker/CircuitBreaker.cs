@@ -1,5 +1,4 @@
-﻿using Chatter.MessageBrokers.Context;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,7 +15,6 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         private Timer _timer;
         private readonly ICircuitBreakerStateStore _stateStore;
         private readonly ILogger<CircuitBreaker> _logger;
-        private readonly ICriticalFailureNotifier _criticalFailureNotifier;
         private readonly ICircuitBreakerExceptionEvaluator _exceptionEvaluator;
         private bool _disposedValue;
         private SemaphoreSlim _halfOpenSemaphore;
@@ -24,7 +22,6 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         public CircuitBreaker(ICircuitBreakerStateStore stateStore,
                               CircuitBreakerOptions circuitBreakerOptions,
                               ILogger<CircuitBreaker> logger,
-                              ICriticalFailureNotifier criticalFailureNotifier,
                               ICircuitBreakerExceptionEvaluator exceptionEvaluator)
         {
             if (circuitBreakerOptions is null)
@@ -34,7 +31,6 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
             _stateStore = stateStore ?? throw new ArgumentNullException(nameof(stateStore));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _criticalFailureNotifier = criticalFailureNotifier ?? throw new ArgumentNullException(nameof(criticalFailureNotifier));
             _exceptionEvaluator = exceptionEvaluator ?? throw new ArgumentNullException(nameof(exceptionEvaluator));
             _openToHalfOpenWaitTime = TimeSpan.FromSeconds(circuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds);
             _concurrentHalfOpenAttempts = circuitBreakerOptions.ConcurrentHalfOpenAttempts;
@@ -83,7 +79,8 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                     }
                 }
 
-                throw new CircuitBreakerOpenException(_stateStore.LastException);
+                return default;
+                //throw new CircuitBreakerOpenException(_stateStore.LastException);
             }
 
             try
@@ -108,8 +105,8 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             _logger.LogDebug("Attempting to CLOSE circuit");
             if (await _stateStore.IncrementSuccessCounter() >= _numberOfHalfOpenSuccessesToClose)
             {
-                ResetOpenTimer();
                 await _stateStore.Close();
+                ResetOpenTimer();
             }
         }
 
@@ -118,17 +115,14 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             _logger.LogDebug("Attempting to OPEN circuit");
             if (await _stateStore.IncrementFailureCounter(ex) >= _numberOfFailuresBeforeOpen)
             {
-                StartOpenTimer();
                 await _stateStore.Open(ex);
+                StartOpenTimer();
             }
         }
 
-        private async void CriticalFailureNotification(object state)
+        private void CriticalFailureNotification(object state)
         {
-            var reason = $"Circuit breaker has been OPEN for {_timeOpenBeforeCriticalFailureNotification} seconds";
-            //remove _criticalFailureNotifier dependency from here and throw new CricitcalCircuitBreakerException. the receiver can then use _criticalFailureNotifier
-            var failureContext = new FailureContext(null, null, reason, _stateStore.LastException, _stateStore.FailureCount, null);
-            await _criticalFailureNotifier.Notify(failureContext);
+            _logger.LogWarning($"Circuit breaker has been OPEN for {_timeOpenBeforeCriticalFailureNotification} seconds");
             StartOpenTimer();
         }
 

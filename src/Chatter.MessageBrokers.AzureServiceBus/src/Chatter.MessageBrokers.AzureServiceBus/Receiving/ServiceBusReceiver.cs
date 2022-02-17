@@ -70,6 +70,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                                      _receiveMode,
                                                                      _retryPolcy,
                                                                      _prefetchCount);
+                                _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_options.MessageReceiverPath}' on endpoint '{this.ServiceBusConnectionBuilder.Endpoint}'");
                             }
                             else
                             {
@@ -80,6 +81,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                                      _receiveMode,
                                                                      _retryPolcy,
                                                                      _prefetchCount);
+                                _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_options.MessageReceiverPath}' on endpoint '{this.ServiceBusConnectionBuilder.Endpoint}' using {_tokenProvider.GetType().Name}");
                             }
                         }
                     }
@@ -128,7 +130,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                     _innerReceiver = null;
                 }
 
-                _logger.LogWarning(e, "Service Bus receiver connection was closed. Attempting to establish new recever connection.");
+                _logger.LogWarning(e, "Service Bus receiver connection was closed.");
 
                 return null;
             }

@@ -37,14 +37,15 @@ namespace Chatter.MessageBrokers.Recovery.Retry
                 }
                 catch (Exception e)
                 {
-                    //TODO: add logging
                     if (!_exceptionEvaluator.ShouldRetry(e))
                     {
+                        _logger.LogTrace(e, "Retry aborted. Exception type not configured for retry.");
                         throw;
                     }
 
                     if (attempts <= _options.MaxRetryAttempts)
                     {
+                        _logger.LogTrace(e, $"Retry attempt {attempts} of {_options.MaxRetryAttempts}");
                         await _delayedRecovery.ExecuteAsync(attempts);
                     }
                     else

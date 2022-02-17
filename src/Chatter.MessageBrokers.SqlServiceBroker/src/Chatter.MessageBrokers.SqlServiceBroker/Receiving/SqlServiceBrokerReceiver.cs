@@ -170,7 +170,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 }
                 else
                 {
-                    _logger.LogWarning($"Unable to update local receiver delivery attempts. {nameof(msg)} is null.");
+                    _logger.LogTrace($"Unable to update local receiver delivery attempts. {nameof(msg)} is null.");
                 }
                 await transaction?.CommitAsync(cancellationToken);
                 //TODO: log success?
@@ -210,7 +210,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 }
                 else
                 {
-                    _logger.LogWarning($"Unable to update local receiver delivery attempts. {nameof(msg)} is null.");
+                    _logger.LogTrace($"Unable to update local receiver delivery attempts. {nameof(msg)} is null.");
                 }
                 return true;
             }
@@ -250,7 +250,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 }
                 else
                 {
-                    _logger.LogWarning($"Unable to end dialog conversation. {nameof(msg)} is null.");
+                    _logger.LogTrace($"Unable to end dialog conversation. {nameof(msg)} is null.");
                 }
 
                 using var scope = _serviceFactory.CreateScope();

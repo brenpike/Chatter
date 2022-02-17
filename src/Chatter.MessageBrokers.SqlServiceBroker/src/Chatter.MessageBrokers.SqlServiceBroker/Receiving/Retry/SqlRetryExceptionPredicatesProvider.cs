@@ -10,9 +10,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving.Retry
         public IEnumerable<Predicate<Exception>> GetExceptionPredicates()
         {
 #if NET5_0_OR_GREATER
-            yield return new Predicate<Exception>(e => e.GetType() == typeof(SqlException) && ((SqlException)e).IsTransient);
+            yield return new Predicate<Exception>(e => e is SqlException exception && exception.IsTransient);
 #endif
-            yield return new Predicate<Exception>(e => e.GetType() == typeof(SqlException) && SqlExceptionHelper.IsErrorNumberTransient(((SqlException)e).Number));
+            yield return new Predicate<Exception>(e => e is SqlException exception && SqlExceptionHelper.IsErrorNumberTransient(exception.Number));
         }
     }
 }
