@@ -59,6 +59,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
         private async Task<ReceivedMessage> ReceiveAsync(SqlConnection connection, SqlTransaction transaction, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var receiveMessageFromQueue = new ReceiveMessageFromQueueCommand(connection,
                                              _options.MessageReceiverPath,
                                              _ssbOptions.ReceiverTimeoutInMilliseconds,
@@ -82,7 +84,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
             catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException)
             {
-                _logger.LogCritical(ex, $"Error connecting to sql");
                 throw new CriticalReceiverException("Error connecting to sql", ex);
             }
 
@@ -97,11 +98,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 message = await ReceiveAsync(connection, transaction, cancellationToken);
             }
 #if NET5_0_OR_GREATER
-                catch (SqlException e) when (e.IsTransient)
-                {
-                    _logger.LogWarning(e, "Failure to receive message from Sql Service Broker due to transient error");
-                    throw;
-                }
+            catch (SqlException e) when (e.IsTransient)
+            {
+                _logger.LogWarning(e, "Failure to receive message from Sql Service Broker due to transient error");
+                throw;
+            }
 #endif
             catch (Exception e)
             {
@@ -115,32 +116,23 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 return null;
             }
 
-            try
+            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+
+            _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
+            var headers = new Dictionary<string, object>
             {
-                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
-                _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
-
-                var headers = new Dictionary<string, object>
-                {
-                    [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
-                    [SSBMessageContext.ConversationHandle] = message.ConvHandle,
-                    [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
-                    [SSBMessageContext.ServiceName] = message.ServiceName,
-                    [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
-                    [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
-                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType,
-                    [MessageContext.ReceiveAttempts] = deliveryAttempts
-                };
-
-                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
-                messageContext.Container.Include(message);
-
-                return messageContext;
-            }
-            catch (Exception e)
-            {
-                throw new PoisonedMessageException($"Unable to build {typeof(MessageBrokerContext).Name} due to poisoned message", e);
-            }
+                [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
+                [SSBMessageContext.ConversationHandle] = message.ConvHandle,
+                [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
+                [SSBMessageContext.ServiceName] = message.ServiceName,
+                [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
+                [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
+                [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType,
+                [MessageContext.ReceiveAttempts] = deliveryAttempts
+            };
+            messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
+            messageContext.Container.Include(message);
+            return messageContext;
         }
 
         private async Task<SqlTransaction> CreateTransaction(SqlConnection connection, CancellationToken cancellationToken)
@@ -149,7 +141,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         public async Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             ReceivedMessage msg = null;
-            if (!context?.Container.TryGet<ReceivedMessage>(out msg) ?? false)
+            if (!context?.Container.TryGet(out msg) ?? false)
             {
                 _logger.LogTrace($"No {nameof(ReceivedMessage)} contained in {nameof(context)}.");
             }
@@ -170,17 +162,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 }
                 else
                 {
-                    _logger.LogTrace($"Unable to update local receiver delivery attempts. {nameof(msg)} is null.");
+                    _logger.LogTrace($"Unable end dialog conversation during message acknowledgment. {nameof(msg)} is null.");
                 }
                 await transaction?.CommitAsync(cancellationToken);
-                //TODO: log success?
+                _logger.LogTrace("Message acknowledgment complete");
                 return true;
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable to complete receive operation");
-                await NackMessageAsync(context, transactionContext, cancellationToken);
-                return false;
             }
             finally
             {
@@ -192,7 +178,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         public async Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             ReceivedMessage msg = null;
-            if (!context?.Container.TryGet<ReceivedMessage>(out msg) ?? false)
+            if (!context?.Container.TryGet(out msg) ?? false)
             {
                 _logger.LogTrace($"No {nameof(ReceivedMessage)} contained in {nameof(context)}.");
             }
@@ -203,7 +189,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             try
             {
                 await transaction?.RollbackAsync(cancellationToken);
-                //TODO: log success?
                 if (msg != null)
                 {
                     _localReceiverDeliveryAttempts.AddOrUpdate(msg.ConvHandle, 1, (ch, deliveryAttempts) => deliveryAttempts + 1);
@@ -212,12 +197,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 {
                     _logger.LogTrace($"Unable to update local receiver delivery attempts. {nameof(msg)} is null.");
                 }
+                _logger.LogTrace("Message negative acknowledgment complete");
                 return true;
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Error sending negative acknowledgement for message");
-                return false;
             }
             finally
             {
@@ -229,9 +210,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         public async Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
             ReceivedMessage msg = null;
-            if (!context?.Container.TryGet<ReceivedMessage>(out msg) ?? false)
+            if (!context?.Container.TryGet(out msg) ?? false)
             {
-                _logger.LogTrace($"No {nameof(ReceivedMessage)} contained in {nameof(context)}.");
+                throw new ArgumentException($"Unable to deadletter message. No {nameof(ReceivedMessage)} contained in {nameof(context)}.", nameof(msg));
             }
 
             transactionContext.Container.TryGet<SqlConnection>(out var connection);
@@ -239,22 +220,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             try
             {
-                if (msg != null)
-                {
-                    var edc = new EndDialogConversationCommand(connection,
-                                           msg.ConvHandle,
-                                           enableCleanup: _ssbOptions.CleanupOnEndConversation,
-                                           transaction: transaction);
-                    await edc.ExecuteAsync(cancellationToken);
-                    _localReceiverDeliveryAttempts.TryRemove(msg.ConvHandle, out var _);
-                }
-                else
-                {
-                    _logger.LogTrace($"Unable to end dialog conversation. {nameof(msg)} is null.");
-                }
+                var edc = new EndDialogConversationCommand(connection,
+                                       msg.ConvHandle,
+                                       enableCleanup: _ssbOptions.CleanupOnEndConversation,
+                                       transaction: transaction);
+                await edc.ExecuteAsync(cancellationToken);
 
                 using var scope = _serviceFactory.CreateScope();
-                var ssbSender = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>(); //TODO: refactor into own class
+                var ssbSender = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>();
                 var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
                 var headers = new Dictionary<string, object>()
                 {
@@ -265,21 +238,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 };
 
                 await ssbSender.Dispatch(new OutboundBrokeredMessage(Guid.NewGuid().ToString(), msg.Body, headers, _options.DeadLetterQueuePath, bodyConverter), transactionContext);
-                _logger.LogInformation($"Message deadlettered."); //TODO: better logging
+                await transaction?.CommitAsync(cancellationToken);
+                _localReceiverDeliveryAttempts.TryRemove(msg.ConvHandle, out var _);
+                _logger.LogTrace($"Message deadlettered.");
                 return true;
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable deadletter message");
-                await NackMessageAsync(context, transactionContext, cancellationToken);
-                return false;
             }
             finally
             {
-                if (transactionContext.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
-                {
-                    await transaction?.CommitAsync(cancellationToken);
-                }
                 transaction?.Dispose();
                 connection?.Dispose();
             }

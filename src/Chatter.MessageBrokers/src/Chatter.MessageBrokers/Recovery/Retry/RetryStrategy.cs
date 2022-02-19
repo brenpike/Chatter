@@ -50,6 +50,7 @@ namespace Chatter.MessageBrokers.Recovery.Retry
                     }
                     else
                     {
+                        _logger?.LogTrace($"Action was unsuccessful after max ({attempts}) retries.");
                         throw new MaxRetryAttemptsExceededException(e, attempts);
                     }
                 }

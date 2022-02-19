@@ -9,6 +9,7 @@ using Microsoft.Azure.ServiceBus.Core;
 using Microsoft.Azure.ServiceBus.Primitives;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
@@ -63,25 +64,32 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                     {
                         if (_innerReceiver == null)
                         {
-                            if (_tokenProvider is NullTokenProvider)
+                            try
                             {
-                                _innerReceiver = new MessageReceiver(this.ServiceBusConnectionBuilder.GetNamespaceConnectionString(),
-                                                                     _options.MessageReceiverPath,
-                                                                     _receiveMode,
-                                                                     _retryPolcy,
-                                                                     _prefetchCount);
-                                _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_options.MessageReceiverPath}' on endpoint '{this.ServiceBusConnectionBuilder.Endpoint}'");
+                                if (_tokenProvider is NullTokenProvider)
+                                {
+                                    _innerReceiver = new MessageReceiver(this.ServiceBusConnectionBuilder.GetNamespaceConnectionString(),
+                                                                         _options.MessageReceiverPath,
+                                                                         _receiveMode,
+                                                                         _retryPolcy,
+                                                                         _prefetchCount);
+                                    _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_options.MessageReceiverPath}' on endpoint '{this.ServiceBusConnectionBuilder.Endpoint}'");
+                                }
+                                else
+                                {
+                                    _innerReceiver = new MessageReceiver(this.ServiceBusConnectionBuilder.Endpoint,
+                                                                         _options.MessageReceiverPath,
+                                                                         _tokenProvider,
+                                                                         this.ServiceBusConnectionBuilder.TransportType,
+                                                                         _receiveMode,
+                                                                         _retryPolcy,
+                                                                         _prefetchCount);
+                                    _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_options.MessageReceiverPath}' on endpoint '{this.ServiceBusConnectionBuilder.Endpoint}' using {_tokenProvider.GetType().Name}");
+                                }
                             }
-                            else
+                            catch (ArgumentException e) //throw when service bus connection string cannot be built
                             {
-                                _innerReceiver = new MessageReceiver(this.ServiceBusConnectionBuilder.Endpoint,
-                                                                     _options.MessageReceiverPath,
-                                                                     _tokenProvider,
-                                                                     this.ServiceBusConnectionBuilder.TransportType,
-                                                                     _receiveMode,
-                                                                     _retryPolcy,
-                                                                     _prefetchCount);
-                                _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_options.MessageReceiverPath}' on endpoint '{this.ServiceBusConnectionBuilder.Endpoint}' using {_tokenProvider.GetType().Name}");
+                                throw new CriticalReceiverException($"Error creating {nameof(MessageReceiver)}", e);
                             }
                         }
                     }
@@ -123,7 +131,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 _logger.LogWarning(sbe, "Failure to receive message from Azure Service Bus due to transient error");
                 throw;
             }
-            catch (ObjectDisposedException e) when (!cancellationToken.IsCancellationRequested)
+            catch (ObjectDisposedException e) when (!cancellationToken.IsCancellationRequested && _innerReceiver.IsClosedOrClosing)
             {
                 lock (_syncLock)
                 {
@@ -133,11 +141,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 _logger.LogWarning(e, "Service Bus receiver connection was closed.");
 
                 return null;
-            }
-            catch (ArgumentException e)
-            {
-                _logger.LogCritical(e, $"Error connecting to service bus receiver");
-                throw new CriticalReceiverException("Error connecting to service bus receiver", e);
             }
             catch (Exception e)
             {
@@ -150,33 +153,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return null;
             }
 
-            try
+            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(message.ContentType);
+
+            message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
+            message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
+            message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
+            message.AddUserProperty(MessageContext.ReceiveAttempts, message.SystemProperties.DeliveryCount);
+
+            var messageContext = new MessageBrokerContext(message.MessageId, message.Body, message.UserProperties, _options.MessageReceiverPath, cancellationToken, bodyConverter);
+            messageContext.Container.Include(message);
+
+            transactionContext.Container.Include(this.InnerReceiver);
+
+            if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
             {
-                MessageBrokerContext messageContext = null;
-
-                message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
-                message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
-                message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
-                message.AddUserProperty(MessageContext.ReceiveAttempts, message.SystemProperties.DeliveryCount);
-
-                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(message.ContentType);
-
-                messageContext = new MessageBrokerContext(message.MessageId, message.Body, message.UserProperties, _options.MessageReceiverPath, cancellationToken, bodyConverter);
-                messageContext.Container.Include(message);
-
-                transactionContext.Container.Include(this.InnerReceiver);
-
-                if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
-                {
-                    transactionContext.Container.Include(this.InnerReceiver.ServiceBusConnection);
-                }
-
-                return messageContext;
+                transactionContext.Container.Include(this.InnerReceiver.ServiceBusConnection);
             }
-            catch (Exception e)
-            {
-                throw new PoisonedMessageException($"Unable to build {typeof(MessageBrokerContext).Name} due to poisoned message", e);
-            }
+
+            return messageContext;
         }
 
         public async Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
@@ -193,6 +187,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
 
             await this.InnerReceiver.CompleteAsync(msg.SystemProperties.LockToken);
+            _logger.LogTrace($"Message '{msg.MessageId}' completed");
             return true;
         }
 
@@ -205,11 +200,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             if (!context.Container.TryGet<Message>(out var msg))
             {
-                _logger.LogWarning($"Unable to negative acknowledge message.  No {nameof(Message)} contained in {nameof(context)}.");
+                _logger.LogWarning($"Unable to negative acknowledge message. No {nameof(Message)} contained in {nameof(context)}.");
                 return false;
             }
 
             await this.InnerReceiver.AbandonAsync(msg.SystemProperties.LockToken, msg.UserProperties);
+            _logger.LogTrace($"Message '{msg.MessageId}' sucessfully abandoned");
             return true;
         }
 
@@ -227,6 +223,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
 
             await this.InnerReceiver.DeadLetterAsync(msg.SystemProperties.LockToken, deadLetterReason, deadLetterErrorDescription);
+            _logger.LogTrace($"Message '{msg.MessageId}' sucessfully deadlettered");
             return true;
         }
 
