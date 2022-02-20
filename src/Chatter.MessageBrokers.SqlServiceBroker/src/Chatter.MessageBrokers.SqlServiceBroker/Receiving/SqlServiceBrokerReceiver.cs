@@ -116,22 +116,34 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 return null;
             }
 
-            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+            IBrokeredMessageBodyConverter bodyConverter = new JsonUnicodeBodyConverter();
 
-            _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
-            var headers = new Dictionary<string, object>
+            try
             {
-                [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
-                [SSBMessageContext.ConversationHandle] = message.ConvHandle,
-                [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
-                [SSBMessageContext.ServiceName] = message.ServiceName,
-                [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
-                [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
-                [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType,
-                [MessageContext.ReceiveAttempts] = deliveryAttempts
-            };
-            messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
-            messageContext.Container.Include(message);
+                bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, $"Error creating body converter for content type '{_ssbOptions.MessageBodyType}'. Defaulting to {nameof(JsonUnicodeBodyConverter)}.");
+            }
+            finally
+            {
+                _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
+                var headers = new Dictionary<string, object>
+                {
+                    [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
+                    [SSBMessageContext.ConversationHandle] = message.ConvHandle,
+                    [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
+                    [SSBMessageContext.ServiceName] = message.ServiceName,
+                    [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
+                    [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
+                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType,
+                    [MessageContext.ReceiveAttempts] = deliveryAttempts
+                };
+                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
+                messageContext.Container.Include(message);
+            }
+
             return messageContext;
         }
 

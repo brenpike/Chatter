@@ -135,58 +135,14 @@ namespace Chatter.MessageBrokers.Receiving
                     {
                         _messageReceiverLoopTokenSource.Token.ThrowIfCancellationRequested();
 
-                        try
-                        {
-                            messageContext = await _recoveryStrategy.ExecuteAsync(
-                                    () => _infrastructureReceiver.ReceiveMessageAsync(transactionContext, _messageReceiverLoopTokenSource.Token),
-                                    _messageReceiverLoopTokenSource.Token
-                                );
-                            _logger.LogTrace("Message received successfully");
-                        }
-                        catch (Exception e)
-                        {
-                            _logger.LogError(e, $"Error receiving brokered message");
-                        }
+                        messageContext = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.ReceiveMessageAsync(transactionContext, _messageReceiverLoopTokenSource.Token), _messageReceiverLoopTokenSource.Token);
 
                         if (messageContext != null)
                         {
-                            try
-                            {
-                                await ProcessMessageAsync(messageContext, transactionContext, _messageReceiverLoopTokenSource.Token);
-                                _logger.LogTrace("Message processed successfully");
-                            }
-                            catch (Exception e)
-                            {
-                                _logger.LogError(e, "Error processing brokered message");
-                                try
-                                {
-                                    var deliveryCount = await _recoveryStrategy.ExecuteAsync(
-                                            () => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, _messageReceiverLoopTokenSource.Token),
-                                            _messageReceiverLoopTokenSource.Token
-                                        );
-                                    if (deliveryCount >= _options.MaxReceiveAttempts)
-                                    {
-                                        await _recoveryStrategy.ExecuteAsync(
-                                                () => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Max message receive attempts exceeded", e.ToString(), _messageReceiverLoopTokenSource.Token),
-                                                _messageReceiverLoopTokenSource.Token
-                                            );
-
-                                        //todo: retry?
-                                        await _recoveryAction.ExecuteAsync(new FailureContext(messageContext.BrokeredMessage, this.ErrorQueueName, "Max message receive attempts exceeded", e, deliveryCount, transactionContext));
-                                    }
-                                    else
-                                    {
-                                        await _recoveryStrategy.ExecuteAsync(
-                                                () => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, _messageReceiverLoopTokenSource.Token),
-                                                _messageReceiverLoopTokenSource.Token
-                                            );
-                                    }
-                                }
-                                catch (Exception inner)
-                                {
-                                    _logger.LogError(inner, "Unable to deadletter or send negative acknowledgment");
-                                }
-                            }
+                            _logger.LogTrace("Message received successfully");
+                            //todo: retry?
+                            await ProcessMessageAsync(messageContext, transactionContext, _messageReceiverLoopTokenSource.Token);
+                            _logger.LogTrace("Message processed successfully");
                         }
                     }
                     catch (CriticalReceiverException)
@@ -198,6 +154,34 @@ namespace Chatter.MessageBrokers.Receiving
                     }
                     catch (ObjectDisposedException) when (_messageReceiverLoopTokenSource.IsCancellationRequested)
                     {
+                    }
+                    catch (PoisonedMessageException e)
+                    {
+                        _logger.LogError(e, $"Poisoned message received. Deadlettering.");
+                        await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, _messageReceiverLoopTokenSource.Token);
+                    }
+                    catch (Exception e)
+                    {
+                        if (messageContext == null)
+                        {
+                            _logger.LogError(e, "Error receiving brokered message");
+                        }
+                        else
+                        {
+                            _logger.LogError(e, "Error processing brokered message");
+                            var deliveryCount = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, _messageReceiverLoopTokenSource.Token), _messageReceiverLoopTokenSource.Token);
+                            if (deliveryCount >= _options.MaxReceiveAttempts)
+                            {
+                                if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, _messageReceiverLoopTokenSource.Token))
+                                {
+                                    await _recoveryAction.ExecuteAsync(new FailureContext(messageContext.BrokeredMessage, this.ErrorQueueName, "Max message receive attempts exceeded", e, deliveryCount, transactionContext));
+                                }
+                            }
+                            else
+                            {
+                                await TryNackWithRecoveryAsync(messageContext, transactionContext, _messageReceiverLoopTokenSource.Token);
+                            }
+                        }
                     }
                     finally
                     {
@@ -215,6 +199,48 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 _logger.LogCritical(e, "Receiver is unable continue due to critical error");
                 await _criticalFailureNotifier.Notify(new FailureContext(null, this.ErrorQueueName, "Critical error occurred", e, -1, null));
+            }
+        }
+
+        private async Task<bool> TryAckWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+        {
+            try
+            {
+                await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
+                return true;
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Unable to send acknowledgment");
+                return false;
+            }
+        }
+
+        private async Task<bool> TryNackWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+        {
+            try
+            {
+                await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
+                return true;
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Unable to send negative acknowledgment");
+                return false;
+            }
+        }
+
+        private async Task<bool> TryDeadletterWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, Exception e, CancellationToken receiverTokenSource)
+        {
+            try
+            {
+                await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Poisoned message received", e.ToString(), receiverTokenSource), receiverTokenSource);
+                return true;
+            }
+            catch (Exception inner)
+            {
+                _logger.LogError(inner, "Unable to deadletter message");
+                return false;
             }
         }
 
@@ -251,19 +277,28 @@ namespace Chatter.MessageBrokers.Receiving
 
             messageContext.Container.GetOrAdd(() => transactionContext);
 
-            brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
+            try
+            {
+                brokeredMessagePayload = inboundMessage.GetMessageFromBody<TMessage>();
+            }
+            catch (Exception e)
+            {
+                throw new PoisonedMessageException($"Unable deserialize {typeof(TMessage).Name} from message body", e);
+            }
 
             using var localTransaction = _infrastructureReceiver.CreateLocalTransaction(transactionContext);
             await DispatchReceivedMessageAsync(brokeredMessagePayload, messageContext, receiverTokenSource);
 
             if (!receiverTokenSource.IsCancellationRequested)
             {
-                await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
-                localTransaction?.Complete();
+                if (await TryAckWithRecoveryAsync(messageContext, transactionContext, receiverTokenSource))
+                {
+                    localTransaction?.Complete();
+                }
             }
             else
             {
-                await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
+                await TryNackWithRecoveryAsync(messageContext, transactionContext, receiverTokenSource);
             }
         }
 

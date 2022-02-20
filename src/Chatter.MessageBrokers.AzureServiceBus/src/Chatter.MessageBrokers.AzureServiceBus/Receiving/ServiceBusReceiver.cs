@@ -9,7 +9,6 @@ using Microsoft.Azure.ServiceBus.Core;
 using Microsoft.Azure.ServiceBus.Primitives;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
@@ -153,21 +152,33 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return null;
             }
 
-            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(message.ContentType);
+            MessageBrokerContext messageContext;
+            IBrokeredMessageBodyConverter bodyConverter = new JsonBodyConverter();
 
-            message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
-            message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
-            message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
-            message.AddUserProperty(MessageContext.ReceiveAttempts, message.SystemProperties.DeliveryCount);
-
-            var messageContext = new MessageBrokerContext(message.MessageId, message.Body, message.UserProperties, _options.MessageReceiverPath, cancellationToken, bodyConverter);
-            messageContext.Container.Include(message);
-
-            transactionContext.Container.Include(this.InnerReceiver);
-
-            if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
+            try
             {
-                transactionContext.Container.Include(this.InnerReceiver.ServiceBusConnection);
+                bodyConverter = _bodyConverterFactory.CreateBodyConverter(message.ContentType);
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, $"Error creating body converter for content type '{message.ContentType}'. Defaulting to {nameof(JsonBodyConverter)}.");
+            }
+            finally
+            {
+                message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
+                message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
+                message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
+                message.AddUserProperty(MessageContext.ReceiveAttempts, message.SystemProperties.DeliveryCount);
+
+                messageContext = new MessageBrokerContext(message.MessageId, message.Body, message.UserProperties, _options.MessageReceiverPath, cancellationToken, bodyConverter);
+
+                messageContext.Container.Include(message);
+                transactionContext.Container.Include(this.InnerReceiver);
+
+                if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
+                {
+                    transactionContext.Container.Include(this.InnerReceiver.ServiceBusConnection);
+                }
             }
 
             return messageContext;
