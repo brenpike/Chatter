@@ -1,4 +1,4 @@
-﻿using Chatter.MessageBrokers.Context;
+﻿using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Options;
 using Microsoft.Extensions.Logging;
 using System;
@@ -24,7 +24,7 @@ namespace Chatter.MessageBrokers.Recovery.Retry
 
         public async Task<TResult> ExecuteAsync<TResult>(Func<Task<TResult>> action, CancellationToken cancellationToken = default)
         {
-            int attempts = 0;
+            int attempts = 1;
 
             while (true)
             {
@@ -32,25 +32,28 @@ namespace Chatter.MessageBrokers.Recovery.Retry
 
                 try
                 {
-                    attempts++;
                     return await action();
+                }
+                catch (CircuitBreakerOpenException)
+                {
                 }
                 catch (Exception e)
                 {
                     if (!_exceptionEvaluator.ShouldRetry(e))
                     {
-                        _logger.LogTrace(e, "Retry aborted. Exception type not configured for retry.");
+                        _logger.LogTrace(e, $"Retry aborted. Exception type '{e.GetType().FullName}' not configured for retry.");
                         throw;
                     }
 
-                    if (attempts <= _options.MaxRetryAttempts)
+                    if (attempts < _options.MaxRetryAttempts)
                     {
                         _logger.LogTrace(e, $"Retry attempt {attempts} of {_options.MaxRetryAttempts}");
                         await _delayedRecovery.ExecuteAsync(attempts);
+                        attempts++;
                     }
                     else
                     {
-                        _logger?.LogInformation($"Action was unsuccessful after max ({attempts}) retries.");
+                        _logger.LogInformation($"Action was unsuccessful after max ({attempts}) retries.");
                         throw new MaxRetryAttemptsExceededException(e, attempts);
                     }
                 }

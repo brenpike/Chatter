@@ -50,37 +50,37 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
             if (IsOpen)
             {
-                if (_stateStore.State == CircuitBreakerState.HalfOpen ||
-                    _stateStore.LastStateChangedDateUtc + _openToHalfOpenWaitTime < DateTime.UtcNow)
+                if (_stateStore.State != CircuitBreakerState.HalfOpen)
                 {
-                    _logger.LogInformation("Circuit Breaker timeout timer expired. Entering HALF-OPEN state.");
+                    await Task.Delay(_openToHalfOpenWaitTime);
+                    _logger.LogInformation("Circuit Breaker half-open timer expired. Entering HALF-OPEN state.");
+                }
+
+                try
+                {
+                    await _halfOpenSemaphore.WaitAsync(cancellationToken);
+                    await _stateStore.HalfOpenAsync();
+                    var context = await action(_stateStore.State);
+                    await TryClose();
+                    return context;
+                }
+                catch (Exception ex)
+                {
+                    await _stateStore.OpenAsync(ex);
+                    throw;
+                }
+                finally
+                {
                     try
                     {
-                        await _halfOpenSemaphore.WaitAsync(cancellationToken);
-                        await _stateStore.HalfOpen();
-                        var context = await action(_stateStore.State);
-                        await TryClose();
-                        return context;
+                        _halfOpenSemaphore?.Release();
                     }
-                    catch (Exception ex)
+                    catch (ObjectDisposedException)
                     {
-                        await _stateStore.Open(ex);
-                        throw;
-                    }
-                    finally
-                    {
-                        try
-                        {
-                            _halfOpenSemaphore?.Release();
-                        }
-                        catch (ObjectDisposedException)
-                        {
-                        }
                     }
                 }
 
-                return default;
-                //throw new CircuitBreakerOpenException(_stateStore.LastException);
+                throw new CircuitBreakerOpenException(_stateStore.LastException);
             }
 
             try
@@ -103,10 +103,9 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         private async Task TryClose()
         {
             _logger.LogTrace("Attempting to CLOSE circuit");
-            if (await _stateStore.IncrementSuccessCounter() >= _numberOfHalfOpenSuccessesToClose)
+            if (await _stateStore.IncrementSuccessCounterAsync() >= _numberOfHalfOpenSuccessesToClose)
             {
-                await _stateStore.Close();
-                _logger.LogInformation("Circuit is now CLOSED");
+                await _stateStore.CloseAsync();
                 ResetOpenTimer();
             }
         }
@@ -114,10 +113,9 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         private async Task TryOpen(Exception ex)
         {
             _logger.LogTrace("Attempting to OPEN circuit");
-            if (await _stateStore.IncrementFailureCounter(ex) >= _numberOfFailuresBeforeOpen)
+            if (await _stateStore.IncrementFailureCounterAsync(ex) >= _numberOfFailuresBeforeOpen)
             {
-                await _stateStore.Open(ex);
-                _logger.LogInformation("Circuit is now OPEN");
+                await _stateStore.OpenAsync(ex);
                 StartOpenTimer();
             }
         }

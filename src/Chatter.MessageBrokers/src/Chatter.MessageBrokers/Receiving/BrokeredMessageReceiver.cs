@@ -120,6 +120,21 @@ namespace Chatter.MessageBrokers.Receiving
             _logger.LogInformation($"'{nameof(BrokeredMessageReceiver<TMessage>)}' for messages of type '{typeof(TMessage).Name}' is shutting down.");
         }
 
+        public async Task StopReceiver()
+        {
+            _messageReceiverLoopTokenSource?.Cancel();
+
+            if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
+            {
+                await _messageReceiverLoop;
+            }
+
+            await _infrastructureReceiver.StopReceiver();
+
+            _semaphore?.Dispose();
+            _messageReceiverLoopTokenSource?.Dispose();
+        }
+
         async Task MessageReceiverLoopAsync()
         {
             try
@@ -140,7 +155,6 @@ namespace Chatter.MessageBrokers.Receiving
                         if (messageContext != null)
                         {
                             _logger.LogTrace("Message received successfully");
-                            //todo: retry?
                             await ProcessMessageAsync(messageContext, transactionContext, _messageReceiverLoopTokenSource.Token);
                             _logger.LogTrace("Message processed successfully");
                         }
@@ -202,48 +216,6 @@ namespace Chatter.MessageBrokers.Receiving
             }
         }
 
-        private async Task<bool> TryAckWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
-        {
-            try
-            {
-                await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
-                return true;
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable to send acknowledgment");
-                return false;
-            }
-        }
-
-        private async Task<bool> TryNackWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
-        {
-            try
-            {
-                await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
-                return true;
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable to send negative acknowledgment");
-                return false;
-            }
-        }
-
-        private async Task<bool> TryDeadletterWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, Exception e, CancellationToken receiverTokenSource)
-        {
-            try
-            {
-                await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Poisoned message received", e.ToString(), receiverTokenSource), receiverTokenSource);
-                return true;
-            }
-            catch (Exception inner)
-            {
-                _logger.LogError(inner, "Unable to deadletter message");
-                return false;
-            }
-        }
-
         public virtual async Task DispatchReceivedMessageAsync(TMessage payload, MessageBrokerContext messageContext, CancellationToken receiverTokenSource)
         {
             receiverTokenSource.ThrowIfCancellationRequested();
@@ -288,7 +260,11 @@ namespace Chatter.MessageBrokers.Receiving
             }
 
             using var localTransaction = _infrastructureReceiver.CreateLocalTransaction(transactionContext);
-            await DispatchReceivedMessageAsync(brokeredMessagePayload, messageContext, receiverTokenSource);
+            await _recoveryStrategy.ExecuteAsync(async () =>
+                {
+                    await DispatchReceivedMessageAsync(brokeredMessagePayload, messageContext, receiverTokenSource);
+                    return Task.FromResult(true);
+                }, receiverTokenSource);
 
             if (!receiverTokenSource.IsCancellationRequested)
             {
@@ -303,19 +279,43 @@ namespace Chatter.MessageBrokers.Receiving
             }
         }
 
-        public async Task StopReceiver()
+        private async Task<bool> TryAckWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
         {
-            _messageReceiverLoopTokenSource?.Cancel();
-
-            if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
+            try
             {
-                await _messageReceiverLoop;
+                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
             }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Unable to send acknowledgment");
+                return false;
+            }
+        }
 
-            await _infrastructureReceiver.StopReceiver();
+        private async Task<bool> TryNackWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+        {
+            try
+            {
+                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Unable to send negative acknowledgment");
+                return false;
+            }
+        }
 
-            _semaphore?.Dispose();
-            _messageReceiverLoopTokenSource?.Dispose();
+        private async Task<bool> TryDeadletterWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, Exception e, CancellationToken receiverTokenSource)
+        {
+            try
+            {
+                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Poisoned message received", e.ToString(), receiverTokenSource), receiverTokenSource);
+            }
+            catch (Exception inner)
+            {
+                _logger.LogError(inner, "Unable to deadletter message");
+                return false;
+            }
         }
 
         public async ValueTask DisposeAsync()

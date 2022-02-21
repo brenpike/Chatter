@@ -7,11 +7,11 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
     {
         Exception LastException { get; }
         DateTime LastStateChangedDateUtc { get; }
-        Task Open(Exception ex);
-        Task<int> IncrementFailureCounter(Exception ex);
-        Task<int> IncrementSuccessCounter();
-        Task Close();
-        Task HalfOpen();
+        Task OpenAsync(Exception ex);
+        Task<int> IncrementFailureCounterAsync(Exception ex);
+        Task<int> IncrementSuccessCounterAsync();
+        Task CloseAsync();
+        Task HalfOpenAsync();
         bool IsClosed { get; }
         CircuitBreakerState State { get; }
         int FailureCount { get; }
