@@ -71,6 +71,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
         public async Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
         {
+            //TODO: Sql Service Broker needs some sort of message envelope.  When deadlettering, for example, the message body is the only thing saved
+            //      none of the headers or anything is saved incuding the deadletter reason and description etc.  We also need to store things like
+            //      delivery counts and other types of metadata
             ReceivedMessage message = null;
             MessageBrokerContext messageContext = null;
             SqlConnection connection;
@@ -104,6 +107,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 throw;
             }
 #endif
+            catch (SqlException e) when (e.Number == 208)
+            {
+                throw new CriticalReceiverException($"Unable to receive message from configured queue '{_options.MessageReceiverPath}'", e);
+            }
             catch (Exception e)
             {
                 _logger.LogError(e, $"Error receiving sql service broker message from queue '{_options.MessageReceiverPath}'");
@@ -115,6 +122,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 await AckMessageAsync(null, transactionContext, cancellationToken); //discard message
                 return null;
             }
+
+            _localReceiverDeliveryAttempts.AddOrUpdate(message.ConvHandle, 1, (ch, deliveryAttempts) => deliveryAttempts + 1);
 
             IBrokeredMessageBodyConverter bodyConverter = new JsonUnicodeBodyConverter();
 
@@ -189,26 +198,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
         public async Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            ReceivedMessage msg = null;
-            if (!context?.Container.TryGet(out msg) ?? false)
-            {
-                _logger.LogTrace($"No {nameof(ReceivedMessage)} contained in {nameof(context)}.");
-            }
-
             transactionContext.Container.TryGet<SqlConnection>(out var connection);
             transactionContext.Container.TryGet<SqlTransaction>(out var transaction);
 
             try
             {
                 await transaction?.RollbackAsync(cancellationToken);
-                if (msg != null)
-                {
-                    _localReceiverDeliveryAttempts.AddOrUpdate(msg.ConvHandle, 1, (ch, deliveryAttempts) => deliveryAttempts + 1);
-                }
-                else
-                {
-                    _logger.LogTrace($"Unable to update local receiver delivery attempts. {nameof(msg)} is null.");
-                }
                 _logger.LogTrace("Message negative acknowledgment complete");
                 return true;
             }

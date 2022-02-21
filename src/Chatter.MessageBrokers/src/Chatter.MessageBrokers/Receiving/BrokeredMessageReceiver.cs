@@ -250,6 +250,7 @@ namespace Chatter.MessageBrokers.Receiving
 
             try
             {
+                //TODO: move this to a factory class for testing purposes... IReceivedMessageDispatcherFactory??
                 using var scope = _serviceFactory.CreateScope();
                 var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
                 messageContext.Container.Include((IExternalDispatcher)scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>());

@@ -50,7 +50,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
             {
                 foreach (var brokeredMessage in brokeredMessages)
                 {
-                    _logger.LogDebug($"Sending brokered message to '{brokeredMessage.Destination}'");
+                    _logger.LogTrace($"Sending brokered message to '{brokeredMessage.Destination}'");
                     brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ConversationGroupId, out var contextConversationGroupId);
                     brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ConversationHandle, out var contextConversationHandle);
                     brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ServiceName, out var contextInitiatorService);
@@ -61,25 +61,24 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
                     Guid conversationHandle = contextConversationHandle != null ? (Guid)contextConversationHandle : default;
 
                     conversationHandle = await BeginConversation(connection, transaction, brokeredMessage, contextInitiatorService, contextServiceContractName).ConfigureAwait(false);
-                    _logger.LogDebug("Dialog conversation has begun.");
-                    _logger.LogTrace($"Conversation Handle: '{conversationHandle}', Initiator Service: '{contextInitiatorService}', Service Contract Name: '{contextServiceContractName}'");
+                    _logger.LogTrace("Dialog conversation has begun.");
+                    _logger.LogDebug($"Conversation Handle: '{conversationHandle}', Initiator Service: '{contextInitiatorService}', Service Contract Name: '{contextServiceContractName}'");
 
                     await SendMessageOnConversation(connection, transaction, brokeredMessage, (string)contextMessageTypeName, conversationHandle).ConfigureAwait(false);
-                    _logger.LogDebug("Message sent on conversation.");
-                    _logger.LogTrace($"Conversation Handle: '{conversationHandle}', Message Type Name: '{contextMessageTypeName}'");
+                    _logger.LogTrace("Message sent on conversation.");
+                    _logger.LogDebug($"Conversation Handle: '{conversationHandle}', Message Type Name: '{contextMessageTypeName}'");
 
                     if (_options.EndConversationAfterDispatch)
                     {
                         await EndConversation(connection, transaction, conversationHandle).ConfigureAwait(false);
-                        _logger.LogDebug("Conversation ended.");
-                        _logger.LogTrace($"Conversation Handle: '{conversationHandle}'");
+                        _logger.LogTrace($"Conversation ended with handle '{conversationHandle}'.");
                     }
                 }
 
                 if (!useContextTransaction)
                 {
                     transaction?.Commit();
-                    _logger.LogDebug("Sending sql transaction committed");
+                    _logger.LogTrace("Sending sql transaction committed");
                 }
             }
             catch (Exception e)
@@ -89,7 +88,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
                 if (!useContextTransaction)
                 {
                     transaction?.Rollback();
-                    _logger.LogDebug("Rolled back message sending transaction");
+                    _logger.LogTrace("Rolled back message sending transaction");
                 }
 
                 throw;
@@ -100,7 +99,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
                 {
                     transaction?.Dispose();
                     connection.Dispose();
-                    _logger.LogDebug("Sending sql connection and sql transaction disposed.");
+                    _logger.LogTrace("Sending sql connection and sql transaction disposed.");
                 }
 
                 _logger.LogInformation("Sending sql service broker message complete.");

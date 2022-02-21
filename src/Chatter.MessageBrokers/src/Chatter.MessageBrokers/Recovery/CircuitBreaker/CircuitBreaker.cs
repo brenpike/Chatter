@@ -53,7 +53,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 if (_stateStore.State == CircuitBreakerState.HalfOpen ||
                     _stateStore.LastStateChangedDateUtc + _openToHalfOpenWaitTime < DateTime.UtcNow)
                 {
-                    _logger.LogDebug("Circuit Breaker timeout timer expired. Entering HALF-OPEN state.");
+                    _logger.LogInformation("Circuit Breaker timeout timer expired. Entering HALF-OPEN state.");
                     try
                     {
                         await _halfOpenSemaphore.WaitAsync(cancellationToken);
@@ -91,7 +91,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             {
                 if (!_exceptionEvaluator.ShouldTrip(ex))
                 {
-                    _logger.LogDebug($"Circuit break not configured for exception type '{ex.GetType().FullName}'. Skipping.");
+                    _logger.LogTrace($"Circuit break not configured for exception type '{ex.GetType().FullName}'. Skipping.");
                     throw;
                 }
 
@@ -102,20 +102,22 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
         private async Task TryClose()
         {
-            _logger.LogDebug("Attempting to CLOSE circuit");
+            _logger.LogTrace("Attempting to CLOSE circuit");
             if (await _stateStore.IncrementSuccessCounter() >= _numberOfHalfOpenSuccessesToClose)
             {
                 await _stateStore.Close();
+                _logger.LogInformation("Circuit is now CLOSED");
                 ResetOpenTimer();
             }
         }
 
         private async Task TryOpen(Exception ex)
         {
-            _logger.LogDebug("Attempting to OPEN circuit");
+            _logger.LogTrace("Attempting to OPEN circuit");
             if (await _stateStore.IncrementFailureCounter(ex) >= _numberOfFailuresBeforeOpen)
             {
                 await _stateStore.Open(ex);
+                _logger.LogInformation("Circuit is now OPEN");
                 StartOpenTimer();
             }
         }
