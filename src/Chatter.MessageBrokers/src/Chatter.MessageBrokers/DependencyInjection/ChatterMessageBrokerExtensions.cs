@@ -121,6 +121,7 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();
             builder.Services.AddScoped<IRetryStrategy, RetryStrategy>();
             builder.Services.AddScoped<IRecoveryStrategy, RetryWithCircuitBreakerStrategy>();
+            builder.Services.AddScoped<IReceivedMessageDispatcher, ScopedReceivedMessageDispatcher>();
 
             if (options?.Reliability?.EnableOutboxPollingProcessor ?? false)
             {

@@ -3,8 +3,6 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Recovery;
-using Chatter.MessageBrokers.Sending;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Threading;
@@ -21,7 +19,6 @@ namespace Chatter.MessageBrokers.Receiving
         private IMessagingInfrastructureReceiver _infrastructureReceiver;
         private readonly IMessagingInfrastructureProvider _infrastructureProvider;
         protected readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
-        protected readonly IServiceScopeFactory _serviceFactory;
         protected ReceiverOptions _options;
         private bool _disposedValue;
         SemaphoreSlim _semaphore;
@@ -30,7 +27,8 @@ namespace Chatter.MessageBrokers.Receiving
         private readonly int _maxConcurrentCalls = 1; //TODO: add configuration for maxconcurrentcalls to messagebrokeroptions and/or receiveroptions
         private readonly MessageBrokerOptions _messageBrokerOptions;
         private readonly IRecoveryStrategy _recoveryStrategy;
-        private readonly IMaxReceivesExceededAction _recoveryAction;
+        private readonly IReceivedMessageDispatcher _receivedMessageDispatcher;
+        private readonly IMaxReceivesExceededAction _failedRecoveryAction;
         private readonly ICriticalFailureNotifier _criticalFailureNotifier;
 
         /// <summary>
@@ -42,10 +40,10 @@ namespace Chatter.MessageBrokers.Receiving
         public BrokeredMessageReceiver(IMessagingInfrastructureProvider infrastructureProvider,
                                        MessageBrokerOptions messageBrokerOptions,
                                        ILogger<BrokeredMessageReceiver<TMessage>> logger,
-                                       IServiceScopeFactory serviceFactory,
                                        IMaxReceivesExceededAction recoveryAction,
                                        ICriticalFailureNotifier criticalFailureNotifier,
-                                       IRecoveryStrategy recoveryStrategy)
+                                       IRecoveryStrategy recoveryStrategy,
+                                       IReceivedMessageDispatcher receivedMessageDispatcher)
         {
             if (infrastructureProvider is null)
             {
@@ -54,11 +52,11 @@ namespace Chatter.MessageBrokers.Receiving
 
             _infrastructureProvider = infrastructureProvider;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
-            _recoveryAction = recoveryAction;
+            _failedRecoveryAction = recoveryAction;
             _criticalFailureNotifier = criticalFailureNotifier ?? throw new ArgumentNullException(nameof(criticalFailureNotifier));
             _messageBrokerOptions = messageBrokerOptions ?? throw new ArgumentNullException(nameof(messageBrokerOptions));
             _recoveryStrategy = recoveryStrategy ?? throw new ArgumentNullException(nameof(recoveryStrategy));
+            _receivedMessageDispatcher = receivedMessageDispatcher ?? throw new ArgumentNullException(nameof(receivedMessageDispatcher));
         }
 
         /// <summary>
@@ -188,7 +186,7 @@ namespace Chatter.MessageBrokers.Receiving
                             {
                                 if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, _messageReceiverLoopTokenSource.Token))
                                 {
-                                    await _recoveryAction.ExecuteAsync(new FailureContext(messageContext.BrokeredMessage, this.ErrorQueueName, "Max message receive attempts exceeded", e, deliveryCount, transactionContext));
+                                    await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
                                 }
                             }
                             else
@@ -222,11 +220,7 @@ namespace Chatter.MessageBrokers.Receiving
 
             try
             {
-                //TODO: move this to a factory class for testing purposes... IReceivedMessageDispatcherFactory??
-                using var scope = _serviceFactory.CreateScope();
-                var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
-                messageContext.Container.Include((IExternalDispatcher)scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>());
-                await dispatcher.Dispatch(payload, messageContext);
+                await _receivedMessageDispatcher.DispatchAsync(payload, messageContext, receiverTokenSource);
             }
             catch (Exception e)
             {
@@ -314,6 +308,24 @@ namespace Chatter.MessageBrokers.Receiving
             catch (Exception inner)
             {
                 _logger.LogError(inner, "Unable to deadletter message");
+                return false;
+            }
+        }
+
+        private async Task<bool> TryExecuteFailedRecoveryAction(MessageBrokerContext messageContext, string failureDescription, Exception exception, int deliveryCount, TransactionContext transactionContext)
+        {
+            try
+            {
+                var failureContext = new FailureContext(messageContext.BrokeredMessage, this.ErrorQueueName, failureDescription, exception, deliveryCount, transactionContext);
+                return await _recoveryStrategy.ExecuteAsync(() =>
+                {
+                    _failedRecoveryAction.ExecuteAsync(failureContext);
+                    return Task.FromResult(true);
+                }, messageContext.CancellationToken);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Unable to execute recovery action");
                 return false;
             }
         }

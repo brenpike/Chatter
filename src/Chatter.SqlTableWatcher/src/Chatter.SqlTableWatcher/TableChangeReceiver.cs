@@ -17,6 +17,7 @@ namespace Chatter.SqlTableWatcher
         where TRowChangeData : class, IMessage
         where TProcessorCommand : ProcessTableChangesCommand<TRowChangeData>
     {
+        private readonly IServiceScopeFactory _serviceFactory;
 
         public TableChangeReceiver(IMessagingInfrastructureProvider infrastructureProvider,
                                    MessageBrokerOptions messageBrokerOptions,
@@ -24,9 +25,11 @@ namespace Chatter.SqlTableWatcher
                                    IServiceScopeFactory serviceFactory,
                                    IMaxReceivesExceededAction recoveryAction,
                                    ICriticalFailureNotifier criticalFailureNotifier,
-                                   IRecoveryStrategy recoveryStrategy)
-            : base(infrastructureProvider, messageBrokerOptions, logger, serviceFactory, recoveryAction, criticalFailureNotifier, recoveryStrategy)
+                                   IRecoveryStrategy recoveryStrategy,
+                                   IReceivedMessageDispatcher receivedMessageDispatcher)
+            : base(infrastructureProvider, messageBrokerOptions, logger, recoveryAction, criticalFailureNotifier, recoveryStrategy, receivedMessageDispatcher)
         {
+            _serviceFactory = serviceFactory ?? throw new System.ArgumentNullException(nameof(serviceFactory));
         }
 
         public override async Task DispatchReceivedMessageAsync(TProcessorCommand message, MessageBrokerContext context, CancellationToken receiverTokenSource)
@@ -39,7 +42,7 @@ namespace Chatter.SqlTableWatcher
 
             if (message.Inserted is null && message.Deleted is null)
             {
-                _logger.LogDebug($"No inserted or deleted records contained in {nameof(ProcessTableChangesCommand<TRowChangeData>)}");
+                _logger.LogTrace($"No inserted or deleted records contained in {nameof(ProcessTableChangesCommand<TRowChangeData>)}");
                 return;
             }
 
