@@ -107,7 +107,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 throw;
             }
 #endif
-            catch (SqlException e) when (e.Number == 208)
+            catch (SqlException e) when (e.Number == 208 || e.Number == 102)
             {
                 throw new CriticalReceiverException($"Unable to receive message from configured queue '{_options.MessageReceiverPath}'", e);
             }
@@ -117,19 +117,42 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 throw;
             }
 
-            if (message is null || message?.Body == null || message?.MessageTypeName != "DEFAULT")
+            if (message is null)
             {
-                await AckMessageAsync(null, transactionContext, cancellationToken); //discard message
+                await transaction?.CommitAsync(cancellationToken);
+                _logger.LogTrace("Discarding null message");
+                return null;
+            }
+
+            if (message.MessageTypeName != ServicesMessageTypes.DefaultType && message.MessageTypeName != ServicesMessageTypes.ChatterBrokeredMessageType)
+            {
+                await transaction?.CommitAsync(cancellationToken);
+                _logger.LogTrace($"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received.");
+                return null;
+            }
+
+            if (message.Body == null)
+            {
+                await transaction?.CommitAsync(cancellationToken);
+                _logger.LogTrace($"Discarding message of type '{message.MessageTypeName}' with null message body");
                 return null;
             }
 
             _localReceiverDeliveryAttempts.AddOrUpdate(message.ConvHandle, 1, (ch, deliveryAttempts) => deliveryAttempts + 1);
 
             IBrokeredMessageBodyConverter bodyConverter = new JsonUnicodeBodyConverter();
+            byte[] messagePayload = message.Body;
+            IDictionary<string, object> headers = new Dictionary<string, object>();
 
             try
             {
                 bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+                if (message.MessageTypeName == ServicesMessageTypes.ChatterBrokeredMessageType)
+                {
+                    var brokeredMessage = bodyConverter.Convert<OutboundBrokeredMessage>(message.Body);
+                    messagePayload = brokeredMessage.Body;
+                    headers = brokeredMessage.MessageContext;
+                }
             }
             catch (Exception e)
             {
@@ -138,18 +161,17 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             finally
             {
                 _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
-                var headers = new Dictionary<string, object>
-                {
-                    [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
-                    [SSBMessageContext.ConversationHandle] = message.ConvHandle,
-                    [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
-                    [SSBMessageContext.ServiceName] = message.ServiceName,
-                    [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
-                    [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
-                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType,
-                    [MessageContext.ReceiveAttempts] = deliveryAttempts
-                };
-                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
+
+                headers[SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle;
+                headers[SSBMessageContext.ConversationHandle] = message.ConvHandle;
+                headers[SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo;
+                headers[SSBMessageContext.ServiceName] = message.ServiceName;
+                headers[SSBMessageContext.ServiceContractName] = message.ServiceContractName;
+                headers[SSBMessageContext.MessageTypeName] = message.MessageTypeName;
+                headers[MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType;
+                headers[MessageContext.ReceiveAttempts] = deliveryAttempts;
+
+                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), messagePayload, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
                 messageContext.Container.Include(message);
             }
 
@@ -236,15 +258,21 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 using var scope = _serviceFactory.CreateScope();
                 var ssbSender = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>();
                 var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+
+                _localReceiverDeliveryAttempts.TryGetValue(msg.ConvHandle, out var deliveryAttempts);
+
                 var headers = new Dictionary<string, object>()
                 {
-                    [SSBMessageContext.ServiceName] = null,
+                    [SSBMessageContext.ConversationHandle] = msg.ConvHandle,
+                    [SSBMessageContext.ServiceName] = msg.ServiceName,
                     [MessageContext.FailureDescription] = deadLetterErrorDescription,
                     [MessageContext.FailureDetails] = deadLetterReason,
-                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType
+                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType,
+                    [SSBMessageContext.MessageTypeName] = ServicesMessageTypes.ChatterBrokeredMessageType,
+                    [SSBMessageContext.ServiceContractName] = ServicesMessageTypes.ChatterServiceContract,
+                    [MessageContext.ReceiveAttempts] = deliveryAttempts
                 };
-
-                await ssbSender.Dispatch(new OutboundBrokeredMessage(Guid.NewGuid().ToString(), msg.Body, headers, _options.DeadLetterQueuePath, bodyConverter), transactionContext);
+                await ssbSender.Dispatch(new OutboundBrokeredMessage(context.BrokeredMessage.MessageId, msg.Body, headers, _options.DeadLetterQueuePath, bodyConverter), transactionContext);
                 await transaction?.CommitAsync(cancellationToken);
                 _localReceiverDeliveryAttempts.TryRemove(msg.ConvHandle, out var _);
                 _logger.LogTrace($"Message deadlettered.");

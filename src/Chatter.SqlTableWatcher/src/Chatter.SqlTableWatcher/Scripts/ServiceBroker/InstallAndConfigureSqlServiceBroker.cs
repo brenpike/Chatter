@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Chatter.MessageBrokers.SqlServiceBroker;
+using System;
 
 namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
 {
@@ -73,18 +74,24 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
                     ALTER AUTHORIZATION ON DATABASE::[{0}] TO [sa]
                 END
 
+                IF NOT EXISTS (SELECT * FROM sys.service_message_types WHERE name = '{6}')
+                    CREATE MESSAGE TYPE [{6}] VALIDATION = NONE;
+
+                IF NOT EXISTS (SELECT * FROM sys.service_contracts WHERE name = '{7}')
+                    CREATE CONTRACT [{7}] ([{6}] SENT BY ANY, [DEFAULT] SENT BY ANY);
+
                 IF NOT EXISTS (SELECT * FROM sys.service_queues WHERE name = '{1}')
 	                CREATE QUEUE {3}.[{1}] WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
 
                 IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{2}')
-	                CREATE SERVICE [{2}] ON QUEUE {3}.[{1}] ([DEFAULT])
+	                CREATE SERVICE [{2}] ON QUEUE {3}.[{1}] ([{7}])
 
                 IF NOT EXISTS (SELECT * FROM sys.service_queues WHERE name = '{4}')
 	                CREATE QUEUE {3}.[{4}] WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
 
                 IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{5}')
-	                CREATE SERVICE [{5}] ON QUEUE {3}.[{4}] ([DEFAULT]) 
-            ", _databaseName, _conversationQueueName, _conversationServiceName, _schemaName, _deadLetterQueueName, _deadLetterServiceName);
+	                CREATE SERVICE [{5}] ON QUEUE {3}.[{4}] ([{7}]) 
+            ", _databaseName, _conversationQueueName, _conversationServiceName, _schemaName, _deadLetterQueueName, _deadLetterServiceName, ServicesMessageTypes.ChatterBrokeredMessageType, ServicesMessageTypes.ChatterServiceContract);
         }
     }
 }

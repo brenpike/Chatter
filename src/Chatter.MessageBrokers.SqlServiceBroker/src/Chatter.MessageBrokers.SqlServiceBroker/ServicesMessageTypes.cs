@@ -31,5 +31,7 @@
         public const string StatusType = "http://schemas.microsoft.com/SQL/ServiceBroker/ServiceDiagnostic/Status";
         public const string DescriptionType = "http://schemas.microsoft.com/SQL/ServiceBroker/ServiceDiagnostic/Description";
         public const string DefaultType = "DEFAULT";
+        public const string ChatterBrokeredMessageType = @"//Chatter/BrokeredMessage";
+        public const string ChatterServiceContract = @"//Chatter";
     }
 }

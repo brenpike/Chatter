@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Chatter.MessageBrokers.SqlServiceBroker;
+using System;
 using System.Text;
 
 namespace Chatter.SqlTableWatcher.Scripts.Triggers
@@ -105,12 +106,12 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
                 	    DECLARE @ConvHandle UNIQUEIDENTIFIER
 
                 	    BEGIN DIALOG @ConvHandle 
-                            FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [DEFAULT] WITH ENCRYPTION=OFF; 
+                            FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [{5}] WITH ENCRYPTION=OFF; 
 
                         SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (@message);
                     END
                 END
-            ", _monitorableTableName, _notificationTriggerName, _notificationTriggeredBy, _conversationServiceName, _schemaName);
+            ", _monitorableTableName, _notificationTriggerName, _notificationTriggeredBy, _conversationServiceName, _schemaName, ServicesMessageTypes.ChatterServiceContract);
         }
     }
 }

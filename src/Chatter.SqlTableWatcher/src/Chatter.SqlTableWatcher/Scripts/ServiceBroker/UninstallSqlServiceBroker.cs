@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Chatter.MessageBrokers.SqlServiceBroker;
+using System;
 
 namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
 {
@@ -82,7 +83,14 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
         {
             return $"{Uninstall(_conversationQueueName, _conversationServiceName, _schemaName)}" +
                    $"{Environment.NewLine}" +
-                   $"{Uninstall(_deadLetterQueueName, _deadLetterServiceName, _schemaName)}";
+                   $"{Uninstall(_deadLetterQueueName, _deadLetterServiceName, _schemaName)}" +
+                   $"{Environment.NewLine}" +
+                   String.Format(@"
+                    IF EXISTS (SELECT * FROM sys.service_contracts WHERE name = '{0}')
+                        DROP CONTRACT [{0}];
+                    IF EXISTS (SELECT * FROM sys.service_message_types WHERE name = '{1}')
+                        DROP MESSAGE TYPE [{1}];
+                        ", ServicesMessageTypes.ChatterServiceContract, ServicesMessageTypes.ChatterBrokeredMessageType);
         }
     }
 }

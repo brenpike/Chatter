@@ -148,7 +148,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
 
         public RecoveryOptions Build()
         {
-            //TODO: add builder functuionality to configure exceptions that trigger retry and/or circuit breaker
+            //TODO: add builder functionality to configure exceptions that trigger retry and/or circuit breaker
             var recoveryOptions = new RecoveryOptions();
             if (_recoveryOptionsSection != null && _recoveryOptionsSection.Exists())
             {

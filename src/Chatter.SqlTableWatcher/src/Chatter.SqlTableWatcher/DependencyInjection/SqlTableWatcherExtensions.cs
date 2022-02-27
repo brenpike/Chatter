@@ -70,12 +70,7 @@ namespace Microsoft.Extensions.DependencyInjection
             {
                 var receiver = string.IsNullOrWhiteSpace(options.TableWatcherQueueName) ? $"{ChatterServiceBrokerConstants.ChatterQueuePrefix}{typeof(TRowChangedData).Name}" : options.TableWatcherQueueName;
                 var dlq = string.IsNullOrWhiteSpace(options.TableWatcherDeadLetterServiceName) ? $"{ChatterServiceBrokerConstants.ChatterDeadLetterServicePrefix}{typeof(TRowChangedData).Name}" : options.TableWatcherDeadLetterServiceName;
-                ssbBuilder.AddSqlServiceBrokerOptions(options.ConnectionString,
-                                                      options.ServiceBrokerOptions.MessageBodyType,
-                                                      options.ServiceBrokerOptions.ReceiverTimeoutInMilliseconds,
-                                                      options.ServiceBrokerOptions.ConversationLifetimeInSeconds,
-                                                      options.ServiceBrokerOptions.ConversationEncryption,
-                                                      options.ServiceBrokerOptions.CleanupOnEndConversation)
+                ssbBuilder.AddSqlServiceBrokerOptions(options.ServiceBrokerOptions)
                           .AddQueueReceiver<ProcessTableChangesCommand<TRowChangedData>>(receiver,
                                                                                          errorQueuePath: options.ReceiverOptions.ErrorQueuePath,
                                                                                          transactionMode: options.ReceiverOptions.TransactionMode,

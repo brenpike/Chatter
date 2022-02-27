@@ -16,12 +16,15 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
     {
         private readonly SqlServiceBrokerOptions _options;
         private readonly ILogger<SqlServiceBrokerSender> _logger;
+        private readonly IBodyConverterFactory _bodyConverterFactory;
 
         public SqlServiceBrokerSender(SqlServiceBrokerOptions options,
-                                      ILogger<SqlServiceBrokerSender> logger)
+                                      ILogger<SqlServiceBrokerSender> logger,
+                                      IBodyConverterFactory bodyConverterFactory)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
         }
 
         public async Task Dispatch(IEnumerable<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext)
@@ -110,7 +113,16 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
             => new EndDialogConversationCommand(connection, conversationHandle, enableCleanup: _options.CleanupOnEndConversation, transaction: transaction).ExecuteAsync();
 
         private Task SendMessageOnConversation(SqlConnection connection, SqlTransaction transaction, OutboundBrokeredMessage brokeredMessage, string messageTypeName, Guid newConvHandle)
-            => new SendOnConversationCommand(connection, newConvHandle, brokeredMessage.Body, transaction, _options.CompressMessageBody, messageTypeName).ExecuteAsync();
+        {
+            byte[] message = brokeredMessage.Body;
+            if (messageTypeName == ServicesMessageTypes.ChatterBrokeredMessageType)
+            {
+                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_options.MessageBodyType);
+                message = bodyConverter.Convert(brokeredMessage);
+            }
+
+            return new SendOnConversationCommand(connection, newConvHandle, message, transaction, _options.CompressMessageBody, messageTypeName).ExecuteAsync();
+        }
 
         private Task<Guid> BeginConversation(SqlConnection connection, SqlTransaction transaction, OutboundBrokeredMessage brokeredMessage, object initiatorService, object serviceContractName)
             => new BeginDialogConversationCommand(connection, brokeredMessage.Destination, (string)initiatorService, (string)serviceContractName, _options.ConversationLifetimeInSeconds, transaction: transaction).ExecuteAsync();
