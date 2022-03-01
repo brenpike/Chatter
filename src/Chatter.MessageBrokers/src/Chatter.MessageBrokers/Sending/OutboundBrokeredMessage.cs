@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
@@ -8,18 +9,23 @@ namespace Chatter.MessageBrokers.Sending
     {
         private readonly IBrokeredMessageBodyConverter _bodyConverter;
 
+        [JsonConstructor]
+        internal OutboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> messageContext, string destination)
+        {
+            MessageId = messageId;
+            Body = body ?? throw new ArgumentNullException(nameof(body));
+            Destination = destination;
+            MessageContext = messageContext ?? new ConcurrentDictionary<string, object>();
+        }
+
         public OutboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> messageContext, string destination, IBrokeredMessageBodyConverter bodyConverter)
+            : this(messageId, body, messageContext, destination)
         {
             if (string.IsNullOrWhiteSpace(destination))
             {
                 throw new ArgumentException($"A destination is required for an {typeof(OutboundBrokeredMessage).Name}.", nameof(destination));
             }
 
-            MessageContext = messageContext ?? new ConcurrentDictionary<string, object>();
-
-            MessageId = messageId;
-            Body = body ?? throw new ArgumentNullException(nameof(body));
-            Destination = destination;
             _bodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
             MessageContext[MessageBrokers.MessageContext.ContentType] = _bodyConverter.ContentType;
 
@@ -52,13 +58,10 @@ namespace Chatter.MessageBrokers.Sending
             return this;
         }
 
-        public string CorrelationId => (string)GetMessageContextByKey(MessageBrokers.MessageContext.CorrelationId);
-        public string ReplyToAddress => (string)GetMessageContextByKey(MessageBrokers.MessageContext.ReplyToAddress);
-        public string ReplyToGroupId => (string)GetMessageContextByKey(MessageBrokers.MessageContext.ReplyToGroupId);
-        public string GroupId => (string)GetMessageContextByKey(MessageBrokers.MessageContext.GroupId);
-        public string Subject => (string)GetMessageContextByKey(MessageBrokers.MessageContext.Subject);
+        public string CorrelationId => GetMessageContextByKey<string>(MessageBrokers.MessageContext.CorrelationId);
         public string ContentType => _bodyConverter.ContentType;
-        public string InfrastructureType => (string)GetMessageContextByKey(MessageBrokers.MessageContext.InfrastructureType);
+        public string InfrastructureType => GetMessageContextByKey<string>(MessageBrokers.MessageContext.InfrastructureType);
+        public int ReceiveAttempts => GetMessageContextByKey<int>(MessageBrokers.MessageContext.ReceiveAttempts);
 
         public OutboundBrokeredMessage RefreshTimeToLive()
         {
@@ -102,23 +105,18 @@ namespace Chatter.MessageBrokers.Sending
             }
         }
 
-        internal OutboundBrokeredMessage ClearReplyToProperties()
-        {
-            MessageContext.Remove(MessageBrokers.MessageContext.ReplyToAddress);
-            MessageContext.Remove(MessageBrokers.MessageContext.ReplyToGroupId);
-            return this;
-        }
-
-        public object GetMessageContextByKey(string key)
+        public TValue GetMessageContextByKey<TValue>(string key)
         {
             if (MessageContext.TryGetValue(key, out var output))
             {
-                return output;
+                return (TValue)output;
             }
             else
             {
-                return null;
+                return default;
             }
         }
+
+        public object GetMessageContextByKey(string key) => GetMessageContextByKey<object>(key);
     }
 }

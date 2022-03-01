@@ -71,9 +71,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
         public async Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            //TODO: Sql Service Broker needs some sort of message envelope.  When deadlettering, for example, the message body is the only thing saved
-            //      none of the headers or anything is saved incuding the deadletter reason and description etc.  We also need to store things like
-            //      delivery counts and other types of metadata
             ReceivedMessage message = null;
             MessageBrokerContext messageContext = null;
             SqlConnection connection;
@@ -142,6 +139,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             IBrokeredMessageBodyConverter bodyConverter = new JsonUnicodeBodyConverter();
             byte[] messagePayload = message.Body;
+            string messageId = message.ConvHandle.ToString();
             IDictionary<string, object> headers = new Dictionary<string, object>();
 
             try
@@ -150,7 +148,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 if (message.MessageTypeName == ServicesMessageTypes.ChatterBrokeredMessageType)
                 {
                     var brokeredMessage = bodyConverter.Convert<OutboundBrokeredMessage>(message.Body);
+
+                    if (brokeredMessage == null)
+                    {
+                        throw new ArgumentNullException(nameof(brokeredMessage), $"Unable to deserialize {nameof(OutboundBrokeredMessage)} from message body");
+                    }
+
                     messagePayload = brokeredMessage.Body;
+                    messageId = brokeredMessage.MessageId;
                     headers = brokeredMessage.MessageContext;
                 }
             }
@@ -171,7 +176,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 headers[MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType;
                 headers[MessageContext.ReceiveAttempts] = deliveryAttempts;
 
-                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), messagePayload, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
+                messageContext = new MessageBrokerContext(messageId, messagePayload, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
                 messageContext.Container.Include(message);
             }
 
