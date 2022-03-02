@@ -4,7 +4,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
 {
     public class RecoveryOptions
     {
-        public int MaxRetryAttempts { get; internal set; }
-        public CircuitBreakerOptions CircuitBreakerOptions { get; internal set; }
+        public int MaxRetryAttempts { get; set; }
+        public CircuitBreakerOptions CircuitBreakerOptions { get; set; }
     }
 }
