@@ -5,7 +5,7 @@ using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving.CircuitBreaker
 {
-    public class ServiceBusCircuitBreakerExceptionPredicatesProvider : ICircuitBreakerExceptionPredicatesProvider
+    internal sealed class ServiceBusCircuitBreakerExceptionPredicatesProvider : ICircuitBreakerExceptionPredicatesProvider
     {
         public IEnumerable<Predicate<Exception>> GetExceptionPredicates()
         {

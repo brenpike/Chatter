@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Chatter.MessageBrokers.Exceptions;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -58,7 +59,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
                 try
                 {
-                    await _halfOpenSemaphore.WaitAsync(cancellationToken);
+                    await _halfOpenSemaphore?.WaitAsync(cancellationToken);
                     await _stateStore.HalfOpenAsync();
                     var context = await action(_stateStore.State);
                     await TryClose();
@@ -122,12 +123,11 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
         private void CriticalFailureNotification(object state)
         {
-            _logger.LogWarning($"Circuit breaker has been OPEN for {_timeOpenBeforeCriticalFailureNotification} seconds");
-            StartOpenTimer();
+            _logger.LogCritical($"Circuit breaker has been OPEN for {_timeOpenBeforeCriticalFailureNotification} seconds");
         }
 
-        private void ResetOpenTimer() => _timer.Change(Timeout.Infinite, Timeout.Infinite);
-        private void StartOpenTimer() => _timer.Change(_timeOpenBeforeCriticalFailureNotification, TimeSpan.FromMilliseconds(-1));
+        private void ResetOpenTimer() => _timer?.Change(Timeout.Infinite, Timeout.Infinite);
+        private void StartOpenTimer() => _timer?.Change(_timeOpenBeforeCriticalFailureNotification, TimeSpan.FromMilliseconds(-1));
 
         private void Dispose(bool disposing)
         {

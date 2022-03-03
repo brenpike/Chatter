@@ -5,7 +5,7 @@ using System.Data.SqlClient;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving.CircuitBreaker
 {
-    public class SqlCircuitBreakerExceptionPredicatesProvider : ICircuitBreakerExceptionPredicatesProvider
+    internal sealed class SqlCircuitBreakerExceptionPredicatesProvider : ICircuitBreakerExceptionPredicatesProvider
     {
         public IEnumerable<Predicate<Exception>> GetExceptionPredicates()
         {

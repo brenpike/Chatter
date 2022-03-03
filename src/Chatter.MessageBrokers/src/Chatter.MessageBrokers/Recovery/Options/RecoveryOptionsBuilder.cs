@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Recovery.Retry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Recovery.Options
 {
@@ -12,20 +13,20 @@ namespace Chatter.MessageBrokers.Recovery.Options
         private CircuitBreakerOptions _circuitBreakerOptions = null;
 
         public const string RecoveryOptionsSectionName = "Chatter:MessageBrokers:Recovery";
-        private readonly IConfiguration _configuration;
         private readonly IServiceCollection _services;
         private readonly IConfigurationSection _recoveryOptionsSection;
         private int _maxRetryAttempts = _defaultMaxRetryAttempts;
+        private readonly List<Predicate<Exception>> _exceptionPredicates;
 
         private const int _defaultMaxRetryAttempts = 5;
         private const int _maxExponentialRetryAttempts = 15;
 
-        private RecoveryOptionsBuilder(IServiceCollection services) : this(services, null, null) { }
-        private RecoveryOptionsBuilder(IServiceCollection services, IConfiguration configuration, IConfigurationSection section)
+        private RecoveryOptionsBuilder(IServiceCollection services) : this(services, null) { }
+        private RecoveryOptionsBuilder(IServiceCollection services, IConfigurationSection section)
         {
             _services = services ?? throw new ArgumentNullException(nameof(services));
-            _configuration = configuration;
             _recoveryOptionsSection = section;
+            _exceptionPredicates = new List<Predicate<Exception>>();
         }
 
         /// <summary>
@@ -46,7 +47,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
         public static RecoveryOptions FromConfig(IServiceCollection services, IConfiguration configuration, string recoveryOptionsSectionName = RecoveryOptionsSectionName)
         {
             var section = configuration?.GetSection(recoveryOptionsSectionName);
-            var builder = new RecoveryOptionsBuilder(services, configuration, section);
+            var builder = new RecoveryOptionsBuilder(services, section);
             return builder.Build();
         }
 
@@ -146,9 +147,23 @@ namespace Chatter.MessageBrokers.Recovery.Options
             return this;
         }
 
+
+        /// <summary>
+        /// Allows configuration of exception predicates that will cause an operation to be retried
+        /// </summary>
+        /// <param name="exceptions">One or more exception predicates</param>
+        /// <returns><see cref="CircuitBreakerOptionsBuilder"/></returns>
+        public RecoveryOptionsBuilder RetryWhen(params Predicate<Exception>[] exceptions)
+        {
+            if (exceptions != null)
+            {
+                _exceptionPredicates.AddRange(exceptions);
+            }
+            return this;
+        }
+
         public RecoveryOptions Build()
         {
-            //TODO: add builder functionality to configure exceptions that trigger retry and/or circuit breaker
             var recoveryOptions = new RecoveryOptions();
             if (_recoveryOptionsSection != null && _recoveryOptionsSection.Exists())
             {
@@ -159,6 +174,11 @@ namespace Chatter.MessageBrokers.Recovery.Options
             {
                 recoveryOptions.MaxRetryAttempts = _defaultMaxRetryAttempts;
                 recoveryOptions.CircuitBreakerOptions = _circuitBreakerOptions;
+            }
+
+            if (_exceptionPredicates.Count > 0)
+            {
+                _services.AddSingleton<IRetryExceptionPredicatesProvider>(new ConfigRetryExceptionPredicatesProvider(_exceptionPredicates));
             }
 
             if (recoveryOptions.CircuitBreakerOptions is null)

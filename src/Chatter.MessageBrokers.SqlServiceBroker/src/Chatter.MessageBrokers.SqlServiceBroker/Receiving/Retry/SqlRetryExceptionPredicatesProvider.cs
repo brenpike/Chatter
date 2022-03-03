@@ -5,7 +5,7 @@ using System.Data.SqlClient;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving.Retry
 {
-    public class SqlRetryExceptionPredicatesProvider : IRetryExceptionPredicatesProvider
+    internal sealed class SqlRetryExceptionPredicatesProvider : IRetryExceptionPredicatesProvider
     {
         public IEnumerable<Predicate<Exception>> GetExceptionPredicates()
         {

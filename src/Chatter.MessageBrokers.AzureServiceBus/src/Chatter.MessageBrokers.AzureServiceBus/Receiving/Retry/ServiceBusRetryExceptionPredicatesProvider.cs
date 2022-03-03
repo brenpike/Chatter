@@ -5,7 +5,7 @@ using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving.Retry
 {
-    public class ServiceBusRetryExceptionPredicatesProvider : IRetryExceptionPredicatesProvider
+    internal sealed class ServiceBusRetryExceptionPredicatesProvider : IRetryExceptionPredicatesProvider
     {
         public IEnumerable<Predicate<Exception>> GetExceptionPredicates()
         {

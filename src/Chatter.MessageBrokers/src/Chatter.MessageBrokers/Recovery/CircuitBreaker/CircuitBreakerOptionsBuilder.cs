@@ -1,7 +1,8 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using Chatter.CQRS;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
-using Chatter.CQRS;
+using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 {
@@ -15,24 +16,24 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
         public const string CircuitBreakerOptionsSectionName = "Chatter:MessageBrokers:Recovery:CircuitBreaker";
         private readonly IServiceCollection _services;
-        private readonly IConfiguration _configuration;
         private readonly IConfigurationSection _circuitBreakerOptionsSection;
+        private readonly List<Predicate<Exception>> _exceptionPredicates;
 
         public static CircuitBreakerOptionsBuilder Create(IServiceCollection services)
             => new CircuitBreakerOptionsBuilder(services);
 
-        private CircuitBreakerOptionsBuilder(IServiceCollection services) : this(services, null, null) { }
-        private CircuitBreakerOptionsBuilder(IServiceCollection services, IConfiguration configuration, IConfigurationSection circuitBreakerOptionsSection)
+        private CircuitBreakerOptionsBuilder(IServiceCollection services) : this(services, null) { }
+        private CircuitBreakerOptionsBuilder(IServiceCollection services, IConfigurationSection circuitBreakerOptionsSection)
         {
             _services = services ?? throw new ArgumentNullException(nameof(services));
-            _configuration = configuration;
             _circuitBreakerOptionsSection = circuitBreakerOptionsSection;
+            _exceptionPredicates = new List<Predicate<Exception>>();
         }
 
         public static CircuitBreakerOptions FromConfig(IServiceCollection services, IConfiguration configuration, string circuitBreakerOptionsSectionName = CircuitBreakerOptionsSectionName)
         {
             var section = configuration?.GetSection(circuitBreakerOptionsSectionName);
-            var builder = new CircuitBreakerOptionsBuilder(services, configuration, section);
+            var builder = new CircuitBreakerOptionsBuilder(services, section);
             return builder.Build();
         }
 
@@ -82,14 +83,27 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         }
 
         /// <summary>
-        /// Sets the time the circuit can remain open before a <see cref="CriticalFailureEvent"/> is raised by the circuit breaker. Critical failure logic 
-        /// should be consumer specific and defined in <see cref="IMessageHandler{CriticalFailureEvent}"/>. Default is 1800 (30 minutes).
+        /// Sets the time the circuit can remain open before a critical event is logged. Default is 1800 (30 minutes).
         /// </summary>
-        /// <param name="timeInSeconds">The time in seconds before a <see cref="CriticalFailureEvent"/> is dispatched</param>
+        /// <param name="timeInSeconds">The time in seconds</param>
         /// <returns><see cref="CircuitBreakerOptionsBuilder"/></returns>
-        public CircuitBreakerOptionsBuilder SetTimeOpenBeforeRaisingCriticalFailureEvent(int timeInSeconds)
+        public CircuitBreakerOptionsBuilder SetTimeOpenBeforeCriticalEvent(int timeInSeconds)
         {
             _secondsOpenBeforeCriticalFailureNotification = timeInSeconds;
+            return this;
+        }
+
+        /// <summary>
+        /// Allows configuration of exception predicates that will cause the circuit breaker to be tripped
+        /// </summary>
+        /// <param name="exceptions">One or more exception predicates</param>
+        /// <returns><see cref="CircuitBreakerOptionsBuilder"/></returns>
+        public CircuitBreakerOptionsBuilder IsTrippedBy(params Predicate<Exception>[] exceptions)
+        {
+            if (exceptions != null)
+            {
+                _exceptionPredicates.AddRange(exceptions);
+            }
             return this;
         }
 
@@ -108,6 +122,11 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 circuitBreakerOptions.NumberOfFailuresBeforeOpen = _numberOfFailuresBeforeOpen;
                 circuitBreakerOptions.NumberOfHalfOpenSuccessesToClose = _numberOfHalfOpenSuccessesToClose;
                 circuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification = _secondsOpenBeforeCriticalFailureNotification;
+            }
+
+            if (_exceptionPredicates.Count > 0)
+            {
+                _services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider>(new ConfigCircuitBreakerExceptionPredicatesProvider(_exceptionPredicates));
             }
 
             _services.AddSingleton(circuitBreakerOptions);

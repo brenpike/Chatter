@@ -73,8 +73,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         {
             ReceivedMessage message = null;
             MessageBrokerContext messageContext = null;
-            SqlConnection connection;
-            SqlTransaction transaction;
+            SqlConnection connection = null;
+            SqlTransaction transaction = null;
 
             try
             {
@@ -86,15 +86,15 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             {
                 throw new CriticalReceiverException("Error connecting to sql", ex);
             }
-
-            transactionContext.Container.Include(connection);
-            if (_transactionMode != TransactionMode.None && transaction != null)
+            finally
             {
-                transactionContext.Container.Include(transaction);
+                transaction?.Dispose();
+                connection?.Dispose();
             }
 
             try
             {
+                throw new Exception("SADSADASDSAD");
                 message = await ReceiveAsync(connection, transaction, cancellationToken);
             }
 #if NET5_0_OR_GREATER
@@ -113,26 +113,41 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 _logger.LogError(e, $"Error receiving sql service broker message from queue '{_options.MessageReceiverPath}'");
                 throw;
             }
+            finally
+            {
+                if (message == null)
+                {
+                    transaction?.Dispose();
+                    connection?.Dispose();
+                }
+            }
 
             if (message is null)
             {
-                await transaction?.CommitAsync(cancellationToken);
-                _logger.LogTrace("Discarding null message");
+                await DiscardMessageAsync(connection, transaction, "Discarding null message", cancellationToken);
                 return null;
             }
 
             if (message.MessageTypeName != ServicesMessageTypes.DefaultType && message.MessageTypeName != ServicesMessageTypes.ChatterBrokeredMessageType)
             {
-                await transaction?.CommitAsync(cancellationToken);
-                _logger.LogTrace($"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received.");
+                await DiscardMessageAsync(connection, transaction
+                    , $"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received."
+                    , cancellationToken);
                 return null;
             }
 
             if (message.Body == null)
             {
-                await transaction?.CommitAsync(cancellationToken);
-                _logger.LogTrace($"Discarding message of type '{message.MessageTypeName}' with null message body");
+                await DiscardMessageAsync(connection, transaction
+                    , $"Discarding message of type '{message.MessageTypeName}' with null message body"
+                    , cancellationToken);
                 return null;
+            }
+
+            transactionContext.Container.Include(connection);
+            if (_transactionMode != TransactionMode.None && transaction != null)
+            {
+                transactionContext.Container.Include(transaction);
             }
 
             _localReceiverDeliveryAttempts.AddOrUpdate(message.ConvHandle, 1, (ch, deliveryAttempts) => deliveryAttempts + 1);
@@ -181,6 +196,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
 
             return messageContext;
+        }
+
+        private async Task DiscardMessageAsync(SqlConnection connection, SqlTransaction transaction, string discardMessage, CancellationToken cancellationToken)
+        {
+            await transaction?.CommitAsync(cancellationToken);
+            transaction?.Dispose();
+            connection?.Dispose();
+            _logger.LogTrace(discardMessage);
         }
 
         private async Task<SqlTransaction> CreateTransaction(SqlConnection connection, CancellationToken cancellationToken)
