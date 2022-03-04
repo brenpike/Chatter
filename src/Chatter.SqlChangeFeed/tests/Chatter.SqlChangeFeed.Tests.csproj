@@ -45,7 +45,7 @@
   
   <ItemGroup>
     <ProjectReference Include="..\..\..\tests\Chatter.Testing.Core.csproj" />
-    <ProjectReference Include="..\src\Chatter.SqlTableWatcher\Chatter.SqlChangeFeed.csproj" />
+    <ProjectReference Include="..\src\Chatter.SqlChangeFeed\Chatter.SqlChangeFeed.csproj" />
   </ItemGroup>
 
 </Project>
