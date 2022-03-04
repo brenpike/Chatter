@@ -9,7 +9,7 @@ trigger:
 
   paths:
     include:
-      - src/Chatter.SqlTableWatcher/*
+      - src/Chatter.SqlChangeFeed/*
 
 pr:
   branches:
@@ -21,5 +21,5 @@ pr:
 extends:
   template: ../../../eng/pipelines/stages/chatter-ci-cd.yml
   parameters:
-    ProjectName: Chatter.SqlTableWatcher
+    ProjectName: Chatter.SqlChangeFeed
     ArtifactName: packages
