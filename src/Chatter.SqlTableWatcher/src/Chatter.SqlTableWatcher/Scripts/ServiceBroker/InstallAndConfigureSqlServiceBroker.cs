@@ -1,7 +1,7 @@
 ﻿using Chatter.MessageBrokers.SqlServiceBroker;
 using System;
 
-namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
+namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
 {
     /// <summary>
     /// Enables and configures SQL Service Broker for use by the change feed. Creates the appropriate

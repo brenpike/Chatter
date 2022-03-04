@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlTableWatcher
+namespace Chatter.SqlChangeFeed
 {
     [Flags]
     public enum ChangeTypes

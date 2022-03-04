@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Data.SqlClient;
 
-namespace Chatter.SqlTableWatcher.Configuration
+namespace Chatter.SqlChangeFeed.Configuration
 {
     public class SqlChangeFeedOptionsBuilder
     {

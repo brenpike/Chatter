@@ -2,7 +2,7 @@
 using System;
 using System.Text;
 
-namespace Chatter.SqlTableWatcher.Scripts.Triggers
+namespace Chatter.SqlChangeFeed.Scripts.Triggers
 {
     /// <summary>
     /// Creates the trigger on the target table that will send changes to a SQL Service Broker CONVERSATION

@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
+namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
 {
     /// <summary>
     /// Removes all SQL Service Broker QUEUES, SERVICES and CONVERSATIONS for the specified SERVICE

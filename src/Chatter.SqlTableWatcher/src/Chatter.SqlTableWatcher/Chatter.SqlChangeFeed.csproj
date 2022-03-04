@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>netstandard2.1;net5.0;net6.0</TargetFrameworks>
-    <PackageId>Chatter.SqlTableWatcher</PackageId>
+    <PackageId>Chatter.SqlChangeFeed</PackageId>
     <Version>0.7.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
@@ -12,8 +12,8 @@
     <PackageTags>.net;SQL;ServiceBroker;Chatter</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IsPackable>true</IsPackable>
-    <AssemblyName>Chatter.SqlTableWatcher</AssemblyName>
-    <RootNamespace>Chatter.SqlTableWatcher</RootNamespace>
+    <AssemblyName>Chatter.SqlChangeFeed</AssemblyName>
+    <RootNamespace>Chatter.SqlChangeFeed</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup Condition=" '$(TargetFramework)' == 'net6.0' ">

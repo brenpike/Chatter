@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <TargetFrameworks>netcoreapp3.1;net5.0;net6.0</TargetFrameworks>
-    <AssemblyName>Chatter.SqlTableWatcher.Tests</AssemblyName>
-    <RootNamespace>Chatter.SqlTableWatcher.Tests</RootNamespace>
+    <AssemblyName>Chatter.SqlChangeFeed.Tests</AssemblyName>
+    <RootNamespace>Chatter.SqlChangeFeed.Tests</RootNamespace>
   </PropertyGroup>
   
   <ItemGroup Condition=" '$(TargetFramework)' == 'net6.0' ">
@@ -25,6 +25,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="DependencyInjection\**" />
+    <EmbeddedResource Remove="DependencyInjection\**" />
+    <None Remove="DependencyInjection\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="coverlet.msbuild" Version="3.1.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -39,10 +45,7 @@
   
   <ItemGroup>
     <ProjectReference Include="..\..\..\tests\Chatter.Testing.Core.csproj" />
-    <ProjectReference Include="..\src\Chatter.SqlTableWatcher\Chatter.SqlTableWatcher.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <Folder Include="DependencyInjection\UsingSqlTableWatcherExtensions\" />
+    <ProjectReference Include="..\src\Chatter.SqlTableWatcher\Chatter.SqlChangeFeed.csproj" />
   </ItemGroup>
 
 </Project>

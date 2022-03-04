@@ -1,14 +1,14 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.SqlTableWatcher;
-using Chatter.SqlTableWatcher.Configuration;
-using Chatter.SqlTableWatcher.Scripts;
+using Chatter.SqlChangeFeed.Configuration;
+using Chatter.SqlChangeFeed.Scripts;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Linq;
 
-namespace Microsoft.Extensions.DependencyInjection
+namespace Chatter.SqlChangeFeed.DependencyInjection
 {
     public static class SqlChangeFeedExtensions
 

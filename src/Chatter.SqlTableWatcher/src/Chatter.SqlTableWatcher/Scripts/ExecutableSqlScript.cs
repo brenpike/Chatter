@@ -3,7 +3,7 @@ using System.Data;
 using System.Data.SqlClient;
 using System.Threading.Tasks;
 
-namespace Chatter.SqlTableWatcher.Scripts
+namespace Chatter.SqlChangeFeed.Scripts
 {
     public abstract class ExecutableSqlScript
     {

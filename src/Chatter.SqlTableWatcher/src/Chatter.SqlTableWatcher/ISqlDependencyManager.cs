@@ -1,7 +1,7 @@
 ﻿using Chatter.CQRS;
 using System.Threading.Tasks;
 
-namespace Chatter.SqlTableWatcher
+namespace Chatter.SqlChangeFeed
 {
     public interface ISqlDependencyManager
     {

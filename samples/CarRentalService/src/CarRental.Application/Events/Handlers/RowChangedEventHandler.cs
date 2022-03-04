@@ -1,7 +1,7 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Exceptions;
-using Chatter.SqlTableWatcher;
+using Chatter.SqlChangeFeed;
 using System.Threading.Tasks;
 
 namespace CarRental.Application.Events.Handlers

@@ -1,7 +1,7 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Events;
 
-namespace Chatter.SqlTableWatcher
+namespace Chatter.SqlChangeFeed
 {
     public class RowUpdatedEvent<TRowChangeData> : IEvent where TRowChangeData : class, IMessage
     {

@@ -1,10 +1,10 @@
-﻿using Chatter.SqlTableWatcher.Configuration;
-using Chatter.SqlTableWatcher.Scripts.ServiceBroker;
-using Chatter.SqlTableWatcher.Scripts.StoredProcedures;
-using Chatter.SqlTableWatcher.Scripts.Triggers;
+﻿using Chatter.SqlChangeFeed.Configuration;
+using Chatter.SqlChangeFeed.Scripts.ServiceBroker;
+using Chatter.SqlChangeFeed.Scripts.StoredProcedures;
+using Chatter.SqlChangeFeed.Scripts.Triggers;
 using System;
 
-namespace Chatter.SqlTableWatcher.Scripts
+namespace Chatter.SqlChangeFeed.Scripts
 {
     public class InstallChangeFeedScript : ExecutableSqlScript
     {

@@ -1,7 +1,7 @@
 ﻿using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 
-namespace Chatter.SqlTableWatcher.Configuration
+namespace Chatter.SqlChangeFeed.Configuration
 {
     public class SqlChangeFeedOptions
     {

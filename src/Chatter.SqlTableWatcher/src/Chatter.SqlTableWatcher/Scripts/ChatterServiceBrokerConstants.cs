@@ -1,4 +1,4 @@
-﻿namespace Chatter.SqlTableWatcher.Scripts
+﻿namespace Chatter.SqlChangeFeed.Scripts
 {
     internal class ChatterServiceBrokerConstants
     {

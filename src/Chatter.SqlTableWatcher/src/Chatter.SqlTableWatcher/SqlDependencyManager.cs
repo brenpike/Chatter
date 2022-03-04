@@ -1,10 +1,10 @@
 ﻿using Chatter.CQRS;
-using Chatter.SqlTableWatcher.Configuration;
-using Chatter.SqlTableWatcher.Scripts;
-using Chatter.SqlTableWatcher.Scripts.StoredProcedures;
+using Chatter.SqlChangeFeed.Configuration;
+using Chatter.SqlChangeFeed.Scripts;
+using Chatter.SqlChangeFeed.Scripts.StoredProcedures;
 using System.Threading.Tasks;
 
-namespace Chatter.SqlTableWatcher
+namespace Chatter.SqlChangeFeed
 {
     public class SqlDependencyManager<TRowChangedData> : ISqlDependencyManager<TRowChangedData> where TRowChangedData : class, IMessage, new()
     {

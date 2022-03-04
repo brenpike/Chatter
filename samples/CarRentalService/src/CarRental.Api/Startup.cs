@@ -5,6 +5,7 @@ using CarRental.Application.Services;
 using CarRental.Infrastructure.Repositories;
 using CarRental.Infrastructure.Repositories.Contexts;
 using CarRental.Infrastructure.Services;
+using Chatter.SqlChangeFeed.DependencyInjection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;

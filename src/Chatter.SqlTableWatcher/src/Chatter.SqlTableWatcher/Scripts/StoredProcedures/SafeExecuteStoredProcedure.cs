@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
+namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
 {
     /// <summary>
     /// Ensures stored procedures existence before executing

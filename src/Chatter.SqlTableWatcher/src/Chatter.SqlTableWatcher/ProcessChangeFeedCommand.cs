@@ -2,7 +2,7 @@
 using Chatter.CQRS.Commands;
 using System.Collections.Generic;
 
-namespace Chatter.SqlTableWatcher
+namespace Chatter.SqlChangeFeed
 {
     public class ProcessChangeFeedCommand<TRowChangeData> : ICommand where TRowChangeData : class, IMessage
     {

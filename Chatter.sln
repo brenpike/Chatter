@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 16
-VisualStudioVersion = 16.0.29709.97
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.CQRS", "src\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj", "{DDCC3424-710B-479E-9F03-2A56496D675C}"
 EndProject
@@ -89,9 +89,9 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.SqlS
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.SqlServiceBroker.Tests", "src\Chatter.MessageBrokers.SqlServiceBroker\tests\Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj", "{4D6FF957-BE51-4AA2-A0C9-7FF5E34DB483}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlTableWatcher.Tests", "src\Chatter.SqlTableWatcher\tests\Chatter.SqlTableWatcher.Tests.csproj", "{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlChangeFeed.Tests", "src\Chatter.SqlTableWatcher\tests\Chatter.SqlChangeFeed.Tests.csproj", "{0B7FFAD9-D297-4D2A-9A04-0DFEEF10FA4A}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlTableWatcher", "src\Chatter.SqlTableWatcher\src\Chatter.SqlTableWatcher\Chatter.SqlTableWatcher.csproj", "{4527EF9B-808D-4D10-A314-6587BD3F35B1}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.SqlChangeFeed", "src\Chatter.SqlTableWatcher\src\Chatter.SqlTableWatcher\Chatter.SqlChangeFeed.csproj", "{4527EF9B-808D-4D10-A314-6587BD3F35B1}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Chatter.MessageBrokers.AzureServiceBus.Auth.Tests", "src\Chatter.MessageBrokers.AzureServiceBus.Auth\tests\Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.csproj", "{A86858EF-AACE-43A1-BF80-F0474FB65246}"
 EndProject

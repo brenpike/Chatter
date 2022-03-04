@@ -1,8 +1,8 @@
-﻿using Chatter.SqlTableWatcher.Scripts.ServiceBroker;
-using Chatter.SqlTableWatcher.Scripts.Triggers;
+﻿using Chatter.SqlChangeFeed.Scripts.ServiceBroker;
+using Chatter.SqlChangeFeed.Scripts.Triggers;
 using System;
 
-namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
+namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
 {
     /// <summary>
     /// Creates the stored procedure that will create necessary database objects needed for the change feed

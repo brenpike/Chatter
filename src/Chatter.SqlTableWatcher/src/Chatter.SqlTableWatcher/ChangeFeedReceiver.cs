@@ -11,7 +11,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Chatter.SqlTableWatcher
+namespace Chatter.SqlChangeFeed
 {
     class ChangeFeedReceiver<TProcessorCommand, TRowChangeData> : BrokeredMessageReceiver<TProcessorCommand>
         where TRowChangeData : class, IMessage

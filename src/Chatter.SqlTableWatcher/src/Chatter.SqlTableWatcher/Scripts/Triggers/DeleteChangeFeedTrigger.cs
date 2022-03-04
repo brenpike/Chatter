@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Chatter.SqlTableWatcher.Scripts.Triggers
+namespace Chatter.SqlChangeFeed.Scripts.Triggers
 {
     /// <summary>
     /// Deletes the change feed trigger
