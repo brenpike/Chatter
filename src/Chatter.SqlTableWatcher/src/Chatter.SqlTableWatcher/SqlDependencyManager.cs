@@ -8,9 +8,9 @@ namespace Chatter.SqlTableWatcher
 {
     public class SqlDependencyManager<TRowChangedData> : ISqlDependencyManager<TRowChangedData> where TRowChangedData : class, IMessage, new()
     {
-        public SqlTableWatcherOptions Options { get; }
+        public SqlChangeFeedOptions Options { get; }
 
-        public SqlDependencyManager(SqlTableWatcherOptions options)
+        public SqlDependencyManager(SqlChangeFeedOptions options)
             => Options = options;
 
         public Task InstallSqlDependencies(string installationProcedureName = "",
@@ -27,8 +27,8 @@ namespace Chatter.SqlTableWatcher
                                                  installationProcedureName,
                                                  Options.SchemaName);
 
-            var installNotificationScript
-                = new InstallNotificationsScript(Options,
+            var installChangeFeedScript
+                = new InstallChangeFeedScript(Options,
                                                  installationProcedureName,
                                                  conversationQueueName,
                                                  conversationServiceName,
@@ -36,8 +36,8 @@ namespace Chatter.SqlTableWatcher
                                                  deadLetterQueueName,
                                                  deadLetterServiceName);
 
-            var uninstallNotificationScript
-                = new UninstallNotificationsScript(Options,
+            var uninstallChangeFeedScript
+                = new UninstallChangeFeedScript(Options,
                                                    uninstallationProcedureName,
                                                    conversationQueueName,
                                                    conversationServiceName,
@@ -46,8 +46,8 @@ namespace Chatter.SqlTableWatcher
                                                    deadLetterQueueName,
                                                    deadLetterServiceName);
 
-            installNotificationScript.Execute();
-            uninstallNotificationScript.Execute();
+            installChangeFeedScript.Execute();
+            uninstallChangeFeedScript.Execute();
             execInstallationProcedureScript.Execute();
 
             return Task.CompletedTask;

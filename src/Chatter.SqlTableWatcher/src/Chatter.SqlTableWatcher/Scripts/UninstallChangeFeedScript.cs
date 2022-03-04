@@ -1,5 +1,4 @@
 ﻿using Chatter.SqlTableWatcher.Configuration;
-using Chatter.SqlTableWatcher.Scripts.Misc;
 using Chatter.SqlTableWatcher.Scripts.ServiceBroker;
 using Chatter.SqlTableWatcher.Scripts.StoredProcedures;
 using Chatter.SqlTableWatcher.Scripts.Triggers;
@@ -7,9 +6,9 @@ using System;
 
 namespace Chatter.SqlTableWatcher.Scripts
 {
-    public class UninstallNotificationsScript : ExecutableSqlScript
+    public class UninstallChangeFeedScript : ExecutableSqlScript
     {
-        private readonly SqlTableWatcherOptions _options;
+        private readonly SqlChangeFeedOptions _options;
         private readonly string _uninstallationProcedureName;
         private readonly string _conversationQueueName;
         private readonly string _conversationServiceName;
@@ -18,7 +17,7 @@ namespace Chatter.SqlTableWatcher.Scripts
         private readonly string _deadLetterQueueName;
         private readonly string _deadLetterServiceName;
 
-        public UninstallNotificationsScript(SqlTableWatcherOptions options,
+        public UninstallChangeFeedScript(SqlChangeFeedOptions options,
                                           string uninstallationProcedureName,
                                           string conversationQueueName,
                                           string conversationServiceName,
@@ -65,7 +64,7 @@ namespace Chatter.SqlTableWatcher.Scripts
 
         public override string ToString()
         {
-            var uninstallServiceBrokerNotificationScript =
+            var uninstallServiceBrokerChangeFeedScript =
                 new UninstallSqlServiceBroker(
                 _options.ConnectionString,
                 _conversationQueueName,
@@ -74,18 +73,17 @@ namespace Chatter.SqlTableWatcher.Scripts
                 _deadLetterQueueName,
                 _deadLetterServiceName);
 
-            var uninstallNotificationTriggerScript =
-                new DeleteNotificationTrigger(
+            var uninstallChangeFeedTriggerScript =
+                new DeleteChangeFeedTrigger(
                 _conversationTriggerName,
                 _options.SchemaName);
 
             return new CreateUninstallProcedure(
                     _options.ConnectionString,
-                    new PermissionInfoDisplayScript(_options.ConnectionString),
                     _options.DatabaseName,
                     _uninstallationProcedureName,
-                    uninstallNotificationTriggerScript,
-                    uninstallServiceBrokerNotificationScript,
+                    uninstallChangeFeedTriggerScript,
+                    uninstallServiceBrokerChangeFeedScript,
                     _options.SchemaName,
                     _installationProcedureName).ToString();
         }

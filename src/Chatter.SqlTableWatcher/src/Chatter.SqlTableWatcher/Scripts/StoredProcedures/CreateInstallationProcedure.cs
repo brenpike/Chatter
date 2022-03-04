@@ -1,45 +1,40 @@
-﻿using Chatter.SqlTableWatcher.Scripts.Misc;
-using Chatter.SqlTableWatcher.Scripts.ServiceBroker;
+﻿using Chatter.SqlTableWatcher.Scripts.ServiceBroker;
 using Chatter.SqlTableWatcher.Scripts.Triggers;
 using System;
 
 namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
 {
     /// <summary>
-    /// Creates the stored procedure that will create necessary database objects needed for notifications
+    /// Creates the stored procedure that will create necessary database objects needed for the change feed
     /// </summary>
     public class CreateInstallationProcedure : ExecutableSqlScript
     {
-        private readonly PermissionInfoDisplayScript _getPermissionsInfo;
         private readonly string _databaseName;
         private readonly string _setupProcedureName;
         private readonly InstallAndConfigureSqlServiceBroker _serviceBrokerConfigScript;
-        private readonly CreateNotificationTrigger _notificationTriggerConfigScript;
-        private readonly CheckIfNotificationTriggerExists _notificationTriggerCheckScript;
+        private readonly CreateChangeFeedTrigger _changeFeedTriggerConfigScript;
         private readonly string _tableName;
         private readonly string _schemaName;
+        private readonly string _triggerName;
 
         /// <summary>
-        /// Creates the stored procedure that will create necessary database objects needed for notifications
+        /// Creates the stored procedure that will create necessary database objects needed for the change feed
         /// </summary>
         /// <param name="connectionString">The SQL connection string</param>
-        /// <param name="getPermissionsInfo">The script used to display required executing permission information</param>
         /// <param name="databaseName">The database where the install stored proc will be created</param>
         /// <param name="setupProcedureName">The name of the stored procedure to create</param>
         /// <param name="serviceBrokerConfigScript">The script which defines all SQL Service Broker related objects</param>
-        /// <param name="notificationTriggerConfigScript">The script which will create the trigger responsible for writing to the QUEUE when the target <paramref name="tableName"/> changes</param>
-        /// <param name="notificationTriggerCheckScript">The script that will check for the notification triggers existence</param>
+        /// <param name="changeFeedTriggerConfigScript">The script which will create the trigger responsible for writing to the QUEUE when the target <paramref name="tableName"/> changes</param>
         /// <param name="tableName">The target table which will be monitored for changes</param>
         /// <param name="schemaName">The schema to use for the various objects to be created</param>
         public CreateInstallationProcedure(string connectionString,
-                                           PermissionInfoDisplayScript getPermissionsInfo,
                                            string databaseName,
                                            string setupProcedureName,
                                            InstallAndConfigureSqlServiceBroker serviceBrokerConfigScript,
-                                           CreateNotificationTrigger notificationTriggerConfigScript,
-                                           CheckIfNotificationTriggerExists notificationTriggerCheckScript,
+                                           CreateChangeFeedTrigger changeFeedTriggerConfigScript,
                                            string tableName,
-                                           string schemaName)
+                                           string schemaName,
+                                           string triggerName)
             : base(connectionString)
         {
             if (string.IsNullOrWhiteSpace(databaseName))
@@ -62,34 +57,32 @@ namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
                 throw new ArgumentException($"'{nameof(schemaName)}' cannot be null or whitespace", nameof(schemaName));
             }
 
-            _getPermissionsInfo = getPermissionsInfo ?? throw new ArgumentNullException(nameof(getPermissionsInfo));
             _databaseName = databaseName;
             _setupProcedureName = setupProcedureName;
             _serviceBrokerConfigScript = serviceBrokerConfigScript ?? throw new ArgumentNullException(nameof(serviceBrokerConfigScript));
-            _notificationTriggerConfigScript = notificationTriggerConfigScript ?? throw new ArgumentNullException(nameof(notificationTriggerConfigScript));
-            _notificationTriggerCheckScript = notificationTriggerCheckScript ?? throw new ArgumentNullException(nameof(notificationTriggerCheckScript));
+            _changeFeedTriggerConfigScript = changeFeedTriggerConfigScript ?? throw new ArgumentNullException(nameof(changeFeedTriggerConfigScript));
             _tableName = tableName;
             _schemaName = schemaName;
+            _triggerName = triggerName;
         }
 
         public override string ToString()
         {
             return string.Format(@"
                 USE [{0}]
-                " + _getPermissionsInfo.ToString() + @"
-                IF OBJECT_ID ('{6}.{1}', 'P') IS NULL
+                IF OBJECT_ID ('{5}.{1}', 'P') IS NULL
                 BEGIN
                     EXEC ('
-                        CREATE PROCEDURE {6}.{1}
+                        CREATE PROCEDURE {5}.{1}
                         AS
                         BEGIN
                             -- Service Broker configuration statement.
                             {2}
 
-                            -- Notification Trigger check statement.
-                            {4}
+                            IF OBJECT_ID (''{5}.{6}'', ''TR'') IS NOT NULL
+                                RETURN;
 
-                            -- Notification Trigger configuration statement.
+                            -- Change Feed Trigger configuration statement.
                             DECLARE @triggerStatement NVARCHAR(MAX)
                             DECLARE @select NVARCHAR(MAX)
                             DECLARE @sqlInserted NVARCHAR(MAX)
@@ -99,7 +92,7 @@ namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
                             
                             SET @select = STUFF((SELECT '','' + ''['' + COLUMN_NAME + '']''
                                FROM INFORMATION_SCHEMA.COLUMNS
-                               WHERE DATA_TYPE NOT IN  (''text'',''ntext'',''image'',''geometry'',''geography'') AND TABLE_SCHEMA = ''{6}'' AND TABLE_NAME = ''{5}'' AND TABLE_CATALOG = ''{0}''
+                               WHERE DATA_TYPE NOT IN  (''text'',''ntext'',''image'',''geometry'',''geography'') AND TABLE_SCHEMA = ''{5}'' AND TABLE_NAME = ''{4}'' AND TABLE_CATALOG = ''{0}''
                                FOR XML PATH ('''')
                                ), 1, 1, '''')
 
@@ -123,7 +116,7 @@ namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
                         END
                         ')
                 END
-            ", _databaseName, _setupProcedureName, _serviceBrokerConfigScript.ToString().Replace("'", "''"), _notificationTriggerConfigScript.ToString().Replace("'", "''''"), _notificationTriggerCheckScript.ToString().Replace("'", "''"), _tableName, _schemaName);
+            ", _databaseName, _setupProcedureName, _serviceBrokerConfigScript.ToString().Replace("'", "''"), _changeFeedTriggerConfigScript.ToString().Replace("'", "''''"), _tableName, _schemaName, _triggerName);
         }
     }
 }

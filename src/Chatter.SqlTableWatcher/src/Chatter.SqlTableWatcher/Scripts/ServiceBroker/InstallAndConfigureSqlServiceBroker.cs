@@ -4,7 +4,7 @@ using System;
 namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
 {
     /// <summary>
-    /// Enables and configures SQL Service Broker for use in the notification process. Creates the appropriate
+    /// Enables and configures SQL Service Broker for use by the change feed. Creates the appropriate
     /// QUEUE and SERVICE if they don't already exist.
     /// </summary>
     public class InstallAndConfigureSqlServiceBroker : ExecutableSqlScript
@@ -17,7 +17,7 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
         private readonly string _deadLetterServiceName;
 
         /// <summary>
-        /// Enables and configures SQL Service Broker for use in the notification process. Creates the appropriate
+        /// Enables and configures SQL Service Broker for use by the change feed. Creates the appropriate
         /// QUEUE and SERVICE if they don't already exist.
         /// </summary>
         /// <param name="connectionString">The SQL connection string</param>
@@ -70,7 +70,6 @@ namespace Chatter.SqlTableWatcher.Scripts.ServiceBroker
                 BEGIN
                     ALTER DATABASE [{0}] SET ENABLE_BROKER; 
 
-                    -- SQL Express
                     ALTER AUTHORIZATION ON DATABASE::[{0}] TO [sa]
                 END
 

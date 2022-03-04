@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS;
 using Chatter.CQRS.Context;
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.SqlTableWatcher;
 using System.Threading.Tasks;
 
@@ -11,6 +12,7 @@ namespace CarRental.Application.Events.Handlers
     {
         public Task Handle(RowUpdatedEvent<OutboxChangedEvent> message, IMessageHandlerContext context)
         {
+            //throw new BrokeredMessageReceiverException("fake", true);
             return Task.CompletedTask;
         }
 

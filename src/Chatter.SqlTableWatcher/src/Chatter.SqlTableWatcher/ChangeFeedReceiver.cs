@@ -13,13 +13,13 @@ using System.Threading.Tasks;
 
 namespace Chatter.SqlTableWatcher
 {
-    class TableChangeReceiver<TProcessorCommand, TRowChangeData> : BrokeredMessageReceiver<TProcessorCommand>
+    class ChangeFeedReceiver<TProcessorCommand, TRowChangeData> : BrokeredMessageReceiver<TProcessorCommand>
         where TRowChangeData : class, IMessage
-        where TProcessorCommand : ProcessTableChangesCommand<TRowChangeData>
+        where TProcessorCommand : ProcessChangeFeedCommand<TRowChangeData>
     {
         private readonly IServiceScopeFactory _serviceFactory;
 
-        public TableChangeReceiver(IMessagingInfrastructureProvider infrastructureProvider,
+        public ChangeFeedReceiver(IMessagingInfrastructureProvider infrastructureProvider,
                                    MessageBrokerOptions messageBrokerOptions,
                                    ILogger<BrokeredMessageReceiver<TProcessorCommand>> logger,
                                    IServiceScopeFactory serviceFactory,
@@ -42,7 +42,7 @@ namespace Chatter.SqlTableWatcher
 
             if (message.Inserted is null && message.Deleted is null)
             {
-                _logger.LogTrace($"No inserted or deleted records contained in {nameof(ProcessTableChangesCommand<TRowChangeData>)}");
+                _logger.LogTrace($"No inserted or deleted records contained in {nameof(ProcessChangeFeedCommand<TRowChangeData>)}");
                 return;
             }
 

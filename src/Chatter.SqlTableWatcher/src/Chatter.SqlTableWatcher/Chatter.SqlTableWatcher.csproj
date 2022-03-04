@@ -3,10 +3,10 @@
   <PropertyGroup>
     <TargetFrameworks>netstandard2.1;net5.0;net6.0</TargetFrameworks>
     <PackageId>Chatter.SqlTableWatcher</PackageId>
-    <Version>0.6.0</Version>
+    <Version>0.7.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
-    <Description>A library that leverags SQL Service Broker to trigger Chatter events when table state changes.</Description>
+    <Description>A library that leverags SQL Service Broker to send sql table changes (insert, update, delete) to a change feed queue for further processing by .NET code.</Description>
     <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>.net;SQL;ServiceBroker;Chatter</PackageTags>

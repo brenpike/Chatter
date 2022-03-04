@@ -3,23 +3,23 @@
 namespace Chatter.SqlTableWatcher.Scripts.Triggers
 {
     /// <summary>
-    /// Deletes the notification trigger
+    /// Deletes the change feed trigger
     /// </summary>
-    public class DeleteNotificationTrigger
+    public class DeleteChangeFeedTrigger
     {
-        private readonly string _notificationTriggerName;
+        private readonly string _changeFeedTriggerName;
         private readonly string _schemaName;
 
         /// <summary>
-        /// Deletes the notification trigger
+        /// Deletes the change feed trigger
         /// </summary>
-        /// <param name="notificationTriggerName">The name of the notification trigger to delete</param>
+        /// <param name="changeFeedTriggerName">The name of the change feed trigger to delete</param>
         /// <param name="schemaName">The schema</param>
-        public DeleteNotificationTrigger(string notificationTriggerName, string schemaName)
+        public DeleteChangeFeedTrigger(string changeFeedTriggerName, string schemaName)
         {
-            if (string.IsNullOrWhiteSpace(notificationTriggerName))
+            if (string.IsNullOrWhiteSpace(changeFeedTriggerName))
             {
-                throw new ArgumentException($"'{nameof(notificationTriggerName)}' cannot be null or whitespace", nameof(notificationTriggerName));
+                throw new ArgumentException($"'{nameof(changeFeedTriggerName)}' cannot be null or whitespace", nameof(changeFeedTriggerName));
             }
 
             if (string.IsNullOrWhiteSpace(schemaName))
@@ -27,7 +27,7 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
                 throw new ArgumentException($"'{nameof(schemaName)}' cannot be null or whitespace", nameof(schemaName));
             }
 
-            _notificationTriggerName = notificationTriggerName;
+            _changeFeedTriggerName = changeFeedTriggerName;
             _schemaName = schemaName;
         }
 
@@ -36,7 +36,7 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
             return string.Format(@"
                 IF OBJECT_ID ('{1}.{0}', 'TR') IS NOT NULL
                     DROP TRIGGER {1}.[{0}];
-            ", _notificationTriggerName, _schemaName);
+            ", _changeFeedTriggerName, _schemaName);
         }
     }
 }

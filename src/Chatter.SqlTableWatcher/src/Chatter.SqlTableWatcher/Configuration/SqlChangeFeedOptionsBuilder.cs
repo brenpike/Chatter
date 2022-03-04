@@ -6,7 +6,7 @@ using System.Data.SqlClient;
 
 namespace Chatter.SqlTableWatcher.Configuration
 {
-    public class SqlTableWatcherOptionsBuilder
+    public class SqlChangeFeedOptionsBuilder
     {
         public IServiceCollection Services { get; }
 
@@ -21,13 +21,13 @@ namespace Chatter.SqlTableWatcher.Configuration
         private int _conversationLifetimeInSeconds = int.MaxValue;
         private bool _coversationEncryption = false;
         private bool _compressMessageBody = true;
-        private string _tableWatcherQueueName = null;
+        private string _changeFeedQueueName = null;
         private string _errorQueueName = null;
         private TransactionMode _transactionMode = TransactionMode.FullAtomicityViaInfrastructure;
-        private string _tableWatcherDeadLetterServiceName;
+        private string _changeFeedDeadLetterServiceName;
         private int _maxReceiveAttempts = 10;
 
-        internal SqlTableWatcherOptionsBuilder(IServiceCollection services, string connectionString, string databaseName, string tableName)
+        internal SqlChangeFeedOptionsBuilder(IServiceCollection services, string connectionString, string databaseName, string tableName)
         {
             Services = services ?? throw new ArgumentNullException(nameof(services));
 
@@ -47,14 +47,23 @@ namespace Chatter.SqlTableWatcher.Configuration
         }
 
         /// <summary>
-        /// Sets the database to watch for changes.
+        /// Sets the database containing the table for which to create a change feed
         /// </summary>
-        /// <param name="databaseName"></param>
-        /// <param name="schemaName"></param>
-        /// <returns></returns>
-        public SqlTableWatcherOptionsBuilder WithNameOfDatabaseToWatch(string databaseName, string schemaName = "dbo")
+        /// <param name="databaseName">The name of the database</param>
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder WithNameOfDatabaseToWatch(string databaseName)
         {
             _databaseName = databaseName;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the schema of the table for which to create a change feed
+        /// </summary>
+        /// <param name="schemaName">The name of the database</param>
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder WithSchema(string schemaName)
+        {
             _schemaName = schemaName;
             return this;
         }
@@ -63,8 +72,8 @@ namespace Chatter.SqlTableWatcher.Configuration
         /// Sets the types of table changes to watch for. By default it watches for inserts, updates and deletes.
         /// </summary>
         /// <param name="changeTypes">Any combination of insert, update and/or delete</param>
-        /// <returns></returns>
-        public SqlTableWatcherOptionsBuilder WithTypesOfChangesToWatch(ChangeTypes changeTypes)
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder WithTypesOfChangesToWatch(ChangeTypes changeTypes)
         {
             _changeTypes = changeTypes;
             return this;
@@ -74,30 +83,30 @@ namespace Chatter.SqlTableWatcher.Configuration
         /// Configured change types made to table being watched will be processed by Chatter. The consumer will be required to handle <see cref="RowInsertedEvent{TRowChangeData}"/>, 
         /// <see cref="RowUpdatedEvent{TRowChangeData}"/>, and <see cref="RowDeletedEvent{TRowChangeData}"/> to receive table changes.
         /// </summary>
-        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
-        public SqlTableWatcherOptionsBuilder EmitRowChangeEvents()
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder EmitRowChangeEvents()
         {
             _processTableChangesViaChatter = true;
             return this;
         }
 
         /// <summary>
-        /// The consumer must handle <see cref="ProcessTableChangesCommand{TRowChangeData}"/> and process the table changes manually.
+        /// The consumer must handle <see cref="ProcessChangeFeedCommand{TRowChangeData}"/> and process the table changes manually.
         /// </summary>
-        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
-        public SqlTableWatcherOptionsBuilder ProcessTableChangesManually()
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder ProcessTableChangesManually()
         {
             _processTableChangesViaChatter = false;
             return this;
         }
 
-        public SqlTableWatcherOptionsBuilder WithApplicationJsonUtf16CharsetMessageBodyType()
+        public SqlChangeFeedOptionsBuilder WithApplicationJsonUtf16CharsetMessageBodyType()
         {
             _messageBodyType = "application/json; charset=utf-16";
             return this;
         }
 
-        public SqlTableWatcherOptionsBuilder WithMessageBodyType(string messageBodyType)
+        public SqlChangeFeedOptionsBuilder WithMessageBodyType(string messageBodyType)
         {
             _messageBodyType = messageBodyType;
             return this;
@@ -108,64 +117,64 @@ namespace Chatter.SqlTableWatcher.Configuration
         /// and re-issuing a wait and receive command. Default is -1 (unlimited).
         /// </summary>
         /// <param name="receiverTimeoutInMilliseconds">The receiver timeout in milliseconds</param>
-        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
-        public SqlTableWatcherOptionsBuilder WithReceiverTimeoutInMilliseconds(int receiverTimeoutInMilliseconds)
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder WithReceiverTimeoutInMilliseconds(int receiverTimeoutInMilliseconds)
         {
             _receiverTimeoutInMilliseconds = receiverTimeoutInMilliseconds;
             return this;
         }
 
-        public SqlTableWatcherOptionsBuilder WithConversationLifetimeInSeconds(int conversationLifetimeInSeconds = int.MaxValue)
+        public SqlChangeFeedOptionsBuilder WithConversationLifetimeInSeconds(int conversationLifetimeInSeconds = int.MaxValue)
         {
             _conversationLifetimeInSeconds = conversationLifetimeInSeconds;
             return this;
         }
 
-        public SqlTableWatcherOptionsBuilder EnableConversationEncryption()
+        public SqlChangeFeedOptionsBuilder EnableConversationEncryption()
         {
             _coversationEncryption = true;
             return this;
         }
 
-        public SqlTableWatcherOptionsBuilder DisableConversationEncryption()
+        public SqlChangeFeedOptionsBuilder DisableConversationEncryption()
         {
             _coversationEncryption = false;
             return this;
         }
 
-        public SqlTableWatcherOptionsBuilder WithCompressedMessageBody()
+        public SqlChangeFeedOptionsBuilder WithCompressedMessageBody()
         {
             _compressMessageBody = true;
             return this;
         }
 
-        public SqlTableWatcherOptionsBuilder WithUncompressedMessageBody()
+        public SqlChangeFeedOptionsBuilder WithUncompressedMessageBody()
         {
             _compressMessageBody = false;
             return this;
         }
 
         /// <summary>
-        /// Set the name of the queue that the underlying sql service broker will use to propogate table changes to the Chatter framework. If not set, a
+        /// Set the name of the change feed queue that will store messages created by sql table changes. If not set, a
         /// default queue name will be set by Chatter.
         /// </summary>
-        /// <param name="tableWatcherQueueName">The queue name</param>
-        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
-        public SqlTableWatcherOptionsBuilder WithTableWatcherQueueName(string tableWatcherQueueName)
+        /// <param name="changeFeedQueueName">The queue name</param>
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder WithChangeFeedQueueName(string changeFeedQueueName)
         {
-            _tableWatcherQueueName = tableWatcherQueueName;
+            _changeFeedQueueName = changeFeedQueueName;
             return this;
         }
 
         /// <summary>
-        /// Set the name of the service that the underlying sql service broker will use to store dead letter messages. If not set, a
+        /// Set the name of the change feed dead letter service that will be used to queue messages that were unable to be processed. If not set, a
         /// default service will be set by Chatter.
         /// </summary>
-        /// <param name="tableWatcherDeadLetterServiceName">The service name</param>
-        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
-        public SqlTableWatcherOptionsBuilder WithTableWatcherDeadLetterServiceName(string tableWatcherDeadLetterServiceName)
+        /// <param name="changeFeedDeadLetterServiceName">The service name</param>
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder WithChangeFeedDeadLetterServiceName(string changeFeedDeadLetterServiceName)
         {
-            _tableWatcherDeadLetterServiceName = tableWatcherDeadLetterServiceName;
+            _changeFeedDeadLetterServiceName = changeFeedDeadLetterServiceName;
             return this;
         }
 
@@ -173,37 +182,37 @@ namespace Chatter.SqlTableWatcher.Configuration
         /// Set the name of the queue to send messages to if sql service broker is unable to receive a queue message
         /// </summary>
         /// <param name="errorQueueName">The name of the queue to send messages to</param>
-        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
-        public SqlTableWatcherOptionsBuilder WithErrorQueueName(string errorQueueName)
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder WithErrorQueueName(string errorQueueName)
         {
             _errorQueueName = errorQueueName;
             return this;
         }
 
         /// <summary>
-        /// Sets the atomicity of the receiver responsible for receving the table change notification. <see cref="TransactionMode.ReceiveOnly"/> is the default.
+        /// Sets the atomicity of the receiver responsible for receving messages from the change feed. <see cref="TransactionMode.ReceiveOnly"/> is the default.
         /// </summary>
         /// <param name="transactionMode">The <see cref="TransactionMode"/> to use</param>
-        /// <returns><see cref="SqlTableWatcherOptionsBuilder"/></returns>
-        public SqlTableWatcherOptionsBuilder WithTransactionMode(TransactionMode transactionMode)
+        /// <returns><see cref="SqlChangeFeedOptionsBuilder"/></returns>
+        public SqlChangeFeedOptionsBuilder WithTransactionMode(TransactionMode transactionMode)
         {
             _transactionMode = transactionMode;
             return this;
         }
 
-        public SqlTableWatcherOptionsBuilder WithMaxReceiveAttempts(int maxReceiveAttempts)
+        public SqlChangeFeedOptionsBuilder WithMaxReceiveAttempts(int maxReceiveAttempts)
         {
             _maxReceiveAttempts = maxReceiveAttempts;
             return this;
         }
 
-        internal SqlTableWatcherOptions Build()
+        internal SqlChangeFeedOptions Build()
         {
             var connStrBuilder = new SqlConnectionStringBuilder(_connectionString);
 
             if (string.IsNullOrWhiteSpace(connStrBuilder.InitialCatalog) && string.IsNullOrWhiteSpace(_databaseName))
             {
-                throw new InvalidOperationException($"Cannot build {nameof(SqlTableWatcherOptions)} if a database is not specified via {nameof(_connectionString)} or {_databaseName}");
+                throw new InvalidOperationException($"Cannot build {nameof(SqlChangeFeedOptions)} if a database is not specified via {nameof(_connectionString)} or {_databaseName}");
             }
 
             if (string.IsNullOrWhiteSpace(_databaseName))
@@ -211,10 +220,10 @@ namespace Chatter.SqlTableWatcher.Configuration
                 _databaseName = connStrBuilder.InitialCatalog;
             }
 
-            return new SqlTableWatcherOptions(_connectionString, _databaseName, _tableName, _schemaName, _changeTypes, _processTableChangesViaChatter, _tableWatcherQueueName)
+            return new SqlChangeFeedOptions(_connectionString, _databaseName, _tableName, _schemaName, _changeTypes, _processTableChangesViaChatter, _changeFeedQueueName)
             {
                 ServiceBrokerOptions = new SqlServiceBrokerOptions(_connectionString, _messageBodyType, _receiverTimeoutInMilliseconds, _conversationLifetimeInSeconds, _coversationEncryption, _compressMessageBody, false),
-                ReceiverOptions = new ReceiverOptions() { ErrorQueuePath = _errorQueueName, TransactionMode = _transactionMode, DeadLetterQueuePath = _tableWatcherDeadLetterServiceName, MaxReceiveAttempts = _maxReceiveAttempts }
+                ReceiverOptions = new ReceiverOptions() { ErrorQueuePath = _errorQueueName, TransactionMode = _transactionMode, DeadLetterQueuePath = _changeFeedDeadLetterServiceName, MaxReceiveAttempts = _maxReceiveAttempts }
             };
         }
     }

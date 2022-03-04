@@ -1,39 +1,35 @@
-﻿using Chatter.SqlTableWatcher.Scripts.Misc;
-using Chatter.SqlTableWatcher.Scripts.ServiceBroker;
+﻿using Chatter.SqlTableWatcher.Scripts.ServiceBroker;
 using Chatter.SqlTableWatcher.Scripts.Triggers;
 using System;
 
 namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
 {
     /// <summary>
-    /// Creates the stored procedure that will remove necessary database objects needed for notifications
+    /// Creates the stored procedure that will remove necessary database objects needed for the change feed
     /// </summary>
     public class CreateUninstallProcedure : ExecutableSqlScript
     {
-        private readonly PermissionInfoDisplayScript _getPermissionsInfo;
         private readonly string _databaseName;
         private readonly string _uninstallProcedureName;
-        private readonly DeleteNotificationTrigger _dropNotificationTriggerScript;
+        private readonly DeleteChangeFeedTrigger _dropChangeFeedTriggerScript;
         private readonly UninstallSqlServiceBroker _serviceBrokerUninstallScript;
         private readonly string _schemaName;
         private readonly string _installProcedureName;
 
         /// <summary>
-        /// Creates the stored procedure that will remove necessary database objects needed for notifications
+        /// Creates the stored procedure that will remove necessary database objects needed for the change feed
         /// </summary>
         /// <param name="connectionString">The SQL connection string</param>
-        /// <param name="getPermissionsInfo">The script used to display required executing permission information</param>
         /// <param name="databaseName">The database where the install stored proc will be created</param>
         /// <param name="uninstallProcedureName">The name of the stored procedure to create</param>
-        /// <param name="dropNotificationTriggerScript">The script used to remove the notification trigger</param>
+        /// <param name="dropChangeFeedTriggerScript">The script used to remove the change feed trigger</param>
         /// <param name="serviceBrokerUninstallScript">The script used to remove all SQL Service Broker related database resources</param>
         /// <param name="schemaName">The schema of the database resources to be removed</param>
         /// <param name="installProcedureName">The name of the installation stored procedure</param>
         public CreateUninstallProcedure(string connectionString,
-                                        PermissionInfoDisplayScript getPermissionsInfo,
                                         string databaseName,
                                         string uninstallProcedureName,
-                                        DeleteNotificationTrigger dropNotificationTriggerScript,
+                                        DeleteChangeFeedTrigger dropChangeFeedTriggerScript,
                                         UninstallSqlServiceBroker serviceBrokerUninstallScript,
                                         string schemaName,
                                         string installProcedureName)
@@ -59,10 +55,9 @@ namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
                 throw new ArgumentException($"'{nameof(installProcedureName)}' cannot be null or whitespace", nameof(installProcedureName));
             }
 
-            _getPermissionsInfo = getPermissionsInfo ?? throw new ArgumentNullException(nameof(getPermissionsInfo));
             _databaseName = databaseName;
             _uninstallProcedureName = uninstallProcedureName;
-            _dropNotificationTriggerScript = dropNotificationTriggerScript ?? throw new ArgumentNullException(nameof(dropNotificationTriggerScript));
+            _dropChangeFeedTriggerScript = dropChangeFeedTriggerScript ?? throw new ArgumentNullException(nameof(dropChangeFeedTriggerScript));
             _serviceBrokerUninstallScript = serviceBrokerUninstallScript ?? throw new ArgumentNullException(nameof(serviceBrokerUninstallScript));
             _schemaName = schemaName;
             _installProcedureName = installProcedureName;
@@ -72,7 +67,6 @@ namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
         {
             return string.Format(@"
                 USE [{0}]
-                " + _getPermissionsInfo.ToString() + @"
                 IF OBJECT_ID ('{4}.{1}', 'P') IS NULL
                 BEGIN
                     EXEC ('
@@ -93,7 +87,7 @@ namespace Chatter.SqlTableWatcher.Scripts.StoredProcedures
             ",
              _databaseName,
              _uninstallProcedureName,
-             _dropNotificationTriggerScript.ToString().Replace("'", "''"),
+             _dropChangeFeedTriggerScript.ToString().Replace("'", "''"),
              _serviceBrokerUninstallScript.ToString().Replace("'", "''"),
              _schemaName,
              _installProcedureName);

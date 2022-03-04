@@ -7,36 +7,36 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
     /// <summary>
     /// Creates the trigger on the target table that will send changes to a SQL Service Broker CONVERSATION
     /// </summary>
-    public class CreateNotificationTrigger
+    public class CreateChangeFeedTrigger
     {
-        private readonly string _monitorableTableName;
-        private readonly string _notificationTriggerName;
-        private readonly string _notificationTriggeredBy;
+        private readonly string _changeFeedTableName;
+        private readonly string _changeFeedTriggerName;
+        private readonly string _changeFeedChangeType;
         private readonly string _conversationServiceName;
         private readonly string _schemaName;
 
         /// <summary>
-        /// Creates the trigger on the target table that will send
+        /// Creates the trigger on the target table that will send changes made to the table as message to the change feed queue
         /// </summary>
-        /// <param name="monitorableTableName">The table to monitor for changes</param>
-        /// <param name="notificationTriggerName">The name of the notification trigger to create</param>
+        /// <param name="changeFeedTableName">The table to install the change feed</param>
+        /// <param name="changeFeedTriggerName">The name of the change feed trigger to create</param>
         /// <param name="triggerRaiseByTypes">The criteria that will raise the trigger</param>
         /// <param name="conversationServiceName">The SQL Service Broker SERVICE that will be part of the COVERSATION</param>
         /// <param name="schemaName">The schema</param>
-        public CreateNotificationTrigger(string monitorableTableName,
-                                         string notificationTriggerName,
+        public CreateChangeFeedTrigger(string changeFeedTableName,
+                                         string changeFeedTriggerName,
                                          ChangeTypes triggerRaiseByTypes,
                                          string conversationServiceName,
                                          string schemaName)
         {
-            if (string.IsNullOrWhiteSpace(monitorableTableName))
+            if (string.IsNullOrWhiteSpace(changeFeedTableName))
             {
-                throw new ArgumentException($"'{nameof(monitorableTableName)}' cannot be null or whitespace", nameof(monitorableTableName));
+                throw new ArgumentException($"'{nameof(changeFeedTableName)}' cannot be null or whitespace", nameof(changeFeedTableName));
             }
 
-            if (string.IsNullOrWhiteSpace(notificationTriggerName))
+            if (string.IsNullOrWhiteSpace(changeFeedTriggerName))
             {
-                throw new ArgumentException($"'{nameof(notificationTriggerName)}' cannot be null or whitespace", nameof(notificationTriggerName));
+                throw new ArgumentException($"'{nameof(changeFeedTriggerName)}' cannot be null or whitespace", nameof(changeFeedTriggerName));
             }
 
             if (string.IsNullOrWhiteSpace(conversationServiceName))
@@ -49,11 +49,11 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
                 throw new ArgumentException($"'{nameof(schemaName)}' cannot be null or whitespace", nameof(schemaName));
             }
 
-            _monitorableTableName = monitorableTableName;
-            _notificationTriggerName = notificationTriggerName;
+            _changeFeedTableName = changeFeedTableName;
+            _changeFeedTriggerName = changeFeedTriggerName;
             _conversationServiceName = conversationServiceName;
             _schemaName = schemaName;
-            _notificationTriggeredBy = GetTriggerAfterStatementCriteria(triggerRaiseByTypes);
+            _changeFeedChangeType = GetTriggerAfterStatementCriteria(triggerRaiseByTypes);
         }
 
         private string GetTriggerAfterStatementCriteria(ChangeTypes types)
@@ -73,7 +73,7 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
         public override string ToString()
         {
             return string.Format(@"
-                CREATE TRIGGER [{1}]
+                CREATE TRIGGER {4}.[{1}]
                 ON {4}.[{0}]
                 WITH EXECUTE AS OWNER
                 AFTER {2} 
@@ -111,7 +111,7 @@ namespace Chatter.SqlTableWatcher.Scripts.Triggers
                         SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (@message);
                     END
                 END
-            ", _monitorableTableName, _notificationTriggerName, _notificationTriggeredBy, _conversationServiceName, _schemaName, ServicesMessageTypes.ChatterServiceContract);
+            ", _changeFeedTableName, _changeFeedTriggerName, _changeFeedChangeType, _conversationServiceName, _schemaName, ServicesMessageTypes.ChatterServiceContract);
         }
     }
 }

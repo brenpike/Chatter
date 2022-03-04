@@ -10,30 +10,30 @@ using System.Linq;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
-    public static class SqlTableWatcherExtensions
+    public static class SqlChangeFeedExtensions
 
     {
-        internal static SqlTableWatcherOptionsBuilder AddSqlTableWatcherOptionsBuilder(this IServiceCollection services, string connectionString, string tableName, string databaseName = null)
-            => new SqlTableWatcherOptionsBuilder(services, connectionString, databaseName, tableName);
+        internal static SqlChangeFeedOptionsBuilder AddSqlChangeFeedOptionsBuilder(this IServiceCollection services, string connectionString, string tableName, string databaseName = null)
+            => new SqlChangeFeedOptionsBuilder(services, connectionString, databaseName, tableName);
 
         /// <summary>
-        /// Configures a watcher to monitor a sql table for changes
+        /// Configures a change feed for specified table
         /// </summary>
         /// <param name="rowChangedDataType">A type implementing <see cref="IMessage"/> that maps to a row that changed in the target database</param>
         /// <param name="connectionString">The connection string for the sql server with the database and table to watch for changes</param>
         /// <param name="databaseName">Optional. The database containing the table to watch. If not specified, Database or InitialCatalog of the connectionString will be used.</param>
         /// <param name="tableName">The name of the table to watch</param>
-        /// <param name="optionsBuilder">An optional builder allowing more complex table watcher configuration</param>
-        public static IChatterBuilder AddSqlTableWatcher(this IChatterBuilder builder,
-                                                         Type rowChangedDataType,
-                                                         string connectionString,
-                                                         string databaseName,
-                                                         string tableName,
-                                                         Action<SqlTableWatcherOptionsBuilder> optionsBuilder = null)
+        /// <param name="optionsBuilder">An optional builder allowing more complex change feed configuration</param>
+        public static IChatterBuilder AddSqlChangeFeed(this IChatterBuilder builder,
+                                                       Type rowChangedDataType,
+                                                       string connectionString,
+                                                       string databaseName,
+                                                       string tableName,
+                                                       Action<SqlChangeFeedOptionsBuilder> optionsBuilder = null)
         {
-            typeof(SqlTableWatcherExtensions).GetMethods()
+            typeof(SqlChangeFeedExtensions).GetMethods()
                              .Where(m => m.IsGenericMethod
-                                         && m.Name == nameof(AddSqlTableWatcher))
+                                         && m.Name == nameof(AddSqlChangeFeed))
                              .FirstOrDefault()
                              .MakeGenericMethod(rowChangedDataType)
                              .Invoke(null, new object[] { builder, connectionString, databaseName, tableName, optionsBuilder });
@@ -42,24 +42,24 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         /// <summary>
-        /// Configures a watcher to monitor a sql table for changes
+        /// Configures a change feed for specified table
         /// </summary>
         /// <typeparam name="TRowChangedData">The <see cref="IMessage"/> representing the state of a changed row in the table being watched</typeparam>
         /// <param name="connectionString">The connection string for the sql server with the database and table to watch for changes</param>
         /// <param name="databaseName">Optional. The database containing the table to watch. If not specified, Database or InitialCatalog of the connectionString will be used.</param>
         /// <param name="tableName">The name of the table to watch</param>
-        /// <param name="optionsBuilder">An optional builder allowing more complex table watcher configuration</param>
+        /// <param name="optionsBuilder">An optional builder allowing more complex change feed configuration</param>
         /// <returns><see cref="IChatterBuilder"/></returns>
-        public static IChatterBuilder AddSqlTableWatcher<TRowChangedData>(this IChatterBuilder builder,
+        public static IChatterBuilder AddSqlChangeFeed<TRowChangedData>(this IChatterBuilder builder,
                                                                           string connectionString,
                                                                           string databaseName,
                                                                           string tableName,
-                                                                          Action<SqlTableWatcherOptionsBuilder> optionsBuilder = null)
+                                                                          Action<SqlChangeFeedOptionsBuilder> optionsBuilder = null)
             where TRowChangedData : class, IMessage, new()
         {
-            var tableWatcherOptions = builder.Services.AddSqlTableWatcherOptionsBuilder(connectionString, tableName, databaseName);
-            optionsBuilder?.Invoke(tableWatcherOptions);
-            SqlTableWatcherOptions options = tableWatcherOptions.Build();
+            var changeFeedOptions = builder.Services.AddSqlChangeFeedOptionsBuilder(connectionString, tableName, databaseName);
+            optionsBuilder?.Invoke(changeFeedOptions);
+            SqlChangeFeedOptions options = changeFeedOptions.Build();
 
             builder.Services.AddIfNotRegistered<ISqlDependencyManager<TRowChangedData>>(ServiceLifetime.Scoped, sp =>
             {
@@ -68,40 +68,40 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.AddSqlServiceBroker(ssbBuilder =>
             {
-                var receiver = string.IsNullOrWhiteSpace(options.TableWatcherQueueName) ? $"{ChatterServiceBrokerConstants.ChatterQueuePrefix}{typeof(TRowChangedData).Name}" : options.TableWatcherQueueName;
-                var dlq = string.IsNullOrWhiteSpace(options.TableWatcherDeadLetterServiceName) ? $"{ChatterServiceBrokerConstants.ChatterDeadLetterServicePrefix}{typeof(TRowChangedData).Name}" : options.TableWatcherDeadLetterServiceName;
+                var receiver = string.IsNullOrWhiteSpace(options.ChangeFeedQueueName) ? $"{ChatterServiceBrokerConstants.ChatterQueuePrefix}{typeof(TRowChangedData).Name}" : options.ChangeFeedQueueName;
+                var dlq = string.IsNullOrWhiteSpace(options.ChangeFeedDeadLetterServiceName) ? $"{ChatterServiceBrokerConstants.ChatterDeadLetterServicePrefix}{typeof(TRowChangedData).Name}" : options.ChangeFeedDeadLetterServiceName;
                 ssbBuilder.AddSqlServiceBrokerOptions(options.ServiceBrokerOptions)
-                          .AddQueueReceiver<ProcessTableChangesCommand<TRowChangedData>>(receiver,
+                          .AddQueueReceiver<ProcessChangeFeedCommand<TRowChangedData>>(receiver,
                                                                                          errorQueuePath: options.ReceiverOptions.ErrorQueuePath,
                                                                                          transactionMode: options.ReceiverOptions.TransactionMode,
                                                                                          deadLetterServicePath: dlq);
             });
 
-            if (options.ProcessTableChangesViaChatter)
+            if (options.ProcessChangeFeedCommandViaChatter)
             {
-                builder.Services.Replace<IBrokeredMessageReceiver<ProcessTableChangesCommand<TRowChangedData>>, TableChangeReceiver<ProcessTableChangesCommand<TRowChangedData>, TRowChangedData>>(ServiceLifetime.Scoped);
+                builder.Services.Replace<IBrokeredMessageReceiver<ProcessChangeFeedCommand<TRowChangedData>>, ChangeFeedReceiver<ProcessChangeFeedCommand<TRowChangedData>, TRowChangedData>>(ServiceLifetime.Scoped);
             }
 
             return builder;
         }
 
         /// <summary>
-        /// Deploys the SQL and SQL Service Broker dependencies required for table changes to be emitted
+        /// Deploys the SQL and SQL Service Broker dependencies required for the sql change feed
         /// </summary>
         /// <typeparam name="TRowChangedData">The row type to use Sql migrations for</typeparam>
         /// <param name="applicationBuilder">The application builder</param>
         /// <returns></returns>
-        public static IApplicationBuilder UseTableWatcherSqlMigrations<TRowChangedData>(this IApplicationBuilder applicationBuilder)
-            => applicationBuilder.UseTableWatcherSqlMigrations(typeof(TRowChangedData));
+        public static IApplicationBuilder UseChangeFeedSqlMigrations<TRowChangedData>(this IApplicationBuilder applicationBuilder)
+            => applicationBuilder.UseChangeFeedSqlMigrations(typeof(TRowChangedData));
 
         /// <summary>
-        /// Deploys the SQL and SQL Service Broker dependencies required for table changes to be emitted
+        /// Deploys the SQL and SQL Service Broker dependencies required for the sql change feed
         /// </summary>
         /// <param name="applicationBuilder">The application builder</param>
         /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
-        public static IApplicationBuilder UseTableWatcherSqlMigrations(this IApplicationBuilder applicationBuilder, Type rowChangedDataType)
+        public static IApplicationBuilder UseChangeFeedSqlMigrations(this IApplicationBuilder applicationBuilder, Type rowChangedDataType)
         {
-            applicationBuilder.ApplicationServices.UseTableWatcherSqlMigrations(rowChangedDataType);
+            applicationBuilder.ApplicationServices.UseChangeFeedSqlMigrations(rowChangedDataType);
             return applicationBuilder;
         }
 
@@ -111,15 +111,15 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <typeparam name="TRowChangedData">The row type to use Sql migrations for</typeparam>
         /// <param name="provider">The service provider</param>
         /// <returns></returns>
-        public static IServiceProvider UseTableWatcherSqlMigrations<TRowChangedData>(this IServiceProvider provider)
-            => provider.UseTableWatcherSqlMigrations(typeof(TRowChangedData));
+        public static IServiceProvider UseChangeFeedSqlMigrations<TRowChangedData>(this IServiceProvider provider)
+            => provider.UseChangeFeedSqlMigrations(typeof(TRowChangedData));
 
         /// <summary>
         /// Deploys the SQL and SQL Service Broker dependencies required for table changes to be emitted
         /// </summary>
         /// <param name="provider">The service provider</param>
         /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
-        public static IServiceProvider UseTableWatcherSqlMigrations(this IServiceProvider provider, Type rowChangedDataType)
+        public static IServiceProvider UseChangeFeedSqlMigrations(this IServiceProvider provider, Type rowChangedDataType)
         {
             using var scope = provider.CreateScope();
             var sdm = (ISqlDependencyManager)scope.ServiceProvider.GetRequiredService(typeof(ISqlDependencyManager<>).MakeGenericType(rowChangedDataType));
@@ -131,10 +131,10 @@ namespace Microsoft.Extensions.DependencyInjection
             var conversationDeadLetterQueueName = $"{ChatterServiceBrokerConstants.ChatterDeadLetterQueuePrefix}{receiverName}";
             var conversationDeadLetterServiceName = $"{ChatterServiceBrokerConstants.ChatterDeadLetterServicePrefix}{receiverName}";
             var conversationTriggerName = $"{ChatterServiceBrokerConstants.ChatterTriggerPrefix}{receiverName}";
-            var installNotificationsStoredProcName = $"{ChatterServiceBrokerConstants.ChatterInstallNotificationsPrefix}{receiverName}";
-            var uninstallNotificationsStoredProcName = $"{ChatterServiceBrokerConstants.ChatterUninstallNotificationsPrefix}{receiverName}";
+            var installChangeFeedStoredProcName = $"{ChatterServiceBrokerConstants.ChatterInstallChangeFeedPrefix}{receiverName}";
+            var uninstallChangeFeedStoredProcName = $"{ChatterServiceBrokerConstants.ChatterUninstallChangeFeedPrefix}{receiverName}";
 
-            sdm.InstallSqlDependencies(installNotificationsStoredProcName, uninstallNotificationsStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName, conversationDeadLetterQueueName, conversationDeadLetterServiceName);
+            sdm.InstallSqlDependencies(installChangeFeedStoredProcName, uninstallChangeFeedStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName, conversationDeadLetterQueueName, conversationDeadLetterServiceName);
 
             return provider;
         }

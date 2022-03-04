@@ -52,7 +52,8 @@ namespace CarRental.Api
             {
                 builder.AddRecoveryOptions(r =>
                 {
-                    r.UseExponentialDelayRecovery(5);
+                    r.UseConstantDelayRecovery(2000).WithMaxRetryAttempts(6); //r.UseExponentialDelayRecovery(5);
+                    r.WithCircuitBreaker(b => b.SetNumberOfFailuresBeforeOpen(3).SetOpenToHalfOpenWaitTime(10).SetNumberOfHalfOpenSuccessesBeforeClose(2));
                 });
             })
             .AddAzureServiceBus(builder =>
@@ -61,11 +62,12 @@ namespace CarRental.Api
                                                       Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
                                                       Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
             })
-            .AddSqlTableWatcher<OutboxChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "OutboxMessage")
+            .AddSqlChangeFeed<OutboxChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "OutboxMessage", b => b.WithMaxReceiveAttempts(8))
+            //.AddSqlChangeFeed<CarRentalAggregateChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "CarRental", b => b.WithMaxReceiveAttempts(8));
             .AddSqlServiceBroker(builder =>
             {
                 builder.AddSqlServiceBrokerOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"))
-                       .AddQueueReceiver<CarRentalAggregateChangedEvent>("Chatter_ConversationQueue_CarRentalAggregateChangedEvent");
+                       .AddQueueReceiver<CarRentalAggregateChangedEvent>("Chatter_Queue_CarRentalAggregateChangedEvent");
             });
         }
 
@@ -74,7 +76,8 @@ namespace CarRental.Api
             if (env.IsDevelopment())
             {
                 app.UseDeveloperExceptionPage();
-                app.UseTableWatcherSqlMigrations<OutboxChangedEvent>();
+                app.UseChangeFeedSqlMigrations<OutboxChangedEvent>();
+                //app.UseChangeFeedSqlMigrations<CarRentalAggregateChangedEvent>();
             }
 
             app.UseSwagger();
