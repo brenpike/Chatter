@@ -1,5 +1,4 @@
-﻿using Chatter.CQRS;
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
@@ -98,6 +97,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         /// </summary>
         /// <param name="exceptions">One or more exception predicates</param>
         /// <returns><see cref="CircuitBreakerOptionsBuilder"/></returns>
+        /// <example>builder.IsTrippedBy(e => e is CustomExceptionType c && c.IsTransient);</example>
         public CircuitBreakerOptionsBuilder IsTrippedBy(params Predicate<Exception>[] exceptions)
         {
             if (exceptions != null)
@@ -106,6 +106,14 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             }
             return this;
         }
+
+        /// <summary>
+        /// Sets the type of exception that will cause the circuit breaker to be tripped
+        /// </summary>
+        /// <typeparam name="TException">The type of exception to trigger the circuit breaker</typeparam>
+        /// <returns><see cref="CircuitBreakerOptionsBuilder"/></returns>
+        public CircuitBreakerOptionsBuilder IsTrippedBy<TException>() where TException : Exception
+            => IsTrippedBy(e => e is TException);
 
         public CircuitBreakerOptions Build()
         {

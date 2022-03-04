@@ -153,6 +153,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
         /// </summary>
         /// <param name="exceptions">One or more exception predicates</param>
         /// <returns><see cref="CircuitBreakerOptionsBuilder"/></returns>
+        /// <example>builder.RetryWhen(e => e is CustomExceptionType c && c.IsTransient);</example>
         public RecoveryOptionsBuilder RetryWhen(params Predicate<Exception>[] exceptions)
         {
             if (exceptions != null)
@@ -161,6 +162,14 @@ namespace Chatter.MessageBrokers.Recovery.Options
             }
             return this;
         }
+
+        /// <summary>
+        /// Sets the type of exception that will cause an operation to be retried
+        /// </summary>
+        /// <typeparam name="TException">The type of exception to trigger a retry operation</typeparam>
+        /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
+        public RecoveryOptionsBuilder RetryWhen<TException>() where TException : Exception
+            => RetryWhen(e => e is TException);
 
         public RecoveryOptions Build()
         {

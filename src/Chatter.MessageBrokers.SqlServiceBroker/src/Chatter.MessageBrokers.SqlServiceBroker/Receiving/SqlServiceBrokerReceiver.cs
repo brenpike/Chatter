@@ -84,17 +84,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
             catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException)
             {
-                throw new CriticalReceiverException("Error connecting to sql", ex);
-            }
-            finally
-            {
                 transaction?.Dispose();
                 connection?.Dispose();
+                throw new CriticalReceiverException("Error connecting to sql", ex);
             }
 
             try
             {
-                throw new Exception("SADSADASDSAD");
                 message = await ReceiveAsync(connection, transaction, cancellationToken);
             }
 #if NET5_0_OR_GREATER
