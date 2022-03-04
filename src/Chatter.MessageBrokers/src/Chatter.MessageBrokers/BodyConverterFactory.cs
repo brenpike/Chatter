@@ -20,11 +20,16 @@ namespace Chatter.MessageBrokers
             }
         }
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="contentType"></param>
+        /// <returns>The appropriate <see cref="IBrokeredMessageBodyConverter"/> for specified <paramref name="contentType"/> or <see cref="JsonBodyConverter"/> if no <see cref="IBrokeredMessageBodyConverter"/> was found.</returns>
         public IBrokeredMessageBodyConverter CreateBodyConverter(string contentType)
         {
             if (!(_bodyConverterProviders.TryGetValue(contentType, out var converter)))
             {
-                throw new KeyNotFoundException($"No {typeof(IBrokeredMessageBodyConverter).Name} was found for content type '{contentType}'.");
+                return new JsonBodyConverter();
             }
 
             return converter;

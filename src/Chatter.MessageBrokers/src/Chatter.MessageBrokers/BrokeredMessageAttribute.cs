@@ -13,6 +13,7 @@ namespace Chatter.MessageBrokers
         public string ErrorQueueName { get; }
         public string MessageDescription { get; }
         public string InfrastructureType { get; }
+        public string DeadletterQueueName { get; }
 
         /// <summary>
         /// Creates a brokered message that can send and receive on different exchanges/entity paths (i.e., queues/topics).
@@ -27,7 +28,8 @@ namespace Chatter.MessageBrokers
                                         string receivingPath = null,
                                         string errorQueueName = null,
                                         string messageDescription = null,
-                                        string infrastructureType = "")
+                                        string infrastructureType = "",
+                                        string deadletterQueueName = null)
         {
             if (string.IsNullOrWhiteSpace(sendingPath) && string.IsNullOrWhiteSpace(receivingPath))
             {
@@ -39,6 +41,7 @@ namespace Chatter.MessageBrokers
             ErrorQueueName = errorQueueName;
             MessageDescription = messageDescription;
             InfrastructureType = infrastructureType;
+            DeadletterQueueName = deadletterQueueName;
         }
     }
 }

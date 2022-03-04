@@ -5,8 +5,12 @@ using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.AzureServiceBus;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
+using Chatter.MessageBrokers.AzureServiceBus.Receiving.CircuitBreaker;
+using Chatter.MessageBrokers.AzureServiceBus.Receiving.Retry;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Recovery.Retry;
 using System;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -38,6 +42,9 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
             builder.Services.AddSingleton<AzureServiceBusEntityPathBuilder>();
 
+            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, ServiceBusCircuitBreakerExceptionPredicatesProvider>();
+            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, ServiceBusRetryExceptionPredicatesProvider>();
+
             builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
                 var sender = sp.GetRequiredService<ServiceBusMessageSenderFactory>();
@@ -55,10 +62,11 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                               string subscriptionName,
                                                                               string errorQueuePath = null,
                                                                               string description = null,
-                                                                              TransactionMode? transactionMode = null)
+                                                                              TransactionMode? transactionMode = null,
+                                                                              int maxReceiveAttempts = 10)
             where TMessage : class, IEvent
         {
-            builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType);
+            builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
 
@@ -66,10 +74,11 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                           string queueName,
                                                                           string errorQueuePath = null,
                                                                           string description = null,
-                                                                          TransactionMode? transactionMode = null)
+                                                                          TransactionMode? transactionMode = null,
+                                                                          int maxReceiveAttempts = 10)
             where TMessage : class, ICommand
         {
-            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType);
+            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
     }

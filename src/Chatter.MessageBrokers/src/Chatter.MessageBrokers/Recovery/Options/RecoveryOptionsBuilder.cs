@@ -1,8 +1,10 @@
 ﻿using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Recovery.Retry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.Recovery.Options
 {
@@ -11,18 +13,20 @@ namespace Chatter.MessageBrokers.Recovery.Options
         private CircuitBreakerOptions _circuitBreakerOptions = null;
 
         public const string RecoveryOptionsSectionName = "Chatter:MessageBrokers:Recovery";
-        private readonly IConfiguration _configuration;
         private readonly IServiceCollection _services;
         private readonly IConfigurationSection _recoveryOptionsSection;
+        private int _maxRetryAttempts = _defaultMaxRetryAttempts;
+        private readonly List<Predicate<Exception>> _exceptionPredicates;
 
-        private int _maxRetryAttempts = 5;
+        private const int _defaultMaxRetryAttempts = 5;
+        private const int _maxExponentialRetryAttempts = 15;
 
-        private RecoveryOptionsBuilder(IServiceCollection services) : this(services, null, null) { }
-        private RecoveryOptionsBuilder(IServiceCollection services, IConfiguration configuration, IConfigurationSection section)
+        private RecoveryOptionsBuilder(IServiceCollection services) : this(services, null) { }
+        private RecoveryOptionsBuilder(IServiceCollection services, IConfigurationSection section)
         {
             _services = services ?? throw new ArgumentNullException(nameof(services));
-            _configuration = configuration;
             _recoveryOptionsSection = section;
+            _exceptionPredicates = new List<Predicate<Exception>>();
         }
 
         /// <summary>
@@ -43,7 +47,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
         public static RecoveryOptions FromConfig(IServiceCollection services, IConfiguration configuration, string recoveryOptionsSectionName = RecoveryOptionsSectionName)
         {
             var section = configuration?.GetSection(recoveryOptionsSectionName);
-            var builder = new RecoveryOptionsBuilder(services, configuration, section);
+            var builder = new RecoveryOptionsBuilder(services, section);
             return builder.Build();
         }
 
@@ -61,13 +65,13 @@ namespace Chatter.MessageBrokers.Recovery.Options
         }
 
         /// <summary>
-        /// Configures the message broker infrastructure to use <see cref="NoDelayRecovery"/> as its <see cref="IDelayedRecoveryStrategy"/>.
-        /// The <see cref="IDelayedRecoveryStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
+        /// Configures the message broker infrastructure to use <see cref="NoDelayRecovery"/> as its <see cref="IRetryDelayStrategy"/>.
+        /// The <see cref="IRetryDelayStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
         /// </summary>
         /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseNoDelayRecovery()
         {
-            _services.Replace<IDelayedRecoveryStrategy, NoDelayRecovery>(ServiceLifetime.Scoped);
+            _services.Replace<IRetryDelayStrategy, NoDelayRetry>(ServiceLifetime.Scoped);
             return this;
         }
 
@@ -84,8 +88,8 @@ namespace Chatter.MessageBrokers.Recovery.Options
         }
 
         /// <summary>
-        /// Configures message broker infrastructure to use <see cref="ExponentialDelayRecovery"/> (exponential backoff) as its <see cref="IDelayedRecoveryStrategy"/>. 
-        /// The <see cref="IDelayedRecoveryStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
+        /// Configures message broker infrastructure to use <see cref="ExponentialDelayRetry"/> (exponential backoff) as its <see cref="IRetryDelayStrategy"/>. 
+        /// The <see cref="IRetryDelayStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
         /// </summary>
         /// <param name="maxRetryAttempts">The maximum number of exponentially backed-off retry attemps</param>
         /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
@@ -109,39 +113,63 @@ namespace Chatter.MessageBrokers.Recovery.Options
         /// </remarks>
         public RecoveryOptionsBuilder UseExponentialDelayRecovery(int maxRetryAttempts)
         {
-            _maxRetryAttempts = maxRetryAttempts;
-            _services.Replace<IDelayedRecoveryStrategy>(ServiceLifetime.Scoped, sp =>
+            _maxRetryAttempts = Math.Min(maxRetryAttempts, _maxExponentialRetryAttempts);
+            _services.Replace<IRetryDelayStrategy>(ServiceLifetime.Scoped, sp =>
             {
-                return new ExponentialDelayRecovery(maxRetryAttempts);
+                return new ExponentialDelayRetry(maxRetryAttempts);
             });
             return this;
         }
 
         /// <summary>
-        /// Configures message broker infrastructure to use <see cref="ConstantDelayRecovery"/> as its <see cref="IDelayedRecoveryStrategy"/>. 
-        /// The <see cref="IDelayedRecoveryStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
+        /// Configures message broker infrastructure to use <see cref="ConstantDelayRetry"/> as its <see cref="IRetryDelayStrategy"/>. 
+        /// The <see cref="IRetryDelayStrategy"/> will be triggered when message broker infrastructure fails to handle a received message.
         /// </summary>
         /// <param name="constantDelayInMilliseconds">The constant time in milliseconds to wait before the next retry attempt</param>
         /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseConstantDelayRecovery(int constantDelayInMilliseconds)
         {
-            _services.Replace<IDelayedRecoveryStrategy>(ServiceLifetime.Scoped, sp =>
+            _services.Replace<IRetryDelayStrategy>(ServiceLifetime.Scoped, sp =>
             {
-                return new ConstantDelayRecovery(constantDelayInMilliseconds);
+                return new ConstantDelayRetry(constantDelayInMilliseconds);
             });
             return this;
         }
 
         /// <summary>
-        /// Registers <see cref="ErrorQueueDispatcher"/> as the <see cref="IRecoveryAction"/> that will be used after message broker infrastructure fails
-        /// to handle a message after <see cref="IDelayedRecoveryStrategy"/> has executed
+        /// Registers <see cref="ErrorQueueDispatcher"/> as the <see cref="IMaxReceivesExceededAction"/> that will be used after message broker infrastructure fails
+        /// to handle a message after <see cref="IRetryDelayStrategy"/> has executed
         /// </summary>
         /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseRouteToErrorQueueRecoveryAction()
         {
-            _services.Replace<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
+            _services.Replace<IMaxReceivesExceededAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
             return this;
         }
+
+
+        /// <summary>
+        /// Allows configuration of exception predicates that will cause an operation to be retried
+        /// </summary>
+        /// <param name="exceptions">One or more exception predicates</param>
+        /// <returns><see cref="CircuitBreakerOptionsBuilder"/></returns>
+        /// <example>builder.RetryWhen(e => e is CustomExceptionType c && c.IsTransient);</example>
+        public RecoveryOptionsBuilder RetryWhen(params Predicate<Exception>[] exceptions)
+        {
+            if (exceptions != null)
+            {
+                _exceptionPredicates.AddRange(exceptions);
+            }
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the type of exception that will cause an operation to be retried
+        /// </summary>
+        /// <typeparam name="TException">The type of exception to trigger a retry operation</typeparam>
+        /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
+        public RecoveryOptionsBuilder RetryWhen<TException>() where TException : Exception
+            => RetryWhen(e => e is TException);
 
         public RecoveryOptions Build()
         {
@@ -153,8 +181,13 @@ namespace Chatter.MessageBrokers.Recovery.Options
             }
             else
             {
-                recoveryOptions.MaxRetryAttempts = _maxRetryAttempts;
+                recoveryOptions.MaxRetryAttempts = _defaultMaxRetryAttempts;
                 recoveryOptions.CircuitBreakerOptions = _circuitBreakerOptions;
+            }
+
+            if (_exceptionPredicates.Count > 0)
+            {
+                _services.AddSingleton<IRetryExceptionPredicatesProvider>(new ConfigRetryExceptionPredicatesProvider(_exceptionPredicates));
             }
 
             if (recoveryOptions.CircuitBreakerOptions is null)

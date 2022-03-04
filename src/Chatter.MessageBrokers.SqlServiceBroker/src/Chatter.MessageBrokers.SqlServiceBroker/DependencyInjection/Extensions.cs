@@ -2,9 +2,13 @@
 using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Recovery.Retry;
 using Chatter.MessageBrokers.SqlServiceBroker;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Chatter.MessageBrokers.SqlServiceBroker.Receiving;
+using Chatter.MessageBrokers.SqlServiceBroker.Receiving.CircuitBreaker;
+using Chatter.MessageBrokers.SqlServiceBroker.Receiving.Retry;
 using Chatter.MessageBrokers.SqlServiceBroker.Sending;
 using System;
 
@@ -27,6 +31,9 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddIfNotRegistered<SqlServiceBrokerSender>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<SqlServiceBrokerReceiverFactory>(ServiceLifetime.Singleton);
 
+            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, SqlCircuitBreakerExceptionPredicatesProvider>();
+            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, SqlRetryExceptionPredicatesProvider>();
+
             builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
                 var sender = sp.GetRequiredService<SqlServiceBrokerSenderFactory>();
@@ -44,10 +51,12 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                 string queueName,
                                                                                 string errorQueuePath = null,
                                                                                 string description = null,
-                                                                                TransactionMode? transactionMode = null)
+                                                                                TransactionMode? transactionMode = null,
+                                                                                string deadLetterServicePath = null,
+                                                                                int maxReceiveAttempts = 10)
             where TMessage : class, IMessage
         {
-            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, SSBMessageContext.InfrastructureType);
+            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, SSBMessageContext.InfrastructureType, deadLetterServicePath, maxReceiveAttempts);
             return builder;
         }
     }

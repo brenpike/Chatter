@@ -33,7 +33,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
                                                                          bool coversationEncryption = false,
                                                                          bool compressMessageBody = true,
                                                                          bool cleanupOnEndConversation = false,
-                                                                         bool endConversationAfterDispatch = false)
+                                                                         bool endConversationAfterDispatch = true)
         {
             _sqlServiceBrokerOptions = new SqlServiceBrokerOptions(connectionString,
                                                                    messageBodyType,
@@ -135,9 +135,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Configuration
         /// <summary>
         /// Configures <see cref="Sending.SqlServiceBrokerSender"/> to END CONVERSATION after a message has been dispatched
         /// </summary>
-        public SqlServiceBrokerOptionsBuilder EndConversationAfterDispatch()
+        public SqlServiceBrokerOptionsBuilder EndConversationAfterDispatch(bool endConvo)
         {
-            _sqlServiceBrokerOptions.EndConversationAfterDispatch = true;
+            _sqlServiceBrokerOptions.EndConversationAfterDispatch = endConvo;
             return this;
         }
 

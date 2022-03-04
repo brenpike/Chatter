@@ -69,43 +69,45 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
 
             var query = new StringBuilder($"BEGIN DIALOG @conversationHandle " +
                                           $"FROM SERVICE {_initiatorServiceName} " +
-                                          $"TO SERVICE @targetService ");
+                                          $"TO SERVICE @targetService");
 
             if (!string.IsNullOrWhiteSpace(_serviceContractName))
             {
-                query.Append("ON CONTRACT @contractName ");
+                query.Append(" ON CONTRACT @contractName");
                 beginConvoCommand.Parameters.Add(new SqlParameter("@contractName", _serviceContractName));
             }
 
             beginConvoCommand.Parameters.Add(new SqlParameter("@targetService", _targetServiceName));
             beginConvoCommand.Parameters.Add("@conversationHandle", SqlDbType.UniqueIdentifier).Direction = ParameterDirection.Output;
 
-            query.Append($"WITH ENCRYPTION = ");
+            query.Append($" WITH ENCRYPTION = ");
 
             if (_encryption)
             {
-                query.Append("ON ");
+                query.Append("ON");
             }
             else
             {
-                query.Append("OFF ");
-            }
-
-            if (_relatedConversationGroupId != default)
-            {
-                query.Append("WITH RELATED_CONVERSATION_GROUP = @conversationGroupId ");
-                beginConvoCommand.Parameters.Add(new SqlParameter("@conversationGroupId", _relatedConversationGroupId));
+                query.Append("OFF");
             }
 
             if (_relatedConversationId != default)
             {
-                query.Append("WITH RELATED_CONVERSATION = @conversationId ");
+                query.Append(" , RELATED_CONVERSATION = @conversationId");
                 beginConvoCommand.Parameters.Add(new SqlParameter("@conversationId", _relatedConversationId));
+            }
+            else
+            {
+                if (_relatedConversationGroupId != default)
+                {
+                    query.Append(" , RELATED_CONVERSATION_GROUP = @conversationGroupId");
+                    beginConvoCommand.Parameters.Add(new SqlParameter("@conversationGroupId", _relatedConversationGroupId));
+                }
             }
 
             if (_lifetime > 0)
             {
-                query.Append($", LIFETIME = @lifetime");
+                query.Append($" , LIFETIME = @lifetime");
                 beginConvoCommand.Parameters.Add(new SqlParameter("@lifetime", _lifetime));
             }
 

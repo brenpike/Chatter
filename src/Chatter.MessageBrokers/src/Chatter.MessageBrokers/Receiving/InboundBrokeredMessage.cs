@@ -13,11 +13,11 @@ namespace Chatter.MessageBrokers.Receiving
 
         internal InboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> messageContext, string messageReceiverPath, IBrokeredMessageBodyConverter bodyConverter)
         {
-            MessageId = messageId ?? throw new ArgumentNullException(nameof(messageId));
-            Body = body ?? throw new ArgumentNullException(nameof(body));
+            MessageId = messageId;
+            Body = body;
             MessageContextImpl = messageContext ?? new ConcurrentDictionary<string, object>();
             MessageReceiverPath = messageReceiverPath;
-            BodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
+            BodyConverter = bodyConverter ?? new JsonBodyConverter();
             CorrelationId = GetMessageContextByKey<string>(MessageBrokers.MessageContext.CorrelationId);
             MessageContextImpl[MessageBrokers.MessageContext.ContentType] = bodyConverter.ContentType;
         }

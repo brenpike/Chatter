@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Recovery.Retry;
 using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
@@ -102,9 +103,8 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddIfNotRegistered<ICircuitBreaker, CircuitBreaker>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<ICircuitBreakerStateStore, InMemoryCircuitBreakerStateStore>(ServiceLifetime.Scoped);
 
-            builder.Services.AddScoped<IFailedReceiveRecoverer, FailedReceiveRecoverer>();
-            builder.Services.AddIfNotRegistered<IRecoveryAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
-            builder.Services.AddIfNotRegistered<IDelayedRecoveryStrategy, NoDelayRecovery>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IMaxReceivesExceededAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IRetryDelayStrategy, NoDelayRetry>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<ICriticalFailureNotifier, CriticalFailureEventDispatcher>(ServiceLifetime.Scoped);
 
             builder.Services.AddIfNotRegistered<IMessageIdGenerator, GuidIdGenerator>(ServiceLifetime.Scoped);
@@ -115,6 +115,13 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
             builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
+            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();
+            builder.Services.AddSingleton<IRetryExceptionEvaluator, RetryExceptionEvaluator>();
+            builder.Services.AddSingleton<ICircuitBreakerExceptionEvaluator, CircuitBreakerExceptionEvaluator>();
+            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();
+            builder.Services.AddScoped<IRetryStrategy, RetryStrategy>();
+            builder.Services.AddScoped<IRecoveryStrategy, RetryWithCircuitBreakerStrategy>();
+            builder.Services.AddScoped<IReceivedMessageDispatcher, ScopedReceivedMessageDispatcher>();
 
             if (options?.Reliability?.EnableOutboxPollingProcessor ?? false)
             {
@@ -181,10 +188,12 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                         string description = null,
                                                                         string senderPath = null,
                                                                         TransactionMode? transactionMode = null,
-                                                                        string infrastructureType = "")
+                                                                        string infrastructureType = "",
+                                                                        string deadletterQueuePath = null,
+                                                                        int maxReceiveAttempts = 10)
             where TMessage : class, IMessage
         {
-            builder.Services.AddReceiver<TMessage>(receiverPath, errorQueuePath, description, senderPath, transactionMode, infrastructureType);
+            builder.Services.AddReceiver<TMessage>(receiverPath, errorQueuePath, description, senderPath, transactionMode, infrastructureType, deadletterQueuePath, maxReceiveAttempts);
             return builder;
         }
 
@@ -209,7 +218,9 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                string description = null,
                                                                string senderPath = null,
                                                                TransactionMode? transactionMode = null,
-                                                               string infrastructureType = "")
+                                                               string infrastructureType = "",
+                                                               string deadletterQueuePath = null,
+                                                               int maxReceiveAttempts = 10)
             where TMessage : class, IMessage
         {
             var messageType = typeof(TMessage);
@@ -227,7 +238,9 @@ namespace Microsoft.Extensions.DependencyInjection
                 ErrorQueuePath = errorQueuePath,
                 Description = description,
                 TransactionMode = transactionMode,
-                InfrastructureType = infrastructureType
+                InfrastructureType = infrastructureType,
+                DeadLetterQueuePath = deadletterQueuePath,
+                MaxReceiveAttempts = maxReceiveAttempts
             };
 
             services.AddReceiverImpl<TMessage>(options);
@@ -239,9 +252,8 @@ namespace Microsoft.Extensions.DependencyInjection
             services.AddScoped(closedBrokeredMessageReceiverInterface, closedConcreteBrokeredMessageReceiver);
             services.AddScoped(closedConcreteReceiverBackgroundService, sp =>
             {
-                return Activator.CreateInstance(closedConcreteReceiverBackgroundService,
-                                                options,
-                                                sp);
+                var br = ActivatorUtilities.CreateInstance(sp, closedConcreteReceiverBackgroundService, options);
+                return br;
             });
             services.AddSingleton(typeof(IHostedService), sp =>
             {
@@ -291,7 +303,8 @@ namespace Microsoft.Extensions.DependencyInjection
                     Description = attr.MessageDescription,
                     TransactionMode = null,
                     SendingPath = attr.SendingPath,
-                    InfrastructureType = attr.InfrastructureType
+                    InfrastructureType = attr.InfrastructureType,
+                    DeadLetterQueuePath = attr.DeadletterQueueName
                 };
 
                 yield return (options, messageType);

@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>net5.0;net6.0</TargetFrameworks>
     <UserSecretsId>6de7adf3-b3ed-42b2-a3b5-c4f2cd886785</UserSecretsId>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup Condition=" '$(TargetFramework)' == 'net6.0' ">

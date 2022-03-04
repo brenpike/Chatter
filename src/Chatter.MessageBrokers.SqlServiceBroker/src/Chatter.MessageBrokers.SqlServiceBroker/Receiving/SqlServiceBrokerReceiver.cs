@@ -2,15 +2,15 @@
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
-using Chatter.MessageBrokers.Recovery;
-using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Chatter.MessageBrokers.SqlServiceBroker.Scripts;
+using Chatter.MessageBrokers.SqlServiceBroker.Sending;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Data;
 using System.Data.SqlClient;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,64 +19,32 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 {
     public class SqlServiceBrokerReceiver : IMessagingInfrastructureReceiver
     {
-        private readonly SqlServiceBrokerOptions _options;
+        private readonly SqlServiceBrokerOptions _ssbOptions;
         private readonly ILogger<SqlServiceBrokerReceiver> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
-        private readonly IFailedReceiveRecoverer _failedReceiveRecoverer;
-        private readonly ICriticalFailureNotifier _criticalFailureNotifier;
-        private CancellationTokenSource _cancellationSource;
         private TransactionMode _transactionMode;
         private readonly ConcurrentDictionary<Guid, int> _localReceiverDeliveryAttempts;
-        private readonly ICircuitBreaker _circuitBreaker;
+        private readonly IServiceScopeFactory _serviceFactory;
+        private ReceiverOptions _options;
 
-        public SqlServiceBrokerReceiver(SqlServiceBrokerOptions options,
+        public SqlServiceBrokerReceiver(SqlServiceBrokerOptions ssbOptions,
                                         MessageBrokerOptions messageBrokerOptions,
                                         ILogger<SqlServiceBrokerReceiver> logger,
                                         IBodyConverterFactory bodyConverterFactory,
-                                        IFailedReceiveRecoverer failedReceiveRecoverer,
-                                        ICriticalFailureNotifier criticalFailureNotifier,
-                                        ICircuitBreaker circuitBreaker)
+                                        IServiceScopeFactory serviceFactory)
         {
-            _options = options ?? throw new ArgumentNullException(nameof(options));
+            _ssbOptions = ssbOptions ?? throw new ArgumentNullException(nameof(ssbOptions));
             _logger = logger;
             _bodyConverterFactory = bodyConverterFactory;
-            _failedReceiveRecoverer = failedReceiveRecoverer;
-            _criticalFailureNotifier = criticalFailureNotifier;
-            _transactionMode = messageBrokerOptions?.TransactionMode ?? TransactionMode.None;
+            _transactionMode = messageBrokerOptions?.TransactionMode ?? TransactionMode.ReceiveOnly;
             _localReceiverDeliveryAttempts = new ConcurrentDictionary<Guid, int>();
-            _circuitBreaker = circuitBreaker;
+            _serviceFactory = serviceFactory;
         }
 
-        public string TargetServiceName { get; private set; }
-        public string QueueName { get; private set; }
-        public string ErrorQueueName { get; private set; }
-
-        //TODO: move error codes elsewhere
-        public const int _poisonMessageDeadletterErrorCode = 100;
-        public const int _recoveryActionDeadletterErrorCode = 200;
-        public const int _failedRecoveryDeadletterErrorCode = 300;
-        public const int _circuitBreakerDeadletterErrorCode = 400;
-
-        public async Task StartReceiver(ReceiverOptions options, Func<MessageBrokerContext, TransactionContext, Task> inboundMessageHandler)
+        public Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
         {
-            try
-            {
-                this.TargetServiceName = options.SendingPath;
-                this.QueueName = options.MessageReceiverPath;
-                this.ErrorQueueName = options.ErrorQueuePath;
-                if (options.TransactionMode != null)
-                {
-                    _transactionMode = options.TransactionMode ?? TransactionMode.None;
-                }
-
-                _cancellationSource = new CancellationTokenSource();
-
-                await MessageReceiverLoop(inboundMessageHandler).ConfigureAwait(false);
-            }
-            catch (Exception e)
-            {
-                _logger.LogCritical(e, $"Receiver stopped due to critical error");
-            }
+            _options = options;
+            return Task.CompletedTask;
         }
 
         public Task StopReceiver()
@@ -87,253 +55,258 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
         private void Cancel()
         {
-            if (_cancellationSource == null || _cancellationSource.Token.IsCancellationRequested)
-            {
-                return;
-            }
-
-            if (!_cancellationSource.Token.CanBeCanceled)
-            {
-                return;
-            }
-
-            _cancellationSource.Cancel();
-            _cancellationSource.Dispose();
         }
 
-        private async Task<ReceivedMessage> ReceiveAsync(SqlConnection connection, SqlTransaction transaction)
+        private async Task<ReceivedMessage> ReceiveAsync(SqlConnection connection, SqlTransaction transaction, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var receiveMessageFromQueue = new ReceiveMessageFromQueueCommand(connection,
-                                             this.QueueName,
-                                             _options.ReceiverTimeoutInMilliseconds,
+                                             _options.MessageReceiverPath,
+                                             _ssbOptions.ReceiverTimeoutInMilliseconds,
                                              transaction: transaction);
 
-            return await receiveMessageFromQueue.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
+            return await receiveMessageFromQueue.ExecuteAsync(cancellationToken);
         }
 
-        private async Task MessageReceiverLoop(Func<MessageBrokerContext, TransactionContext, Task> brokeredMessageHandler)
+        public async Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            while (!_cancellationSource.IsCancellationRequested)
+            ReceivedMessage message = null;
+            MessageBrokerContext messageContext = null;
+            SqlConnection connection = null;
+            SqlTransaction transaction = null;
+
+            try
             {
-                try
+                connection = new SqlConnection(_ssbOptions.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                transaction = await CreateTransaction(connection, cancellationToken);
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException)
+            {
+                transaction?.Dispose();
+                connection?.Dispose();
+                throw new CriticalReceiverException("Error connecting to sql", ex);
+            }
+
+            try
+            {
+                message = await ReceiveAsync(connection, transaction, cancellationToken);
+            }
+#if NET5_0_OR_GREATER
+            catch (SqlException e) when (e.IsTransient)
+            {
+                _logger.LogWarning(e, "Failure to receive message from Sql Service Broker due to transient error");
+                throw;
+            }
+#endif
+            catch (SqlException e) when (e.Number == 208 || e.Number == 102)
+            {
+                throw new CriticalReceiverException($"Unable to receive message from configured queue '{_options.MessageReceiverPath}'", e);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, $"Error receiving sql service broker message from queue '{_options.MessageReceiverPath}'");
+                throw;
+            }
+            finally
+            {
+                if (message == null)
                 {
-                    await _circuitBreaker.Execute(async _ =>
-                    {
-                        using SqlConnection connection = new SqlConnection(_options.ConnectionString);
-                        await connection.OpenAsync();
-                        using SqlTransaction transaction = await CreateTransaction(connection).ConfigureAwait(false);
-
-                        ReceivedMessage message = null;
-
-                        try
-                        {
-                            message = await ReceiveAsync(connection, transaction).ConfigureAwait(false);
-                        }
-                        catch (Exception)
-                        {
-                            _logger.LogError($"Error receiving sql service broker message from queue '{this.QueueName}'");
-                            throw;
-                        }
-
-                        if (message == null || _cancellationSource.IsCancellationRequested)
-                        {
-                            return;
-                        }
-
-                        if (message?.Body == null)
-                        {
-                            await CompleteAsync(connection, transaction, message).ConfigureAwait(false);
-                            return;
-                        }
-
-                        MessageBrokerContext messageContext = null;
-                        TransactionContext transactionContext = null;
-
-                        try
-                        {
-
-
-                            using var receiverTokenSource = new CancellationTokenSource();
-                            try
-                            {
-                                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_options.MessageBodyType);
-
-                                var headers = new Dictionary<string, object>
-                                {
-                                    [SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle,
-                                    [SSBMessageContext.ConversationHandle] = message.ConvHandle,
-                                    [SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo,
-                                    [SSBMessageContext.ServiceName] = message.ServiceName,
-                                    [SSBMessageContext.ServiceContractName] = message.ServiceContractName,
-                                    [SSBMessageContext.MessageTypeName] = message.MessageTypeName,
-                                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType
-                                };
-
-                                messageContext = new MessageBrokerContext(message.ConvHandle.ToString(), message.Body, headers, this.QueueName, receiverTokenSource.Token, bodyConverter);
-                                messageContext.Container.Include(message);
-
-                                transactionContext = new TransactionContext(this.QueueName, _transactionMode);
-
-                                if (_transactionMode == TransactionMode.FullAtomicityViaInfrastructure && transaction != null)
-                                {
-                                    transactionContext.Container.Include<IDbTransaction>(transaction);
-                                }
-                            }
-                            catch (Exception e)
-                            {
-                                throw new PoisonedMessageException($"Unable to build {typeof(MessageBrokerContext).Name} due to poisoned message", e);
-                            }
-
-                            await brokeredMessageHandler(messageContext, transactionContext).ConfigureAwait(false);
-
-                            if (!receiverTokenSource.IsCancellationRequested)
-                            {
-                                await CompleteAsync(connection, transaction, message).ConfigureAwait(false);
-                            }
-                            else
-                            {
-                                await AbandonAsync(transaction, message).ConfigureAwait(false);
-                            }
-                        }
-                        catch (PoisonedMessageException pme)
-                        {
-                            _logger?.LogError(pme, "Poisoned message received");
-                            try
-                            {
-                                await DeadLetterAsync(connection, transaction, message, _poisonMessageDeadletterErrorCode,
-                                                      $"Poisoned message received from queue '{this.QueueName}' cannot be handled.",
-                                                      pme.Message).ConfigureAwait(false);
-                            }
-                            catch (Exception)
-                            {
-                                _logger?.LogError("Error deadlettering poisoned message");
-                                throw;
-                            }
-
-                            return;
-                        }
-                        catch (Exception e)
-                        {
-                            try
-                            {
-                                _logger.LogError(e, "Error handling recevied message. Attempting recovery.");
-
-                                RecoveryState state = RecoveryState.Retrying;
-
-                                _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
-
-                                var failureContext = new FailureContext(messageContext.BrokeredMessage,
-                                                                        this.ErrorQueueName,
-                                                                        "Unable to handle received message",
-                                                                        e,
-                                                                        deliveryAttempts,
-                                                                        transactionContext);
-
-                                state = await _failedReceiveRecoverer.Execute(failureContext).ConfigureAwait(false);
-
-                                if (state == RecoveryState.DeadLetter)
-                                {
-                                    await DeadLetterAsync(connection, transaction, message, _recoveryActionDeadletterErrorCode,
-                                                          $"Deadlettering message by request of recovery action.",
-                                                          $"Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'").ConfigureAwait(false);
-                                }
-
-                                if (state == RecoveryState.RecoveryActionExecuted)
-                                {
-                                    await CompleteAsync(connection, transaction, message).ConfigureAwait(false);
-                                }
-
-                                if (state == RecoveryState.Retrying)
-                                {
-                                    await AbandonAsync(transaction, message).ConfigureAwait(false);
-                                }
-                            }
-                            catch (Exception onErrorException)
-                            {
-                                var aggEx = new AggregateException(e, onErrorException);
-
-                                _logger.LogError(aggEx, $"Recovery was unsuccessful. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'");
-
-                                _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
-
-                                var failureContext = new FailureContext(messageContext.BrokeredMessage,
-                                                                        this.ErrorQueueName,
-                                                                        "Unable to recover from error which occurred during message handling",
-                                                                        aggEx,
-                                                                        deliveryAttempts,
-                                                                        transactionContext);
-
-                                await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);
-
-                                await DeadLetterAsync(connection, transaction, message, _failedRecoveryDeadletterErrorCode,
-                                                      $"Critical error encountered receiving message. Conversation Handle: '{message.ConvHandle}, Conversation Group Id: '{message.ConvGroupHandle}'",
-                                                      aggEx.ToString()).ConfigureAwait(false);
-                            }
-                        }
-                    }, _cancellationSource.Token);
-                }
-                catch (ArgumentException ae)
-                {
-                    _logger.LogCritical(ae, $"Stopping {nameof(MessageReceiverLoop)}. SQL Connection string supplied is invalid. {nameof(_options.ConnectionString)}='{_options.ConnectionString}'");
-                    return;
-                }
-                catch (Exception e)
-                {
-                    _logger.LogError(e, $"Error occurred in {nameof(MessageReceiverLoop)}.");
+                    transaction?.Dispose();
+                    connection?.Dispose();
                 }
             }
-        }
 
-        private async Task<SqlTransaction> CreateTransaction(SqlConnection connection)
-            => (SqlTransaction)(_transactionMode != TransactionMode.None ? await connection.BeginTransactionAsync(_cancellationSource.Token) : null);
+            if (message is null)
+            {
+                await DiscardMessageAsync(connection, transaction, "Discarding null message", cancellationToken);
+                return null;
+            }
 
-        private Task AbandonAsync(IDbTransaction transaction, ReceivedMessage message)
-        {
-            transaction?.Rollback();
+            if (message.MessageTypeName != ServicesMessageTypes.DefaultType && message.MessageTypeName != ServicesMessageTypes.ChatterBrokeredMessageType)
+            {
+                await DiscardMessageAsync(connection, transaction
+                    , $"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received."
+                    , cancellationToken);
+                return null;
+            }
+
+            if (message.Body == null)
+            {
+                await DiscardMessageAsync(connection, transaction
+                    , $"Discarding message of type '{message.MessageTypeName}' with null message body"
+                    , cancellationToken);
+                return null;
+            }
+
+            transactionContext.Container.Include(connection);
+            if (_transactionMode != TransactionMode.None && transaction != null)
+            {
+                transactionContext.Container.Include(transaction);
+            }
+
             _localReceiverDeliveryAttempts.AddOrUpdate(message.ConvHandle, 1, (ch, deliveryAttempts) => deliveryAttempts + 1);
-            return Task.CompletedTask;
-        }
 
-        private async Task CompleteAsync(SqlConnection connection, IDbTransaction transaction, ReceivedMessage message)
-        {
+            IBrokeredMessageBodyConverter bodyConverter = new JsonUnicodeBodyConverter();
+            byte[] messagePayload = message.Body;
+            string messageId = message.ConvHandle.ToString();
+            IDictionary<string, object> headers = new Dictionary<string, object>();
+
             try
             {
-                var edc = new EndDialogConversationCommand(connection,
-                                                           message.ConvHandle,
-                                                           enableCleanup: _options.CleanupOnEndConversation,
-                                                           transaction: (SqlTransaction)transaction);
-                await edc.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
-                transaction?.Commit();
-                _localReceiverDeliveryAttempts.TryRemove(message.ConvHandle, out var _);
+                bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+                if (message.MessageTypeName == ServicesMessageTypes.ChatterBrokeredMessageType)
+                {
+                    var brokeredMessage = bodyConverter.Convert<OutboundBrokeredMessage>(message.Body);
+
+                    if (brokeredMessage == null)
+                    {
+                        throw new ArgumentNullException(nameof(brokeredMessage), $"Unable to deserialize {nameof(OutboundBrokeredMessage)} from message body");
+                    }
+
+                    messagePayload = brokeredMessage.Body;
+                    messageId = brokeredMessage.MessageId;
+                    headers = brokeredMessage.MessageContext;
+                }
             }
             catch (Exception e)
             {
-                await AbandonAsync(transaction, message).ConfigureAwait(false);
-                _logger.LogError(e, "Unable to complete receive operation");
+                _logger.LogWarning(e, $"Error creating body converter for content type '{_ssbOptions.MessageBodyType}'. Defaulting to {nameof(JsonUnicodeBodyConverter)}.");
+            }
+            finally
+            {
+                _localReceiverDeliveryAttempts.TryGetValue(message.ConvHandle, out var deliveryAttempts);
+
+                headers[SSBMessageContext.ConversationGroupId] = message.ConvGroupHandle;
+                headers[SSBMessageContext.ConversationHandle] = message.ConvHandle;
+                headers[SSBMessageContext.MessageSequenceNumber] = message.MessageSeqNo;
+                headers[SSBMessageContext.ServiceName] = message.ServiceName;
+                headers[SSBMessageContext.ServiceContractName] = message.ServiceContractName;
+                headers[SSBMessageContext.MessageTypeName] = message.MessageTypeName;
+                headers[MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType;
+                headers[MessageContext.ReceiveAttempts] = deliveryAttempts;
+
+                messageContext = new MessageBrokerContext(messageId, messagePayload, headers, _options.MessageReceiverPath, cancellationToken, bodyConverter);
+                messageContext.Container.Include(message);
+            }
+
+            return messageContext;
+        }
+
+        private async Task DiscardMessageAsync(SqlConnection connection, SqlTransaction transaction, string discardMessage, CancellationToken cancellationToken)
+        {
+            await transaction?.CommitAsync(cancellationToken);
+            transaction?.Dispose();
+            connection?.Dispose();
+            _logger.LogTrace(discardMessage);
+        }
+
+        private async Task<SqlTransaction> CreateTransaction(SqlConnection connection, CancellationToken cancellationToken)
+            => (_transactionMode != TransactionMode.None ? await connection.BeginTransactionAsync(cancellationToken) : null) as SqlTransaction;
+
+        public async Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        {
+            ReceivedMessage msg = null;
+            if (!context?.Container.TryGet(out msg) ?? false)
+            {
+                _logger.LogTrace($"No {nameof(ReceivedMessage)} contained in {nameof(context)}.");
+            }
+
+            transactionContext.Container.TryGet<SqlConnection>(out var connection);
+            transactionContext.Container.TryGet<SqlTransaction>(out var transaction);
+
+            try
+            {
+                if (msg != null)
+                {
+                    var edc = new EndDialogConversationCommand(connection,
+                                           msg.ConvHandle,
+                                           enableCleanup: _ssbOptions.CleanupOnEndConversation,
+                                           transaction: transaction);
+                    await edc.ExecuteAsync(cancellationToken);
+                    _localReceiverDeliveryAttempts.TryRemove(msg.ConvHandle, out var _);
+                }
+                else
+                {
+                    _logger.LogTrace($"Unable end dialog conversation during message acknowledgment. {nameof(msg)} is null.");
+                }
+                await transaction?.CommitAsync(cancellationToken);
+                _logger.LogTrace("Message acknowledgment complete");
+                return true;
+            }
+            finally
+            {
+                transaction?.Dispose();
+                connection?.Dispose();
             }
         }
 
-        private async Task DeadLetterAsync(SqlConnection connection, IDbTransaction transaction, ReceivedMessage message, int errorCode, string reason, string description)
+        public async Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            var errorDescription = reason + Environment.NewLine + description;
+            transactionContext.Container.TryGet<SqlConnection>(out var connection);
+            transactionContext.Container.TryGet<SqlTransaction>(out var transaction);
+
             try
             {
-                transaction?.Rollback();
-                var edc = new EndDialogConversationCommand(connection,
-                                                           message.ConvHandle,
-                                                           errorCode,
-                                                           errorDescription,
-                                                           enableCleanup: _options.CleanupOnEndConversation);
-                await edc.ExecuteAsync(_cancellationSource.Token).ConfigureAwait(false);
-                _localReceiverDeliveryAttempts.TryRemove(message.ConvHandle, out var _);
+                await transaction?.RollbackAsync(cancellationToken);
+                _logger.LogTrace("Message negative acknowledgment complete");
+                return true;
             }
-            catch (Exception e)
+            finally
             {
-                await AbandonAsync(transaction, message).ConfigureAwait(false);
-                _logger.LogError(e, "Unable to complete receive operation");
+                transaction?.Dispose();
+                connection?.Dispose();
+            }
+        }
+
+        public async Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+        {
+            ReceivedMessage msg = null;
+            if (!context?.Container.TryGet(out msg) ?? false)
+            {
+                throw new ArgumentException($"Unable to deadletter message. No {nameof(ReceivedMessage)} contained in {nameof(context)}.", nameof(msg));
             }
 
-            _logger.LogError(errorDescription);
+            transactionContext.Container.TryGet<SqlConnection>(out var connection);
+            transactionContext.Container.TryGet<SqlTransaction>(out var transaction);
+
+            try
+            {
+                var edc = new EndDialogConversationCommand(connection,
+                                       msg.ConvHandle,
+                                       enableCleanup: _ssbOptions.CleanupOnEndConversation,
+                                       transaction: transaction);
+                await edc.ExecuteAsync(cancellationToken);
+
+                using var scope = _serviceFactory.CreateScope();
+                var ssbSender = scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>();
+                var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+
+                _localReceiverDeliveryAttempts.TryGetValue(msg.ConvHandle, out var deliveryAttempts);
+
+                var headers = new Dictionary<string, object>()
+                {
+                    [SSBMessageContext.ConversationHandle] = msg.ConvHandle,
+                    [SSBMessageContext.ServiceName] = msg.ServiceName,
+                    [MessageContext.FailureDescription] = deadLetterErrorDescription,
+                    [MessageContext.FailureDetails] = deadLetterReason,
+                    [MessageContext.InfrastructureType] = SSBMessageContext.InfrastructureType,
+                    [SSBMessageContext.MessageTypeName] = ServicesMessageTypes.ChatterBrokeredMessageType,
+                    [SSBMessageContext.ServiceContractName] = ServicesMessageTypes.ChatterServiceContract,
+                    [MessageContext.ReceiveAttempts] = deliveryAttempts
+                };
+                await ssbSender.Dispatch(new OutboundBrokeredMessage(context.BrokeredMessage.MessageId, msg.Body, headers, _options.DeadLetterQueuePath, bodyConverter), transactionContext);
+                await transaction?.CommitAsync(cancellationToken);
+                _localReceiverDeliveryAttempts.TryRemove(msg.ConvHandle, out var _);
+                _logger.LogTrace($"Message deadlettered.");
+                return true;
+            }
+            finally
+            {
+                transaction?.Dispose();
+                connection?.Dispose();
+            }
         }
 
         public void Dispose()
@@ -345,7 +318,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         public async ValueTask DisposeAsync()
         {
             await Task.CompletedTask;
-            Cancel();
             Dispose(disposing: false);
             GC.SuppressFinalize(this);
         }
@@ -356,8 +328,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             {
                 Cancel();
             }
-
-            _cancellationSource = null;
         }
     }
 }

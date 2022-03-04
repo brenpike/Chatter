@@ -10,6 +10,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         private int _failureCount;
         private int _successCount;
         private readonly ILogger<InMemoryCircuitBreakerStateStore> _logger;
+        private object stateLock = new object();
 
         public InMemoryCircuitBreakerStateStore(ILogger<InMemoryCircuitBreakerStateStore> logger)
             => _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -21,48 +22,58 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         public int FailureCount => _failureCount;
         public int SuccessCount => _successCount;
 
-        public Task HalfOpen()
+        public Task HalfOpenAsync()
         {
             if (State == CircuitBreakerState.HalfOpen)
             {
                 return Task.CompletedTask;
             }
 
-            Interlocked.Exchange(ref _successCount, 0);
-            LastStateChangedDateUtc = DateTime.UtcNow;
-            State = CircuitBreakerState.HalfOpen;
-            _logger.LogDebug("Circuit Breaker is now in the HALF-OPEN state.");
+            lock (stateLock)
+            {
+                Interlocked.Exchange(ref _successCount, 0);
+                LastStateChangedDateUtc = DateTime.UtcNow;
+                State = CircuitBreakerState.HalfOpen;
+            }
+
+            _logger.LogInformation("Circuit Breaker is now in the HALF-OPEN state.");
             return Task.CompletedTask;
         }
 
-        public Task Close()
+        public Task CloseAsync()
         {
-            LastStateChangedDateUtc = DateTime.UtcNow;
-            State = CircuitBreakerState.Closed;
-            Interlocked.Exchange(ref _failureCount, 0);
-            _logger.LogDebug("Circuit Breaker is now in the CLOSED state.");
+            lock (stateLock)
+            {
+                LastStateChangedDateUtc = DateTime.UtcNow;
+                State = CircuitBreakerState.Closed;
+                Interlocked.Exchange(ref _failureCount, 0);
+            }
+            _logger.LogInformation("Circuit Breaker is now in the CLOSED state.");
             return Task.CompletedTask;
         }
 
-        public Task Open(Exception ex)
+        public Task OpenAsync(Exception ex)
         {
-            LastStateChangedDateUtc = DateTime.UtcNow;
-            LastException = ex;
-            State = CircuitBreakerState.Open;
-            _logger.LogDebug("Circuit Breaker is now in the OPEN state.");
+            lock (stateLock)
+            {
+                LastStateChangedDateUtc = DateTime.UtcNow;
+                LastException = ex;
+                State = CircuitBreakerState.Open;
+            }
+            _logger.LogInformation("Circuit Breaker is now in the OPEN state.");
             return Task.CompletedTask;
         }
 
-        public Task<int> IncrementSuccessCounter()
+        public Task<int> IncrementSuccessCounterAsync()
         {
-            _logger.LogDebug("Incrementing success counter");
+            _logger.LogTrace("Incrementing success counter");
             return Task.FromResult(Interlocked.Increment(ref _successCount));
         }
 
-        public Task<int> IncrementFailureCounter(Exception ex)
+        public Task<int> IncrementFailureCounterAsync(Exception ex)
         {
             LastException = ex;
-            _logger.LogDebug("Incrementing failure counter");
+            _logger.LogTrace("Incrementing failure counter");
             return Task.FromResult(Interlocked.Increment(ref _failureCount));
         }
     }

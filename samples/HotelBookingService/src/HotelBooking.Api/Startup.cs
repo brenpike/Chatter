@@ -29,14 +29,14 @@ namespace HotelBooking.Api
                 c.SwaggerDoc("v1", new OpenApiInfo { Title = "Hotel Booking Api", Version = "v1" });
             });
 
-            services.AddChatterCqrs(Configuration, typeof(BookHotelCommand))
-                .AddCommandPipeline(builder =>
+            services.AddChatterCqrs(Configuration, builder =>
                 {
                     builder.WithRoutingSlipBehavior();
-                })
+                }, typeof(BookHotelCommand))
                 .AddMessageBrokers(builder =>
                 {
-                    builder.AddReceiver<BookHotelCommand>("book-trip-saga/2/book-hotel", transactionMode: TransactionMode.FullAtomicityViaInfrastructure);
+                    builder.AddReceiver<BookHotelCommand>("book-trip-saga/2/book-hotel", transactionMode: TransactionMode.FullAtomicityViaInfrastructure)
+                           .AddRecoveryOptions(recovery => recovery.UseConstantDelayRecovery(1000).WithCircuitBreaker(cb => cb.SetNumberOfFailuresBeforeOpen(2)));
                 })
                 .AddAzureServiceBus(builder =>
                 {

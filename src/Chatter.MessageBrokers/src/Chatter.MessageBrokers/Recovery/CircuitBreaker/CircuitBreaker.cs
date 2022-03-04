@@ -1,4 +1,4 @@
-﻿using Chatter.MessageBrokers.Context;
+﻿using Chatter.MessageBrokers.Exceptions;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Threading;
@@ -16,14 +16,14 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         private Timer _timer;
         private readonly ICircuitBreakerStateStore _stateStore;
         private readonly ILogger<CircuitBreaker> _logger;
-        private readonly ICriticalFailureNotifier _criticalFailureNotifier;
+        private readonly ICircuitBreakerExceptionEvaluator _exceptionEvaluator;
         private bool _disposedValue;
         private SemaphoreSlim _halfOpenSemaphore;
 
         public CircuitBreaker(ICircuitBreakerStateStore stateStore,
                               CircuitBreakerOptions circuitBreakerOptions,
                               ILogger<CircuitBreaker> logger,
-                              ICriticalFailureNotifier criticalFailureNotifier)
+                              ICircuitBreakerExceptionEvaluator exceptionEvaluator)
         {
             if (circuitBreakerOptions is null)
             {
@@ -32,7 +32,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
             _stateStore = stateStore ?? throw new ArgumentNullException(nameof(stateStore));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _criticalFailureNotifier = criticalFailureNotifier ?? throw new ArgumentNullException(nameof(criticalFailureNotifier));
+            _exceptionEvaluator = exceptionEvaluator ?? throw new ArgumentNullException(nameof(exceptionEvaluator));
             _openToHalfOpenWaitTime = TimeSpan.FromSeconds(circuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds);
             _concurrentHalfOpenAttempts = circuitBreakerOptions.ConcurrentHalfOpenAttempts;
             _numberOfFailuresBeforeOpen = circuitBreakerOptions.NumberOfFailuresBeforeOpen;
@@ -45,42 +45,57 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         public bool IsClosed { get { return _stateStore.IsClosed; } }
         public bool IsOpen { get { return !IsClosed; } }
 
-        public async Task Execute(Func<CircuitBreakerState, Task> action, CancellationToken cancellationToken = default)
+        public async Task<TResult> ExecuteAsync<TResult>(Func<CircuitBreakerState, Task<TResult>> action, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (IsOpen)
             {
-                if (_stateStore.State == CircuitBreakerState.HalfOpen ||
-                    _stateStore.LastStateChangedDateUtc + _openToHalfOpenWaitTime < DateTime.UtcNow)
+                if (_stateStore.State != CircuitBreakerState.HalfOpen)
                 {
-                    _logger.LogDebug("Circuit Breaker timeout timer expired. Entering HALF-OPEN state.");
+                    await Task.Delay(_openToHalfOpenWaitTime);
+                    _logger.LogInformation("Circuit Breaker half-open timer expired. Entering HALF-OPEN state.");
+                }
+
+                try
+                {
+                    await _halfOpenSemaphore?.WaitAsync(cancellationToken);
+                    await _stateStore.HalfOpenAsync();
+                    var context = await action(_stateStore.State);
+                    await TryClose();
+                    return context;
+                }
+                catch (Exception ex)
+                {
+                    await _stateStore.OpenAsync(ex);
+                    throw;
+                }
+                finally
+                {
                     try
                     {
-                        await _halfOpenSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-                        await _stateStore.HalfOpen();
-                        await action(_stateStore.State).ConfigureAwait(false);
-                        await TryClose();
-                        return;
+                        _halfOpenSemaphore?.Release();
                     }
-                    catch (Exception ex)
+                    catch (ObjectDisposedException)
                     {
-                        await _stateStore.Open(ex);
-                        throw;
-                    }
-                    finally
-                    {
-                        _halfOpenSemaphore.Release();
                     }
                 }
 
-                return;
+                throw new CircuitBreakerOpenException(_stateStore.LastException);
             }
 
             try
             {
-                await action(_stateStore.State).ConfigureAwait(false);
+                return await action(_stateStore.State);
             }
             catch (Exception ex)
             {
+                if (!_exceptionEvaluator.ShouldTrip(ex))
+                {
+                    _logger.LogTrace($"Circuit break not configured for exception type '{ex.GetType().FullName}'. Skipping.");
+                    throw;
+                }
+
                 await TryOpen(ex);
                 throw;
             }
@@ -88,34 +103,31 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
         private async Task TryClose()
         {
-            _logger.LogDebug("Attempting to CLOSE circuit");
-            if (await _stateStore.IncrementSuccessCounter() >= _numberOfHalfOpenSuccessesToClose)
+            _logger.LogTrace("Attempting to CLOSE circuit");
+            if (await _stateStore.IncrementSuccessCounterAsync() >= _numberOfHalfOpenSuccessesToClose)
             {
+                await _stateStore.CloseAsync();
                 ResetOpenTimer();
-                await _stateStore.Close();
             }
         }
 
         private async Task TryOpen(Exception ex)
         {
-            _logger.LogDebug("Attempting to OPEN circuit");
-            if (await _stateStore.IncrementFailureCounter(ex).ConfigureAwait(false) >= _numberOfFailuresBeforeOpen)
+            _logger.LogTrace("Attempting to OPEN circuit");
+            if (await _stateStore.IncrementFailureCounterAsync(ex) >= _numberOfFailuresBeforeOpen)
             {
+                await _stateStore.OpenAsync(ex);
                 StartOpenTimer();
-                await _stateStore.Open(ex).ConfigureAwait(false);
             }
         }
 
-        private async void CriticalFailureNotification(object state)
+        private void CriticalFailureNotification(object state)
         {
-            var reason = $"Circuit breaker has been OPEN for {_timeOpenBeforeCriticalFailureNotification} seconds";
-            var failureContext = new FailureContext(null, null, reason, _stateStore.LastException, _stateStore.FailureCount, null);
-            await _criticalFailureNotifier.Notify(failureContext).ConfigureAwait(false);
-            StartOpenTimer();
+            _logger.LogCritical($"Circuit breaker has been OPEN for {_timeOpenBeforeCriticalFailureNotification} seconds");
         }
 
-        private void ResetOpenTimer() => _timer.Change(Timeout.Infinite, Timeout.Infinite);
-        private void StartOpenTimer() => _timer.Change(_timeOpenBeforeCriticalFailureNotification, TimeSpan.FromMilliseconds(-1));
+        private void ResetOpenTimer() => _timer?.Change(Timeout.Infinite, Timeout.Infinite);
+        private void StartOpenTimer() => _timer?.Change(_timeOpenBeforeCriticalFailureNotification, TimeSpan.FromMilliseconds(-1));
 
         private void Dispose(bool disposing)
         {

@@ -14,10 +14,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
                 MessageId = string.IsNullOrWhiteSpace(brokeredMessage.MessageId) ? Guid.NewGuid().ToString() : brokeredMessage.MessageId,
                 CorrelationId = brokeredMessage.CorrelationId,
                 ContentType = brokeredMessage.ContentType,
-                Label = brokeredMessage.Subject,
-                ReplyTo = brokeredMessage.ReplyToAddress,
-                ReplyToSessionId = brokeredMessage.ReplyToGroupId,
-                SessionId = brokeredMessage.GroupId,
+                Label = brokeredMessage.GetSubject(),
+                ReplyTo = brokeredMessage.GetReplyToAddress(),
+                ReplyToSessionId = brokeredMessage.GetReplyToGroupId(),
+                SessionId = brokeredMessage.GetGroupId(),
                 PartitionKey = brokeredMessage.GetPartitionKey(),
                 ViaPartitionKey = brokeredMessage.GetViaPartitionKey(),
                 To = brokeredMessage.GetToAddress()
@@ -43,10 +43,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             return outboundBrokeredMessage;
         }
 
-        public static DateTime? GetScheduledEnqueueTimeUtc(this OutboundBrokeredMessage outboundBrokeredMessage)
-        {
-            return (DateTime?)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.ScheduledEnqueueTimeUtc);
-        }
+        public static DateTime? GetScheduledEnqueueTimeUtc(this OutboundBrokeredMessage outboundBrokeredMessage) => (DateTime?)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.ScheduledEnqueueTimeUtc);
 
         public static OutboundBrokeredMessage WithTo(this OutboundBrokeredMessage outboundBrokeredMessage, string to)
         {
@@ -54,10 +51,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             return outboundBrokeredMessage;
         }
 
-        public static string GetToAddress(this OutboundBrokeredMessage outboundBrokeredMessage)
-        {
-            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.To);
-        }
+        public static string GetToAddress(this OutboundBrokeredMessage outboundBrokeredMessage) => (string)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.To);
 
         public static OutboundBrokeredMessage WithViaPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage, string viaPartitionKey)
         {
@@ -65,10 +59,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             return outboundBrokeredMessage;
         }
 
-        public static string GetViaPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage)
-        {
-            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.ViaPartitionKey);
-        }
+        public static string GetViaPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage) => outboundBrokeredMessage.GetMessageContextByKey<string>(ASBMessageContext.ViaPartitionKey);
 
         public static OutboundBrokeredMessage WithPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage, string partitionKey)
         {
@@ -76,10 +67,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             return outboundBrokeredMessage;
         }
 
-        public static string GetPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage)
-        {
-            return (string)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.PartitionKey);
-        }
+        public static string GetPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage) => outboundBrokeredMessage.GetMessageContextByKey<string>(ASBMessageContext.PartitionKey);
+        public static string GetReplyToAddress(this OutboundBrokeredMessage outboundBrokeredMessage) => outboundBrokeredMessage.GetMessageContextByKey<string>(MessageContext.ReplyToAddress);
+        public static string GetReplyToGroupId(this OutboundBrokeredMessage outboundBrokeredMessage) => outboundBrokeredMessage.GetMessageContextByKey<string>(MessageContext.ReplyToGroupId);
+        public static string GetGroupId(this OutboundBrokeredMessage outboundBrokeredMessage) => outboundBrokeredMessage.GetMessageContextByKey<string>(MessageContext.GroupId);
+        public static string GetSubject(this OutboundBrokeredMessage outboundBrokeredMessage) => outboundBrokeredMessage.GetMessageContextByKey<string>(MessageContext.Subject);
 
         public static object GetApplicationPropertyByKey(this OutboundBrokeredMessage outboundBrokeredMessage, string key)
         {

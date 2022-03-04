@@ -17,9 +17,15 @@
         public string SendingPath { get; set; }
 
         /// <summary>
-        /// Gets the name of the path to send messages on error.
+        /// Gets the name of the path to send messages on error. Used by <see cref="IRecoveryAction"/>
         /// </summary>
         public string ErrorQueuePath { get; set; }
+
+        /// <summary>
+        /// The path of the deadletter queue. Messages will be forwarded to this queue if they are unable to be received after max configured retries, failed IRecoveryAction or if they are poisoned.
+        /// This property may be ignored by message broker infrastructure which have their own DLQ implementation.
+        /// </summary>
+        public string DeadLetterQueuePath { get; set; }
 
         /// <summary>
         /// The type of transactionality the message will be part of while being received by the messaging infrastructure
@@ -31,5 +37,13 @@
         /// during startup will be used.
         /// </summary>
         public string InfrastructureType { get; set; } = "";
+
+        /// <summary>
+        /// The max number of attempts that will be made to receive a message from a queue/subscription before the message is deadlettered.
+        /// Messaging infrastructure implementation will take precedence. If this value is set to 11 but the messaging infrastructure's
+        /// "max delivery count" is set to 10, the message will only be attemped to be received 10 times and thus any application logic triggered by
+        /// comparing actual receive attempts to the max will not execute.
+        /// </summary>
+        public int MaxReceiveAttempts { get; set; } = 10;
     }
 }

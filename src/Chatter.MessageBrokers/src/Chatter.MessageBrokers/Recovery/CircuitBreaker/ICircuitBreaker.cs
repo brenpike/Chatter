@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Chatter.MessageBrokers.Context;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,6 +10,6 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         bool IsClosed { get; }
         bool IsOpen { get; }
 
-        Task Execute(Func<CircuitBreakerState, Task> action, CancellationToken cancellationToken = default);
+        Task<TResult> ExecuteAsync<TResult>(Func<CircuitBreakerState, Task<TResult>> action, CancellationToken cancellationToken = default);
     }
 }

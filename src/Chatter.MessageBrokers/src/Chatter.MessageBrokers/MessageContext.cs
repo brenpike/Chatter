@@ -3,7 +3,6 @@
     public class MessageContext
     {
         public static readonly string ChatterBaseHeader = "Chatter";
-        private static readonly string Saga = "Saga";
         private static readonly string Routing = "Routing";
         private static readonly string Infrastructure = "Infrastructure";
 
@@ -47,18 +46,6 @@
         /// </summary>
         public static readonly string ExpiryTimeUtc = $"{ChatterBaseHeader}.ExpiryTimeUtc";
         /// <summary>
-        /// The status of the saga a message is part of
-        /// </summary>
-        public static readonly string SagaStatus = $"{ChatterBaseHeader}.{Saga}.Status";
-        /// <summary>
-        /// The Id of the saga a message is a part of
-        /// </summary>
-        public static readonly string SagaId = $"{ChatterBaseHeader}.{Saga}.Id";
-        /// <summary>
-        /// The path to the receiver that is performing the role of saga orchestrator
-        /// </summary>
-        public static readonly string SagaOrchestratorPath = $"{ChatterBaseHeader}.{Saga}.OrchestratorPath";
-        /// <summary>
         /// True if the message has encountered an error while being received
         /// </summary>
         public static readonly string IsError = $"{ChatterBaseHeader}.IsError";
@@ -85,6 +72,9 @@
         /// The type of brokered message infrastructure the message is being sent or received on
         /// </summary>
         public static readonly string InfrastructureType = $"{ChatterBaseHeader}.{Infrastructure}.Type";
-
+        /// <summary>
+        /// The total number of attempts that have been made by a receiver to receive and handle the message
+        /// </summary>
+        public static readonly string ReceiveAttempts = $"{ChatterBaseHeader}.{Infrastructure}.ReceiveAttempts";
     }
 }
