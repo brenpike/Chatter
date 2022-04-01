@@ -116,15 +116,16 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                              ORDER BY PK_ORDINAL;
 
                             -- Construct statement for trigger to actually build message content:
-                            DECLARE @TriggerMessageStatement nvarchar(max) = ''DECLARE @TraceId uniqueidentifier = NEWID();
+                            DECLARE @TriggerMessageStatement nvarchar(max) = ''
                             SET @Message = (
-                            SELECT @TraceId [TraceId],
+                            SELECT
 	                            JSON_QUERY(NULLIF(JSON_QUERY((SELECT '' + CASE @ExplicitCols WHEN 1 THEN REPLACE(SUBSTRING(@ColumnList, 2, LEN(@ColumnList)), ''%PFX%.'', ''ins.'') ELSE ''ins.*'' END + '' FOR JSON PATH, WITHOUT_ARRAY_WRAPPER)), ''''{{}}'''')) [Inserted],
 	                            JSON_QUERY(NULLIF(JSON_QUERY((SELECT '' + CASE @ExplicitCols WHEN 1 THEN REPLACE(SUBSTRING(@ColumnList, 2, LEN(@ColumnList)), ''%PFX%.'', ''del.'') ELSE ''del.*'' END + '' FOR JSON PATH, WITHOUT_ARRAY_WRAPPER)), ''''{{}}'''')) [Deleted]
                             FROM INSERTED ins
                             FULL OUTER JOIN DELETED del ON '' + SUBSTRING(@JoinColumns, 6, LEN(@JoinColumns)) + ''
                             FOR JSON AUTO
-                            );SET @message = (SELECT JSON_QUERY(@message) [Changes] FOR JSON PATH, WITHOUT_ARRAY_WRAPPER);'';
+                            );
+                            SET @message = (SELECT JSON_QUERY(@message) [Changes] FOR JSON PATH, WITHOUT_ARRAY_WRAPPER);'';
 
                             -- Change Feed Trigger configuration statement.
                             DECLARE @triggerStatement NVARCHAR(MAX) = REPLACE(CONVERT(nvarchar(max), N''{3}''), ''%set_message_statement%'', @TriggerMessageStatement);

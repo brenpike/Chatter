@@ -277,7 +277,7 @@ namespace Chatter.MessageBrokers.Receiving
         {
             try
             {
-                return await _recoveryStrategy.ExecuteAsync(async () => await _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
+                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
             }
             catch (Exception e)
             {
@@ -290,7 +290,7 @@ namespace Chatter.MessageBrokers.Receiving
         {
             try
             {
-                return await _recoveryStrategy.ExecuteAsync(async () => await _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
+                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
             }
             catch (Exception e)
             {
@@ -303,7 +303,7 @@ namespace Chatter.MessageBrokers.Receiving
         {
             try
             {
-                return await _recoveryStrategy.ExecuteAsync(async () => await _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Poisoned message received", e.ToString(), receiverTokenSource), receiverTokenSource);
+                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Poisoned message received", e.ToString(), receiverTokenSource), receiverTokenSource);
             }
             catch (Exception inner)
             {
