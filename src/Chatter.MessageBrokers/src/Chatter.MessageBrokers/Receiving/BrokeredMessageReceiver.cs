@@ -169,7 +169,7 @@ namespace Chatter.MessageBrokers.Receiving
                     }
                     catch (PoisonedMessageException e)
                     {
-                        _logger.LogError(e, $"Poisoned message received. Deadlettering.");
+                        _logger.LogError(e, "Poisoned message received. Deadlettering.");
                         await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, _messageReceiverLoopTokenSource.Token);
                     }
                     catch (Exception e)
@@ -257,7 +257,7 @@ namespace Chatter.MessageBrokers.Receiving
             await _recoveryStrategy.ExecuteAsync(async () =>
                 {
                     await DispatchReceivedMessageAsync(brokeredMessagePayload, messageContext, receiverTokenSource);
-                    return Task.FromResult(true);
+                    return true;
                 }, receiverTokenSource);
 
             if (!receiverTokenSource.IsCancellationRequested)
@@ -317,10 +317,10 @@ namespace Chatter.MessageBrokers.Receiving
             try
             {
                 var failureContext = new FailureContext(messageContext.BrokeredMessage, this.ErrorQueueName, failureDescription, exception, deliveryCount, transactionContext);
-                return await _recoveryStrategy.ExecuteAsync(() =>
+                return await _recoveryStrategy.ExecuteAsync(async () =>
                 {
-                    _failedRecoveryAction.ExecuteAsync(failureContext);
-                    return Task.FromResult(true);
+                    await _failedRecoveryAction.ExecuteAsync(failureContext);
+                    return true;
                 }, messageContext.CancellationToken);
             }
             catch (Exception e)

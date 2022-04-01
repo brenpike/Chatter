@@ -83,32 +83,16 @@ namespace Chatter.SqlChangeFeed.Scripts.Triggers
 
                 IF EXISTS (SELECT * FROM sys.services WHERE name = '{3}')
                 BEGIN
-                    DECLARE @message NVARCHAR(MAX)
-                    SET @message = N''
-
-                    DECLARE @InsertedJSON NVARCHAR(MAX) 
-                    DECLARE @DeletedJSON NVARCHAR(MAX) 
-                    
-                    %inserted_select_statement%
-                    
-                    %deleted_select_statement% 
-                    
-                    IF (COALESCE(@DeletedJSON, N'') = N'') SET @message = @InsertedJSON
-                    ELSE
-                    	IF (COALESCE(@InsertedJSON, N'') = N'') SET @message = @DeletedJSON
-                    ELSE
-                    	SET @message = CONCAT(SUBSTRING(@InsertedJSON,1,LEN(@InsertedJSON) - 1), N',', SUBSTRING(@DeletedJSON,2,LEN(@DeletedJSON)-1))
-
+                    DECLARE @message NVARCHAR(MAX);
+                    %set_message_statement%
                     IF @message IS NOT NULL
 					BEGIN
-                        SET @message = compress(@message)                    
 
-                	    DECLARE @ConvHandle UNIQUEIDENTIFIER
-
+                	    DECLARE @ConvHandle UNIQUEIDENTIFIER;
                 	    BEGIN DIALOG @ConvHandle 
                             FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [{5}] WITH ENCRYPTION=OFF; 
 
-                        SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (@message);
+                        SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (COMPRESS(@message));
                     END
                 END
             ", _changeFeedTableName, _changeFeedTriggerName, _changeFeedChangeType, _conversationServiceName, _schemaName, ServicesMessageTypes.ChatterServiceContract);
