@@ -63,13 +63,13 @@ namespace CarRental.Api
                                                       Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:ClientSecret"),
                                                       Configuration.GetValue<string>("Chatter:Infrastructure:AzureServiceBus:Auth:Authority"));
             })
-            .AddSqlChangeFeed<OutboxChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "OutboxMessage", b => b.WithMaxReceiveAttempts(8))
+            .AddSqlChangeFeed<OutboxChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "OutboxMessage", b => b.WithMaxReceiveAttempts(8));
             //.AddSqlChangeFeed<CarRentalAggregateChangedEvent>(Configuration.GetValue<string>("ConnectionStrings:CarRentals"), "CarRentals", "CarRental", b => b.WithMaxReceiveAttempts(8));
-            .AddSqlServiceBroker(builder =>
-            {
-                builder.AddSqlServiceBrokerOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"))
-                       .AddQueueReceiver<CarRentalAggregateChangedEvent>("Chatter_Queue_CarRentalAggregateChangedEvent");
-            });
+            //.AddSqlServiceBroker(builder =>
+            //{
+            //    builder.AddSqlServiceBrokerOptions(Configuration.GetValue<string>("ConnectionStrings:CarRentals"))
+            //           .AddQueueReceiver<CarRentalAggregateChangedEvent>("Chatter_Queue_CarRentalAggregateChangedEvent");
+            //});
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)

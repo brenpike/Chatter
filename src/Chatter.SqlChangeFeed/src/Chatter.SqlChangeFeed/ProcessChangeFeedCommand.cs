@@ -6,7 +6,6 @@ namespace Chatter.SqlChangeFeed
 {
     public class ProcessChangeFeedCommand<TRowChangeData> : ICommand where TRowChangeData : class, IMessage
     {
-        public IEnumerable<TRowChangeData> Inserted { get; set; } = new List<TRowChangeData>();
-        public IEnumerable<TRowChangeData> Deleted { get; set; } = new List<TRowChangeData>();
+        public IEnumerable<ChangeFeedItem<TRowChangeData>> Changes { get; set; } = new List<ChangeFeedItem<TRowChangeData>>();
     }
 }
