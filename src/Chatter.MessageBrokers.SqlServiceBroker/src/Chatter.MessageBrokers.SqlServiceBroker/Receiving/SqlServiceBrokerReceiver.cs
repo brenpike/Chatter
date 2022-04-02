@@ -100,7 +100,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 throw;
             }
 #endif
-            catch (SqlException e) when (e.Number == 208 || e.Number == 102)
+            catch (SqlException e) when (e.Number == 102)
             {
                 throw new CriticalReceiverException($"Unable to receive message from configured queue '{_options.MessageReceiverPath}'", e);
             }
