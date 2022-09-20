@@ -124,6 +124,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 return null;
             }
 
+            if (message.MessageTypeName == ServicesMessageTypes.EndDialogType)
+            {
+                await AckEndDialogAsync(connection, transaction, message.ConvHandle, cancellationToken);
+                return null;
+            }
+
             if (message.MessageTypeName != ServicesMessageTypes.DefaultType && message.MessageTypeName != ServicesMessageTypes.ChatterBrokeredMessageType)
             {
                 await DiscardMessageAsync(connection, transaction
@@ -194,6 +200,24 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             return messageContext;
         }
 
+        private async Task AckEndDialogAsync(SqlConnection connection, SqlTransaction transaction, Guid convHandle, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var edc = new EndDialogConversationCommand(connection,
+                                  convHandle,
+                                  enableCleanup: _ssbOptions.CleanupOnEndConversation,
+                                  transaction: transaction);
+                await edc.ExecuteAsync(cancellationToken);
+                await transaction?.CommitAsync(cancellationToken);
+            }
+            finally
+            {
+                transaction?.Dispose();
+                connection?.Dispose();
+            }
+        }
+        
         private async Task DiscardMessageAsync(SqlConnection connection, SqlTransaction transaction, string discardMessage, CancellationToken cancellationToken)
         {
             await transaction?.CommitAsync(cancellationToken);
