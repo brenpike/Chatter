@@ -1,4 +1,5 @@
-﻿using Chatter.CQRS.Queries;
+﻿using Chatter.CQRS.Context;
+using Chatter.CQRS.Queries;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -39,7 +40,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         public async Task MustInvokeQueryHandlerWhenRegisteredWIthServiceProvider()
         {
             await _sut.Query(_query);
-            _handler.Verify(h => h.Handle(It.IsAny<TestQuery>()), Times.Once);
+            _handler.Verify(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>()), Times.Once);
         }
 
         [Fact]
@@ -52,7 +53,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         [Fact]
         public async Task MustThrowIfQueryHandlerThrowsException()
         {
-            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>())).Throws<Exception>();
+            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>())).Throws<Exception>();
             await FluentActions.Invoking(async () => await _sut.Query(_query)).Should().ThrowAsync<Exception>();
         }
 
@@ -67,7 +68,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         [Fact]
         public async Task MustReturnValueFromQueryHandlerIfSuccessful()
         {
-            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>())).ReturnsAsync("result");
+            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>())).ReturnsAsync("result");
             var result = await _sut.Query(_query);
             result.Should().BeAssignableTo<string>();
             result.Should().NotBeNullOrEmpty();

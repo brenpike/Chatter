@@ -1,4 +1,5 @@
-﻿using Chatter.CQRS.Queries;
+﻿using Chatter.CQRS.Context;
+using Chatter.CQRS.Queries;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,7 +45,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         private class FakeQuery : IQuery<string> { }
         private class FakeHandler : IQueryHandler<FakeQuery, string>
         {
-            public Task<string> Handle(FakeQuery query) => throw new NotImplementedException();
+            public Task<string> Handle(FakeQuery query, IQueryHandlerContext context) => throw new NotImplementedException();
         }
     }
 }

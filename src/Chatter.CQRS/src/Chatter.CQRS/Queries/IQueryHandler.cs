@@ -1,4 +1,5 @@
 ﻿using System.Threading.Tasks;
+using Chatter.CQRS.Context;
 
 namespace Chatter.CQRS.Queries
 {
@@ -9,11 +10,12 @@ namespace Chatter.CQRS.Queries
     /// <typeparam name="TResult">The return type of the query.</typeparam>
     public interface IQueryHandler<in TQuery, TResult> where TQuery : class, IQuery<TResult>
     {
-        /// <summary>
-        /// The method that is called when a query of type <typeparamref name="TQuery"/> is dispatched by a <see cref="IQueryDispatcher"/>.
-        /// </summary>
-        /// <param name="query">The query to execute</param>
-        /// <returns>A result of type <typeparamref name="TResult"/></returns>
-        Task<TResult> Handle(TQuery query);
+		/// <summary>
+		/// The method that is called when a query of type <typeparamref name="TQuery"/> is dispatched by a <see cref="IQueryDispatcher"/>.
+		/// </summary>
+		/// <param name="query">The query to execute</param>
+		/// <param name="context">The context passed to the handler</param>
+		/// <returns>A result of type <typeparamref name="TResult"/></returns>
+		Task<TResult> Handle(TQuery query, IQueryHandlerContext context);
     }
 }

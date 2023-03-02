@@ -14,15 +14,14 @@ using System.Threading.Tasks;
 
 namespace Chatter.SqlChangeFeed
 {
-    class ChangeFeedReceiver<TProcessorCommand, TRowChangeData> : BrokeredMessageReceiver<TProcessorCommand>
+    class ChangeFeedReceiver<TRowChangeData> : BrokeredMessageReceiver<ProcessChangeFeedCommand<TRowChangeData>>
         where TRowChangeData : class, IMessage
-        where TProcessorCommand : ProcessChangeFeedCommand<TRowChangeData>
     {
         private readonly IServiceScopeFactory _serviceFactory;
 
         public ChangeFeedReceiver(IMessagingInfrastructureProvider infrastructureProvider,
                                    MessageBrokerOptions messageBrokerOptions,
-                                   ILogger<BrokeredMessageReceiver<TProcessorCommand>> logger,
+                                   ILogger<BrokeredMessageReceiver<ProcessChangeFeedCommand<TRowChangeData>>> logger,
                                    IServiceScopeFactory serviceFactory,
                                    IMaxReceivesExceededAction recoveryAction,
                                    ICriticalFailureNotifier criticalFailureNotifier,
@@ -33,15 +32,15 @@ namespace Chatter.SqlChangeFeed
             _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
         }
 
-        public override async Task DispatchReceivedMessageAsync(TProcessorCommand message, MessageBrokerContext context, CancellationToken receiverTokenSource)
+        public override async Task DispatchReceivedMessageAsync(ProcessChangeFeedCommand<TRowChangeData> payload, MessageBrokerContext messageContext, CancellationToken receiverTokenSource)
         {
             receiverTokenSource.ThrowIfCancellationRequested();
 
             using var scope = _serviceFactory.CreateScope();
             var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
-            context.Container.Include((IExternalDispatcher)scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>());
+            messageContext.Container.Include((IExternalDispatcher)scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>());
 
-            int totalChangeCount = message.Changes.Count();
+            int totalChangeCount = payload.Changes.Count();
 
             if (totalChangeCount == 0)
             {
@@ -51,23 +50,23 @@ namespace Chatter.SqlChangeFeed
 
             int inserted = 0, updated = 0, deleted = 0;
             _logger.LogTrace("Processing {TotalNumChanges} changes from Change Feed", totalChangeCount);
-            foreach(var changeFeedItem in message.Changes)
+            foreach(var changeFeedItem in payload.Changes)
             {
                 if (changeFeedItem.Inserted != null && changeFeedItem.Deleted != null)
                 {
-                    await dispatcher.Dispatch(new RowUpdatedEvent<TRowChangeData>(changeFeedItem.Inserted, changeFeedItem.Deleted), context);
+                    await dispatcher.Dispatch(new RowUpdatedEvent<TRowChangeData>(changeFeedItem.Inserted, changeFeedItem.Deleted), messageContext);
                     _logger.LogTrace("Processed UPDATE from change feed");
                     updated++;
                 }
                 else if (changeFeedItem.Inserted != null && changeFeedItem.Deleted == null)
                 {
-                    await dispatcher.Dispatch(new RowInsertedEvent<TRowChangeData>(changeFeedItem.Inserted), context);
+                    await dispatcher.Dispatch(new RowInsertedEvent<TRowChangeData>(changeFeedItem.Inserted), messageContext);
                     _logger.LogTrace("Processed INSERT from change feed");
                     inserted++;
                 }
                 else if (changeFeedItem.Inserted == null && changeFeedItem.Deleted != null)
                 {
-                    await dispatcher.Dispatch(new RowDeletedEvent<TRowChangeData>(changeFeedItem.Deleted), context);
+                    await dispatcher.Dispatch(new RowDeletedEvent<TRowChangeData>(changeFeedItem.Deleted), messageContext);
                     _logger.LogTrace("Processed DELETE from change feed");
                     deleted++;
                 }

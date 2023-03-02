@@ -79,7 +79,7 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
 
             if (options.ProcessChangeFeedCommandViaChatter)
             {
-                builder.Services.Replace<IBrokeredMessageReceiver<ProcessChangeFeedCommand<TRowChangedData>>, ChangeFeedReceiver<ProcessChangeFeedCommand<TRowChangedData>, TRowChangedData>>(ServiceLifetime.Scoped);
+                builder.Services.Replace<IBrokeredMessageReceiver<ProcessChangeFeedCommand<TRowChangedData>>, ChangeFeedReceiver<TRowChangedData>>(ServiceLifetime.Scoped);
             }
 
             return builder;
