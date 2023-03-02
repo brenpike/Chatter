@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using Chatter.CQRS.Context;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Runtime.CompilerServices;
@@ -22,14 +23,18 @@ namespace Chatter.CQRS.Queries
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        ///<inheritdoc/>
-        public async Task<TResult> Query<TResult>(IQuery<TResult> query)
+		///<inheritdoc/>
+		public Task<TResult> Query<TResult>(IQuery<TResult> query)
+			=> Query<TResult>(query, new MessageHandlerContext());
+		
+		///<inheritdoc/>
+		public async Task<TResult> Query<TResult>(IQuery<TResult> query, IMessageHandlerContext messageHandlerContext)
         {
             try
             {
                 var handlerType = typeof(IQueryHandler<,>).MakeGenericType(query.GetType(), typeof(TResult));
                 dynamic handler = _serviceProvider.GetRequiredService(handlerType);
-                return await handler.Handle((dynamic)query);
+                return await handler.Handle((dynamic)query, messageHandlerContext);
             }
             catch (Exception e)
             {
@@ -39,12 +44,16 @@ namespace Chatter.CQRS.Queries
         }
 
         ///<inheritdoc/>
-        public async Task<TResult> Query<TQuery, TResult>(TQuery query) where TQuery : class, IQuery<TResult>
+        public Task<TResult> Query<TQuery, TResult>(TQuery query) where TQuery : class, IQuery<TResult>
+			=> Query<TQuery, TResult>(query, new MessageHandlerContext());
+        
+        ///<inheritdoc/>
+        public async Task<TResult> Query<TQuery, TResult>(TQuery query, IMessageHandlerContext messageHandlerContext) where TQuery : class, IQuery<TResult>
         {
             try
             {
                 var handler = _serviceProvider.GetRequiredService<IQueryHandler<TQuery, TResult>>();
-                return await handler.Handle(query);
+                return await handler.Handle(query, messageHandlerContext);
             }
             catch (Exception e)
             {

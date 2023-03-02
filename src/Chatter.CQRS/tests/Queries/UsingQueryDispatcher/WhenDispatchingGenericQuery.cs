@@ -1,4 +1,5 @@
-﻿using Chatter.CQRS.Queries;
+﻿using Chatter.CQRS.Context;
+using Chatter.CQRS.Queries;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
     {
         private readonly Mock<IServiceProvider> _serviceProvider = new Mock<IServiceProvider>();
         private readonly Mock<IQueryHandler<IQuery<string>, string>> _handler = new Mock<IQueryHandler<IQuery<string>, string>>();
+		private readonly Mock<IMessageHandlerContext> _context = new Mock<IMessageHandlerContext>();
         private readonly LoggerCreator<QueryDispatcher> _logger;
         private readonly IQuery<string> _query;
         private readonly QueryDispatcher _sut;
@@ -36,8 +38,8 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         [Fact]
         public async Task MustInvokeQueryHandlerWhenRegisteredWIthServiceProvider()
         {
-            await _sut.Query<IQuery<string>, string>(_query);
-            _handler.Verify(h => h.Handle(_query), Times.Once);
+            await _sut.Query<IQuery<string>, string>(_query, _context.Object);
+            _handler.Verify(h => h.Handle(_query, _context.Object), Times.Once);
         }
 
         [Fact]
@@ -50,8 +52,8 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         [Fact]
         public async Task MustThrowIfQueryHandlerThrowsException()
         {
-            _handler.Setup(h => h.Handle(_query)).Throws<Exception>();
-            await FluentActions.Invoking(async () => await _sut.Query<IQuery<string>, string>(_query)).Should().ThrowAsync<Exception>();
+            _handler.Setup(h => h.Handle(_query, _context.Object)).Throws<Exception>();
+            await FluentActions.Invoking(async () => await _sut.Query<IQuery<string>, string>(_query, _context.Object)).Should().ThrowAsync<Exception>();
         }
 
         [Fact]
@@ -66,8 +68,8 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         public async Task MustReturnValueFromQueryHandlerIfSuccessful()
         {
             var returnValue = "result";
-            _handler.Setup(h => h.Handle(_query)).Returns(() => Task.FromResult(returnValue));
-            var result = await _sut.Query<IQuery<string>, string>(_query);
+            _handler.Setup(h => h.Handle(_query, _context.Object)).Returns(() => Task.FromResult(returnValue));
+            var result = await _sut.Query<IQuery<string>, string>(_query, _context.Object);
             result.Should().BeAssignableTo<string>();
             result.Should().BeSameAs(returnValue);
             result.Should().Be(returnValue);
