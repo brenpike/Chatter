@@ -14,7 +14,7 @@ namespace CarRental.Application.Queries
         public GetCarRentalHandler(IRepository<Domain.Aggregates.CarRental, Guid> repository) 
             => _repository = repository ?? throw new ArgumentNullException(nameof(repository));
 
-        public async Task<CarRentalDto> Handle(GetCarRental query, IMessageHandlerContext context)
+        public async Task<CarRentalDto> Handle(GetCarRental query, IQueryHandlerContext context)
         {
             var rental = await _repository.GetByIdAsync(query.Id);
             var rentalDto = new CarRentalDto

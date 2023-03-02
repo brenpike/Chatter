@@ -25,16 +25,16 @@ namespace Chatter.CQRS.Queries
 
 		///<inheritdoc/>
 		public Task<TResult> Query<TResult>(IQuery<TResult> query)
-			=> Query<TResult>(query, new MessageHandlerContext());
+			=> Query<TResult>(query, new QueryHandlerContext());
 		
 		///<inheritdoc/>
-		public async Task<TResult> Query<TResult>(IQuery<TResult> query, IMessageHandlerContext messageHandlerContext)
+		public async Task<TResult> Query<TResult>(IQuery<TResult> query, IQueryHandlerContext queryHandlerContext)
         {
             try
             {
                 var handlerType = typeof(IQueryHandler<,>).MakeGenericType(query.GetType(), typeof(TResult));
                 dynamic handler = _serviceProvider.GetRequiredService(handlerType);
-                return await handler.Handle((dynamic)query, messageHandlerContext);
+                return await handler.Handle((dynamic)query, queryHandlerContext);
             }
             catch (Exception e)
             {
@@ -45,15 +45,15 @@ namespace Chatter.CQRS.Queries
 
         ///<inheritdoc/>
         public Task<TResult> Query<TQuery, TResult>(TQuery query) where TQuery : class, IQuery<TResult>
-			=> Query<TQuery, TResult>(query, new MessageHandlerContext());
+			=> Query<TQuery, TResult>(query, new QueryHandlerContext());
         
         ///<inheritdoc/>
-        public async Task<TResult> Query<TQuery, TResult>(TQuery query, IMessageHandlerContext messageHandlerContext) where TQuery : class, IQuery<TResult>
+        public async Task<TResult> Query<TQuery, TResult>(TQuery query, IQueryHandlerContext queryHandlerContext) where TQuery : class, IQuery<TResult>
         {
             try
             {
                 var handler = _serviceProvider.GetRequiredService<IQueryHandler<TQuery, TResult>>();
-                return await handler.Handle(query, messageHandlerContext);
+                return await handler.Handle(query, queryHandlerContext);
             }
             catch (Exception e)
             {

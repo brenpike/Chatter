@@ -16,6 +16,6 @@ namespace Chatter.CQRS.Queries
 		/// <param name="query">The query to execute</param>
 		/// <param name="context">The context passed to the handler</param>
 		/// <returns>A result of type <typeparamref name="TResult"/></returns>
-		Task<TResult> Handle(TQuery query, IMessageHandlerContext context);
+		Task<TResult> Handle(TQuery query, IQueryHandlerContext context);
     }
 }

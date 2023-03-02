@@ -14,7 +14,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
     {
         private readonly Mock<IServiceProvider> _serviceProvider = new Mock<IServiceProvider>();
         private readonly Mock<IQueryHandler<IQuery<string>, string>> _handler = new Mock<IQueryHandler<IQuery<string>, string>>();
-		private readonly Mock<IMessageHandlerContext> _context = new Mock<IMessageHandlerContext>();
+		private readonly Mock<IQueryHandlerContext> _context = new Mock<IQueryHandlerContext>();
         private readonly LoggerCreator<QueryDispatcher> _logger;
         private readonly IQuery<string> _query;
         private readonly QueryDispatcher _sut;

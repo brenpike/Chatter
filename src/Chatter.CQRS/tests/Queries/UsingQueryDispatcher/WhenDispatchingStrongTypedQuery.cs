@@ -40,7 +40,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         public async Task MustInvokeQueryHandlerWhenRegisteredWIthServiceProvider()
         {
             await _sut.Query(_query);
-            _handler.Verify(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IMessageHandlerContext>()), Times.Once);
+            _handler.Verify(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>()), Times.Once);
         }
 
         [Fact]
@@ -53,7 +53,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         [Fact]
         public async Task MustThrowIfQueryHandlerThrowsException()
         {
-            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IMessageHandlerContext>())).Throws<Exception>();
+            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>())).Throws<Exception>();
             await FluentActions.Invoking(async () => await _sut.Query(_query)).Should().ThrowAsync<Exception>();
         }
 
@@ -68,7 +68,7 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         [Fact]
         public async Task MustReturnValueFromQueryHandlerIfSuccessful()
         {
-            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IMessageHandlerContext>())).ReturnsAsync("result");
+            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>())).ReturnsAsync("result");
             var result = await _sut.Query(_query);
             result.Should().BeAssignableTo<string>();
             result.Should().NotBeNullOrEmpty();

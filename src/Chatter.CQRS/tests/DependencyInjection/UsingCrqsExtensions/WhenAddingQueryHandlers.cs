@@ -45,7 +45,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         private class FakeQuery : IQuery<string> { }
         private class FakeHandler : IQueryHandler<FakeQuery, string>
         {
-            public Task<string> Handle(FakeQuery query, IMessageHandlerContext context) => throw new NotImplementedException();
+            public Task<string> Handle(FakeQuery query, IQueryHandlerContext context) => throw new NotImplementedException();
         }
     }
 }
