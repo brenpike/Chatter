@@ -250,15 +250,10 @@ namespace Microsoft.Extensions.DependencyInjection
         private static void AddReceiverImpl(this IServiceCollection services, ReceiverOptions options, Type closedBrokeredMessageReceiverInterface, Type closedConcreteBrokeredMessageReceiver, Type closedConcreteReceiverBackgroundService)
         {
             services.AddScoped(closedBrokeredMessageReceiverInterface, closedConcreteBrokeredMessageReceiver);
-            services.AddScoped(closedConcreteReceiverBackgroundService, sp =>
-            {
-                var br = ActivatorUtilities.CreateInstance(sp, closedConcreteReceiverBackgroundService, options);
-                return br;
-            });
             services.AddSingleton(typeof(IHostedService), sp =>
             {
                 using var scope = sp.CreateScope();
-                return scope.ServiceProvider.GetRequiredService(closedConcreteReceiverBackgroundService);
+                return Activator.CreateInstance(closedConcreteReceiverBackgroundService, options, scope.ServiceProvider);
             });
         }
 

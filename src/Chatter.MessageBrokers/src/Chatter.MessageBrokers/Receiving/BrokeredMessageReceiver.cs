@@ -22,7 +22,6 @@ namespace Chatter.MessageBrokers.Receiving
         protected ReceiverOptions _options;
         private bool _disposedValue;
         private SemaphoreSlim _concurrentMessagesSemaphore;
-        private readonly SemaphoreSlim _receiverInstancesSemaphore = new SemaphoreSlim(1, 1);
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
         private readonly int _maxConcurrentCalls = 1; //TODO: add configuration for maxconcurrentcalls to messagebrokeroptions and/or receiveroptions
@@ -76,7 +75,6 @@ namespace Chatter.MessageBrokers.Receiving
         ///<inheritdoc/>
         public async Task<IAsyncDisposable> StartReceiver(ReceiverOptions options, CancellationToken receiverTerminationToken)
         {
-            await _receiverInstancesSemaphore.WaitAsync(receiverTerminationToken);
             try
             {
                 await StartReceiverImpl(options, receiverTerminationToken);
@@ -84,16 +82,6 @@ namespace Chatter.MessageBrokers.Receiving
             catch (Exception e)
             {
                 _logger.LogCritical(e, "Critical unhandled error occured during {executingFunction}", nameof(MessageReceiverLoopAsync));
-            }
-            finally
-            {
-                try
-                {
-                    _receiverInstancesSemaphore?.Release();
-                }
-                catch (ObjectDisposedException)
-                {
-                }
             }
 
             return this;
@@ -142,7 +130,6 @@ namespace Chatter.MessageBrokers.Receiving
 
             await _infrastructureReceiver.StopReceiver();
 
-            _receiverInstancesSemaphore?.Dispose();
             _concurrentMessagesSemaphore?.Dispose();
             _messageReceiverLoopTokenSource?.Dispose();
         }
@@ -361,7 +348,6 @@ namespace Chatter.MessageBrokers.Receiving
                     _messageReceiverLoopTokenSource?.Cancel();
                     _infrastructureReceiver?.Dispose();
                     _concurrentMessagesSemaphore?.Dispose();
-                    _receiverInstancesSemaphore?.Dispose();
                     _messageReceiverLoopTokenSource?.Dispose();
                 }
 
