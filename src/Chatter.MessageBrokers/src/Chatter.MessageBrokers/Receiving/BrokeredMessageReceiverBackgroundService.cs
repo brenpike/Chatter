@@ -13,7 +13,6 @@ namespace Chatter.MessageBrokers.Receiving
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
     class BrokeredMessageReceiverBackgroundService<TMessage> : BackgroundService where TMessage : class, IMessage
     {
-        private readonly IServiceProvider _serviceScopeFactory;
         private readonly ReceiverOptions _options;
         private readonly IBrokeredMessageReceiver<TMessage> _receiver;
 
@@ -25,14 +24,12 @@ namespace Chatter.MessageBrokers.Receiving
                                                         IServiceProvider serviceScopeFactory)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
-            _serviceScopeFactory = serviceScopeFactory;
-            _receiver = _serviceScopeFactory.GetRequiredService<IBrokeredMessageReceiver<TMessage>>();
+            _receiver = serviceScopeFactory.GetRequiredService<IBrokeredMessageReceiver<TMessage>>();
         }
 
         ///<inheritdoc/>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            if (_receiver.IsReceiving) return;
             await using var _ = await _receiver.StartReceiver(_options, stoppingToken).ConfigureAwait(false);
         }
     }
