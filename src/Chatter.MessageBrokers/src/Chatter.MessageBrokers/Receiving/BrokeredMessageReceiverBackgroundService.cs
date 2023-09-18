@@ -32,6 +32,7 @@ namespace Chatter.MessageBrokers.Receiving
         ///<inheritdoc/>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            if (_receiver.IsReceiving) return;
             await using var _ = await _receiver.StartReceiver(_options, stoppingToken).ConfigureAwait(false);
         }
     }

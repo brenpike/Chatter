@@ -21,7 +21,8 @@ namespace Chatter.MessageBrokers.Receiving
         protected readonly ILogger<BrokeredMessageReceiver<TMessage>> _logger;
         protected ReceiverOptions _options;
         private bool _disposedValue;
-        SemaphoreSlim _semaphore;
+        private SemaphoreSlim _concurrentMessagesSemaphore;
+        private readonly SemaphoreSlim _receiverInstancesSemaphore = new SemaphoreSlim(1, 1);
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
         private readonly int _maxConcurrentCalls = 1; //TODO: add configuration for maxconcurrentcalls to messagebrokeroptions and/or receiveroptions
@@ -75,21 +76,26 @@ namespace Chatter.MessageBrokers.Receiving
         ///<inheritdoc/>
         public async Task<IAsyncDisposable> StartReceiver(ReceiverOptions options, CancellationToken receiverTerminationToken)
         {
+            await _receiverInstancesSemaphore.WaitAsync(receiverTerminationToken);
             try
             {
-                await InitAsync(options, receiverTerminationToken);
+                await StartReceiverImpl(options, receiverTerminationToken);
             }
             catch (Exception e)
             {
-                _logger.LogCritical(e, $"Critical unhandled error occured during {nameof(MessageReceiverLoopAsync)}");
+                _logger.LogCritical(e, "Critical unhandled error occured during {executingFunction}", nameof(MessageReceiverLoopAsync));
+            }
+            finally
+            {
+                _receiverInstancesSemaphore.Release();
             }
 
             return this;
         }
 
-        async Task InitAsync(ReceiverOptions options, CancellationToken receiverTerminationToken)
+        async Task StartReceiverImpl(ReceiverOptions options, CancellationToken receiverTerminationToken)
         {
-            _logger.LogInformation($"Initializing '{nameof(BrokeredMessageReceiver<TMessage>)}' of type '{typeof(TMessage).Name}'.");
+            _logger.LogInformation("Initializing '{executingFunction}' of type '{receiverMessageType}'.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
             options.Description ??= options.MessageReceiverPath;
             _infrastructureReceiver = _infrastructureProvider.GetReceiver(options.InfrastructureType);
             options.MessageReceiverPath = _infrastructureProvider.GetInfrastructure(options.InfrastructureType).PathBuilder.GetMessageReceivingPath(options.SendingPath, options.MessageReceiverPath);
@@ -106,16 +112,17 @@ namespace Chatter.MessageBrokers.Receiving
             await _infrastructureReceiver.InitializeAsync(_options, receiverTerminationToken);
             _logger.LogTrace("Successfully initialized messaging infrastructure");
 
-            _logger.LogDebug($"Receiver options: Infrastructure type: '{_options.InfrastructureType}', Transaction Mode: '{options.TransactionMode}', Message receiver: '{options.MessageReceiverPath}', Deadletter queue: '{options.DeadLetterQueuePath}', Error queue: '{options.ErrorQueuePath}', Max receive attempts: '{options.MaxReceiveAttempts}', Message sent from: '{options.SendingPath}', Max Concurrent Receives: '{_maxConcurrentCalls}'");
+            _logger.LogDebug("Receiver options: Infrastructure type: '{infrastructureType}', Transaction Mode: '{transactionMode}', Message receiver: '{messageReceiverPath}', Deadletter queue: '{deadLetterQueuePath}', Error queue: '{errorQueuePath}', Max receive attempts: '{maxReceiveAttempts}', Message sent from: '{sendingPath}', Max Concurrent Receives: '{maxConcurrentCalls}'",
+                _options.InfrastructureType, options.TransactionMode, options.MessageReceiverPath, options.DeadLetterQueuePath, options.ErrorQueuePath, options.MaxReceiveAttempts, options.SendingPath, _maxConcurrentCalls);
 
-            _semaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
+            _concurrentMessagesSemaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
             _messageReceiverLoopTokenSource = CancellationTokenSource.CreateLinkedTokenSource(receiverTerminationToken);
 
             _messageReceiverLoop = MessageReceiverLoopAsync();
             this.IsReceiving = true;
-            _logger.LogInformation($"'{nameof(BrokeredMessageReceiver<TMessage>)}' has started receiving messages of type '{typeof(TMessage).Name}'.");
+            _logger.LogInformation("'{executingFunction}' has started receiving messages of type '{receiverMessageType}'.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
             await _messageReceiverLoop;
-            _logger.LogInformation($"'{nameof(BrokeredMessageReceiver<TMessage>)}' for messages of type '{typeof(TMessage).Name}' is shutting down.");
+            _logger.LogInformation("'{executingFunction}' for messages of type '{receiverMessageType}' is shutting down.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
         }
 
         public async Task StopReceiver()
@@ -129,7 +136,8 @@ namespace Chatter.MessageBrokers.Receiving
 
             await _infrastructureReceiver.StopReceiver();
 
-            _semaphore?.Dispose();
+            _receiverInstancesSemaphore?.Dispose();
+            _concurrentMessagesSemaphore?.Dispose();
             _messageReceiverLoopTokenSource?.Dispose();
         }
 
@@ -139,7 +147,7 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 while (!_messageReceiverLoopTokenSource.IsCancellationRequested)
                 {
-                    await _semaphore.WaitAsync(_messageReceiverLoopTokenSource.Token);
+                    await _concurrentMessagesSemaphore.WaitAsync(_messageReceiverLoopTokenSource.Token);
 
                     MessageBrokerContext messageContext = null;
                     TransactionContext transactionContext = new TransactionContext(this.MessageReceiverPath, _options.TransactionMode.Value);
@@ -199,7 +207,7 @@ namespace Chatter.MessageBrokers.Receiving
                     {
                         try
                         {
-                            _semaphore?.Release();
+                            _concurrentMessagesSemaphore?.Release();
                         }
                         catch (ObjectDisposedException)
                         {
@@ -346,7 +354,8 @@ namespace Chatter.MessageBrokers.Receiving
                 {
                     _messageReceiverLoopTokenSource?.Cancel();
                     _infrastructureReceiver?.Dispose();
-                    _semaphore?.Dispose();
+                    _concurrentMessagesSemaphore?.Dispose();
+                    _receiverInstancesSemaphore?.Dispose();
                     _messageReceiverLoopTokenSource?.Dispose();
                 }
 
