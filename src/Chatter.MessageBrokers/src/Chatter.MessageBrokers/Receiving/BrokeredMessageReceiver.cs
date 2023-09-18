@@ -87,7 +87,13 @@ namespace Chatter.MessageBrokers.Receiving
             }
             finally
             {
-                _receiverInstancesSemaphore.Release();
+                try
+                {
+                    _receiverInstancesSemaphore?.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
             }
 
             return this;
