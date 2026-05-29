@@ -4,6 +4,7 @@ using Chatter.CQRS.Events;
 using Chatter.CQRS.Pipeline;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using System.Linq;
 using Xunit;
 
 namespace Chatter.CQRS.Tests.DependencyInjection.UsingServiceCollectionExtensions
@@ -58,8 +59,29 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingServiceCollectionExtension
             });
         }
 
+        [Fact]
+        public void MustExcludeServiceDescriptorIfImplementationTypeIsNull()
+        {
+            var sc = new ServiceCollection();
+
+            // Factory- and instance-registered descriptors leave ImplementationType null
+            // (ImplementationFactory / ImplementationInstance are set instead), so the
+            // `sd.ImplementationType != null` short-circuit must exclude them before the
+            // type-comparison arms run.
+            sc.AddTransient<ICommand>(sp => new FakeCommand());
+            sc.AddSingleton(typeof(IMessage), new FakeCommand());
+            sc.AddTransient(typeof(IEvent), typeof(FakeCommand));
+
+            var foundServices = sc.GetServiceDescriptorsByImplementationType(typeof(FakeCommand));
+
+            foundServices.Should().HaveCount(1);
+            var found = foundServices.Single();
+            found.ImplementationType.Should().Be(typeof(FakeCommand));
+            found.ServiceType.Should().Be(typeof(IEvent));
+        }
+
         private class NotACommand { }
-        private class FakeCommand : ICommand { }
+        private class FakeCommand : ICommand, IEvent { }
         private class AnotherFakeCommand : ICommand { }
     }
 }
