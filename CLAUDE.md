@@ -1,0 +1,7 @@
+# Chatter
+
+## Validation
+
+```
+dotnet test
+```

@@ -1,0 +1,86 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C * status *)",
+      "Bash(git -C * branch *)",
+      "Bash(git -C * log *)",
+      "Bash(git -C * diff *)",
+      "Bash(git -C * show *)",
+      "Bash(git -C * stash show *)",
+      "Bash(git -C * stash list)",
+      "Bash(git -C * fetch *)",
+      "Bash(git -C * rev-list *)",
+      "Bash(git -C * show-ref *)",
+      "Bash(git diff *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch *)",
+      "Bash(git fetch *)",
+      "Bash(git rev-parse *)",
+      "Bash(git stash list)",
+      "Bash(git stash show *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(sed -n *)",
+      "Bash(gh api user *)",
+      "Bash(gh api graphql *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr comment *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr checkout *)",
+      "Bash(gh repo view *)",
+      "Bash(grep *)",
+      "Bash(cat > .hivemind/*)",
+      "Write(.hivemind/review-loop/*)",
+      "Bash(mkdir -p .hivemind/review-loop)",
+      "Monitor",
+      "Bash(jq *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(ls *)",
+      "Bash(wc *)",
+      "Bash(uniq *)",
+      "Bash(echo *)",
+      "Bash(printf *)",
+      "Bash(cat *)",
+      "Bash(sort *)",
+      "Bash(git ls-files *)",
+      "Bash(git ls-tree *)",
+      "Bash(git tag)",
+      "Bash(git tag -l*)",
+      "Bash(git tag --list*)",
+      "Bash(git grep *)",
+      "Bash(bash tools/policy_check.sh*)",
+      "Bash(bash tools/validate_reports.sh*)",
+      "Bash(bash -n *)"
+    ]
+  },
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/caveman-ultra-subagent.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "caveman@caveman": true,
+    "claude-mem@thedotmack": true,
+    "codex@openai-codex": true,
+    "hivemind@brenpike": true
+  },
+  "agent": "hivemind:overlord",
+  "pluginConfigs": {
+    "caveman@caveman": {
+      "options": {
+        "defaultLevel": "ultra"
+      }
+    }
+  }
+}
