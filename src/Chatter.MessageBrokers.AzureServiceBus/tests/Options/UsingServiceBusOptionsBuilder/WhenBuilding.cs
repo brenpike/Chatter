@@ -137,6 +137,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustLeavePolicyAsRetryExponentialWhenRetryPolicySectionPopulated()
         {
+            // Pins finding #2: a populated RetryPolicy section is SILENTLY IGNORED because the
+            // internal RetryPolicy property never binds, so PostConfiguration takes its first branch
+            // and Policy is the default RetryExponential (RetryPolicy.Default) — NOT a policy built
+            // from the supplied MaximumRetryCount=5 / MinimumBackoffInSeconds=1. Asserting only the
+            // RetryExponential type would pass both for the ignored-default policy AND for a
+            // (hypothetical) correctly-bound configured policy, so the supplied values are pinned as
+            // ignored by comparing the resulting policy's observable parameters against the
+            // section-absent default and confirming they do NOT reflect the config.
+            var defaultPolicy = (RetryExponential)Create(new ServiceCollection(), EmptyConfig())
+                .WithConnectionString(_sasConnectionString)
+                .Build()
+                .Policy;
+
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -144,7 +157,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
                 [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "1",
             });
             var options = Create(new ServiceCollection(), config).Build();
-            options.Policy.Should().BeOfType<RetryExponential>();
+
+            var policy = options.Policy.Should().BeOfType<RetryExponential>().Subject;
+            // The supplied MinimumBackoffInSeconds=1 is IGNORED: the resulting policy's MinimalBackoff
+            // stays at the SDK default of 0s, never the requested 1s. (The requested
+            // MaximumRetryCount=5 coincidentally equals the SDK default MaxRetryCount of 5, so it
+            // cannot distinguish ignored-vs-bound — MinimalBackoff is the parameter that proves the
+            // config was discarded.)
+            policy.MinimalBackoff.Should().Be(TimeSpan.Zero);
+            policy.MinimalBackoff.Should().NotBe(TimeSpan.FromSeconds(1));
+            // Every observable parameter matches the section-absent default policy: the populated
+            // config produced exactly the default RetryExponential, confirming it was silently ignored.
+            policy.MaxRetryCount.Should().Be(defaultPolicy.MaxRetryCount);
+            policy.MinimalBackoff.Should().Be(defaultPolicy.MinimalBackoff);
+            policy.MaximumBackoff.Should().Be(defaultPolicy.MaximumBackoff);
+            policy.DeltaBackoff.Should().Be(defaultPolicy.DeltaBackoff);
         }
 
         [Fact]
