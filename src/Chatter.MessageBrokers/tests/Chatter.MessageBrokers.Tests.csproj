@@ -37,6 +37,7 @@
   
   <ItemGroup>
     <ProjectReference Include="..\..\..\tests\Chatter.Testing.Core.csproj" />
+    <ProjectReference Include="..\src\Chatter.MessageBrokers\Chatter.MessageBrokers.csproj" />
   </ItemGroup>
 
 </Project>
