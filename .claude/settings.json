@@ -1,0 +1,30 @@
+{
+  "enabledPlugins": {
+    "hivemind@brenpike": true
+  },
+  "agent": "hivemind:overlord",
+  "permissions": {
+    "allow": [
+      "Bash(echo *)",
+      "Bash(printf *)",
+      "Bash(cat *)",
+      "Bash(grep *)",
+      "Bash(jq *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(ls *)",
+      "Bash(wc *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(git ls-files *)",
+      "Bash(git ls-tree *)",
+      "Bash(git grep *)",
+      "Bash(git tag)",
+      "Bash(git tag -l*)",
+      "Bash(git tag --list*)",
+      "Bash(git stash list)",
+      "Bash(git stash show *)",
+      "Bash(node /path/to/.claude/plugins/cache/openai-codex/codex/*)"
+    ]
+  }
+}
