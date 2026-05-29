@@ -14,7 +14,7 @@ namespace Chatter.CQRS.DependencyInjection
         public static IServiceCollection AddPipelineBehavior(this IServiceCollection services, Type behaviorType)
         {
             _ = behaviorType ?? throw new ArgumentNullException(nameof(behaviorType), "Cannot add null behavior type to command pipeline.");
-            var ii = behaviorType.GetTypeInfo()?.ImplementedInterfaces ?? throw new NullReferenceException($"Unable to get implemented interfaces for '{behaviorType.Name}'.");
+            var ii = behaviorType.GetTypeInfo().ImplementedInterfaces ?? throw new NullReferenceException($"Unable to get implemented interfaces for '{behaviorType.Name}'.");
 
             if (!ii.Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommandBehavior<>)))
             {

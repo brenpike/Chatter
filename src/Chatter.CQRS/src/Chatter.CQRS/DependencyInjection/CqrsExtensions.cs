@@ -92,11 +92,6 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             var pipeline = chatterBuilder.Services.CreatePipelineBuilder();
 
-            if (pipeline is null)
-            {
-                return chatterBuilder;
-            }
-
             chatterBuilder.Services.AddTransient(typeof(ICommandBehaviorPipeline<>), typeof(CommandBehaviorPipeline<>));
 
             pipelineBuilder?.Invoke(pipeline);
