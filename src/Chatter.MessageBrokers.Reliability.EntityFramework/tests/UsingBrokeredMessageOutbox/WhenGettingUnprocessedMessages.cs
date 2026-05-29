@@ -1,8 +1,10 @@
-﻿using Chatter.Testing.Core.Creators.MessageBrokers;
+﻿using Chatter.MessageBrokers.Reliability.Outbox;
+using Chatter.Testing.Core.Creators.MessageBrokers;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Moq;
+using System;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -37,6 +39,61 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             _context.ThatHasOutboxMessage(message);
             var messages = await _sut.GetUnprocessedMessagesFromOutbox();
             messages.Should().Contain(message);
+        }
+
+        [Fact]
+        public async Task MustGetUnprocessedBatchMessageWithMatchingBatchId()
+        {
+            var batchId = Guid.NewGuid();
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            message.BatchId = batchId;
+            _context.ThatHasOutboxMessage(message);
+
+            var messages = await _sut.GetUnprocessedBatch(batchId);
+
+            messages.Should().Contain(message);
+        }
+
+        [Fact]
+        public async Task MustNotGetProcessedMessageFromBatchEvenWhenBatchIdMatches()
+        {
+            var batchId = Guid.NewGuid();
+            OutboxMessage message = New.MessageBrokers().OutboxMessage();
+            message.BatchId = batchId;
+            _context.ThatHasOutboxMessage(message);
+
+            var messages = await _sut.GetUnprocessedBatch(batchId);
+
+            messages.Should().BeEmpty();
+        }
+
+        [Fact]
+        public async Task MustNotGetUnprocessedMessageFromBatchWhenBatchIdDiffers()
+        {
+            var batchId = Guid.NewGuid();
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            message.BatchId = Guid.NewGuid();
+            _context.ThatHasOutboxMessage(message);
+
+            var messages = await _sut.GetUnprocessedBatch(batchId);
+
+            messages.Should().BeEmpty();
+        }
+
+        [Fact]
+        public async Task MustReturnEmptyFromBatchWhenOutboxIsEmpty()
+        {
+            var messages = await _sut.GetUnprocessedBatch(Guid.NewGuid());
+
+            messages.Should().BeEmpty();
+        }
+
+        [Fact]
+        public async Task MustReturnEmptyFromUnprocessedWhenOutboxIsEmpty()
+        {
+            var messages = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Should().BeEmpty();
         }
     }
 }
