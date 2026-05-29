@@ -42,7 +42,7 @@ Each bounded context owns its ubiquitous language in a local `CONTEXT.md`; start
 
 ## Workflow & Agents
 
-Branch, commit, PR, review, version-bump, agent dispatch, model routing, and skill selection are governed by the hivemind plugin (see `.claude/settings.json` → `enabledPlugins.hivemind@brenpike` and `agent: hivemind:overlord`). Do not restate or override those rules here.
+Branch, commit, PR, review, version-bump, agent dispatch, model routing, and skill selection are governed by the [hivemind plugin](https://github.com/brenpike/hivemind) (see `.claude/settings.json` → `enabledPlugins.hivemind@brenpike` and `agent: hivemind:overlord`). Do not restate or override those rules here.
 
 ## Versioning
 
