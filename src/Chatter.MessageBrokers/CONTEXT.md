@@ -20,9 +20,9 @@ _Avoid_: forwarder (a Router specialization).
 
 **Inbox**: Persistence pattern recording received messages to enforce idempotent, once-only handling.
 
-**Routing Slip**: A message carrying its own itinerary of steps/destinations to visit in sequence.
+**Routing Slip**: A message carrying its own itinerary of steps/destinations to visit in sequence (`RoutingSlipBuilder`).
 
-**Recovery**: Resilience policies applied to receiving — Retry and Circuit Breaker.
+**Recovery**: Resilience policies applied to receiving — Retry and Circuit Breaker (`RetryWithCircuitBreakerStrategy`).
 
 **Circuit Breaker**: A recovery policy that halts processing after repeated failures.
 
@@ -39,7 +39,7 @@ _Avoid_: forwarder (a Router specialization).
 - A Brokered Message Receiver consumes infrastructure messages and hands them to the Brokered Message Dispatcher.
 - The Dispatcher relays to a Command or Event handler (Chatter.CQRS) by message type.
 - Recovery (Retry, Circuit Breaker) wraps receiving; exhausting it yields a Critical Failure routed to the Error Queue.
-- Outbox and Inbox depend on a persistence implementation (see Reliability EntityFramework context).
+- Inbox and Outbox use in-memory implementations by default; durable storage is supplied by the Reliability.EntityFramework context.
 - A Routing Slip drives a Router across a sequence of destinations.
 - Concrete brokers (Azure Service Bus, SQL Service Broker) implement the receiver/sender/path interfaces defined here.
 

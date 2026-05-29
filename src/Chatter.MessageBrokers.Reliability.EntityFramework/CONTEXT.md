@@ -14,8 +14,10 @@ EF Core persistence implementing the inbox/outbox reliability ports and unit-of-
 
 ## Relationships
 
-- Implements the Outbox and Inbox persistence ports defined in the Message Brokers context.
-- The Unit of Work commits domain changes together with Outbox/Inbox writes via a Persistance Transaction.
+- Implements the Outbox and Inbox persistence ports defined in the Message Brokers context, replacing their in-memory defaults.
+- All types are generic over the consumer's own `DbContext` (`TContext : DbContext`) — no separate Chatter context; entity configs are applied in the consumer's `OnModelCreating`.
+- Wired through the Command Pipeline as behaviors (`WithInboxBehavior<TContext>()`, `WithOutboxProcessingBehavior<TContext>()`, `WithUnitOfWorkBehavior<TContext>()`), not a standalone DI registration.
+- The Unit of Work commits domain changes together with Outbox/Inbox writes via a Persistance Transaction (`IPersistanceTransaction`).
 
 ## Example dialogue
 

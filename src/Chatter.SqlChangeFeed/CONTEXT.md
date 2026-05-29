@@ -13,19 +13,26 @@ _Avoid_: change stream.
 
 **Stored Procedure**: Installed SQL procedure that the change-feed plumbing invokes to read/forward changes.
 
-**Change Feed Options**: Configuration naming the watched table, connection, and feed behavior.
+**Change Feed Options**: Configuration naming the watched table, database, connection, change types to watch, and feed behavior.
+
+**Row Changed Event**: The default strongly-typed notifications fanned out per change — `RowInsertedEvent<T>`, `RowUpdatedEvent<T>`, `RowDeletedEvent<T>` — handled via `IMessageHandler<T>`.
+
+**Change Feed Item**: A single captured row change (`ChangeFeedItem<T>`); a batch is delivered as `ProcessChangeFeedCommand<T>` in manual mode (`ProcessTableChangesManually()`).
+
+**Change Feed Migration**: Opt-in, idempotent SQL provisioning (`UseChangeFeedSqlMigrations<T>`) that installs the Service Broker objects, table Trigger, and install/uninstall Stored Procedures. Not run automatically at registration.
 
 ## Relationships
 
-- A Table Watcher installs Triggers and Stored Procedures on the watched table via Setup Scripts.
-- Triggers fire on row changes; the resulting notifications form the Change Feed.
-- Change-feed notifications can be relayed through the Message Brokers context, typically over SQL Service Broker.
+- A Change Feed Migration installs the Trigger and Stored Procedures on the watched table; provisioning is opt-in, not automatic.
+- The Trigger fires on row changes and pushes onto SQL Service Broker; the resulting notifications form the Change Feed.
+- By default the Change Feed fans out to Row Changed Events; manual mode delivers raw Change Feed Items instead.
+- Change-feed notifications are handled through Chatter.CQRS handlers and can be relayed via the Message Brokers context.
 
 ## Example dialogue
 
 > **Dev:** "How does Chatter know a row changed without polling?"
-> **Domain expert:** "The Table Watcher installs Triggers that push onto SQL Service Broker; the Change Feed delivers those notifications to your handler."
+> **Domain expert:** "Run the Change Feed Migration once to install the Trigger; it pushes changes onto SQL Service Broker, and the Change Feed delivers a RowInsertedEvent / RowUpdatedEvent / RowDeletedEvent to your handler."
 
 ## Flagged ambiguities
 
-- **Table Watcher vs SQL Change Feed**: code anchors use `chatter-tablewatcher`; the package is `Chatter.SqlChangeFeed`. Treat Table Watcher as the legacy alias.
+- **Table Watcher vs SQL Change Feed**: legacy code anchor was `chatter-tablewatcher`; the package is `Chatter.SqlChangeFeed`. Treat Table Watcher as the legacy alias.

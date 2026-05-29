@@ -24,15 +24,20 @@ _Avoid_: middleware.
 
 **Message Context**: Per-dispatch contextual data flowing alongside a message through dispatch and handling.
 
-**Dispatcher**: The component that routes a message to its registered handler(s).
+**Message Dispatcher**: Routes a Command (to one handler) or an Event (to many) — `IMessageDispatcher`.
 _Avoid_: mediator (used as the pattern name, not the type).
+
+**Query Dispatcher**: Routes a Query to its `IQueryHandler<TQuery,TResult>` — `IQueryDispatcher`, separate from the Message Dispatcher.
+
+**External Dispatcher**: The outbound-publish seam (`IExternalDispatcher`), a no-op by default (`NoOpExternalDispatcher`); a broker module replaces it to publish Integration Events.
 
 ## Relationships
 
 - An Aggregate is changed by Commands and produces Domain Events.
 - A Command is dispatched to exactly one handler; an Event fans out to many.
+- Commands and Events go through the Message Dispatcher; Queries go through the separate Query Dispatcher.
 - A Command Pipeline wraps all Command handlers.
-- A Domain Event may be promoted to an Integration Event for cross-service publish.
+- A Domain Event may be promoted to an Integration Event, published outward via the External Dispatcher (replaced by a broker module).
 - Message Context accompanies every dispatch through the pipeline and handlers.
 
 ## Example dialogue

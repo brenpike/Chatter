@@ -4,9 +4,11 @@ Azure Service Bus implementation of the Chatter.MessageBrokers interfaces for se
 
 ## Language
 
-**Service Bus Receiver**: Azure Service Bus realization of the Brokered Message Receiver, pulling from queues/topics.
+**Queue Receiver**: Receiver bound to an ASB queue for Commands (`AddQueueReceiver<TMessage>`).
 
-**Service Bus Sender**: Azure Service Bus realization of the message sender, publishing to queues/topics.
+**Topic Subscription**: Receiver bound to an ASB topic subscription for Events (`AddTopicSubscription<TMessage>`).
+
+**Service Bus Sender**: Azure Service Bus realization of the message sender, publishing to queues/topics; outbound handler API via `IMessageHandlerContext.AzureServiceBus()`.
 
 **Service Bus Options**: Configuration (connection, paths, retry, circuit breaker) for the Azure Service Bus connection.
 
@@ -17,6 +19,7 @@ Azure Service Bus implementation of the Chatter.MessageBrokers interfaces for se
 ## Relationships
 
 - Implements the receiver/sender/path interfaces defined in the Message Brokers context.
+- Commands map to a Queue Receiver; Events map to a Topic Subscription.
 - Service Bus Options configure recovery (Retry, Circuit Breaker) for receiving.
 - Authentication is supplied by the Azure Service Bus Auth context.
 
