@@ -33,6 +33,11 @@ namespace Chatter.Testing.Core.Creators.MessageBrokers
                 return new InboxMessageCreator(NewContext);
             }
 
+            public FailureContextCreator FailureContext()
+            {
+                return new FailureContextCreator(NewContext);
+            }
+
             public NewRecovery Recovery()
             {
                 return new NewRecovery(NewContext);
