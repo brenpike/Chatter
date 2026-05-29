@@ -37,6 +37,7 @@
   
   <ItemGroup>
     <ProjectReference Include="..\..\..\tests\Chatter.Testing.Core.csproj" />
+    <ProjectReference Include="..\src\Chatter.MessageBrokers.AzureServiceBus.Auth\Chatter.MessageBrokers.AzureServiceBus.Auth.csproj" />
   </ItemGroup>
 
 </Project>
