@@ -334,3 +334,6 @@ ASALocalRun/
 
 Publish/
 .hivemind/
+
+# Claude Code personal overrides
+CLAUDE.local.md
