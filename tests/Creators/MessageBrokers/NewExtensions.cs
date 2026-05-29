@@ -1,4 +1,6 @@
-﻿namespace Chatter.Testing.Core.Creators.MessageBrokers
+﻿using Chatter.Testing.Core.Creators.MessageBrokers.Recovery;
+
+namespace Chatter.Testing.Core.Creators.MessageBrokers
 {
     public static class NewExtensions
     {
@@ -29,6 +31,31 @@
             public InboxMessageCreator InboxMessage()
             {
                 return new InboxMessageCreator(NewContext);
+            }
+
+            public NewRecovery Recovery()
+            {
+                return new NewRecovery(NewContext);
+            }
+        }
+
+        public class NewRecovery
+        {
+            private INewContext NewContext { get; }
+
+            public NewRecovery(INewContext context)
+            {
+                NewContext = context;
+            }
+
+            public RecoveryOptionsCreator RecoveryOptions()
+            {
+                return new RecoveryOptionsCreator(NewContext);
+            }
+
+            public CircuitBreakerOptionsCreator CircuitBreakerOptions()
+            {
+                return new CircuitBreakerOptionsCreator(NewContext);
             }
         }
     }
