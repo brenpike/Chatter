@@ -14,22 +14,16 @@ stages:
         vmImage: 'ubuntu-latest'
       steps:
       - task: UseDotNet@2
-        displayName: 'Use .NET 3 Core sdk'
+        displayName: 'Use .NET 8 sdk'
         inputs:
           packageType: 'sdk'
-          version: '3.x'
+          version: '8.x'
 
       - task: UseDotNet@2
-        displayName: 'Use .NET 5 Core sdk'
+        displayName: 'Use .NET 10 sdk'
         inputs:
           packageType: 'sdk'
-          version: '5.x'
-
-      - task: UseDotNet@2
-        displayName: 'Use .NET 6 Core sdk'
-        inputs:
-          packageType: 'sdk'
-          version: '6.x'
+          version: '10.x'
           
       - task: DotNetCoreCLI@2
         displayName: 'Dotnet Restore ${{parameters.ProjectName}}'
