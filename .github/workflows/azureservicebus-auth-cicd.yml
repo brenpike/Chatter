@@ -1,4 +1,4 @@
-name: Chatter.MessageBrokers.AzureServiceBus.Auth CI/CD
+name: Chatter.MessageBrokers.AzureServiceBus.Auth CD
 
 on:
   workflow_dispatch:
@@ -8,27 +8,9 @@ on:
         required: true
         default: 'Manual build from GitHub UI'
   push:
-    branches:
-      - 'feature/**'
-      - 'bugfix/**'
-      - 'hotfix/**'
-      - 'refactor/**'
-      - 'chore/**'
-      - 'docs/**'
-      - 'test/**'
-      - 'ci/**'
-      - 'release/**'
-      - master
+    branches: [master]
     paths:
       - 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/**'
-      - 'tests/**'
-      - '.github/workflows/azureservicebus-auth-cicd.yml'
-  pull_request:
-    branches:
-      - master
-    paths:
-      - 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/**'
-      - 'tests/**'
       - '.github/workflows/azureservicebus-auth-cicd.yml'
 
 permissions:
@@ -39,50 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: |
-            8.0.x
-            10.0.x
-          cache: true
-          cache-dependency-path: |
-            **/packages.lock.json
-      - name: Restore
-        run: dotnet restore 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/tests/Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.csproj' --locked-mode
-      - name: Build
-        run: dotnet build 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/tests/Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.csproj' -c Release --no-restore
-      - name: Test
-        run: dotnet test 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/tests/Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.csproj' -c Release --no-build /p:CollectCoverage=true
-      - name: Pack
-        run: dotnet pack 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/Chatter.MessageBrokers.AzureServiceBus.Auth/Chatter.MessageBrokers.AzureServiceBus.Auth.csproj' -c Release --no-build -o publish/nuget
-      - name: Upload NuGet
-        uses: actions/upload-artifact@v6
-        with:
-          name: nuget-azureservicebus-auth
-          path: publish/nuget/**
-          retention-days: 5
-          if-no-files-found: error
-
-  version-check:
-    name: version-check
-    uses: ./.github/workflows/version-check.yml
-    if: github.event_name == 'pull_request'
-    with:
-      src-path: 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/'
-      csproj-path: 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/Chatter.MessageBrokers.AzureServiceBus.Auth/Chatter.MessageBrokers.AzureServiceBus.Auth.csproj'
-      tag-prefix: 'azureservicebus-auth'
-
   deploy:
     name: deploy
-    needs: build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     environment:
@@ -96,6 +36,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
       - name: Guard against duplicate release
         shell: bash
         run: |
@@ -106,18 +55,16 @@ jobs:
             exit 1
           fi
           echo "Release guard passed: $TAG does not yet exist."
-      - name: Download NuGet
-        uses: actions/download-artifact@v6
-        with:
-          name: nuget-azureservicebus-auth
-          path: ./dist/nuget
+      - name: Restore
+        run: dotnet restore 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/Chatter.MessageBrokers.AzureServiceBus.Auth/Chatter.MessageBrokers.AzureServiceBus.Auth.csproj' --locked-mode
+      - name: Pack
+        run: dotnet pack 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/Chatter.MessageBrokers.AzureServiceBus.Auth/Chatter.MessageBrokers.AzureServiceBus.Auth.csproj' -c Release -o ./dist/nuget
       - name: Push NuGet packages
         shell: bash
         run: |
           dotnet nuget push "./dist/nuget/*.nupkg" \
             -k '${{ env.NUGET_AUTH_TOKEN }}' \
-            -s '${{ env.NUGET_URL }}' \
-            --skip-duplicate
+            -s '${{ env.NUGET_URL }}'
 
   tag:
     name: tag
