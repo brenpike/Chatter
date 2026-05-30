@@ -34,6 +34,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-reliability-ef
+  cancel-in-progress: false
+
 jobs:
   build:
     name: build
@@ -80,7 +84,7 @@ jobs:
     name: deploy
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     environment:
       name: Production
     env:
@@ -89,6 +93,19 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Guard against duplicate release
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '<Version>' 'src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/Chatter.MessageBrokers.Reliability.EntityFramework.csproj' | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d ' \r')
+          TAG='reliability-ef/v'"${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "ERROR: Tag $TAG already exists — version was not bumped. Refusing to deploy (would silently discard merged code)." >&2
+            exit 1
+          fi
+          echo "Release guard passed: $TAG does not yet exist."
       - name: Download NuGet
         uses: actions/download-artifact@v6
         with:

@@ -33,12 +33,13 @@ jobs:
           echo "Changed src/ files requiring version bump check:"
           echo "$CHANGED"
           VERSION=$(grep -m1 '<Version>' '${{ inputs.csproj-path }}' | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d ' \r')
-          LATEST_TAG=$(git tag -l '${{ inputs.tag-prefix }}/v*' | grep -v -- '-' | sort -V | tail -1 || true)
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No existing ${{ inputs.tag-prefix }}/v* release tags found. Bootstrapping — version check passes."
+          PREFIX='${{ inputs.tag-prefix }}'
+          LATEST_VERSION=$(git tag -l "${PREFIX}/v*" | sed "s|^${PREFIX}/v||" | grep -v -- '-' | sort -V | tail -1 || true)
+          if [ -z "$LATEST_VERSION" ]; then
+            echo "No existing ${PREFIX}/v* release tags found. Bootstrapping — version check passes."
             exit 0
           fi
-          TAG_VERSION="${LATEST_TAG#${{ inputs.tag-prefix }}/v}"
+          TAG_VERSION="$LATEST_VERSION"
           version_gt() {
             local v1 v2
             v1=$(echo "$1" | sed 's/-.*//')
@@ -60,4 +61,4 @@ jobs:
             echo "ERROR: Version $VERSION must be greater than latest release tag version $TAG_VERSION. Bump the version before merging."
             exit 1
           fi
-          echo "Version check passed: csproj=$VERSION, latest release tag=$LATEST_TAG"
+          echo "Version check passed: csproj=$VERSION, latest release tag=${PREFIX}/v${TAG_VERSION}"
