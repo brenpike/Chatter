@@ -100,8 +100,9 @@ namespace Chatter.MessageBrokers.Reliability
                 return;
             }
 
-            foreach (var (id, message) in _outbox)
+            foreach (var kvp in _outbox)
             {
+                var message = kvp.Value;
                 if (!message.ProcessedFromOutboxAtUtc.HasValue)
                 {
                     continue;
@@ -112,7 +113,7 @@ namespace Chatter.MessageBrokers.Reliability
                     continue;
                 }
 
-                _outbox.TryRemove(id, out _);
+                _outbox.TryRemove(kvp.Key, out _);
             }
         }
 

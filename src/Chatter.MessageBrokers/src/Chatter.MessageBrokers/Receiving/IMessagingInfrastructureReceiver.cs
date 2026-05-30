@@ -23,8 +23,16 @@ namespace Chatter.MessageBrokers.Receiving
         Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken);
         Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken);
         Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken);
-        Task<int> MessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken) => Task.FromResult((int)context?.BrokeredMessage?.MessageContext[MessageContext.ReceiveAttempts]);
+        Task<int> MessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken)
+#if !NETSTANDARD2_0
+            => Task.FromResult((int)context?.BrokeredMessage?.MessageContext[MessageContext.ReceiveAttempts])
+#endif
+            ;
 
-        TransactionScope CreateLocalTransaction(TransactionContext context) => null;
+        TransactionScope CreateLocalTransaction(TransactionContext context)
+#if !NETSTANDARD2_0
+            => null
+#endif
+            ;
     }
 }
