@@ -64,7 +64,8 @@ jobs:
         run: |
           dotnet nuget push "./dist/nuget/*.nupkg" \
             -k '${{ env.NUGET_AUTH_TOKEN }}' \
-            -s '${{ env.NUGET_URL }}'
+            -s '${{ env.NUGET_URL }}' \
+            --skip-duplicate
 
   tag:
     name: tag
