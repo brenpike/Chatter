@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/ci.yml'
+  push:
+    branches:
+      - 'feature/**'
+      - 'bugfix/**'
+      - 'hotfix/**'
+      - 'refactor/**'
+      - 'chore/**'
+      - 'docs/**'
+      - 'test/**'
+      - 'ci/**'
+      - 'release/**'
+      - master
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+      - name: Restore
+        run: |
+          for p in \
+            'src/Chatter.CQRS/tests/Chatter.CQRS.Tests.csproj' \
+            'src/Chatter.MessageBrokers/tests/Chatter.MessageBrokers.Tests.csproj' \
+            'src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj' \
+            'src/Chatter.MessageBrokers.AzureServiceBus.Auth/tests/Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.csproj' \
+            'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' \
+            'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' \
+            'src/Chatter.SqlChangeFeed/tests/Chatter.SqlChangeFeed.Tests.csproj'; do
+            dotnet restore "$p" --locked-mode
+          done
+      - name: Build
+        run: |
+          for p in \
+            'src/Chatter.CQRS/tests/Chatter.CQRS.Tests.csproj' \
+            'src/Chatter.MessageBrokers/tests/Chatter.MessageBrokers.Tests.csproj' \
+            'src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj' \
+            'src/Chatter.MessageBrokers.AzureServiceBus.Auth/tests/Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.csproj' \
+            'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' \
+            'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' \
+            'src/Chatter.SqlChangeFeed/tests/Chatter.SqlChangeFeed.Tests.csproj'; do
+            dotnet build "$p" -c Release --no-restore
+          done
+      - name: Test
+        run: |
+          for p in \
+            'src/Chatter.CQRS/tests/Chatter.CQRS.Tests.csproj' \
+            'src/Chatter.MessageBrokers/tests/Chatter.MessageBrokers.Tests.csproj' \
+            'src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj' \
+            'src/Chatter.MessageBrokers.AzureServiceBus.Auth/tests/Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.csproj' \
+            'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' \
+            'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' \
+            'src/Chatter.SqlChangeFeed/tests/Chatter.SqlChangeFeed.Tests.csproj'; do
+            dotnet test "$p" -c Release --no-build /p:CollectCoverage=true
+          done

@@ -1,0 +1,80 @@
+name: Chatter.MessageBrokers CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'The reason for running the workflow'
+        required: true
+        default: 'Manual build from GitHub UI'
+  push:
+    branches: [master]
+    paths:
+      - 'src/Chatter.MessageBrokers/**'
+      - '.github/workflows/messagebrokers-cicd.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-messagebrokers
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    environment:
+      name: production-messagebrokers
+    env:
+      NUGET_AUTH_TOKEN: ${{ secrets.NUGET_AUTH_TOKEN }}
+      NUGET_URL: ${{ vars.NUGET_URL }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+      - name: Guard against duplicate release
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '<Version>' 'src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Chatter.MessageBrokers.csproj' | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d ' \r')
+          TAG='messagebrokers/v'"${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "ERROR: Tag $TAG already exists — version was not bumped. Refusing to deploy (would silently discard merged code)." >&2
+            exit 1
+          fi
+          echo "Release guard passed: $TAG does not yet exist."
+      - name: Restore
+        run: dotnet restore 'src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Chatter.MessageBrokers.csproj' --locked-mode
+      - name: Pack
+        run: dotnet pack 'src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Chatter.MessageBrokers.csproj' -c Release -o ./dist/nuget
+      - name: Push NuGet packages
+        shell: bash
+        run: |
+          dotnet nuget push "./dist/nuget/*.nupkg" \
+            -k '${{ env.NUGET_AUTH_TOKEN }}' \
+            -s '${{ env.NUGET_URL }}' \
+            --skip-duplicate
+
+  tag:
+    name: tag
+    uses: ./.github/workflows/create-version-tag.yml
+    needs: deploy
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    permissions:
+      contents: write
+    with:
+      csproj-path: 'src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Chatter.MessageBrokers.csproj'
+      tag-prefix: 'messagebrokers'
+      package-name: 'Chatter.MessageBrokers'

@@ -1,0 +1,58 @@
+name: Version Check (all modules)
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  cqrs:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.CQRS/'
+      csproj-path: 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj'
+      tag-prefix: 'cqrs'
+
+  messagebrokers:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.MessageBrokers/'
+      csproj-path: 'src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Chatter.MessageBrokers.csproj'
+      tag-prefix: 'messagebrokers'
+
+  azureservicebus:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.MessageBrokers.AzureServiceBus/'
+      csproj-path: 'src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/Chatter.MessageBrokers.AzureServiceBus.csproj'
+      tag-prefix: 'azureservicebus'
+
+  azureservicebus-auth:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/'
+      csproj-path: 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/Chatter.MessageBrokers.AzureServiceBus.Auth/Chatter.MessageBrokers.AzureServiceBus.Auth.csproj'
+      tag-prefix: 'azureservicebus-auth'
+
+  reliability-ef:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.MessageBrokers.Reliability.EntityFramework/'
+      csproj-path: 'src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/Chatter.MessageBrokers.Reliability.EntityFramework.csproj'
+      tag-prefix: 'reliability-ef'
+
+  sqlservicebroker:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.MessageBrokers.SqlServiceBroker/'
+      csproj-path: 'src/Chatter.MessageBrokers.SqlServiceBroker/src/Chatter.MessageBrokers.SqlServiceBroker/Chatter.MessageBrokers.SqlServiceBroker.csproj'
+      tag-prefix: 'sqlservicebroker'
+
+  sqlchangefeed:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.SqlChangeFeed/'
+      csproj-path: 'src/Chatter.SqlChangeFeed/src/Chatter.SqlChangeFeed/Chatter.SqlChangeFeed.csproj'
+      tag-prefix: 'sqlchangefeed'
