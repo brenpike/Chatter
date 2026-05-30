@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     environment:
-      name: Production
+      name: production-cqrs
     env:
       NUGET_AUTH_TOKEN: ${{ secrets.NUGET_AUTH_TOKEN }}
       NUGET_URL: ${{ vars.NUGET_URL }}
