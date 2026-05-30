@@ -47,7 +47,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
 
             var transaction = useContextTransaction
                                     ? contextTransaction
+#if NETSTANDARD2_0
+                                    : connection.BeginTransaction() as SqlTransaction;
+#else
                                     : (SqlTransaction)await connection.BeginTransactionAsync();
+#endif
 
             try
             {

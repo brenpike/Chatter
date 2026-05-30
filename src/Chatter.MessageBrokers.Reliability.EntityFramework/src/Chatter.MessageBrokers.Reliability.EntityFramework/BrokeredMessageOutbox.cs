@@ -65,6 +65,11 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             outbox.Update(outboxMessage);
         }
 
+#if NETSTANDARD2_0
+        public Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext, CancellationToken cancellationToken = default)
+            => SendToOutbox(new[] { outboundBrokeredMessage }, transactionContext, cancellationToken);
+#endif
+
         public async Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext, CancellationToken cancellationToken = default)
         {
             var outbox = _context.Set<OutboxMessage>();

@@ -238,6 +238,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             return true;
         }
 
+#if NETSTANDARD2_0
+        public Task<int> MessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken)
+            => Task.FromResult((int)context?.BrokeredMessage?.MessageContext[MessageContext.ReceiveAttempts]);
+#endif
+
         public TransactionScope CreateLocalTransaction(TransactionContext context)
         {
             if (context.TransactionMode == TransactionMode.None || context.TransactionMode == TransactionMode.ReceiveOnly)

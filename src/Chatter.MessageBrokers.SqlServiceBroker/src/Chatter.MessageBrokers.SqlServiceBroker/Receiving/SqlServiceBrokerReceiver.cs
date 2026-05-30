@@ -14,6 +14,7 @@ using System.Collections.Generic;
 using System.Data.SqlClient;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Transactions;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 {
@@ -209,7 +210,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                                   enableCleanup: _ssbOptions.CleanupOnEndConversation,
                                   transaction: transaction);
                 await edc.ExecuteAsync(cancellationToken);
+#if NETSTANDARD2_0
+                transaction?.Commit();
+#else
                 await transaction?.CommitAsync(cancellationToken);
+#endif
             }
             finally
             {
@@ -217,17 +222,26 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 connection?.Dispose();
             }
         }
-        
+
         private async Task DiscardMessageAsync(SqlConnection connection, SqlTransaction transaction, string discardMessage, CancellationToken cancellationToken)
         {
+#if NETSTANDARD2_0
+            transaction?.Commit();
+            await Task.CompletedTask;
+#else
             await transaction?.CommitAsync(cancellationToken);
+#endif
             transaction?.Dispose();
             connection?.Dispose();
             _logger.LogTrace(discardMessage);
         }
 
         private async Task<SqlTransaction> CreateTransaction(SqlConnection connection, CancellationToken cancellationToken)
+#if NETSTANDARD2_0
+            => await Task.FromResult((_transactionMode != TransactionMode.None ? connection.BeginTransaction() : null) as SqlTransaction);
+#else
             => (_transactionMode != TransactionMode.None ? await connection.BeginTransactionAsync(cancellationToken) : null) as SqlTransaction;
+#endif
 
         public async Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
@@ -255,7 +269,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 {
                     _logger.LogTrace($"Unable end dialog conversation during message acknowledgment. {nameof(msg)} is null.");
                 }
+#if NETSTANDARD2_0
+                transaction?.Commit();
+                await Task.CompletedTask;
+#else
                 await transaction?.CommitAsync(cancellationToken);
+#endif
                 _logger.LogTrace("Message acknowledgment complete");
                 return true;
             }
@@ -273,7 +292,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             try
             {
+#if NETSTANDARD2_0
+                transaction?.Rollback();
+                await Task.CompletedTask;
+#else
                 await transaction?.RollbackAsync(cancellationToken);
+#endif
                 _logger.LogTrace("Message negative acknowledgment complete");
                 return true;
             }
@@ -321,7 +345,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                     [MessageContext.ReceiveAttempts] = deliveryAttempts
                 };
                 await ssbSender.Dispatch(new OutboundBrokeredMessage(context.BrokeredMessage.MessageId, msg.Body, headers, _options.DeadLetterQueuePath, bodyConverter), transactionContext);
+#if NETSTANDARD2_0
+                transaction?.Commit();
+                await Task.CompletedTask;
+#else
                 await transaction?.CommitAsync(cancellationToken);
+#endif
                 _localReceiverDeliveryAttempts.TryRemove(msg.ConvHandle, out var _);
                 _logger.LogTrace($"Message deadlettered.");
                 return true;
@@ -332,6 +361,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 connection?.Dispose();
             }
         }
+
+#if NETSTANDARD2_0
+        public Task<int> MessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken)
+            => Task.FromResult((int)context?.BrokeredMessage?.MessageContext[MessageContext.ReceiveAttempts]);
+
+        public TransactionScope CreateLocalTransaction(TransactionContext context) => null;
+#endif
 
         public void Dispose()
         {
