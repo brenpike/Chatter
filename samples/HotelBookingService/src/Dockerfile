@@ -1,9 +1,9 @@
-﻿FROM mcr.microsoft.com/dotnet/core/aspnet:3.1-nanoserver-1809 AS base
+﻿FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
 WORKDIR /app
 EXPOSE 80
 EXPOSE 443
 
-FROM mcr.microsoft.com/dotnet/core/sdk:3.1-nanoserver-1809 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY ["samples/HotelBookingService/src/HotelBooking.Api/HotelBooking.Api.csproj", "samples/HotelBookingService/src/HotelBooking.Api/"]
 COPY ["samples/HotelBookingService/src/HotelBooking.Application/HotelBooking.Application.csproj", "samples/HotelBookingService/src/HotelBooking.Application/"]
