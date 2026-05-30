@@ -1,6 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+#if !NETSTANDARD2_0
 using System.IO.Enumeration;
+#else
+using System.Text.RegularExpressions;
+#endif
 using System.Linq;
 using System.Reflection;
 
@@ -56,6 +60,23 @@ namespace Chatter.CQRS.DependencyInjection
 
         private bool IsMatchingNamespaceSelector(string comparator)
             => string.IsNullOrWhiteSpace(NamespaceSelector)
+#if !NETSTANDARD2_0
                    || FileSystemName.MatchesSimpleExpression(NamespaceSelector, comparator ?? string.Empty, true);
+#else
+                   || MatchesSimpleExpressionPolyfill(NamespaceSelector, comparator ?? string.Empty);
+
+        /// <summary>
+        /// Polyfill for <c>System.IO.Enumeration.FileSystemName.MatchesSimpleExpression</c> (not available in netstandard2.0).
+        /// Supports <c>*</c> (zero-or-more chars) and <c>?</c> (exactly one char); whole-string, case-insensitive match.
+        /// </summary>
+        private static bool MatchesSimpleExpressionPolyfill(string expression, string name)
+        {
+            // Escape all regex metacharacters in the expression, then restore * and ? wildcards.
+            var regexPattern = "^" + Regex.Escape(expression)
+                                         .Replace(@"\*", ".*")
+                                         .Replace(@"\?", ".") + "$";
+            return Regex.IsMatch(name, regexPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+#endif
     }
 }
