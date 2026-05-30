@@ -1,9 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.1;net5.0;net6.0</TargetFrameworks>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
     <PackageId>Chatter.MessageBrokers</PackageId>
-    <Version>0.8.6</Version>
+    <Version>0.9.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>A message broker adapter library built on top of Chatter.CQRS.</Description>
@@ -14,21 +15,16 @@
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net6.0' ">
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="6.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="6.0.0" />
+  <ItemGroup Condition=" '$(TargetFramework)' == 'net10.0' ">
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
   </ItemGroup>
 
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net5.0' ">
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="5.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="5.0.0" />
-  </ItemGroup>
-
-  <ItemGroup Condition=" '$(TargetFramework)' == 'netstandard2.1' ">
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="3.1.15" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="3.1.15" />
+  <ItemGroup Condition=" '$(TargetFramework)' == 'net8.0' ">
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

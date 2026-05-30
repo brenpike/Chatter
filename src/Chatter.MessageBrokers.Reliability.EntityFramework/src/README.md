@@ -20,7 +20,7 @@ Because the inbox, outbox, and unit of work all run against the same `DbContext`
 dotnet add package Chatter.MessageBrokers.Reliability.EntityFramework
 ```
 
-The package targets `netstandard2.1`, `net5.0`, and `net6.0`, and pulls in `Microsoft.EntityFrameworkCore` / `Microsoft.EntityFrameworkCore.Relational` for the matching framework.
+The package targets `net8.0` and `net10.0`, and pulls in `Microsoft.EntityFrameworkCore` / `Microsoft.EntityFrameworkCore.Relational` for the matching framework.
 
 ## Getting Started
 

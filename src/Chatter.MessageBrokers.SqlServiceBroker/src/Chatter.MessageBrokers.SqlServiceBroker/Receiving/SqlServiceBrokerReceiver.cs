@@ -14,6 +14,7 @@ using System.Collections.Generic;
 using System.Data.SqlClient;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Transactions;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 {
@@ -217,7 +218,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 connection?.Dispose();
             }
         }
-        
+
         private async Task DiscardMessageAsync(SqlConnection connection, SqlTransaction transaction, string discardMessage, CancellationToken cancellationToken)
         {
             await transaction?.CommitAsync(cancellationToken);

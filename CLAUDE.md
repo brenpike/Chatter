@@ -10,7 +10,7 @@ Hivemind's Validation Procedure runs the command in this block.
 dotnet test
 ```
 
-Solution is `Chatter.sln`; tests live under `src/<Module>/tests/*.Tests.csproj` plus shared `tests/Chatter.Testing.Core.csproj`; all library and shared-test-core projects target `netstandard2.1;net5.0;net6.0`.
+Solution is `Chatter.sln`; tests live under `src/<Module>/tests/*.Tests.csproj` plus shared `tests/Chatter.Testing.Core.csproj`; library modules target `net8.0;net10.0` and the shared test core and test projects target `net8.0;net10.0`.
 
 ## Project Layout
 
