@@ -89,7 +89,7 @@ Options are modeled by `SqlServiceBrokerOptions` and assembled with `SqlServiceB
 
 `SqlServiceBrokerOptionsBuilder.Build()` throws if no options were configured, if the connection string is null/whitespace, or if the message body type is missing.
 
-Recovery (retry and circuit breaker) is supplied automatically: `AddSqlServiceBroker` registers `SqlRetryExceptionPredicatesProvider` and `SqlCircuitBreakerExceptionPredicatesProvider`, which classify SQL failures as transient (e.g. `SqlException.IsTransient` on net5.0+, known transient error numbers, and error `208` "invalid object name") so the core Chatter recovery pipeline retries or trips the breaker appropriately.
+Recovery (retry and circuit breaker) is supplied automatically: `AddSqlServiceBroker` registers `SqlRetryExceptionPredicatesProvider` and `SqlCircuitBreakerExceptionPredicatesProvider`, which classify SQL failures as transient (e.g. `SqlException.IsTransient` on net8.0+, known transient error numbers, and error `208` "invalid object name") so the core Chatter recovery pipeline retries or trips the breaker appropriately.
 
 ## SQL Setup
 
