@@ -16,9 +16,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
-- Target frameworks migrated from `netstandard2.1;net5.0;net6.0` to `netstandard2.0;net8.0;net10.0`.
-- `Azure.Identity` bumped to 1.21.0 and `Microsoft.Identity.Client` bumped to 4.84.1; both dependencies retain `netstandard2.0` support.
+- Target frameworks migrated from `netstandard2.1;net5.0;net6.0` to `net8.0;net10.0`.
+- `Azure.Identity` bumped to 1.21.0 and `Microsoft.Identity.Client` bumped to 4.84.1.
 
 ### Removed
 
-- Dropped the `net5.0` and `net6.0` target-framework monikers and `netstandard2.1`. This is a breaking change for consumers pinned to those in-box assets. Consumers on modern runtimes resolve the `net8.0` or `net10.0` asset; the new `netstandard2.0` asset broadens reach to .NET Framework 4.6.2+.
+- Dropped the `net5.0`, `net6.0`, and `netstandard2.1` target-framework monikers. This is a breaking change for consumers pinned to those in-box assets. Consumers on modern runtimes resolve the `net8.0` or `net10.0` asset.

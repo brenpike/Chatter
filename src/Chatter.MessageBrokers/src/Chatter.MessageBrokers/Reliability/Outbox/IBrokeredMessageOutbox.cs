@@ -10,10 +10,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
     public interface IBrokeredMessageOutbox
     {
         Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext, CancellationToken cancellationToken = default)
-#if !NETSTANDARD2_0
-             => SendToOutbox(new[] { outboundBrokeredMessage }, transactionContext, cancellationToken)
-#endif
-             ;
+             => SendToOutbox(new[] { outboundBrokeredMessage }, transactionContext, cancellationToken);
         Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext, CancellationToken cancellationToken = default);
 
         Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default);

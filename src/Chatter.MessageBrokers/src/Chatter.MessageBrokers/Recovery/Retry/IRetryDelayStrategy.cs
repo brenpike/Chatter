@@ -6,17 +6,11 @@ namespace Chatter.MessageBrokers.Recovery.Retry
     public interface IRetryDelayStrategy
     {
         void Execute(FailureContext failureContext)
-#if !NETSTANDARD2_0
-            => ExecuteAsync(failureContext).GetAwaiter().GetResult()
-#endif
-            ;
+            => ExecuteAsync(failureContext).GetAwaiter().GetResult();
         Task ExecuteAsync(FailureContext failureContext);
 
         void Execute(int deliveryCount)
-#if !NETSTANDARD2_0
-            => ExecuteAsync(deliveryCount).GetAwaiter().GetResult()
-#endif
-            ;
+            => ExecuteAsync(deliveryCount).GetAwaiter().GetResult();
         Task ExecuteAsync(int deliveryCount);
     }
 }

@@ -32,11 +32,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
         public async Task<ReceivedMessage> ExecuteAsync(CancellationToken cancellationToken = default)
         {
             using var receiveCommand = Create();
-#if NETSTANDARD2_0
-            using var reader = await receiveCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-#else
             await using var reader = await receiveCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-#endif
             if (!reader.Read() || reader.IsDBNull(0))
             {
                 return null;

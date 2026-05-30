@@ -51,9 +51,5 @@ namespace Chatter.MessageBrokers.Recovery.Retry
                 ? _maxDelayInMilliseconds
                 : delayInMilliseconds);
         }
-#if NETSTANDARD2_0
-        public void Execute(FailureContext failureContext) => ExecuteAsync(failureContext).GetAwaiter().GetResult();
-        public void Execute(int deliveryCount) => ExecuteAsync(deliveryCount).GetAwaiter().GetResult();
-#endif
     }
 }

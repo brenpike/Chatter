@@ -22,10 +22,6 @@ namespace Chatter.MessageBrokers.Recovery.Retry
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-#if NETSTANDARD2_0
-        public TResult Execute<TResult>(Func<Task<TResult>> action, CancellationToken cancellationToken = default)
-            => ExecuteAsync(action, cancellationToken).GetAwaiter().GetResult();
-#endif
         public async Task<TResult> ExecuteAsync<TResult>(Func<Task<TResult>> action, CancellationToken cancellationToken = default)
         {
             int attempts = 1;
