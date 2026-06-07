@@ -1,15 +1,16 @@
-﻿using Chatter.MessageBrokers.AzureServiceBus.Sending;
+﻿using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Context;
 
 namespace Chatter.CQRS.Context
 {
     public static class MessageHandlerContextExtensions
     {
-        public static IAzureServiceBusContextDispatcher AzureServiceBus(this IMessageHandlerContext context)
+        public static IMessageBrokerContext AzureServiceBus(this IMessageHandlerContext context)
         {
             if (context is IMessageBrokerContext mbc)
             {
-                return new AzureServiceBusContextDispatcher(mbc);
+                mbc.BrokeredMessage?.UseMessagingInfrastructure(it => it.AzureServiceBus());
+                return mbc;
             }
 
             return null;
