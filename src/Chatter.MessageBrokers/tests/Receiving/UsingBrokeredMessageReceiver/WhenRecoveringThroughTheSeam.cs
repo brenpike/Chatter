@@ -160,6 +160,66 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             public string Value { get; set; }
         }
 
+        // ------------------------------------------------------------------ recording state-store decorator
+        //
+        // INVARIANT: The circuit breaker drives state transitions through ICircuitBreakerStateStore,
+        // but the store overwrites State on each transition (Open → HalfOpen → Closed), so the
+        // intermediate Open/HalfOpen states are lost by the time the test inspects the final State.
+        // This decorator delegates to the real InMemoryCircuitBreakerStateStore and records the
+        // ordered sequence of transitions actually requested, so a test can assert the circuit
+        // genuinely opened and half-opened rather than only that it ended Closed (a state it also
+        // starts in). Transitions are appended under a lock so the receiver loop's background writes
+        // never race the test thread's reads.
+        private sealed class RecordingCircuitBreakerStateStore : ICircuitBreakerStateStore
+        {
+            private readonly InMemoryCircuitBreakerStateStore _inner;
+            private readonly object _transitionsLock = new object();
+            private readonly List<CircuitBreakerState> _transitions = new List<CircuitBreakerState>();
+
+            public RecordingCircuitBreakerStateStore(InMemoryCircuitBreakerStateStore inner)
+                => _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+
+            // Locked snapshot so test-thread reads never touch the backing List<T> while the
+            // receiver loop mutates it via the transition methods below.
+            public IReadOnlyList<CircuitBreakerState> ObservedTransitions
+            {
+                get { lock (_transitionsLock) { return _transitions.ToArray(); } }
+            }
+
+            private void Record(CircuitBreakerState state)
+            {
+                lock (_transitionsLock) { _transitions.Add(state); }
+            }
+
+            public Exception LastException => _inner.LastException;
+            public DateTime LastStateChangedDateUtc => _inner.LastStateChangedDateUtc;
+            public bool IsClosed => _inner.IsClosed;
+            public CircuitBreakerState State => _inner.State;
+            public int FailureCount => _inner.FailureCount;
+            public int SuccessCount => _inner.SuccessCount;
+
+            public Task OpenAsync(Exception ex)
+            {
+                Record(CircuitBreakerState.Open);
+                return _inner.OpenAsync(ex);
+            }
+
+            public Task HalfOpenAsync()
+            {
+                Record(CircuitBreakerState.HalfOpen);
+                return _inner.HalfOpenAsync();
+            }
+
+            public Task CloseAsync()
+            {
+                Record(CircuitBreakerState.Closed);
+                return _inner.CloseAsync();
+            }
+
+            public Task<int> IncrementSuccessCounterAsync() => _inner.IncrementSuccessCounterAsync();
+            public Task<int> IncrementFailureCounterAsync(Exception ex) => _inner.IncrementFailureCounterAsync(ex);
+        }
+
         // ------------------------------------------------------------------
         // Test (a): handler fails on first delivery, succeeds on second.
         //
@@ -302,7 +362,18 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             var cbEvaluator = new CircuitBreakerExceptionEvaluator(
                 new[] { new ConfigCircuitBreakerExceptionPredicatesProvider(
                     new Predicate<Exception>[] { e => e is InvalidOperationException }) });
-            var (circuitBreaker, stateStore) = BuildCircuitBreaker(cbOptions, cbEvaluator);
+
+            // Wrap the real state store in a recording decorator so the test can assert the circuit
+            // actually transitioned through Open and HalfOpen, not just that it ended Closed (which it
+            // also starts as). The CircuitBreaker is constructed directly here against the recorder.
+            var stateStore = new RecordingCircuitBreakerStateStore(
+                new InMemoryCircuitBreakerStateStore(
+                    NullLogger<InMemoryCircuitBreakerStateStore>.Instance));
+            var circuitBreaker = new CircuitBreaker(
+                stateStore,
+                cbOptions,
+                NullLogger<CircuitBreaker>.Instance,
+                cbEvaluator);
 
             // Retry: ShouldRetry=true for InvalidOperationException; MaxRetryAttempts=3 gives
             // the loop enough room to absorb the first failure and re-enter the CB.
@@ -328,6 +399,16 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             // Assert: handler was invoked at least twice (fail → CB open → half-open → succeed).
             dispatchCallCount.Should().BeGreaterThan(1,
                 because: "handler must be re-attempted after the circuit breaker transitions through half-open");
+
+            // CB must have actually opened and half-opened — not merely ended Closed (the state it
+            // also starts in). Without this, a regression where the breaker never calls
+            // OpenAsync/HalfOpenAsync would still leave the store Closed and pass the assertion below,
+            // so this test would silently stop pinning the Closed → Open → HalfOpen transition.
+            var observedTransitions = stateStore.ObservedTransitions;
+            observedTransitions.Should().Contain(CircuitBreakerState.Open,
+                because: "the qualifying failure must trip the circuit breaker to Open before recovery");
+            observedTransitions.Should().Contain(CircuitBreakerState.HalfOpen,
+                because: "the circuit breaker must transition through HalfOpen on the recovery attempt");
 
             // CB must be Closed after successful half-open recovery (NumberOfHalfOpenSuccessesToClose=1).
             stateStore.IsClosed.Should().BeTrue(
