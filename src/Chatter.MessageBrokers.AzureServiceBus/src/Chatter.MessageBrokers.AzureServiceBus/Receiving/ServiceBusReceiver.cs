@@ -14,6 +14,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
     internal class ServiceBusReceiver : IMessagingInfrastructureReceiver
     {
+        // INVARIANT: the Azure Service Bus SDK rejects a deadletter error description longer than 4096
+        // UTF-16 chars with ArgumentOutOfRangeException (Parameter 'deadLetterErrorDescription'), so the
+        // description is capped at this length (matching the SDK's char-based validation) before dispatch.
+        private const int MaxDeadLetterErrorDescriptionLength = 4096;
+        private const string DeadLetterErrorDescriptionTruncationMarker = "…[truncated]";
+
         readonly object _syncLock;
         private readonly ILogger<ServiceBusReceiver> _logger;
         private readonly InboundBrokeredMessageFactory _inboundFactory;
@@ -212,9 +218,25 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return false;
             }
 
-            await this.InnerReceiver.DeadLetterAsync(msg.SystemProperties.LockToken, deadLetterReason, deadLetterErrorDescription);
+            await this.InnerReceiver.DeadLetterAsync(msg.SystemProperties.LockToken, deadLetterReason, CapDeadLetterErrorDescription(deadLetterErrorDescription));
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully deadlettered");
             return true;
+        }
+
+        // Caps the deadletter error description at the SDK's MaxDeadLetterErrorDescriptionLength UTF-16
+        // chars. A null/empty or already-fitting description is returned unchanged; an over-limit
+        // description preserves its diagnostic head and appends a truncation marker, reserving the
+        // marker's length inside the budget so the result never exceeds the limit.
+        private static string CapDeadLetterErrorDescription(string deadLetterErrorDescription)
+        {
+            if (string.IsNullOrEmpty(deadLetterErrorDescription)
+                || deadLetterErrorDescription.Length <= MaxDeadLetterErrorDescriptionLength)
+            {
+                return deadLetterErrorDescription;
+            }
+
+            var headLength = MaxDeadLetterErrorDescriptionLength - DeadLetterErrorDescriptionTruncationMarker.Length;
+            return deadLetterErrorDescription.Substring(0, headLength) + DeadLetterErrorDescriptionTruncationMarker;
         }
 
         public TransactionScope CreateLocalTransaction(TransactionContext context)
