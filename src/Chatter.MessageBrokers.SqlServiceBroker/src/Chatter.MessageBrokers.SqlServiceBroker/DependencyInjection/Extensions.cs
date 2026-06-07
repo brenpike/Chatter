@@ -30,13 +30,19 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddIfNotRegistered<SqlServiceBrokerReceiver>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<SqlServiceBrokerSender>(ServiceLifetime.Scoped);
 
-            // Folded receiver/dispatcher factory: each delegate opens a DI scope, resolves the scoped
-            // infrastructure service, and disposes the scope — reproducing the former
-            // SqlServiceBrokerReceiverFactory / SqlServiceBrokerSenderFactory behavior exactly.
-            builder.Services.AddSingleton<SqlServiceBrokerInfrastructureFactory>(sp =>
+            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, SqlCircuitBreakerExceptionPredicatesProvider>();
+            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, SqlRetryExceptionPredicatesProvider>();
+
+            builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
+                // Folded receiver/dispatcher factory captured directly in this infrastructure's
+                // descriptor (NOT resolved from the container by the shared MessagingInfrastructureFactory
+                // type), so each broker keeps its own factory under multi-broker registration. Each
+                // delegate opens a DI scope, resolves the scoped infrastructure service, and disposes the
+                // scope — reproducing the former SqlServiceBrokerReceiverFactory / SqlServiceBrokerSenderFactory
+                // behavior exactly.
                 var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new SqlServiceBrokerInfrastructureFactory(
+                var infrastructureFactory = new MessagingInfrastructureFactory(
                     () =>
                     {
                         using var scope = scopeFactory.CreateScope();
@@ -47,14 +53,6 @@ namespace Microsoft.Extensions.DependencyInjection
                         using var scope = scopeFactory.CreateScope();
                         return scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>();
                     });
-            });
-
-            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, SqlCircuitBreakerExceptionPredicatesProvider>();
-            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, SqlRetryExceptionPredicatesProvider>();
-
-            builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
-            {
-                var infrastructureFactory = sp.GetRequiredService<SqlServiceBrokerInfrastructureFactory>();
                 return new MessagingInfrastructure(SSBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory);
             });
 
