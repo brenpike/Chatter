@@ -11,67 +11,18 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
     // SqlServiceBrokerReceiver.ReceiveMessageAsync AS-IS. These rows are the SPEC that
     // STEP-004's ServiceBrokerMessageClassifier must satisfy.
     //
-    // The ServiceBrokerMessageClassifier type does not yet exist (introduced in STEP-004).
-    // The [Theory] rows that reference ClassificationOutcome are SKIPPED until STEP-004 lands.
-    // STEP-004 MUST match the ClassificationOutcome enum shape defined in this file exactly, or
-    // update this file as part of its own scope and note the delta in its report.
+    // The classification rows are exercised against the production
+    // ServiceBrokerMessageClassifier (introduced in STEP-004); the ClassificationOutcome enum
+    // is the production type from Chatter.MessageBrokers.SqlServiceBroker.Receiving.
     //
     // The delivery-attempt increment characterization ([Fact] tests at the bottom) runs GREEN
     // today: it exercises only ReceivedMessage + ConcurrentDictionary — no missing type.
 
-    /// <summary>
-    /// Mirrors the decision-result produced by ServiceBrokerMessageClassifier (STEP-004).
-    /// Defined here so the test file compiles before STEP-004 lands. STEP-004 must introduce a
-    /// type with at least these members in the
-    /// Chatter.MessageBrokers.SqlServiceBroker.Receiving namespace; once it does, this local
-    /// copy can be removed and the using replaced with the production import.
-    /// </summary>
-    // INVARIANT: member names and ordinal positions must match what STEP-004 produces verbatim.
-    public enum ClassificationOutcome
-    {
-        /// <summary>Message reference is null — discard (commit + dispose, return null).</summary>
-        DiscardNull = 0,
-
-        /// <summary>
-        /// MessageTypeName == ServicesMessageTypes.EndDialogType — ack (EndDialogConversationCommand)
-        /// and return null; no dispatch.
-        /// </summary>
-        EndDialog = 1,
-
-        /// <summary>
-        /// MessageTypeName is not DefaultType and not ChatterBrokeredMessageType — discard and
-        /// return null; no dispatch.
-        /// </summary>
-        DiscardWrongType = 2,
-
-        /// <summary>
-        /// MessageTypeName is an accepted type but Body is null — discard and return null;
-        /// no dispatch.
-        /// </summary>
-        DiscardNullBody = 3,
-
-        /// <summary>
-        /// MessageTypeName == ChatterBrokeredMessageType with non-null Body — deserialise as
-        /// OutboundBrokeredMessage, unwrap payload/id/headers, dispatch.
-        /// </summary>
-        DispatchChatterBrokeredMessage = 4,
-
-        /// <summary>
-        /// MessageTypeName == DefaultType with non-null Body — dispatch raw body without unwrapping.
-        /// </summary>
-        DispatchDefault = 5,
-    }
-
     public class WhenClassifyingReceivedMessages : Testing.Core.Context
     {
         // -----------------------------------------------------------------------
-        // Decision-table rows — SKIPPED until STEP-004 introduces
-        // ServiceBrokerMessageClassifier.
-        //
-        // When STEP-004 lands:
-        //  1. Remove the Skip attribute from each [Theory].
-        //  2. Replace the local ClassificationOutcome references with the production type.
-        //  3. Implement the Classify(ReceivedMessage) call in the body.
+        // Decision-table rows — bound against the production
+        // ServiceBrokerMessageClassifier (STEP-004).
         // -----------------------------------------------------------------------
 
         private static ReceivedMessage BuildMessage(
@@ -152,23 +103,22 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
                 "DefaultType with non-null body must be classified as DispatchDefault" };
         }
 
-        // STEP-004: remove Skip, remove the pragma suppression, wire up
-        // ServiceBusMessageClassifier.Classify(message), and delete the throw.
-#pragma warning disable xUnit1026 // parameters unused until STEP-004 wires the body
-        [Theory(Skip = "STEP-004: ServiceBrokerMessageClassifier not yet introduced — rows are the spec")]
+        // INVARIANT: this method is internal (not public) because its ClassificationOutcome
+        // parameter is an internal production type; a public method with a less-accessible
+        // parameter trips CS0051. The test assembly sees the type via InternalsVisibleTo.
+        [Theory]
         [MemberData(nameof(ClassificationRows))]
-        public void MustProduceExpectedOutcome(
+        internal void MustProduceExpectedOutcome(
             ReceivedMessage message,
             ClassificationOutcome expectedOutcome,
             string because)
         {
-            // STEP-004 wires this in. Body of spec:
-            //   var classifier = new ServiceBrokerMessageClassifier();
-            //   ClassificationOutcome actual = classifier.Classify(message);
-            //   actual.Should().Be(expectedOutcome, because);
-            throw new NotImplementedException("STEP-004: implement ServiceBrokerMessageClassifier and remove Skip");
+            var classifier = new ServiceBrokerMessageClassifier();
+
+            ClassificationOutcome actual = classifier.Classify(message);
+
+            actual.Should().Be(expectedOutcome, because);
         }
-#pragma warning restore xUnit1026
 
         // -----------------------------------------------------------------------
         // Delivery-attempt increment characterization — RUNS GREEN today.
