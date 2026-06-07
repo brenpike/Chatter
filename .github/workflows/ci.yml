@@ -9,17 +9,7 @@ on:
       - 'tests/**'
       - '.github/workflows/ci.yml'
   push:
-    branches:
-      - 'feature/**'
-      - 'bugfix/**'
-      - 'hotfix/**'
-      - 'refactor/**'
-      - 'chore/**'
-      - 'docs/**'
-      - 'test/**'
-      - 'ci/**'
-      - 'release/**'
-      - master
+    branches: [master]
     paths:
       - 'src/**'
       - 'tests/**'
