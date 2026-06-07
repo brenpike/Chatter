@@ -10,7 +10,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/Chatter.MessageBrokers.Reliability.EntityFramework/**'
+      - 'src/Chatter.MessageBrokers.Reliability.EntityFramework/src/**'
       - '.github/workflows/reliability-ef-cicd.yml'
 
 permissions:

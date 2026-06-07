@@ -10,7 +10,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/**'
+      - 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/**'
       - '.github/workflows/azureservicebus-auth-cicd.yml'
 
 permissions:

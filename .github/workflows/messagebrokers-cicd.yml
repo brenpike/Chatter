@@ -10,7 +10,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/Chatter.MessageBrokers/**'
+      - 'src/Chatter.MessageBrokers/src/**'
       - '.github/workflows/messagebrokers-cicd.yml'
 
 permissions:

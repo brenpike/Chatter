@@ -10,7 +10,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/Chatter.SqlChangeFeed/**'
+      - 'src/Chatter.SqlChangeFeed/src/**'
       - '.github/workflows/sqlchangefeed-cicd.yml'
 
 permissions:
