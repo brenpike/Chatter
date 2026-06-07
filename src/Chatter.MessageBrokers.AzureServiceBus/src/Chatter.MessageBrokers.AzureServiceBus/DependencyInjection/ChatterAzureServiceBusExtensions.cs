@@ -42,10 +42,10 @@ namespace Microsoft.Extensions.DependencyInjection
             // Folded receiver/dispatcher factory: each delegate opens a DI scope, resolves the scoped
             // infrastructure service, and disposes the scope — reproducing the former
             // ServiceBusReceiverFactory / ServiceBusMessageSenderFactory behavior exactly.
-            builder.Services.AddSingleton<ServiceBusInfrastructureFactory>(sp =>
+            builder.Services.AddSingleton<MessagingInfrastructureFactory>(sp =>
             {
                 var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new ServiceBusInfrastructureFactory(
+                return new MessagingInfrastructureFactory(
                     () =>
                     {
                         using var scope = scopeFactory.CreateScope();
@@ -63,7 +63,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
-                var infrastructureFactory = sp.GetRequiredService<ServiceBusInfrastructureFactory>();
+                var infrastructureFactory = sp.GetRequiredService<MessagingInfrastructureFactory>();
                 var pathBuilder = sp.GetRequiredService<AzureServiceBusEntityPathBuilder>();
                 return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory, pathBuilder);
             });
