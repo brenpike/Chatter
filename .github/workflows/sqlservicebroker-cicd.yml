@@ -10,7 +10,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/Chatter.MessageBrokers.SqlServiceBroker/**'
+      - 'src/Chatter.MessageBrokers.SqlServiceBroker/src/**'
       - '.github/workflows/sqlservicebroker-cicd.yml'
 
 permissions:

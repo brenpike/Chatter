@@ -10,7 +10,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/Chatter.CQRS/**'
+      - 'src/Chatter.CQRS/src/**'
       - '.github/workflows/cqrs-cicd.yml'
 
 permissions:

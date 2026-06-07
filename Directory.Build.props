@@ -1,0 +1,20 @@
+<Project>
+
+  <!-- Coverage-only properties, scoped to test projects (names ending in '.Tests').
+       This naturally excludes Chatter.Testing.Core (ends in '.Core'), library projects,
+       and samples, so nothing here alters packaged library output. CollectCoverage is
+       intentionally NOT set: CI passes /p:CollectCoverage=true; default OFF keeps plain
+       `dotnet test` fast. -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <CoverletOutputFormat>cobertura</CoverletOutputFormat>
+    <!-- coverlet 10.0.1 with an explicit (non-trailing-slash) filename inserts
+         '.$(TargetFramework)' before the final '.' segment of the supplied filename.
+         Supplying '<ProjectName>.cobertura.xml' therefore yields a unique-per-project,
+         unique-per-TFM file: artifacts/coverage/<ProjectName>.cobertura.<TFM>.xml
+         (empirically verified). Do NOT add $(TargetFramework) here — coverlet adds it. -->
+    <CoverletOutput>$(MSBuildThisFileDirectory)artifacts/coverage/$(MSBuildProjectName).cobertura.xml</CoverletOutput>
+    <ExcludeByAttribute>GeneratedCodeAttribute;CompilerGeneratedAttribute;ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
+    <Exclude>[*.Tests]*;[Chatter.Testing.Core]*</Exclude>
+  </PropertyGroup>
+
+</Project>

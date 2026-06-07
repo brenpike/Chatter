@@ -83,3 +83,22 @@ jobs:
             'src/Chatter.SqlChangeFeed/tests/Chatter.SqlChangeFeed.Tests.csproj'; do
             dotnet test "$p" -c Release --no-build /p:CollectCoverage=true
           done
+      - name: Merge coverage report
+        run: |
+          dotnet tool install --global dotnet-reportgenerator-globaltool --version 5.5.10
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+      - name: Generate aggregate coverage
+        run: |
+          reportgenerator \
+            -reports:'artifacts/coverage/*.cobertura.*.xml' \
+            -targetdir:'artifacts/coverage/report' \
+            -reporttypes:'Cobertura;TextSummary;MarkdownSummaryGithub'
+          cat artifacts/coverage/report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            artifacts/coverage/report/**
+            artifacts/coverage/*.cobertura.*.xml
