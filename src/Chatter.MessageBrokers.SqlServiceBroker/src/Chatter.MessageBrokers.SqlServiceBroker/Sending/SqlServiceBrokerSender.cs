@@ -2,29 +2,34 @@
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
+using Chatter.MessageBrokers.SqlServiceBroker.Receiving;
 using Chatter.MessageBrokers.SqlServiceBroker.Scripts;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
 {
-    public class SqlServiceBrokerSender : IMessagingInfrastructureDispatcher
+    internal class SqlServiceBrokerSender : IMessagingInfrastructureDispatcher
     {
         private readonly SqlServiceBrokerOptions _options;
         private readonly ILogger<SqlServiceBrokerSender> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
+        private readonly ISqlConnectionSource _connectionSource;
 
         public SqlServiceBrokerSender(SqlServiceBrokerOptions options,
                                       ILogger<SqlServiceBrokerSender> logger,
-                                      IBodyConverterFactory bodyConverterFactory)
+                                      IBodyConverterFactory bodyConverterFactory,
+                                      ISqlConnectionSource connectionSource)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
+            _connectionSource = connectionSource ?? throw new ArgumentNullException(nameof(connectionSource));
         }
 
         public async Task Dispatch(IEnumerable<OutboundBrokeredMessage> brokeredMessages, TransactionContext transactionContext)
@@ -33,15 +38,23 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
             SqlTransaction contextTransaction = null;
             transactionContext?.Container.TryGet(out contextTransaction);
             var contextTransactionMode = transactionContext?.TransactionMode ?? TransactionMode.None;
-            var useContextTransaction = contextTransactionMode == TransactionMode.FullAtomicityViaInfrastructure && contextTransaction != null;
+            var decision = OutboundTransactionPolicy.Resolve(contextTransactionMode, contextTransaction != null);
+            var useContextTransaction = decision.UseContextTransaction;
 
-            SqlConnection connection = useContextTransaction
-                                            ? contextTransaction.Connection
-                                            : new SqlConnection(_options.ConnectionString);
-
-            if (connection.State != ConnectionState.Open)
+            SqlConnection connection;
+            if (decision.ConnectionOrigin == OutboundConnectionOrigin.ReuseContext)
             {
-                await connection.OpenAsync();
+                connection = contextTransaction.Connection;
+
+                if (connection.State != ConnectionState.Open)
+                {
+                    await connection.OpenAsync();
+                    _logger.LogTrace("Sql connection opened.");
+                }
+            }
+            else
+            {
+                connection = await _connectionSource.OpenAsync(CancellationToken.None);
                 _logger.LogTrace("Sql connection opened.");
             }
 

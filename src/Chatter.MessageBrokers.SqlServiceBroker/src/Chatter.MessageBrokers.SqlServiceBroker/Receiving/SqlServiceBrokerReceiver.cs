@@ -18,28 +18,33 @@ using System.Transactions;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 {
-    public class SqlServiceBrokerReceiver : IMessagingInfrastructureReceiver
+    internal class SqlServiceBrokerReceiver : IMessagingInfrastructureReceiver
     {
         private readonly SqlServiceBrokerOptions _ssbOptions;
+        private readonly ISqlConnectionSource _connectionSource;
         private readonly ILogger<SqlServiceBrokerReceiver> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private TransactionMode _transactionMode;
         private readonly ConcurrentDictionary<Guid, int> _localReceiverDeliveryAttempts;
         private readonly IServiceScopeFactory _serviceFactory;
+        private readonly ServiceBrokerMessageClassifier _classifier;
         private ReceiverOptions _options;
 
         public SqlServiceBrokerReceiver(SqlServiceBrokerOptions ssbOptions,
+                                        ISqlConnectionSource connectionSource,
                                         MessageBrokerOptions messageBrokerOptions,
                                         ILogger<SqlServiceBrokerReceiver> logger,
                                         IBodyConverterFactory bodyConverterFactory,
                                         IServiceScopeFactory serviceFactory)
         {
             _ssbOptions = ssbOptions ?? throw new ArgumentNullException(nameof(ssbOptions));
+            _connectionSource = connectionSource ?? throw new ArgumentNullException(nameof(connectionSource));
             _logger = logger;
             _bodyConverterFactory = bodyConverterFactory;
             _transactionMode = messageBrokerOptions?.TransactionMode ?? TransactionMode.ReceiveOnly;
             _localReceiverDeliveryAttempts = new ConcurrentDictionary<Guid, int>();
             _serviceFactory = serviceFactory;
+            _classifier = new ServiceBrokerMessageClassifier();
         }
 
         public Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
@@ -79,8 +84,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             try
             {
-                connection = new SqlConnection(_ssbOptions.ConnectionString);
-                await connection.OpenAsync(cancellationToken);
+                connection = await _connectionSource.OpenAsync(cancellationToken);
                 transaction = await CreateTransaction(connection, cancellationToken);
             }
             catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException)
@@ -119,32 +123,26 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 }
             }
 
-            if (message is null)
-            {
-                await DiscardMessageAsync(connection, transaction, "Discarding null message", cancellationToken);
-                return null;
-            }
+            var outcome = _classifier.Classify(message);
 
-            if (message.MessageTypeName == ServicesMessageTypes.EndDialogType)
+            switch (outcome)
             {
-                await AckEndDialogAsync(connection, transaction, message.ConvHandle, cancellationToken);
-                return null;
-            }
-
-            if (message.MessageTypeName != ServicesMessageTypes.DefaultType && message.MessageTypeName != ServicesMessageTypes.ChatterBrokeredMessageType)
-            {
-                await DiscardMessageAsync(connection, transaction
-                    , $"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received."
-                    , cancellationToken);
-                return null;
-            }
-
-            if (message.Body == null)
-            {
-                await DiscardMessageAsync(connection, transaction
-                    , $"Discarding message of type '{message.MessageTypeName}' with null message body"
-                    , cancellationToken);
-                return null;
+                case ClassificationOutcome.DiscardNull:
+                    await DiscardMessageAsync(connection, transaction, "Discarding null message", cancellationToken);
+                    return null;
+                case ClassificationOutcome.EndDialog:
+                    await AckEndDialogAsync(connection, transaction, message.ConvHandle, cancellationToken);
+                    return null;
+                case ClassificationOutcome.DiscardWrongType:
+                    await DiscardMessageAsync(connection, transaction
+                        , $"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received."
+                        , cancellationToken);
+                    return null;
+                case ClassificationOutcome.DiscardNullBody:
+                    await DiscardMessageAsync(connection, transaction
+                        , $"Discarding message of type '{message.MessageTypeName}' with null message body"
+                        , cancellationToken);
+                    return null;
             }
 
             transactionContext.Container.Include(connection);

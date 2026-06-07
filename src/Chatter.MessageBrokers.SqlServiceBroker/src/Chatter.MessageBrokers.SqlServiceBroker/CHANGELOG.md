@@ -12,6 +12,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.9.0] - 2026-06-07
+
+### Changed
+
+- `SqlServiceBrokerReceiver` and `SqlServiceBrokerSender` are now `internal` (removed from the public API surface), thinned behind injectable SDK seams. Behaviour is unchanged.
+- Connection creation now flows through an internal `ISqlConnectionSource` seam (production `SqlClientConnectionSource`), shared by the receiver and sender.
+- Message classification extracted into a pure internal `ServiceBrokerMessageClassifier`; the sender's transaction-enlistment decision extracted into a pure internal `OutboundTransactionPolicy`.
+- The separate `SqlServiceBrokerReceiverFactory` / `SqlServiceBrokerSenderFactory` are folded into a single `Func<>`-backed internal `SqlServiceBrokerInfrastructureFactory`.
+
+### Removed
+
+- `SqlServiceBrokerReceiverFactory` and `SqlServiceBrokerSenderFactory` (folded into `SqlServiceBrokerInfrastructureFactory`).
+
 ## [0.8.1] - 2026-06-06
 
 ### Fixed
