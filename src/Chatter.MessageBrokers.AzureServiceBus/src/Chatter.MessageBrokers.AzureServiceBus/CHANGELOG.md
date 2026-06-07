@@ -12,6 +12,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+- Cap the Azure Service Bus deadletter error description to the SDK's 4096-character limit, preventing `System.ArgumentOutOfRangeException` on `OnDeadLetterAsync` (#92).
+
 ## [0.10.1] - 2026-06-07
 
 ### Changed
