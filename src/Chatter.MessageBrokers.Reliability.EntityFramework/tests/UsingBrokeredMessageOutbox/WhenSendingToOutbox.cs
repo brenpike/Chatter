@@ -5,7 +5,6 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -34,8 +33,11 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             _sut = new BrokeredMessageOutbox<DbContext>(_context, _loggerFactory.Object);
         }
 
+        private const string FixedCorrelationId = "fixed-correlation-id";
+
         private OutboundBrokeredMessage CreateOutbound(string messageId = "msg-1", string destination = "test-destination")
-            => new OutboundBrokeredMessage(messageId, new byte[] { 1, 2, 3 }, new Dictionary<string, object>(), destination, _bodyConverter.Object);
+            => new OutboundBrokeredMessage(messageId, new byte[] { 1, 2, 3 }, new Dictionary<string, object>(), destination, _bodyConverter.Object)
+                .WithCorrelationId(FixedCorrelationId);
 
         [Fact]
         public async Task MustPersistOneOutboxMessagePerOutboundMessage()
@@ -69,7 +71,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             await _sut.SendToOutbox(new[] { outbound }, null);
 
             var persisted = (await _dbContext.Set<OutboxMessage>().ToListAsync()).Single();
-            persisted.MessageContext.Should().Be(JsonConvert.SerializeObject(outbound.MessageContext));
+            // This literal pins the CURRENT Newtonsoft wire form of the persisted MessageContext.
+            // The OutboundBrokeredMessage ctor injects two headers in this order: ContentType
+            // (from the body converter) then CorrelationId (pinned via WithCorrelationId so the
+            // wire form is deterministic). MUST be updated when the Phase-2 STJ port intentionally
+            // changes the serialized form.
+            var expectedWire = $"{{\"{MessageContext.ContentType}\":\"application/json\",\"{MessageContext.CorrelationId}\":\"{FixedCorrelationId}\"}}";
+            persisted.MessageContext.Should().Be(expectedWire);
         }
 
         [Fact]

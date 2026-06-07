@@ -63,6 +63,23 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
         }
 
         [Fact]
+        public async Task MustStoreNewtonsoftSerializedMessageContextWireString()
+        {
+            // This literal pins the CURRENT Newtonsoft wire form of the stored MessageContext.
+            // The OutboundBrokeredMessage ctor injects two headers in this order: ContentType
+            // (from the body converter) then CorrelationId (pinned via WithCorrelationId so the
+            // wire form is deterministic). MUST be updated when the Phase-2 STJ port intentionally
+            // changes the serialized form.
+            var outbound = CreateOutbound("id-1", "queue/path").WithCorrelationId("fixed-correlation-id");
+
+            await _sut.SendToOutbox(outbound, new TransactionContext());
+
+            var stored = (await _sut.GetUnprocessedMessagesFromOutbox()).Single();
+            var expectedWire = $"{{\"{MessageContext.ContentType}\":\"application/json\",\"{MessageContext.CorrelationId}\":\"fixed-correlation-id\"}}";
+            stored.MessageContext.Should().Be(expectedWire);
+        }
+
+        [Fact]
         public async Task MustThrowInvalidOperationWhenAddingDuplicateMessageId()
         {
             await _sut.SendToOutbox(CreateOutbound("id-1"), new TransactionContext());
