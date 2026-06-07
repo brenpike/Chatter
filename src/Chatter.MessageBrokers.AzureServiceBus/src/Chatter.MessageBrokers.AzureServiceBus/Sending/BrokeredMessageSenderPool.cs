@@ -1,7 +1,6 @@
-﻿using Chatter.MessageBrokers.AzureServiceBus.Options;
+using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Core;
-using Microsoft.Azure.ServiceBus.Primitives;
 using System;
 using System.Collections.Concurrent;
 
@@ -9,22 +8,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
     class BrokeredMessageSenderPool
     {
-        readonly ServiceBusConnectionStringBuilder _connectionStringBuilder;
-        readonly RetryPolicy _retryPolicy;
         readonly ConcurrentDictionary<(string entityPath, (ServiceBusConnection connnection, string viaEntityPath)), ConcurrentQueue<MessageSender>> _senders;
-        private readonly ITokenProvider _tokenProvider;
+        private readonly IServiceBusMessageSenderFactory _senderFactory;
 
         public BrokeredMessageSenderPool(ServiceBusOptions serviceBusOptions)
-        {
-            if (serviceBusOptions == null)
-            {
-                throw new ArgumentNullException(nameof(serviceBusOptions), $"Service Bus options are required to use {nameof(BrokeredMessageSenderPool)}");
-            }
+            : this(new AzureSdkMessageSenderFactory(serviceBusOptions))
+        { }
 
+        // Internal seam ctor: an IServiceBusMessageSenderFactory can be injected so the pool's
+        // checkout/return logic is unit-testable without the live connection that a real
+        // MessageSender opens on construction.
+        internal BrokeredMessageSenderPool(IServiceBusMessageSenderFactory senderFactory)
+        {
             _senders = new ConcurrentDictionary<(string, (ServiceBusConnection, string)), ConcurrentQueue<MessageSender>>();
-            _retryPolicy = serviceBusOptions.Policy;
-            _connectionStringBuilder = new ServiceBusConnectionStringBuilder(serviceBusOptions.ConnectionString);
-            _tokenProvider = serviceBusOptions.TokenProvider;
+            _senderFactory = senderFactory ?? throw new ArgumentNullException(nameof(senderFactory));
         }
 
         /// <summary>
@@ -39,21 +36,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 
             if (!sendersForDestination.TryDequeue(out var sender) || sender.IsClosedOrClosing)
             {
-                if (receiverConnectionAndPath.connection != null && receiverConnectionAndPath.sendViaPath != null)
-                {
-                    sender = new MessageSender(receiverConnectionAndPath.connection, destinationEntityPath, receiverConnectionAndPath.sendViaPath, _retryPolicy);
-                }
-                else
-                {
-                    if (_tokenProvider is NullTokenProvider)
-                    {
-                        sender = new MessageSender(_connectionStringBuilder.GetNamespaceConnectionString(), destinationEntityPath, _retryPolicy);
-                    }
-                    else
-                    {
-                        sender = new MessageSender(_connectionStringBuilder.Endpoint, destinationEntityPath, _tokenProvider, _connectionStringBuilder.TransportType, _retryPolicy);
-                    }
-                }
+                sender = _senderFactory.Create(destinationEntityPath, receiverConnectionAndPath);
             }
 
             return sender;
