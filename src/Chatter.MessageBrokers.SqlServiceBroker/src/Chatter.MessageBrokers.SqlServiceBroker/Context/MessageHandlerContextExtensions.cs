@@ -1,15 +1,16 @@
-﻿using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.SqlServiceBroker.Sending;
+using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.Context;
 
 namespace Chatter.CQRS.Context
 {
     public static class MessageHandlerContextExtensions
     {
-        public static ISqlServiceBrokerContextDispatcher SqlServiceBroker(this IMessageHandlerContext context)
+        public static IMessageBrokerContext SqlServiceBroker(this IMessageHandlerContext context)
         {
             if (context is IMessageBrokerContext mbc)
             {
-                return new SqlServiceBrokerContextDispatcher(mbc);
+                mbc.BrokeredMessage?.UseMessagingInfrastructure(it => it.SqlServiceBroker());
+                return mbc;
             }
 
             return null;
