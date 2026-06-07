@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
+using Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
@@ -49,6 +50,34 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             return sut;
         }
 
+        // Drives the deadletter path through the in-memory IServiceBusMessageReceiver double so the
+        // capped description handed to DeadLetterAsync is captured via DeadLetteredLockTokens.
+        private static ServiceBusReceiver CreateInMemorySut(InMemoryServiceBusMessageReceiver inMemory)
+        {
+            var serviceBusOptions = new ServiceBusOptions
+            {
+                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
+                TokenProvider = new NullTokenProvider(),
+            };
+            var logger = new Mock<ILogger<ServiceBusReceiver>>();
+            var factory = new Mock<IBodyConverterFactory>();
+            factory.Setup(f => f.CreateBodyConverter(It.IsAny<string>())).Returns(new JsonBodyConverter());
+            var inboundFactory = new InboundBrokeredMessageFactory(factory.Object, Mock.Of<ILogger>());
+            return new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
+        }
+
+        private static async Task<(ServiceBusReceiver sut, MessageBrokerContext context, TransactionContext transactionContext)> ReceivedPeekLockMessageAsync(InMemoryServiceBusMessageReceiver inMemory)
+        {
+            inMemory.EnqueueMessage(ServiceBusMessageFactory.ReceivedMessage());
+            var sut = CreateInMemorySut(inMemory);
+            await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = "receiver", TransactionMode = TransactionMode.ReceiveOnly }, CancellationToken.None);
+            var transactionContext = new TransactionContext("receiver");
+            var context = await sut.ReceiveMessageAsync(transactionContext, CancellationToken.None);
+            return (sut, context, transactionContext);
+        }
+
+        private const int MaxDeadLetterErrorDescriptionLength = 4096;
+
         [Fact]
         public async Task MustReturnFalseFromAckWhenNotPeekLock()
         {
@@ -95,6 +124,49 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var sut = await CreatePeekLockSutAsync();
             var result = await sut.DeadletterMessageAsync(CreateEmptyContext(), new TransactionContext("receiver"), "reason", "description", CancellationToken.None);
             result.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task MustForwardSubLimitDeadletterDescriptionUnchanged()
+        {
+            var inMemory = new InMemoryServiceBusMessageReceiver();
+            var (sut, context, transactionContext) = await ReceivedPeekLockMessageAsync(inMemory);
+            var description = new string('a', MaxDeadLetterErrorDescriptionLength - 1);
+
+            var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
+
+            result.Should().BeTrue();
+            inMemory.DeadLetteredLockTokens.Should().ContainSingle()
+                .Which.description.Should().Be(description);
+        }
+
+        [Fact]
+        public async Task MustForwardExactlyLimitDeadletterDescriptionUnchanged()
+        {
+            var inMemory = new InMemoryServiceBusMessageReceiver();
+            var (sut, context, transactionContext) = await ReceivedPeekLockMessageAsync(inMemory);
+            var description = new string('a', MaxDeadLetterErrorDescriptionLength);
+
+            var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
+
+            result.Should().BeTrue();
+            inMemory.DeadLetteredLockTokens.Should().ContainSingle()
+                .Which.description.Should().Be(description);
+        }
+
+        [Fact]
+        public async Task MustCapOverLimitDeadletterDescriptionWithoutThrowing()
+        {
+            var inMemory = new InMemoryServiceBusMessageReceiver();
+            var (sut, context, transactionContext) = await ReceivedPeekLockMessageAsync(inMemory);
+            var description = new string('a', MaxDeadLetterErrorDescriptionLength + 100);
+
+            var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
+
+            result.Should().BeTrue();
+            var captured = inMemory.DeadLetteredLockTokens.Should().ContainSingle().Subject.description;
+            captured.Length.Should().BeLessThanOrEqualTo(MaxDeadLetterErrorDescriptionLength);
+            captured.Should().StartWith(new string('a', 10));
         }
     }
 }
