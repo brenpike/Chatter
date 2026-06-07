@@ -43,8 +43,19 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
 
         // ------------------------------------------------------------------ public test API
 
-        /// <summary>Ordered log of calls made by the receiver loop.</summary>
-        public IReadOnlyList<ReceiverCall> CallLog => _callLog;
+        /// <summary>
+        /// Ordered log of calls made by the receiver loop. Returns a locked snapshot so test-thread
+        /// reads never touch the backing <see cref="List{T}"/> while the loop is mutating it under
+        /// <see cref="RecordCall"/>'s lock (<see cref="List{T}"/> is not safe for concurrent read/write).
+        /// </summary>
+        public IReadOnlyList<ReceiverCall> CallLog
+        {
+            get
+            {
+                lock (_callLog)
+                    return _callLog.ToArray();
+            }
+        }
 
         /// <summary>
         /// Completes when <see cref="ReceiveMessageAsync"/> has returned the configured number

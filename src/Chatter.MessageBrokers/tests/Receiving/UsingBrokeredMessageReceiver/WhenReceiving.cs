@@ -71,6 +71,23 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 bodyConverter: converter);
         }
 
+        // INVARIANT: Drained completes only if the receiver loop reaches ReceiveMessageAsync.
+        // If the receiver faults during startup/initialization, StartReceiver catches and returns
+        // without faulting the loop task, so a bare `await infraReceiver.Drained` would block forever
+        // and hang the test run. Bound the wait on the same watchdog used for the disposition wait so
+        // an unreached drain fails promptly instead of hanging.
+        private static async Task AwaitDrainedAsync(
+            InMemoryMessagingInfrastructureReceiver infraReceiver,
+            CancellationToken watchdog)
+        {
+            var watchdogTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (watchdog.Register(() => watchdogTcs.TrySetCanceled(watchdog)))
+            {
+                var completed = await Task.WhenAny(infraReceiver.Drained, watchdogTcs.Task);
+                await completed; // surface OperationCanceledException if the watchdog fired first
+            }
+        }
+
         // INVARIANT: Drained fires at message dequeue, before ProcessMessageAsync runs.
         // Asserting on the CallLog requires waiting until the expected disposition (Ack/Nack/Deadletter)
         // actually appears — not just until the message is dequeued. This helper yields until the
@@ -129,11 +146,10 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             using var cts = new CancellationTokenSource();
             var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(), cts.Token));
 
-            await infraReceiver.Drained;
-
             // Wait for the Ack to land in the log before cancelling, to avoid the race where
             // cancellation fires before ProcessMessageAsync runs and no disposition is recorded.
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
             await WaitForDispositionAsync(infraReceiver, ReceiverCall.Ack, watchdog.Token);
 
             cts.Cancel();
@@ -167,9 +183,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             using var cts = new CancellationTokenSource();
             var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxReceiveAttempts: 10), cts.Token));
 
-            await infraReceiver.Drained;
-
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
             await WaitForDispositionAsync(infraReceiver, ReceiverCall.Nack, watchdog.Token);
 
             cts.Cancel();
@@ -197,9 +212,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             using var cts = new CancellationTokenSource();
             var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(), cts.Token));
 
-            await infraReceiver.Drained;
-
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
             await WaitForDispositionAsync(infraReceiver, ReceiverCall.Deadletter, watchdog.Token);
 
             cts.Cancel();
@@ -240,9 +254,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             using var cts = new CancellationTokenSource();
             var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxReceiveAttempts: maxAttempts), cts.Token));
 
-            await infraReceiver.Drained;
-
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
             await WaitForDispositionAsync(infraReceiver, ReceiverCall.Deadletter, watchdog.Token);
 
             cts.Cancel();
