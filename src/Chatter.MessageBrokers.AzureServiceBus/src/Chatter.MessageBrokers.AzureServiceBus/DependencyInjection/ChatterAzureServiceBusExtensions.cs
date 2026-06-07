@@ -39,13 +39,19 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
             builder.Services.AddSingleton<AzureServiceBusEntityPathBuilder>();
 
-            // Folded receiver/dispatcher factory: each delegate opens a DI scope, resolves the scoped
-            // infrastructure service, and disposes the scope — reproducing the former
-            // ServiceBusReceiverFactory / ServiceBusMessageSenderFactory behavior exactly.
-            builder.Services.AddSingleton<MessagingInfrastructureFactory>(sp =>
+            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, ServiceBusCircuitBreakerExceptionPredicatesProvider>();
+            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, ServiceBusRetryExceptionPredicatesProvider>();
+
+            builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
+                // Folded receiver/dispatcher factory captured directly in this infrastructure's
+                // descriptor (NOT resolved from the container by the shared MessagingInfrastructureFactory
+                // type), so each broker keeps its own factory under multi-broker registration. Each
+                // delegate opens a DI scope, resolves the scoped infrastructure service, and disposes the
+                // scope — reproducing the former ServiceBusReceiverFactory / ServiceBusMessageSenderFactory
+                // behavior exactly.
                 var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new MessagingInfrastructureFactory(
+                var infrastructureFactory = new MessagingInfrastructureFactory(
                     () =>
                     {
                         using var scope = scopeFactory.CreateScope();
@@ -56,14 +62,6 @@ namespace Microsoft.Extensions.DependencyInjection
                         using var scope = scopeFactory.CreateScope();
                         return scope.ServiceProvider.GetRequiredService<ServiceBusMessageSender>();
                     });
-            });
-
-            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, ServiceBusCircuitBreakerExceptionPredicatesProvider>();
-            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, ServiceBusRetryExceptionPredicatesProvider>();
-
-            builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
-            {
-                var infrastructureFactory = sp.GetRequiredService<MessagingInfrastructureFactory>();
                 var pathBuilder = sp.GetRequiredService<AzureServiceBusEntityPathBuilder>();
                 return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory, pathBuilder);
             });
