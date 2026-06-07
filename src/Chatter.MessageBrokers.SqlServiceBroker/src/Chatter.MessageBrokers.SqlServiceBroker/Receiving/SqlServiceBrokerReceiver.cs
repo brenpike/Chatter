@@ -18,9 +18,10 @@ using System.Transactions;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 {
-    public class SqlServiceBrokerReceiver : IMessagingInfrastructureReceiver
+    internal class SqlServiceBrokerReceiver : IMessagingInfrastructureReceiver
     {
         private readonly SqlServiceBrokerOptions _ssbOptions;
+        private readonly ISqlConnectionSource _connectionSource;
         private readonly ILogger<SqlServiceBrokerReceiver> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private TransactionMode _transactionMode;
@@ -29,12 +30,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private ReceiverOptions _options;
 
         public SqlServiceBrokerReceiver(SqlServiceBrokerOptions ssbOptions,
+                                        ISqlConnectionSource connectionSource,
                                         MessageBrokerOptions messageBrokerOptions,
                                         ILogger<SqlServiceBrokerReceiver> logger,
                                         IBodyConverterFactory bodyConverterFactory,
                                         IServiceScopeFactory serviceFactory)
         {
             _ssbOptions = ssbOptions ?? throw new ArgumentNullException(nameof(ssbOptions));
+            _connectionSource = connectionSource ?? throw new ArgumentNullException(nameof(connectionSource));
             _logger = logger;
             _bodyConverterFactory = bodyConverterFactory;
             _transactionMode = messageBrokerOptions?.TransactionMode ?? TransactionMode.ReceiveOnly;
@@ -79,8 +82,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             try
             {
-                connection = new SqlConnection(_ssbOptions.ConnectionString);
-                await connection.OpenAsync(cancellationToken);
+                connection = await _connectionSource.OpenAsync(cancellationToken);
                 transaction = await CreateTransaction(connection, cancellationToken);
             }
             catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException)
