@@ -25,20 +25,37 @@ namespace Microsoft.Extensions.DependencyInjection
             optionsBuilder?.Invoke(optBuilder);
             var options = optBuilder.Build();
 
-            builder.Services.AddIfNotRegistered<SqlServiceBrokerReceiver>(ServiceLifetime.Scoped);
-            builder.Services.AddIfNotRegistered<SqlServiceBrokerSenderFactory>(ServiceLifetime.Singleton);
+            builder.Services.AddIfNotRegistered<ISqlConnectionSource, SqlClientConnectionSource>(ServiceLifetime.Scoped);
 
+            builder.Services.AddIfNotRegistered<SqlServiceBrokerReceiver>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<SqlServiceBrokerSender>(ServiceLifetime.Scoped);
-            builder.Services.AddIfNotRegistered<SqlServiceBrokerReceiverFactory>(ServiceLifetime.Singleton);
+
+            // Folded receiver/dispatcher factory: each delegate opens a DI scope, resolves the scoped
+            // infrastructure service, and disposes the scope — reproducing the former
+            // SqlServiceBrokerReceiverFactory / SqlServiceBrokerSenderFactory behavior exactly.
+            builder.Services.AddSingleton<SqlServiceBrokerInfrastructureFactory>(sp =>
+            {
+                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+                return new SqlServiceBrokerInfrastructureFactory(
+                    () =>
+                    {
+                        using var scope = scopeFactory.CreateScope();
+                        return scope.ServiceProvider.GetRequiredService<SqlServiceBrokerReceiver>();
+                    },
+                    () =>
+                    {
+                        using var scope = scopeFactory.CreateScope();
+                        return scope.ServiceProvider.GetRequiredService<SqlServiceBrokerSender>();
+                    });
+            });
 
             builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, SqlCircuitBreakerExceptionPredicatesProvider>();
             builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, SqlRetryExceptionPredicatesProvider>();
 
             builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
-                var sender = sp.GetRequiredService<SqlServiceBrokerSenderFactory>();
-                var receiver = sp.GetRequiredService<SqlServiceBrokerReceiverFactory>();
-                return new MessagingInfrastructure(SSBMessageContext.InfrastructureType, receiver, sender);
+                var infrastructureFactory = sp.GetRequiredService<SqlServiceBrokerInfrastructureFactory>();
+                return new MessagingInfrastructure(SSBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory);
             });
 
             builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
