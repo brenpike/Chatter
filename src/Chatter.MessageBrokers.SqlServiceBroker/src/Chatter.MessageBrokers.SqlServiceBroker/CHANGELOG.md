@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.8.1] - 2026-06-06
+
+### Fixed
+
+- Upgraded `System.Data.SqlClient` 4.8.3 -> 4.8.6, resolving Dependabot alert #11 (SQL Data Provider Security Feature Bypass, high) and #1 (.NET Information Disclosure, medium).
+
 ## [0.8.0] - 2026-05-30
 
 ### Changed
