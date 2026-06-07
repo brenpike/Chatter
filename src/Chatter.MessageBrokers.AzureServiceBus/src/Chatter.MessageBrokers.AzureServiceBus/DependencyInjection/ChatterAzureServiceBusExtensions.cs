@@ -34,23 +34,38 @@ namespace Microsoft.Extensions.DependencyInjection
         private static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, ServiceBusOptions options)
         {
             builder.Services.AddScoped<ServiceBusReceiver>();
-            builder.Services.AddSingleton<ServiceBusReceiverFactory>();
-
             builder.Services.AddScoped<ServiceBusMessageSender>();
-            builder.Services.AddSingleton<ServiceBusMessageSenderFactory>();
 
             builder.Services.AddSingleton<BrokeredMessageSenderPool>();
             builder.Services.AddSingleton<AzureServiceBusEntityPathBuilder>();
+
+            // Folded receiver/dispatcher factory: each delegate opens a DI scope, resolves the scoped
+            // infrastructure service, and disposes the scope — reproducing the former
+            // ServiceBusReceiverFactory / ServiceBusMessageSenderFactory behavior exactly.
+            builder.Services.AddSingleton<ServiceBusInfrastructureFactory>(sp =>
+            {
+                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+                return new ServiceBusInfrastructureFactory(
+                    () =>
+                    {
+                        using var scope = scopeFactory.CreateScope();
+                        return scope.ServiceProvider.GetRequiredService<ServiceBusReceiver>();
+                    },
+                    () =>
+                    {
+                        using var scope = scopeFactory.CreateScope();
+                        return scope.ServiceProvider.GetRequiredService<ServiceBusMessageSender>();
+                    });
+            });
 
             builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, ServiceBusCircuitBreakerExceptionPredicatesProvider>();
             builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, ServiceBusRetryExceptionPredicatesProvider>();
 
             builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
-                var sender = sp.GetRequiredService<ServiceBusMessageSenderFactory>();
-                var receiver = sp.GetRequiredService<ServiceBusReceiverFactory>();
+                var infrastructureFactory = sp.GetRequiredService<ServiceBusInfrastructureFactory>();
                 var pathBuilder = sp.GetRequiredService<AzureServiceBusEntityPathBuilder>();
-                return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, receiver, sender, pathBuilder);
+                return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory, pathBuilder);
             });
 
             return builder;

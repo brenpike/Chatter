@@ -1,11 +1,8 @@
-﻿using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
-using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Core;
 using Microsoft.Azure.ServiceBus.Primitives;
 using Microsoft.Extensions.Logging;
 using System;
@@ -15,16 +12,17 @@ using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
-    public class ServiceBusReceiver : IMessagingInfrastructureReceiver
+    internal class ServiceBusReceiver : IMessagingInfrastructureReceiver
     {
         readonly object _syncLock;
         private readonly ILogger<ServiceBusReceiver> _logger;
-        private readonly IBodyConverterFactory _bodyConverterFactory;
+        private readonly InboundBrokeredMessageFactory _inboundFactory;
+        private readonly Func<ReceiverOptions, ReceiveMode, IServiceBusMessageReceiver> _receiverFactory;
         private readonly ITokenProvider _tokenProvider;
         private readonly RetryPolicy _retryPolcy;
         private readonly int _prefetchCount;
         private ReceiveMode _receiveMode;
-        MessageReceiver _innerReceiver;
+        IServiceBusMessageReceiver _innerReceiver;
         private bool _disposedValue;
         private ReceiverOptions _options;
 
@@ -32,6 +30,23 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                   MessageBrokerOptions messageBrokerOptions,
                                   ILogger<ServiceBusReceiver> logger,
                                   IBodyConverterFactory bodyConverterFactory)
+            : this(serviceBusOptions,
+                   messageBrokerOptions,
+                   logger,
+                   new InboundBrokeredMessageFactory(
+                       bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory)),
+                       logger ?? throw new ArgumentNullException(nameof(logger))),
+                   receiverFactory: null)
+        { }
+
+        // Internal seam ctor: an IServiceBusMessageReceiver factory (path + receive-mode -> port) can be
+        // injected to drive receive/ack behavior with an in-memory double in tests. When null, the
+        // production AzureSdkMessageReceiverAdapter source is used.
+        internal ServiceBusReceiver(ServiceBusOptions serviceBusOptions,
+                                    MessageBrokerOptions messageBrokerOptions,
+                                    ILogger<ServiceBusReceiver> logger,
+                                    InboundBrokeredMessageFactory inboundFactory,
+                                    Func<ReceiverOptions, ReceiveMode, IServiceBusMessageReceiver> receiverFactory)
         {
             if (serviceBusOptions is null)
             {
@@ -41,11 +56,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _syncLock = new object();
             ServiceBusConnectionBuilder = new ServiceBusConnectionStringBuilder(serviceBusOptions.ConnectionString);
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
+            _inboundFactory = inboundFactory ?? throw new ArgumentNullException(nameof(inboundFactory));
             _tokenProvider = serviceBusOptions.TokenProvider;
             _retryPolcy = serviceBusOptions.Policy;
             _prefetchCount = serviceBusOptions.PrefetchCount;
             _receiveMode = messageBrokerOptions?.TransactionMode == TransactionMode.None ? ReceiveMode.ReceiveAndDelete : ReceiveMode.PeekLock;
+            _receiverFactory = receiverFactory ?? CreateProductionReceiver;
         }
 
         /// <summary>
@@ -53,7 +69,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// </summary>
         public ServiceBusConnectionStringBuilder ServiceBusConnectionBuilder { get; }
 
-        internal MessageReceiver InnerReceiver
+        private IServiceBusMessageReceiver CreateProductionReceiver(ReceiverOptions options, ReceiveMode receiveMode)
+            => new AzureSdkMessageReceiverAdapter(ServiceBusConnectionBuilder,
+                                                  options.MessageReceiverPath,
+                                                  receiveMode,
+                                                  _retryPolcy,
+                                                  _prefetchCount,
+                                                  _tokenProvider,
+                                                  _logger);
+
+        internal IServiceBusMessageReceiver InnerReceiver
         {
             get
             {
@@ -63,33 +88,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                     {
                         if (_innerReceiver == null)
                         {
-                            try
-                            {
-                                if (_tokenProvider is NullTokenProvider)
-                                {
-                                    _innerReceiver = new MessageReceiver(this.ServiceBusConnectionBuilder.GetNamespaceConnectionString(),
-                                                                         _options.MessageReceiverPath,
-                                                                         _receiveMode,
-                                                                         _retryPolcy,
-                                                                         _prefetchCount);
-                                    _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_options.MessageReceiverPath}' on endpoint '{this.ServiceBusConnectionBuilder.Endpoint}'");
-                                }
-                                else
-                                {
-                                    _innerReceiver = new MessageReceiver(this.ServiceBusConnectionBuilder.Endpoint,
-                                                                         _options.MessageReceiverPath,
-                                                                         _tokenProvider,
-                                                                         this.ServiceBusConnectionBuilder.TransportType,
-                                                                         _receiveMode,
-                                                                         _retryPolcy,
-                                                                         _prefetchCount);
-                                    _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_options.MessageReceiverPath}' on endpoint '{this.ServiceBusConnectionBuilder.Endpoint}' using {_tokenProvider.GetType().Name}");
-                                }
-                            }
-                            catch (ArgumentException e) //throw when service bus connection string cannot be built
-                            {
-                                throw new CriticalReceiverException($"Error creating {nameof(MessageReceiver)}", e);
-                            }
+                            _innerReceiver = _receiverFactory(_options, _receiveMode);
                         }
                     }
                 }
@@ -152,33 +151,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return null;
             }
 
-            MessageBrokerContext messageContext;
-            IBrokeredMessageBodyConverter bodyConverter = new JsonBodyConverter();
+            var messageContext = _inboundFactory.CreateContext(message, _options.MessageReceiverPath, cancellationToken);
 
-            try
+            transactionContext.Container.Include(this.InnerReceiver);
+
+            if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
             {
-                bodyConverter = _bodyConverterFactory.CreateBodyConverter(message.ContentType);
-            }
-            catch (Exception e)
-            {
-                _logger.LogWarning(e, $"Error creating body converter for content type '{message.ContentType}'. Defaulting to {nameof(JsonBodyConverter)}.");
-            }
-            finally
-            {
-                message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
-                message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
-                message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
-                message.AddUserProperty(MessageContext.ReceiveAttempts, message.SystemProperties.DeliveryCount);
-
-                messageContext = new MessageBrokerContext(message.MessageId, message.Body, message.UserProperties, _options.MessageReceiverPath, cancellationToken, bodyConverter);
-
-                messageContext.Container.Include(message);
-                transactionContext.Container.Include(this.InnerReceiver);
-
-                if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
-                {
-                    transactionContext.Container.Include(this.InnerReceiver.ServiceBusConnection);
-                }
+                transactionContext.Container.Include(this.InnerReceiver.ServiceBusConnection);
             }
 
             return messageContext;
