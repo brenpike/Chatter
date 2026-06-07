@@ -12,6 +12,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.10.0] - 2026-06-07
+
+### Changed
+
+- `IMessageHandlerContext.SqlServiceBroker()` now returns the core `IMessageBrokerContext` (was `ISqlServiceBrokerContextDispatcher`). The same `Send`/`Publish`/`Forward` members remain, so callers using those recompile unchanged.
+
+### Removed
+
+- `SqlServiceBrokerContextDispatcher` and `ISqlServiceBrokerContextDispatcher` — pass-through wrappers collapsed into `IMessageBrokerContext`. Code referencing those types directly is broken.
+
 ## [0.9.0] - 2026-06-07
 
 ### Changed
