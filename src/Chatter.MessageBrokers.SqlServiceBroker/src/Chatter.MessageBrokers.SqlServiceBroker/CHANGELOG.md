@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.10.1] - 2026-06-07
+
+### Changed
+
+- Rerouted DI registration to the shared core `MessagingInfrastructureFactory`; removed the internal `SqlServiceBrokerInfrastructureFactory` (behavior-preserving — identical scope-open/resolve/dispose semantics). Now depends on `Chatter.MessageBrokers` >= 0.10.0.
+
 ## [0.10.0] - 2026-06-07
 
 ### Changed
