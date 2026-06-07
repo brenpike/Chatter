@@ -33,10 +33,10 @@ namespace Microsoft.Extensions.DependencyInjection
             // Folded receiver/dispatcher factory: each delegate opens a DI scope, resolves the scoped
             // infrastructure service, and disposes the scope — reproducing the former
             // SqlServiceBrokerReceiverFactory / SqlServiceBrokerSenderFactory behavior exactly.
-            builder.Services.AddSingleton<SqlServiceBrokerInfrastructureFactory>(sp =>
+            builder.Services.AddSingleton<MessagingInfrastructureFactory>(sp =>
             {
                 var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new SqlServiceBrokerInfrastructureFactory(
+                return new MessagingInfrastructureFactory(
                     () =>
                     {
                         using var scope = scopeFactory.CreateScope();
@@ -54,7 +54,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             builder.Services.AddSingleton<IMessagingInfrastructure>(sp =>
             {
-                var infrastructureFactory = sp.GetRequiredService<SqlServiceBrokerInfrastructureFactory>();
+                var infrastructureFactory = sp.GetRequiredService<MessagingInfrastructureFactory>();
                 return new MessagingInfrastructure(SSBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory);
             });
 
