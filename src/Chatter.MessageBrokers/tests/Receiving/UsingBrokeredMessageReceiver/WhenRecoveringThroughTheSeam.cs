@@ -121,6 +121,23 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
 
         // ------------------------------------------------------------------ determinism helper (mirrors WhenReceiving.cs)
 
+        // INVARIANT: Drained completes only if the receiver loop reaches ReceiveMessageAsync.
+        // If the receiver faults during startup/initialization, StartReceiver catches and returns
+        // without faulting the loop task, so a bare `await infraReceiver.Drained` would block forever
+        // and hang the test run. Bound the wait on the same watchdog used for the disposition wait so
+        // an unreached drain fails promptly instead of hanging.
+        private static async Task AwaitDrainedAsync(
+            InMemoryMessagingInfrastructureReceiver infraReceiver,
+            CancellationToken watchdog)
+        {
+            var watchdogTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (watchdog.Register(() => watchdogTcs.TrySetCanceled(watchdog)))
+            {
+                var completed = await Task.WhenAny(infraReceiver.Drained, watchdogTcs.Task);
+                await completed; // surface OperationCanceledException if the watchdog fired first
+            }
+        }
+
         // INVARIANT: Drained fires at message dequeue, before ProcessMessageAsync runs.
         // Poll the CallLog until the expected disposition appears, then return.
         // The watchdog CTS (10 s) bounds the wait in case of unexpected code paths.
@@ -209,9 +226,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             using var cts = new CancellationTokenSource();
             var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(), cts.Token));
 
-            await infraReceiver.Drained;
-
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
             await WaitForDispositionAsync(infraReceiver, ReceiverCall.Ack, watchdog.Token);
 
             cts.Cancel();
@@ -302,9 +318,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             using var cts = new CancellationTokenSource();
             var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(), cts.Token));
 
-            await infraReceiver.Drained;
-
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
             await WaitForDispositionAsync(infraReceiver, ReceiverCall.Ack, watchdog.Token);
 
             cts.Cancel();
