@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.9.1] - 2026-06-06
+
+### Fixed
+
+- Picked up `Chatter.MessageBrokers.SqlServiceBroker` 0.8.1, which upgrades the transitive `System.Data.SqlClient` 4.8.3 -> 4.8.6 (resolves Dependabot alerts #11 and #1).
+
 ## [0.9.0] - 2026-05-30
 
 ### Changed

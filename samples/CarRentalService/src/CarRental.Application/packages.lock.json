@@ -412,8 +412,8 @@
       },
       "System.Data.SqlClient": {
         "type": "Transitive",
-        "resolved": "4.8.3",
-        "contentHash": "yERfVLXAY0QbylAgaGLByYN0hFxX28aeEQ0hUgJO+Ntn1AfmWl5HHUoYJA0Yl9HhIUUJHVaS/Sw/RLZr5aaC+A==",
+        "resolved": "4.8.6",
+        "contentHash": "2Ij/LCaTQRyAi5lAv7UUTV9R2FobC8xN9mE0fXBZohum/xLl8IZVmE98Rq5ugQHjCgTBRKqpXRb4ORulRdA6Ig==",
         "dependencies": {
           "runtime.native.System.Data.SqlClient.sni": "4.7.0"
         }
@@ -471,13 +471,13 @@
         "dependencies": {
           "Chatter.MessageBrokers": "[0.9.0, )",
           "Microsoft.Extensions.Hosting": "[10.0.0, )",
-          "System.Data.SqlClient": "[4.8.3, )"
+          "System.Data.SqlClient": "[4.8.6, )"
         }
       },
       "chatter.sqlchangefeed": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers.SqlServiceBroker": "[0.8.0, )",
+          "Chatter.MessageBrokers.SqlServiceBroker": "[0.8.1, )",
           "Microsoft.AspNetCore.Http.Abstractions": "[2.2.0, )"
         }
       },
@@ -898,8 +898,8 @@
       },
       "System.Data.SqlClient": {
         "type": "Transitive",
-        "resolved": "4.8.3",
-        "contentHash": "yERfVLXAY0QbylAgaGLByYN0hFxX28aeEQ0hUgJO+Ntn1AfmWl5HHUoYJA0Yl9HhIUUJHVaS/Sw/RLZr5aaC+A==",
+        "resolved": "4.8.6",
+        "contentHash": "2Ij/LCaTQRyAi5lAv7UUTV9R2FobC8xN9mE0fXBZohum/xLl8IZVmE98Rq5ugQHjCgTBRKqpXRb4ORulRdA6Ig==",
         "dependencies": {
           "runtime.native.System.Data.SqlClient.sni": "4.7.0"
         }
@@ -957,13 +957,13 @@
         "dependencies": {
           "Chatter.MessageBrokers": "[0.9.0, )",
           "Microsoft.Extensions.Hosting": "[8.0.0, )",
-          "System.Data.SqlClient": "[4.8.3, )"
+          "System.Data.SqlClient": "[4.8.6, )"
         }
       },
       "chatter.sqlchangefeed": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers.SqlServiceBroker": "[0.8.0, )",
+          "Chatter.MessageBrokers.SqlServiceBroker": "[0.8.1, )",
           "Microsoft.AspNetCore.Http.Abstractions": "[2.2.0, )"
         }
       },
