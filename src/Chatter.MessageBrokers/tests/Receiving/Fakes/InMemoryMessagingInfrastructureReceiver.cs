@@ -88,23 +88,27 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
             return Task.CompletedTask;
         }
 
-        public Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
+        public async Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            RecordCall(ReceiverCall.Receive);
-
             if (_messageQueue.TryDequeue(out var context))
             {
+                RecordCall(ReceiverCall.Receive);
+
                 int callCount = Interlocked.Increment(ref _receiveCallCount);
                 if (callCount >= _expectedMessageCount)
                     _drainedTcs.TrySetResult(true);
 
-                return Task.FromResult(context);
+                return context;
             }
 
-            // Queue empty but not yet cancelled: return null so the loop idles without blocking.
-            return Task.FromResult<MessageBrokerContext>(null);
+            // Queue empty: block until cancellation instead of returning null synchronously.
+            // Returning null here would let the receiver loop spin-call back into this method,
+            // pegging CPU and growing CallLog unbounded while the test winds down. Awaiting the
+            // token parks the loop until cts.Cancel(), at which point the OCE unwinds it cleanly.
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            return null; // unreachable: the await above always throws on cancellation.
         }
 
         public Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
