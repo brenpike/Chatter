@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <Include>[Chatter.MessageBrokers.AzureServiceBus.Auth]*</Include>
   </PropertyGroup>
 
   <ItemGroup>
