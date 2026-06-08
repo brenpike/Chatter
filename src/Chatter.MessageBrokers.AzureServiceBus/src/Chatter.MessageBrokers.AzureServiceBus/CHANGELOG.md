@@ -12,6 +12,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.10.3] - 2026-06-07
+
+### Changed
+
+- Swapped ServiceBusOptions [JsonIgnore] attributes from Newtonsoft.Json to System.Text.Json. Dropped the transitive Newtonsoft.Json dependency.
+
+### Fixed
+
 - Cap the Azure Service Bus deadletter error description to the SDK's 4096-character limit, preventing `System.ArgumentOutOfRangeException` on `OnDeadLetterAsync` (#92).
 
 ## [0.10.1] - 2026-06-07
