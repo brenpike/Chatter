@@ -98,5 +98,54 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
 
             _outbox.Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
         }
+
+        // REGRESSION ORACLE: production writers (InMemory/EF SendToOutbox) serialize the entire
+        // IDictionary<string, object> MessageContext, which legitimately holds non-string values —
+        // an integer ReceiveAttempts (SSB receive/deadletter), a TimeSpan TimeToLive, and a DateTime
+        // ScheduledEnqueueTimeUtc (Azure). Deserializing that row back to Dictionary<string, string>
+        // threw JsonException on the numeric value; Process swallows it into LogError, silently
+        // stranding a valid row (never dispatched, never marked processed). This context is built the
+        // same way the writers build it — JsonSerializer.Serialize over an IDictionary<string, object>
+        // with ChatterJson.Options — so it pins the real wire format, and the positive-dispatch +
+        // processed assertions make any future re-break of the materialization visible.
+        private static OutboxMessage CreateOutboxMessageWithNonStringContextValues()
+        {
+            var context = new System.Collections.Generic.Dictionary<string, object>
+            {
+                [MessageContext.ContentType] = ContentType,
+                [MessageContext.InfrastructureType] = Infra,
+                [MessageContext.ReceiveAttempts] = 3,
+                [MessageContext.TimeToLive] = TimeSpan.FromMinutes(5),
+                ["ScheduledEnqueueTimeUtc"] = new DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc),
+            };
+
+            return new OutboxMessage
+            {
+                Id = 2,
+                MessageId = "message-id",
+                Destination = "destination",
+                MessageContentType = null,
+                MessageContext = System.Text.Json.JsonSerializer.Serialize(context, ChatterJson.Options),
+                MessageBody = "message-body",
+            };
+        }
+
+        [Fact]
+        public async Task MustDispatchOutboxMessageWhenContextContainsNonStringValues()
+        {
+            await _sut.Process(CreateOutboxMessageWithNonStringContextValues());
+
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+        }
+
+        [Fact]
+        public async Task MustMarkProcessedWhenContextContainsNonStringValues()
+        {
+            var message = CreateOutboxMessageWithNonStringContextValues();
+
+            await _sut.Process(message);
+
+            _outbox.Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
+        }
     }
 }

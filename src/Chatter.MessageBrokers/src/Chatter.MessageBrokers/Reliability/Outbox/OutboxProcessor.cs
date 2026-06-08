@@ -33,12 +33,16 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 IDictionary<string, object> messageContext = new Dictionary<string, object>();
                 if (!string.IsNullOrWhiteSpace(message.MessageContext))
                 {
-                    // INVARIANT: the persisted MessageContext is a flat string->string header map.
-                    // Deserialize to Dictionary<string, string> so values are System.String rather than
-                    // JsonElement, preserving the (string) reads below and the IDictionary<string, object>
-                    // passed to the OutboundBrokeredMessage ctor.
-                    var headers = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(message.MessageContext, ChatterJson.Options);
-                    messageContext = headers.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                    // The persisted MessageContext is an IDictionary<string, object> whose values are
+                    // NOT all strings: WithTimeToLive/RefreshTimeToLive write a TimeSpan, Azure Service
+                    // Bus WithScheduledEnqueueTimeUtc writes a DateTime, and SSB receive/deadletter paths
+                    // write an integer ReceiveAttempts. Deserializing to Dictionary<string, string> threw
+                    // on any non-string JSON token (e.g. the numeric ReceiveAttempts), and Process only
+                    // logs the exception, silently stranding a valid outbox row. Deserialize to
+                    // JsonElement and materialize each value to its CLR primitive by ValueKind so every
+                    // valid row replays and the (string) reads below remain correct for string headers.
+                    var headers = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(message.MessageContext, ChatterJson.Options);
+                    messageContext = headers.ToDictionary(kvp => kvp.Key, kvp => MaterializeContextValue(kvp.Value));
                 }
 
                 var contentType = message.MessageContentType;
@@ -74,6 +78,30 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             catch (Exception e)
             {
                 _logger.LogError(e, $"Unable to process outbox message with id '{message.Id}'");
+            }
+        }
+
+        // Materializes a persisted MessageContext value to the CLR primitive that matches its JSON
+        // kind, mirroring Newtonsoft's IDictionary<string, object> round-trip. String headers (e.g.
+        // ContentType, InfrastructureType) materialize to System.String so existing (string) casts
+        // hold; numbers/booleans/null round-trip without forcing a string; objects/arrays (none are
+        // written today) fall back to their raw JSON so no value is dropped.
+        private static object MaterializeContextValue(System.Text.Json.JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case System.Text.Json.JsonValueKind.String:
+                    return element.GetString();
+                case System.Text.Json.JsonValueKind.Number:
+                    return element.TryGetInt64(out var l) ? l : element.GetDouble();
+                case System.Text.Json.JsonValueKind.True:
+                case System.Text.Json.JsonValueKind.False:
+                    return element.GetBoolean();
+                case System.Text.Json.JsonValueKind.Null:
+                case System.Text.Json.JsonValueKind.Undefined:
+                    return null;
+                default:
+                    return element.GetRawText();
             }
         }
 
