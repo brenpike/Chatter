@@ -1,9 +1,14 @@
-﻿using Microsoft.Azure.ServiceBus;
-
-namespace Chatter.MessageBrokers.AzureServiceBus
+﻿namespace Chatter.MessageBrokers.AzureServiceBus
 {
     class AzureServiceBusEntityPathBuilder : IBrokeredMessagePathBuilder
     {
+        // INVARIANT: reproduces the path shape of Azure Service Bus' internal EntityNameFormatter
+        // (FormatSubscriptionPath / FormatRulePath). Azure.Messaging.ServiceBus 7.20.1 exposes no
+        // public path formatter (the legacy public Microsoft.Azure.ServiceBus.EntityNameHelper was
+        // removed; EntityNameFormatter is internal), so the canonical segment literals are inlined.
+        private const string SubscriptionsSegment = "Subscriptions";
+        private const string RulesSegment = "Rules";
+
         string IBrokeredMessagePathBuilder.GetMessageReceivingPath(string messageSendingPath, string messageReceiverPath)
         {
 
@@ -22,11 +27,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus
                 return messageReceiverPath;
             }
 
-            return EntityNameHelper.FormatSubscriptionPath(messageSendingPath, messageReceiverPath);
+            return FormatSubscriptionPath(messageSendingPath, messageReceiverPath);
         }
 
-        string IBrokeredMessagePathBuilder.GetMessageReceivingRulePath(string messageSendingPath, string messageReceiverPath, string ruleName) 
-            => EntityNameHelper.FormatRulePath(messageSendingPath, messageReceiverPath, ruleName);
+        string IBrokeredMessagePathBuilder.GetMessageReceivingRulePath(string messageSendingPath, string messageReceiverPath, string ruleName)
+            => $"{FormatSubscriptionPath(messageSendingPath, messageReceiverPath)}/{RulesSegment}/{ruleName}";
+
+        private static string FormatSubscriptionPath(string topicPath, string subscriptionName)
+            => $"{topicPath}/{SubscriptionsSegment}/{subscriptionName}";
 
         string IBrokeredMessagePathBuilder.GetMessageSendingPath(string messageSendingPath) 
             => messageSendingPath;
