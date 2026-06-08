@@ -135,5 +135,75 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingRoutingSlipSerializati
             // Numbers materialize to long (Int64) per the materializer's Newtonsoft-parity semantics.
             roundTrippedSlip.Attachments["attachment-number"].Should().BeOfType<long>().Which.Should().Be(42L);
         }
+
+        // STRUCTURED + TYPED ATTACHMENTS FIDELITY: the "all areas" mandate for the RoutingSlip seam.
+        // Newtonsoft's untyped read produced navigable JObject/JArray and CLR-typed leaves for object/
+        // array Attachments values, so a consumer storing a Dictionary, an array, a DateTime, a string,
+        // and an int could read them back as navigable structures and CLR types. After the STJ port the
+        // global MaterializingObjectConverter on ChatterJson.Options materializes each Attachments value
+        // INLINE during the RoutingSlip deserialize (no per-seam materialize line), so this asserts each
+        // entry reads back as the correct CLR type / navigable structure through the real production
+        // seams (WithRoutingSlip serialize -> TryGetRoutingSlip deserialize).
+        [Fact]
+        public void MustRoundTripStructuredAndTypedAttachmentsThroughProductionSeams()
+        {
+            var id = Guid.NewGuid();
+            var instant = new DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc);
+
+            var slip = RoutingSlipBuilder.NewRoutingSlip(id)
+                .WithRoute("only")
+                .Build();
+
+            // A spread of Attachments value shapes: primitive string, primitive int, a DateTime, a
+            // structured object (Dictionary), and an array.
+            slip.Attachments["str"] = "a-string";
+            slip.Attachments["num"] = 42;
+            slip.Attachments["when"] = instant;
+            slip.Attachments["obj"] = new Dictionary<string, object> { ["id"] = 1, ["name"] = "abc" };
+            slip.Attachments["arr"] = new object[] { 1, "two", true };
+
+            // SERIALIZE seam.
+            var serializeContext = new Dictionary<string, object>();
+            var serializeSut = CreateContext(serializeContext);
+            serializeSut.BrokeredMessage.WithRoutingSlip(slip);
+
+            var serializedSlip = serializeContext[MessageContext.RoutingSlip];
+
+            // DESERIALIZE seam.
+            var deserializeContext = new Dictionary<string, object>
+            {
+                [MessageContext.RoutingSlip] = serializedSlip
+            };
+            var deserializeSut = CreateContext(deserializeContext);
+
+            var found = deserializeSut.TryGetRoutingSlip(out var roundTrippedSlip);
+
+            found.Should().BeTrue();
+            roundTrippedSlip.Id.Should().Be(id);
+
+            var attachments = roundTrippedSlip.Attachments;
+
+            // string -> string
+            attachments["str"].Should().BeOfType<string>().And.Be("a-string");
+
+            // int -> long (untyped Newtonsoft-parity widening)
+            attachments["num"].Should().BeOfType<long>().And.Be(42L);
+
+            // strict ISO-8601 -> DateTime
+            attachments["when"].Should().BeOfType<DateTime>();
+            ((DateTime)attachments["when"]).ToUniversalTime().Should().Be(instant);
+
+            // structured object -> navigable Dictionary<string, object> with materialized leaves
+            var obj = attachments["obj"].Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            obj["id"].Should().BeOfType<long>().And.Be(1L);
+            obj["name"].Should().BeOfType<string>().And.Be("abc");
+
+            // array -> navigable List<object> with materialized elements
+            var arr = attachments["arr"].Should().BeAssignableTo<IList<object>>().Subject;
+            arr.Should().HaveCount(3);
+            arr[0].Should().BeOfType<long>().And.Be(1L);
+            arr[1].Should().BeOfType<string>().And.Be("two");
+            arr[2].Should().BeOfType<bool>().And.Be(true);
+        }
     }
 }

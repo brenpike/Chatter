@@ -122,5 +122,46 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
             inbound.ReceiveAttempts.Should().Be(7,
                 "the production ReceiveAttempts accessor must read the materialized boxed long as an int without throwing");
         }
+
+        // STRUCTURED + TYPED ENVELOPE HEADER FIDELITY: the "all areas" mandate for the SSB receive seam.
+        // An envelope header carrying a STRUCTURED (object and array) value, plus a typed primitive, must
+        // survive the JsonUnicodeBodyConverter (UTF-16) envelope round-trip and materialize through
+        // MessageContext.MaterializePersistedContext to navigable CLR collections / CLR types — the same
+        // global MaterializingObjectConverter on the shared ChatterJson.Options drives the materialization
+        // as for UTF-8 bodies. This pins that a prior-hop structured header (e.g. a serialized sub-context)
+        // is readable as a navigable Dictionary/List downstream rather than a raw JsonElement.
+        [Fact]
+        public void MustMaterializeStructuredAndTypedEnvelopeHeadersToClrTypes()
+        {
+            var sentContext = new Dictionary<string, object>
+            {
+                [MessageContext.ReceiveAttempts] = 2,
+                ["structured-object"] = new Dictionary<string, object> { ["id"] = 1, ["name"] = "abc" },
+                ["structured-array"] = new object[] { 1, "two", true },
+            };
+
+            var deserializedEnvelope = DeserializeEnvelopeAsReceiverDoes(sentContext);
+
+            // The exact receiver-seam call (SqlServiceBrokerReceiver.cs:180).
+            IDictionary<string, object> headers =
+                MessageContext.MaterializePersistedContext(deserializedEnvelope.MessageContext);
+
+            // typed primitive -> long
+            headers[MessageContext.ReceiveAttempts].Should().BeOfType<long>().And.Be(2L);
+
+            // structured object header -> navigable Dictionary with materialized leaves
+            var structuredObject = headers["structured-object"]
+                .Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            structuredObject["id"].Should().BeOfType<long>().And.Be(1L);
+            structuredObject["name"].Should().BeOfType<string>().And.Be("abc");
+
+            // structured array header -> navigable List with materialized elements
+            var structuredArray = headers["structured-array"]
+                .Should().BeAssignableTo<IList<object>>().Subject;
+            structuredArray.Should().HaveCount(3);
+            structuredArray[0].Should().BeOfType<long>().And.Be(1L);
+            structuredArray[1].Should().BeOfType<string>().And.Be("two");
+            structuredArray[2].Should().BeOfType<bool>().And.Be(true);
+        }
     }
 }

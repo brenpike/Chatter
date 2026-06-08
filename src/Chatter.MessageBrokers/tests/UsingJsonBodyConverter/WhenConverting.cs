@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using Xunit;
@@ -13,6 +14,18 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
         {
             public string Name { get; set; }
             public int Value { get; set; }
+        }
+
+        // Body DTO carrying object / Dictionary<string, object> / List<object> members. STJ would
+        // surface raw JsonElement at each object-typed read position; the global
+        // MaterializingObjectConverter on ChatterJson.Options must materialize them to CLR types so a
+        // downstream consumer reading Payload / Tags / Items does not hit a JsonElement cast failure.
+        // This is the body-converter face of the converter — the open Codex P2 (JsonBodyConverter.cs:11).
+        private class ObjectMembersBodyPoco
+        {
+            public object Payload { get; set; }
+            public Dictionary<string, object> Tags { get; set; }
+            public List<object> Items { get; set; }
         }
 
         // Immutable command/event-style DTO: members exposed with PRIVATE setters only.
@@ -118,6 +131,51 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             var result = _sut.Convert<GetterOnlyCollectionBodyPoco>(bytes);
 
             result.Items.Should().Equal("a", "b");
+        }
+
+        // OPEN CODEX P2 RESOLUTION (JsonBodyConverter.cs:11): a body DTO whose members are object-typed
+        // must arrive with CLR-typed (materialized) values, NOT raw JsonElement, after Convert<TBody>.
+        // The Payload object member, the Dictionary<string, object> member, and the List<object> member
+        // each route through the global MaterializingObjectConverter on the shared ChatterJson.Options,
+        // so a consumer reading them downstream gets long/string/DateTime/nested-collections rather than
+        // a JsonElement cast failure — restoring Newtonsoft's untyped-read fidelity over UTF-8 bodies.
+        [Fact]
+        public void MustMaterializeObjectTypedBodyMembersToClrTypes()
+        {
+            var bytes = _sut.GetBytes(
+                "{\"Payload\":{\"id\":1,\"when\":\"2026-06-07T12:00:00Z\"}," +
+                "\"Tags\":{\"k\":\"v\",\"n\":7}," +
+                "\"Items\":[1,\"two\",true]}");
+
+            var result = _sut.Convert<ObjectMembersBodyPoco>(bytes);
+
+            // object Payload -> navigable Dictionary with recursively-materialized leaves.
+            var payload = result.Payload.Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            payload["id"].Should().BeOfType<long>().And.Be(1L);
+            payload["when"].Should().BeOfType<DateTime>();
+
+            // Dictionary<string, object> member -> values materialized to CLR types (NOT JsonElement).
+            result.Tags["k"].Should().BeOfType<string>().And.Be("v");
+            result.Tags["n"].Should().BeOfType<long>().And.Be(7L);
+
+            // List<object> member -> elements materialized to CLR types (NOT JsonElement).
+            result.Items[0].Should().BeOfType<long>().And.Be(1L);
+            result.Items[1].Should().BeOfType<string>().And.Be("two");
+            result.Items[2].Should().BeOfType<bool>().And.Be(true);
+        }
+
+        // A body that IS a Dictionary<string, object> (the whole payload, not a member): every value
+        // materializes to its CLR type through the converter over the UTF-8 JsonBodyConverter path.
+        [Fact]
+        public void MustMaterializeBodyThatIsDictionaryOfObjectToClrTypes()
+        {
+            var bytes = _sut.GetBytes("{\"count\":3,\"name\":\"abc\",\"flag\":true}");
+
+            var result = _sut.Convert<Dictionary<string, object>>(bytes);
+
+            result["count"].Should().BeOfType<long>().And.Be(3L);
+            result["name"].Should().BeOfType<string>().And.Be("abc");
+            result["flag"].Should().BeOfType<bool>().And.Be(true);
         }
     }
 }

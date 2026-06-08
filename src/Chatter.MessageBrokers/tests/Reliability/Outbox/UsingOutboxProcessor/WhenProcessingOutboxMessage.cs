@@ -147,5 +147,52 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
 
             _outbox.Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
         }
+
+        // STRUCTURED-VALUE REPLAY FIDELITY (the "all areas" mandate for the outbox seam): a MessageContext
+        // value that is itself a STRUCTURED object survives the persist -> replay round-trip materialized
+        // to a navigable Dictionary<string, object> with CLR-typed leaves (NOT a raw JsonElement). The
+        // OutboxProcessor builds the replayed OutboundBrokeredMessage from
+        // MessageContext.MaterializePersistedContext(message.MessageContext), whose values are driven by
+        // the global MaterializingObjectConverter on ChatterJson.Options. Capturing the dispatched message
+        // exposes the materialized context so a regression that re-surfaced a JsonElement here fails.
+        [Fact]
+        public async Task MustReplayStructuredContextValueMaterializedOnDispatch()
+        {
+            var context = new System.Collections.Generic.Dictionary<string, object>
+            {
+                [MessageContext.ContentType] = ContentType,
+                [MessageContext.InfrastructureType] = Infra,
+                ["structured"] = new System.Collections.Generic.Dictionary<string, object>
+                {
+                    ["id"] = 1,
+                    ["name"] = "abc",
+                },
+            };
+
+            var message = new OutboxMessage
+            {
+                Id = 3,
+                MessageId = "message-id",
+                Destination = "destination",
+                MessageContentType = null,
+                MessageContext = System.Text.Json.JsonSerializer.Serialize(context, ChatterJson.Options),
+                MessageBody = "message-body",
+            };
+
+            OutboundBrokeredMessage dispatched = null;
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                       .Callback<OutboundBrokeredMessage, TransactionContext>((m, _) => dispatched = m)
+                       .Returns(Task.CompletedTask);
+
+            await _sut.Process(message);
+
+            dispatched.Should().NotBeNull();
+            dispatched.MessageContext.Should().ContainKey("structured");
+
+            var structured = dispatched.MessageContext["structured"]
+                .Should().BeAssignableTo<System.Collections.Generic.IDictionary<string, object>>().Subject;
+            structured["id"].Should().BeOfType<long>().And.Be(1L);
+            structured["name"].Should().BeOfType<string>().And.Be("abc");
+        }
     }
 }
