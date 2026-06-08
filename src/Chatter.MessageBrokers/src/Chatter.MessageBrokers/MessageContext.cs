@@ -1,9 +1,54 @@
-﻿using System.Text.Json;
+﻿using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
 
 namespace Chatter.MessageBrokers
 {
     public class MessageContext
     {
+        /// <summary>
+        /// Deserializes a persisted MessageContext (JSON object whose values are System.Text.Json
+        /// <see cref="JsonElement"/>s) into a fully-materialized <c>IDictionary&lt;string, object&gt;</c>
+        /// whose values carry the CLR types Newtonsoft's untyped read would have produced. This is the
+        /// single construction point shared by every System.Text.Json deserialize seam (outbox replay,
+        /// SQL Service Broker envelope unwrap) so no downstream typed reader observes a raw JsonElement.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: every value is projected through <see cref="MaterializePersistedContextValue"/> so
+        /// the per-value parity semantics documented there hold uniformly across all seams. Returns an
+        /// empty dictionary for null/empty/whitespace json.
+        /// </remarks>
+        public static IDictionary<string, object> MaterializePersistedContext(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new Dictionary<string, object>();
+            }
+
+            var elements = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, ChatterJson.Options);
+            return elements.ToDictionary(kvp => kvp.Key, kvp => MaterializePersistedContextValue(kvp.Value));
+        }
+
+        /// <summary>
+        /// Projects an already-deserialized System.Text.Json context dictionary (object-typed values that
+        /// are raw <see cref="JsonElement"/>s, as produced when STJ deserializes an
+        /// <c>IDictionary&lt;string, object&gt;</c>) into a fully-materialized dictionary whose values
+        /// carry the CLR types Newtonsoft's untyped read would have produced. Values that are not
+        /// JsonElements (already CLR-typed) are passed through unchanged. Returns an empty dictionary for
+        /// a null source.
+        /// </summary>
+        public static IDictionary<string, object> MaterializePersistedContext(IDictionary<string, object> context)
+        {
+            if (context == null)
+            {
+                return new Dictionary<string, object>();
+            }
+
+            return context.ToDictionary(
+                kvp => kvp.Key,
+                kvp => kvp.Value is JsonElement element ? MaterializePersistedContextValue(element) : kvp.Value);
+        }
+
         /// <summary>
         /// Materializes a persisted MessageContext value (a System.Text.Json <see cref="JsonElement"/>)
         /// back to the CLR type that Newtonsoft's untyped <c>IDictionary&lt;string, object&gt;</c>

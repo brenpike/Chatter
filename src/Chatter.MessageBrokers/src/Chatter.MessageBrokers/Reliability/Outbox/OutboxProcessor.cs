@@ -30,19 +30,13 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         {
             try
             {
-                IDictionary<string, object> messageContext = new Dictionary<string, object>();
-                if (!string.IsNullOrWhiteSpace(message.MessageContext))
-                {
-                    // The persisted MessageContext is an IDictionary<string, object> whose values are
-                    // NOT all strings: WithTimeToLive/RefreshTimeToLive write a TimeSpan, Azure Service
-                    // Bus WithScheduledEnqueueTimeUtc writes a DateTime, and SSB receive/deadletter paths
-                    // write an integer ReceiveAttempts. Deserialize each value to a JsonElement and run it
-                    // through MessageContext.MaterializePersistedContextValue, which restores the CLR type
-                    // Newtonsoft's untyped read produced so the (string)/(DateTime?)/integer reads on the
-                    // replayed context below and downstream remain correct.
-                    var headers = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(message.MessageContext, ChatterJson.Options);
-                    messageContext = headers.ToDictionary(kvp => kvp.Key, kvp => MessageContext.MaterializePersistedContextValue(kvp.Value));
-                }
+                // The persisted MessageContext is an IDictionary<string, object> whose values are
+                // NOT all strings: WithTimeToLive/RefreshTimeToLive write a TimeSpan, Azure Service
+                // Bus WithScheduledEnqueueTimeUtc writes a DateTime, and SSB receive/deadletter paths
+                // write an integer ReceiveAttempts. MaterializePersistedContext restores the CLR types
+                // Newtonsoft's untyped read produced so the (string)/(DateTime?)/integer reads on the
+                // replayed context below and downstream remain correct.
+                IDictionary<string, object> messageContext = MessageContext.MaterializePersistedContext(message.MessageContext);
 
                 var contentType = message.MessageContentType;
                 if (string.IsNullOrWhiteSpace(message.MessageContentType))

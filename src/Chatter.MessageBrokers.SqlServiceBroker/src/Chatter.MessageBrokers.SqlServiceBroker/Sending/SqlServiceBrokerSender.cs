@@ -67,16 +67,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
                 foreach (var brokeredMessage in brokeredMessages)
                 {
                     _logger.LogTrace($"Sending brokered message to '{brokeredMessage.Destination}'");
-                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ConversationGroupId, out var contextConversationGroupId);
-                    brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ConversationHandle, out var contextConversationHandle);
                     brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ServiceName, out var contextInitiatorService);
                     brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.ServiceContractName, out var contextServiceContractName);
                     brokeredMessage.MessageContext.TryGetValue(SSBMessageContext.MessageTypeName, out var contextMessageTypeName);
 
-                    Guid conversationGroupId = contextConversationGroupId != null ? (Guid)contextConversationGroupId : default;
-                    Guid conversationHandle = contextConversationHandle != null ? (Guid)contextConversationHandle : default;
-
-                    conversationHandle = await BeginConversation(connection, transaction, brokeredMessage, contextInitiatorService, contextServiceContractName).ConfigureAwait(false);
+                    var conversationHandle = await BeginConversation(connection, transaction, brokeredMessage, contextInitiatorService, contextServiceContractName).ConfigureAwait(false);
                     _logger.LogTrace("Dialog conversation has begun.");
                     _logger.LogDebug($"Conversation Handle: '{conversationHandle}', Initiator Service: '{contextInitiatorService}', Service Contract Name: '{contextServiceContractName}'");
 

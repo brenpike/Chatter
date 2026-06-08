@@ -172,7 +172,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
                     messagePayload = brokeredMessage.Body;
                     messageId = brokeredMessage.MessageId;
-                    headers = brokeredMessage.MessageContext;
+                    // The envelope was deserialized via System.Text.Json (JsonUnicodeBodyConverter),
+                    // so OutboundBrokeredMessage.MessageContext's object-typed values are raw JsonElements.
+                    // Materialize them to CLR types before they feed downstream GetMessageContextByKey<T>
+                    // casts, so an upstream-stamped non-string header (e.g. a numeric ReceiveAttempts from
+                    // a prior SSB hop) does not throw InvalidCastException on the live receive path.
+                    headers = MessageContext.MaterializePersistedContext(brokeredMessage.MessageContext);
                 }
             }
             catch (Exception e)
