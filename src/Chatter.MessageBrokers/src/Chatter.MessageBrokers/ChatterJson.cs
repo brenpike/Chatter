@@ -32,6 +32,12 @@ namespace Chatter.MessageBrokers
 
             // PascalCase property names (no NamingPolicy set) — matches Newtonsoft default.
             // WriteIndented = false (compact) — matches Newtonsoft default.
+
+            // Newtonsoft's default object deserialization matches property names case-insensitively;
+            // System.Text.Json defaults this to false. Without it, camelCase inbound bodies
+            // (e.g. {"name":"abc","value":42}) silently deserialize to defaults, dropping data.
+            // Read-path only — does NOT affect serialized output, so wire-output parity is preserved.
+            PropertyNameCaseInsensitive = true,
         };
     }
 }
