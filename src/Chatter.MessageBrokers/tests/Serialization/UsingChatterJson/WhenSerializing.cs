@@ -68,5 +68,53 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingChatterJson
 
             roundTripped.Name.Should().Be("éü\U0001F600");
         }
+
+        // ====================================================================================
+        // Newtonsoft read-leniency parity — deserialize-side leniencies Newtonsoft's default
+        // JsonConvert tolerated but System.Text.Json tightened to throw. Each MUST succeed on read
+        // without throwing while leaving serialize wire output unchanged (golden parity tests stay
+        // byte-identical).
+        // ====================================================================================
+
+        // Newtonsoft coerced a quoted numeric value ({"Value":"42"}) into an int property; STJ
+        // defaults strict and throws. NumberHandling.AllowReadingFromString restores the read.
+        [Fact]
+        public void MustReadQuotedNumberIntoNumericProperty()
+        {
+            var deserialized = JsonSerializer.Deserialize<Poco>("{\"Value\":\"42\"}", ChatterJson.Options);
+
+            deserialized.Value.Should().Be(42);
+        }
+
+        // Newtonsoft tolerated a trailing comma; STJ defaults false and throws. AllowTrailingCommas
+        // restores the read.
+        [Fact]
+        public void MustReadBodyWithTrailingComma()
+        {
+            var deserialized = JsonSerializer.Deserialize<Poco>("{\"Name\":\"abc\",\"Value\":42,}", ChatterJson.Options);
+
+            deserialized.Name.Should().Be("abc");
+            deserialized.Value.Should().Be(42);
+        }
+
+        // Newtonsoft tolerated // line comments; STJ defaults Disallow and throws.
+        // ReadCommentHandling.Skip ignores them on read.
+        [Fact]
+        public void MustReadBodyWithLineComment()
+        {
+            var deserialized = JsonSerializer.Deserialize<Poco>("{\n// a line comment\n\"Value\":42}", ChatterJson.Options);
+
+            deserialized.Value.Should().Be(42);
+        }
+
+        // Newtonsoft tolerated /* block */ comments; STJ defaults Disallow and throws.
+        // ReadCommentHandling.Skip ignores them on read.
+        [Fact]
+        public void MustReadBodyWithBlockComment()
+        {
+            var deserialized = JsonSerializer.Deserialize<Poco>("{/* block comment */\"Value\":42}", ChatterJson.Options);
+
+            deserialized.Value.Should().Be(42);
+        }
     }
 }

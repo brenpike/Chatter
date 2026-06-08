@@ -47,6 +47,26 @@ namespace Chatter.MessageBrokers
             // serialize by their PascalCase declared name (no NamingPolicy set), so wire-output
             // parity with the prior Newtonsoft serialization is preserved.
             IncludeFields = true,
+
+            // ---- Newtonsoft read-leniency parity ----
+            // The following three options restore deserialize-side leniencies that Newtonsoft's
+            // default JsonConvert tolerated but System.Text.Json tightened to throw. They are all
+            // READ-path only and MUST NOT change serialized wire bytes (golden byte-parity tests
+            // stay byte-identical); they exist so existing producers' messages keep deserializing.
+
+            // Newtonsoft coerced quoted numeric values (e.g. {"RetryCount":"3"}) into int/long DTO
+            // properties; STJ defaults strict and throws JsonException. AllowReadingFromString is
+            // READ-only — it does NOT serialize numbers as strings (no WriteAsString), so wire
+            // output is unchanged.
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString,
+
+            // Newtonsoft tolerated trailing commas (e.g. {"Name":"abc",}); STJ defaults false and
+            // throws. Read-path only; serialize never emits trailing commas.
+            AllowTrailingCommas = true,
+
+            // Newtonsoft tolerated // line and /* block */ comments in inbound JSON; STJ defaults
+            // Disallow and throws. Skip ignores them on read; serialize never emits comments.
+            ReadCommentHandling = System.Text.Json.JsonCommentHandling.Skip,
         };
     }
 }
