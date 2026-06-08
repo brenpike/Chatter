@@ -1,19 +1,18 @@
-using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using Chatter.MessageBrokers.Context;
-using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
     /// <summary>
-    /// Pure, I/O-free shaping of an Azure Service Bus <see cref="Message"/> into a
-    /// <see cref="MessageBrokerContext"/>. Extracted VERBATIM from
-    /// <see cref="ServiceBusReceiver.ReceiveMessageAsync"/>: body-converter selection (with try/catch
-    /// fallback to <see cref="JsonBodyConverter"/>), the four header stamps, and context assembly.
-    /// The transaction-context includes that touch the live receiver/connection stay in
-    /// <see cref="ServiceBusReceiver"/> because they are not I/O-free.
+    /// Pure, I/O-free shaping of an Azure Service Bus <see cref="ServiceBusReceivedMessage"/> into a
+    /// <see cref="MessageBrokerContext"/>: body-converter selection (with try/catch fallback to
+    /// <see cref="JsonBodyConverter"/>), the four header stamps, and context assembly. The
+    /// transaction-context includes that touch the live receiver stay in <see cref="ServiceBusReceiver"/>
+    /// because they are not I/O-free.
     /// </summary>
     internal class InboundBrokeredMessageFactory
     {
@@ -33,7 +32,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// null when <paramref name="message"/> is null. The received message is included in the
         /// returned context's container.
         /// </summary>
-        public MessageBrokerContext CreateContext(Message message, string messageReceiverPath, CancellationToken cancellationToken)
+        /// <remarks>
+        /// INVARIANT: <see cref="ServiceBusReceivedMessage.ApplicationProperties"/> is read-only, so the
+        /// four header stamps (TTL, expiry, infrastructure type, receive attempts) are written into the
+        /// MUTABLE header dictionary handed to the context — never back onto the received message — and
+        /// the values are sourced from the message's top-level properties.
+        /// </remarks>
+        public MessageBrokerContext CreateContext(ServiceBusReceivedMessage message, string messageReceiverPath, CancellationToken cancellationToken)
         {
             if (message is null)
             {
@@ -53,12 +58,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
             finally
             {
-                message.AddUserProperty(MessageContext.TimeToLive, message.TimeToLive);
-                message.AddUserProperty(MessageContext.ExpiryTimeUtc, message.ExpiresAtUtc);
-                message.AddUserProperty(MessageContext.InfrastructureType, ASBMessageContext.InfrastructureType);
-                message.AddUserProperty(MessageContext.ReceiveAttempts, message.SystemProperties.DeliveryCount);
+                var headers = new Dictionary<string, object>();
+                foreach (var property in message.ApplicationProperties)
+                {
+                    headers[property.Key] = property.Value;
+                }
 
-                messageContext = new MessageBrokerContext(message.MessageId, message.Body, message.UserProperties, messageReceiverPath, cancellationToken, bodyConverter);
+                headers[MessageContext.TimeToLive] = message.TimeToLive;
+                headers[MessageContext.ExpiryTimeUtc] = message.ExpiresAt.UtcDateTime;
+                headers[MessageContext.InfrastructureType] = ASBMessageContext.InfrastructureType;
+                headers[MessageContext.ReceiveAttempts] = message.DeliveryCount;
+
+                messageContext = new MessageBrokerContext(message.MessageId, message.Body.ToArray(), headers, messageReceiverPath, cancellationToken, bodyConverter);
 
                 messageContext.Container.Include(message);
             }

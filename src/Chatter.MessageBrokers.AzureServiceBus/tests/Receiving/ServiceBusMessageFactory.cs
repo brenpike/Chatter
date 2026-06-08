@@ -1,36 +1,33 @@
-using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
 using System;
-using System.Reflection;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
 {
-    // Builds Microsoft.Azure.ServiceBus.Message instances that behave as if RECEIVED from the broker.
-    // The legacy SDK (v5.2.0) only populates SystemProperties on receive and guards DeliveryCount /
-    // LockToken behind ThrowIfNotReceived (driven by the internal sequenceNumber field), so a unit
-    // test must prime those internal members via reflection to exercise the inbound shaping path.
+    // Builds Azure.Messaging.ServiceBus.ServiceBusReceivedMessage instances that behave as if RECEIVED
+    // from the broker. The SDK exposes ServiceBusModelFactory.ServiceBusReceivedMessage for exactly this
+    // purpose, so received-state fields (lock token, delivery count, expiry, TTL, application properties)
+    // are set via the model factory's named parameters — no reflection.
     internal static class ServiceBusMessageFactory
     {
-        public static Message ReceivedMessage(byte[] body = null,
-                                              string messageId = "message-id",
-                                              string contentType = "application/json",
-                                              int deliveryCount = 1,
-                                              Guid? lockToken = null)
+        public static ServiceBusReceivedMessage ReceivedMessage(byte[] body = null,
+                                                                string messageId = "message-id",
+                                                                string contentType = "application/json",
+                                                                int deliveryCount = 1,
+                                                                Guid? lockToken = null,
+                                                                TimeSpan? timeToLive = null,
+                                                                DateTimeOffset? enqueuedTime = null)
         {
-            var message = new Message(body ?? new byte[] { 1 })
-            {
-                MessageId = messageId,
-                ContentType = contentType,
-            };
+            var ttl = timeToLive ?? TimeSpan.FromMinutes(5);
+            var enqueued = enqueuedTime ?? DateTimeOffset.UtcNow;
 
-            var sp = message.SystemProperties;
-            var spType = typeof(Message.SystemPropertiesCollection);
-
-            // sequenceNumber > 0 satisfies ThrowIfNotReceived so DeliveryCount/LockToken are readable.
-            spType.GetField("sequenceNumber", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(sp, 1L);
-            spType.GetProperty("DeliveryCount").GetSetMethod(true).Invoke(sp, new object[] { deliveryCount });
-            spType.GetField("lockTokenGuid", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(sp, lockToken ?? Guid.NewGuid());
-
-            return message;
+            return ServiceBusModelFactory.ServiceBusReceivedMessage(
+                body: new BinaryData(body ?? new byte[] { 1 }),
+                messageId: messageId,
+                contentType: contentType,
+                timeToLive: ttl,
+                deliveryCount: deliveryCount,
+                lockTokenGuid: lockToken ?? Guid.NewGuid(),
+                enqueuedTime: enqueued);
         }
     }
 }

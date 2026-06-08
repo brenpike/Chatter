@@ -1,4 +1,4 @@
-using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -6,25 +6,25 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
     /// <summary>
     /// Internal port over the operations the <see cref="ServiceBusReceiver"/> needs from an Azure
-    /// Service Bus <see cref="Microsoft.Azure.ServiceBus.Core.MessageReceiver"/>. The production
-    /// adapter (<see cref="AzureSdkMessageReceiverAdapter"/>) lazily constructs the SDK receiver and
-    /// holds the live connection; an in-memory adapter is used to pin receive/ack behavior in tests.
+    /// Service Bus <see cref="Azure.Messaging.ServiceBus.ServiceBusReceiver"/>. The production adapter
+    /// (<see cref="AzureSdkMessageReceiverAdapter"/>) lazily constructs the SDK receiver from a shared
+    /// <see cref="ServiceBusClient"/> and recreates it after a close/dispose; an in-memory adapter is
+    /// used to pin receive/ack behavior in tests.
     /// </summary>
+    /// <remarks>
+    /// INVARIANT: settlement is by RECEIVED MESSAGE OBJECT (<see cref="ServiceBusReceivedMessage"/>),
+    /// not by lock-token string — the Azure.Messaging.ServiceBus SDK settles against the message that
+    /// carries the lock token internally.
+    /// </remarks>
     internal interface IServiceBusMessageReceiver
     {
-        /// <summary>
-        /// The connection backing the receiver, included in the transaction container for
-        /// <see cref="Chatter.MessageBrokers.Receiving.TransactionMode.FullAtomicityViaInfrastructure"/>.
-        /// </summary>
-        ServiceBusConnection ServiceBusConnection { get; }
-
-        /// <summary>True once the underlying receiver has begun closing.</summary>
+        /// <summary>True once the underlying receiver has been closed (or disposed).</summary>
         bool IsClosedOrClosing { get; }
 
-        Task<Message> ReceiveAsync();
-        Task CompleteAsync(string lockToken);
-        Task AbandonAsync(string lockToken, IDictionary<string, object> propertiesToModify);
-        Task DeadLetterAsync(string lockToken, string deadLetterReason, string deadLetterErrorDescription);
+        Task<ServiceBusReceivedMessage> ReceiveAsync();
+        Task CompleteAsync(ServiceBusReceivedMessage message);
+        Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify);
+        Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription);
         Task CloseAsync();
     }
 }

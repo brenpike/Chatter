@@ -27,7 +27,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var serviceBusOptions = new ServiceBusOptions
             {
                 ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
-                TokenProvider = new NullTokenProvider(),
             };
             var messageBrokerOptions = new MessageBrokerOptions();
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
@@ -51,7 +50,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var serviceBusOptions = new ServiceBusOptions
             {
                 ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
-                TokenProvider = new NullTokenProvider(),
             };
             var bodyConverterFactory = new Mock<IBodyConverterFactory>();
             Action act = () => new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), null, bodyConverterFactory.Object);
@@ -64,7 +62,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var serviceBusOptions = new ServiceBusOptions
             {
                 ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
-                TokenProvider = new NullTokenProvider(),
             };
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             Action act = () => new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), logger.Object, null);
