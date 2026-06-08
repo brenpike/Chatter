@@ -1,9 +1,12 @@
+using Azure.Core;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using FluentAssertions;
-using Microsoft.Azure.ServiceBus;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOptionsBuilder
@@ -58,14 +61,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         public void MustReturnSameBuilderFromAddTokenProviderInstance()
         {
             var sut = CreateSut();
-            sut.AddTokenProvider(new NullTokenProvider()).Should().BeSameAs(sut);
+            sut.AddTokenProvider(new MarkerTokenCredential()).Should().BeSameAs(sut);
         }
 
         [Fact]
         public void MustReturnSameBuilderFromAddTokenProviderFactory()
         {
             var sut = CreateSut();
-            sut.AddTokenProvider(() => new NullTokenProvider()).Should().BeSameAs(sut);
+            sut.AddTokenProvider(() => new MarkerTokenCredential()).Should().BeSameAs(sut);
         }
 
         [Fact]
@@ -78,5 +81,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustExposeServiceCollection()
             => CreateSut().Services.Should().BeSameAs(_services);
+
+        private sealed class MarkerTokenCredential : TokenCredential
+        {
+            public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken)
+                => new AccessToken("t", DateTimeOffset.MaxValue);
+
+            public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken)
+                => new ValueTask<AccessToken>(new AccessToken("t", DateTimeOffset.MaxValue));
+        }
     }
 }
