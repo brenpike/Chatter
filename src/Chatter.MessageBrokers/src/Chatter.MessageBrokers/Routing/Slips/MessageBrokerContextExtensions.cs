@@ -1,5 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
-using Newtonsoft.Json;
+using System.Text.Json;
 
 namespace Chatter.MessageBrokers.Routing.Slips
 {
@@ -15,7 +15,12 @@ namespace Chatter.MessageBrokers.Routing.Slips
                     {
                         if (mbc.BrokeredMessage.MessageContext.TryGetValue(MessageContext.RoutingSlip, out var rs))
                         {
-                            RoutingSlip theSlip = JsonConvert.DeserializeObject<RoutingSlip>((string)rs);
+                            // Attachments (IDictionary<string, object>) values are materialized to the CLR
+                            // types Newtonsoft's untyped read produced during this deserialize by the global
+                            // MaterializingObjectConverter on ChatterJson.Options, so consumers that set
+                            // slip.Attachments["foo"] = "bar" and read it back as string/int after
+                            // TryGetRoutingSlip don't hit cast failures — no per-seam materialization needed.
+                            RoutingSlip theSlip = JsonSerializer.Deserialize<RoutingSlip>((string)rs, ChatterJson.Options);
                             routingSlip = theSlip;
                             return true;
                         }

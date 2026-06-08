@@ -1,5 +1,5 @@
-﻿using Newtonsoft.Json;
-using System.Text;
+﻿using System.Text;
+using System.Text.Json;
 
 namespace Chatter.MessageBrokers
 {
@@ -8,7 +8,7 @@ namespace Chatter.MessageBrokers
         public string ContentType => "application/json";
 
         public TBody Convert<TBody>(byte[] body)
-            => JsonConvert.DeserializeObject<TBody>(Stringify(body));
+            => JsonSerializer.Deserialize<TBody>(Stringify(body), ChatterJson.Options);
 
         public byte[] Convert(object body)
             => GetBytes(Stringify(body));
@@ -17,7 +17,9 @@ namespace Chatter.MessageBrokers
             => Encoding.UTF8.GetString(body);
 
         public string Stringify(object body)
-            => JsonConvert.SerializeObject(body);
+            => body is null
+                ? JsonSerializer.Serialize<object>(null, ChatterJson.Options)
+                : JsonSerializer.Serialize(body, body.GetType(), ChatterJson.Options);
 
         public byte[] GetBytes(string body)
             => Encoding.UTF8.GetBytes(body);

@@ -1,5 +1,4 @@
-﻿using Newtonsoft.Json;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
@@ -9,7 +8,7 @@ namespace Chatter.MessageBrokers.Sending
     {
         private readonly IBrokeredMessageBodyConverter _bodyConverter;
 
-        [JsonConstructor]
+        [System.Text.Json.Serialization.JsonConstructor]
         internal OutboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> messageContext, string destination)
         {
             MessageId = messageId;
@@ -61,7 +60,19 @@ namespace Chatter.MessageBrokers.Sending
         public string CorrelationId => GetMessageContextByKey<string>(MessageBrokers.MessageContext.CorrelationId);
         public string ContentType => _bodyConverter.ContentType;
         public string InfrastructureType => GetMessageContextByKey<string>(MessageBrokers.MessageContext.InfrastructureType);
-        public int ReceiveAttempts => GetMessageContextByKey<int>(MessageBrokers.MessageContext.ReceiveAttempts);
+        // A live-receive context holds a native int here, but an outbox-replayed context (deserialized
+        // JSON) materializes the numeric value to a boxed long (see MessageContext.MaterializePersistedContextValue,
+        // matching Newtonsoft). Unboxing a boxed long with (int) throws InvalidCastException, so read as
+        // object and convert — mirroring GetTimeToLive()'s tolerant TimeSpan-or-string handling below.
+        // Absent key yields null, preserving the prior default(int) == 0 behavior.
+        public int ReceiveAttempts
+        {
+            get
+            {
+                var receiveAttempts = GetMessageContextByKey(MessageBrokers.MessageContext.ReceiveAttempts);
+                return receiveAttempts == null ? default : Convert.ToInt32(receiveAttempts);
+            }
+        }
 
         public OutboundBrokeredMessage RefreshTimeToLive()
         {

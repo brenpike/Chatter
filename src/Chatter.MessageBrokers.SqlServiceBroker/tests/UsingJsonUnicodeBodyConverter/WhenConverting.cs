@@ -67,16 +67,16 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.UsingJsonUnicodeBodyConv
             _sut.Stringify(utf8Bytes).Should().NotBe("hello world");
         }
 
-        // Convert<T> of invalid JSON surfaces the underlying Newtonsoft.Json exception with no
+        // Convert<T> of invalid JSON surfaces the underlying System.Text.Json exception with no
         // custom wrapping.
         [Fact]
-        public void MustThrowNewtonsoftExceptionWhenConvertingInvalidJson()
+        public void MustThrowExceptionWhenConvertingInvalidJson()
         {
             var invalidJsonBytes = Encoding.Unicode.GetBytes("{ this is not valid json");
 
             Action act = () => _sut.Convert<BodyPoco>(invalidJsonBytes);
 
-            act.Should().Throw<Newtonsoft.Json.JsonReaderException>();
+            act.Should().Throw<System.Text.Json.JsonException>();
         }
     }
 }

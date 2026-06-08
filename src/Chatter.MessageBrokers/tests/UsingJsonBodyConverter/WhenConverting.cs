@@ -1,4 +1,6 @@
 using FluentAssertions;
+using System;
+using System.Collections.Generic;
 using System.Text;
 using Xunit;
 
@@ -12,6 +14,84 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
         {
             public string Name { get; set; }
             public int Value { get; set; }
+        }
+
+        // Body DTO carrying object / Dictionary<string, object> / List<object> members. STJ would
+        // surface raw JsonElement at each object-typed read position; the global
+        // MaterializingObjectConverter on ChatterJson.Options must materialize them to CLR types so a
+        // downstream consumer reading Payload / Tags / Items does not hit a JsonElement cast failure.
+        // This is the body-converter face of the converter — the open Codex P2 (JsonBodyConverter.cs:11).
+        private class ObjectMembersBodyPoco
+        {
+            public object Payload { get; set; }
+            public Dictionary<string, object> Tags { get; set; }
+            public List<object> Items { get; set; }
+        }
+
+        // Immutable command/event-style DTO: members exposed with PRIVATE setters only.
+        // Newtonsoft populated private setters by default; the STJ port must too (read-path).
+        private class PrivateSetterBodyPoco
+        {
+            public string Name { get; private set; }
+            public int Value { get; private set; }
+        }
+
+        // Message contract exposing an INITIALIZED getter-only collection. Newtonsoft populated
+        // the existing collection through the getter; the STJ port must too (read-path).
+        private class GetterOnlyCollectionBodyPoco
+        {
+            public List<string> Items { get; } = new();
+        }
+
+        // Immutable command/event-style DTO whose ONLY default constructor is PRIVATE. Newtonsoft
+        // instantiated the type via the non-public ctor and then populated the private setters; STJ
+        // cannot create the instance (no public parameterless ctor, no [JsonConstructor]) unless the
+        // EnableNonPublicParameterlessConstructor contract modifier wires CreateObject. Members are
+        // private-set, so EnableNonPublicSetters then populates them once the instance exists.
+        private class PrivateCtorDto
+        {
+            private PrivateCtorDto() { }
+            public string Name { get; private set; }
+            public int Value { get; private set; }
+        }
+
+        // REGRESSION GUARD: a DTO with a parameterized [JsonConstructor] AND a private parameterless
+        // ctor, exposing GET-ONLY constructor-bound members. STJ constructs via the parameterized
+        // [JsonConstructor] (leaving CreateObject == null while it uses its internal parameterized
+        // delegate). The EnableNonPublicParameterlessConstructor modifier MUST NOT hijack this by
+        // installing the private parameterless ctor as CreateObject — doing so bypasses the
+        // parameterized constructor and leaves Name/Value at defaults. The modifier's [JsonConstructor]
+        // + parameterized-ctor gates keep STJ's annotated-ctor binding intact.
+        private class CtorBoundDto
+        {
+            public string Name { get; }
+            public int Value { get; }
+
+            private CtorBoundDto() { }
+
+            [System.Text.Json.Serialization.JsonConstructor]
+            public CtorBoundDto(string name, int value)
+            {
+                Name = name;
+                Value = value;
+            }
+        }
+
+        // DTO carrying a strongly-typed bool and a nullable bool. Newtonsoft coerced a QUOTED boolean
+        // ({"Enabled":"true"}) into the bool member; the STJ port must too via the shared
+        // NewtonsoftLenientBooleanConverter on ChatterJson.Options (read-path).
+        private class BooleanBodyPoco
+        {
+            public bool Enabled { get; set; }
+            public bool? Nullable { get; set; }
+        }
+
+        // DTO with an object-typed member. Used to confirm the bool converter does NOT coerce a quoted
+        // "true" at an object position — that position is owned by MaterializingObjectConverter, which keeps
+        // a quoted string as a string (Newtonsoft untyped-read parity).
+        private class ObjectPositionBoolPoco
+        {
+            public object Flag { get; set; }
         }
 
         [Fact]
@@ -48,6 +128,248 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
         {
             var json = _sut.Stringify(new BodyPoco { Name = "abc", Value = 42 });
             json.Should().Be("{\"Name\":\"abc\",\"Value\":42}");
+        }
+
+        // PARITY: Newtonsoft's JsonConvert.SerializeObject(null) produced the literal JSON "null".
+        // The STJ port must not dereference body.GetType() on a null body (NullReferenceException);
+        // a null body serializes to the literal JSON null, matching JsonUnicodeBodyConverter.
+        [Fact]
+        public void MustStringifyNullObjectAsJsonNullWithoutThrowing()
+        {
+            object body = null;
+
+            _sut.Stringify(body).Should().Be("null");
+        }
+
+        // A null body round-trips: serialize -> "null" bytes; deserialize -> default(TBody).
+        [Fact]
+        public void MustRoundTripNullObjectThroughBytes()
+        {
+            object body = null;
+
+            var bytes = _sut.Convert(body);
+            var result = _sut.Convert<BodyPoco>(bytes);
+
+            result.Should().BeNull();
+        }
+
+        // PARITY: Newtonsoft populated NON-PUBLIC property setters by default; STJ binds only
+        // public setters / ctor params. The EnableNonPublicSetters contract modifier on the
+        // shared ChatterJson.Options restores Newtonsoft's private-setter binding, so immutable
+        // command/event DTOs deserialize their members instead of silently leaving them at
+        // default (null / 0).
+        [Fact]
+        public void MustPopulatePrivateSettersOnDeserialize()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
+
+            var result = _sut.Convert<PrivateSetterBodyPoco>(bytes);
+
+            result.Name.Should().Be("abc");
+            result.Value.Should().Be(42);
+        }
+
+        // PARITY: Newtonsoft populated an EXISTING initialized getter-only collection through its
+        // getter (add into the already-constructed instance). STJ defaults object-creation handling
+        // to Replace and EnableNonPublicSetters skips a setter-less member, so without
+        // PreferredObjectCreationHandling = Populate on the shared ChatterJson.Options the DTO would
+        // arrive with an EMPTY Items collection. Populate restores the inbound array values.
+        [Fact]
+        public void MustPopulateGetterOnlyCollectionsOnDeserialize()
+        {
+            var bytes = _sut.GetBytes("{\"Items\":[\"a\",\"b\"]}");
+
+            var result = _sut.Convert<GetterOnlyCollectionBodyPoco>(bytes);
+
+            result.Items.Should().Equal("a", "b");
+        }
+
+        // PARITY: Newtonsoft instantiated a DTO whose ONLY default constructor is non-public and then
+        // populated its (private) setters. STJ's JsonSerializer.Deserialize<T> cannot create such an
+        // instance, so EnableNonPublicSetters alone never gets a chance to run — the
+        // EnableNonPublicParameterlessConstructor contract modifier on the shared ChatterJson.Options
+        // must wire JsonTypeInfo.CreateObject to the non-public parameterless ctor. The instance is
+        // then created and its private Name/Value populated (without the modifier this deserialize
+        // fails: STJ cannot construct the type).
+        [Fact]
+        public void MustActivateNonPublicParameterlessConstructorOnDeserialize()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
+
+            var result = _sut.Convert<PrivateCtorDto>(bytes);
+
+            result.Should().NotBeNull();
+            result.Name.Should().Be("abc");
+            result.Value.Should().Be(42);
+        }
+
+        // REGRESSION (Codex P2, ChatterJson.cs:223): a DTO with a parameterized [JsonConstructor] AND
+        // a private parameterless ctor must deserialize THROUGH the parameterized constructor, so its
+        // get-only ctor-bound Name/Value arrive populated (NOT defaults). If the
+        // EnableNonPublicParameterlessConstructor modifier wrongly installed the private parameterless
+        // ctor as CreateObject, STJ would bypass the [JsonConstructor] and Name/Value would be
+        // null/0. The modifier's gates keep STJ's parameterized construction path intact.
+        [Fact]
+        public void MustNotOverrideParameterizedJsonConstructorWithPrivateParameterlessCtor()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
+
+            var result = _sut.Convert<CtorBoundDto>(bytes);
+
+            result.Should().NotBeNull();
+            result.Name.Should().Be("abc");
+            result.Value.Should().Be(42);
+        }
+
+        // UNAFFECTED: a type with a PUBLIC parameterless ctor already has a CreateObject, so the
+        // non-public-ctor modifier must skip it and leave normal construction untouched.
+        [Fact]
+        public void MustLeavePublicConstructorTypesUnaffected()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
+
+            var result = _sut.Convert<BodyPoco>(bytes);
+
+            result.Name.Should().Be("abc");
+            result.Value.Should().Be(42);
+        }
+
+        // OPEN CODEX P2 RESOLUTION (JsonBodyConverter.cs:11): a body DTO whose members are object-typed
+        // must arrive with CLR-typed (materialized) values, NOT raw JsonElement, after Convert<TBody>.
+        // The Payload object member, the Dictionary<string, object> member, and the List<object> member
+        // each route through the global MaterializingObjectConverter on the shared ChatterJson.Options,
+        // so a consumer reading them downstream gets long/string/DateTime/nested-collections rather than
+        // a JsonElement cast failure — restoring Newtonsoft's untyped-read fidelity over UTF-8 bodies.
+        [Fact]
+        public void MustMaterializeObjectTypedBodyMembersToClrTypes()
+        {
+            var bytes = _sut.GetBytes(
+                "{\"Payload\":{\"id\":1,\"when\":\"2026-06-07T12:00:00Z\"}," +
+                "\"Tags\":{\"k\":\"v\",\"n\":7}," +
+                "\"Items\":[1,\"two\",true]}");
+
+            var result = _sut.Convert<ObjectMembersBodyPoco>(bytes);
+
+            // object Payload -> navigable Dictionary with recursively-materialized leaves.
+            var payload = result.Payload.Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            payload["id"].Should().BeOfType<long>().And.Be(1L);
+            payload["when"].Should().BeOfType<DateTime>();
+
+            // Dictionary<string, object> member -> values materialized to CLR types (NOT JsonElement).
+            result.Tags["k"].Should().BeOfType<string>().And.Be("v");
+            result.Tags["n"].Should().BeOfType<long>().And.Be(7L);
+
+            // List<object> member -> elements materialized to CLR types (NOT JsonElement).
+            result.Items[0].Should().BeOfType<long>().And.Be(1L);
+            result.Items[1].Should().BeOfType<string>().And.Be("two");
+            result.Items[2].Should().BeOfType<bool>().And.Be(true);
+        }
+
+        // A body that IS a Dictionary<string, object> (the whole payload, not a member): every value
+        // materializes to its CLR type through the converter over the UTF-8 JsonBodyConverter path.
+        [Fact]
+        public void MustMaterializeBodyThatIsDictionaryOfObjectToClrTypes()
+        {
+            var bytes = _sut.GetBytes("{\"count\":3,\"name\":\"abc\",\"flag\":true}");
+
+            var result = _sut.Convert<Dictionary<string, object>>(bytes);
+
+            result["count"].Should().BeOfType<long>().And.Be(3L);
+            result["name"].Should().BeOfType<string>().And.Be("abc");
+            result["flag"].Should().BeOfType<bool>().And.Be(true);
+        }
+
+        // OPEN CODEX P2 RESOLUTION (ChatterJson.cs:75): Newtonsoft coerced a QUOTED boolean
+        // ({"Enabled":"true"}) into a strongly-typed bool DTO member; STJ's AllowReadingFromString covers
+        // quoted NUMBERS only and throws JsonException on a quoted bool. The shared
+        // NewtonsoftLenientBooleanConverter restores the read-leniency: "true"/"false" (case-insensitive),
+        // the integer-string forms "1"/"0", and a bare numeric 1/0 all coerce into the bool member, while a
+        // genuine boolean token reads normally.
+        [Theory]
+        [InlineData("{\"Enabled\":\"true\"}", true)]
+        [InlineData("{\"Enabled\":\"false\"}", false)]
+        [InlineData("{\"Enabled\":true}", true)]
+        [InlineData("{\"Enabled\":false}", false)]
+        [InlineData("{\"Enabled\":\"True\"}", true)]
+        [InlineData("{\"Enabled\":\"FALSE\"}", false)]
+        [InlineData("{\"Enabled\":\"1\"}", true)]
+        [InlineData("{\"Enabled\":\"0\"}", false)]
+        [InlineData("{\"Enabled\":1}", true)]
+        [InlineData("{\"Enabled\":0}", false)]
+        public void MustAcceptQuotedBooleanOnReadForBoolMember(string json, bool expected)
+        {
+            var bytes = _sut.GetBytes(json);
+
+            var result = _sut.Convert<BooleanBodyPoco>(bytes);
+
+            result.Enabled.Should().Be(expected);
+        }
+
+        // bool? member: JSON null -> null; a quoted boolean delegates to the bool read logic.
+        [Fact]
+        public void MustReadNullForNullableBoolMember()
+        {
+            var bytes = _sut.GetBytes("{\"Nullable\":null}");
+
+            var result = _sut.Convert<BooleanBodyPoco>(bytes);
+
+            result.Nullable.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustAcceptQuotedBooleanOnReadForNullableBoolMember()
+        {
+            var bytes = _sut.GetBytes("{\"Nullable\":\"true\"}");
+
+            var result = _sut.Convert<BooleanBodyPoco>(bytes);
+
+            result.Nullable.Should().BeTrue();
+        }
+
+        // An unparseable quoted value throws JsonException (same as a genuinely invalid value).
+        [Fact]
+        public void MustThrowOnUnparseableQuotedBooleanForBoolMember()
+        {
+            var bytes = _sut.GetBytes("{\"Enabled\":\"notabool\"}");
+
+            Action act = () => _sut.Convert<BooleanBodyPoco>(bytes);
+
+            act.Should().Throw<System.Text.Json.JsonException>();
+        }
+
+        // WRITE byte-parity: a real bool serializes to the bare JSON boolean token (NOT a quoted string),
+        // matching Newtonsoft and the STJ default. The converter's Write path must not quote.
+        [Fact]
+        public void MustWriteRealBooleanTokenNotQuotedString()
+        {
+            var json = _sut.Stringify(new BooleanBodyPoco { Enabled = true, Nullable = false });
+
+            json.Should().Be("{\"Enabled\":true,\"Nullable\":false}");
+        }
+
+        // OBJECT-POSITION PARITY: a quoted "true" at an object-typed member must STAY a string — that
+        // position is owned by MaterializingObjectConverter (typeof(object) only), NOT the bool converter.
+        // Confirms the bool converter does not interfere with the object-converter seam.
+        [Fact]
+        public void MustKeepQuotedBooleanAsStringAtObjectPosition()
+        {
+            var bytes = _sut.GetBytes("{\"Flag\":\"true\"}");
+
+            var result = _sut.Convert<ObjectPositionBoolPoco>(bytes);
+
+            result.Flag.Should().BeOfType<string>().And.Be("true");
+        }
+
+        // OBJECT-POSITION PARITY: a real JSON boolean at an object-typed member materializes to a CLR bool
+        // (the object converter's True/False branch), unchanged by the strongly-typed bool converter.
+        [Fact]
+        public void MustMaterializeRealBooleanToClrBoolAtObjectPosition()
+        {
+            var bytes = _sut.GetBytes("{\"Flag\":true}");
+
+            var result = _sut.Convert<ObjectPositionBoolPoco>(bytes);
+
+            result.Flag.Should().BeOfType<bool>().And.Be(true);
         }
     }
 }

@@ -12,6 +12,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.11.0] - 2026-06-07
+
+### Changed
+
+- **BREAKING:** Newtonsoft.Json is removed. Message DTOs annotated with Newtonsoft contract attributes — `[JsonProperty("name")]`, `[JsonIgnore]`, `[JsonConverter]`, etc. — are no longer honored. Migrate such DTOs to the System.Text.Json equivalents (`[JsonPropertyName("name")]`, `[System.Text.Json.Serialization.JsonIgnore]`, STJ `[JsonConverter]`). Property-name aliasing and member-ignore contracts must be re-expressed with STJ attributes or wire compatibility for those specific contracts will break. (The migration preserves default Newtonsoft read/write behavior — casing, number/leniency, private-setter binding, type fidelity — for un-annotated DTOs; only explicit Newtonsoft attribute contracts require migration.)
+- Replaced Newtonsoft.Json with System.Text.Json for all serialization (body converter, routing slips, outbox message-context). Wire format preserved byte-for-byte via a custom relaxed JSON encoder (ChatterJson/ChatterJsonEncoder) that mirrors Newtonsoft escaping, including literal supplementary-plane/emoji output, so persisted and in-flight payloads remain cross-version compatible.
+
+### Fixed
+
+- Outbox replay now restores heterogeneous CLR types from the persisted message context (JSON integers → Int64, ISO-8601 strings → DateTime) so the Azure Service Bus typed readers (scheduled-enqueue time, time-to-live, receive attempts) no longer throw and outbox rows are no longer stranded. Wire format unchanged.
+- RoutingSlip visited-step history (non-empty) now survives JSON round-trip. Wire format unchanged.
+- Outbox replay and SQL Service Broker receive now restore heterogeneous CLR types from the persisted/transmitted message context via a centralized materializer applied at every System.Text.Json deserialization seam, so typed header readers no longer throw. Newtonsoft wire/round-trip parity preserved (JSON strings are not coerced to Guid).
+- Object-typed and `IDictionary<string,object>`-typed values now restore CLR-type fidelity by construction at every System.Text.Json deserialize seam — message body DTOs (`object`/dictionary members), routing-slip attachments, and outbox/SQL Service Broker message context — via a global object converter on the shared serializer options. Integer JSON values materialize to `Int64`, ISO-8601 strings to `DateTime`, structured values to navigable `Dictionary<string,object>`/`List<object>`; Guid-shaped strings stay `string` (Newtonsoft parity). Replaces the prior per-seam materialization with a single source of truth. Wire format unchanged (serialize output byte-identical).
+
+### Removed
+
+- Removed the Newtonsoft.Json package dependency.
+
 ## [0.10.0] - 2026-06-07
 
 ### Added

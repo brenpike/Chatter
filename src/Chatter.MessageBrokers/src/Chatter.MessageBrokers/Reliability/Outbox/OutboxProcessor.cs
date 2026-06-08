@@ -1,6 +1,5 @@
 ﻿using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -31,11 +30,14 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         {
             try
             {
-                IDictionary<string, object> messageContext = new Dictionary<string, object>();
-                if (!string.IsNullOrWhiteSpace(message.MessageContext))
-                {
-                    messageContext = JsonConvert.DeserializeObject<IDictionary<string, object>>(message.MessageContext);
-                }
+                // The persisted MessageContext is a JSON string whose values are NOT all strings:
+                // WithTimeToLive/RefreshTimeToLive write a TimeSpan, Azure Service Bus
+                // WithScheduledEnqueueTimeUtc writes a DateTime, and SSB receive/deadletter paths write an
+                // integer ReceiveAttempts. MaterializePersistedContext deserializes the string through
+                // ChatterJson.Options, where the registered MaterializingObjectConverter restores inline the
+                // CLR types Newtonsoft's untyped read produced — so the (string)/(DateTime?)/integer reads on
+                // the replayed context below and downstream remain correct.
+                IDictionary<string, object> messageContext = MessageContext.MaterializePersistedContext(message.MessageContext);
 
                 var contentType = message.MessageContentType;
                 if (string.IsNullOrWhiteSpace(message.MessageContentType))

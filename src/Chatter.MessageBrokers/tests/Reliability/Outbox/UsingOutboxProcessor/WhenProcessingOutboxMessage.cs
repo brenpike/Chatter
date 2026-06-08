@@ -98,5 +98,101 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
 
             _outbox.Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
         }
+
+        // REGRESSION ORACLE: production writers (InMemory/EF SendToOutbox) serialize the entire
+        // IDictionary<string, object> MessageContext, which legitimately holds non-string values —
+        // an integer ReceiveAttempts (SSB receive/deadletter), a TimeSpan TimeToLive, and a DateTime
+        // ScheduledEnqueueTimeUtc (Azure). Deserializing that row back to Dictionary<string, string>
+        // threw JsonException on the numeric value; Process swallows it into LogError, silently
+        // stranding a valid row (never dispatched, never marked processed). This context is built the
+        // same way the writers build it — JsonSerializer.Serialize over an IDictionary<string, object>
+        // with ChatterJson.Options — so it pins the real wire format, and the positive-dispatch +
+        // processed assertions make any future re-break of the materialization visible.
+        private static OutboxMessage CreateOutboxMessageWithNonStringContextValues()
+        {
+            var context = new System.Collections.Generic.Dictionary<string, object>
+            {
+                [MessageContext.ContentType] = ContentType,
+                [MessageContext.InfrastructureType] = Infra,
+                [MessageContext.ReceiveAttempts] = 3,
+                [MessageContext.TimeToLive] = TimeSpan.FromMinutes(5),
+                ["ScheduledEnqueueTimeUtc"] = new DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc),
+            };
+
+            return new OutboxMessage
+            {
+                Id = 2,
+                MessageId = "message-id",
+                Destination = "destination",
+                MessageContentType = null,
+                MessageContext = System.Text.Json.JsonSerializer.Serialize(context, ChatterJson.Options),
+                MessageBody = "message-body",
+            };
+        }
+
+        [Fact]
+        public async Task MustDispatchOutboxMessageWhenContextContainsNonStringValues()
+        {
+            await _sut.Process(CreateOutboxMessageWithNonStringContextValues());
+
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+        }
+
+        [Fact]
+        public async Task MustMarkProcessedWhenContextContainsNonStringValues()
+        {
+            var message = CreateOutboxMessageWithNonStringContextValues();
+
+            await _sut.Process(message);
+
+            _outbox.Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        // STRUCTURED-VALUE REPLAY FIDELITY (the "all areas" mandate for the outbox seam): a MessageContext
+        // value that is itself a STRUCTURED object survives the persist -> replay round-trip materialized
+        // to a navigable Dictionary<string, object> with CLR-typed leaves (NOT a raw JsonElement). The
+        // OutboxProcessor builds the replayed OutboundBrokeredMessage from
+        // MessageContext.MaterializePersistedContext(message.MessageContext), whose values are driven by
+        // the global MaterializingObjectConverter on ChatterJson.Options. Capturing the dispatched message
+        // exposes the materialized context so a regression that re-surfaced a JsonElement here fails.
+        [Fact]
+        public async Task MustReplayStructuredContextValueMaterializedOnDispatch()
+        {
+            var context = new System.Collections.Generic.Dictionary<string, object>
+            {
+                [MessageContext.ContentType] = ContentType,
+                [MessageContext.InfrastructureType] = Infra,
+                ["structured"] = new System.Collections.Generic.Dictionary<string, object>
+                {
+                    ["id"] = 1,
+                    ["name"] = "abc",
+                },
+            };
+
+            var message = new OutboxMessage
+            {
+                Id = 3,
+                MessageId = "message-id",
+                Destination = "destination",
+                MessageContentType = null,
+                MessageContext = System.Text.Json.JsonSerializer.Serialize(context, ChatterJson.Options),
+                MessageBody = "message-body",
+            };
+
+            OutboundBrokeredMessage dispatched = null;
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                       .Callback<OutboundBrokeredMessage, TransactionContext>((m, _) => dispatched = m)
+                       .Returns(Task.CompletedTask);
+
+            await _sut.Process(message);
+
+            dispatched.Should().NotBeNull();
+            dispatched.MessageContext.Should().ContainKey("structured");
+
+            var structured = dispatched.MessageContext["structured"]
+                .Should().BeAssignableTo<System.Collections.Generic.IDictionary<string, object>>().Subject;
+            structured["id"].Should().BeOfType<long>().And.Be(1L);
+            structured["name"].Should().BeOfType<string>().And.Be("abc");
+        }
     }
 }

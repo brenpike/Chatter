@@ -25,7 +25,7 @@ Chatter is a suite of modular .NET libraries for building domain-driven Web APIs
  Chatter.SqlChangeFeed — emits SQL Server row-change notifications (Service Broker)
 ```
 
-Chatter.MessageBrokers defines the transport interfaces; you pick a concrete implementation (**Azure Service Bus** or **SQL Server Service Broker**) and, optionally, durable reliability storage (**Entity Framework**). A 'from scratch' walkthrough lives in the [samples](./samples/README.md).
+Chatter.MessageBrokers defines the transport interfaces; you pick a concrete implementation (**Azure Service Bus** or **SQL Server Service Broker**) and, optionally, durable reliability storage (**Entity Framework**).
 
 ## Modules
 
@@ -109,7 +109,6 @@ Emits strongly-typed notifications when rows in a watched SQL Server table are i
 1. Install **Chatter.CQRS** and register it: `services.AddChatterCqrs(...)`.
 2. To exchange messages across services, add **Chatter.MessageBrokers** plus a transport — **AzureServiceBus** or **SqlServiceBroker**.
 3. For durable reliability, add **Reliability.EntityFramework** and apply its entity configurations to your `DbContext`.
-4. Walk through a complete two-API scenario in the [samples](./samples/README.md).
 
 Each module's README (linked above) has installation, configuration, and worked examples.
 

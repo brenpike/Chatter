@@ -1,5 +1,5 @@
 ﻿using Chatter.MessageBrokers.Routing.Options;
-using Newtonsoft.Json;
+using System.Text.Json;
 
 namespace Chatter.MessageBrokers.Routing.Slips
 {
@@ -7,7 +7,7 @@ namespace Chatter.MessageBrokers.Routing.Slips
     {
         public static SendOptions WithRoutingSlip(this SendOptions options, RoutingSlip slip)
         {
-            var serializedRoutingSlip = JsonConvert.SerializeObject(slip);
+            var serializedRoutingSlip = JsonSerializer.Serialize(slip, ChatterJson.Options);
             options.WithMessageContext(MessageContext.RoutingSlip, serializedRoutingSlip);
             return options;
         }
