@@ -6,7 +6,9 @@ using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Generic;
+using System.Linq;
 using Xunit;
+using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.UsingChatterAzureServiceBusExtensions
 {
@@ -37,6 +39,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         // string. AddLogging is required because the receiver factory delegate resolves a scoped
         // ServiceBusReceiver, which depends on ILogger<ServiceBusReceiver>.
         private static ServiceProvider BuildProvider()
+            => BuildServices().BuildServiceProvider();
+
+        private static ServiceCollection BuildServices()
         {
             var services = new ServiceCollection();
             services.AddLogging();
@@ -45,7 +50,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
                     .AddMessageBrokers()
                     .AddAzureServiceBus(o => o.WithConnectionString(_connectionString));
 
-            return services.BuildServiceProvider();
+            return services;
         }
 
         [Fact]
@@ -110,6 +115,32 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             var second = infrastructure.DispatchInfrastructure;
 
             first.Should().NotBeSameAs(second);
+        }
+
+        [Fact]
+        public void MustRegisterSharedServiceBusClientAsSingleton()
+        {
+            // Cross-entity transactions require ONE ServiceBusClient per namespace, so the client is
+            // registered as a singleton built once from ServiceBusOptions.
+            var services = BuildServices();
+
+            var clientDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(ServiceBusClient));
+
+            clientDescriptor.Should().NotBeNull();
+            clientDescriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<ServiceBusClient>().Should().NotBeNull();
+        }
+
+        [Fact]
+        public void MustResolveSenderFactoryAsAzureSdkMessageSenderFactory()
+        {
+            using var provider = BuildProvider();
+
+            var senderFactory = provider.GetRequiredService<IServiceBusMessageSenderFactory>();
+
+            senderFactory.Should().BeOfType<AzureSdkMessageSenderFactory>();
         }
 
         [Fact]

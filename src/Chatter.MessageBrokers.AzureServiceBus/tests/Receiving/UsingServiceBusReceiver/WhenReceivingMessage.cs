@@ -4,11 +4,16 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Transactions;
 using Xunit;
+// Disambiguate the local ServiceBusReceiver (system under test) from the SDK type of the same name
+// pulled in by `using Azure.Messaging.ServiceBus;` (CS0104).
+using ServiceBusReceiver = Chatter.MessageBrokers.AzureServiceBus.Receiving.ServiceBusReceiver;
+using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBusReceiver
 {
@@ -19,6 +24,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
     // receive-mode flip (observed indirectly through the ack-eligibility guard), are pinned.
     public class WhenReceivingMessage : Testing.Core.Context
     {
+        private const string _connectionString =
+            "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret";
+
+        // The shared ServiceBusClient the receiver consumes from DI in production. Constructing it from a
+        // placeholder SAS connection string opens no connection (the SDK connects lazily on first
+        // receive/send), so it is a valid stand-in for the DI-provided singleton here.
+        private static ServiceBusClient CreateClient() => new ServiceBusClient(_connectionString);
+
         // MessageBrokerOptions.TransactionMode is internal-set in the core assembly (no IVT to the
         // test assembly), so it is left at its default (TransactionMode.None => ReceiveAndDelete).
         // The PeekLock mode is reached via InitializeAsync in the acknowledging tests.
@@ -26,13 +39,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
+                ConnectionString = _connectionString,
             };
             var messageBrokerOptions = new MessageBrokerOptions();
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             var bodyConverterFactory = new Mock<IBodyConverterFactory>();
 
-            return new ServiceBusReceiver(serviceBusOptions, messageBrokerOptions, logger.Object, bodyConverterFactory.Object);
+            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, messageBrokerOptions, logger.Object, bodyConverterFactory.Object);
         }
 
         [Fact]
@@ -40,7 +53,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         {
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             var bodyConverterFactory = new Mock<IBodyConverterFactory>();
-            Action act = () => new ServiceBusReceiver(null, new MessageBrokerOptions(), logger.Object, bodyConverterFactory.Object);
+            Action act = () => new ServiceBusReceiver(CreateClient(), null, new MessageBrokerOptions(), logger.Object, bodyConverterFactory.Object);
+            act.Should().Throw<ArgumentNullException>();
+        }
+
+        [Fact]
+        public void MustThrowWhenClientNull()
+        {
+            var serviceBusOptions = new ServiceBusOptions
+            {
+                ConnectionString = _connectionString,
+            };
+            var logger = new Mock<ILogger<ServiceBusReceiver>>();
+            var bodyConverterFactory = new Mock<IBodyConverterFactory>();
+            Action act = () => new ServiceBusReceiver(null, serviceBusOptions, new MessageBrokerOptions(), logger.Object, bodyConverterFactory.Object);
             act.Should().Throw<ArgumentNullException>();
         }
 
@@ -49,10 +75,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
+                ConnectionString = _connectionString,
             };
             var bodyConverterFactory = new Mock<IBodyConverterFactory>();
-            Action act = () => new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), null, bodyConverterFactory.Object);
+            Action act = () => new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), null, bodyConverterFactory.Object);
             act.Should().Throw<ArgumentNullException>();
         }
 
@@ -61,10 +87,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
+                ConnectionString = _connectionString,
             };
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
-            Action act = () => new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), logger.Object, null);
+            Action act = () => new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, null);
             act.Should().Throw<ArgumentNullException>();
         }
 

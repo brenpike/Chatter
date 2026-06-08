@@ -12,6 +12,9 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Retry;
 using System;
+using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
+using ServiceBusClientOptions = Azure.Messaging.ServiceBus.ServiceBusClientOptions;
+using ServiceBusConnectionStringProperties = Azure.Messaging.ServiceBus.ServiceBusConnectionStringProperties;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -36,7 +39,12 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<ServiceBusReceiver>();
             builder.Services.AddScoped<ServiceBusMessageSender>();
 
-            builder.Services.AddSingleton<BrokeredMessageSenderPool>();
+            // INVARIANT: a single shared ServiceBusClient per namespace. Cross-entity transactions require
+            // one client per namespace, so the client is a singleton built once from ServiceBusOptions with
+            // EnableCrossEntityTransactions enabled; receivers and senders are created off this one client.
+            var sharedClient = CreateSharedClient(options);
+            builder.Services.AddSingleton(sharedClient);
+            builder.Services.AddSingleton<IServiceBusMessageSenderFactory>(new AzureSdkMessageSenderFactory(sharedClient));
             builder.Services.AddSingleton<AzureServiceBusEntityPathBuilder>();
 
             builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, ServiceBusCircuitBreakerExceptionPredicatesProvider>();
@@ -69,6 +77,30 @@ namespace Microsoft.Extensions.DependencyInjection
             return builder;
         }
 
+        // Builds the single shared ServiceBusClient for the namespace from ServiceBusOptions. A null
+        // TokenCredential means SAS auth via the connection string; a non-null TokenCredential authenticates
+        // against the fully-qualified namespace derived from the connection string's Endpoint. Cross-entity
+        // transactions are enabled on the client so the send + the receiver's settle enlist in one
+        // transaction, and the configured RetryOptions (when present) are carried onto the client.
+        private static ServiceBusClient CreateSharedClient(ServiceBusOptions options)
+        {
+            var clientOptions = new ServiceBusClientOptions
+            {
+                EnableCrossEntityTransactions = true,
+            };
+            if (options.RetryOptions != null)
+            {
+                clientOptions.RetryOptions = options.RetryOptions;
+            }
+
+            if (options.TokenCredential is null)
+            {
+                return new ServiceBusClient(options.ConnectionString, clientOptions);
+            }
+
+            var fullyQualifiedNamespace = ServiceBusConnectionStringProperties.Parse(options.ConnectionString).FullyQualifiedNamespace;
+            return new ServiceBusClient(fullyQualifiedNamespace, options.TokenCredential, clientOptions);
+        }
 
         public static ServiceBusOptionsBuilder AddTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
                                                                               string topicName,

@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using FluentAssertions;
 using Azure.Messaging.ServiceBus;
+using System;
 using System.Collections.Generic;
 using Xunit;
 

@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
 using Azure.Messaging.ServiceBus;
 using FluentAssertions;

@@ -12,6 +12,10 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
+// Disambiguate the local ServiceBusReceiver (system under test) from the SDK type of the same name
+// pulled in by `using Azure.Messaging.ServiceBus;` (CS0104).
+using ServiceBusReceiver = Chatter.MessageBrokers.AzureServiceBus.Receiving.ServiceBusReceiver;
+using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBusReceiver
 {
@@ -28,15 +32,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             return factory.Object;
         }
 
+        private const string _connectionString =
+            "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret";
+
+        // The shared ServiceBusClient the receiver consumes from DI in production. A placeholder SAS
+        // connection string opens no connection (the SDK connects lazily), so it is a valid stand-in here.
+        private static ServiceBusClient CreateClient() => new ServiceBusClient(_connectionString);
+
         private static ServiceBusReceiver CreateSut(InMemoryServiceBusMessageReceiver inMemory, out InboundBrokeredMessageFactory inboundFactory)
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
+                ConnectionString = _connectionString,
             };
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             inboundFactory = new InboundBrokeredMessageFactory(JsonFactory(), Mock.Of<ILogger>());
-            return new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
+            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
         }
 
         private static async Task<ServiceBusReceiver> InitializedPeekLockSutAsync(InMemoryServiceBusMessageReceiver inMemory)

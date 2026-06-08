@@ -5,11 +5,16 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
+// Disambiguate the local ServiceBusReceiver (system under test) from the SDK type of the same name
+// pulled in by `using Azure.Messaging.ServiceBus;` (CS0104).
+using ServiceBusReceiver = Chatter.MessageBrokers.AzureServiceBus.Receiving.ServiceBusReceiver;
+using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBusReceiver
 {
@@ -23,6 +28,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
     // TransactionMode flips the receiver into PeekLock, so guard branch (2) becomes reachable.
     public class WhenAcknowledgingMessage : Testing.Core.Context
     {
+        private const string _connectionString =
+            "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret";
+
+        // The shared ServiceBusClient the receiver consumes from DI in production. A placeholder SAS
+        // connection string opens no connection (the SDK connects lazily), so it is a valid stand-in here.
+        private static ServiceBusClient CreateClient() => new ServiceBusClient(_connectionString);
+
         private static MessageBrokerContext CreateEmptyContext()
             => new MessageBrokerContext("message-id", new byte[] { 1 }, null, "receiver", CancellationToken.None, new JsonBodyConverter());
 
@@ -32,13 +44,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
+                ConnectionString = _connectionString,
             };
             var messageBrokerOptions = new MessageBrokerOptions();
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             var bodyConverterFactory = new Mock<IBodyConverterFactory>();
 
-            return new ServiceBusReceiver(serviceBusOptions, messageBrokerOptions, logger.Object, bodyConverterFactory.Object);
+            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, messageBrokerOptions, logger.Object, bodyConverterFactory.Object);
         }
 
         private static async Task<ServiceBusReceiver> CreatePeekLockSutAsync()
@@ -55,13 +67,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
+                ConnectionString = _connectionString,
             };
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             var factory = new Mock<IBodyConverterFactory>();
             factory.Setup(f => f.CreateBodyConverter(It.IsAny<string>())).Returns(new JsonBodyConverter());
             var inboundFactory = new InboundBrokeredMessageFactory(factory.Object, Mock.Of<ILogger>());
-            return new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
+            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
         }
 
         private static async Task<(ServiceBusReceiver sut, MessageBrokerContext context, TransactionContext transactionContext)> ReceivedPeekLockMessageAsync(InMemoryServiceBusMessageReceiver inMemory)

@@ -5,6 +5,7 @@ using Chatter.MessageBrokers.Receiving;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
@@ -25,19 +26,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly Func<ReceiverOptions, ServiceBusReceiveMode, IServiceBusMessageReceiver> _receiverFactory;
         private readonly ServiceBusOptions _serviceBusOptions;
         private ServiceBusReceiveMode _receiveMode;
-        // TODO(STEP-006): the shared ServiceBusClient will be injected from DI rather than constructed here
-        // from ServiceBusOptions. Until then the receiver lazily builds a client from the options so the
-        // production adapter has a client to create its SDK receiver from.
-        private ServiceBusClient _client;
+        // INVARIANT: the receiver and sender MUST share ONE ServiceBusClient per namespace so the send and
+        // the receiver's settle enlist in one cross-entity transaction (EnableCrossEntityTransactions). The
+        // client is the DI-registered singleton injected here, NOT one this receiver constructs.
+        private readonly ServiceBusClient _client;
         IServiceBusMessageReceiver _innerReceiver;
         private bool _disposedValue;
         private ReceiverOptions _options;
 
-        public ServiceBusReceiver(ServiceBusOptions serviceBusOptions,
+        public ServiceBusReceiver(ServiceBusClient client,
+                                  ServiceBusOptions serviceBusOptions,
                                   MessageBrokerOptions messageBrokerOptions,
                                   ILogger<ServiceBusReceiver> logger,
                                   IBodyConverterFactory bodyConverterFactory)
-            : this(serviceBusOptions,
+            : this(client,
+                   serviceBusOptions,
                    messageBrokerOptions,
                    logger,
                    new InboundBrokeredMessageFactory(
@@ -48,8 +51,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         // Internal seam ctor: an IServiceBusMessageReceiver factory (path + receive-mode -> port) can be
         // injected to drive receive/ack behavior with an in-memory double in tests. When null, the
-        // production AzureSdkMessageReceiverAdapter source is used.
-        internal ServiceBusReceiver(ServiceBusOptions serviceBusOptions,
+        // production AzureSdkMessageReceiverAdapter source (off the shared client) is used.
+        internal ServiceBusReceiver(ServiceBusClient client,
+                                    ServiceBusOptions serviceBusOptions,
                                     MessageBrokerOptions messageBrokerOptions,
                                     ILogger<ServiceBusReceiver> logger,
                                     InboundBrokeredMessageFactory inboundFactory,
@@ -61,6 +65,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
 
             _syncLock = new object();
+            _client = client ?? throw new ArgumentNullException(nameof(client));
             _serviceBusOptions = serviceBusOptions;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _inboundFactory = inboundFactory ?? throw new ArgumentNullException(nameof(inboundFactory));
@@ -68,37 +73,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _receiverFactory = receiverFactory ?? CreateProductionReceiver;
         }
 
-        // TODO(STEP-006): replace this options-derived client with the shared ServiceBusClient injected
-        // from DI. A null TokenCredential means "authenticate with the connection string's SAS".
-        private ServiceBusClient Client
-        {
-            get
-            {
-                if (_client == null)
-                {
-                    lock (_syncLock)
-                    {
-                        if (_client == null)
-                        {
-                            var clientOptions = new ServiceBusClientOptions();
-                            if (_serviceBusOptions.RetryOptions != null)
-                            {
-                                clientOptions.RetryOptions = _serviceBusOptions.RetryOptions;
-                            }
-
-                            _client = _serviceBusOptions.TokenCredential is null
-                                ? new ServiceBusClient(_serviceBusOptions.ConnectionString, clientOptions)
-                                : new ServiceBusClient(_serviceBusOptions.ConnectionString, _serviceBusOptions.TokenCredential, clientOptions);
-                        }
-                    }
-                }
-
-                return _client;
-            }
-        }
-
         private IServiceBusMessageReceiver CreateProductionReceiver(ReceiverOptions options, ServiceBusReceiveMode receiveMode)
-            => new AzureSdkMessageReceiverAdapter(Client,
+            => new AzureSdkMessageReceiverAdapter(_client,
                                                   options.MessageReceiverPath,
                                                   receiveMode,
                                                   _serviceBusOptions.PrefetchCount,
@@ -223,7 +199,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return false;
             }
 
-            await this.InnerReceiver.AbandonAsync(msg, msg.ApplicationProperties);
+            await this.InnerReceiver.AbandonAsync(msg, new Dictionary<string, object>(msg.ApplicationProperties));
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully abandoned");
             return true;
         }
