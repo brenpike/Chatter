@@ -1,7 +1,49 @@
-﻿namespace Chatter.MessageBrokers
+﻿using System.Text.Json;
+
+namespace Chatter.MessageBrokers
 {
     public class MessageContext
     {
+        /// <summary>
+        /// Materializes a persisted MessageContext value (a System.Text.Json <see cref="JsonElement"/>)
+        /// back to the CLR type that Newtonsoft's untyped <c>IDictionary&lt;string, object&gt;</c>
+        /// deserialization would have produced. The outbox persists MessageContext as JSON whose values
+        /// are heterogeneously typed (string headers, a numeric ReceiveAttempts, a DateTime scheduled
+        /// enqueue time), and downstream typed readers depend on those CLR types being restored on replay.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: this is a deserialize-only companion to the header constants below — it must
+        /// reproduce Newtonsoft's default untyped read semantics so that the (string), (DateTime?), and
+        /// integer reads on the replayed context continue to hold:
+        /// <list type="bullet">
+        /// <item>Number -> <c>long</c> when it fits an Int64, else <c>double</c> (matches Newtonsoft).</item>
+        /// <item>String -> <see cref="System.DateTime"/> when it is a strict ISO-8601 value
+        /// (<see cref="JsonElement.TryGetDateTime"/>, matching Newtonsoft's default DateParseHandling),
+        /// else the raw string. TryGetDateTime is strict by design so non-date strings are not over-coerced.</item>
+        /// <item>True/False -> <c>bool</c>.</item>
+        /// <item>Null/Undefined -> <c>null</c>.</item>
+        /// <item>Object/Array -> raw JSON text so no value is dropped.</item>
+        /// </list>
+        /// </remarks>
+        internal static object MaterializePersistedContextValue(JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Number:
+                    return element.TryGetInt64(out var asLong) ? asLong : element.GetDouble();
+                case JsonValueKind.String:
+                    return element.TryGetDateTime(out var asDateTime) ? asDateTime : (object)element.GetString();
+                case JsonValueKind.True:
+                case JsonValueKind.False:
+                    return element.GetBoolean();
+                case JsonValueKind.Null:
+                case JsonValueKind.Undefined:
+                    return null;
+                default:
+                    return element.GetRawText();
+            }
+        }
+
         public static readonly string ChatterBaseHeader = "Chatter";
         private static readonly string Routing = "Routing";
         private static readonly string Infrastructure = "Infrastructure";
