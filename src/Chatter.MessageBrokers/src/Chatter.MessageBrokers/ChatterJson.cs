@@ -38,6 +38,15 @@ namespace Chatter.MessageBrokers
             // (e.g. {"name":"abc","value":42}) silently deserialize to defaults, dropping data.
             // Read-path only — does NOT affect serialized output, so wire-output parity is preserved.
             PropertyNameCaseInsensitive = true,
+
+            // Newtonsoft's JsonConvert serializes/deserializes public FIELDS by default;
+            // System.Text.Json defaults IncludeFields to false, so a contract exposing public
+            // fields (e.g. class Event { public string Name; }) would serialize as {} and
+            // deserialize to defaults, silently dropping data. Enabling this restores
+            // Newtonsoft-compatible field handling on BOTH read and write paths. Public fields
+            // serialize by their PascalCase declared name (no NamingPolicy set), so wire-output
+            // parity with the prior Newtonsoft serialization is preserved.
+            IncludeFields = true,
         };
     }
 }
