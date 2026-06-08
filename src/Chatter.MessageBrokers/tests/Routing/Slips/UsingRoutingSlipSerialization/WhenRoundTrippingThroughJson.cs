@@ -4,7 +4,6 @@ using FluentAssertions;
 using Moq;
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
 using System.Threading;
 using Xunit;
 
@@ -91,8 +90,10 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingRoutingSlipSerializati
             slip.RouteToNextStep().Should().Be("second");
             slip.Visited.Should().HaveCount(2);
 
-            // Seed a non-empty Attachments entry (internal setter is visible to this test assembly).
+            // Seed non-empty Attachments entries carrying primitives (internal setter is visible to this
+            // test assembly). After round-trip these must materialize back to their CLR types, not JsonElement.
             slip.Attachments["attachment-key"] = "attachment-value";
+            slip.Attachments["attachment-number"] = 42;
 
             // SERIALIZE seam.
             var serializeContext = new Dictionary<string, object>();
@@ -123,13 +124,16 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingRoutingSlipSerializati
             roundTrippedSlip.Visited[0].DestinationPath.Should().Be("first");
             roundTrippedSlip.Visited[1].DestinationPath.Should().Be("second");
 
-            // Attachments survives. The value boxes to a JsonElement on deserialize (the Attachments value
-            // type is object, so STJ binds it to JsonElement); assert the key survives and the JSON string
-            // payload is intact rather than pinning the boxed CLR type.
+            // Attachments survives AND its primitive values are materialized back to the CLR types
+            // Newtonsoft's untyped read produced (NOT raw JsonElement). TryGetRoutingSlip applies the
+            // shared MessageContext materializer to the deserialized slip's Attachments, so a consumer
+            // that stored a string/int reads it straight back without a JsonElement cast failure.
             roundTrippedSlip.Attachments.Should().ContainKey("attachment-key");
-            var attachmentValue = roundTrippedSlip.Attachments["attachment-key"];
-            attachmentValue.Should().BeOfType<JsonElement>();
-            ((JsonElement)attachmentValue).GetString().Should().Be("attachment-value");
+            roundTrippedSlip.Attachments["attachment-key"].Should().BeOfType<string>().Which.Should().Be("attachment-value");
+
+            roundTrippedSlip.Attachments.Should().ContainKey("attachment-number");
+            // Numbers materialize to long (Int64) per the materializer's Newtonsoft-parity semantics.
+            roundTrippedSlip.Attachments["attachment-number"].Should().BeOfType<long>().Which.Should().Be(42L);
         }
     }
 }
