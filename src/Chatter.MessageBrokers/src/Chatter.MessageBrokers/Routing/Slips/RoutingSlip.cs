@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace Chatter.MessageBrokers.Routing.Slips
 {
@@ -8,6 +9,7 @@ namespace Chatter.MessageBrokers.Routing.Slips
     {
         private readonly IList<RoutingStep> _visited;
 
+        [JsonConstructor]
         internal RoutingSlip()
         {
             _visited = new List<RoutingStep>();
@@ -16,7 +18,9 @@ namespace Chatter.MessageBrokers.Routing.Slips
         }
 
         public Guid Id { get; set; }
+        [JsonInclude]
         public IList<RoutingStep> Route { get; internal set; }
+        [JsonInclude]
         public IDictionary<string, object> Attachments { get; internal set; }
         public IReadOnlyList<RoutingStep> Visited => (IReadOnlyList<RoutingStep>)_visited;
 

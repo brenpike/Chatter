@@ -1,5 +1,5 @@
 ﻿using Chatter.MessageBrokers.Context;
-using Newtonsoft.Json;
+using System.Text.Json;
 
 namespace Chatter.MessageBrokers.Routing.Slips
 {
@@ -15,7 +15,7 @@ namespace Chatter.MessageBrokers.Routing.Slips
                     {
                         if (mbc.BrokeredMessage.MessageContext.TryGetValue(MessageContext.RoutingSlip, out var rs))
                         {
-                            RoutingSlip theSlip = JsonConvert.DeserializeObject<RoutingSlip>((string)rs);
+                            RoutingSlip theSlip = JsonSerializer.Deserialize<RoutingSlip>((string)rs, ChatterJson.Options);
                             routingSlip = theSlip;
                             return true;
                         }
