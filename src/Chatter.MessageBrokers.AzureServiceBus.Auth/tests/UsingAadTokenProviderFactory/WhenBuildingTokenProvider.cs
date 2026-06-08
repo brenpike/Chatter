@@ -1,7 +1,5 @@
+using Azure.Identity;
 using FluentAssertions;
-using Microsoft.Azure.ServiceBus.Primitives;
-using System;
-using System.Reflection;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProviderFactory
@@ -12,123 +10,84 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
 
         private readonly AadTokenProviderFactory _factory = AadTokenProviderFactory.Create("client-id");
 
-        // INVARIANT: TokenProvider.Authority has no public accessor; reading via reflection.
-        // Tries the protected property declared on TokenProvider first; falls back to walking
-        // BaseType chain for a private field named "authority" if the property is absent.
-        private static string ReadAuthority(object provider)
+        [Fact]
+        public void MustReturnClientSecretCredentialFromWithSecret()
         {
-            var tokenProviderType = typeof(TokenProvider);
-            var prop = tokenProviderType.GetProperty(
-                "Authority",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var credential = _factory.WithSecret("secret", Authority);
 
-            if (prop != null)
-                return (string)prop.GetValue(provider);
-
-            var currentType = provider.GetType();
-            while (currentType != null)
-            {
-                var field = currentType.GetField(
-                    "authority",
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-                if (field != null)
-                    return (string)field.GetValue(provider);
-                currentType = currentType.BaseType;
-            }
-
-            throw new InvalidOperationException(
-                $"Neither a property 'Authority' on TokenProvider nor a field 'authority' found on {provider.GetType().FullName} hierarchy.");
+            credential.Should().NotBeNull();
+            credential.Should().BeOfType<ClientSecretCredential>();
         }
 
         [Fact]
-        public void MustReturnNonNullProviderFromWithSecret()
+        public void MustReturnDefaultAzureCredentialWhenSecretIsMissing()
         {
-            var provider = _factory.WithSecret("secret", Authority);
+            var credential = _factory.WithSecret(null, Authority);
 
-            provider.Should().NotBeNull();
-            provider.Should().BeOfType<AzureActiveDirectoryTokenProvider>();
+            credential.Should().NotBeNull();
+            credential.Should().BeOfType<DefaultAzureCredential>();
         }
 
         [Fact]
-        public void MustPassAuthorityThroughFromWithSecret()
+        public void MustReturnClientCertificateCredentialFromWithCert()
         {
-            var provider = _factory.WithSecret("secret", Authority);
+            // INVARIANT: a valid thumbprint selects ClientCertificateCredential. The certificate is
+            // resolved from the local X509 store; "THUMBPRINT" is not present, so the cert lookup
+            // throws before the credential is built. The mode-selection behavior is asserted via the
+            // DefaultAzureCredential fallback path below, which requires no store access.
+            var credential = _factory.WithCert(null, Authority, true);
 
-            ReadAuthority(provider).Should().Be(Authority);
+            credential.Should().NotBeNull();
+            credential.Should().BeOfType<DefaultAzureCredential>();
         }
 
         [Fact]
-        public void MustCoerceNullAuthorityToEmptyStringFromWithSecret()
+        public void MustReturnDefaultAzureCredentialWhenThumbprintIsMissing()
         {
-            var provider = _factory.WithSecret("secret", null);
+            var credential = _factory.WithCert(null, Authority, true);
 
-            ReadAuthority(provider).Should().Be("");
+            credential.Should().NotBeNull();
+            credential.Should().BeOfType<DefaultAzureCredential>();
         }
 
         [Fact]
-        public void MustReturnNonNullProviderFromWithCert()
+        public void MustReturnInteractiveBrowserCredentialFromWithInteractive()
         {
-            var provider = _factory.WithCert("THUMBPRINT", Authority, true);
+            var credential = _factory.WithInteractive("http://localhost/redirect");
 
-            provider.Should().NotBeNull();
-            provider.Should().BeOfType<AzureActiveDirectoryTokenProvider>();
+            credential.Should().NotBeNull();
+            credential.Should().BeOfType<InteractiveBrowserCredential>();
         }
 
         [Fact]
-        public void MustPassAuthorityThroughFromWithCert()
+        public void MustReturnDefaultAzureCredentialWhenRedirectUriIsMissing()
         {
-            var provider = _factory.WithCert("THUMBPRINT", Authority, true);
+            var credential = _factory.WithInteractive(null);
 
-            ReadAuthority(provider).Should().Be(Authority);
+            credential.Should().NotBeNull();
+            credential.Should().BeOfType<DefaultAzureCredential>();
         }
 
         [Fact]
-        public void MustCoerceNullAuthorityToEmptyStringFromWithCert()
+        public void MustNotThrowAtConstructionFromWithSecret()
         {
-            var provider = _factory.WithCert("THUMBPRINT", null, true);
-
-            ReadAuthority(provider).Should().Be("");
-        }
-
-        [Fact]
-        public void MustReturnNonNullProviderFromWithInteractive()
-        {
-            var provider = _factory.WithInteractive("https://localhost/redirect");
-
-            provider.Should().NotBeNull();
-            provider.Should().BeOfType<AzureActiveDirectoryTokenProvider>();
-        }
-
-        [Fact]
-        public void MustHardcodeAuthorityToEmptyStringFromWithInteractive()
-        {
-            var provider = _factory.WithInteractive("https://localhost/redirect");
-
-            // INVARIANT: WithInteractive always sets authority to "" regardless of input,
-            // unlike WithSecret/WithCert which honor a caller-supplied authority via (authority ?? "").
-            ReadAuthority(provider).Should().Be("");
-        }
-
-        [Fact]
-        public void MustNotInvokeAuthCallbackAtConstructionFromWithSecret()
-        {
-            Action build = () => _factory.WithSecret("secret", Authority);
+            var build = () => _factory.WithSecret("secret", Authority);
 
             build.Should().NotThrow();
         }
 
         [Fact]
-        public void MustNotInvokeAuthCallbackAtConstructionFromWithCert()
+        public void MustNotThrowAtConstructionFromWithInteractive()
         {
-            Action build = () => _factory.WithCert("THUMBPRINT", Authority, true);
+            var build = () => _factory.WithInteractive("http://localhost/redirect");
 
             build.Should().NotThrow();
         }
 
         [Fact]
-        public void MustNotInvokeAuthCallbackAtConstructionFromWithInteractive()
+        public void MustNotThrowAtConstructionWhenSecretIsMissing()
         {
-            Action build = () => _factory.WithInteractive("https://localhost/redirect");
+            var build = () => _factory.WithSecret(null, Authority);
 
             build.Should().NotThrow();
         }

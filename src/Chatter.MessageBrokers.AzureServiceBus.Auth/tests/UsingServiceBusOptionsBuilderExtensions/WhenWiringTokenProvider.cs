@@ -11,17 +11,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingServiceBusOptio
     {
         private const string ClientId = "client-id";
         private const string Secret = "secret";
-        private const string Thumbprint = "THUMBPRINT";
+        // INVARIANT: WithCert resolves the certificate from the local X509 store eagerly when the
+        // Func fires at registration. A real thumbprint would require a matching cert in the store,
+        // so these wiring tests use the missing-thumbprint path (DefaultAzureCredential fallback),
+        // which exercises the same eager-Func registration without store access.
+        private const string Thumbprint = null;
         private const string Authority = "https://login.microsoftonline.com/tenant/";
         private const string RedirectUri = "https://localhost/redirect";
 
-        // INVARIANT: the end-to-end ServiceBusOptions.TokenProvider round-trip is intentionally
-        // NOT re-asserted here because ServiceBusOptionsBuilder.Build() is internal to
-        // Chatter.MessageBrokers.AzureServiceBus and not visible to this assembly; that round-trip
-        // is owned by the ASB module test WhenBuilding.cs. These tests characterize ONLY the
-        // public extension surface: that registration invokes the eager Func building an
-        // AzureActiveDirectoryTokenProvider WITHOUT firing the MSAL/DefaultAzureCredential callback,
-        // and that the fluent contract returns the same builder instance.
+        // INVARIANT: the end-to-end ServiceBusOptions.TokenCredential round-trip is intentionally
+        // NOT re-asserted here because both ServiceBusOptions.TokenCredential (internal set) and
+        // ServiceBusOptionsBuilder.Build() are internal to Chatter.MessageBrokers.AzureServiceBus
+        // and not visible to this assembly; that round-trip is owned by the ASB module test
+        // WhenBuilding.cs. These tests characterize ONLY the public extension surface: that
+        // registration invokes the eager Func building an Azure.Core.TokenCredential, and that the
+        // fluent contract returns the same builder instance.
         private static ServiceBusOptionsBuilder CreateBuilder()
             => ServiceBusOptionsBuilder.Create(
                 new ServiceCollection(),
