@@ -1,4 +1,6 @@
+using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace Chatter.MessageBrokers
 {
@@ -67,6 +69,65 @@ namespace Chatter.MessageBrokers
             // Newtonsoft tolerated // line and /* block */ comments in inbound JSON; STJ defaults
             // Disallow and throws. Skip ignores them on read; serialize never emits comments.
             ReadCommentHandling = System.Text.Json.JsonCommentHandling.Skip,
+
+            // Newtonsoft populated NON-PUBLIC property setters (private/protected/internal) by
+            // default — common for immutable command/event DTOs declared as
+            // `public string Name { get; private set; }`. System.Text.Json only binds PUBLIC
+            // setters or constructor parameters, so such contracts now silently deserialize to
+            // defaults (or fail) on the shared read path. EnableNonPublicSetters restores the
+            // Newtonsoft default via a contract-model modifier (see below). DESERIALIZE-side only
+            // (wires JsonPropertyInfo.Set, never Get), so serialized wire bytes are unchanged and
+            // golden byte-parity tests stay byte-identical.
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver
+            {
+                Modifiers = { EnableNonPublicSetters }
+            },
         };
+
+        // Contract-model modifier: for any property STJ left unsettable on deserialize
+        // (Set == null — i.e. no public setter and no [JsonInclude]-forced setter) whose
+        // underlying CLR member nonetheless exposes a NON-PUBLIC setter, wire Set to invoke
+        // that setter via reflection. This restores Newtonsoft's default private-setter binding
+        // globally for ALL body/context deserialization through ChatterJson.Options.
+        //
+        // No-op (and MUST stay a no-op) for:
+        //   - properties with a public setter — STJ already set Set (skipped: Set != null)
+        //   - [JsonInclude] members (e.g. RoutingSlip.Route/Attachments/Visited with internal/
+        //     private setters) — STJ already set Set for them (skipped: Set != null)
+        //   - constructor-parameter-bound members on [JsonConstructor] types (RoutingSlip,
+        //     RoutingStep, OutboundBrokeredMessage) and records — these expose NO setter
+        //     (GetSetMethod(nonPublic: true) == null), so ctor binding is untouched
+        //   - fields (IncludeFields) — AttributeProvider is a FieldInfo, not PropertyInfo
+        private static void EnableNonPublicSetters(JsonTypeInfo typeInfo)
+        {
+            if (typeInfo.Kind != JsonTypeInfoKind.Object)
+            {
+                return;
+            }
+
+            foreach (var property in typeInfo.Properties)
+            {
+                if (property.Set is not null)
+                {
+                    // STJ already found a bindable setter (public or [JsonInclude]-forced).
+                    continue;
+                }
+
+                if (property.AttributeProvider is not PropertyInfo propertyInfo)
+                {
+                    // Fields and synthesized members are not non-public-setter properties.
+                    continue;
+                }
+
+                var setMethod = propertyInfo.GetSetMethod(nonPublic: true);
+                if (setMethod is null)
+                {
+                    // No CLR setter at all (get-only / ctor-bound) — leave to ctor binding.
+                    continue;
+                }
+
+                property.Set = (obj, value) => propertyInfo.SetValue(obj, value);
+            }
+        }
     }
 }

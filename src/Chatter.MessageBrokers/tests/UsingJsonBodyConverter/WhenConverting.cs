@@ -14,6 +14,14 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             public int Value { get; set; }
         }
 
+        // Immutable command/event-style DTO: members exposed with PRIVATE setters only.
+        // Newtonsoft populated private setters by default; the STJ port must too (read-path).
+        private class PrivateSetterBodyPoco
+        {
+            public string Name { get; private set; }
+            public int Value { get; private set; }
+        }
+
         [Fact]
         public void MustExposeApplicationJsonContentType()
             => _sut.ContentType.Should().Be("application/json");
@@ -71,6 +79,22 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             var result = _sut.Convert<BodyPoco>(bytes);
 
             result.Should().BeNull();
+        }
+
+        // PARITY: Newtonsoft populated NON-PUBLIC property setters by default; STJ binds only
+        // public setters / ctor params. The EnableNonPublicSetters contract modifier on the
+        // shared ChatterJson.Options restores Newtonsoft's private-setter binding, so immutable
+        // command/event DTOs deserialize their members instead of silently leaving them at
+        // default (null / 0).
+        [Fact]
+        public void MustPopulatePrivateSettersOnDeserialize()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
+
+            var result = _sut.Convert<PrivateSetterBodyPoco>(bytes);
+
+            result.Name.Should().Be("abc");
+            result.Value.Should().Be(42);
         }
     }
 }
