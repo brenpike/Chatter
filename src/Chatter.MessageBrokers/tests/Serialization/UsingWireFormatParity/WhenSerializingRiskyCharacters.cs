@@ -3,9 +3,9 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Slips;
 using FluentAssertions;
 using Moq;
-using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.Serialization.UsingWireFormatParity
@@ -133,17 +133,18 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingWireFormatParity
         }
 
         [Fact]
-        public void MustEmitGoldenNewtonsoftOutboxContextJsonForRiskyHeaderValue()
+        public void MustEmitGoldenOutboxContextJsonForRiskyHeaderValue()
         {
-            // Mirrors InMemoryBrokeredMessageOutbox: JsonConvert.SerializeObject over the
-            // MessageContext dictionary. Keys are the fixed Chatter.* header constants.
+            // Mirrors the production outbox serialize path (InMemoryBrokeredMessageOutbox /
+            // BrokeredMessageOutbox): JsonSerializer.Serialize over the MessageContext dictionary
+            // using the shared ChatterJson.Options. Keys are the fixed Chatter.* header constants.
             var messageContext = new Dictionary<string, object>
             {
                 [MessageContext.ContentType] = "application/json",
                 [MessageContext.CorrelationId] = RiskyValue
             };
 
-            JsonConvert.SerializeObject(messageContext).Should().Be(GoldenOutboxContextJson);
+            JsonSerializer.Serialize(messageContext, ChatterJson.Options).Should().Be(GoldenOutboxContextJson);
         }
 
         // ---- Deserialize-side sanity gates (Newtonsoft today; STJ asserts come in STEP-PARITY-VERIFY) ----
@@ -170,12 +171,13 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingWireFormatParity
         }
 
         [Fact]
-        public void MustDeserializeGoldenNewtonsoftOutboxContextBytes()
+        public void MustDeserializeGoldenOutboxContextBytesThroughStj()
         {
-            // Feed the golden Newtonsoft-written outbox MessageContext bytes back through Newtonsoft
-            // today; STEP-PARITY-VERIFY repeats under STJ. Confirms the risky CorrelationId value
-            // survives a full round-trip intact.
-            var roundTripped = JsonConvert.DeserializeObject<Dictionary<string, object>>(GoldenOutboxContextJson);
+            // Feed the golden Newtonsoft-written outbox MessageContext bytes back through STJ using the
+            // shared ChatterJson.Options, matching how OutboxProcessor now deserializes (to
+            // Dictionary<string, string> so values are System.String). Confirms STJ reads historical
+            // Newtonsoft bytes and the risky CorrelationId value survives a full round-trip intact.
+            var roundTripped = JsonSerializer.Deserialize<Dictionary<string, string>>(GoldenOutboxContextJson, ChatterJson.Options);
 
             roundTripped.Should().ContainKey(MessageContext.CorrelationId)
                 .WhoseValue.Should().Be(RiskyValue);

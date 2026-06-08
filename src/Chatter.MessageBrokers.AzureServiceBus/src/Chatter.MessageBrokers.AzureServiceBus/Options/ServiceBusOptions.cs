@@ -1,7 +1,7 @@
 ﻿using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Primitives;
-using Newtonsoft.Json;
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Options
 {
