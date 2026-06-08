@@ -49,5 +49,28 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             var json = _sut.Stringify(new BodyPoco { Name = "abc", Value = 42 });
             json.Should().Be("{\"Name\":\"abc\",\"Value\":42}");
         }
+
+        // PARITY: Newtonsoft's JsonConvert.SerializeObject(null) produced the literal JSON "null".
+        // The STJ port must not dereference body.GetType() on a null body (NullReferenceException);
+        // a null body serializes to the literal JSON null, matching JsonUnicodeBodyConverter.
+        [Fact]
+        public void MustStringifyNullObjectAsJsonNullWithoutThrowing()
+        {
+            object body = null;
+
+            _sut.Stringify(body).Should().Be("null");
+        }
+
+        // A null body round-trips: serialize -> "null" bytes; deserialize -> default(TBody).
+        [Fact]
+        public void MustRoundTripNullObjectThroughBytes()
+        {
+            object body = null;
+
+            var bytes = _sut.Convert(body);
+            var result = _sut.Convert<BodyPoco>(bytes);
+
+            result.Should().BeNull();
+        }
     }
 }

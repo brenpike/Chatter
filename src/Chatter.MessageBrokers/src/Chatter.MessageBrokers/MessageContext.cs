@@ -67,7 +67,12 @@ namespace Chatter.MessageBrokers
         /// else the raw string. TryGetDateTime is strict by design so non-date strings are not over-coerced.</item>
         /// <item>True/False -> <c>bool</c>.</item>
         /// <item>Null/Undefined -> <c>null</c>.</item>
-        /// <item>Object/Array -> raw JSON text so no value is dropped.</item>
+        /// <item>Object -> a recursively-materialized <c>Dictionary&lt;string, object&gt;</c> and
+        /// Array -> a recursively-materialized <c>List&lt;object&gt;</c>, so structured attachment
+        /// values stay navigable as nested CLR collections (the closest CLR-fidelity match to the
+        /// <c>JObject</c>/<c>JArray</c> Newtonsoft's untyped read produced) rather than being
+        /// flattened to a raw JSON string. Each nested value/element is projected through this same
+        /// method so the per-value parity semantics hold uniformly at every depth.</item>
         /// </list>
         /// </remarks>
         internal static object MaterializePersistedContextValue(JsonElement element)
@@ -84,6 +89,13 @@ namespace Chatter.MessageBrokers
                 case JsonValueKind.Null:
                 case JsonValueKind.Undefined:
                     return null;
+                case JsonValueKind.Object:
+                    return element.EnumerateObject()
+                        .ToDictionary(property => property.Name, property => MaterializePersistedContextValue(property.Value));
+                case JsonValueKind.Array:
+                    return element.EnumerateArray()
+                        .Select(MaterializePersistedContextValue)
+                        .ToList();
                 default:
                     return element.GetRawText();
             }

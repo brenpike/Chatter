@@ -155,5 +155,63 @@ namespace Chatter.MessageBrokers.Tests.UsingMessageContext
 
             materialized.Should().NotBeNull().And.BeEmpty();
         }
+
+        // -----------------------------------------------------------------------
+        // Structured (object/array) attachment values — PARITY: Newtonsoft materialized
+        // IDictionary<string, object> object/array entries as navigable JObject/JArray, so a
+        // consumer doing slip.Attachments["payload"] = new { Id = 1 } could read structured data
+        // back. The STJ materializer must recursively materialize objects -> Dictionary<string,
+        // object> and arrays -> List<object> (navigable nested CLR collections) instead of
+        // flattening them to a raw JSON string. Leaf values keep the per-value parity rules.
+        // -----------------------------------------------------------------------
+
+        [Fact]
+        public void MustRestoreJsonObjectAsNavigableDictionaryWithTypedLeaves()
+        {
+            var materialized = MaterializeFrom(new Dictionary<string, object>
+            {
+                ["payload"] = new Dictionary<string, object> { ["id"] = 1, ["name"] = "abc" },
+            });
+
+            var payload = materialized["payload"].Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            payload["id"].Should().BeOfType<long>().And.Be(1L);
+            payload["name"].Should().BeOfType<string>().And.Be("abc");
+        }
+
+        [Fact]
+        public void MustRestoreJsonArrayAsNavigableListWithTypedElements()
+        {
+            var materialized = MaterializeFrom(new Dictionary<string, object>
+            {
+                ["items"] = new object[] { 1, "two", true },
+            });
+
+            var items = materialized["items"].Should().BeAssignableTo<IList<object>>().Subject;
+            items.Should().HaveCount(3);
+            items[0].Should().BeOfType<long>().And.Be(1L);
+            items[1].Should().BeOfType<string>().And.Be("two");
+            items[2].Should().BeOfType<bool>().And.Be(true);
+        }
+
+        [Fact]
+        public void MustRecursivelyMaterializeNestedObjectsAndArrays()
+        {
+            var materialized = MaterializeFrom(new Dictionary<string, object>
+            {
+                ["payload"] = new Dictionary<string, object>
+                {
+                    ["nested"] = new Dictionary<string, object> { ["count"] = 7 },
+                    ["tags"] = new object[] { "a", "b" },
+                },
+            });
+
+            var payload = materialized["payload"].Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+
+            var nested = payload["nested"].Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            nested["count"].Should().BeOfType<long>().And.Be(7L);
+
+            var tags = payload["tags"].Should().BeAssignableTo<IList<object>>().Subject;
+            tags.Should().Equal("a", "b");
+        }
     }
 }
