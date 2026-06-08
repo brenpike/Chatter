@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Collections.Generic;
 using System.Text;
 using Xunit;
 
@@ -20,6 +21,13 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
         {
             public string Name { get; private set; }
             public int Value { get; private set; }
+        }
+
+        // Message contract exposing an INITIALIZED getter-only collection. Newtonsoft populated
+        // the existing collection through the getter; the STJ port must too (read-path).
+        private class GetterOnlyCollectionBodyPoco
+        {
+            public List<string> Items { get; } = new();
         }
 
         [Fact]
@@ -95,6 +103,21 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
 
             result.Name.Should().Be("abc");
             result.Value.Should().Be(42);
+        }
+
+        // PARITY: Newtonsoft populated an EXISTING initialized getter-only collection through its
+        // getter (add into the already-constructed instance). STJ defaults object-creation handling
+        // to Replace and EnableNonPublicSetters skips a setter-less member, so without
+        // PreferredObjectCreationHandling = Populate on the shared ChatterJson.Options the DTO would
+        // arrive with an EMPTY Items collection. Populate restores the inbound array values.
+        [Fact]
+        public void MustPopulateGetterOnlyCollectionsOnDeserialize()
+        {
+            var bytes = _sut.GetBytes("{\"Items\":[\"a\",\"b\"]}");
+
+            var result = _sut.Convert<GetterOnlyCollectionBodyPoco>(bytes);
+
+            result.Items.Should().Equal("a", "b");
         }
     }
 }

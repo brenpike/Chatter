@@ -50,6 +50,17 @@ namespace Chatter.MessageBrokers
             // parity with the prior Newtonsoft serialization is preserved.
             IncludeFields = true,
 
+            // Newtonsoft populated EXISTING initialized getter-only collections/objects through
+            // the getter — a contract exposing `public List<Item> Items { get; } = new();` had its
+            // inbound array values added INTO the already-constructed instance. System.Text.Json
+            // defaults object-creation handling to Replace and (since the member has no setter)
+            // the EnableNonPublicSetters modifier skips it, so such DTOs arrive with an EMPTY
+            // collection, silently dropping data on both JsonBodyConverter and JsonUnicodeBodyConverter.
+            // Populate makes STJ add into the existing initialized instance instead of replacing it,
+            // restoring Newtonsoft's behavior. DESERIALIZE-side only — it does NOT change serialized
+            // wire bytes, so golden byte-parity tests stay byte-identical. .NET 8+ API (net8.0 + net10.0).
+            PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate,
+
             // ---- Newtonsoft read-leniency parity ----
             // The following three options restore deserialize-side leniencies that Newtonsoft's
             // default JsonConvert tolerated but System.Text.Json tightened to throw. They are all
