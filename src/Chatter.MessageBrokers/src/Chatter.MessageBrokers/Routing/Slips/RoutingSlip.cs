@@ -7,7 +7,7 @@ namespace Chatter.MessageBrokers.Routing.Slips
 {
     public class RoutingSlip
     {
-        private readonly IList<RoutingStep> _visited;
+        private IList<RoutingStep> _visited;
 
         [JsonConstructor]
         internal RoutingSlip()
@@ -22,7 +22,12 @@ namespace Chatter.MessageBrokers.Routing.Slips
         public IList<RoutingStep> Route { get; internal set; }
         [JsonInclude]
         public IDictionary<string, object> Attachments { get; internal set; }
-        public IReadOnlyList<RoutingStep> Visited => (IReadOnlyList<RoutingStep>)_visited;
+        [JsonInclude]
+        public IReadOnlyList<RoutingStep> Visited
+        {
+            get => (IReadOnlyList<RoutingStep>)_visited;
+            private set => _visited = value is null ? new List<RoutingStep>() : new List<RoutingStep>(value);
+        }
 
         public string RouteToNextStep()
         {
