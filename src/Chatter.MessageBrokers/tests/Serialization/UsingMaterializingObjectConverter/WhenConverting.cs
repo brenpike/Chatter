@@ -254,6 +254,33 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingMaterializingObjectCon
             value.Should().BeAssignableTo<IList<object>>().Which.Should().BeEmpty();
         }
 
+        // PARITY: duplicate property names are legal JSON (RFC 8259). Newtonsoft's untyped read and
+        // System.Text.Json's own Dictionary<string, object> converter both resolve them last-write-wins;
+        // the materializer must NOT throw (a LINQ ToDictionary would raise ArgumentException) and must
+        // keep the LAST occurrence, so a payload carrying duplicate keys does not poison the deserialize.
+        [Fact]
+        public void MustMaterializeDuplicateObjectKeysAsLastWriteWins()
+        {
+            var value = MaterializeObjectMember("{\"k\":1,\"k\":2}");
+
+            var dictionary = value.Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            dictionary.Should().HaveCount(1);
+            dictionary["k"].Should().BeOfType<long>().And.Be(2L);
+        }
+
+        // PARITY: duplicate keys inside a NESTED object position resolve last-write-wins at depth too,
+        // since every nested object routes through the same materialization recipe.
+        [Fact]
+        public void MustMaterializeDuplicateKeysInNestedObjectAsLastWriteWins()
+        {
+            var value = MaterializeObjectMember("{\"outer\":{\"k\":\"first\",\"k\":\"second\"}}");
+
+            var outer = value.Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            var inner = outer["outer"].Should().BeAssignableTo<IDictionary<string, object>>().Subject;
+            inner.Should().HaveCount(1);
+            inner["k"].Should().Be("second");
+        }
+
         // ------------------------------------------------------------------------------------
         // B. WRITE — byte-parity, non-reentrant pass-through, NO stack overflow
         // ------------------------------------------------------------------------------------

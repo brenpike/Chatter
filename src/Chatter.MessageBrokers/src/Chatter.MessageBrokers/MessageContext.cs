@@ -102,8 +102,17 @@ namespace Chatter.MessageBrokers
                 case JsonValueKind.Undefined:
                     return null;
                 case JsonValueKind.Object:
-                    return element.EnumerateObject()
-                        .ToDictionary(property => property.Name, property => MaterializeJsonElement(property.Value));
+                    // Last-write-wins on duplicate property names, matching Newtonsoft's default untyped
+                    // read and System.Text.Json's own Dictionary<string, object> converter. A LINQ
+                    // ToDictionary would throw ArgumentException on duplicate keys — duplicate keys are
+                    // legal JSON (RFC 8259), so an inbound/persisted object-typed value carrying them must
+                    // not poison the deserialize at any object-typed seam this recipe now backs.
+                    var materializedObject = new Dictionary<string, object>();
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        materializedObject[property.Name] = MaterializeJsonElement(property.Value);
+                    }
+                    return materializedObject;
                 case JsonValueKind.Array:
                     return element.EnumerateArray()
                         .Select(MaterializeJsonElement)
