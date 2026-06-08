@@ -1,8 +1,8 @@
 <Project>
 
   <!-- Coverage-only properties, scoped to test projects (names ending in '.Tests').
-       This naturally excludes Chatter.Testing.Core (ends in '.Core'), library projects,
-       and samples, so nothing here alters packaged library output. CollectCoverage is
+       This naturally excludes Chatter.Testing.Core (ends in '.Core') and library
+       projects, so nothing here alters packaged library output. CollectCoverage is
        intentionally NOT set: CI passes /p:CollectCoverage=true; default OFF keeps plain
        `dotnet test` fast. -->
   <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">

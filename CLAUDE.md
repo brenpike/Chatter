@@ -16,7 +16,6 @@ Solution is `Chatter.sln`; tests live under `src/<Module>/tests/*.Tests.csproj` 
 
 - `src/` — 7 independently-versioned NuGet package modules, each with its own `src/` and `tests/` subtree.
 - `tests/` — shared test core (`Chatter.Testing.Core.csproj`) referenced by all module test projects.
-- `samples/` — runnable end-to-end sample services (CarRental, FlightBooking, HotelBooking, TravelBooking, SharedKernel).
 - `.github/workflows/` — GitHub Actions CI/CD: one `<module>-cicd.yml` per module plus reusable `version-check.yml` / `create-version-tag.yml` and `codeql-analysis.yml`.
 - `CONTEXT-MAP.md` — entry point to bounded-context docs; lists all 7 contexts, their paths, and relationships.
 
