@@ -1,6 +1,5 @@
 ﻿using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -34,7 +33,12 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 IDictionary<string, object> messageContext = new Dictionary<string, object>();
                 if (!string.IsNullOrWhiteSpace(message.MessageContext))
                 {
-                    messageContext = JsonConvert.DeserializeObject<IDictionary<string, object>>(message.MessageContext);
+                    // INVARIANT: the persisted MessageContext is a flat string->string header map.
+                    // Deserialize to Dictionary<string, string> so values are System.String rather than
+                    // JsonElement, preserving the (string) reads below and the IDictionary<string, object>
+                    // passed to the OutboundBrokeredMessage ctor.
+                    var headers = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(message.MessageContext, ChatterJson.Options);
+                    messageContext = headers.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
                 }
 
                 var contentType = message.MessageContentType;

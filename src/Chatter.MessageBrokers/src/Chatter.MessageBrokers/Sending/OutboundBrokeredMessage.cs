@@ -1,5 +1,4 @@
-﻿using Newtonsoft.Json;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
@@ -9,7 +8,7 @@ namespace Chatter.MessageBrokers.Sending
     {
         private readonly IBrokeredMessageBodyConverter _bodyConverter;
 
-        [JsonConstructor]
+        [System.Text.Json.Serialization.JsonConstructor]
         internal OutboundBrokeredMessage(string messageId, byte[] body, IDictionary<string, object> messageContext, string destination)
         {
             MessageId = messageId;

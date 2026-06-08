@@ -3,7 +3,6 @@ using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -46,7 +45,7 @@ namespace Chatter.MessageBrokers.Reliability
             var outboxMessage = new OutboxMessage
             {
                 MessageId = outboundBrokeredMessage.MessageId,
-                MessageContext = JsonConvert.SerializeObject(outboundBrokeredMessage.MessageContext),
+                MessageContext = System.Text.Json.JsonSerializer.Serialize(outboundBrokeredMessage.MessageContext, ChatterJson.Options),
                 Destination = outboundBrokeredMessage.Destination,
                 MessageBody = outboundBrokeredMessage.Stringify(),
                 MessageContentType = outboundBrokeredMessage.ContentType,
