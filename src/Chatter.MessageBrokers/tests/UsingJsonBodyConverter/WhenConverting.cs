@@ -55,6 +55,28 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             public int Value { get; private set; }
         }
 
+        // REGRESSION GUARD: a DTO with a parameterized [JsonConstructor] AND a private parameterless
+        // ctor, exposing GET-ONLY constructor-bound members. STJ constructs via the parameterized
+        // [JsonConstructor] (leaving CreateObject == null while it uses its internal parameterized
+        // delegate). The EnableNonPublicParameterlessConstructor modifier MUST NOT hijack this by
+        // installing the private parameterless ctor as CreateObject — doing so bypasses the
+        // parameterized constructor and leaves Name/Value at defaults. The modifier's [JsonConstructor]
+        // + parameterized-ctor gates keep STJ's annotated-ctor binding intact.
+        private class CtorBoundDto
+        {
+            public string Name { get; }
+            public int Value { get; }
+
+            private CtorBoundDto() { }
+
+            [System.Text.Json.Serialization.JsonConstructor]
+            public CtorBoundDto(string name, int value)
+            {
+                Name = name;
+                Value = value;
+            }
+        }
+
         [Fact]
         public void MustExposeApplicationJsonContentType()
             => _sut.ContentType.Should().Be("application/json");
@@ -158,6 +180,24 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
 
             var result = _sut.Convert<PrivateCtorDto>(bytes);
+
+            result.Should().NotBeNull();
+            result.Name.Should().Be("abc");
+            result.Value.Should().Be(42);
+        }
+
+        // REGRESSION (Codex P2, ChatterJson.cs:223): a DTO with a parameterized [JsonConstructor] AND
+        // a private parameterless ctor must deserialize THROUGH the parameterized constructor, so its
+        // get-only ctor-bound Name/Value arrive populated (NOT defaults). If the
+        // EnableNonPublicParameterlessConstructor modifier wrongly installed the private parameterless
+        // ctor as CreateObject, STJ would bypass the [JsonConstructor] and Name/Value would be
+        // null/0. The modifier's gates keep STJ's parameterized construction path intact.
+        [Fact]
+        public void MustNotOverrideParameterizedJsonConstructorWithPrivateParameterlessCtor()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
+
+            var result = _sut.Convert<CtorBoundDto>(bytes);
 
             result.Should().NotBeNull();
             result.Name.Should().Be("abc");

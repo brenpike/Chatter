@@ -177,17 +177,29 @@ namespace Chatter.MessageBrokers
         // restores Newtonsoft's default instantiation of DTOs whose only default constructor is
         // private/internal; combined with EnableNonPublicSetters the private members then populate.
         //
+        // CRITICAL GATE: this modifier must NEVER override a PARAMETERIZED construction path. STJ
+        // leaves CreateObject == null NOT ONLY for types it cannot construct, but ALSO for types it
+        // constructs via a PARAMETERIZED constructor — those use an INTERNAL parameterized-creation
+        // delegate, not the public CreateObject. So a DTO with a parameterized [JsonConstructor] (or
+        // constructor-bound get-only members) PLUS a private parameterless ctor would otherwise be
+        // hijacked here: we would find the private parameterless ctor and install it as CreateObject,
+        // making STJ bypass the parameterized constructor and leave get-only ctor-bound properties at
+        // defaults. The gates below ensure we install ONLY when the type genuinely has NO other
+        // creation path. FAIL-SAFE: when uncertain whether STJ is using a parameterized ctor, do NOT
+        // install — the private-parameterless-only DTO is the SOLE case we must enable.
+        //
         // No-op (and MUST stay a no-op) for:
         //   - types with a public parameterless ctor — STJ already set CreateObject (skipped:
         //     CreateObject != null)
-        //   - types using [JsonConstructor] parameterized construction (RoutingSlip, RoutingStep,
-        //     OutboundBrokeredMessage) — STJ binds via ctor parameters, so CreateObject is already
-        //     non-null (skipped); their construction is NOT overridden, preserving slip round-trip
-        //     and golden byte-parity
-        //   - records / types whose only ctor is a required parameterized one — GetConstructor for
-        //     an EMPTY parameter list returns null, so they are not touched (left to ctor binding)
-        //   - abstract types / interfaces — Kind != Object OR no instantiable ctor; GetConstructor
-        //     returns null
+        //   - types annotated with [JsonConstructor] on ANY constructor (parameterized or not) —
+        //     STJ owns construction; never override (RoutingSlip, RoutingStep, OutboundBrokeredMessage)
+        //   - types using parameterized construction / constructor-bound parameters — STJ binds via
+        //     ctor parameters (CreateObject left null for the internal parameterized delegate);
+        //     installing the private parameterless ctor would bypass it and drop get-only ctor-bound
+        //     members. Records and get-only-ctor-bound DTOs fall here.
+        //   - records / types whose only ctor is a required parameterized one — no parameterless ctor
+        //     and a parameterized ctor present, so they are not touched (left to ctor binding)
+        //   - abstract types / interfaces — Kind != Object OR no instantiable ctor
         private static void EnableNonPublicParameterlessConstructor(JsonTypeInfo typeInfo)
         {
             if (typeInfo.Kind != JsonTypeInfoKind.Object)
@@ -197,7 +209,7 @@ namespace Chatter.MessageBrokers
 
             if (typeInfo.CreateObject is not null)
             {
-                // STJ already has a creation mechanism (public ctor or [JsonConstructor] binding).
+                // STJ already has a public-ctor creation mechanism.
                 return;
             }
 
@@ -205,6 +217,32 @@ namespace Chatter.MessageBrokers
             if (type.IsAbstract || type.IsInterface)
             {
                 return;
+            }
+
+            var allConstructors = type.GetConstructors(
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+            // GATE 1: any [JsonConstructor]-annotated ctor means STJ owns construction — never override.
+            foreach (var candidate in allConstructors)
+            {
+                if (candidate.GetCustomAttribute<System.Text.Json.Serialization.JsonConstructorAttribute>() is not null)
+                {
+                    return;
+                }
+            }
+
+            // GATE 2: any parameterized constructor means a parameterized creation path may exist (STJ
+            // leaves CreateObject null while using its internal parameterized delegate). FAIL-SAFE: if
+            // a parameterized ctor is present we do NOT install — overriding it would bypass the
+            // parameterized construction and drop get-only ctor-bound members. Only a type whose ONLY
+            // constructor is the non-public PARAMETERLESS one is the private-parameterless-only DTO we
+            // must enable.
+            foreach (var candidate in allConstructors)
+            {
+                if (candidate.GetParameters().Length > 0)
+                {
+                    return;
+                }
             }
 
             var ctor = type.GetConstructor(
@@ -215,8 +253,8 @@ namespace Chatter.MessageBrokers
 
             if (ctor is null || ctor.IsPublic)
             {
-                // No parameterless ctor at all (record / required parameterized ctor), or a public
-                // one (already handled by STJ). Only a NON-PUBLIC parameterless ctor is restored here.
+                // No parameterless ctor at all, or a public one (already handled by STJ). Only a
+                // NON-PUBLIC parameterless ctor with NO parameterized sibling is restored here.
                 return;
             }
 
