@@ -17,33 +17,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
         private OutboundBrokeredMessage CreateSut()
             => new OutboundBrokeredMessage("message-id", _body, new Dictionary<string, object>(), "destination", _converter);
 
-        // Mirrors MessageContext.MaterializePersistedContextValue (internal to Chatter.MessageBrokers,
-        // NOT visible to this Chatter.MessageBrokers.AzureServiceBus.Tests assembly) and the projection
-        // OutboxProcessor.Process performs on replay: deserialize each persisted value to a JsonElement and
-        // restore the CLR type Newtonsoft's untyped read produced. The production materializer is pinned
-        // directly in Chatter.MessageBrokers.Tests (WhenSerializingRiskyCharacters); here it is reproduced
-        // so this test can construct the SAME boxed-long / DateTime context the outbox hands back, then drive
-        // the REAL Azure Service Bus typed readers against it.
-        // INVARIANT: must stay byte-equivalent to MessageContext.MaterializePersistedContextValue.
-        private static object MaterializePersistedContextValue(JsonElement element)
-        {
-            switch (element.ValueKind)
-            {
-                case JsonValueKind.Number:
-                    return element.TryGetInt64(out var asLong) ? asLong : element.GetDouble();
-                case JsonValueKind.String:
-                    return element.TryGetDateTime(out var asDateTime) ? asDateTime : (object)element.GetString();
-                case JsonValueKind.True:
-                case JsonValueKind.False:
-                    return element.GetBoolean();
-                case JsonValueKind.Null:
-                case JsonValueKind.Undefined:
-                    return null;
-                default:
-                    return element.GetRawText();
-            }
-        }
-
         [Fact]
         public void MustRoundTripTo()
         {
@@ -123,16 +96,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
             var persisted = JsonSerializer.Serialize(liveContext, ChatterJson.Options);
 
             // MATERIALIZE seam: deserialize to Dictionary<string, JsonElement> and project each value through
-            // the materializer (mirrored above) — identical to OutboxProcessor.Process on replay.
+            // the REAL production materializer (MessageContext.MaterializePersistedContextValue, now visible
+            // via InternalsVisibleTo) — identical to OutboxProcessor.Process on replay. No local mirror.
             var headers = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(persisted, ChatterJson.Options);
             IDictionary<string, object> materializedContext =
-                headers.ToDictionary(kvp => kvp.Key, kvp => MaterializePersistedContextValue(kvp.Value));
+                headers.ToDictionary(kvp => kvp.Key, kvp => MessageContext.MaterializePersistedContextValue(kvp.Value));
 
-            // Confirm the replayed context holds the post-materialize SHAPE that previously broke the
-            // reader: the numeric ReceiveAttempts comes back as a boxed numeric that is NOT a native int
-            // (the materializer reproduces Newtonsoft's untyped read), so a raw (int) unbox would have
-            // thrown InvalidCastException without ReceiveAttempts' Convert.ToInt32 tolerance.
-            materializedContext[MessageContext.ReceiveAttempts].Should().NotBeOfType<int>();
+            // Pin the EXACT materialized shape the REAL method yields for an Int64-fitting JSON integer: long.
+            // MaterializePersistedContextValue returns `TryGetInt64(out var asLong) ? (object)asLong : (object)GetDouble()`;
+            // each branch is boxed independently, so an integer that fits an Int64 materializes to a boxed long
+            // (matching Newtonsoft's untyped IDictionary<string, object> read). A boxed long is NOT a native int —
+            // so a raw (int) unbox would still throw InvalidCastException without ReceiveAttempts' Convert.ToInt32 tolerance.
+            materializedContext[MessageContext.ReceiveAttempts].Should().BeOfType<long>();
 
             // Construct the OutboundBrokeredMessage from the materialized dictionary the way
             // OutboxProcessor does, then drive the REAL typed readers.

@@ -30,7 +30,7 @@ namespace Chatter.MessageBrokers
             switch (element.ValueKind)
             {
                 case JsonValueKind.Number:
-                    return element.TryGetInt64(out var asLong) ? asLong : element.GetDouble();
+                    return element.TryGetInt64(out var asLong) ? (object)asLong : (object)element.GetDouble();
                 case JsonValueKind.String:
                     return element.TryGetDateTime(out var asDateTime) ? asDateTime : (object)element.GetString();
                 case JsonValueKind.True:
