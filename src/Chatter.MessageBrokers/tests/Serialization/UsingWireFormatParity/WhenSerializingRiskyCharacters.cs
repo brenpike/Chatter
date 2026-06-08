@@ -92,6 +92,29 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingWireFormatParity
             json.Should().Be(GoldenBodyJson);
         }
 
+        // STEP-000B FEASIBILITY GATE (Option A byte-for-byte parity):
+        // Proves the STJ port — JsonBodyConverter.Stringify now routes through ChatterJson.Options
+        // (ChatterJsonEncoder) — emits the astral emoji 😀 (U+1F600) as LITERAL UTF-8, NOT as a
+        // 😀 surrogate escape. UnsafeRelaxedJsonEscaping alone surrogate-escapes astral
+        // scalars; ChatterJsonEncoder forcing all non-ASCII literal is what makes Option A achievable.
+        // Asserted BYTE-FOR-BYTE on the UTF-8 encoding of the output against the frozen golden literal.
+        // If STJ's writer hard-escaped surrogate pairs regardless of the encoder, this would go RED.
+        [Fact]
+        public void MustEmitAstralScalarAsLiteralUtf8ByteForByteThroughStjPort()
+        {
+            var json = new JsonBodyConverter().Stringify(new BodyPoco { Name = RiskyValue });
+
+            var actualBytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var expectedBytes = System.Text.Encoding.UTF8.GetBytes(GoldenBodyJson);
+
+            actualBytes.Should().Equal(expectedBytes);
+
+            // Pin the literal 4-byte UTF-8 encoding of 😀 (U+1F600 -> F0 9F 98 80) is present and that
+            // the surrogate-escape form "😀" is absent.
+            json.Should().Contain("\U0001F600");
+            json.Should().NotContain("\\u");
+        }
+
         [Fact]
         public void MustEmitGoldenNewtonsoftSlipJsonForRiskyDestinationPath()
         {

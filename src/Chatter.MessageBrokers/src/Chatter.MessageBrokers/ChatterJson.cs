@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Encodings.Web;
 
 namespace Chatter.MessageBrokers
 {
@@ -12,15 +11,22 @@ namespace Chatter.MessageBrokers
         // as a performance cliff; a single cached instance is the prescribed pattern.
         public static readonly JsonSerializerOptions Options = new JsonSerializerOptions
         {
-            // UnsafeRelaxedJsonEscaping is intentional: it preserves byte-for-byte wire
-            // compatibility with the prior Newtonsoft.Json serialization, which emits +, <, >, &,
-            // ', /, and non-ASCII/emoji characters (e.g. éü😀) as their literal UTF-8 bytes rather
-            // than \uXXXX escape sequences. This is a cross-version interop contract: persisted
-            // outbox rows and rolling deploys must round-trip identically across the Newtonsoft
-            // and STJ serializers. Parity is gated by the WhenSerializingRiskyCharacters parity
-            // test. Do not change this encoder without re-running the parity suite.
+            // ChatterJsonEncoder is intentional: it preserves byte-for-byte wire compatibility with
+            // the prior Newtonsoft.Json serialization, which emits +, <, >, &, ', /, and ALL
+            // non-ASCII characters — including astral/supplementary-plane scalars such as emoji
+            // (e.g. éü😀, U+1F600) — as their literal UTF-8 bytes rather than \uXXXX escapes.
+            // UnsafeRelaxedJsonEscaping alone is NOT sufficient: it surrogate-escapes astral scalars
+            // (😀 -> 😀), breaking parity. ChatterJsonEncoder decorates it to force all
+            // non-ASCII literal while keeping its ASCII relaxation and structural escapes (", \, C0
+            // controls). This is a cross-version interop contract: persisted outbox rows and rolling
+            // deploys must round-trip identically across the Newtonsoft and STJ serializers. Parity
+            // is gated by the WhenSerializingRiskyCharacters parity test.
+            //
+            // OUT OF CONTRACT: raw C0 control characters (U+0000–U+001F). The inner encoder escapes
+            // them with \uXXXX long-form; Newtonsoft uses short escapes (\n, \t, …) where defined.
+            // These are not matched and do not appear in real brokered-message content.
             // Ref: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/character-encoding
-            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            Encoder = ChatterJsonEncoder.Shared,
 
             // PascalCase property names (no NamingPolicy set) — matches Newtonsoft default.
             // WriteIndented = false (compact) — matches Newtonsoft default.
