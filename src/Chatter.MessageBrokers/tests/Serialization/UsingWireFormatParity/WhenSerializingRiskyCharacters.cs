@@ -5,6 +5,7 @@ using FluentAssertions;
 using Moq;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using Xunit;
 
@@ -173,16 +174,21 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingWireFormatParity
         [Fact]
         public void MustDeserializeGoldenOutboxContextBytesThroughStj()
         {
-            // Feed the golden Newtonsoft-written outbox MessageContext bytes back through STJ using the
-            // shared ChatterJson.Options, matching how OutboxProcessor now deserializes (to
-            // Dictionary<string, string> so values are System.String). Confirms STJ reads historical
-            // Newtonsoft bytes and the risky CorrelationId value survives a full round-trip intact.
-            var roundTripped = JsonSerializer.Deserialize<Dictionary<string, string>>(GoldenOutboxContextJson, ChatterJson.Options);
+            // Feed the golden Newtonsoft-written outbox MessageContext bytes back through the REAL replay
+            // path OutboxProcessor now uses: deserialize to Dictionary<string, JsonElement> via the shared
+            // ChatterJson.Options, then project each value through MessageContext.MaterializePersistedContextValue
+            // (internal, visible to this Chatter.MessageBrokers.Tests assembly) to restore the CLR types the
+            // typed readers expect. Confirms STJ reads historical Newtonsoft bytes AND that the materializer
+            // leaves the risky CorrelationId as a String — it is not date-shaped, so TryGetDateTime rejects it
+            // and it is NOT over-coerced to a DateTime.
+            var headers = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(GoldenOutboxContextJson, ChatterJson.Options);
+            var roundTripped = headers.ToDictionary(kvp => kvp.Key, kvp => MessageContext.MaterializePersistedContextValue(kvp.Value));
 
-            roundTripped.Should().ContainKey(MessageContext.CorrelationId)
-                .WhoseValue.Should().Be(RiskyValue);
-            roundTripped.Should().ContainKey(MessageContext.ContentType)
-                .WhoseValue.Should().Be("application/json");
+            roundTripped.Should().ContainKey(MessageContext.CorrelationId);
+            roundTripped[MessageContext.CorrelationId].Should().BeOfType<string>().Which.Should().Be(RiskyValue);
+
+            roundTripped.Should().ContainKey(MessageContext.ContentType);
+            roundTripped[MessageContext.ContentType].Should().BeOfType<string>().Which.Should().Be("application/json");
         }
     }
 }

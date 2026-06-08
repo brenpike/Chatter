@@ -4,6 +4,7 @@ using FluentAssertions;
 using Moq;
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using Xunit;
 
@@ -65,11 +66,70 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingRoutingSlipSerializati
             roundTrippedSlip.Route.Should().HaveCount(2);
             roundTrippedSlip.Route[0].DestinationPath.Should().Be("a");
             roundTrippedSlip.Route[1].DestinationPath.Should().Be("b");
+        }
 
-            // KNOWN UNTESTED SUB-SURFACE: RoutingSlip.Attachments (IDictionary<string, object>) is left
-            // empty here on purpose. Its object-boxing round-trip is serializer-dependent (Newtonsoft
-            // boxes to JObject; STJ would box to JsonElement), so it is an STJ-changeable surface that is
-            // intentionally NOT pinned by this characterization test.
+        // VISITED + ATTACHMENTS FIDELITY GATE (the MED finding): the prior round-trip pinned only an empty
+        // Visited / empty Attachments, so a regression that dropped a populated Visited list (or Attachments
+        // entry) would not be caught. This advances the slip with RouteToNextStep() so _visited is non-empty
+        // BEFORE serialize, seeds a non-empty Attachments entry, then round-trips through the real production
+        // seams (WithRoutingSlip serialize -> TryGetRoutingSlip deserialize) and asserts both survive. Visited
+        // binds back through RoutingSlip.Visited's [JsonInclude] private setter, which the STJ port must preserve.
+        [Fact]
+        public void MustRoundTripNonEmptyVisitedAndAttachmentsThroughProductionSeams()
+        {
+            var id = Guid.NewGuid();
+
+            var slip = RoutingSlipBuilder.NewRoutingSlip(id)
+                .WithRoute("first")
+                .WithRoute("second")
+                .WithRoute("third")
+                .Build();
+
+            // Advance the slip so the first two steps move into Visited (in order) and only "third" remains in
+            // Route. This makes _visited non-empty so the serialize/deserialize of Visited is load-bearing.
+            slip.RouteToNextStep().Should().Be("first");
+            slip.RouteToNextStep().Should().Be("second");
+            slip.Visited.Should().HaveCount(2);
+
+            // Seed a non-empty Attachments entry (internal setter is visible to this test assembly).
+            slip.Attachments["attachment-key"] = "attachment-value";
+
+            // SERIALIZE seam.
+            var serializeContext = new Dictionary<string, object>();
+            var serializeSut = CreateContext(serializeContext);
+            serializeSut.BrokeredMessage.WithRoutingSlip(slip);
+
+            serializeContext.Should().ContainKey(MessageContext.RoutingSlip);
+            var serializedSlip = serializeContext[MessageContext.RoutingSlip];
+
+            // DESERIALIZE seam.
+            var deserializeContext = new Dictionary<string, object>
+            {
+                [MessageContext.RoutingSlip] = serializedSlip
+            };
+            var deserializeSut = CreateContext(deserializeContext);
+
+            var found = deserializeSut.TryGetRoutingSlip(out var roundTrippedSlip);
+
+            found.Should().BeTrue();
+            roundTrippedSlip.Id.Should().Be(id);
+
+            // Route retains the single un-visited step.
+            roundTrippedSlip.Route.Should().HaveCount(1);
+            roundTrippedSlip.Route[0].DestinationPath.Should().Be("third");
+
+            // Visited survives with the correct count and ORDERED DestinationPaths.
+            roundTrippedSlip.Visited.Should().HaveCount(2);
+            roundTrippedSlip.Visited[0].DestinationPath.Should().Be("first");
+            roundTrippedSlip.Visited[1].DestinationPath.Should().Be("second");
+
+            // Attachments survives. The value boxes to a JsonElement on deserialize (the Attachments value
+            // type is object, so STJ binds it to JsonElement); assert the key survives and the JSON string
+            // payload is intact rather than pinning the boxed CLR type.
+            roundTrippedSlip.Attachments.Should().ContainKey("attachment-key");
+            var attachmentValue = roundTrippedSlip.Attachments["attachment-key"];
+            attachmentValue.Should().BeOfType<JsonElement>();
+            ((JsonElement)attachmentValue).GetString().Should().Be("attachment-value");
         }
     }
 }
