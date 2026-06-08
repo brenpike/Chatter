@@ -15,14 +15,12 @@ namespace Chatter.MessageBrokers.Routing.Slips
                     {
                         if (mbc.BrokeredMessage.MessageContext.TryGetValue(MessageContext.RoutingSlip, out var rs))
                         {
+                            // Attachments (IDictionary<string, object>) values are materialized to the CLR
+                            // types Newtonsoft's untyped read produced during this deserialize by the global
+                            // MaterializingObjectConverter on ChatterJson.Options, so consumers that set
+                            // slip.Attachments["foo"] = "bar" and read it back as string/int after
+                            // TryGetRoutingSlip don't hit cast failures — no per-seam materialization needed.
                             RoutingSlip theSlip = JsonSerializer.Deserialize<RoutingSlip>((string)rs, ChatterJson.Options);
-                            // STJ deserializes Attachments (IDictionary<string, object>) with primitive values
-                            // left as raw JsonElement. Materialize them to the CLR types Newtonsoft's untyped
-                            // read produced, so consumers that set slip.Attachments["foo"] = "bar" and read it
-                            // back as string/int after TryGetRoutingSlip don't hit cast failures. Same seam
-                            // treatment applied to the persisted MessageContext; deserialize-side only (wire
-                            // output unchanged).
-                            theSlip.Attachments = MessageContext.MaterializePersistedContext(theSlip.Attachments);
                             routingSlip = theSlip;
                             return true;
                         }

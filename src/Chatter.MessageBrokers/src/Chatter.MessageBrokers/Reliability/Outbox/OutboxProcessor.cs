@@ -30,12 +30,13 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         {
             try
             {
-                // The persisted MessageContext is an IDictionary<string, object> whose values are
-                // NOT all strings: WithTimeToLive/RefreshTimeToLive write a TimeSpan, Azure Service
-                // Bus WithScheduledEnqueueTimeUtc writes a DateTime, and SSB receive/deadletter paths
-                // write an integer ReceiveAttempts. MaterializePersistedContext restores the CLR types
-                // Newtonsoft's untyped read produced so the (string)/(DateTime?)/integer reads on the
-                // replayed context below and downstream remain correct.
+                // The persisted MessageContext is a JSON string whose values are NOT all strings:
+                // WithTimeToLive/RefreshTimeToLive write a TimeSpan, Azure Service Bus
+                // WithScheduledEnqueueTimeUtc writes a DateTime, and SSB receive/deadletter paths write an
+                // integer ReceiveAttempts. MaterializePersistedContext deserializes the string through
+                // ChatterJson.Options, where the registered MaterializingObjectConverter restores inline the
+                // CLR types Newtonsoft's untyped read produced — so the (string)/(DateTime?)/integer reads on
+                // the replayed context below and downstream remain correct.
                 IDictionary<string, object> messageContext = MessageContext.MaterializePersistedContext(message.MessageContext);
 
                 var contentType = message.MessageContentType;

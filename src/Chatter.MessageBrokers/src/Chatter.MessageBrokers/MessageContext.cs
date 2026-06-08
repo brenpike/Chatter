@@ -7,16 +7,17 @@ namespace Chatter.MessageBrokers
     public class MessageContext
     {
         /// <summary>
-        /// Deserializes a persisted MessageContext (JSON object whose values are System.Text.Json
-        /// <see cref="JsonElement"/>s) into a fully-materialized <c>IDictionary&lt;string, object&gt;</c>
-        /// whose values carry the CLR types Newtonsoft's untyped read would have produced. This is the
-        /// single construction point shared by every System.Text.Json deserialize seam (outbox replay,
-        /// SQL Service Broker envelope unwrap) so no downstream typed reader observes a raw JsonElement.
+        /// Deserializes a persisted MessageContext JSON object into a fully-materialized
+        /// <c>IDictionary&lt;string, object&gt;</c> whose values carry the CLR types Newtonsoft's untyped
+        /// read would have produced. A thin wrapper over a <see cref="ChatterJson.Options"/> deserialize:
+        /// the global <c>MaterializingObjectConverter</c> registered there materializes every object-typed
+        /// value inline through the shared <see cref="MaterializeJsonElement"/> recipe, so no downstream
+        /// typed reader observes a raw <see cref="JsonElement"/>.
         /// </summary>
         /// <remarks>
-        /// INVARIANT: every value is projected through <see cref="MaterializePersistedContextValue"/> so
-        /// the per-value parity semantics documented there hold uniformly across all seams. Returns an
-        /// empty dictionary for null/empty/whitespace json.
+        /// INVARIANT: materialization is driven by the registered converter (same shared recipe), so the
+        /// per-value parity semantics documented on <see cref="MaterializePersistedContextValue"/> hold
+        /// uniformly across all seams. Returns an empty dictionary for null/empty/whitespace json.
         /// </remarks>
         internal static IDictionary<string, object> MaterializePersistedContext(string json)
         {
@@ -25,8 +26,7 @@ namespace Chatter.MessageBrokers
                 return new Dictionary<string, object>();
             }
 
-            var elements = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, ChatterJson.Options);
-            return elements.ToDictionary(kvp => kvp.Key, kvp => MaterializePersistedContextValue(kvp.Value));
+            return JsonSerializer.Deserialize<Dictionary<string, object>>(json, ChatterJson.Options);
         }
 
         /// <summary>
@@ -76,6 +76,18 @@ namespace Chatter.MessageBrokers
         /// </list>
         /// </remarks>
         internal static object MaterializePersistedContextValue(JsonElement element)
+            => MaterializeJsonElement(element);
+
+        /// <summary>
+        /// The single shared materialization recipe: maps a System.Text.Json <see cref="JsonElement"/>
+        /// to the CLR type Newtonsoft's untyped <c>IDictionary&lt;string, object&gt;</c> read would have
+        /// produced. This is the one construction point invoked both by <see cref="MaterializePersistedContext"/>
+        /// (via <see cref="MaterializePersistedContextValue"/>) and by the global
+        /// <c>MaterializingObjectConverter</c> registered on <see cref="ChatterJson.Options"/>, so the
+        /// per-value parity semantics documented on <see cref="MaterializePersistedContextValue"/> hold
+        /// identically at every object-typed read position and at every nesting depth.
+        /// </summary>
+        internal static object MaterializeJsonElement(JsonElement element)
         {
             switch (element.ValueKind)
             {
@@ -91,10 +103,10 @@ namespace Chatter.MessageBrokers
                     return null;
                 case JsonValueKind.Object:
                     return element.EnumerateObject()
-                        .ToDictionary(property => property.Name, property => MaterializePersistedContextValue(property.Value));
+                        .ToDictionary(property => property.Name, property => MaterializeJsonElement(property.Value));
                 case JsonValueKind.Array:
                     return element.EnumerateArray()
-                        .Select(MaterializePersistedContextValue)
+                        .Select(MaterializeJsonElement)
                         .ToList();
                 default:
                     return element.GetRawText();

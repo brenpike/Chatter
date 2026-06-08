@@ -93,6 +93,15 @@ namespace Chatter.MessageBrokers
             {
                 Modifiers = { EnableNonPublicSetters }
             },
+
+            // MaterializingObjectConverter restores CLR-type fidelity at every object-typed READ position
+            // (message-context values, RoutingSlip.Attachments values, any DTO `object` member): STJ would
+            // otherwise surface a raw JsonElement, whereas Newtonsoft's untyped read produced string/long/
+            // double/bool/DateTime and nested Dictionary<string,object>/List<object>. It only intercepts
+            // typeToConvert == typeof(object) (RoutingSlip.Route/Visited are IList<RoutingStep> — typed, NOT
+            // object — so untouched). Its Write path is a non-reentrant runtime-typed pass-through, so wire
+            // output stays byte-identical (golden parity preserved).
+            Converters = { new MaterializingObjectConverter() },
         };
 
         // Contract-model modifier: for any property STJ left unsettable on deserialize
