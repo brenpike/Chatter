@@ -22,9 +22,11 @@ namespace Chatter.MessageBrokers
             // deploys must round-trip identically across the Newtonsoft and STJ serializers. Parity
             // is gated by the WhenSerializingRiskyCharacters parity test.
             //
-            // OUT OF CONTRACT: raw C0 control characters (U+0000–U+001F). The inner encoder escapes
-            // them with \uXXXX long-form; Newtonsoft uses short escapes (\n, \t, …) where defined.
-            // These are not matched and do not appear in real brokered-message content.
+            // OUT OF CONTRACT: raw C0 control characters (U+0000–U+001F). The inner encoder
+            // (UnsafeRelaxedJsonEscaping) emits JSON-standard short escapes (\n, \t, \r, etc.)
+            // for the shortcut controls and \uXXXX for the remaining non-shortcut C0 scalars;
+            // Newtonsoft's exact mapping differs for some of those non-shortcut scalars. Neither
+            // form appears in real brokered-message content.
             // Ref: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/character-encoding
             Encoder = ChatterJsonEncoder.Shared,
 
