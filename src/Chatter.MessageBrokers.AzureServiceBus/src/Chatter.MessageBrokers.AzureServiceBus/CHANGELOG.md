@@ -12,6 +12,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.0.0] - 2026-06-08
+
+### Changed
+
+- Migrated from `Microsoft.Azure.ServiceBus` to `Azure.Messaging.ServiceBus` 7.20.1. Receive and send paths now operate on `ServiceBusReceivedMessage` / `ServiceBusMessage` objects.
+- `FullAtomicityViaInfrastructure` is now backed by a shared `ServiceBusClient` created with `EnableCrossEntityTransactions = true`.
+- `ServiceBusOptions` exposes a `TokenCredential` property (for AAD auth via the Auth package) and a `ServiceBusRetryOptions` property (replaces legacy retry-policy surface).
+- Entity-path formatting and exception predicates ported to the new SDK types.
+
+### Removed
+
+- `BrokeredMessageSenderPool` removed; sender lifecycle is now managed internally by the `Azure.Messaging.ServiceBus` SDK.
+- `NullTokenProvider` removed; no replacement required — omit `TokenCredential` to use connection-string auth.
+- Legacy `ITokenProvider` and `RetryPolicy` option surface removed (was `Microsoft.Azure.ServiceBus` types).
+- Send-via connection routing removed; the new SDK does not expose an equivalent send-via API.
+
+**Migration path:** Connection-string authentication is unchanged. AAD consumers should supply a `TokenCredential` via `ServiceBusOptions.TokenCredential`; use `Chatter.MessageBrokers.AzureServiceBus.Auth` to obtain a credential from client-secret, client-certificate, interactive-browser, or `DefaultAzureCredential`.
+
 ## [0.10.3] - 2026-06-07
 
 ### Changed
