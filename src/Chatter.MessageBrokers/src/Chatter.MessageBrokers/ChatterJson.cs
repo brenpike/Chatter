@@ -117,10 +117,21 @@ namespace Chatter.MessageBrokers
             // whereas STJ (with no enum converter) reads numbers ONLY and throws on a name. This factory reads
             // names (case-insensitively) AND numbers, while WRITING the numeric value — Newtonsoft's default
             // and STJ's default both write enums as numbers — so wire-output byte parity is preserved.
+            //
+            // NewtonsoftLenientBooleanConverter restores Newtonsoft read-leniency for bool/bool? DTO members
+            // (sibling to the enum converter; part of the "Newtonsoft read-leniency parity" group above):
+            // Newtonsoft's default read coerced a QUOTED boolean (e.g. {"Enabled":"true"}) into a bool, whereas
+            // STJ's AllowReadingFromString covers quoted NUMBERS only and throws on a quoted bool. This factory
+            // reads "true"/"false" (case-insensitively), the integer-string forms "1"/"0", and a bare numeric
+            // 1/0, while WRITING the real boolean token (WriteBooleanValue) so wire-output byte parity is
+            // preserved. It fires ONLY for strongly-typed bool/bool? members — a boolean at an object-typed
+            // position is owned by MaterializingObjectConverter (typeof(object) only), so a quoted "true" at an
+            // object position stays a string per Newtonsoft untyped-read parity.
             Converters =
             {
                 new MaterializingObjectConverter(),
                 new NumericWriteStringReadEnumConverter(),
+                new NewtonsoftLenientBooleanConverter(),
             },
         };
 

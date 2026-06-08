@@ -77,6 +77,23 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             }
         }
 
+        // DTO carrying a strongly-typed bool and a nullable bool. Newtonsoft coerced a QUOTED boolean
+        // ({"Enabled":"true"}) into the bool member; the STJ port must too via the shared
+        // NewtonsoftLenientBooleanConverter on ChatterJson.Options (read-path).
+        private class BooleanBodyPoco
+        {
+            public bool Enabled { get; set; }
+            public bool? Nullable { get; set; }
+        }
+
+        // DTO with an object-typed member. Used to confirm the bool converter does NOT coerce a quoted
+        // "true" at an object position — that position is owned by MaterializingObjectConverter, which keeps
+        // a quoted string as a string (Newtonsoft untyped-read parity).
+        private class ObjectPositionBoolPoco
+        {
+            public object Flag { get; set; }
+        }
+
         [Fact]
         public void MustExposeApplicationJsonContentType()
             => _sut.ContentType.Should().Be("application/json");
@@ -260,6 +277,99 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             result["count"].Should().BeOfType<long>().And.Be(3L);
             result["name"].Should().BeOfType<string>().And.Be("abc");
             result["flag"].Should().BeOfType<bool>().And.Be(true);
+        }
+
+        // OPEN CODEX P2 RESOLUTION (ChatterJson.cs:75): Newtonsoft coerced a QUOTED boolean
+        // ({"Enabled":"true"}) into a strongly-typed bool DTO member; STJ's AllowReadingFromString covers
+        // quoted NUMBERS only and throws JsonException on a quoted bool. The shared
+        // NewtonsoftLenientBooleanConverter restores the read-leniency: "true"/"false" (case-insensitive),
+        // the integer-string forms "1"/"0", and a bare numeric 1/0 all coerce into the bool member, while a
+        // genuine boolean token reads normally.
+        [Theory]
+        [InlineData("{\"Enabled\":\"true\"}", true)]
+        [InlineData("{\"Enabled\":\"false\"}", false)]
+        [InlineData("{\"Enabled\":true}", true)]
+        [InlineData("{\"Enabled\":false}", false)]
+        [InlineData("{\"Enabled\":\"True\"}", true)]
+        [InlineData("{\"Enabled\":\"FALSE\"}", false)]
+        [InlineData("{\"Enabled\":\"1\"}", true)]
+        [InlineData("{\"Enabled\":\"0\"}", false)]
+        [InlineData("{\"Enabled\":1}", true)]
+        [InlineData("{\"Enabled\":0}", false)]
+        public void MustAcceptQuotedBooleanOnReadForBoolMember(string json, bool expected)
+        {
+            var bytes = _sut.GetBytes(json);
+
+            var result = _sut.Convert<BooleanBodyPoco>(bytes);
+
+            result.Enabled.Should().Be(expected);
+        }
+
+        // bool? member: JSON null -> null; a quoted boolean delegates to the bool read logic.
+        [Fact]
+        public void MustReadNullForNullableBoolMember()
+        {
+            var bytes = _sut.GetBytes("{\"Nullable\":null}");
+
+            var result = _sut.Convert<BooleanBodyPoco>(bytes);
+
+            result.Nullable.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustAcceptQuotedBooleanOnReadForNullableBoolMember()
+        {
+            var bytes = _sut.GetBytes("{\"Nullable\":\"true\"}");
+
+            var result = _sut.Convert<BooleanBodyPoco>(bytes);
+
+            result.Nullable.Should().BeTrue();
+        }
+
+        // An unparseable quoted value throws JsonException (same as a genuinely invalid value).
+        [Fact]
+        public void MustThrowOnUnparseableQuotedBooleanForBoolMember()
+        {
+            var bytes = _sut.GetBytes("{\"Enabled\":\"notabool\"}");
+
+            Action act = () => _sut.Convert<BooleanBodyPoco>(bytes);
+
+            act.Should().Throw<System.Text.Json.JsonException>();
+        }
+
+        // WRITE byte-parity: a real bool serializes to the bare JSON boolean token (NOT a quoted string),
+        // matching Newtonsoft and the STJ default. The converter's Write path must not quote.
+        [Fact]
+        public void MustWriteRealBooleanTokenNotQuotedString()
+        {
+            var json = _sut.Stringify(new BooleanBodyPoco { Enabled = true, Nullable = false });
+
+            json.Should().Be("{\"Enabled\":true,\"Nullable\":false}");
+        }
+
+        // OBJECT-POSITION PARITY: a quoted "true" at an object-typed member must STAY a string — that
+        // position is owned by MaterializingObjectConverter (typeof(object) only), NOT the bool converter.
+        // Confirms the bool converter does not interfere with the object-converter seam.
+        [Fact]
+        public void MustKeepQuotedBooleanAsStringAtObjectPosition()
+        {
+            var bytes = _sut.GetBytes("{\"Flag\":\"true\"}");
+
+            var result = _sut.Convert<ObjectPositionBoolPoco>(bytes);
+
+            result.Flag.Should().BeOfType<string>().And.Be("true");
+        }
+
+        // OBJECT-POSITION PARITY: a real JSON boolean at an object-typed member materializes to a CLR bool
+        // (the object converter's True/False branch), unchanged by the strongly-typed bool converter.
+        [Fact]
+        public void MustMaterializeRealBooleanToClrBoolAtObjectPosition()
+        {
+            var bytes = _sut.GetBytes("{\"Flag\":true}");
+
+            var result = _sut.Convert<ObjectPositionBoolPoco>(bytes);
+
+            result.Flag.Should().BeOfType<bool>().And.Be(true);
         }
     }
 }
