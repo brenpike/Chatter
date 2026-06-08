@@ -1,4 +1,4 @@
-﻿using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,7 +7,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Extensions
 {
     public static class MessageExtensions
     {
-        public static Message WithHashedBodyMessageId(this Message message, string messageId)
+        public static ServiceBusMessage WithHashedBodyMessageId(this ServiceBusMessage message, string messageId)
         {
             if (!string.IsNullOrWhiteSpace(messageId))
             {
@@ -16,7 +16,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Extensions
             }
 
             using var sha265Provider = new SHA256CryptoServiceProvider();
-            var hash = sha265Provider.ComputeHash(message.Body);
+            var hash = sha265Provider.ComputeHash(message.Body.ToArray());
             StringBuilder sb = new StringBuilder();
             foreach (byte b in hash)
                 sb.Append(b.ToString("X2"));
@@ -25,18 +25,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Extensions
             return message;
         }
 
-        public static Message WithUserProperties(this Message message, IDictionary<string, object> userProperties)
+        public static ServiceBusMessage WithApplicationProperties(this ServiceBusMessage message, IDictionary<string, object> applicationProperties)
         {
-            foreach (var kvp in userProperties)
+            foreach (var kvp in applicationProperties)
             {
-                message.UserProperties[kvp.Key] = kvp.Value;
+                message.ApplicationProperties[kvp.Key] = kvp.Value;
             }
             return message;
         }
 
-        public static Message AddUserProperty(this Message message, string name, object value)
+        public static ServiceBusMessage AddApplicationProperty(this ServiceBusMessage message, string name, object value)
         {
-            message.UserProperties[name] = value;
+            message.ApplicationProperties[name] = value;
             return message;
         }
     }

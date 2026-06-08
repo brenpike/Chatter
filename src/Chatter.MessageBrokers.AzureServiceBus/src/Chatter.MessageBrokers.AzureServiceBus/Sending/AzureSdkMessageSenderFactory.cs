@@ -1,49 +1,27 @@
-using Chatter.MessageBrokers.AzureServiceBus.Options;
-using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Core;
-using Microsoft.Azure.ServiceBus.Primitives;
+using Azure.Messaging.ServiceBus;
 using System;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
     /// <summary>
-    /// Production <see cref="IServiceBusMessageSenderFactory"/> that reproduces the VERBATIM three-branch
-    /// <see cref="MessageSender"/> construction previously inlined in <see cref="BrokeredMessageSenderPool.GetOrCreate"/>:
-    /// send-via an existing receiver connection, namespace connection string under a
-    /// <see cref="NullTokenProvider"/>, or endpoint + token provider. The constructed sender opens a
-    /// live connection, so this branch selection is exercised in production only.
+    /// Production <see cref="IServiceBusMessageSenderFactory"/> that creates every
+    /// <see cref="ServiceBusSender"/> off the shared <see cref="ServiceBusClient"/>. The old three-branch
+    /// construction (send-via an existing receiver connection, namespace connection string under a null
+    /// token provider, or endpoint + token provider) is collapsed: the shared client carries auth and
+    /// EnableCrossEntityTransactions, so a single <see cref="ServiceBusClient.CreateSender(string)"/> call
+    /// serves every destination.
     /// </summary>
     internal class AzureSdkMessageSenderFactory : IServiceBusMessageSenderFactory
     {
-        readonly ServiceBusConnectionStringBuilder _connectionStringBuilder;
-        readonly RetryPolicy _retryPolicy;
-        private readonly ITokenProvider _tokenProvider;
+        // TODO(STEP-006): the shared ServiceBusClient is injected from DI. EnableCrossEntityTransactions
+        // is set on the client there so the send + the receiver's settle enlist in one cross-entity
+        // transaction within ServiceBusMessageSender's TransactionScope.
+        private readonly ServiceBusClient _client;
 
-        public AzureSdkMessageSenderFactory(ServiceBusOptions serviceBusOptions)
-        {
-            if (serviceBusOptions == null)
-            {
-                throw new ArgumentNullException(nameof(serviceBusOptions), $"Service Bus options are required to use {nameof(AzureSdkMessageSenderFactory)}");
-            }
+        public AzureSdkMessageSenderFactory(ServiceBusClient client)
+            => _client = client ?? throw new ArgumentNullException(nameof(client));
 
-            _retryPolicy = serviceBusOptions.Policy;
-            _connectionStringBuilder = new ServiceBusConnectionStringBuilder(serviceBusOptions.ConnectionString);
-            _tokenProvider = serviceBusOptions.TokenProvider;
-        }
-
-        public MessageSender Create(string destinationEntityPath, (ServiceBusConnection connection, string sendViaPath) receiverConnectionAndPath)
-        {
-            if (receiverConnectionAndPath.connection != null && receiverConnectionAndPath.sendViaPath != null)
-            {
-                return new MessageSender(receiverConnectionAndPath.connection, destinationEntityPath, receiverConnectionAndPath.sendViaPath, _retryPolicy);
-            }
-
-            if (_tokenProvider is NullTokenProvider)
-            {
-                return new MessageSender(_connectionStringBuilder.GetNamespaceConnectionString(), destinationEntityPath, _retryPolicy);
-            }
-
-            return new MessageSender(_connectionStringBuilder.Endpoint, destinationEntityPath, _tokenProvider, _connectionStringBuilder.TransportType, _retryPolicy);
-        }
+        public ServiceBusSender Create(string destinationEntityPath)
+            => _client.CreateSender(destinationEntityPath);
     }
 }

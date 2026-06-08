@@ -28,7 +28,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
 
         [Fact]
         public void MustMapBody()
-            => CreateSut().AsAzureServiceBusMessage().Body.Should().Equal(_body);
+            => CreateSut().AsAzureServiceBusMessage().Body.ToArray().Should().Equal(_body);
 
         [Fact]
         public void MustMapContentTypeFromConverter()
@@ -39,21 +39,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
             => CreateSut().AsAzureServiceBusMessage().CorrelationId.Should().NotBeNullOrEmpty();
 
         [Fact]
-        public void MustMapLabelFromSubject()
+        public void MustMapSubjectFromSubject()
         {
             var context = new Dictionary<string, object> { [MessageContext.Subject] = "the-subject" };
-            CreateSut(context: context).AsAzureServiceBusMessage().Label.Should().Be("the-subject");
+            CreateSut(context: context).AsAzureServiceBusMessage().Subject.Should().Be("the-subject");
         }
 
         [Fact]
         public void MustThrowWhenGroupIdSetWithoutMatchingPartitionKey()
         {
-            // INVARIANT: the mapping assigns SessionId then PartitionKey on the SDK Message; for a
-            // partitioned message the SDK requires PartitionKey == SessionId, so a GroupId without a
-            // matching PartitionKey makes set_PartitionKey throw InvalidOperationException.
+            // INVARIANT: the mapping assigns SessionId then PartitionKey on the SDK ServiceBusMessage; for
+            // a partitioned message the SDK requires PartitionKey == SessionId, so a GroupId without a
+            // matching PartitionKey makes set_PartitionKey throw ArgumentOutOfRangeException
+            // (Azure.Messaging.ServiceBus validates the setter and rejects the mismatch).
             var context = new Dictionary<string, object> { [MessageContext.GroupId] = "group-1" };
             Action map = () => CreateSut(context: context).AsAzureServiceBusMessage();
-            map.Should().Throw<InvalidOperationException>();
+            map.Should().Throw<ArgumentOutOfRangeException>();
         }
 
         [Fact]
@@ -91,7 +92,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
         public void MustMapViaPartitionKey()
         {
             var sut = CreateSut().WithViaPartitionKey("via-pk");
-            sut.AsAzureServiceBusMessage().ViaPartitionKey.Should().Be("via-pk");
+            sut.AsAzureServiceBusMessage().TransactionPartitionKey.Should().Be("via-pk");
         }
 
         [Fact]
@@ -114,11 +115,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
         {
             var when = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var sut = CreateSut().WithScheduledEnqueueTimeUtc(when);
-            sut.AsAzureServiceBusMessage().ScheduledEnqueueTimeUtc.Should().Be(when);
+            sut.AsAzureServiceBusMessage().ScheduledEnqueueTime.Should().Be(when);
         }
 
         [Fact]
         public void MustLeaveScheduledEnqueueTimeUtcAtDefaultWhenAbsent()
-            => CreateSut().AsAzureServiceBusMessage().ScheduledEnqueueTimeUtc.Should().Be(default(DateTime));
+            => CreateSut().AsAzureServiceBusMessage().ScheduledEnqueueTime.Should().Be(default(DateTimeOffset));
     }
 }
