@@ -18,6 +18,18 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingChatterJson
             public int Value { get; set; }
         }
 
+        private enum BookingStatus
+        {
+            Pending = 0,
+            Booked = 1,
+            Cancelled = 2,
+        }
+
+        private class EnumPoco
+        {
+            public BookingStatus Status { get; set; }
+        }
+
         [Fact]
         public void MustExposeNonNullCachedOptions()
         {
@@ -115,6 +127,55 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingChatterJson
             var deserialized = JsonSerializer.Deserialize<Poco>("{/* block comment */\"Value\":42}", ChatterJson.Options);
 
             deserialized.Value.Should().Be(42);
+        }
+
+        // Newtonsoft's default read accepted an enum NAME for an enum property ({"Status":"Booked"});
+        // STJ with no enum converter reads numbers only and throws. NumericWriteStringReadEnumConverter
+        // accepts the name on read.
+        [Fact]
+        public void MustReadEnumPropertyFromStringName()
+        {
+            var deserialized = JsonSerializer.Deserialize<EnumPoco>("{\"Status\":\"Booked\"}", ChatterJson.Options);
+
+            deserialized.Status.Should().Be(BookingStatus.Booked);
+        }
+
+        // Newtonsoft parsed enum names case-insensitively; the converter restores that via
+        // Enum.Parse(ignoreCase: true).
+        [Fact]
+        public void MustReadEnumPropertyFromStringNameCaseInsensitively()
+        {
+            var deserialized = JsonSerializer.Deserialize<EnumPoco>("{\"Status\":\"cancelled\"}", ChatterJson.Options);
+
+            deserialized.Status.Should().Be(BookingStatus.Cancelled);
+        }
+
+        // The pre-converter numeric read path must keep working ({"Status":2}).
+        [Fact]
+        public void MustReadEnumPropertyFromNumber()
+        {
+            var deserialized = JsonSerializer.Deserialize<EnumPoco>("{\"Status\":2}", ChatterJson.Options);
+
+            deserialized.Status.Should().Be(BookingStatus.Cancelled);
+        }
+
+        // WIRE PARITY: the enum converter MUST write the NUMERIC value (Newtonsoft's default and STJ's
+        // default both write enums as numbers), not the name — otherwise golden byte-parity breaks.
+        [Fact]
+        public void MustWriteEnumPropertyAsNumberToPreserveWireParity()
+        {
+            var json = JsonSerializer.Serialize(new EnumPoco { Status = BookingStatus.Booked }, ChatterJson.Options);
+
+            json.Should().Be("{\"Status\":1}");
+        }
+
+        // An unknown enum name is a genuine error, not silently coerced.
+        [Fact]
+        public void MustThrowOnUnknownEnumName()
+        {
+            var act = () => JsonSerializer.Deserialize<EnumPoco>("{\"Status\":\"NotARealStatus\"}", ChatterJson.Options);
+
+            act.Should().Throw<JsonException>();
         }
     }
 }

@@ -101,7 +101,17 @@ namespace Chatter.MessageBrokers
             // typeToConvert == typeof(object) (RoutingSlip.Route/Visited are IList<RoutingStep> — typed, NOT
             // object — so untouched). Its Write path is a non-reentrant runtime-typed pass-through, so wire
             // output stays byte-identical (golden parity preserved).
-            Converters = { new MaterializingObjectConverter() },
+            //
+            // NumericWriteStringReadEnumConverter restores Newtonsoft read-leniency for enum DTO properties:
+            // Newtonsoft's default read accepted BOTH the enum NAME (e.g. {"Status":"Booked"}) and its number,
+            // whereas STJ (with no enum converter) reads numbers ONLY and throws on a name. This factory reads
+            // names (case-insensitively) AND numbers, while WRITING the numeric value — Newtonsoft's default
+            // and STJ's default both write enums as numbers — so wire-output byte parity is preserved.
+            Converters =
+            {
+                new MaterializingObjectConverter(),
+                new NumericWriteStringReadEnumConverter(),
+            },
         };
 
         // Contract-model modifier: for any property STJ left unsettable on deserialize
