@@ -12,10 +12,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
-## [0.10.2] - 2026-06-07
+## [0.11.0] - 2026-06-07
 
 ### Changed
 
+- **BREAKING:** `JsonUnicodeBodyConverter` (UTF-16) now deserializes message DTOs with System.Text.Json. Message DTOs annotated with Newtonsoft contract attributes — `[JsonProperty("name")]`, `[JsonIgnore]`, `[JsonConverter]`, etc. — are no longer honored. Migrate such DTOs to the System.Text.Json equivalents (`[JsonPropertyName("name")]`, `[System.Text.Json.Serialization.JsonIgnore]`, STJ `[JsonConverter]`). Property-name aliasing and member-ignore contracts must be re-expressed with STJ attributes or wire compatibility for those specific contracts will break. (Default Newtonsoft read/write behavior is preserved for un-annotated DTOs; only explicit Newtonsoft attribute contracts require migration.)
 - Ported JsonUnicodeBodyConverter (UTF-16) to System.Text.Json via the shared Chatter.MessageBrokers serializer options; wire format unchanged. Dropped the transitive Newtonsoft.Json dependency.
 
 ### Fixed

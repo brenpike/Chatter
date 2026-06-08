@@ -7,7 +7,7 @@
          TryEncodeUnicodeScalar) is char*-pointer based, so the overrides must be unsafe. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PackageId>Chatter.MessageBrokers</PackageId>
-    <Version>0.10.1</Version>
+    <Version>0.11.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>A message broker adapter library built on top of Chatter.CQRS.</Description>

@@ -12,10 +12,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
-## [0.10.1] - 2026-06-07
+## [0.11.0] - 2026-06-07
 
 ### Changed
 
+- **BREAKING:** Newtonsoft.Json is removed. Message DTOs annotated with Newtonsoft contract attributes — `[JsonProperty("name")]`, `[JsonIgnore]`, `[JsonConverter]`, etc. — are no longer honored. Migrate such DTOs to the System.Text.Json equivalents (`[JsonPropertyName("name")]`, `[System.Text.Json.Serialization.JsonIgnore]`, STJ `[JsonConverter]`). Property-name aliasing and member-ignore contracts must be re-expressed with STJ attributes or wire compatibility for those specific contracts will break. (The migration preserves default Newtonsoft read/write behavior — casing, number/leniency, private-setter binding, type fidelity — for un-annotated DTOs; only explicit Newtonsoft attribute contracts require migration.)
 - Replaced Newtonsoft.Json with System.Text.Json for all serialization (body converter, routing slips, outbox message-context). Wire format preserved byte-for-byte via a custom relaxed JSON encoder (ChatterJson/ChatterJsonEncoder) that mirrors Newtonsoft escaping, including literal supplementary-plane/emoji output, so persisted and in-flight payloads remain cross-version compatible.
 
 ### Fixed
