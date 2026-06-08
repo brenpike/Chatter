@@ -18,6 +18,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 - Ported JsonUnicodeBodyConverter (UTF-16) to System.Text.Json via the shared Chatter.MessageBrokers serializer options; wire format unchanged. Dropped the transitive Newtonsoft.Json dependency.
 
+### Fixed
+
+- SQL Service Broker inbound headers now materialize System.Text.Json-deserialized context values to their CLR types so downstream typed reads no longer throw InvalidCastException; removed two vestigial Guid casts in the sender that could throw on round-tripped values.
+
 ## [0.10.1] - 2026-06-07
 
 ### Changed

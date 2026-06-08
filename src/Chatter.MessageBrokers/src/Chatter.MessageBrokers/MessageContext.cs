@@ -18,7 +18,7 @@ namespace Chatter.MessageBrokers
         /// the per-value parity semantics documented there hold uniformly across all seams. Returns an
         /// empty dictionary for null/empty/whitespace json.
         /// </remarks>
-        public static IDictionary<string, object> MaterializePersistedContext(string json)
+        internal static IDictionary<string, object> MaterializePersistedContext(string json)
         {
             if (string.IsNullOrWhiteSpace(json))
             {
@@ -37,7 +37,7 @@ namespace Chatter.MessageBrokers
         /// JsonElements (already CLR-typed) are passed through unchanged. Returns an empty dictionary for
         /// a null source.
         /// </summary>
-        public static IDictionary<string, object> MaterializePersistedContext(IDictionary<string, object> context)
+        internal static IDictionary<string, object> MaterializePersistedContext(IDictionary<string, object> context)
         {
             if (context == null)
             {
