@@ -1,3 +1,4 @@
+using System;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -89,9 +90,18 @@ namespace Chatter.MessageBrokers
             // Newtonsoft default via a contract-model modifier (see below). DESERIALIZE-side only
             // (wires JsonPropertyInfo.Set, never Get), so serialized wire bytes are unchanged and
             // golden byte-parity tests stay byte-identical.
+            // EnableNonPublicParameterlessConstructor is registered AFTER EnableNonPublicSetters
+            // (modifier order = run order). Newtonsoft instantiated a DTO whose ONLY default
+            // constructor is non-public (e.g. `class Event { private Event() {} ... }`) and then
+            // populated its setters; STJ's JsonSerializer.Deserialize<T> cannot create such an
+            // instance (no public parameterless ctor, no [JsonConstructor]), so the
+            // EnableNonPublicSetters modifier above is never even reached and inbound bodies fail.
+            // This companion modifier wires JsonTypeInfo.CreateObject to invoke the non-public
+            // parameterless ctor — restoring Newtonsoft's instantiation so the setter modifier can
+            // then populate the private members. DESERIALIZE-side only; no serialize/wire change.
             TypeInfoResolver = new DefaultJsonTypeInfoResolver
             {
-                Modifiers = { EnableNonPublicSetters }
+                Modifiers = { EnableNonPublicSetters, EnableNonPublicParameterlessConstructor }
             },
 
             // MaterializingObjectConverter restores CLR-type fidelity at every object-typed READ position
@@ -158,6 +168,59 @@ namespace Chatter.MessageBrokers
 
                 property.Set = (obj, value) => propertyInfo.SetValue(obj, value);
             }
+        }
+
+        // Contract-model modifier: for an object-kind type that STJ found NO usable creation
+        // mechanism for (CreateObject == null — no public parameterless ctor and no
+        // [JsonConstructor] parameterized binding) but which nonetheless exposes a NON-PUBLIC
+        // parameterless constructor, wire CreateObject to invoke that ctor via reflection. This
+        // restores Newtonsoft's default instantiation of DTOs whose only default constructor is
+        // private/internal; combined with EnableNonPublicSetters the private members then populate.
+        //
+        // No-op (and MUST stay a no-op) for:
+        //   - types with a public parameterless ctor — STJ already set CreateObject (skipped:
+        //     CreateObject != null)
+        //   - types using [JsonConstructor] parameterized construction (RoutingSlip, RoutingStep,
+        //     OutboundBrokeredMessage) — STJ binds via ctor parameters, so CreateObject is already
+        //     non-null (skipped); their construction is NOT overridden, preserving slip round-trip
+        //     and golden byte-parity
+        //   - records / types whose only ctor is a required parameterized one — GetConstructor for
+        //     an EMPTY parameter list returns null, so they are not touched (left to ctor binding)
+        //   - abstract types / interfaces — Kind != Object OR no instantiable ctor; GetConstructor
+        //     returns null
+        private static void EnableNonPublicParameterlessConstructor(JsonTypeInfo typeInfo)
+        {
+            if (typeInfo.Kind != JsonTypeInfoKind.Object)
+            {
+                return;
+            }
+
+            if (typeInfo.CreateObject is not null)
+            {
+                // STJ already has a creation mechanism (public ctor or [JsonConstructor] binding).
+                return;
+            }
+
+            var type = typeInfo.Type;
+            if (type.IsAbstract || type.IsInterface)
+            {
+                return;
+            }
+
+            var ctor = type.GetConstructor(
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
+                binder: null,
+                Type.EmptyTypes,
+                modifiers: null);
+
+            if (ctor is null || ctor.IsPublic)
+            {
+                // No parameterless ctor at all (record / required parameterized ctor), or a public
+                // one (already handled by STJ). Only a NON-PUBLIC parameterless ctor is restored here.
+                return;
+            }
+
+            typeInfo.CreateObject = () => ctor.Invoke(null);
         }
     }
 }

@@ -43,6 +43,18 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             public List<string> Items { get; } = new();
         }
 
+        // Immutable command/event-style DTO whose ONLY default constructor is PRIVATE. Newtonsoft
+        // instantiated the type via the non-public ctor and then populated the private setters; STJ
+        // cannot create the instance (no public parameterless ctor, no [JsonConstructor]) unless the
+        // EnableNonPublicParameterlessConstructor contract modifier wires CreateObject. Members are
+        // private-set, so EnableNonPublicSetters then populates them once the instance exists.
+        private class PrivateCtorDto
+        {
+            private PrivateCtorDto() { }
+            public string Name { get; private set; }
+            public int Value { get; private set; }
+        }
+
         [Fact]
         public void MustExposeApplicationJsonContentType()
             => _sut.ContentType.Should().Be("application/json");
@@ -131,6 +143,38 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             var result = _sut.Convert<GetterOnlyCollectionBodyPoco>(bytes);
 
             result.Items.Should().Equal("a", "b");
+        }
+
+        // PARITY: Newtonsoft instantiated a DTO whose ONLY default constructor is non-public and then
+        // populated its (private) setters. STJ's JsonSerializer.Deserialize<T> cannot create such an
+        // instance, so EnableNonPublicSetters alone never gets a chance to run — the
+        // EnableNonPublicParameterlessConstructor contract modifier on the shared ChatterJson.Options
+        // must wire JsonTypeInfo.CreateObject to the non-public parameterless ctor. The instance is
+        // then created and its private Name/Value populated (without the modifier this deserialize
+        // fails: STJ cannot construct the type).
+        [Fact]
+        public void MustActivateNonPublicParameterlessConstructorOnDeserialize()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
+
+            var result = _sut.Convert<PrivateCtorDto>(bytes);
+
+            result.Should().NotBeNull();
+            result.Name.Should().Be("abc");
+            result.Value.Should().Be(42);
+        }
+
+        // UNAFFECTED: a type with a PUBLIC parameterless ctor already has a CreateObject, so the
+        // non-public-ctor modifier must skip it and leave normal construction untouched.
+        [Fact]
+        public void MustLeavePublicConstructorTypesUnaffected()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}");
+
+            var result = _sut.Convert<BodyPoco>(bytes);
+
+            result.Name.Should().Be("abc");
+            result.Value.Should().Be(42);
         }
 
         // OPEN CODEX P2 RESOLUTION (JsonBodyConverter.cs:11): a body DTO whose members are object-typed
