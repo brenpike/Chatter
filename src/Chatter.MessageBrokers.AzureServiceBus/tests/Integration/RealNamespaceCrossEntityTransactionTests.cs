@@ -1,22 +1,29 @@
 using System;
 using System.Threading.Tasks;
-using System.Transactions;
-using Azure.Messaging.ServiceBus;
+using Chatter.CQRS;
+using Chatter.CQRS.Commands;
+using Chatter.CQRS.Context;
+using Chatter.MessageBrokers.AzureServiceBus.Options;
+using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
 {
     // Real-namespace proof of the cross-entity transaction guarantee that Chatter's
-    // FullAtomicityViaInfrastructure mode relies on. The Azure Service Bus emulator CANNOT exercise these —
-    // cross-entity (multi-top-level-entity) transactions throw "Local transactions cannot span multiple
-    // top-level entities" on the emulator — so these tests target a REAL Azure Service Bus namespace.
+    // FullAtomicityViaInfrastructure mode relies on, driven THROUGH Chatter's pipeline (NOT the raw SDK). The
+    // Azure Service Bus emulator CANNOT exercise these — cross-entity (multi-top-level-entity) transactions
+    // throw "Local transactions cannot span multiple top-level entities" on the emulator — so these tests
+    // target a REAL Azure Service Bus namespace.
     //
-    // They drive the Azure.Messaging.ServiceBus SDK directly off a single EnableCrossEntityTransactions
-    // ServiceBusClient — the exact client shape Chatter builds in ChatterAzureServiceBusExtensions
-    // .CreateSharedClient (one client per namespace, cross-entity enabled). Exercising the SDK directly
-    // isolates the broker guarantee (receive-settle + send enlisting in one TransactionScope) from the
-    // Chatter pipeline's scope orchestration, which is unit-tested elsewhere.
+    // SYSTEM UNDER TEST = Chatter's pipeline. A receiver on QueueA runs in
+    // TransactionMode.FullAtomicityViaInfrastructure; its handler forwards to QueueB via the broker context's
+    // Send (IMessageBrokerContext.Send), which enlists in the receiver's atomic TransactionScope on the shared
+    // EnableCrossEntityTransactions client. The committed/rolled-back observable behavior is asserted purely
+    // through Chatter: a RecordingMessageHandler on QueueB observes the forwarded message (or its absence), and
+    // the QueueA handler's invocation count observes redelivery.
     //
     // CRITICAL — TRAIT: this class carries ONLY [Trait("Category","RealNamespaceIntegration")] and NOT the
     // Integration trait. xUnit traits are additive, so an Integration trait here would let the emulator CI
@@ -29,112 +36,151 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     [Collection(RealNamespaceCrossEntityTransactionCollection.Name)]
     public class RealNamespaceCrossEntityTransactionTests
     {
+        private static readonly TimeSpan HandlerWait = TimeSpan.FromSeconds(30);
+        // A window long enough that a forwarded message (if it were going to arrive) or a redelivery would land
+        // within it, used to assert the ABSENCE of a forward and to observe source redelivery on rollback.
+        private static readonly TimeSpan ObservationWindow = TimeSpan.FromSeconds(20);
+
         private readonly RealNamespaceCrossEntityTransactionFixture _namespace;
 
         public RealNamespaceCrossEntityTransactionTests(RealNamespaceCrossEntityTransactionFixture @namespace)
             => _namespace = @namespace;
 
-        // Mirrors ChatterAzureServiceBusExtensions.CreateSharedClient for the SAS (connection-string) path:
-        // a single client per namespace with EnableCrossEntityTransactions so a send and a receive-settle on
-        // different entities enlist in one transaction.
-        private ServiceBusClient CreateSharedCrossEntityClient()
-            => new ServiceBusClient(
-                _namespace.GetConnectionString(),
-                new ServiceBusClientOptions { EnableCrossEntityTransactions = true });
-
-        private static async Task SeedAsync(ServiceBusClient client, string queue, string body)
+        // The command consumed on QueueA. Its handler forwards a ForwardedCommand to QueueB within the
+        // receiver's FullAtomicityViaInfrastructure scope.
+        public sealed class SourceCommand : ICommand
         {
-            var sender = client.CreateSender(queue);
-            await sender.SendMessageAsync(new ServiceBusMessage(body));
+            public string Value { get; set; }
         }
 
-        // Assertion-only read helper: callers only assert on the returned message and never settle it.
-        // Uses ReceiveAndDelete (NOT PeekLock) so the message is removed on receipt and cannot reappear
-        // once its PeekLock lock would expire. The fixture reuses the same per-run queues across the test
-        // methods with a 10-second lock duration, so a peeked-but-unsettled message would otherwise become
-        // visible again and be consumed by a later test, causing order/timing-dependent cross-test leakage.
-        private static async Task<ServiceBusReceivedMessage> ReceiveForAssertionAsync(ServiceBusClient client, string queue)
+        // The command forwarded to QueueB; a RecordingMessageHandler on QueueB observes it (or its absence).
+        public sealed class ForwardedCommand : ICommand
         {
-            var receiver = client.CreateReceiver(queue, new ServiceBusReceiverOptions
+            public string Value { get; set; }
+        }
+
+        // A handler on QueueA that forwards to QueueB via the broker context's Send (enlisting in the atomic
+        // scope), then OPTIONALLY throws after the forward so the atomic scope does not complete — exercising
+        // the rolled-back cross-entity path. Records every invocation of SourceCommand through the shared
+        // registry so the test can observe redelivery on rollback. The forward target queue and the
+        // throw-after-forward behavior are injected so one handler serves both the committed and rolled-back
+        // cases.
+        private sealed class ForwardingSourceHandler : IMessageHandler<SourceCommand>
+        {
+            private readonly HandlerSignalRegistry _registry;
+            private readonly string _destinationQueue;
+            private readonly bool _throwAfterForward;
+
+            public ForwardingSourceHandler(HandlerSignalRegistry registry, string destinationQueue, bool throwAfterForward)
             {
-                ReceiveMode = ServiceBusReceiveMode.ReceiveAndDelete,
-            });
-            return await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(10));
+                _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+                _destinationQueue = destinationQueue ?? throw new ArgumentNullException(nameof(destinationQueue));
+                _throwAfterForward = throwAfterForward;
+            }
+
+            public async Task Handle(SourceCommand message, IMessageHandlerContext context)
+            {
+                var brokerContext = context as IMessageBrokerContext;
+                _registry.GetOrAdd<SourceCommand>().Record(
+                    new HandledRecord<SourceCommand>(message, brokerContext));
+
+                // Forward within the receiver's atomic scope. On the committed path the scope completes after
+                // the handler returns, committing this send together with the source settle. On the rolled-back
+                // path the throw below prevents the scope completing, rolling BOTH back.
+                await brokerContext.Send(
+                    new ForwardedCommand { Value = message.Value + "-forwarded" },
+                    _destinationQueue);
+
+                if (_throwAfterForward)
+                {
+                    throw new InvalidOperationException(
+                        "force rollback of the cross-entity atomic scope after the forward");
+                }
+            }
         }
 
-        // atomic-commit (cross-entity): receive from A and send to B inside ONE TransactionScope, then
-        // Complete the scope. Asserts A's message is consumed AND B receives the message — the happy-path
-        // cross-entity guarantee that FullAtomicityViaInfrastructure depends on.
+        private ChatterPipelineHarness BuildHarness(bool throwAfterForward)
+            => ChatterPipelineHarness.Build(
+                _namespace.GetConnectionString(),
+                sb =>
+                {
+                    // Source receiver on the fixture's unique QueueA in FullAtomicityViaInfrastructure; its
+                    // forwarding handler enlists the forward in the atomic scope. Registered explicitly so
+                    // Chatter resolves the forwarding handler for SourceCommand.
+                    sb.AddQueueReceiver<SourceCommand>(
+                        _namespace.QueueA,
+                        transactionMode: TransactionMode.FullAtomicityViaInfrastructure);
+                    sb.Services.AddTransient<IMessageHandler<SourceCommand>>(sp =>
+                        new ForwardingSourceHandler(
+                            sp.GetRequiredService<HandlerSignalRegistry>(),
+                            _namespace.QueueB,
+                            throwAfterForward));
+
+                    // Dest receiver on the fixture's unique QueueB; its RecordingMessageHandler<ForwardedCommand>
+                    // (wired by the harness via the messageTypes arg) observes the forwarded message.
+                    sb.AddQueueReceiver<ForwardedCommand>(_namespace.QueueB);
+                },
+                typeof(ForwardedCommand));
+
+        // Committed cross-entity transaction THROUGH Chatter: the QueueA handler forwards to QueueB and returns
+        // normally, so Chatter completes the atomic scope — committing the forward and the source settle
+        // together. QueueB receives the forwarded message (observed via Chatter's receive path) and QueueA's
+        // source is consumed (handled exactly once, no redelivery).
         [RequiresRealServiceBusNamespaceFact]
         public async Task CommittedCrossEntityTransactionConsumesSourceAndDeliversToDestination()
         {
-            var client = CreateSharedCrossEntityClient();
-            await SeedAsync(client, _namespace.QueueA, "seed-commit");
+            await using var harness = BuildHarness(throwAfterForward: false);
+            await harness.StartAsync();
 
-            var receiver = client.CreateReceiver(_namespace.QueueA, new ServiceBusReceiverOptions
+            var dispatcher = harness.CreateDispatcher(out var scope);
+            using (scope)
             {
-                ReceiveMode = ServiceBusReceiveMode.PeekLock,
-            });
-            var sender = client.CreateSender(_namespace.QueueB);
-
-            var received = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(10));
-            received.Should().NotBeNull("the seed message must be available on queue A");
-
-            using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
-            {
-                await sender.SendMessageAsync(new ServiceBusMessage("forwarded-commit"));
-                await receiver.CompleteMessageAsync(received);
-                scope.Complete();
+                await dispatcher.Send(new SourceCommand { Value = "commit" }, _namespace.QueueA);
             }
 
-            var delivered = await ReceiveForAssertionAsync(client, _namespace.QueueB);
-            delivered.Should().NotBeNull("the forwarded message must be delivered to queue B after the scope commits");
-            delivered.Body.ToString().Should().Be("forwarded-commit");
+            // The forwarded message is delivered to QueueB through Chatter's receive path — the committed
+            // cross-entity guarantee FullAtomicityViaInfrastructure depends on.
+            var delivered = await harness.WaitForHandledAsync<ForwardedCommand>(HandlerWait);
+            delivered.Message.Value.Should().Be(
+                "commit-forwarded",
+                "the forwarded message must arrive on QueueB when the atomic scope commits");
 
-            // Source message was completed inside the committed scope, so A holds nothing more.
-            var leftoverOnA = await ReceiveForAssertionAsync(client, _namespace.QueueA);
-            leftoverOnA.Should().BeNull("the source message must be consumed when the scope commits");
+            // The source on QueueA was consumed in the committed scope: the handler is invoked exactly once and
+            // never redelivered.
+            var sourceInvocations = await harness.WaitForInvocationCountAsync<SourceCommand>(2, ObservationWindow);
+            sourceInvocations.Should().Be(
+                1,
+                "the source message is settled in the committed atomic scope, so it is never redelivered");
         }
 
-        // atomic-rollback (cross-entity): receive from A and send to B inside one TransactionScope, then throw
-        // BEFORE scope.Complete() → B must NOT receive the message AND A's message must be redelivered (the
-        // PeekLock is released because CompleteMessageAsync never committed).
+        // Rolled-back cross-entity transaction THROUGH Chatter: the QueueA handler forwards to QueueB and then
+        // throws BEFORE the atomic scope completes, so Chatter rolls BOTH the forward and the source settle
+        // back. QueueB receives NOTHING and the source message is redelivered (the QueueA handler is invoked
+        // again because the settle rolled back).
         [RequiresRealServiceBusNamespaceFact]
         public async Task RolledBackCrossEntityTransactionDeliversNothingAndRedeliversSource()
         {
-            var client = CreateSharedCrossEntityClient();
-            await SeedAsync(client, _namespace.QueueA, "seed-rollback");
+            await using var harness = BuildHarness(throwAfterForward: true);
+            await harness.StartAsync();
 
-            var receiver = client.CreateReceiver(_namespace.QueueA, new ServiceBusReceiverOptions
+            var dispatcher = harness.CreateDispatcher(out var scope);
+            using (scope)
             {
-                ReceiveMode = ServiceBusReceiveMode.PeekLock,
-            });
-            var sender = client.CreateSender(_namespace.QueueB);
-
-            var received = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(10));
-            received.Should().NotBeNull("the seed message must be available on queue A");
-
-            try
-            {
-                using var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled);
-                await sender.SendMessageAsync(new ServiceBusMessage("forwarded-rollback"));
-                await receiver.CompleteMessageAsync(received);
-                throw new InvalidOperationException("force rollback before scope.Complete()");
-                // scope.Complete() intentionally never reached.
-            }
-            catch (InvalidOperationException)
-            {
-                // expected: the scope disposes without Complete, rolling back the send and the settle.
+                await dispatcher.Send(new SourceCommand { Value = "rollback" }, _namespace.QueueA);
             }
 
-            // Abandon to release the lock immediately rather than waiting out LockDuration.
-            await receiver.AbandonMessageAsync(received);
+            // The source is redelivered because the settle rolled back with the scope: the handler is invoked
+            // more than once.
+            var sourceInvocations = await harness.WaitForInvocationCountAsync<SourceCommand>(2, HandlerWait);
+            sourceInvocations.Should().BeGreaterThanOrEqualTo(
+                2,
+                "the source must be redelivered when the atomic scope rolls back without completing");
 
-            var deliveredToB = await ReceiveForAssertionAsync(client, _namespace.QueueB);
-            deliveredToB.Should().BeNull("the forwarded send must roll back when the scope does not complete");
-
-            var redeliveredOnA = await ReceiveForAssertionAsync(client, _namespace.QueueA);
-            redeliveredOnA.Should().NotBeNull("the source message must be redelivered when the settle rolls back");
+            // The forward rolled back with the scope, so QueueB receives nothing within the observation window.
+            var forwardArrived = await harness.WaitForInvocationCountAsync<ForwardedCommand>(1, ObservationWindow);
+            forwardArrived.Should().Be(
+                0,
+                "the forwarded send must roll back with the atomic scope, so QueueB receives nothing");
         }
     }
 }
