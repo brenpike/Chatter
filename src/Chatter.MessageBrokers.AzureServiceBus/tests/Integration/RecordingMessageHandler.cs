@@ -35,6 +35,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     {
         private readonly TaskCompletionSource<HandledRecord<TMessage>> _handled =
             new TaskCompletionSource<HandledRecord<TMessage>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _invocationCount;
 
         // When non-null, the handler throws this (a fresh instance per invocation) after recording the
         // message, exercising Chatter's receiver retry/deadletter path.
@@ -42,8 +43,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
 
         public Task<HandledRecord<TMessage>> Handled => _handled.Task;
 
+        // The total number of times Chatter's pipeline has invoked the handler for TMessage. Lets a test
+        // observe redelivery (PeekLock retry) vs a single ReceiveAndDelete delivery without holding the
+        // transiently-constructed handler instance.
+        public int InvocationCount => Volatile.Read(ref _invocationCount);
+
         internal void Record(HandledRecord<TMessage> record)
-            => _handled.TrySetResult(record);
+        {
+            Interlocked.Increment(ref _invocationCount);
+            _handled.TrySetResult(record);
+        }
     }
 
     // Registry of per-message-type signals, registered as a singleton. The harness creates/looks up the

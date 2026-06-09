@@ -158,6 +158,29 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             return await handled.ConfigureAwait(false);
         }
 
+        // Bounded poll until the handler for TMessage has been invoked at least minCount times, returning the
+        // observed count. Returns the last observed count (which may be below minCount) if the timeout
+        // elapses first — callers assert on the returned count so a never-reached threshold fails fast
+        // instead of hanging. Used to observe PeekLock redelivery (count climbs past 1) versus a single
+        // ReceiveAndDelete delivery.
+        public async Task<int> WaitForInvocationCountAsync<TMessage>(int minCount, TimeSpan timeout)
+            where TMessage : IMessage
+        {
+            var signal = GetSignal<TMessage>();
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                if (signal.InvocationCount >= minCount)
+                {
+                    return signal.InvocationCount;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            }
+
+            return signal.InvocationCount;
+        }
+
         public async ValueTask DisposeAsync()
         {
             _pumpCts.Cancel();
