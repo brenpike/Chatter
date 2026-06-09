@@ -76,6 +76,60 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             }
         }
 
+        // Records, across all invocations, whether the handler was ever invoked for a FOLLOW-UP message — the
+        // HandlerSignal only retains the LAST record, so a dedicated flag is needed to prove the follow-up was
+        // NEVER delivered over the whole (redelivered) lifetime, not merely on the last poll. Registered as a
+        // singleton so the test and the DI-resolved handler share one instance.
+        private sealed class FollowUpObserver
+        {
+            private int _followUpHandledCount;
+
+            public int FollowUpHandledCount => Volatile.Read(ref _followUpHandledCount);
+
+            public void RecordFollowUp() => Interlocked.Increment(ref _followUpHandledCount);
+        }
+
+        // The rollback counterpart of ForwardingAtomicHandler: on the ORIGINAL message it sends a follow-up to
+        // the SAME entity within the receiver's atomic scope and THEN THROWS before returning, so the
+        // TransactionScope never completes and the enlisted follow-up send is rolled back (never delivered). It
+        // records every invocation (via the signal registry, so the test can observe redelivery) and flags any
+        // follow-up sighting on the shared FollowUpObserver so the test can prove no follow-up is ever handled.
+        private sealed class RollbackAtomicHandler : IMessageHandler<AtomicCommand>
+        {
+            private readonly HandlerSignalRegistry _registry;
+            private readonly FollowUpObserver _followUpObserver;
+
+            public RollbackAtomicHandler(HandlerSignalRegistry registry, FollowUpObserver followUpObserver)
+            {
+                _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+                _followUpObserver = followUpObserver ?? throw new ArgumentNullException(nameof(followUpObserver));
+            }
+
+            public async Task Handle(AtomicCommand message, IMessageHandlerContext context)
+            {
+                _registry.GetOrAdd<AtomicCommand>().Record(
+                    new HandledRecord<AtomicCommand>(message, context as IMessageBrokerContext));
+
+                if (message.IsFollowUp)
+                {
+                    // A follow-up reaching the handler would mean the rolled-back send was delivered — the
+                    // failure this test guards against. Flag it and stop (no further send) so the test can assert
+                    // it never happens.
+                    _followUpObserver.RecordFollowUp();
+                    return;
+                }
+
+                // Send the follow-up to the SAME entity so it enlists in the receiver's atomic scope, then throw
+                // BEFORE returning so the scope never completes — the follow-up send must roll back with it.
+                await context.Send(
+                    new AtomicCommand { Value = message.Value + "-followup", IsFollowUp = true },
+                    AtomicQueue);
+
+                throw new InvalidOperationException(
+                    "force the atomic scope to roll back after enlisting the follow-up send");
+            }
+        }
+
         // FullAtomicityViaInfrastructure on a single entity: the original is consumed and the follow-up it
         // sends (within the atomic scope) is delivered back to the same handler. Observing the follow-up
         // handling proves the send committed atomically with the original's settle.
@@ -122,6 +176,57 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
                     r => r.Message.IsFollowUp && r.Message.Value == "atomic-followup",
                     "the committed atomic scope must deliver the follow-up payload to the same entity, not just " +
                     "redeliver the original");
+        }
+
+        // FullAtomicityViaInfrastructure rollback (the commit test's counterpart): the handler sends a follow-up
+        // to the SAME entity within the atomic scope and then THROWS, so the TransactionScope never completes.
+        // The enlisted follow-up send must roll back (the follow-up is NEVER delivered) AND the original is
+        // abandoned on the PeekLock and REDELIVERED to the handler. This is the rollback half of the atomicity
+        // guarantee — the original's settle and the follow-up send fail together. maxReceiveAttempts bounds the
+        // redelivery so the original eventually deadletters instead of looping forever.
+        [RequiresDockerFact]
+        public async Task FullAtomicityRollsBackFollowUpWhenHandlerThrowsAndRedeliversOriginal()
+        {
+            var followUpObserver = new FollowUpObserver();
+
+            await using var harness = ChatterPipelineHarness.Build(
+                _emulator.GetConnectionString(),
+                sb =>
+                {
+                    sb.AddQueueReceiver<AtomicCommand>(
+                        AtomicQueue,
+                        transactionMode: TransactionMode.FullAtomicityViaInfrastructure,
+                        maxReceiveAttempts: 3);
+                    // The shared observer the test reads to prove no follow-up ever reaches the handler.
+                    sb.Services.AddSingleton(followUpObserver);
+                    // The rollback handler sends the follow-up then throws, so the atomic scope never completes.
+                    sb.Services.AddTransient<IMessageHandler<AtomicCommand>, RollbackAtomicHandler>();
+                });
+            await harness.StartAsync();
+
+            var dispatcher = harness.CreateDispatcher(out var scope);
+            using (scope)
+            {
+                await dispatcher.Send(new AtomicCommand { Value = "rollback" }, AtomicQueue);
+            }
+
+            // First handling: the original message (which sends the follow-up, then throws).
+            var firstHandling = await harness.WaitForHandledAsync<AtomicCommand>(HandlerWait);
+            firstHandling.Message.Value.Should().Be("rollback");
+            firstHandling.Message.IsFollowUp.Should().BeFalse("the original message is consumed first");
+
+            // The original is abandoned on the thrown handler and REDELIVERED (PeekLock), so the handler is
+            // invoked again — proving the original's settle rolled back with the scope.
+            var observed = await harness.WaitForInvocationCountAsync<AtomicCommand>(2, HandlerWait);
+            observed.Should().BeGreaterThanOrEqualTo(2,
+                "the original is abandoned when the handler throws and must be redelivered (the settle rolled back)");
+
+            // The follow-up send enlisted in the never-completed scope must have rolled back: across the entire
+            // redelivered lifetime the handler is NEVER invoked for a follow-up. The window is generous enough
+            // that a delivered follow-up (if the rollback were broken) would have landed within it.
+            followUpObserver.FollowUpHandledCount.Should().Be(
+                0,
+                "the follow-up sent inside the never-completed atomic scope must roll back and never be delivered");
         }
     }
 }

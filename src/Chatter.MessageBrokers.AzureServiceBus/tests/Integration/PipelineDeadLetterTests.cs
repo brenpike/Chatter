@@ -35,7 +35,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     public class PipelineDeadLetterTests
     {
         private const string DeadLetterQueue = "chatter.deadletter";
+        // A dedicated queue (MaxDeliveryCount 10, so the broker does NOT deadletter before Chatter does) for the
+        // exact-attempts boundary test: Chatter's maxReceiveAttempts (small N) governs deadlettering, and the
+        // queue is isolated so its $DeadLetterQueue peek is not polluted by other tests' poisoned messages.
+        private const string AttemptsQueue = "chatter.attempts";
+        // The exact number of handler invocations expected on the attempts boundary test before Chatter
+        // deadletters: Chatter deadletters when deliveryCount >= MaxReceiveAttempts, so with N attempts the
+        // PeekLock handler is invoked exactly N times.
+        private const int MaxReceiveAttemptsForBoundary = 2;
         private static readonly TimeSpan HandlerWait = TimeSpan.FromSeconds(30);
+        // A window long enough that any further (over-N) redelivery would have landed, used to assert the handler
+        // is NOT invoked beyond the exact attempt count.
+        private static readonly TimeSpan NoFurtherInvocationWindow = TimeSpan.FromSeconds(15);
         // A window long enough for Chatter to settle the deadletter after the handler throws, before the
         // edge-only peek of the $DeadLetterQueue sub-queue.
         private static readonly TimeSpan DeadLetterPeekWait = TimeSpan.FromSeconds(20);
@@ -59,11 +70,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         // Edge-only raw-SDK read of the entity's dead-letter sub-queue. Chatter exposes no DLQ read, so the
         // Azure SDK is used here purely to observe the message Chatter's deadletter path produced. PeekLock +
         // explicit Complete drains it so a leftover cannot leak into a later run on the shared emulator.
-        private async Task<ServiceBusReceivedMessage> ReceiveDeadLetteredAsync(TimeSpan timeout)
+        private async Task<ServiceBusReceivedMessage> ReceiveDeadLetteredAsync(TimeSpan timeout, string queue = DeadLetterQueue)
         {
             await using var client = new ServiceBusClient(_emulator.GetConnectionString());
             var receiver = client.CreateReceiver(
-                DeadLetterQueue,
+                queue,
                 new ServiceBusReceiverOptions
                 {
                     SubQueue = SubQueue.DeadLetter,
@@ -165,6 +176,60 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             deadLettered.DeadLetterErrorDescription.Should().EndWith(
                 DeadLetterErrorDescriptionTruncationMarker,
                 "the capped description preserves its diagnostic head and appends Chatter's truncation marker");
+        }
+
+        // Exact attempts -> deadletter boundary: with a throwing handler on a PeekLock receiver configured for
+        // maxReceiveAttempts: N (on a queue whose own MaxDeliveryCount is higher, so the BROKER does not
+        // deadletter first), Chatter invokes the handler EXACTLY N times — it redelivers on each abandoned lock
+        // and deadletters only once deliveryCount >= N — and then the message lands on the entity's
+        // $DeadLetterQueue. This pins the attempts->deadletter boundary precisely (the existing tests assert only
+        // >= 2 redelivery); both the exact invocation count and the resulting DLQ landing are proven through
+        // Chatter, with the raw SDK used only at the edge to peek the DLQ.
+        [RequiresDockerFact]
+        public async Task ThrowingHandlerIsInvokedExactlyMaxAttemptsThenDeadletters()
+        {
+            await using var harness = ChatterPipelineHarness.Build(
+                _emulator.GetConnectionString(),
+                sb => sb.AddQueueReceiver<DeadLetterCommand>(
+                    AttemptsQueue,
+                    transactionMode: TransactionMode.ReceiveOnly,
+                    maxReceiveAttempts: MaxReceiveAttemptsForBoundary),
+                typeof(DeadLetterCommand));
+            await harness.StartAsync();
+
+            harness.GetSignal<DeadLetterCommand>().ThrowOnHandle =
+                () => new InvalidOperationException("force exact-attempts deadletter through Chatter's pipeline");
+
+            var dispatcher = harness.CreateDispatcher(out var scope);
+            using (scope)
+            {
+                await dispatcher.Send(new DeadLetterCommand { Value = "exact-attempts" }, AttemptsQueue);
+            }
+
+            // Chatter invokes the handler on each PeekLock delivery until it deadletters at deliveryCount >= N,
+            // so the handler is invoked exactly N times: first reach N...
+            var reached = await harness.WaitForInvocationCountAsync<DeadLetterCommand>(
+                MaxReceiveAttemptsForBoundary, HandlerWait);
+            reached.Should().Be(
+                MaxReceiveAttemptsForBoundary,
+                "Chatter redelivers an abandoned PeekLock message and deadletters at deliveryCount >= maxReceiveAttempts, so the handler is invoked exactly that many times");
+
+            // ...then confirm it does NOT exceed N within a margin (no further redelivery after deadlettering).
+            var afterDeadletter = await harness.WaitForInvocationCountAsync<DeadLetterCommand>(
+                MaxReceiveAttemptsForBoundary + 1, NoFurtherInvocationWindow);
+            afterDeadletter.Should().Be(
+                MaxReceiveAttemptsForBoundary,
+                "once Chatter deadletters at max attempts the message is gone, so the handler is not invoked again");
+
+            // The message then lands on the entity's $DeadLetterQueue — the attempts boundary terminated in a
+            // deadletter, not an endless redelivery. This DLQ read is the only raw-SDK usage and drains the
+            // message so it cannot leak into a later run on the shared emulator.
+            var deadLettered = await ReceiveDeadLetteredAsync(DeadLetterPeekWait, AttemptsQueue);
+            deadLettered.Should().NotBeNull(
+                "after exactly maxReceiveAttempts failed deliveries Chatter must move the message to the entity's $DeadLetterQueue");
+            deadLettered.DeadLetterReason.Should().Be(
+                "Poisoned message received",
+                "Chatter stamps this literal reason when it deadletters at the attempts boundary");
         }
     }
 }
