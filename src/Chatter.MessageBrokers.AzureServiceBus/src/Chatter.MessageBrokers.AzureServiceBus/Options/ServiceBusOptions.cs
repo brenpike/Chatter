@@ -19,7 +19,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // top-level entity throws "Local transactions cannot span multiple top-level entities". This is
         // auto-enabled when a FullAtomicityViaInfrastructure receiver is registered; opt in explicitly here
         // only when a single-entity host needs cross-entity send+settle atomicity.
-        public bool EnableCrossEntityTransactions { get; internal set; }
+        public bool EnableCrossEntityTransactions { get; set; }
         internal RetryPolicyConfiguation RetryPolicy { get; set; }
         [JsonIgnore]
         public ServiceBusRetryOptions RetryOptions { get; internal set; }

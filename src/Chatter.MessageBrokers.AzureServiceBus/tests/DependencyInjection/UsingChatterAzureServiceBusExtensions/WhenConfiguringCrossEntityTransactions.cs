@@ -28,6 +28,34 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         private static IConfiguration EmptyConfig()
             => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>()).Build();
 
+        // Builds a configuration whose Chatter:Infrastructure:AzureServiceBus section carries the connection
+        // string plus the supplied EnableCrossEntityTransactions value, so the opt-in is exercised purely via
+        // config binding (ServiceBusOptionsBuilder.UseConfig -> section.Get<ServiceBusOptions>()), with NO
+        // fluent WithCrossEntityTransactions() call.
+        private static IConfiguration CrossEntityConfig(bool enableCrossEntityTransactions)
+            => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+            {
+                ["Chatter:Infrastructure:AzureServiceBus:ConnectionString"] = _connectionString,
+                ["Chatter:Infrastructure:AzureServiceBus:EnableCrossEntityTransactions"] =
+                    enableCrossEntityTransactions.ToString(),
+            }).Build();
+
+        // Builds services where the ASB opt-in comes ONLY from configuration binding (no fluent
+        // WithConnectionString / WithCrossEntityTransactions): the section is bound by the options builder.
+        private static ServiceCollection BuildServicesFromConfig(
+            IConfiguration configuration,
+            Action<ServiceBusOptionsBuilder> configure)
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+
+            services.AddChatterCqrs(configuration, typeof(WhenConfiguringCrossEntityTransactions))
+                    .AddMessageBrokers()
+                    .AddAzureServiceBus(sb => configure(sb));
+
+            return services;
+        }
+
         private static ServiceCollection BuildServices(Action<ServiceBusOptionsBuilder> configure)
             => BuildServices(configure, null);
 
@@ -196,6 +224,51 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
                 },
                 mb => mb.WithTransactionMode(TransactionMode.ReceiveOnly))
                 .BuildServiceProvider();
+
+            var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
+
+            resolveClient.Should().NotThrow();
+            resolveClient().Should().NotBeNull();
+        }
+
+        [Fact]
+        public async Task MustBindCrossEntityOptInFromConfigurationAndTripGuardForMultipleTopLevelEntities()
+        {
+            // Config-only opt-in: EnableCrossEntityTransactions = true is set purely via configuration binding
+            // (no fluent WithCrossEntityTransactions()). The flag must bind from the section, so pairing it with
+            // two distinct top-level entities trips the single-top-level-entity guard exactly as the fluent
+            // opt-in does. Regression guard for the internal-setter binding gap (config opt-in was silently
+            // ignored because ConfigurationBinder skips non-public setters).
+            await using var provider = BuildServicesFromConfig(
+                CrossEntityConfig(enableCrossEntityTransactions: true),
+                sb =>
+                {
+                    sb.AddQueueReceiver<FirstCommand>("queue-a");
+                    sb.AddQueueReceiver<SecondCommand>("queue-b");
+                }).BuildServiceProvider();
+
+            var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
+
+            resolveClient.Should()
+                .Throw<InvalidOperationException>()
+                .WithMessage("*single top-level receiver entity*")
+                .WithMessage("*queue-a*")
+                .WithMessage("*queue-b*");
+        }
+
+        [Fact]
+        public async Task MustNotEnableCrossEntityWhenConfigOptInAbsentForMultipleTopLevelEntities()
+        {
+            // Config binds EnableCrossEntityTransactions = false (the default): cross-entity stays OFF, so two
+            // distinct non-atomic top-level entities are allowed and the guard does not trip — the config-bound
+            // flag is genuinely honored in both directions.
+            await using var provider = BuildServicesFromConfig(
+                CrossEntityConfig(enableCrossEntityTransactions: false),
+                sb =>
+                {
+                    sb.AddQueueReceiver<FirstCommand>("queue-a");
+                    sb.AddQueueReceiver<SecondCommand>("queue-b");
+                }).BuildServiceProvider();
 
             var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
 
