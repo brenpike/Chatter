@@ -66,7 +66,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             leftover.Should().BeNull($"queue '{queue}' must hold nothing extra after the pipeline settles the message");
         }
 
-        // Bounded drain: ReceiveAndDelete-drains the active queue until it yields nothing within a short window,
+        // A single empty ReceiveAndDelete read is NOT proof the queue is drained: the message can still be held
+        // under PeekLock by Chatter's pump while it unwinds/deadletters, so a separate receiver sees no
+        // AVAILABLE message and reads null even though the message is not yet settled. Requiring this many
+        // CONSECUTIVE empty reads, each over a real wait window, makes the drain wait past that transient
+        // unavailability before declaring the queue quiet.
+        private const int DrainQuietReads = 3;
+
+        // Bounded drain: ReceiveAndDelete-drains the active queue until it stays empty across DrainQuietReads
+        // CONSECUTIVE empty reads (a single null read is treated as transient unavailability, not as drained),
         // bounded by an overall timeout. Used to WAIT for an in-flight settle/deadletter to finish (the active
         // copy of the message disappears once Chatter abandons-to-deadletter at max attempts) so the next test
         // on the SAME shared queue cannot consume a leftover that was still settling at teardown. Bounded so it
@@ -80,13 +88,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             });
 
             var deadline = DateTime.UtcNow + timeout;
+            var consecutiveEmpty = 0;
             while (DateTime.UtcNow < deadline)
             {
                 var leftover = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(2));
                 if (leftover is null)
                 {
-                    return;
+                    // A null read may be transient (the message is locked, not gone). Only treat the queue as
+                    // drained once it stays empty across several consecutive reads.
+                    if (++consecutiveEmpty >= DrainQuietReads)
+                    {
+                        return;
+                    }
+
+                    continue;
                 }
+
+                // A delivered message resets the quiet streak: something was still active, so keep draining.
+                consecutiveEmpty = 0;
             }
         }
 

@@ -192,8 +192,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             await DrainQueueAsync(_namespace.QueueA, HandlerWait);
         }
 
-        // Bounded drain of a real-namespace queue: ReceiveAndDelete-drains until it yields nothing within a
-        // short window, bounded by an overall timeout, so a rolled-back/redelivered source left active at
+        // A single empty ReceiveAndDelete read is NOT proof the queue is drained: the rolled-back source can
+        // still be held under PeekLock by Chatter's receiver (the QueueA receiver uses the default
+        // maxReceiveAttempts of 10, so the source is redelivered/locked, not yet dead-lettered), so a separate
+        // receiver sees no AVAILABLE message and reads null even though the source is not yet settled. Requiring
+        // this many CONSECUTIVE empty reads, each over a real wait window, makes the drain wait past that
+        // transient unavailability before declaring the queue quiet.
+        private const int DrainQuietReads = 3;
+
+        // Bounded drain of a real-namespace queue: ReceiveAndDelete-drains until it stays empty across
+        // DrainQuietReads CONSECUTIVE empty reads (a single null read is treated as transient unavailability,
+        // not as drained), bounded by an overall timeout, so a rolled-back/redelivered source left active at
         // teardown cannot leak into a later test on the same shared queue. Bounded so it never hangs CI.
         private async Task DrainQueueAsync(string queue, TimeSpan timeout)
         {
@@ -204,13 +213,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             });
 
             var deadline = DateTime.UtcNow + timeout;
+            var consecutiveEmpty = 0;
             while (DateTime.UtcNow < deadline)
             {
                 var leftover = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(2));
                 if (leftover is null)
                 {
-                    return;
+                    // A null read may be transient (the source is locked, not gone). Only treat the queue as
+                    // drained once it stays empty across several consecutive reads.
+                    if (++consecutiveEmpty >= DrainQuietReads)
+                    {
+                        return;
+                    }
+
+                    continue;
                 }
+
+                // A delivered message resets the quiet streak: something was still active, so keep draining.
+                consecutiveEmpty = 0;
             }
         }
     }
