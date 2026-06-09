@@ -1,4 +1,4 @@
-﻿namespace Chatter.MessageBrokers.Receiving
+namespace Chatter.MessageBrokers.Receiving
 {
     public interface IReceiveMessages
     {

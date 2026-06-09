@@ -47,7 +47,14 @@ namespace Microsoft.Extensions.DependencyInjection
             // host), so the shared-client factory can always resolve it. AddQueueReceiver/AddTopicSubscription
             // run before this (the options delegate completes before AddAzureServiceBus(builder, options)),
             // so any populated registry is reused here rather than replaced.
-            GetOrAddReceiverRegistry(builder.Services);
+            var receiverRegistry = GetOrAddReceiverRegistry(builder.Services);
+
+            // Fold attribute-registered receivers ([BrokeredMessageAttribute] assembly scan) into the ASB
+            // receiver registry and stamp the global MaxConcurrentCalls. This runs at registration time, before
+            // the shared-client factory reads the registry at lazy resolve. `options` (the built ServiceBusOptions)
+            // is the only place the finalized global MaxConcurrentCalls is known — it is resolved at
+            // optBuilder.Build(), AFTER the receiver-registration options delegate has already run.
+            PopulateFromDiscoveredReceivers(builder.Services, receiverRegistry, options);
 
             // INVARIANT: a single shared ServiceBusClient per namespace. The client is a singleton built once
             // from ServiceBusOptions; receivers and senders are created off this one client. The client is
@@ -200,6 +207,89 @@ namespace Microsoft.Extensions.DependencyInjection
             registry = new ServiceBusReceiverRegistry();
             services.AddSingleton(registry);
             return registry;
+        }
+
+        // Folds attribute-registered receivers (the core [BrokeredMessageAttribute] assembly scan, which never
+        // calls AddQueueReceiver/AddTopicSubscription) into the ASB receiver registry so the cross-entity
+        // effective-flag computation and single-top-level-entity guard see them, and stamps the global
+        // MaxConcurrentCalls onto each ASB receiver's retained ReceiverOptions.
+        //
+        // The core IDiscoveredReceiverRegistry retains the LIVE ReceiverOptions instances; it is registered as a
+        // singleton ImplementationInstance, so it is read directly off the IServiceCollection here at
+        // registration time (no provider build) — the same object the receivers' hosted-service closures
+        // captured. Stamping MaxConcurrentCalls on a retained instance is therefore visible when
+        // BrokeredMessageReceiver reads ReceiverOptions.MaxConcurrentCalls at init.
+        //
+        // INVARIANT: a blank/empty ReceiverOptions.InfrastructureType is resolved by the core
+        // MessagingInfrastructureProvider to the FIRST-REGISTERED IMessagingInfrastructure (its _default =
+        // infrastructures.FirstOrDefault()), NOT unconditionally to ASB. This method runs BEFORE ASB registers
+        // its OWN IMessagingInfrastructure descriptor (the AddSingleton<IMessagingInfrastructure> in
+        // AddAzureServiceBus, below this call), so ANY IMessagingInfrastructure descriptor already present in
+        // `services` at this point belongs to an EARLIER-registered broker. If one exists, that earlier broker —
+        // not ASB — is the core's default, so blank-typed receivers are NOT ASB's and must not be claimed.
+        // `asbIsDefault` reproduces the core's first-registered-wins resolution BY CONSTRUCTION at ASB's own
+        // registration time. ACCEPTED BOUNDARY: a consumer that reorders registrations by adding an
+        // IMessagingInfrastructure AFTER AddAzureServiceBus would shift the core default away from ASB; this
+        // method only sees the descriptors present when AddAzureServiceBus runs.
+        private static void PopulateFromDiscoveredReceivers(IServiceCollection services, ServiceBusReceiverRegistry receiverRegistry, ServiceBusOptions options)
+        {
+            var discoveredRegistry = services
+                .FirstOrDefault(d => d.ServiceType == typeof(IDiscoveredReceiverRegistry))?
+                .ImplementationInstance as IDiscoveredReceiverRegistry;
+            if (discoveredRegistry is null)
+            {
+                return;
+            }
+
+            var asbIsDefault = !services.Any(d => d.ServiceType == typeof(IMessagingInfrastructure));
+
+            foreach (var receiverOptions in discoveredRegistry.DiscoveredReceivers)
+            {
+                if (!IsAzureServiceBusReceiver(receiverOptions.InfrastructureType, asbIsDefault))
+                {
+                    continue;
+                }
+
+                // (MaxConcurrentCalls) Stamp the finalized global value onto the retained live instance, before
+                // any hosted-service pumps. Visible at receiver init via ReceiverOptions.MaxConcurrentCalls.
+                receiverOptions.MaxConcurrentCalls = options.MaxConcurrentCalls;
+
+                // (F3) Infer the ASB top-level entity (queue vs topic) using the same SendingPath/ReceiverPath
+                // convention as AzureServiceBusEntityPathBuilder: a queue receiver has SendingPath empty or equal
+                // to its receiver path (top-level = receiver path); a topic subscription has a distinct
+                // SendingPath that is the topic (top-level = SendingPath). Register with per-call transactionMode
+                // null so it inherits the global mode in AnyRequiresCrossEntityTransactions, matching how the
+                // inline AddQueueReceiver/AddTopicSubscription guard treats no-per-call-mode receivers. The ASB
+                // registry de-dups top-level entities case-insensitively (DistinctTopLevelEntities), so a receiver
+                // registered BOTH via attribute and explicit AddQueueReceiver/AddTopicSubscription is not
+                // double-counted as a distinct top-level entity.
+                var topLevelEntity = InferTopLevelEntity(receiverOptions.SendingPath, receiverOptions.MessageReceiverPath);
+                receiverRegistry.Register(topLevelEntity, receiverOptions.TransactionMode);
+            }
+        }
+
+        // An ASB receiver is one EXPLICITLY typed to ASB (always claimed) OR one left on the default
+        // infrastructure (blank/empty InfrastructureType) ONLY WHEN ASB is the core's resolved default. The core
+        // MessagingInfrastructureProvider resolves a blank InfrastructureType to the FIRST-REGISTERED
+        // IMessagingInfrastructure, so a blank-typed receiver is ASB's only when no earlier broker registered its
+        // own infrastructure first (asbIsDefault == true). When an earlier broker is the default, blank-typed
+        // receivers belong to it and are excluded here, matching the runtime's attribution. Receivers typed to a
+        // DIFFERENT non-ASB infrastructure are always excluded.
+        private static bool IsAzureServiceBusReceiver(string infrastructureType, bool asbIsDefault)
+            => (asbIsDefault && string.IsNullOrWhiteSpace(infrastructureType))
+            || string.Equals(infrastructureType, ASBMessageContext.InfrastructureType, StringComparison.Ordinal);
+
+        // Mirrors AzureServiceBusEntityPathBuilder's queue-vs-subscription inference: a queue receiver's
+        // sending path is empty or equals its receiver path (the queue IS the top-level entity); a topic
+        // subscription's sending path is the distinct topic (the TOPIC is the top-level entity).
+        private static string InferTopLevelEntity(string sendingPath, string messageReceiverPath)
+        {
+            if (string.IsNullOrWhiteSpace(sendingPath) || string.Equals(sendingPath, messageReceiverPath, StringComparison.Ordinal))
+            {
+                return messageReceiverPath;
+            }
+
+            return sendingPath;
         }
     }
 }

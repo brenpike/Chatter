@@ -12,6 +12,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.2.0] - 2026-06-09
+
+### Changed
+
+- The global `ServiceBusOptions.MaxConcurrentCalls` is now propagated to receivers as a source-of-truth value (previously a dead option). NOTE: this does not yet enable parallel message processing — that is tracked as a follow-up (#147).
+
+### Fixed
+
+- (F3) Attribute-registered (`[BrokeredMessage]`) receivers are now included in the cross-entity-transactions single-top-level-entity startup guard via the new discovered-receiver seam — previously they bypassed the registry and were unprotected. The fold-in now respects the core's default-infrastructure resolution: a blank-`InfrastructureType` receiver is attributed to Azure Service Bus only when Azure Service Bus is the resolved default (no other broker registered its infrastructure first), so in a multi-broker host a non-ASB blank-typed receiver is no longer mis-claimed by the ASB guard or stamped with ASB's `MaxConcurrentCalls`.
+- (F4) A cross-entity startup guard violation now fails host startup with a plain `InvalidOperationException` instead of being silently swallowed by the core receiver.
+- (F5) Explicit `WithMaxConcurrentCalls(...)` / `WithPrefetchCount(...)` calls set to the default value are no longer silently dropped in favor of configuration (nullable builder backing fields distinguish "unset" from "set-to-default").
+
 ## [1.1.0] - 2026-06-09
 
 ### Added

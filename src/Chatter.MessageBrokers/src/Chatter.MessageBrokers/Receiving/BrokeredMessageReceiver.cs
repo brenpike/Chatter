@@ -14,7 +14,7 @@ namespace Chatter.MessageBrokers.Receiving
     /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
-    public class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
+    public class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage>, IReceiverStartupSignal where TMessage : class, IMessage
     {
         private IMessagingInfrastructureReceiver _infrastructureReceiver;
         private readonly IMessagingInfrastructureProvider _infrastructureProvider;
@@ -24,12 +24,18 @@ namespace Chatter.MessageBrokers.Receiving
         private SemaphoreSlim _concurrentMessagesSemaphore;
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
-        private readonly int _maxConcurrentCalls = 1; //TODO: add configuration for maxconcurrentcalls to messagebrokeroptions and/or receiveroptions
+        private int _maxConcurrentCalls = 1;
         private readonly MessageBrokerOptions _messageBrokerOptions;
         private readonly IRecoveryStrategy _recoveryStrategy;
         private readonly IReceivedMessageDispatcher _receivedMessageDispatcher;
         private readonly IMaxReceivesExceededAction _failedRecoveryAction;
         private readonly ICriticalFailureNotifier _criticalFailureNotifier;
+
+        // INVARIANT: completed exactly once, at the IsReceiving = true seam in StartReceiverImpl. Backs the
+        // ReceivingStarted startup-completion signal so callers gate on go-live without polling IsReceiving.
+        // RunContinuationsAsynchronously keeps the awaiter's continuation off the receive-loop start path.
+        private readonly TaskCompletionSource<bool> _receivingStartedSource =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         /// <summary>
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
@@ -64,6 +70,12 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
 
+        // EXPLICIT interface implementation: the go-live signal is reachable ONLY through the internal
+        // IReceiverStartupSignal seam, never as a member of the public BrokeredMessageReceiver<TMessage> surface.
+        // This keeps the relocated signal fully off the public contract (the public-API regression guard asserts
+        // its absence from IReceiveMessages, IBrokeredMessageReceiver<>, and this concrete type).
+        Task IReceiverStartupSignal.ReceivingStarted => _receivingStartedSource.Task;
+
         public string SendingPath { get; private set; }
         public string MessageReceiverPath { get; private set; }
         public string ErrorQueueName { get; private set; }
@@ -79,10 +91,20 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 await StartReceiverImpl(options, receiverTerminationToken);
             }
-            catch (Exception e)
+            catch (Exception e) when (this.IsReceiving)
             {
+                // INVARIANT: this.IsReceiving only becomes true once StartReceiverImpl has finished the startup
+                // phase (infrastructure resolve + InitializeAsync) and the steady-state receive loop is live.
+                // Exceptions caught here therefore escaped the running loop, NOT the startup phase. The receive
+                // loop owns its own transient/retry/circuit-breaker handling, so anything that reaches here is a
+                // post-startup runtime fault: log it critically and let the host keep running (existing behavior).
                 _logger.LogCritical(e, "Critical unhandled error occured during {executingFunction}", nameof(MessageReceiverLoopAsync));
             }
+            // INVARIANT: startup-fatal exceptions (e.g. the Azure Service Bus cross-entity-transactions guard's
+            // InvalidOperationException, or any infrastructure/configuration failure surfaced before the receive
+            // loop goes live) are intentionally NOT caught here. They propagate to the caller so that, when this
+            // runs under IHostedService.StartAsync, .NET aborts host startup loudly instead of leaving a silently
+            // stopped receiver in a still-running host.
 
             return this;
         }
@@ -101,6 +123,20 @@ namespace Chatter.MessageBrokers.Receiving
 
             options.TransactionMode ??= _messageBrokerOptions.TransactionMode;
             _options = options;
+            _maxConcurrentCalls = _options.MaxConcurrentCalls;
+
+            // Floor-at-the-sink: MaxConcurrentCalls is the single convergence point for every ingress path
+            // (the ASB WithMaxConcurrentCalls fluent setter, config binding, and the ASB MaxConcurrentCalls
+            // stamp onto retained ReceiverOptions), all of which accept an unvalidated int. A value < 1 would
+            // reach 'new SemaphoreSlim(count, count)' below and throw an opaque ArgumentOutOfRangeException at
+            // receiver startup. Validate here so a misconfigured value fails fast with a message that names the
+            // bad value and its source, surfaced through the same startup-fatal propagation path as the
+            // cross-entity guard rather than as an obscure semaphore error.
+            if (_maxConcurrentCalls < 1)
+            {
+                throw new InvalidOperationException(
+                    $"ReceiverOptions.MaxConcurrentCalls must be at least 1 for receiver '{options.MessageReceiverPath}'; found {_maxConcurrentCalls}. Configure a value >= 1.");
+            }
 
             _logger.LogTrace("Initializing messaging infrastructure");
             await _infrastructureReceiver.InitializeAsync(_options, receiverTerminationToken);
@@ -114,6 +150,7 @@ namespace Chatter.MessageBrokers.Receiving
 
             _messageReceiverLoop = MessageReceiverLoopAsync();
             this.IsReceiving = true;
+            _receivingStartedSource.TrySetResult(true);
             _logger.LogInformation("'{executingFunction}' has started receiving messages of type '{receiverMessageType}'.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
             await _messageReceiverLoop;
             _logger.LogInformation("'{executingFunction}' for messages of type '{receiverMessageType}' is shutting down.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);

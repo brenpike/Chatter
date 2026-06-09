@@ -11,6 +11,7 @@ using Moq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -45,7 +46,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             return mock;
         }
 
-        private static ReceiverOptions BuildReceiverOptions(int maxReceiveAttempts = 10)
+        private static ReceiverOptions BuildReceiverOptions(int maxReceiveAttempts = 10, int maxConcurrentCalls = 1)
             => new ReceiverOptions
             {
                 InfrastructureType = InMemoryMessagingInfrastructureProvider.InfrastructureType,
@@ -55,6 +56,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 DeadLetterQueuePath = "deadletter-queue",
                 TransactionMode = TransactionMode.None,
                 MaxReceiveAttempts = maxReceiveAttempts,
+                MaxConcurrentCalls = maxConcurrentCalls,
             };
 
         // INVARIANT: body must deserialise cleanly as FakeMessage for non-poison tests.
@@ -265,6 +267,96 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             infraReceiver.CallLog.Should().NotContain(ReceiverCall.Nack);
             infraReceiver.CallLog.Should().NotContain(ReceiverCall.Ack);
             maxReceivesAction.Verify(a => a.ExecuteAsync(It.IsAny<FailureContext>()), Times.Once);
+        }
+
+        // ------------------------------------------------------------------ (MaxConcurrentCalls) honored at receiver init
+
+        [Fact]
+        public async Task MustReceiveSuccessfullyWhenMaxConcurrentCallsAboveDefault()
+        {
+            // StartReceiverImpl reads ReceiverOptions.MaxConcurrentCalls into the concurrency semaphore at init
+            // (_concurrentMessagesSemaphore = new SemaphoreSlim(maxConcurrentCalls, maxConcurrentCalls)). A value
+            // above the default 1 must be accepted and leave the receive→dispatch→Ack path working — proving the
+            // new option is wired through receiver startup without regressing the loop. (The single receive loop
+            // is sequential, so concurrency throughput is not observable through the in-memory double; this pins
+            // that a >1 value is honored at init rather than rejected.)
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 1);
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            infraReceiver.Enqueue(BuildContext());
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            using var cts = new CancellationTokenSource();
+            var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls: 4), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
+            await WaitForDispositionAsync(infraReceiver, ReceiverCall.Ack, watchdog.Token);
+
+            cts.Cancel();
+            await loop;
+
+            infraReceiver.CallLog.Should().Contain(ReceiverCall.Ack);
+            dispatcher.Verify(
+                d => d.DispatchAsync(It.IsAny<FakeMessage>(), It.IsAny<MessageBrokerContext>(), It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        // ------------------------------------------------------------------ (startup signal) internal seam + public-surface guard
+
+        // INVARIANT: the go-live startup signal lives on the INTERNAL IReceiverStartupSignal seam (reachable here
+        // via InternalsVisibleTo("Chatter.MessageBrokers.Tests")), NOT the public IReceiveMessages contract. The
+        // concrete receiver produces it; BrokeredMessageReceiverBackgroundService is its only consumer.
+        [Fact]
+        public async Task MustCompleteReceivingStartedSignalOnGoLive()
+        {
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 1);
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            infraReceiver.Enqueue(BuildContext());
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            sut.Should().BeAssignableTo<IReceiverStartupSignal>(
+                "the go-live signal lives on the internal IReceiverStartupSignal seam");
+            var startupSignal = (IReceiverStartupSignal)sut;
+            startupSignal.ReceivingStarted.IsCompleted.Should().BeFalse("the receiver has not started yet");
+
+            using var cts = new CancellationTokenSource();
+            var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(), cts.Token));
+
+            // Drained fires once the receive loop is live; go-live (IsReceiving = true) is set on the same path
+            // immediately before the loop is awaited, so ReceivingStarted has completed by the time it drains.
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
+            await WaitForDispositionAsync(infraReceiver, ReceiverCall.Ack, watchdog.Token);
+
+            sut.IsReceiving.Should().BeTrue();
+            startupSignal.ReceivingStarted.IsCompletedSuccessfully
+                .Should().BeTrue("the signal completes exactly when the receiver goes live");
+
+            cts.Cancel();
+            await loop;
+        }
+
+        // INVARIANT: public-API-shape guard. ReceivingStarted must NOT be reachable on ANY public surface — not the
+        // IReceiveMessages contract, not the IBrokeredMessageReceiver<> contract, and not the public concrete
+        // BrokeredMessageReceiver<> type. It was relocated to the internal IReceiverStartupSignal seam (implemented
+        // explicitly on the concrete receiver) to keep 0.12.0 a non-breaking MINOR. This guard fails if the member
+        // is ever silently re-added to a public interface OR re-exposed as a public/implicit member on the concrete
+        // receiver (e.g. by reverting the explicit interface implementation).
+        [Fact]
+        public void MustNotExposeReceivingStartedOnPublicReceiveMessagesContract()
+        {
+            const BindingFlags PublicInstance = BindingFlags.Public | BindingFlags.Instance;
+
+            typeof(IReceiveMessages).GetProperty("ReceivingStarted", PublicInstance)
+                .Should().BeNull("ReceivingStarted lives on the internal IReceiverStartupSignal seam, not the public IReceiveMessages contract");
+
+            typeof(IBrokeredMessageReceiver<>).GetProperty("ReceivingStarted", PublicInstance)
+                .Should().BeNull("ReceivingStarted must not leak onto the public IBrokeredMessageReceiver<> contract");
+
+            typeof(BrokeredMessageReceiver<>).GetProperty("ReceivingStarted", PublicInstance)
+                .Should().BeNull("ReceivingStarted must be an explicit IReceiverStartupSignal implementation, not a public member of the concrete receiver");
         }
     }
 }
