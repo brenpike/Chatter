@@ -113,6 +113,19 @@ namespace Chatter.MessageBrokers.Receiving
             _options = options;
             _maxConcurrentCalls = _options.MaxConcurrentCalls;
 
+            // Floor-at-the-sink: MaxConcurrentCalls is the single convergence point for every ingress path
+            // (the ASB WithMaxConcurrentCalls fluent setter, config binding, and the ASB MaxConcurrentCalls
+            // stamp onto retained ReceiverOptions), all of which accept an unvalidated int. A value < 1 would
+            // reach 'new SemaphoreSlim(count, count)' below and throw an opaque ArgumentOutOfRangeException at
+            // receiver startup. Validate here so a misconfigured value fails fast with a message that names the
+            // bad value and its source, surfaced through the same startup-fatal propagation path as the
+            // cross-entity guard rather than as an obscure semaphore error.
+            if (_maxConcurrentCalls < 1)
+            {
+                throw new InvalidOperationException(
+                    $"ReceiverOptions.MaxConcurrentCalls must be at least 1 for receiver '{options.MessageReceiverPath}'; found {_maxConcurrentCalls}. Configure a value >= 1.");
+            }
+
             _logger.LogTrace("Initializing messaging infrastructure");
             await _infrastructureReceiver.InitializeAsync(_options, receiverTerminationToken);
             _logger.LogTrace("Successfully initialized messaging infrastructure");
