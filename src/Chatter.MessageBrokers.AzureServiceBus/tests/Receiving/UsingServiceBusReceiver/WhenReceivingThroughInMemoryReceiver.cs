@@ -5,13 +5,17 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
-using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
+// Disambiguate the local ServiceBusReceiver (system under test) from the SDK type of the same name
+// pulled in by `using Azure.Messaging.ServiceBus;` (CS0104).
+using ServiceBusReceiver = Chatter.MessageBrokers.AzureServiceBus.Receiving.ServiceBusReceiver;
+using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBusReceiver
 {
@@ -28,16 +32,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             return factory.Object;
         }
 
+        private const string _connectionString =
+            "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret";
+
+        // The shared ServiceBusClient the receiver consumes from DI in production. A placeholder SAS
+        // connection string opens no connection (the SDK connects lazily), so it is a valid stand-in here.
+        private static ServiceBusClient CreateClient() => new ServiceBusClient(_connectionString);
+
         private static ServiceBusReceiver CreateSut(InMemoryServiceBusMessageReceiver inMemory, out InboundBrokeredMessageFactory inboundFactory)
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
-                TokenProvider = new NullTokenProvider(),
+                ConnectionString = _connectionString,
             };
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             inboundFactory = new InboundBrokeredMessageFactory(JsonFactory(), Mock.Of<ILogger>());
-            return new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
+            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
         }
 
         private static async Task<ServiceBusReceiver> InitializedPeekLockSutAsync(InMemoryServiceBusMessageReceiver inMemory)
@@ -90,7 +100,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         public async Task MustRethrowTransientServiceBusException()
         {
             var inMemory = new InMemoryServiceBusMessageReceiver();
-            inMemory.EnqueueThrow(new ServiceBusException(true, "transient"));
+            inMemory.EnqueueThrow(new ServiceBusException(isTransient: true, "transient", null, ServiceBusFailureReason.ServiceCommunicationProblem));
             var sut = await InitializedPeekLockSutAsync(inMemory);
 
             Func<Task> act = () => sut.ReceiveMessageAsync(new TransactionContext("receiver"), CancellationToken.None);
@@ -148,7 +158,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var result = await sut.AckMessageAsync(context, transactionContext, CancellationToken.None);
 
             result.Should().BeTrue();
-            inMemory.CompletedLockTokens.Should().ContainSingle().Which.Should().Be(message.SystemProperties.LockToken);
+            inMemory.CompletedMessages.Should().ContainSingle().Which.Should().BeSameAs(message);
         }
 
         [Fact]
@@ -164,7 +174,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var result = await sut.NackMessageAsync(context, transactionContext, CancellationToken.None);
 
             result.Should().BeTrue();
-            inMemory.AbandonedLockTokens.Should().ContainSingle().Which.Should().Be(message.SystemProperties.LockToken);
+            inMemory.AbandonedMessages.Should().ContainSingle().Which.Should().BeSameAs(message);
         }
 
         [Fact]
@@ -180,8 +190,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", "description", CancellationToken.None);
 
             result.Should().BeTrue();
-            inMemory.DeadLetteredLockTokens.Should().ContainSingle()
-                .Which.Should().Be((message.SystemProperties.LockToken, "reason", "description"));
+            var deadlettered = inMemory.DeadLetteredMessages.Should().ContainSingle().Subject;
+            deadlettered.message.Should().BeSameAs(message);
+            deadlettered.reason.Should().Be("reason");
+            deadlettered.description.Should().Be("description");
         }
 
         [Fact]

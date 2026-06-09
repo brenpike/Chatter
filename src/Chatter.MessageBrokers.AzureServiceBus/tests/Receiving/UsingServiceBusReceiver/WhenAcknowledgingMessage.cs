@@ -5,24 +5,36 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
+// Disambiguate the local ServiceBusReceiver (system under test) from the SDK type of the same name
+// pulled in by `using Azure.Messaging.ServiceBus;` (CS0104).
+using ServiceBusReceiver = Chatter.MessageBrokers.AzureServiceBus.Receiving.ServiceBusReceiver;
+using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBusReceiver
 {
     // Characterization tests pinning the ack/nack/deadletter guard branches that return BEFORE
     // touching InnerReceiver (which would open a live connection):
-    //   1. When the effective ReceiveMode != PeekLock (i.e. TransactionMode.None => ReceiveAndDelete)
-    //      every ack/nack/deadletter returns false without inspecting the context container.
-    //   2. When in PeekLock mode but no Microsoft.Azure.ServiceBus.Message is in the context
-    //      container, every ack/nack/deadletter returns false and logs a warning.
+    //   1. When the effective ServiceBusReceiveMode != PeekLock (i.e. TransactionMode.None =>
+    //      ReceiveAndDelete) every ack/nack/deadletter returns false without inspecting the container.
+    //   2. When in PeekLock mode but no ServiceBusReceivedMessage is in the context container, every
+    //      ack/nack/deadletter returns false and logs a warning.
     // The InitializeAsync receive-mode flip is observed indirectly: initializing with a non-None
     // TransactionMode flips the receiver into PeekLock, so guard branch (2) becomes reachable.
     public class WhenAcknowledgingMessage : Testing.Core.Context
     {
+        private const string _connectionString =
+            "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret";
+
+        // The shared ServiceBusClient the receiver consumes from DI in production. A placeholder SAS
+        // connection string opens no connection (the SDK connects lazily), so it is a valid stand-in here.
+        private static ServiceBusClient CreateClient() => new ServiceBusClient(_connectionString);
+
         private static MessageBrokerContext CreateEmptyContext()
             => new MessageBrokerContext("message-id", new byte[] { 1 }, null, "receiver", CancellationToken.None, new JsonBodyConverter());
 
@@ -32,14 +44,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
-                TokenProvider = new NullTokenProvider(),
+                ConnectionString = _connectionString,
             };
             var messageBrokerOptions = new MessageBrokerOptions();
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             var bodyConverterFactory = new Mock<IBodyConverterFactory>();
 
-            return new ServiceBusReceiver(serviceBusOptions, messageBrokerOptions, logger.Object, bodyConverterFactory.Object);
+            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, messageBrokerOptions, logger.Object, bodyConverterFactory.Object);
         }
 
         private static async Task<ServiceBusReceiver> CreatePeekLockSutAsync()
@@ -51,19 +62,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         }
 
         // Drives the deadletter path through the in-memory IServiceBusMessageReceiver double so the
-        // capped description handed to DeadLetterAsync is captured via DeadLetteredLockTokens.
+        // capped description handed to DeadLetterAsync is captured via DeadLetteredMessages.
         private static ServiceBusReceiver CreateInMemorySut(InMemoryServiceBusMessageReceiver inMemory)
         {
             var serviceBusOptions = new ServiceBusOptions
             {
-                ConnectionString = "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=key;SharedAccessKey=secret",
-                TokenProvider = new NullTokenProvider(),
+                ConnectionString = _connectionString,
             };
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             var factory = new Mock<IBodyConverterFactory>();
             factory.Setup(f => f.CreateBodyConverter(It.IsAny<string>())).Returns(new JsonBodyConverter());
             var inboundFactory = new InboundBrokeredMessageFactory(factory.Object, Mock.Of<ILogger>());
-            return new ServiceBusReceiver(serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
+            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
         }
 
         private static async Task<(ServiceBusReceiver sut, MessageBrokerContext context, TransactionContext transactionContext)> ReceivedPeekLockMessageAsync(InMemoryServiceBusMessageReceiver inMemory)
@@ -136,7 +146,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
 
             result.Should().BeTrue();
-            inMemory.DeadLetteredLockTokens.Should().ContainSingle()
+            inMemory.DeadLetteredMessages.Should().ContainSingle()
                 .Which.description.Should().Be(description);
         }
 
@@ -150,7 +160,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
 
             result.Should().BeTrue();
-            inMemory.DeadLetteredLockTokens.Should().ContainSingle()
+            inMemory.DeadLetteredMessages.Should().ContainSingle()
                 .Which.description.Should().Be(description);
         }
 
@@ -164,7 +174,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
 
             result.Should().BeTrue();
-            var captured = inMemory.DeadLetteredLockTokens.Should().ContainSingle().Subject.description;
+            var captured = inMemory.DeadLetteredMessages.Should().ContainSingle().Subject.description;
             captured.Length.Should().BeLessThanOrEqualTo(MaxDeadLetterErrorDescriptionLength);
             captured.Should().StartWith(new string('a', 10));
         }

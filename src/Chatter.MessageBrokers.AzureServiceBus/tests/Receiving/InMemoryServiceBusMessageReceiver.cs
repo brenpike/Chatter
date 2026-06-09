@@ -1,5 +1,5 @@
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
-using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -8,16 +8,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
 {
     // In-memory IServiceBusMessageReceiver double used to drive ServiceBusReceiver's receive/ack
     // paths without a live Azure Service Bus namespace. Receive results (including null) are queued;
-    // ack/nack/deadletter lock tokens are recorded; IsClosedOrClosing is toggleable; and a single
-    // transient ServiceBusException or an ObjectDisposedException can be injected on the next receive.
+    // ack/nack/deadletter settle by the received MESSAGE OBJECT and are recorded; IsClosedOrClosing is
+    // toggleable; and a single transient ServiceBusException or an ObjectDisposedException can be
+    // injected on the next receive.
     internal class InMemoryServiceBusMessageReceiver : IServiceBusMessageReceiver
     {
-        private readonly Queue<Func<Message>> _receiveResults = new Queue<Func<Message>>();
+        private readonly Queue<Func<ServiceBusReceivedMessage>> _receiveResults = new Queue<Func<ServiceBusReceivedMessage>>();
 
-        public List<string> CompletedLockTokens { get; } = new List<string>();
-        public List<string> AbandonedLockTokens { get; } = new List<string>();
-        public List<(string lockToken, string reason, string description)> DeadLetteredLockTokens { get; }
-            = new List<(string, string, string)>();
+        public List<ServiceBusReceivedMessage> CompletedMessages { get; } = new List<ServiceBusReceivedMessage>();
+        public List<ServiceBusReceivedMessage> AbandonedMessages { get; } = new List<ServiceBusReceivedMessage>();
+        public List<(ServiceBusReceivedMessage message, string reason, string description)> DeadLetteredMessages { get; }
+            = new List<(ServiceBusReceivedMessage, string, string)>();
         public List<IDictionary<string, object>> AbandonPropertiesToModify { get; } = new List<IDictionary<string, object>>();
 
         public int ReceiveCount { get; private set; }
@@ -25,42 +26,40 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
 
         public bool IsClosedOrClosing { get; set; }
 
-        public ServiceBusConnection ServiceBusConnection { get; set; }
-
-        public void EnqueueMessage(Message message) => _receiveResults.Enqueue(() => message);
+        public void EnqueueMessage(ServiceBusReceivedMessage message) => _receiveResults.Enqueue(() => message);
 
         public void EnqueueNull() => _receiveResults.Enqueue(() => null);
 
         public void EnqueueThrow(Exception exception) => _receiveResults.Enqueue(() => throw exception);
 
-        public Task<Message> ReceiveAsync()
+        public Task<ServiceBusReceivedMessage> ReceiveAsync()
         {
             ReceiveCount++;
             if (_receiveResults.Count == 0)
             {
-                return Task.FromResult<Message>(null);
+                return Task.FromResult<ServiceBusReceivedMessage>(null);
             }
 
             var next = _receiveResults.Dequeue();
             return Task.FromResult(next());
         }
 
-        public Task CompleteAsync(string lockToken)
+        public Task CompleteAsync(ServiceBusReceivedMessage message)
         {
-            CompletedLockTokens.Add(lockToken);
+            CompletedMessages.Add(message);
             return Task.CompletedTask;
         }
 
-        public Task AbandonAsync(string lockToken, IDictionary<string, object> propertiesToModify)
+        public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
         {
-            AbandonedLockTokens.Add(lockToken);
+            AbandonedMessages.Add(message);
             AbandonPropertiesToModify.Add(propertiesToModify);
             return Task.CompletedTask;
         }
 
-        public Task DeadLetterAsync(string lockToken, string deadLetterReason, string deadLetterErrorDescription)
+        public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
         {
-            DeadLetteredLockTokens.Add((lockToken, deadLetterReason, deadLetterErrorDescription));
+            DeadLetteredMessages.Add((message, deadLetterReason, deadLetterErrorDescription));
             return Task.CompletedTask;
         }
 

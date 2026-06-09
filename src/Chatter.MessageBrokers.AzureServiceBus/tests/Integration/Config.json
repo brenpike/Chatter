@@ -1,0 +1,37 @@
+{
+  "UserConfig": {
+    "Namespaces": [
+      {
+        "Name": "sbemulatorns",
+        "Queues": [
+          {
+            "Name": "queue.a",
+            "Properties": {
+              "DeadLetteringOnMessageExpiration": false,
+              "DefaultMessageTimeToLive": "PT1H",
+              "LockDuration": "PT10S",
+              "MaxDeliveryCount": 10,
+              "RequiresDuplicateDetection": false,
+              "RequiresSession": false
+            }
+          },
+          {
+            "Name": "queue.b",
+            "Properties": {
+              "DeadLetteringOnMessageExpiration": false,
+              "DefaultMessageTimeToLive": "PT1H",
+              "LockDuration": "PT10S",
+              "MaxDeliveryCount": 10,
+              "RequiresDuplicateDetection": false,
+              "RequiresSession": false
+            }
+          }
+        ],
+        "Topics": []
+      }
+    ],
+    "Logging": {
+      "Type": "File"
+    }
+  }
+}

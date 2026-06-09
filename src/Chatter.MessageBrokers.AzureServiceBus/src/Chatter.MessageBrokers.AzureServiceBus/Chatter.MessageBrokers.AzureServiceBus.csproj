@@ -4,7 +4,7 @@
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <PackageId>Chatter.MessageBrokers.AzureServiceBus</PackageId>
-    <Version>0.10.3</Version>
+    <Version>1.0.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>An implementation of the Chatter.MessageBrokers adapter library for Azure Service Bus.</Description>
@@ -16,7 +16,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Azure.ServiceBus" Version="5.2.0" />
+    <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.20.1" />
     <PackageReference Include="Scrutor" Version="3.3.0" />
   </ItemGroup>
 

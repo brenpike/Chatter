@@ -1,5 +1,5 @@
-﻿using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Primitives;
+using Azure.Core;
+using Azure.Messaging.ServiceBus;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
@@ -16,9 +16,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public int PrefetchCount { get; set; } = 0;
         internal RetryPolicyConfiguation RetryPolicy { get; set; }
         [JsonIgnore]
-        public RetryPolicy Policy { get; internal set; }
+        public ServiceBusRetryOptions RetryOptions { get; internal set; }
+        // INVARIANT: a null TokenCredential means "authenticate using the connection string's SAS".
         [JsonIgnore]
-        public ITokenProvider TokenProvider { get; internal set; } = new NullTokenProvider();
+        public TokenCredential TokenCredential { get; internal set; } = null;
     }
 
     internal class RetryPolicyConfiguation

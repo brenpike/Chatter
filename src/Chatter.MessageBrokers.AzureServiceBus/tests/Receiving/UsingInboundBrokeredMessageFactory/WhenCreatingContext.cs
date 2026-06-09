@@ -12,7 +12,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingInboundBro
 {
     // Unit tests over the pure, I/O-free InboundBrokeredMessageFactory extracted from
     // ServiceBusReceiver.ReceiveMessageAsync: body-converter fallback, each of the four header
-    // stamps, and the null-message guard.
+    // stamps, and the null-message guard. The header stamps are written into the context's MESSAGE
+    // CONTEXT dictionary (ServiceBusReceivedMessage.ApplicationProperties is read-only), so they are
+    // asserted via BrokeredMessage.MessageContext rather than back on the received message.
     public class WhenCreatingContext : Testing.Core.Context
     {
         private static InboundBrokeredMessageFactory CreateSut(IBodyConverterFactory bodyConverterFactory = null)
@@ -72,8 +74,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingInboundBro
         {
             var sut = CreateSut();
             var message = ServiceBusMessageFactory.ReceivedMessage();
-            sut.CreateContext(message, "receiver", CancellationToken.None);
-            message.UserProperties.Should().ContainKey(MessageContext.TimeToLive);
+            var context = sut.CreateContext(message, "receiver", CancellationToken.None);
+            context.BrokeredMessage.MessageContext.Should().ContainKey(MessageContext.TimeToLive);
         }
 
         [Fact]
@@ -81,8 +83,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingInboundBro
         {
             var sut = CreateSut();
             var message = ServiceBusMessageFactory.ReceivedMessage();
-            sut.CreateContext(message, "receiver", CancellationToken.None);
-            message.UserProperties.Should().ContainKey(MessageContext.ExpiryTimeUtc);
+            var context = sut.CreateContext(message, "receiver", CancellationToken.None);
+            context.BrokeredMessage.MessageContext.Should().ContainKey(MessageContext.ExpiryTimeUtc);
         }
 
         [Fact]
@@ -90,8 +92,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingInboundBro
         {
             var sut = CreateSut();
             var message = ServiceBusMessageFactory.ReceivedMessage();
-            sut.CreateContext(message, "receiver", CancellationToken.None);
-            message.UserProperties[MessageContext.InfrastructureType].Should().Be(ASBMessageContext.InfrastructureType);
+            var context = sut.CreateContext(message, "receiver", CancellationToken.None);
+            context.BrokeredMessage.MessageContext[MessageContext.InfrastructureType].Should().Be(ASBMessageContext.InfrastructureType);
         }
 
         [Fact]
@@ -99,8 +101,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingInboundBro
         {
             var sut = CreateSut();
             var message = ServiceBusMessageFactory.ReceivedMessage(deliveryCount: 4);
-            sut.CreateContext(message, "receiver", CancellationToken.None);
-            message.UserProperties[MessageContext.ReceiveAttempts].Should().Be(4);
+            var context = sut.CreateContext(message, "receiver", CancellationToken.None);
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(4);
         }
 
         [Fact]
@@ -109,7 +111,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingInboundBro
             var sut = CreateSut();
             var message = ServiceBusMessageFactory.ReceivedMessage();
             var context = sut.CreateContext(message, "receiver", CancellationToken.None);
-            context.Container.TryGet<Microsoft.Azure.ServiceBus.Message>(out var contained).Should().BeTrue();
+            context.Container.TryGet<Azure.Messaging.ServiceBus.ServiceBusReceivedMessage>(out var contained).Should().BeTrue();
             contained.Should().BeSameAs(message);
         }
 

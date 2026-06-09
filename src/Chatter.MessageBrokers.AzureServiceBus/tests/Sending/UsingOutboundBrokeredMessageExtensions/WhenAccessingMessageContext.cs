@@ -119,7 +119,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
 
             // The ASB mapping must read the same typed values onto the SDK Message without throwing.
             var asbMessage = replayed.AsAzureServiceBusMessage();
-            asbMessage.ScheduledEnqueueTimeUtc.Should().Be(scheduledEnqueueTimeUtc);
+            asbMessage.ScheduledEnqueueTime.Should().Be(scheduledEnqueueTimeUtc);
             asbMessage.TimeToLive.Should().Be(timeToLive);
         }
     }

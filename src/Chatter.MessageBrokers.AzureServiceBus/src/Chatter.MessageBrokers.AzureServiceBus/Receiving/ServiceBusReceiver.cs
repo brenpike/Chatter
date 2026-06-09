@@ -2,10 +2,10 @@ using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
-using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Primitives;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
@@ -23,20 +23,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         readonly object _syncLock;
         private readonly ILogger<ServiceBusReceiver> _logger;
         private readonly InboundBrokeredMessageFactory _inboundFactory;
-        private readonly Func<ReceiverOptions, ReceiveMode, IServiceBusMessageReceiver> _receiverFactory;
-        private readonly ITokenProvider _tokenProvider;
-        private readonly RetryPolicy _retryPolcy;
-        private readonly int _prefetchCount;
-        private ReceiveMode _receiveMode;
+        private readonly Func<ReceiverOptions, ServiceBusReceiveMode, IServiceBusMessageReceiver> _receiverFactory;
+        private readonly ServiceBusOptions _serviceBusOptions;
+        private ServiceBusReceiveMode _receiveMode;
+        // INVARIANT: the receiver and sender MUST share ONE ServiceBusClient per namespace so the send and
+        // the receiver's settle enlist in one cross-entity transaction (EnableCrossEntityTransactions). The
+        // client is the DI-registered singleton injected here, NOT one this receiver constructs.
+        private readonly ServiceBusClient _client;
         IServiceBusMessageReceiver _innerReceiver;
         private bool _disposedValue;
         private ReceiverOptions _options;
 
-        public ServiceBusReceiver(ServiceBusOptions serviceBusOptions,
+        public ServiceBusReceiver(ServiceBusClient client,
+                                  ServiceBusOptions serviceBusOptions,
                                   MessageBrokerOptions messageBrokerOptions,
                                   ILogger<ServiceBusReceiver> logger,
                                   IBodyConverterFactory bodyConverterFactory)
-            : this(serviceBusOptions,
+            : this(client,
+                   serviceBusOptions,
                    messageBrokerOptions,
                    logger,
                    new InboundBrokeredMessageFactory(
@@ -47,12 +51,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         // Internal seam ctor: an IServiceBusMessageReceiver factory (path + receive-mode -> port) can be
         // injected to drive receive/ack behavior with an in-memory double in tests. When null, the
-        // production AzureSdkMessageReceiverAdapter source is used.
-        internal ServiceBusReceiver(ServiceBusOptions serviceBusOptions,
+        // production AzureSdkMessageReceiverAdapter source (off the shared client) is used.
+        internal ServiceBusReceiver(ServiceBusClient client,
+                                    ServiceBusOptions serviceBusOptions,
                                     MessageBrokerOptions messageBrokerOptions,
                                     ILogger<ServiceBusReceiver> logger,
                                     InboundBrokeredMessageFactory inboundFactory,
-                                    Func<ReceiverOptions, ReceiveMode, IServiceBusMessageReceiver> receiverFactory)
+                                    Func<ReceiverOptions, ServiceBusReceiveMode, IServiceBusMessageReceiver> receiverFactory)
         {
             if (serviceBusOptions is null)
             {
@@ -60,28 +65,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
 
             _syncLock = new object();
-            ServiceBusConnectionBuilder = new ServiceBusConnectionStringBuilder(serviceBusOptions.ConnectionString);
+            _client = client ?? throw new ArgumentNullException(nameof(client));
+            _serviceBusOptions = serviceBusOptions;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _inboundFactory = inboundFactory ?? throw new ArgumentNullException(nameof(inboundFactory));
-            _tokenProvider = serviceBusOptions.TokenProvider;
-            _retryPolcy = serviceBusOptions.Policy;
-            _prefetchCount = serviceBusOptions.PrefetchCount;
-            _receiveMode = messageBrokerOptions?.TransactionMode == TransactionMode.None ? ReceiveMode.ReceiveAndDelete : ReceiveMode.PeekLock;
+            _receiveMode = messageBrokerOptions?.TransactionMode == TransactionMode.None ? ServiceBusReceiveMode.ReceiveAndDelete : ServiceBusReceiveMode.PeekLock;
             _receiverFactory = receiverFactory ?? CreateProductionReceiver;
         }
 
-        /// <summary>
-        /// Connection object to the service bus namespace.
-        /// </summary>
-        public ServiceBusConnectionStringBuilder ServiceBusConnectionBuilder { get; }
-
-        private IServiceBusMessageReceiver CreateProductionReceiver(ReceiverOptions options, ReceiveMode receiveMode)
-            => new AzureSdkMessageReceiverAdapter(ServiceBusConnectionBuilder,
+        private IServiceBusMessageReceiver CreateProductionReceiver(ReceiverOptions options, ServiceBusReceiveMode receiveMode)
+            => new AzureSdkMessageReceiverAdapter(_client,
                                                   options.MessageReceiverPath,
                                                   receiveMode,
-                                                  _retryPolcy,
-                                                  _prefetchCount,
-                                                  _tokenProvider,
+                                                  _serviceBusOptions.PrefetchCount,
                                                   _logger);
 
         internal IServiceBusMessageReceiver InnerReceiver
@@ -108,7 +104,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _options = options;
             if (options.TransactionMode != null)
             {
-                _receiveMode = _options.TransactionMode == TransactionMode.None ? ReceiveMode.ReceiveAndDelete : ReceiveMode.PeekLock;
+                _receiveMode = _options.TransactionMode == TransactionMode.None ? ServiceBusReceiveMode.ReceiveAndDelete : ServiceBusReceiveMode.PeekLock;
             }
 
             return Task.CompletedTask;
@@ -124,7 +120,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         public async Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            Message message;
+            ServiceBusReceivedMessage message;
 
             try
             {
@@ -163,7 +159,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
             {
-                transactionContext.Container.Include(this.InnerReceiver.ServiceBusConnection);
+                // INVARIANT: the received message (NOT a connection) is carried in the container so
+                // STEP-004's send path can enlist it. Cross-entity transactions on the shared client
+                // handle atomicity (wired in STEP-004/006); the old ServiceBusConnection mechanism is gone.
+                transactionContext.Container.Include(message);
             }
 
             return messageContext;
@@ -171,54 +170,54 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         public async Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            if (_receiveMode != ReceiveMode.PeekLock)
+            if (_receiveMode != ServiceBusReceiveMode.PeekLock)
             {
                 return false;
             }
 
-            if (!context.Container.TryGet<Message>(out var msg))
+            if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                _logger.LogWarning($"Unable to acknowledge message. No {nameof(Message)} contained in {nameof(context)}.");
+                _logger.LogWarning($"Unable to acknowledge message. No {nameof(ServiceBusReceivedMessage)} contained in {nameof(context)}.");
                 return false;
             }
 
-            await this.InnerReceiver.CompleteAsync(msg.SystemProperties.LockToken);
+            await this.InnerReceiver.CompleteAsync(msg);
             _logger.LogTrace($"Message '{msg.MessageId}' completed");
             return true;
         }
 
         public async Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
-            if (_receiveMode != ReceiveMode.PeekLock)
+            if (_receiveMode != ServiceBusReceiveMode.PeekLock)
             {
                 return false;
             }
 
-            if (!context.Container.TryGet<Message>(out var msg))
+            if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                _logger.LogWarning($"Unable to negative acknowledge message. No {nameof(Message)} contained in {nameof(context)}.");
+                _logger.LogWarning($"Unable to negative acknowledge message. No {nameof(ServiceBusReceivedMessage)} contained in {nameof(context)}.");
                 return false;
             }
 
-            await this.InnerReceiver.AbandonAsync(msg.SystemProperties.LockToken, msg.UserProperties);
+            await this.InnerReceiver.AbandonAsync(msg, new Dictionary<string, object>(msg.ApplicationProperties));
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully abandoned");
             return true;
         }
 
         public async Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
-            if (_receiveMode != ReceiveMode.PeekLock)
+            if (_receiveMode != ServiceBusReceiveMode.PeekLock)
             {
                 return false;
             }
 
-            if (!context.Container.TryGet<Message>(out var msg))
+            if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                _logger.LogWarning($"Unable to deadletter message. No {nameof(Message)} contained in {nameof(context)}.");
+                _logger.LogWarning($"Unable to deadletter message. No {nameof(ServiceBusReceivedMessage)} contained in {nameof(context)}.");
                 return false;
             }
 
-            await this.InnerReceiver.DeadLetterAsync(msg.SystemProperties.LockToken, deadLetterReason, CapDeadLetterErrorDescription(deadLetterErrorDescription));
+            await this.InnerReceiver.DeadLetterAsync(msg, deadLetterReason, CapDeadLetterErrorDescription(deadLetterErrorDescription));
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully deadlettered");
             return true;
         }

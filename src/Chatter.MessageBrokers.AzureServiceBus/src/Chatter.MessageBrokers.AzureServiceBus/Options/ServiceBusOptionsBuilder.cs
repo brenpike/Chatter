@@ -1,5 +1,5 @@
-﻿using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Primitives;
+using Azure.Core;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
@@ -9,14 +9,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
     public partial class ServiceBusOptionsBuilder
     {
         public IServiceCollection Services { get; private set; }
-        private ITokenProvider _tokenProvider;
+        private TokenCredential _tokenCredential;
         private const string _defaultAzureServiceBusSectionName = "Chatter:Infrastructure:AzureServiceBus";
         private string _connectionString = null;
         private string _azureServiceBusSectionName = null;
         private IConfiguration _configuration;
         private int _maxConcurrentCalls = _defaultMaxConcurrentCalls;
         private int _prefetchCount = _defaultPrefetchCount;
-        private RetryPolicy _retryPolicy = RetryPolicy.Default;
+        private ServiceBusRetryOptions _retryOptions = null;
         private IConfigurationSection _serviceBusOptionsSection = null;
 
         private const int _defaultMaxConcurrentCalls = 1;
@@ -29,19 +29,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         {
             _configuration = configuration;
             Services = services;
-            _tokenProvider = new NullTokenProvider();
+            _tokenCredential = null;
             UseConfig();
         }
 
-        public ServiceBusOptionsBuilder AddTokenProvider(ITokenProvider tokenProvider)
+        public ServiceBusOptionsBuilder AddTokenProvider(TokenCredential tokenCredential)
         {
-            _tokenProvider = tokenProvider;
+            _tokenCredential = tokenCredential;
             return this;
         }
 
-        public ServiceBusOptionsBuilder AddTokenProvider(Func<ITokenProvider> tokenProviderFactory)
+        public ServiceBusOptionsBuilder AddTokenProvider(Func<TokenCredential> tokenCredentialFactory)
         {
-            _tokenProvider = tokenProviderFactory?.Invoke() ?? new NullTokenProvider();
+            _tokenCredential = tokenCredentialFactory?.Invoke();
             return this;
         }
 
@@ -72,16 +72,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         public ServiceBusOptionsBuilder WithNoRetry()
         {
-            _retryPolicy = RetryPolicy.NoRetry;
+            _retryOptions = new ServiceBusRetryOptions { MaxRetries = 0 };
             return this;
         }
 
         public ServiceBusOptionsBuilder WithExponentialDelay(int maximumRetryCount, double maximumBackoffInSeconds, double minimumBackoffInSeconds, double deltaBackoffInSeconds)
         {
-            _retryPolicy = new RetryExponential(TimeSpan.FromSeconds(minimumBackoffInSeconds),
-                            TimeSpan.FromSeconds(maximumBackoffInSeconds),
-                            TimeSpan.FromSeconds(deltaBackoffInSeconds),
-                            maximumRetryCount);
+            // Azure.Messaging.ServiceBus has no per-attempt delta-backoff knob; Delay is the base
+            // backoff applied exponentially. minimumBackoff maps to Delay, maximumBackoff to MaxDelay.
+            // deltaBackoffInSeconds is retained on the signature for source compatibility but has no
+            // equivalent in the new SDK retry model.
+            _ = deltaBackoffInSeconds;
+            _retryOptions = new ServiceBusRetryOptions
+            {
+                Mode = ServiceBusRetryMode.Exponential,
+                MaxRetries = maximumRetryCount,
+                Delay = TimeSpan.FromSeconds(minimumBackoffInSeconds),
+                MaxDelay = TimeSpan.FromSeconds(maximumBackoffInSeconds)
+            };
             return this;
         }
 
@@ -94,23 +102,57 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
             if (serviceBusConfig.RetryPolicy == null)
             {
-                serviceBusConfig.Policy = RetryPolicy.Default;
+                serviceBusConfig.RetryOptions = new ServiceBusRetryOptions();
             }
             else if (serviceBusConfig.RetryPolicy.MaximumRetryCount == 0
                 && serviceBusConfig.RetryPolicy.MaximumBackoffInSeconds == 0
                 && serviceBusConfig.RetryPolicy.MinimumBackoffInSeconds == 0
                 && serviceBusConfig.RetryPolicy.DeltaBackoffInSeconds == 0)
             {
-                serviceBusConfig.Policy = RetryPolicy.NoRetry;
+                serviceBusConfig.RetryOptions = new ServiceBusRetryOptions { MaxRetries = 0 };
             }
             else
             {
-                var retryExponential = new RetryExponential(TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.MinimumBackoffInSeconds),
-                                            TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.MaximumBackoffInSeconds),
-                                            TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.DeltaBackoffInSeconds),
-                                            serviceBusConfig.RetryPolicy.MaximumRetryCount);
-                serviceBusConfig.Policy = retryExponential;
+                serviceBusConfig.RetryOptions = new ServiceBusRetryOptions
+                {
+                    Mode = ServiceBusRetryMode.Exponential,
+                    MaxRetries = serviceBusConfig.RetryPolicy.MaximumRetryCount,
+                    Delay = TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.MinimumBackoffInSeconds),
+                    MaxDelay = TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.MaximumBackoffInSeconds)
+                };
             }
+        }
+
+        // INVARIANT: connection-string SAS auth is present when the connection string carries either a
+        // SharedAccessSignature (pre-signed SAS token) or a key-based SAS pair (SharedAccessKeyName AND
+        // SharedAccessKey). The connection string is PARSED into its fields via
+        // ServiceBusConnectionStringProperties rather than substring-matched on the raw string: a raw
+        // IndexOf("SharedAccessKey") also matches the SharedAccessKeyName key, so an endpoint-only string
+        // carrying SharedAccessKeyName (intended to pair with a TokenCredential for AAD) but no actual
+        // SharedAccessKey/SharedAccessSignature secret would be falsely detected as SAS, dropping the
+        // credential and falling back to a secret-less connection-string auth that cannot connect.
+        private static bool ConnectionStringHasSas(string connectionString)
+        {
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                return false;
+            }
+
+            ServiceBusConnectionStringProperties properties;
+            try
+            {
+                properties = ServiceBusConnectionStringProperties.Parse(connectionString);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+
+            var hasSharedAccessSignature = !string.IsNullOrWhiteSpace(properties.SharedAccessSignature);
+            var hasSharedAccessKeyPair = !string.IsNullOrWhiteSpace(properties.SharedAccessKeyName)
+                && !string.IsNullOrWhiteSpace(properties.SharedAccessKey);
+
+            return hasSharedAccessSignature || hasSharedAccessKeyPair;
         }
 
         internal ServiceBusOptions Build()
@@ -132,18 +174,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 options.ConnectionString = _connectionString;
             }
 
-            if (_retryPolicy != RetryPolicy.Default)
+            if (_retryOptions != null)
             {
-                options.Policy = _retryPolicy;
+                options.RetryOptions = _retryOptions;
             }
 
-            if (!(_tokenProvider is NullTokenProvider))
+            if (_tokenCredential != null && !ConnectionStringHasSas(options.ConnectionString))
             {
-                var connStringBuilder = new ServiceBusConnectionStringBuilder(options.ConnectionString);
-                if (string.IsNullOrWhiteSpace(connStringBuilder.SasToken) && string.IsNullOrWhiteSpace(connStringBuilder.SasKey))
-                {
-                    options.TokenProvider = _tokenProvider;
-                }
+                options.TokenCredential = _tokenCredential;
             }
 
             if (_maxConcurrentCalls != _defaultMaxConcurrentCalls)

@@ -1,28 +1,28 @@
 ﻿using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using Chatter.MessageBrokers.Sending;
-using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
 using System;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 {
     public static class OutboundBrokeredMessageExtensions
     {
-        public static Message AsAzureServiceBusMessage(this OutboundBrokeredMessage brokeredMessage)
+        public static ServiceBusMessage AsAzureServiceBusMessage(this OutboundBrokeredMessage brokeredMessage)
         {
-            var message = new Message(brokeredMessage.Body)
+            var message = new ServiceBusMessage(BinaryData.FromBytes(brokeredMessage.Body))
             {
                 MessageId = string.IsNullOrWhiteSpace(brokeredMessage.MessageId) ? Guid.NewGuid().ToString() : brokeredMessage.MessageId,
                 CorrelationId = brokeredMessage.CorrelationId,
                 ContentType = brokeredMessage.ContentType,
-                Label = brokeredMessage.GetSubject(),
+                Subject = brokeredMessage.GetSubject(),
                 ReplyTo = brokeredMessage.GetReplyToAddress(),
                 ReplyToSessionId = brokeredMessage.GetReplyToGroupId(),
                 SessionId = brokeredMessage.GetGroupId(),
                 PartitionKey = brokeredMessage.GetPartitionKey(),
-                ViaPartitionKey = brokeredMessage.GetViaPartitionKey(),
+                TransactionPartitionKey = brokeredMessage.GetViaPartitionKey(),
                 To = brokeredMessage.GetToAddress()
             }
-            .WithUserProperties(brokeredMessage.MessageContext);
+            .WithApplicationProperties(brokeredMessage.MessageContext);
 
             if (brokeredMessage.GetTimeToLive() != null)
             {
@@ -31,7 +31,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 
             if (brokeredMessage.GetScheduledEnqueueTimeUtc() != null)
             {
-                message.ScheduledEnqueueTimeUtc = brokeredMessage.GetScheduledEnqueueTimeUtc().Value;
+                message.ScheduledEnqueueTime = brokeredMessage.GetScheduledEnqueueTimeUtc().Value;
             }
 
             return message;

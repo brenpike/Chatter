@@ -12,6 +12,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [3.0.0] - 2026-06-08
+
+### Changed
+
+- `AadTokenProviderFactory` now returns `Azure.Core.TokenCredential` (via `Azure.Identity`) instead of the legacy `ITokenProvider`. Supported credential flows: client-secret (`ClientSecretCredential`), client-certificate (`ClientCertificateCredential`), interactive-browser (`InteractiveBrowserCredential`), and `DefaultAzureCredential` fallback.
+- `UseAadTokenProvider*` extension methods updated to wire the returned `TokenCredential` into `ServiceBusOptions.TokenCredential`.
+
+### Removed
+
+- MSAL (`Microsoft.Identity.Client`) dependency removed; `Azure.Identity` is now the sole auth library.
+- `AzureActiveDirectoryTokenProvider` class removed.
+- `ITokenProvider` return type removed from all factory and extension-method surfaces.
+
 ## [2.0.0] - 2026-05-30
 
 ### Changed

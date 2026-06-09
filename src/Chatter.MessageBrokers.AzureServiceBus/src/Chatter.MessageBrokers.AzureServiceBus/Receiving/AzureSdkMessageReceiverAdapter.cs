@@ -1,51 +1,44 @@
 using Chatter.MessageBrokers.Exceptions;
-using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Core;
-using Microsoft.Azure.ServiceBus.Primitives;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using SdkServiceBusReceiver = Azure.Messaging.ServiceBus.ServiceBusReceiver;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
     /// <summary>
-    /// Production <see cref="IServiceBusMessageReceiver"/> adapter wrapping the Azure Service Bus SDK
-    /// <see cref="MessageReceiver"/>. Holds the VERBATIM double-checked-lock lazy construction moved
-    /// out of <see cref="ServiceBusReceiver"/>: the SDK receiver is created on first access (opening a
-    /// live connection), and is reconstructed after a reset (e.g. following an
-    /// <see cref="ObjectDisposedException"/> on a closing receiver).
+    /// Production <see cref="IServiceBusMessageReceiver"/> adapter wrapping the Azure.Messaging.ServiceBus
+    /// SDK <see cref="SdkServiceBusReceiver"/>. The SDK receiver is long-lived and created on first access
+    /// from a shared <see cref="ServiceBusClient"/> (the client opens the live connection), and is
+    /// reconstructed after a reset (e.g. following an <see cref="ObjectDisposedException"/> on a closed
+    /// receiver) by recreating it from that same shared client.
     /// </summary>
     internal class AzureSdkMessageReceiverAdapter : IServiceBusMessageReceiver
     {
         readonly object _syncLock = new object();
-        private readonly ServiceBusConnectionStringBuilder _connectionStringBuilder;
+        private readonly ServiceBusClient _client;
         private readonly string _messageReceiverPath;
-        private readonly ReceiveMode _receiveMode;
-        private readonly RetryPolicy _retryPolicy;
+        private readonly ServiceBusReceiveMode _receiveMode;
         private readonly int _prefetchCount;
-        private readonly ITokenProvider _tokenProvider;
         private readonly ILogger _logger;
-        private MessageReceiver _innerReceiver;
+        private SdkServiceBusReceiver _innerReceiver;
 
-        public AzureSdkMessageReceiverAdapter(ServiceBusConnectionStringBuilder connectionStringBuilder,
+        public AzureSdkMessageReceiverAdapter(ServiceBusClient client,
                                               string messageReceiverPath,
-                                              ReceiveMode receiveMode,
-                                              RetryPolicy retryPolicy,
+                                              ServiceBusReceiveMode receiveMode,
                                               int prefetchCount,
-                                              ITokenProvider tokenProvider,
                                               ILogger logger)
         {
-            _connectionStringBuilder = connectionStringBuilder ?? throw new ArgumentNullException(nameof(connectionStringBuilder));
+            _client = client ?? throw new ArgumentNullException(nameof(client));
             _messageReceiverPath = messageReceiverPath;
             _receiveMode = receiveMode;
-            _retryPolicy = retryPolicy;
             _prefetchCount = prefetchCount;
-            _tokenProvider = tokenProvider;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        MessageReceiver InnerReceiver
+        SdkServiceBusReceiver InnerReceiver
         {
             get
             {
@@ -57,30 +50,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                         {
                             try
                             {
-                                if (_tokenProvider is NullTokenProvider)
+                                _innerReceiver = _client.CreateReceiver(_messageReceiverPath, new ServiceBusReceiverOptions
                                 {
-                                    _innerReceiver = new MessageReceiver(_connectionStringBuilder.GetNamespaceConnectionString(),
-                                                                         _messageReceiverPath,
-                                                                         _receiveMode,
-                                                                         _retryPolicy,
-                                                                         _prefetchCount);
-                                    _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_messageReceiverPath}' on endpoint '{_connectionStringBuilder.Endpoint}'");
-                                }
-                                else
-                                {
-                                    _innerReceiver = new MessageReceiver(_connectionStringBuilder.Endpoint,
-                                                                         _messageReceiverPath,
-                                                                         _tokenProvider,
-                                                                         _connectionStringBuilder.TransportType,
-                                                                         _receiveMode,
-                                                                         _retryPolicy,
-                                                                         _prefetchCount);
-                                    _logger.LogTrace($"{nameof(MessageReceiver)} created for '{_messageReceiverPath}' on endpoint '{_connectionStringBuilder.Endpoint}' using {_tokenProvider.GetType().Name}");
-                                }
+                                    ReceiveMode = _receiveMode,
+                                    PrefetchCount = _prefetchCount,
+                                });
+                                _logger.LogTrace($"{nameof(SdkServiceBusReceiver)} created for '{_messageReceiverPath}' on endpoint '{_client.FullyQualifiedNamespace}'");
                             }
-                            catch (ArgumentException e) //throw when service bus connection string cannot be built
+                            catch (ArgumentException e) //throw when the receiver cannot be created (e.g. invalid entity path)
                             {
-                                throw new CriticalReceiverException($"Error creating {nameof(MessageReceiver)}", e);
+                                throw new CriticalReceiverException($"Error creating {nameof(SdkServiceBusReceiver)}", e);
                             }
                         }
                     }
@@ -90,23 +69,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public ServiceBusConnection ServiceBusConnection => InnerReceiver.ServiceBusConnection;
+        public bool IsClosedOrClosing => _innerReceiver != null && _innerReceiver.IsClosed;
 
-        public bool IsClosedOrClosing => _innerReceiver != null && _innerReceiver.IsClosedOrClosing;
+        public Task<ServiceBusReceivedMessage> ReceiveAsync() => InnerReceiver.ReceiveMessageAsync();
 
-        public Task<Message> ReceiveAsync() => InnerReceiver.ReceiveAsync();
+        public Task CompleteAsync(ServiceBusReceivedMessage message) => InnerReceiver.CompleteMessageAsync(message);
 
-        public Task CompleteAsync(string lockToken) => InnerReceiver.CompleteAsync(lockToken);
+        public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
+            => InnerReceiver.AbandonMessageAsync(message, propertiesToModify);
 
-        public Task AbandonAsync(string lockToken, IDictionary<string, object> propertiesToModify)
-            => InnerReceiver.AbandonAsync(lockToken, propertiesToModify);
-
-        public Task DeadLetterAsync(string lockToken, string deadLetterReason, string deadLetterErrorDescription)
-            => InnerReceiver.DeadLetterAsync(lockToken, deadLetterReason, deadLetterErrorDescription);
+        public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
+            => InnerReceiver.DeadLetterMessageAsync(message, deadLetterReason, deadLetterErrorDescription);
 
         public async Task CloseAsync()
         {
-            MessageReceiver toClose;
+            SdkServiceBusReceiver toClose;
             lock (_syncLock)
             {
                 toClose = _innerReceiver;

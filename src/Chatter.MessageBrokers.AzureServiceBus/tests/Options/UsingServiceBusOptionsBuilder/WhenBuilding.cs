@@ -1,11 +1,12 @@
+using Azure.Core;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using FluentAssertions;
-using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Primitives;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -17,11 +18,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
     //
     // The internal ServiceBusOptions.RetryPolicy config property never binds via
     // section.Get<ServiceBusOptions>() (the binder skips internal setters), so PostConfiguration
-    // ALWAYS hits its first branch and Policy is a fresh RetryExponential (RetryPolicy.Default).
-    // The all-zero->NoRetry and populated->RetryExponential-mapping branches are therefore dead
-    // via config; see the characterization-findings doc. NoRetry / mapped RetryExponential are only
-    // reachable through the WithNoRetry() / WithExponentialDelay() fluent setters, which is what the
-    // policy tests below pin.
+    // ALWAYS hits its first branch and RetryOptions is a fresh default ServiceBusRetryOptions. The
+    // all-zero->MaxRetries=0 and populated->Exponential-mapping branches are therefore dead via
+    // config; see the characterization-findings doc. The MaxRetries=0 / mapped Exponential options
+    // are only reachable through the WithNoRetry() / WithExponentialDelay() fluent setters, which is
+    // what the policy tests below pin.
     public class WhenBuilding : Testing.Core.Context
     {
         private const string _sasConnectionString =
@@ -109,19 +110,23 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
-        public void MustLeavePolicyAsRetryExponentialWhenSectionAbsent()
+        public void MustLeaveRetryOptionsUnsetWhenSectionAbsent()
         {
+            // Section absent and no fluent setter: PostConfiguration never runs and no fluent
+            // RetryOptions is applied, so RetryOptions stays null on the freshly-built options.
             var options = Create(new ServiceCollection(), EmptyConfig())
                 .WithConnectionString(_sasConnectionString)
                 .Build();
-            options.Policy.Should().BeOfType<RetryExponential>();
+            options.RetryOptions.Should().BeNull();
         }
 
         [Fact]
-        public void MustLeavePolicyAsRetryExponentialWhenRetryPolicySectionAllZero()
+        public void MustLeaveRetryOptionsAtDefaultExponentialWhenRetryPolicySectionAllZero()
         {
             // Pins the dead-branch behavior: even an all-zero RetryPolicy config section does NOT
-            // produce NoRetry, because the internal RetryPolicy property never binds.
+            // produce a MaxRetries=0 options, because the internal RetryPolicy property never binds,
+            // so PostConfiguration takes its first branch and RetryOptions is a fresh default
+            // ServiceBusRetryOptions (Exponential mode, the SDK default MaxRetries of 3).
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -131,24 +136,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
                 [$"{_sectionName}:RetryPolicy:DeltaBackoffInSeconds"] = "0",
             });
             var options = Create(new ServiceCollection(), config).Build();
-            options.Policy.Should().BeOfType<RetryExponential>();
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
+            options.RetryOptions.MaxRetries.Should().Be(new ServiceBusRetryOptions().MaxRetries);
         }
 
         [Fact]
-        public void MustLeavePolicyAsRetryExponentialWhenRetryPolicySectionPopulated()
+        public void MustLeaveRetryOptionsAtDefaultWhenRetryPolicySectionPopulated()
         {
             // Pins finding #2: a populated RetryPolicy section is SILENTLY IGNORED because the
             // internal RetryPolicy property never binds, so PostConfiguration takes its first branch
-            // and Policy is the default RetryExponential (RetryPolicy.Default) — NOT a policy built
-            // from the supplied MaximumRetryCount=5 / MinimumBackoffInSeconds=1. Asserting only the
-            // RetryExponential type would pass both for the ignored-default policy AND for a
-            // (hypothetical) correctly-bound configured policy, so the supplied values are pinned as
-            // ignored by comparing the resulting policy's observable parameters against the
-            // section-absent default and confirming they do NOT reflect the config.
-            var defaultPolicy = (RetryExponential)Create(new ServiceCollection(), EmptyConfig())
-                .WithConnectionString(_sasConnectionString)
-                .Build()
-                .Policy;
+            // and RetryOptions is the default ServiceBusRetryOptions — NOT options built from the
+            // supplied MaximumRetryCount=5 / MinimumBackoffInSeconds=1. The supplied values are pinned
+            // as ignored by comparing the resulting options' observable parameters against a fresh
+            // default ServiceBusRetryOptions and confirming they do NOT reflect the config.
+            var defaultOptions = new ServiceBusRetryOptions();
 
             var config = ConfigWith(new Dictionary<string, string>
             {
@@ -158,40 +160,41 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             });
             var options = Create(new ServiceCollection(), config).Build();
 
-            var policy = options.Policy.Should().BeOfType<RetryExponential>().Subject;
-            // The supplied MinimumBackoffInSeconds=1 is IGNORED: the resulting policy's MinimalBackoff
-            // stays at the SDK default of 0s, never the requested 1s. (The requested
-            // MaximumRetryCount=5 coincidentally equals the SDK default MaxRetryCount of 5, so it
-            // cannot distinguish ignored-vs-bound — MinimalBackoff is the parameter that proves the
-            // config was discarded.)
-            policy.MinimalBackoff.Should().Be(TimeSpan.Zero);
-            policy.MinimalBackoff.Should().NotBe(TimeSpan.FromSeconds(1));
-            // Every observable parameter matches the section-absent default policy: the populated
-            // config produced exactly the default RetryExponential, confirming it was silently ignored.
-            policy.MaxRetryCount.Should().Be(defaultPolicy.MaxRetryCount);
-            policy.MinimalBackoff.Should().Be(defaultPolicy.MinimalBackoff);
-            policy.MaximumBackoff.Should().Be(defaultPolicy.MaximumBackoff);
-            policy.DeltaBackoff.Should().Be(defaultPolicy.DeltaBackoff);
+            options.RetryOptions.Should().NotBeNull();
+            // The supplied MinimumBackoffInSeconds=1 is IGNORED: the resulting options' Delay stays at
+            // the SDK default, never the requested 1s.
+            options.RetryOptions.Delay.Should().Be(defaultOptions.Delay);
+            options.RetryOptions.Delay.Should().NotBe(TimeSpan.FromSeconds(1));
+            // Every observable parameter matches a fresh default ServiceBusRetryOptions: the populated
+            // config produced exactly the default options, confirming it was silently ignored.
+            options.RetryOptions.Mode.Should().Be(defaultOptions.Mode);
+            options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
+            options.RetryOptions.MaxDelay.Should().Be(defaultOptions.MaxDelay);
         }
 
         [Fact]
-        public void MustApplyNoRetryPolicyViaFluentSetter()
+        public void MustApplyNoRetryOptionsViaFluentSetter()
         {
             var options = Create(new ServiceCollection(), EmptyConfig())
                 .WithConnectionString(_sasConnectionString)
                 .WithNoRetry()
                 .Build();
-            options.Policy.GetType().Name.Should().Be("NoRetry");
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.MaxRetries.Should().Be(0);
         }
 
         [Fact]
-        public void MustApplyExponentialDelayPolicyViaFluentSetter()
+        public void MustApplyExponentialDelayOptionsViaFluentSetter()
         {
             var options = Create(new ServiceCollection(), EmptyConfig())
                 .WithConnectionString(_sasConnectionString)
                 .WithExponentialDelay(5, 30, 1, 3)
                 .Build();
-            options.Policy.Should().BeOfType<RetryExponential>();
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
+            options.RetryOptions.MaxRetries.Should().Be(5);
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(1));
+            options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(30));
         }
 
         [Fact]
@@ -233,39 +236,60 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
-        public void MustNotApplyTokenProviderWhenConnectionStringHasSas()
+        public void MustNotApplyTokenCredentialWhenConnectionStringHasSas()
         {
             var options = Create(new ServiceCollection(), EmptyConfig())
                 .WithConnectionString(_sasConnectionString)
-                .AddTokenProvider(new MarkerTokenProvider())
+                .AddTokenProvider(new MarkerTokenCredential())
                 .Build();
-            options.TokenProvider.Should().BeOfType<NullTokenProvider>();
+            options.TokenCredential.Should().BeNull();
         }
 
         [Fact]
-        public void MustApplyTokenProviderWhenConnectionStringLacksSas()
+        public void MustApplyTokenCredentialWhenConnectionStringLacksSas()
         {
-            var marker = new MarkerTokenProvider();
+            var marker = new MarkerTokenCredential();
             var options = Create(new ServiceCollection(), EmptyConfig())
                 .WithConnectionString(_noSasConnectionString)
                 .AddTokenProvider(marker)
                 .Build();
-            options.TokenProvider.Should().BeSameAs(marker);
+            options.TokenCredential.Should().BeSameAs(marker);
         }
 
         [Fact]
-        public void MustLeaveDefaultNullTokenProviderWhenNoneSupplied()
+        public void MustLeaveTokenCredentialNullWhenNoneSupplied()
         {
             var options = Create(new ServiceCollection(), EmptyConfig())
                 .WithConnectionString(_noSasConnectionString)
                 .Build();
-            options.TokenProvider.Should().BeOfType<NullTokenProvider>();
+            options.TokenCredential.Should().BeNull();
         }
 
-        private sealed class MarkerTokenProvider : ITokenProvider
+        [Fact]
+        public void MustApplyTokenCredentialWhenConnectionStringHasKeyNameButNoSecret()
         {
-            public Task<SecurityToken> GetTokenAsync(string appliesTo, TimeSpan timeout)
-                => Task.FromResult(new SecurityToken("t", DateTime.Now, "a", string.Empty));
+            // Regression: SAS detection must PARSE the connection string fields, not substring-match the
+            // raw string. A connection string carrying SharedAccessKeyName (the key NAME) but no actual
+            // SharedAccessKey/SharedAccessSignature secret is NOT SAS-authenticated — it is intended to
+            // pair with a TokenCredential for AAD. A naive IndexOf("SharedAccessKey") matches the
+            // SharedAccessKeyName key and would falsely drop the credential.
+            const string keyNameOnlyConnectionString =
+                "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=k";
+            var marker = new MarkerTokenCredential();
+            var options = Create(new ServiceCollection(), EmptyConfig())
+                .WithConnectionString(keyNameOnlyConnectionString)
+                .AddTokenProvider(marker)
+                .Build();
+            options.TokenCredential.Should().BeSameAs(marker);
+        }
+
+        private sealed class MarkerTokenCredential : TokenCredential
+        {
+            public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken)
+                => new AccessToken("t", DateTimeOffset.MaxValue);
+
+            public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken)
+                => new ValueTask<AccessToken>(new AccessToken("t", DateTimeOffset.MaxValue));
         }
     }
 }

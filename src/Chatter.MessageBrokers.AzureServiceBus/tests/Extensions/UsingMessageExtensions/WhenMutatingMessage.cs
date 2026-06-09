@@ -1,18 +1,19 @@
 using Chatter.MessageBrokers.AzureServiceBus.Extensions;
 using FluentAssertions;
-using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
+using System;
 using System.Collections.Generic;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Extensions.UsingMessageExtensions
 {
-    // Microsoft.Azure.ServiceBus.Message constructed directly; UserProperties auto-initializes
-    // to an empty dictionary, so the merge/add extensions operate against it without setup.
+    // Azure.Messaging.ServiceBus.ServiceBusMessage constructed directly; ApplicationProperties
+    // auto-initializes to an empty dictionary, so the merge/add extensions operate against it without setup.
     public class WhenMutatingMessage : Testing.Core.Context
     {
         private readonly byte[] _body = new byte[] { 1, 2, 3 };
 
-        private Message CreateMessage() => new Message(_body);
+        private ServiceBusMessage CreateMessage() => new ServiceBusMessage(BinaryData.FromBytes(_body));
 
         [Fact]
         public void MustComputeUppercaseSha256HexMessageIdWhenIdIsBlank()
@@ -44,36 +45,36 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Extensions.UsingMessageEx
         }
 
         [Fact]
-        public void MustMergeUserProperties()
+        public void MustMergeApplicationProperties()
         {
             var message = CreateMessage();
-            message.WithUserProperties(new Dictionary<string, object> { ["a"] = 1, ["b"] = "two" });
-            message.UserProperties["a"].Should().Be(1);
-            message.UserProperties["b"].Should().Be("two");
+            message.WithApplicationProperties(new Dictionary<string, object> { ["a"] = 1, ["b"] = "two" });
+            message.ApplicationProperties["a"].Should().Be(1);
+            message.ApplicationProperties["b"].Should().Be("two");
         }
 
         [Fact]
-        public void MustOverwriteExistingUserPropertyOnMerge()
+        public void MustOverwriteExistingApplicationPropertyOnMerge()
         {
             var message = CreateMessage();
-            message.UserProperties["a"] = "original";
-            message.WithUserProperties(new Dictionary<string, object> { ["a"] = "replaced" });
-            message.UserProperties["a"].Should().Be("replaced");
+            message.ApplicationProperties["a"] = "original";
+            message.WithApplicationProperties(new Dictionary<string, object> { ["a"] = "replaced" });
+            message.ApplicationProperties["a"].Should().Be("replaced");
         }
 
         [Fact]
-        public void MustAddSingleUserProperty()
+        public void MustAddSingleApplicationProperty()
         {
             var message = CreateMessage();
-            message.AddUserProperty("key", "value");
-            message.UserProperties["key"].Should().Be("value");
+            message.AddApplicationProperty("key", "value");
+            message.ApplicationProperties["key"].Should().Be("value");
         }
 
         [Fact]
-        public void MustReturnSameMessageInstanceFromAddUserProperty()
+        public void MustReturnSameMessageInstanceFromAddApplicationProperty()
         {
             var message = CreateMessage();
-            message.AddUserProperty("key", "value").Should().BeSameAs(message);
+            message.AddApplicationProperty("key", "value").Should().BeSameAs(message);
         }
     }
 }

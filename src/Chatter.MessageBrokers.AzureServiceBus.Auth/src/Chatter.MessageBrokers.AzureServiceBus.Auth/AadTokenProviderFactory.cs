@@ -1,116 +1,114 @@
-﻿using Azure.Core;
+using Azure.Core;
 using Azure.Identity;
-using Microsoft.Azure.ServiceBus.Primitives;
-using Microsoft.Identity.Client;
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography.X509Certificates;
-using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Auth
 {
     public class AadTokenProviderFactory
     {
         private readonly string _clientId;
-        private readonly TokenRequestContext _requestContext;
 
         public static AadTokenProviderFactory Create(string clientId) => new AadTokenProviderFactory(clientId);
 
         private AadTokenProviderFactory(string clientId)
         {
             _clientId = clientId;
-            _requestContext = new TokenRequestContext(new[] { "https://servicebus.azure.net/.default" });
         }
 
         /// <summary>
-        /// Creates an <see cref="AzureActiveDirectoryTokenProvider"/> using a client secret. If no client secret is provided <see cref="DefaultAzureCredential"/> is used.
+        /// Creates a <see cref="TokenCredential"/> using a client secret. If no client secret is provided a <see cref="DefaultAzureCredential"/> is returned.
         /// </summary>
         /// <param name="clientSecret">The client secret to use to authenticate with Azure AD</param>
-        /// <param name="authority">A URL that indicates a directory that MSAL can request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/</param>
-        /// <returns><see cref="AzureActiveDirectoryTokenProvider"/></returns>
-        public AzureActiveDirectoryTokenProvider WithSecret(string clientSecret, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null)
+        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is parsed from the path and the scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
+        /// <returns>A <see cref="TokenCredential"/>: a <see cref="ClientSecretCredential"/> when a secret is supplied, otherwise a <see cref="DefaultAzureCredential"/>.</returns>
+        public TokenCredential WithSecret(string clientSecret, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null)
         {
-            AzureActiveDirectoryTokenProvider.AuthenticationCallback authCallback = async (audience, authority, state) =>
+            if (string.IsNullOrWhiteSpace(clientSecret))
             {
-                if (string.IsNullOrWhiteSpace(clientSecret))
-                {
-                    return (await GetTokenFromDefaultAzureCredential(optBuilder)).Token;
-                }
+                return BuildDefaultAzureCredential(optBuilder);
+            }
 
-                IConfidentialClientApplication app = ConfidentialClientApplicationBuilder.Create(_clientId)
-                                .WithAuthority(authority)
-                                .WithClientSecret(clientSecret)
-                                .Build();
-
-                var authResult = await app.AcquireTokenForClient(_requestContext.Scopes).ExecuteAsync();
-
-                return authResult.AccessToken;
-            };
-
-            return new AzureActiveDirectoryTokenProvider(authCallback, authority ?? "", null);
+            var (tenantId, authorityHost) = ParseAuthority(authority);
+            var options = new ClientSecretCredentialOptions();
+            ApplyAuthorityHost(options, authorityHost);
+            return new ClientSecretCredential(tenantId, _clientId, clientSecret, options);
         }
 
         /// <summary>
-        /// Creates an <see cref="AzureActiveDirectoryTokenProvider"/> using a certificate. If no thumbprint is provided <see cref="DefaultAzureCredential"/> is used.
+        /// Creates a <see cref="TokenCredential"/> using a certificate. If no thumbprint is provided a <see cref="DefaultAzureCredential"/> is returned.
         /// </summary>
         /// <param name="thumbPrint">The thumbprint of the certificate to use for authentication</param>
-        /// <param name="authority">A URL that indicates a directory that MSAL can request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/
-        /// <param name="validCertsOnly">Indicates if only valid certificates are can be found and used from the X509 cert store. If using self-signed certs, this value should be false.</param>
-        /// <returns><see cref="AzureActiveDirectoryTokenProvider"/></returns>
-        public AzureActiveDirectoryTokenProvider WithCert(string thumbPrint, string authority, bool validCertsOnly, Action<DefaultAzureCredentialOptions> optBuilder = null)
+        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is parsed from the path and the scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
+        /// <param name="validCertsOnly">Indicates if only valid certificates can be found and used from the X509 cert store. If using self-signed certs, this value should be false.</param>
+        /// <returns>A <see cref="TokenCredential"/>: a <see cref="ClientCertificateCredential"/> when a thumbprint is supplied, otherwise a <see cref="DefaultAzureCredential"/>.</returns>
+        public TokenCredential WithCert(string thumbPrint, string authority, bool validCertsOnly, Action<DefaultAzureCredentialOptions> optBuilder = null)
         {
-            AzureActiveDirectoryTokenProvider.AuthenticationCallback authCallback = async (audience, authority, state) =>
+            if (string.IsNullOrWhiteSpace(thumbPrint))
             {
-                if (string.IsNullOrWhiteSpace(thumbPrint))
-                {
-                    return (await GetTokenFromDefaultAzureCredential(optBuilder)).Token;
-                }
+                return BuildDefaultAzureCredential(optBuilder);
+            }
 
-                var cert = GetCertificate(thumbPrint, validCertsOnly);
-
-                IConfidentialClientApplication app = ConfidentialClientApplicationBuilder.Create(_clientId)
-                                .WithAuthority(authority)
-                                .WithCertificate(cert)
-                                .Build();
-
-                var authResult = await app.AcquireTokenForClient(_requestContext.Scopes).ExecuteAsync();
-                return authResult.AccessToken;
-            };
-
-            return new AzureActiveDirectoryTokenProvider(authCallback, authority ?? "", null);
+            var cert = GetCertificate(thumbPrint, validCertsOnly);
+            var (tenantId, authorityHost) = ParseAuthority(authority);
+            var options = new ClientCertificateCredentialOptions();
+            ApplyAuthorityHost(options, authorityHost);
+            return new ClientCertificateCredential(tenantId, _clientId, cert, options);
         }
 
         /// <summary>
-        /// Creates an <see cref="AzureActiveDirectoryTokenProvider"/> using interactive login. If no redirect url is provided <see cref="DefaultAzureCredential"/> is used.
+        /// Creates a <see cref="TokenCredential"/> using interactive login. If no redirect url is provided a <see cref="DefaultAzureCredential"/> is returned.
         /// </summary>
         /// <param name="redirectUri">The uri to redirect to after interactive login</param>
-        /// <returns><see cref="AzureActiveDirectoryTokenProvider"/></returns>
-        public AzureActiveDirectoryTokenProvider WithInteractive(string redirectUri, Action<DefaultAzureCredentialOptions> optBuilder = null)
+        /// <returns>A <see cref="TokenCredential"/>: an <see cref="InteractiveBrowserCredential"/> when a redirect uri is supplied, otherwise a <see cref="DefaultAzureCredential"/>.</returns>
+        public TokenCredential WithInteractive(string redirectUri, Action<DefaultAzureCredentialOptions> optBuilder = null)
         {
-            AzureActiveDirectoryTokenProvider.AuthenticationCallback authCallback = async (audience, authority, state) =>
+            if (string.IsNullOrWhiteSpace(redirectUri))
             {
-                if (string.IsNullOrWhiteSpace(redirectUri))
-                {
-                    return (await GetTokenFromDefaultAzureCredential(optBuilder)).Token;
-                }
+                return BuildDefaultAzureCredential(optBuilder);
+            }
 
-                IConfidentialClientApplication app = ConfidentialClientApplicationBuilder.Create(_clientId)
-                                .WithRedirectUri(redirectUri)
-                                .Build();
-
-                var authResult = await app.AcquireTokenForClient(_requestContext.Scopes).ExecuteAsync();
-                return authResult.AccessToken;
+            var options = new InteractiveBrowserCredentialOptions
+            {
+                ClientId = _clientId,
+                RedirectUri = new Uri(redirectUri)
             };
-
-            return new AzureActiveDirectoryTokenProvider(authCallback, "", null);
+            return new InteractiveBrowserCredential(options);
         }
 
-        private ValueTask<AccessToken> GetTokenFromDefaultAzureCredential(Action<DefaultAzureCredentialOptions> optBuilder)
+        private static DefaultAzureCredential BuildDefaultAzureCredential(Action<DefaultAzureCredentialOptions> optBuilder)
         {
             var opts = new DefaultAzureCredentialOptions();
             optBuilder?.Invoke(opts);
-            var defaultCredentials = new DefaultAzureCredential(opts);
-            return defaultCredentials.GetTokenAsync(_requestContext, System.Threading.CancellationToken.None);
+            return new DefaultAzureCredential(opts);
+        }
+
+        // INVARIANT: the legacy MSAL authority was a full directory URL (scheme+host+tenant path),
+        // e.g. https://login.microsoftonline.com/{tenant}/. Azure.Identity credentials take the
+        // tenant id separately and the scheme+host as AuthorityHost, so the URL is split here:
+        // the first path segment is the tenant id; the scheme+host becomes AuthorityHost. A null,
+        // empty, or unparseable authority yields a null tenant id and null AuthorityHost, deferring
+        // to the credential's own defaults (mirrors the old (authority ?? "") coercion).
+        private static (string tenantId, Uri authorityHost) ParseAuthority(string authority)
+        {
+            if (string.IsNullOrWhiteSpace(authority)
+                || !Uri.TryCreate(authority, UriKind.Absolute, out var authorityUri))
+            {
+                return (null, null);
+            }
+
+            var tenantId = authorityUri.AbsolutePath.Trim('/');
+            var authorityHost = new Uri(authorityUri.GetLeftPart(UriPartial.Authority));
+            return (string.IsNullOrWhiteSpace(tenantId) ? null : tenantId, authorityHost);
+        }
+
+        private static void ApplyAuthorityHost(TokenCredentialOptions options, Uri authorityHost)
+        {
+            if (authorityHost != null)
+            {
+                options.AuthorityHost = authorityHost;
+            }
         }
 
         X509Certificate2 GetCertificate(string thumbPrint, bool validCertsOnly)

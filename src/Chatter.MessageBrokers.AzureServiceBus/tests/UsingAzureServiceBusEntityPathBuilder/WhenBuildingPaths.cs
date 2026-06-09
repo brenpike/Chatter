@@ -1,6 +1,5 @@
 using Chatter.MessageBrokers.AzureServiceBus;
 using FluentAssertions;
-using Microsoft.Azure.ServiceBus;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.UsingAzureServiceBusEntityPathBuilder
@@ -27,15 +26,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.UsingAzureServiceBusEntit
         public void MustReturnReceiverPathWhenSendingIsBlankAndReceiverIsNotBlank()
             => _sut.GetMessageReceivingPath("", "receiver").Should().Be("receiver");
 
+        // Expected path shapes reproduce Azure Service Bus' canonical subscription/rule path format
+        // (topic/Subscriptions/<sub> and .../Rules/<rule>). The SDK's EntityNameFormatter is internal
+        // in Azure.Messaging.ServiceBus 7.20.1, so the literals are pinned directly.
         [Fact]
         public void MustReturnSubscriptionPathWhenSendingAndReceiverDiffer()
             => _sut.GetMessageReceivingPath("topic", "subscriber")
-                   .Should().Be(EntityNameHelper.FormatSubscriptionPath("topic", "subscriber"));
+                   .Should().Be("topic/Subscriptions/subscriber");
 
         [Fact]
-        public void MustReturnRulePathFromEntityNameHelper()
+        public void MustReturnRulePathInSubscriptionRuleFormat()
             => _sut.GetMessageReceivingRulePath("topic", "subscriber", "rule")
-                   .Should().Be(EntityNameHelper.FormatRulePath("topic", "subscriber", "rule"));
+                   .Should().Be("topic/Subscriptions/subscriber/Rules/rule");
 
         [Fact]
         public void MustReturnSendingPathIdentity()
