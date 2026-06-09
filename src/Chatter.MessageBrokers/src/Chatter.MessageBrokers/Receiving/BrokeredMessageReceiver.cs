@@ -5,6 +5,7 @@ using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Recovery;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -25,6 +26,21 @@ namespace Chatter.MessageBrokers.Receiving
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
         private int _maxConcurrentCalls = 1;
+
+        // INVARIANT: every per-message worker task admitted by the concurrency semaphore is tracked here for the
+        // lifetime of its processing. The loop prunes completed tasks each turn (bounded accumulation) and the
+        // shutdown path (StopReceiver/Dispose) drains the live set before disposing the semaphore or token source,
+        // so no in-flight worker can touch a disposed SemaphoreSlim / CancellationTokenSource. Guarded by its own
+        // lock because the loop thread adds/prunes while worker continuations remove on completion.
+        private readonly HashSet<Task> _inFlightTasks = new HashSet<Task>();
+        private readonly object _inFlightTasksLock = new object();
+
+        // INVARIANT: holds the FIRST CriticalReceiverException observed inside a worker task. Workers run
+        // fire-and-forget relative to the receive loop, so a critical fault cannot be surfaced by awaiting them
+        // inline; instead the faulting worker publishes it here via Interlocked.CompareExchange (first writer wins)
+        // and the loop observes it each turn, rethrowing on the loop thread so the existing outer
+        // catch (CriticalReceiverException) fires the _criticalFailureNotifier.Notify path exactly as before.
+        private CriticalReceiverException _workerCriticalFault;
         private readonly MessageBrokerOptions _messageBrokerOptions;
         private readonly IRecoveryStrategy _recoveryStrategy;
         private readonly IReceivedMessageDispatcher _receivedMessageDispatcher;
@@ -165,6 +181,12 @@ namespace Chatter.MessageBrokers.Receiving
                 await _messageReceiverLoop;
             }
 
+            // INVARIANT: drain any worker tasks still in flight before disposing the semaphore / token source so no
+            // worker touches a disposed SemaphoreSlim. When the loop completed normally its own finally already
+            // drained; this is the belt-and-suspenders path for a faulted loop (the await above is skipped) and is
+            // a no-op once the set is empty.
+            await DrainInFlightWorkersAsync();
+
             await _infrastructureReceiver.StopReceiver();
 
             _concurrentMessagesSemaphore?.Dispose();
@@ -177,78 +199,221 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 while (!_messageReceiverLoopTokenSource.IsCancellationRequested)
                 {
+                    // INVARIANT: a CriticalReceiverException observed in a worker stops the loop. Observe it BEFORE
+                    // admitting another slot so a critical fault halts pulling promptly and routes through the outer
+                    // catch (preserving the _criticalFailureNotifier.Notify path), rather than being lost in the
+                    // fire-and-forget worker.
+                    ThrowIfWorkerCriticalFault();
+
                     await _concurrentMessagesSemaphore.WaitAsync(_messageReceiverLoopTokenSource.Token);
 
+                    // INVARIANT: the per-message TransactionContext is constructed PER-TURN and its ownership transfers
+                    // to the spawned worker, so concurrent workers never share a TransactionContext and cannot
+                    // cross-enlist. The receive call itself stays on the loop thread (pull cadence stays serialized);
+                    // only the processing error ladder and the semaphore release fan out into the worker task.
+                    var transactionContext = new TransactionContext(this.MessageReceiverPath, _options.TransactionMode.Value);
                     MessageBrokerContext messageContext = null;
-                    TransactionContext transactionContext = new TransactionContext(this.MessageReceiverPath, _options.TransactionMode.Value);
+                    var slotAcquired = true;
 
                     try
                     {
                         _messageReceiverLoopTokenSource.Token.ThrowIfCancellationRequested();
 
                         messageContext = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.ReceiveMessageAsync(transactionContext, _messageReceiverLoopTokenSource.Token), _messageReceiverLoopTokenSource.Token);
-
-                        if (messageContext != null)
-                        {
-                            _logger.LogTrace("Message received successfully");
-                            await ProcessMessageAsync(messageContext, transactionContext, _messageReceiverLoopTokenSource.Token);
-                            _logger.LogTrace("Message processed successfully");
-                        }
                     }
                     catch (CriticalReceiverException)
                     {
+                        ReleaseConcurrencySlot();
                         throw; //stop receiver loop
                     }
                     catch (OperationCanceledException) when (_messageReceiverLoopTokenSource.IsCancellationRequested)
                     {
+                        ReleaseConcurrencySlot();
+                        slotAcquired = false;
                     }
                     catch (ObjectDisposedException) when (_messageReceiverLoopTokenSource.IsCancellationRequested)
                     {
-                    }
-                    catch (PoisonedMessageException e)
-                    {
-                        _logger.LogError(e, "Poisoned message received. Deadlettering.");
-                        await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, _messageReceiverLoopTokenSource.Token);
+                        ReleaseConcurrencySlot();
+                        slotAcquired = false;
                     }
                     catch (Exception e)
                     {
-                        if (messageContext == null)
-                        {
-                            _logger.LogError(e, "Error receiving brokered message");
-                        }
-                        else
-                        {
-                            _logger.LogError(e, "Error processing brokered message");
-                            var deliveryCount = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, _messageReceiverLoopTokenSource.Token), _messageReceiverLoopTokenSource.Token);
-                            if (deliveryCount >= _options.MaxReceiveAttempts)
-                            {
-                                if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, _messageReceiverLoopTokenSource.Token))
-                                {
-                                    await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
-                                }
-                            }
-                            else
-                            {
-                                await TryNackWithRecoveryAsync(messageContext, transactionContext, _messageReceiverLoopTokenSource.Token);
-                            }
-                        }
+                        // A failure to RECEIVE (no messageContext) is handled inline on the loop thread, mirroring the
+                        // original error ladder's messageContext == null branch, then the slot is released.
+                        _logger.LogError(e, "Error receiving brokered message");
+                        ReleaseConcurrencySlot();
+                        slotAcquired = false;
                     }
-                    finally
+
+                    if (!slotAcquired)
                     {
-                        try
-                        {
-                            _concurrentMessagesSemaphore?.Release();
-                        }
-                        catch (ObjectDisposedException)
-                        {
-                        }
+                        continue;
                     }
+
+                    if (messageContext == null)
+                    {
+                        // Nothing received this turn (empty receive or swallowed cancellation): release the slot and
+                        // continue pulling. Only a non-null messageContext spawns a worker.
+                        ReleaseConcurrencySlot();
+                        continue;
+                    }
+
+                    _logger.LogTrace("Message received successfully");
+                    SpawnProcessingWorker(messageContext, transactionContext);
+
+                    // Prune completed worker references so the tracking set does not accumulate unboundedly across
+                    // the loop's lifetime.
+                    PruneCompletedWorkers();
                 }
             }
             catch (CriticalReceiverException e)
             {
                 _logger.LogCritical(e, "Receiver is unable continue due to critical error");
                 await _criticalFailureNotifier.Notify(new FailureContext(null, this.ErrorQueueName, "Critical error occurred", e, -1, null));
+            }
+            finally
+            {
+                // Drain any still-running workers before the loop task completes so callers that await the loop
+                // (StartReceiverImpl / StopReceiver) observe a fully-quiesced receiver.
+                await DrainInFlightWorkersAsync();
+            }
+        }
+
+        // INVARIANT: runs the per-message error ladder + semaphore release for a SINGLE received message in a tracked
+        // background task that owns its OWN messageContext + transactionContext. Up to MaxConcurrentCalls of these run
+        // concurrently. A CriticalReceiverException raised here is published to _workerCriticalFault (observed by the
+        // loop) rather than lost; every other fault is handled by the ladder, and the slot is always released in the
+        // per-task finally so a fault never leaks a semaphore slot.
+        void SpawnProcessingWorker(MessageBrokerContext messageContext, TransactionContext transactionContext)
+        {
+            // INVARIANT: snapshot the CancellationToken on the loop thread (where the token source is guaranteed live)
+            // and hand the VALUE to the worker. A CancellationToken struct keeps reporting IsCancellationRequested
+            // after its source is disposed, whereas re-reading _messageReceiverLoopTokenSource.Token from a detached
+            // worker could hit a disposed source during shutdown. This keeps the worker's cancellation-swallow filters
+            // valid through teardown.
+            var workerToken = _messageReceiverLoopTokenSource.Token;
+            var worker = Task.Run(() => ProcessReceivedMessageWorkerAsync(messageContext, transactionContext, workerToken));
+
+            lock (_inFlightTasksLock)
+            {
+                _inFlightTasks.Add(worker);
+            }
+
+            // INVARIANT: the worker body itself never rethrows (its finally swallows nothing critical past publishing
+            // to _workerCriticalFault), so this continuation only prunes the completed reference. It must not be the
+            // sole observer of faults — fault propagation is via _workerCriticalFault, observed on the loop thread.
+            worker.ContinueWith(
+                completed =>
+                {
+                    lock (_inFlightTasksLock)
+                    {
+                        _inFlightTasks.Remove(completed);
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        async Task ProcessReceivedMessageWorkerAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken workerToken)
+        {
+            try
+            {
+                await ProcessMessageAsync(messageContext, transactionContext, workerToken);
+                _logger.LogTrace("Message processed successfully");
+            }
+            catch (CriticalReceiverException e)
+            {
+                // First writer wins: publish to the loop-observed fault field so the loop stops and the existing
+                // outer-handler _criticalFailureNotifier.Notify path fires. Never lost in fire-and-forget.
+                Interlocked.CompareExchange(ref _workerCriticalFault, e, null);
+            }
+            catch (OperationCanceledException) when (workerToken.IsCancellationRequested)
+            {
+            }
+            catch (ObjectDisposedException) when (workerToken.IsCancellationRequested)
+            {
+            }
+            catch (PoisonedMessageException e)
+            {
+                _logger.LogError(e, "Poisoned message received. Deadlettering.");
+                await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Error processing brokered message");
+                var deliveryCount = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, workerToken), workerToken);
+                if (deliveryCount >= _options.MaxReceiveAttempts)
+                {
+                    if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken))
+                    {
+                        await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
+                    }
+                }
+                else
+                {
+                    await TryNackWithRecoveryAsync(messageContext, transactionContext, workerToken);
+                }
+            }
+            finally
+            {
+                ReleaseConcurrencySlot();
+            }
+        }
+
+        // INVARIANT: idempotent-safe release guarded against the disposed-semaphore race during shutdown, preserving
+        // the original finally's ObjectDisposedException swallow.
+        void ReleaseConcurrencySlot()
+        {
+            try
+            {
+                _concurrentMessagesSemaphore?.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        void ThrowIfWorkerCriticalFault()
+        {
+            var fault = Interlocked.CompareExchange(ref _workerCriticalFault, null, null);
+            if (fault != null)
+            {
+                throw fault;
+            }
+        }
+
+        void PruneCompletedWorkers()
+        {
+            lock (_inFlightTasksLock)
+            {
+                _inFlightTasks.RemoveWhere(t => t.IsCompleted);
+            }
+        }
+
+        async Task DrainInFlightWorkersAsync()
+        {
+            Task[] pending;
+            lock (_inFlightTasksLock)
+            {
+                pending = new Task[_inFlightTasks.Count];
+                _inFlightTasks.CopyTo(pending);
+            }
+
+            if (pending.Length == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.WhenAll(pending);
+            }
+            catch
+            {
+                // Worker faults are already handled inside ProcessReceivedMessageWorkerAsync (error ladder +
+                // _workerCriticalFault publication). Draining only needs to ensure every worker has QUIESCED before
+                // the semaphore / token source are disposed; individual fault outcomes are not re-surfaced here.
             }
         }
 
@@ -370,7 +535,16 @@ namespace Chatter.MessageBrokers.Receiving
 
         public async ValueTask DisposeAsync()
         {
+            // INVARIANT: signal cancellation and drain in-flight workers BEFORE the semaphore / token source are
+            // disposed so no worker touches a disposed SemaphoreSlim. Dispose(disposing: false) below does not
+            // dispose the managed semaphore/token source, so this is the async path's authoritative drain.
+            _messageReceiverLoopTokenSource?.Cancel();
+            await DrainInFlightWorkersAsync();
+
             await _infrastructureReceiver.DisposeAsync();
+
+            _concurrentMessagesSemaphore?.Dispose();
+            _messageReceiverLoopTokenSource?.Dispose();
 
             Dispose(disposing: false);
             GC.SuppressFinalize(this);
