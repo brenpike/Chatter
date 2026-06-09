@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Chatter.CQRS;
@@ -35,6 +36,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     {
         private readonly TaskCompletionSource<HandledRecord<TMessage>> _handled =
             new TaskCompletionSource<HandledRecord<TMessage>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly ConcurrentQueue<HandledRecord<TMessage>> _records =
+            new ConcurrentQueue<HandledRecord<TMessage>>();
         private int _invocationCount;
 
         // When non-null, the handler throws this (a fresh instance per invocation) after recording the
@@ -48,9 +51,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         // transiently-constructed handler instance.
         public int InvocationCount => Volatile.Read(ref _invocationCount);
 
+        // Every captured invocation in arrival order. Unlike Handled (which holds only the FIRST invocation),
+        // this lets a test assert on the PAYLOAD of a later delivery (e.g. that a committed follow-up actually
+        // arrived) rather than inferring it from the invocation count alone.
+        public IReadOnlyCollection<HandledRecord<TMessage>> Records => _records;
+
         internal void Record(HandledRecord<TMessage> record)
         {
             Interlocked.Increment(ref _invocationCount);
+            _records.Enqueue(record);
             _handled.TrySetResult(record);
         }
     }

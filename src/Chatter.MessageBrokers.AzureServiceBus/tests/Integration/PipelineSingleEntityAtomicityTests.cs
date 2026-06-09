@@ -111,6 +111,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             var observed = await harness.WaitForInvocationCountAsync<AtomicCommand>(2, HandlerWait);
             observed.Should().BeGreaterThanOrEqualTo(2,
                 "the follow-up sent within the committed atomic scope must be delivered to the same entity");
+
+            // Assert the actual follow-up PAYLOAD was delivered, not merely that the count reached 2. In the
+            // failure case the count could climb to 2 via a redelivery of the ORIGINAL (which is also recorded
+            // before the send) without the committed follow-up ever arriving; requiring a handled record whose
+            // IsFollowUp == true proves the follow-up send was committed and delivered, not inferred from the
+            // count.
+            harness.GetSignal<AtomicCommand>().Records
+                .Should().Contain(
+                    r => r.Message.IsFollowUp && r.Message.Value == "atomic-followup",
+                    "the committed atomic scope must deliver the follow-up payload to the same entity, not just " +
+                    "redeliver the original");
         }
     }
 }

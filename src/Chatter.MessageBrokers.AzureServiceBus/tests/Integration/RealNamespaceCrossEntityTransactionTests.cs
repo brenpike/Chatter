@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using Azure.Messaging.ServiceBus;
 using Chatter.CQRS;
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
@@ -181,6 +182,36 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             forwardArrived.Should().Be(
                 0,
                 "the forwarded send must roll back with the atomic scope, so QueueB receives nothing");
+
+            // On rollback the source is redelivered, and the QueueA receiver in BuildHarness uses the default
+            // maxReceiveAttempts (10), so the 'rollback' source is still active/locked on the fixture's shared
+            // QueueA at this point — NOT yet dead-lettered. Disposing the harness now could leave that stale
+            // source active; if the committed test then runs on the same QueueA it could consume the leftover
+            // and forward 'rollback-forwarded', making its commit assertion order-dependent. Drain QueueA
+            // (bounded) so the rolled-back source is settled before teardown.
+            await DrainQueueAsync(_namespace.QueueA, HandlerWait);
+        }
+
+        // Bounded drain of a real-namespace queue: ReceiveAndDelete-drains until it yields nothing within a
+        // short window, bounded by an overall timeout, so a rolled-back/redelivered source left active at
+        // teardown cannot leak into a later test on the same shared queue. Bounded so it never hangs CI.
+        private async Task DrainQueueAsync(string queue, TimeSpan timeout)
+        {
+            await using var client = new ServiceBusClient(_namespace.GetConnectionString());
+            var receiver = client.CreateReceiver(queue, new ServiceBusReceiverOptions
+            {
+                ReceiveMode = ServiceBusReceiveMode.ReceiveAndDelete,
+            });
+
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                var leftover = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(2));
+                if (leftover is null)
+                {
+                    return;
+                }
+            }
         }
     }
 }

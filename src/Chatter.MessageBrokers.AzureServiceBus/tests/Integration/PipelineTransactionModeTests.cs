@@ -66,6 +66,30 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             leftover.Should().BeNull($"queue '{queue}' must hold nothing extra after the pipeline settles the message");
         }
 
+        // Bounded drain: ReceiveAndDelete-drains the active queue until it yields nothing within a short window,
+        // bounded by an overall timeout. Used to WAIT for an in-flight settle/deadletter to finish (the active
+        // copy of the message disappears once Chatter abandons-to-deadletter at max attempts) so the next test
+        // on the SAME shared queue cannot consume a leftover that was still settling at teardown. Bounded so it
+        // never hangs CI.
+        private async Task DrainQueueAsync(string queue, TimeSpan timeout)
+        {
+            await using var client = new ServiceBusClient(_emulator.GetConnectionString());
+            var receiver = client.CreateReceiver(queue, new ServiceBusReceiverOptions
+            {
+                ReceiveMode = ServiceBusReceiveMode.ReceiveAndDelete,
+            });
+
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                var leftover = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(2));
+                if (leftover is null)
+                {
+                    return;
+                }
+            }
+        }
+
         // ReceiveOnly happy path: a command sent through Chatter is handled exactly once and settled
         // (Complete). No redelivery occurs within a bounded window, and the queue holds nothing extra.
         [RequiresDockerFact]
@@ -152,6 +176,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             // (count climbs past the first invocation) before Chatter deadletters at max attempts.
             var observed = await harness.WaitForInvocationCountAsync<ReceiveOnlyCommand>(2, HandlerWait);
             observed.Should().BeGreaterThanOrEqualTo(2, "a PeekLock receiver redelivers an abandoned message");
+
+            // Settlement happens AFTER the second invocation is observed: the throwing handler unwinds and
+            // Chatter abandons-to-deadletter at maxReceiveAttempts. Disposing the harness right here would
+            // cancel the receiver mid-settlement and could leave 'receive-only-redelivered' locked/abandoned on
+            // the SHARED chatter.receiveonly queue, where a later test on the same queue could consume it and
+            // fail nondeterministically. Drain the active queue (bounded) so any in-flight redelivery/settle is
+            // consumed before teardown, leaving nothing active for the next test.
+            await DrainQueueAsync(ReceiveOnlyQueue, HandlerWait);
         }
     }
 }
