@@ -42,9 +42,13 @@ namespace Microsoft.Extensions.DependencyInjection
             // INVARIANT: a single shared ServiceBusClient per namespace. Cross-entity transactions require
             // one client per namespace, so the client is a singleton built once from ServiceBusOptions with
             // EnableCrossEntityTransactions enabled; receivers and senders are created off this one client.
-            var sharedClient = CreateSharedClient(options);
-            builder.Services.AddSingleton(sharedClient);
-            builder.Services.AddSingleton<IServiceBusMessageSenderFactory>(new AzureSdkMessageSenderFactory(sharedClient));
+            // The client is registered via a factory delegate (not as a pre-built implementation instance) so
+            // the container OWNS it: Microsoft DI disposes only the singletons it creates, so factory
+            // registration ensures the client — and the senders cached off it — are disposed on provider
+            // teardown (e.g. when apps/tests dispose and rebuild the service provider).
+            builder.Services.AddSingleton(_ => CreateSharedClient(options));
+            builder.Services.AddSingleton<IServiceBusMessageSenderFactory>(sp =>
+                new AzureSdkMessageSenderFactory(sp.GetRequiredService<ServiceBusClient>()));
             builder.Services.AddSingleton<AzureServiceBusEntityPathBuilder>();
 
             builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, ServiceBusCircuitBreakerExceptionPredicatesProvider>();

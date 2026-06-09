@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Xunit;
 using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 
@@ -54,9 +55,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         }
 
         [Fact]
-        public void MustResolveMessagingInfrastructureWithAzureServiceBusType()
+        public async Task MustResolveMessagingInfrastructureWithAzureServiceBusType()
         {
-            using var provider = BuildProvider();
+            await using var provider = BuildProvider();
 
             var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
 
@@ -65,9 +66,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         }
 
         [Fact]
-        public void MustResolveReceiveInfrastructureAsServiceBusReceiver()
+        public async Task MustResolveReceiveInfrastructureAsServiceBusReceiver()
         {
-            using var provider = BuildProvider();
+            await using var provider = BuildProvider();
 
             var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
 
@@ -76,9 +77,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         }
 
         [Fact]
-        public void MustResolveDispatchInfrastructureAsServiceBusMessageSender()
+        public async Task MustResolveDispatchInfrastructureAsServiceBusMessageSender()
         {
-            using var provider = BuildProvider();
+            await using var provider = BuildProvider();
 
             var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
 
@@ -87,13 +88,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         }
 
         [Fact]
-        public void MustYieldDistinctReceiverInstancePerReceiveInfrastructureAccess()
+        public async Task MustYieldDistinctReceiverInstancePerReceiveInfrastructureAccess()
         {
             // Pins the documented per-Create behavior: each ReceiveInfrastructure access opens a fresh DI
             // scope, resolves the scoped ServiceBusReceiver, and disposes the scope — so the scoped
             // instance intentionally outlives the resolution scope and two accesses yield DISTINCT
             // instances.
-            using var provider = BuildProvider();
+            await using var provider = BuildProvider();
 
             var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
 
@@ -104,10 +105,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         }
 
         [Fact]
-        public void MustYieldDistinctDispatcherInstancePerDispatchInfrastructureAccess()
+        public async Task MustYieldDistinctDispatcherInstancePerDispatchInfrastructureAccess()
         {
             // Same fresh-scope-per-Create behavior for the dispatcher factory delegate.
-            using var provider = BuildProvider();
+            await using var provider = BuildProvider();
 
             var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
 
@@ -118,7 +119,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         }
 
         [Fact]
-        public void MustRegisterSharedServiceBusClientAsSingleton()
+        public async Task MustRegisterSharedServiceBusClientAsSingleton()
         {
             // Cross-entity transactions require ONE ServiceBusClient per namespace, so the client is
             // registered as a singleton built once from ServiceBusOptions.
@@ -129,14 +130,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             clientDescriptor.Should().NotBeNull();
             clientDescriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
 
-            using var provider = services.BuildServiceProvider();
+            await using var provider = services.BuildServiceProvider();
             provider.GetRequiredService<ServiceBusClient>().Should().NotBeNull();
         }
 
         [Fact]
-        public void MustResolveSenderFactoryAsAzureSdkMessageSenderFactory()
+        public async Task MustResolveSenderFactoryAsAzureSdkMessageSenderFactory()
         {
-            using var provider = BuildProvider();
+            await using var provider = BuildProvider();
 
             var senderFactory = provider.GetRequiredService<IServiceBusMessageSenderFactory>();
 
@@ -144,11 +145,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         }
 
         [Fact]
-        public void MustResolvePathBuilderAsAzureServiceBusEntityPathBuilder()
+        public async Task MustResolvePathBuilderAsAzureServiceBusEntityPathBuilder()
         {
             // Pins the 4-arg MessagingInfrastructure ctor path: PathBuilder is the ASB-specific
             // AzureServiceBusEntityPathBuilder, not the core DefaultBrokeredMessagePathBuilder.
-            using var provider = BuildProvider();
+            await using var provider = BuildProvider();
 
             var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
 
