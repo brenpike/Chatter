@@ -124,8 +124,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         }
 
         // INVARIANT: connection-string SAS auth is present when the connection string carries either a
-        // SharedAccessKey (key-based SAS) or a SharedAccessSignature (pre-signed SAS token). The old
-        // SDK's ServiceBusConnectionStringBuilder.SasToken/SasKey check is replaced by this direct parse.
+        // SharedAccessSignature (pre-signed SAS token) or a key-based SAS pair (SharedAccessKeyName AND
+        // SharedAccessKey). The connection string is PARSED into its fields via
+        // ServiceBusConnectionStringProperties rather than substring-matched on the raw string: a raw
+        // IndexOf("SharedAccessKey") also matches the SharedAccessKeyName key, so an endpoint-only string
+        // carrying SharedAccessKeyName (intended to pair with a TokenCredential for AAD) but no actual
+        // SharedAccessKey/SharedAccessSignature secret would be falsely detected as SAS, dropping the
+        // credential and falling back to a secret-less connection-string auth that cannot connect.
         private static bool ConnectionStringHasSas(string connectionString)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
@@ -133,8 +138,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 return false;
             }
 
-            return connectionString.IndexOf("SharedAccessKey", StringComparison.OrdinalIgnoreCase) >= 0
-                || connectionString.IndexOf("SharedAccessSignature", StringComparison.OrdinalIgnoreCase) >= 0;
+            ServiceBusConnectionStringProperties properties;
+            try
+            {
+                properties = ServiceBusConnectionStringProperties.Parse(connectionString);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+
+            var hasSharedAccessSignature = !string.IsNullOrWhiteSpace(properties.SharedAccessSignature);
+            var hasSharedAccessKeyPair = !string.IsNullOrWhiteSpace(properties.SharedAccessKeyName)
+                && !string.IsNullOrWhiteSpace(properties.SharedAccessKey);
+
+            return hasSharedAccessSignature || hasSharedAccessKeyPair;
         }
 
         internal ServiceBusOptions Build()

@@ -265,6 +265,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             options.TokenCredential.Should().BeNull();
         }
 
+        [Fact]
+        public void MustApplyTokenCredentialWhenConnectionStringHasKeyNameButNoSecret()
+        {
+            // Regression: SAS detection must PARSE the connection string fields, not substring-match the
+            // raw string. A connection string carrying SharedAccessKeyName (the key NAME) but no actual
+            // SharedAccessKey/SharedAccessSignature secret is NOT SAS-authenticated — it is intended to
+            // pair with a TokenCredential for AAD. A naive IndexOf("SharedAccessKey") matches the
+            // SharedAccessKeyName key and would falsely drop the credential.
+            const string keyNameOnlyConnectionString =
+                "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=k";
+            var marker = new MarkerTokenCredential();
+            var options = Create(new ServiceCollection(), EmptyConfig())
+                .WithConnectionString(keyNameOnlyConnectionString)
+                .AddTokenProvider(marker)
+                .Build();
+            options.TokenCredential.Should().BeSameAs(marker);
+        }
+
         private sealed class MarkerTokenCredential : TokenCredential
         {
             public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken)
