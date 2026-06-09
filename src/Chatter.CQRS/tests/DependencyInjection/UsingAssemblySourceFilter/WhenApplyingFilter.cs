@@ -2,6 +2,8 @@
 using Chatter.Testing.Core.Creators.Common;
 using Chatter.Testing.Core.Creators.CQRS;
 using FluentAssertions;
+using Moq;
+using System;
 using System.Linq;
 using System.Reflection;
 using Xunit;
@@ -255,6 +257,59 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceFilter
             var result = filter.Apply();
 
             result.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustTolerateAssemblyWhoseGetTypesThrowsReflectionTypeLoadExceptionAndStillDiscoverMatchingAssemblies()
+        {
+            var throwingAssemblyMock = new Mock<Assembly>();
+            throwingAssemblyMock.SetupGet(a => a.FullName).Returns("DynamicProxyGenAssembly2");
+            throwingAssemblyMock.Setup(a => a.GetTypes())
+                                .Throws(new ReflectionTypeLoadException(new Type[] { null }, new Exception[] { new Exception() }));
+
+            var @namespace = "This.is.a.Namespace";
+            var type = New.Common().Type
+                .WithNamespace(@namespace)
+                .Creation;
+            var matchingAssembly = New.Common().Assembly
+                .WithTypes(type)
+                .Creation;
+
+            var assemblyFilterSourceProvider = New.Cqrs().AssemblyFilterSourceProvider
+                .WithSourceAssemblies(throwingAssemblyMock.Object, matchingAssembly)
+                .Creation;
+
+            var filter = new AssemblySourceFilter(assemblyFilterSourceProvider, @namespace.ToUpper(), null);
+            var result = filter.Apply();
+
+            result.Should().HaveCount(1);
+            result.Should().Contain(matchingAssembly);
+        }
+
+        [Fact]
+        public void MustReturnNonNullLoadableTypesWhenGetTypesThrowsReflectionTypeLoadException()
+        {
+            var loadableType = New.Common().Type.Creation;
+            var assemblyMock = new Mock<Assembly>();
+            assemblyMock.Setup(a => a.GetTypes())
+                        .Throws(new ReflectionTypeLoadException(new Type[] { loadableType, null }, new Exception[] { new Exception() }));
+
+            var result = AssemblySourceFilter.SafeGetLoadableTypes(assemblyMock.Object);
+
+            result.Should().ContainSingle().Which.Should().BeSameAs(loadableType);
+        }
+
+        [Fact]
+        public void MustReturnAllTypesWhenGetTypesDoesNotThrow()
+        {
+            var type = New.Common().Type.Creation;
+            var assembly = New.Common().Assembly
+                .WithTypes(type)
+                .Creation;
+
+            var result = AssemblySourceFilter.SafeGetLoadableTypes(assembly);
+
+            result.Should().ContainSingle().Which.Should().BeSameAs(type);
         }
     }
 }

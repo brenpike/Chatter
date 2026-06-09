@@ -1,13 +1,12 @@
 using System;
-using System.Text;
 using System.Threading.Tasks;
-using Azure.Messaging.ServiceBus;
 using Chatter.CQRS;
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -19,31 +18,28 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     //
     //   Forwarding: a command is sent via IBrokeredMessageDispatcher.Send to chatter.forward.source. A handler
     //     on that queue (resolved by Chatter on the receive path) forwards a follow-up to chatter.forward.dest
-    //     via the broker context's Send (IMessageBrokerContext.Send). The forwarded message is then observed on
-    //     chatter.forward.dest by an edge-only raw-SDK receive, proving the forward routed through Chatter's
-    //     send path with its payload intact.
+    //     via the broker context's Send (IMessageBrokerContext.Send). A SECOND in-process Chatter receiver on
+    //     chatter.forward.dest then delivers the forwarded command to its RecordingMessageHandler, proving the
+    //     forward routed through Chatter's send path with its payload intact — end to end, with no raw-SDK edge.
     //
-    //     TOPOLOGY CONSTRAINT (why the dest is read at the edge, not via a second Chatter receiver): the
-    //     production ServiceBusClient is built with EnableCrossEntityTransactions = true
-    //     (ChatterAzureServiceBusExtensions.CreateSharedClient) and ALL receivers/senders are created off that
-    //     one shared client. With cross-entity transactions enabled, the Azure SDK pins the first entity the
-    //     client touches as the transaction "via" entity and REJECTS a second receiver bound to a different
-    //     top-level entity on the same client — "Local transactions cannot span multiple top-level entities
-    //     such as queue or topic" (Azure/azure-sdk-for-net#34997). So a second in-process Chatter receiver on
-    //     chatter.forward.dest cannot run alongside the chatter.forward.source receiver; its receive throws and
-    //     BrokeredMessageReceiver.StartReceiver swallows the failure (logs LogCritical, does not rethrow), so
-    //     the handler is simply never invoked. The forward itself succeeds (Chatter's send path runs under a
-    //     ReceiveOnly Suppress scope), so the delivered message is observed at the dest with a raw-SDK edge
-    //     receive instead of a second Chatter pump. See the suspected-production-concern note in the worker
-    //     report.
+    //     TOPOLOGY NOTE (why a second Chatter receiver on the dest now works): EnableCrossEntityTransactions is
+    //     opt-in and defaults OFF (ChatterAzureServiceBusExtensions auto-enables it only when a
+    //     FullAtomicityViaInfrastructure receiver is registered). Both receivers here are ReceiveOnly, so
+    //     cross-entity transactions stay OFF and the shared ServiceBusClient does NOT pin a single "via" entity
+    //     — a second receiver on a different top-level entity (chatter.forward.dest) coexists with the
+    //     chatter.forward.source receiver in one host. (When cross-entity transactions ARE on, the Azure SDK
+    //     still rejects receivers spanning multiple top-level entities — "Local transactions cannot span
+    //     multiple top-level entities such as queue or topic", Azure/azure-sdk-for-net#34997 — which the
+    //     DI-time startup guard now converts into a loud configuration failure; see
+    //     WhenConfiguringCrossEntityTransactions.)
     //
     //   Topic: an event is published via IBrokeredMessageDispatcher.Publish to chatter.topic. A receiver
     //     registered with AddTopicSubscription<TEvt>("chatter.topic","chatter.sub") delivers it to a
     //     RecordingMessageHandler, proving Chatter's topic publish + subscription receive path.
     //
-    // Raw Azure.Messaging.ServiceBus appears ONLY at the test EDGE to receive the forwarded message from
-    // chatter.forward.dest (mirroring the deadletter tests' edge peek of $DeadLetterQueue) — never as the
-    // system under test. The send/forward/publish are all Chatter calls.
+    // The send/forward/publish are all Chatter calls, and the forwarded message is observed via a second
+    // Chatter receiver (RecordingMessageHandler) rather than a raw-SDK edge receive — the whole path is
+    // Chatter's.
     //
     // All facts are gated by [RequiresDockerFact] and SKIPPED (never failed) when Docker is absent so a plain
     // `dotnet test` stays green; the emulator CI lane (`--filter Category=Integration`) runs them for real.
@@ -73,8 +69,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             public string Value { get; set; }
         }
 
-        // The command the source handler forwards to chatter.forward.dest. An edge-only raw-SDK receive on the
-        // dest queue captures it, proving the forward landed through Chatter's send path.
+        // The command the source handler forwards to chatter.forward.dest. A second in-process Chatter receiver
+        // on the dest delivers it to a RecordingMessageHandler, proving the forward landed through Chatter's
+        // send path.
         public sealed class ForwardedCommand : ICommand
         {
             public string Value { get; set; }
@@ -104,36 +101,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             }
         }
 
-        // Edge-only raw-SDK receive of the forwarded message from chatter.forward.dest. Chatter cannot run a
-        // second in-process receiver on this entity alongside the chatter.forward.source receiver (the shared
-        // EnableCrossEntityTransactions client rejects a second receiver on a different top-level entity — see
-        // the class-level TOPOLOGY CONSTRAINT note), so the Azure SDK is used here purely to observe the message
-        // Chatter's forward produced. PeekLock + explicit Complete drains it so a leftover cannot leak into a
-        // later run on the shared emulator. The body is the UTF-8 JSON Chatter's JsonBodyConverter wrote, so the
-        // forwarded payload is asserted by decoding the raw body rather than re-running Chatter's deserializer.
-        private async Task<string> ReceiveForwardedBodyAsync(TimeSpan timeout)
-        {
-            await using var client = new ServiceBusClient(_emulator.GetConnectionString());
-            var receiver = client.CreateReceiver(
-                ForwardDestQueue,
-                new ServiceBusReceiverOptions { ReceiveMode = ServiceBusReceiveMode.PeekLock });
-
-            var forwarded = await receiver.ReceiveMessageAsync(timeout);
-            if (forwarded is null)
-            {
-                return null;
-            }
-
-            await receiver.CompleteMessageAsync(forwarded);
-            return Encoding.UTF8.GetString(forwarded.Body.ToArray());
-        }
-
         // Forwarding through Chatter: a command sent to chatter.forward.source is consumed by a handler that
-        // forwards a follow-up to chatter.forward.dest via the broker context's Send. The forwarded message is
-        // observed on chatter.forward.dest by an edge-only raw-SDK receive, proving the forward routed through
-        // Chatter's send path with the payload intact. Only the source receiver runs in-process; the dest is
-        // read at the edge because the shared cross-entity-transaction client cannot host a second receiver on a
-        // different top-level entity (class-level TOPOLOGY CONSTRAINT note).
+        // forwards a follow-up to chatter.forward.dest via the broker context's Send. A SECOND in-process
+        // Chatter receiver on chatter.forward.dest delivers the forwarded command to its RecordingMessageHandler,
+        // proving the forward routed through Chatter's send path with the payload intact — end to end. Both
+        // receivers are ReceiveOnly, so cross-entity transactions stay OFF and both can run on the shared client
+        // (class-level TOPOLOGY NOTE).
         [RequiresDockerFact]
         public async Task HandlerForwardsToDestinationQueueThroughChatterSendPath()
         {
@@ -143,11 +116,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
                 {
                     // Receiver on the source queue, whose handler forwards via the broker context. Register the
                     // forwarding handler explicitly so Chatter resolves it (instead of a RecordingMessageHandler)
-                    // for SourceCommand on the receive path. NO dest receiver: a second receiver on
-                    // chatter.forward.dest would be rejected by the shared EnableCrossEntityTransactions client.
-                    sb.AddQueueReceiver<SourceCommand>(ForwardSourceQueue);
+                    // for SourceCommand on the receive path.
+                    sb.AddQueueReceiver<SourceCommand>(ForwardSourceQueue, transactionMode: TransactionMode.ReceiveOnly);
                     sb.Services.AddTransient<IMessageHandler<SourceCommand>, ForwardingSourceHandler>();
-                });
+
+                    // A second receiver on the dest queue: with cross-entity transactions OFF (both ReceiveOnly),
+                    // it coexists with the source receiver in one host and delivers the forwarded command to its
+                    // RecordingMessageHandler.
+                    sb.AddQueueReceiver<ForwardedCommand>(ForwardDestQueue, transactionMode: TransactionMode.ReceiveOnly);
+                },
+                typeof(ForwardedCommand));
             await harness.StartAsync();
 
             var dispatcher = harness.CreateDispatcher(out var scope);
@@ -157,15 +135,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             }
 
             // The source handler's forward (Chatter's send path) must land the ForwardedCommand on
-            // chatter.forward.dest; observe it at the edge. The wait is generous because the emulator must
-            // deliver the source message, run the handler, complete the forward send, then enqueue on the dest.
-            var forwardedBody = await ReceiveForwardedBodyAsync(HandlerWait);
+            // chatter.forward.dest, where the second Chatter receiver delivers it to its handler. The wait is
+            // generous because the emulator must deliver the source message, run the handler, complete the
+            // forward send, then deliver on the dest.
+            var handled = await harness.WaitForHandledAsync<ForwardedCommand>(HandlerWait);
 
-            forwardedBody.Should().NotBeNull(
+            handled.Message.Should().NotBeNull(
                 "the forwarded command must be delivered to chatter.forward.dest through Chatter's send path");
-            forwardedBody.Should().Contain(
+            handled.Message.Value.Should().Be(
                 "origin-forwarded",
-                "the dest queue must hold the exact payload the source handler forwarded");
+                "the dest receiver's handler must receive the exact payload the source handler forwarded");
         }
 
         // Topic publish/subscribe through Chatter: an event published to chatter.topic via Chatter's

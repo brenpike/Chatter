@@ -14,6 +14,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public string ConnectionString { get; set; }
         public int MaxConcurrentCalls { get; set; } = 1;
         public int PrefetchCount { get; set; } = 0;
+        // INVARIANT: cross-entity transactions are OFF by default. Enabling them pins the shared
+        // ServiceBusClient to the first top-level entity it touches, so a second receiver on a different
+        // top-level entity throws "Local transactions cannot span multiple top-level entities". This is
+        // auto-enabled when a FullAtomicityViaInfrastructure receiver is registered; opt in explicitly here
+        // only when a single-entity host needs cross-entity send+settle atomicity.
+        public bool EnableCrossEntityTransactions { get; set; }
         internal RetryPolicyConfiguation RetryPolicy { get; set; }
         [JsonIgnore]
         public ServiceBusRetryOptions RetryOptions { get; internal set; }

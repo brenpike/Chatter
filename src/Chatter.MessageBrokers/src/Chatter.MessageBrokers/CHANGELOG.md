@@ -6,11 +6,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
-### Added
+## [0.11.1] - 2026-06-09
 
 ### Changed
 
-### Fixed
+- Re-released to pull in Chatter.CQRS 0.8.1 (assembly-source scan no longer throws `ReflectionTypeLoadException` on dynamic/unloadable assemblies); no functional change to Chatter.MessageBrokers itself.
 
 ## [0.11.0] - 2026-06-07
 

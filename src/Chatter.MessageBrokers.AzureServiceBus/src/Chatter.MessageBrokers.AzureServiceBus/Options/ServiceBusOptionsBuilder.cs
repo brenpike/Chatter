@@ -18,6 +18,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         private int _prefetchCount = _defaultPrefetchCount;
         private ServiceBusRetryOptions _retryOptions = null;
         private IConfigurationSection _serviceBusOptionsSection = null;
+        // INVARIANT: null means WithCrossEntityTransactions was never called, so the config-bound value is
+        // left untouched. A non-null value means the fluent method was called and its value overrides any
+        // config-bound value in EITHER direction (explicit false overrides config true, explicit true
+        // overrides config false). This distinguishes "fluent method not called" from "called with the
+        // default value" — a plain bool defaulting to false could not tell those apart, which silently
+        // dropped an explicit WithCrossEntityTransactions(false) when config bound true.
+        private bool? _enableCrossEntityTransactions = null;
 
         private const int _defaultMaxConcurrentCalls = 1;
         private const int _defaultPrefetchCount = 0;
@@ -67,6 +74,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public ServiceBusOptionsBuilder WithPrefetchCount(int count)
         {
             _prefetchCount = count;
+            return this;
+        }
+
+        // Opts the shared ServiceBusClient into cross-entity transactions. Default is OFF: enabling this pins
+        // the client to a single top-level entity, so a host configured this way may register only one
+        // top-level receiver entity (enforced by a startup guard). A FullAtomicityViaInfrastructure receiver
+        // turns this on automatically; call this only to force it on for an explicitly single-entity host.
+        public ServiceBusOptionsBuilder WithCrossEntityTransactions(bool enabled = true)
+        {
+            _enableCrossEntityTransactions = enabled;
             return this;
         }
 
@@ -192,6 +209,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             if (_prefetchCount != _defaultPrefetchCount)
             {
                 options.PrefetchCount = _prefetchCount;
+            }
+
+            // Explicit fluent call wins over configuration: apply the fluent value only when
+            // WithCrossEntityTransactions was actually called, leaving the config-bound value untouched
+            // otherwise.
+            if (_enableCrossEntityTransactions.HasValue)
+            {
+                options.EnableCrossEntityTransactions = _enableCrossEntityTransactions.Value;
             }
 
             Services.AddSingleton(options);
