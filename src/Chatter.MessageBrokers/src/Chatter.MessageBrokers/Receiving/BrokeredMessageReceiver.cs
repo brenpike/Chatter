@@ -79,10 +79,20 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 await StartReceiverImpl(options, receiverTerminationToken);
             }
-            catch (Exception e)
+            catch (Exception e) when (this.IsReceiving)
             {
+                // INVARIANT: this.IsReceiving only becomes true once StartReceiverImpl has finished the startup
+                // phase (infrastructure resolve + InitializeAsync) and the steady-state receive loop is live.
+                // Exceptions caught here therefore escaped the running loop, NOT the startup phase. The receive
+                // loop owns its own transient/retry/circuit-breaker handling, so anything that reaches here is a
+                // post-startup runtime fault: log it critically and let the host keep running (existing behavior).
                 _logger.LogCritical(e, "Critical unhandled error occured during {executingFunction}", nameof(MessageReceiverLoopAsync));
             }
+            // INVARIANT: startup-fatal exceptions (e.g. the Azure Service Bus cross-entity-transactions guard's
+            // InvalidOperationException, or any infrastructure/configuration failure surfaced before the receive
+            // loop goes live) are intentionally NOT caught here. They propagate to the caller so that, when this
+            // runs under IHostedService.StartAsync, .NET aborts host startup loudly instead of leaving a silently
+            // stopped receiver in a still-running host.
 
             return this;
         }
