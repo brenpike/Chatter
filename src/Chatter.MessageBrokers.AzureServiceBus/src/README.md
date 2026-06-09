@@ -162,6 +162,25 @@ Both treat the following as transient (when `IsTransient` is `true`): `ServiceBu
 
 The connection string above uses SAS-based auth. Azure Active Directory (AAD) authentication — token providers such as managed identity / `ITokenProvider` integrations — is provided by the sibling package [`Chatter.MessageBrokers.AzureServiceBus.Auth`](#chatter-azureservicebus-auth). When a token provider is supplied (via `AddTokenProvider(...)`) and the connection string contains no SAS token/key, that token provider is used to authenticate to the namespace.
 
+## Testing
+
+### Real-namespace cross-entity transaction tests
+
+The `FullAtomicityViaInfrastructure` mode relies on Azure Service Bus cross-entity (multi-top-level-entity) transactions. The local Service Bus emulator **cannot** exercise these — it throws `Local transactions cannot span multiple top-level entities` — so the cross-entity atomic commit/rollback tests run only against a **real** Azure Service Bus namespace. They are tagged `Category=RealNamespaceIntegration` (deliberately *not* `Category=Integration`, so the emulator test lane never selects them).
+
+These tests **skip cleanly** when no real namespace is configured, so a plain `dotnet test` stays green without any Azure resources.
+
+**Run locally:** set the `CHATTER_ASB_REAL_NAMESPACE_CONNECTION_STRING` environment variable to a connection string for a real Azure Service Bus namespace. The string must carry the **Manage** claim, because the test fixture creates and deletes uniquely-named queues (per run) via the Service Bus administration client.
+
+```bash
+export CHATTER_ASB_REAL_NAMESPACE_CONNECTION_STRING="Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<key>"
+dotnet test src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj --filter 'Category=RealNamespaceIntegration'
+```
+
+When the variable is unset (or blank) the tests are skipped at discovery time.
+
+**Run in CI:** the `real-namespace-integration` job in `.github/workflows/ci.yml` runs this lane. Configure a GitHub Actions **repository secret** named `CHATTER_ASB_REAL_NAMESPACE_CONNECTION_STRING` (Manage-claim connection string) for it to execute. Without the secret (forks, or repos that have not configured it) the job is a clean no-op and never fails CI.
+
 ## Domain Language
 
 See the [domain glossary](../CONTEXT.md) for definitions of Service Bus Receiver, Service Bus Sender, Service Bus Options, Service Bus Retry, and Service Bus Circuit Breaker.
