@@ -347,24 +347,32 @@ namespace Chatter.MessageBrokers.Receiving
             }
             finally
             {
-                // Drain any still-running workers before the loop task completes so callers that await the loop
-                // (StartReceiverImpl / StopReceiver) observe a fully-quiesced receiver. ConfigureAwait(false): the
-                // loop already runs on the pool, but keep teardown context-free as defense-in-depth so the
-                // synchronous Dispose wait can never deadlock on a captured context.
-                await DrainInFlightWorkersAsync().ConfigureAwait(false);
-
                 // INVARIANT: notify EXACTLY ONCE on a critical fault, regardless of HOW the loop exited. A worker
                 // fault now also cancels the loop token (SignalLoopCriticalFault), so the loop can exit either by
                 // rethrowing the CriticalReceiverException (caught above) OR via OperationCanceledException from the
                 // cancelled token while a worker fault sits in _workerCriticalFault. Both routes converge here: if a
                 // fault was published by ANY path, fire the single notifier. The first-writer-wins field guarantees
                 // one fault value and the catch above never double-notifies (it only records into the same field).
+                //
+                // INVARIANT (fail-fast notify-BEFORE-drain): surface the critical fault to the host BEFORE awaiting
+                // the worker drain. With MaxConcurrentCalls > 1, a sibling worker that is blocked or that ignores the
+                // cancellation token can make DrainInFlightWorkersAsync's Task.WhenAll wait indefinitely. Notifying
+                // first guarantees the host learns of a critical receiver failure promptly (the fail-fast path) instead
+                // of being stalled behind an unbounded drain. The drain still runs afterward so the quiesce-before-
+                // dispose guarantee is preserved for callers that await the loop (StartReceiverImpl / StopReceiver).
                 var criticalFault = Interlocked.CompareExchange(ref _workerCriticalFault, null, null);
                 if (criticalFault != null)
                 {
                     _logger.LogCritical(criticalFault, "Receiver is unable continue due to critical error");
                     await _criticalFailureNotifier.Notify(new FailureContext(null, this.ErrorQueueName, "Critical error occurred", criticalFault, -1, null)).ConfigureAwait(false);
                 }
+
+                // Drain any still-running workers before the loop task completes so callers that await the loop
+                // (StartReceiverImpl / StopReceiver) observe a fully-quiesced receiver. ConfigureAwait(false): the
+                // loop already runs on the pool, but keep teardown context-free as defense-in-depth so the
+                // synchronous Dispose wait can never deadlock on a captured context. This runs AFTER the critical-fault
+                // notify above so an unbounded drain can never starve the fail-fast notification path.
+                await DrainInFlightWorkersAsync().ConfigureAwait(false);
             }
         }
 
