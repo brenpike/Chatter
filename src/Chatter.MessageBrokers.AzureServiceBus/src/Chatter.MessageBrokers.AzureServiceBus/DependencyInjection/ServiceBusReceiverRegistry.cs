@@ -23,10 +23,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
             _receivers.Add(new RegisteredReceiver(topLevelEntity, transactionMode));
         }
 
-        // True when any configured receiver requested FullAtomicityViaInfrastructure, which requires
-        // cross-entity transactions on the shared client.
-        public bool AnyRequiresCrossEntityTransactions()
-            => _receivers.Any(r => r.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure);
+        // True when any configured receiver's EFFECTIVE transaction mode is FullAtomicityViaInfrastructure,
+        // which requires cross-entity transactions on the shared client. A receiver registered with no
+        // per-call mode (null) inherits the global MessageBrokerOptions.TransactionMode at runtime (mirroring
+        // BrokeredMessageReceiver's `options.TransactionMode ??= _messageBrokerOptions.TransactionMode`), so
+        // the effective mode folds the global mode in: per-call ?? global.
+        public bool AnyRequiresCrossEntityTransactions(TransactionMode globalTransactionMode)
+            => _receivers.Any(r => (r.TransactionMode ?? globalTransactionMode) == TransactionMode.FullAtomicityViaInfrastructure);
 
         // The set of DISTINCT top-level receiver entities (queue names / topic names), case-insensitive to
         // match Azure Service Bus entity-name semantics. Used by the startup guard to detect the

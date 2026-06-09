@@ -27,6 +27,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 - Cross-entity transactions are no longer forced on, so a host can run multiple queue receivers on distinct entities again (regression introduced in 1.0.0 by the Azure.Messaging.ServiceBus migration).
 - The fatal cross-entity rejection now surfaces as a `CriticalReceiverException` instead of hanging silently.
+- A global `WithTransactionMode(FullAtomicityViaInfrastructure)` now correctly auto-enables cross-entity transactions on the shared client; previously only per-receiver transaction modes were honored, so receivers inheriting the global atomicity mode silently lost the cross-entity guarantee.
 
 ## [1.0.0] - 2026-06-08
 

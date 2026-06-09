@@ -1,5 +1,6 @@
 using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
@@ -28,12 +29,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>()).Build();
 
         private static ServiceCollection BuildServices(Action<ServiceBusOptionsBuilder> configure)
+            => BuildServices(configure, null);
+
+        private static ServiceCollection BuildServices(
+            Action<ServiceBusOptionsBuilder> configure,
+            Action<MessageBrokerOptionsBuilder> configureMessageBrokers)
         {
             var services = new ServiceCollection();
             services.AddLogging();
 
             services.AddChatterCqrs(EmptyConfig(), typeof(WhenConfiguringCrossEntityTransactions))
-                    .AddMessageBrokers()
+                    .AddMessageBrokers(configureMessageBrokers)
                     .AddAzureServiceBus(sb =>
                     {
                         sb.WithConnectionString(_connectionString);
@@ -127,6 +133,69 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
                 sb.AddTopicSubscription<FirstEvent>("shared-topic", "sub-1");
                 sb.AddTopicSubscription<SecondEvent>("shared-topic", "sub-2");
             }).BuildServiceProvider();
+
+            var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
+
+            resolveClient.Should().NotThrow();
+            resolveClient().Should().NotBeNull();
+        }
+
+        [Fact]
+        public async Task MustConstructSharedClientWhenGlobalFullAtomicityWithSingleReceiverWithoutPerCallMode()
+        {
+            // Regression guard for the bug: a GLOBAL WithTransactionMode(FullAtomicityViaInfrastructure) set on
+            // MessageBrokerOptions, with a single queue receiver carrying NO per-call mode, must auto-enable
+            // cross-entity transactions via the inherited global mode. With one top-level entity the guard does
+            // not trip and the client is constructed.
+            await using var provider = BuildServices(
+                sb => sb.AddQueueReceiver<FirstCommand>("queue-a"),
+                mb => mb.WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure))
+                .BuildServiceProvider();
+
+            var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
+
+            resolveClient.Should().NotThrow();
+            resolveClient().Should().NotBeNull();
+        }
+
+        [Fact]
+        public async Task MustThrowConfigurationGuardWhenGlobalFullAtomicitySpansMultipleTopLevelEntities()
+        {
+            // Global WithTransactionMode(FullAtomicityViaInfrastructure) folds into each receiver's effective
+            // mode, so two distinct top-level queue entities (neither with a per-call mode) trip the
+            // single-top-level-entity guard exactly as per-call atomicity would.
+            await using var provider = BuildServices(
+                sb =>
+                {
+                    sb.AddQueueReceiver<FirstCommand>("queue-a");
+                    sb.AddQueueReceiver<SecondCommand>("queue-b");
+                },
+                mb => mb.WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure))
+                .BuildServiceProvider();
+
+            var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
+
+            resolveClient.Should()
+                .Throw<InvalidOperationException>()
+                .WithMessage("*single top-level receiver entity*")
+                .WithMessage("*queue-a*")
+                .WithMessage("*queue-b*");
+        }
+
+        [Fact]
+        public async Task MustConstructSharedClientWhenGlobalReceiveOnlyWithTwoNonAtomicReceivers()
+        {
+            // Global ReceiveOnly (the default global mode) keeps cross-entity OFF, so two distinct non-atomic
+            // top-level entities are allowed and the guard does not trip — existing multi-receiver hosts are
+            // unaffected by the global-mode fold-in.
+            await using var provider = BuildServices(
+                sb =>
+                {
+                    sb.AddQueueReceiver<FirstCommand>("queue-a");
+                    sb.AddQueueReceiver<SecondCommand>("queue-b");
+                },
+                mb => mb.WithTransactionMode(TransactionMode.ReceiveOnly))
+                .BuildServiceProvider();
 
             var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
 

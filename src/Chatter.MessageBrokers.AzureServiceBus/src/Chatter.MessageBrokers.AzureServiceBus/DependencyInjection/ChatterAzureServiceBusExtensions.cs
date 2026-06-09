@@ -9,6 +9,7 @@ using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving.CircuitBreaker;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving.Retry;
 using Chatter.MessageBrokers.AzureServiceBus.Sending;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Retry;
@@ -62,7 +63,8 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddSingleton(sp =>
             {
                 var registry = sp.GetRequiredService<ServiceBusReceiverRegistry>();
-                var enableCrossEntityTransactions = ResolveEffectiveCrossEntityTransactions(options, registry);
+                var globalTransactionMode = sp.GetRequiredService<MessageBrokerOptions>().TransactionMode;
+                var enableCrossEntityTransactions = ResolveEffectiveCrossEntityTransactions(options, registry, globalTransactionMode);
                 return CreateSharedClient(options, enableCrossEntityTransactions);
             });
             builder.Services.AddSingleton<IServiceBusMessageSenderFactory>(sp =>
@@ -101,14 +103,16 @@ namespace Microsoft.Extensions.DependencyInjection
 
         // Computes the EFFECTIVE cross-entity-transactions flag for the shared client and enforces the
         // single-top-level-entity startup guard. Cross-entity is ON when explicitly opted in via
-        // ServiceBusOptions OR when any registered receiver requested FullAtomicityViaInfrastructure (which
-        // depends on it). When ON, Azure Service Bus pins the client to ONE top-level entity, so registering
-        // more than one distinct top-level receiver entity (queue name / topic name; subscriptions on the
-        // same topic count once) is unsupportable — fail fast and loud at startup rather than letting the SDK
-        // silently fail the second receiver.
-        private static bool ResolveEffectiveCrossEntityTransactions(ServiceBusOptions options, ServiceBusReceiverRegistry registry)
+        // ServiceBusOptions OR when any registered receiver's EFFECTIVE transaction mode is
+        // FullAtomicityViaInfrastructure (which depends on it). A receiver with no per-call mode inherits the
+        // global MessageBrokerOptions.TransactionMode, so globalTransactionMode is folded into that
+        // per-receiver effective-mode computation. When ON, Azure Service Bus pins the client to ONE
+        // top-level entity, so registering more than one distinct top-level receiver entity (queue name /
+        // topic name; subscriptions on the same topic count once) is unsupportable — fail fast and loud at
+        // startup rather than letting the SDK silently fail the second receiver.
+        private static bool ResolveEffectiveCrossEntityTransactions(ServiceBusOptions options, ServiceBusReceiverRegistry registry, TransactionMode globalTransactionMode)
         {
-            var effective = options.EnableCrossEntityTransactions || registry.AnyRequiresCrossEntityTransactions();
+            var effective = options.EnableCrossEntityTransactions || registry.AnyRequiresCrossEntityTransactions(globalTransactionMode);
             if (!effective)
             {
                 return false;
