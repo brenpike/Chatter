@@ -441,17 +441,47 @@ namespace Chatter.MessageBrokers.Receiving
             catch (Exception e)
             {
                 _logger.LogError(e, "Error processing brokered message");
-                var deliveryCount = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, workerToken), workerToken);
-                if (deliveryCount >= _options.MaxReceiveAttempts)
+
+                // INVARIANT: the generic processing-error recovery ladder must not let an UNEXPECTED fault escape the
+                // worker. TryAck/TryNack/TryDeadletter/TryExecuteFailedRecoveryAction each catch internally, but the
+                // delivery-count probe (MessageDeliveryCountAsync) is awaited OUTSIDE any protective try here. If it
+                // throws (e.g. recovery-strategy retries exhausted), the worker task would fault AFTER the slot is
+                // released, the loop never observes it (workers are fire-and-forget; only CriticalReceiverException is
+                // published to _workerCriticalFault), the in-flight continuation removes it, and DrainInFlightWorkersAsync
+                // swallows worker faults — the message is left unsettled while the receiver still reports healthy. In the
+                // pre-parallelization serial loop this exception escaped to the loop and was logged critically. Restore
+                // that VISIBILITY by catching an unexpected fault in this branch and logging it critically rather than
+                // letting it vanish. A CriticalReceiverException is NOT caught here (it never originates from this ladder
+                // and would be handled by its own catch above), so circuit-breaker/critical-stop semantics are unchanged.
+                try
                 {
-                    if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken))
+                    var deliveryCount = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, workerToken), workerToken);
+                    if (deliveryCount >= _options.MaxReceiveAttempts)
                     {
-                        await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
+                        if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken))
+                        {
+                            await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
+                        }
+                    }
+                    else
+                    {
+                        await TryNackWithRecoveryAsync(messageContext, transactionContext, workerToken);
                     }
                 }
-                else
+                catch (OperationCanceledException) when (workerToken.IsCancellationRequested)
                 {
-                    await TryNackWithRecoveryAsync(messageContext, transactionContext, workerToken);
+                    // Shutdown cancellation during recovery: benign, swallowed like the worker's other cancellation paths.
+                }
+                catch (ObjectDisposedException) when (workerToken.IsCancellationRequested)
+                {
+                }
+                catch (Exception recoveryError)
+                {
+                    // The settlement/recovery probe itself failed unexpectedly (the message could not be settled). Surface
+                    // it critically — matching the serial loop's visibility — instead of letting the worker fault silently
+                    // and the unsettled message look healthy. The loop is unaffected; this single message's settlement
+                    // failure is now observable in logs rather than swallowed by the worker drain.
+                    _logger.LogCritical(recoveryError, "Unrecoverable failure settling brokered message after a processing error; message may remain unsettled");
                 }
             }
             finally
