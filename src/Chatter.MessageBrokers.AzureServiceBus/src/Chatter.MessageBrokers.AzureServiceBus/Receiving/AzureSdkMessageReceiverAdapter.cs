@@ -3,6 +3,7 @@ using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using SdkServiceBusReceiver = Azure.Messaging.ServiceBus.ServiceBusReceiver;
 
@@ -71,7 +72,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         public bool IsClosedOrClosing => _innerReceiver != null && _innerReceiver.IsClosed;
 
-        public Task<ServiceBusReceivedMessage> ReceiveAsync() => InnerReceiver.ReceiveMessageAsync();
+        public Task<ServiceBusReceivedMessage> ReceiveAsync(CancellationToken cancellationToken)
+            => InnerReceiver.ReceiveMessageAsync(maxWaitTime: null, cancellationToken);
 
         public Task CompleteAsync(ServiceBusReceivedMessage message) => InnerReceiver.CompleteMessageAsync(message);
 

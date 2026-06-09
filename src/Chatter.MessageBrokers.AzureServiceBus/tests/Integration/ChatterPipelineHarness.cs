@@ -58,6 +58,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             string connectionString,
             Action<ServiceBusOptionsBuilder> configureReceivers,
             params Type[] messageTypes)
+            => Build(connectionString, configureReceivers, configureServices: null, messageTypes);
+
+        // Overload with an additive, post-Chatter-wiring service-registration hook. configureServices (when
+        // non-null) runs AFTER the full Chatter graph + RecordingMessageHandler registrations are in place and
+        // BEFORE BuildServiceProvider(), so a test can register custom services (e.g. a coordinator-driven
+        // blocking IMessageHandler<TMessage> and a shared coordinator singleton) into Chatter's REAL DI graph
+        // and have Chatter's dispatcher resolve them on the receive path. A later IMessageHandler<TMessage>
+        // registration replaces the harness's default RecordingMessageHandler<TMessage> for that type (last
+        // registration wins for GetRequiredService), letting a test substitute its own handler. The
+        // parameterless-hook overload above forwards configureServices: null so every existing caller compiles
+        // and behaves identically.
+        public static ChatterPipelineHarness Build(
+            string connectionString,
+            Action<ServiceBusOptionsBuilder> configureReceivers,
+            Action<IServiceCollection> configureServices,
+            params Type[] messageTypes)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
             {
@@ -103,6 +119,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
                 var handlerImplementation = typeof(RecordingMessageHandler<>).MakeGenericType(messageType);
                 services.AddTransient(handlerInterface, handlerImplementation);
             }
+
+            // Additive hook: a test may register custom services into the real Chatter graph here (after Chatter
+            // wiring + the default RecordingMessageHandler registrations, before the provider is built). A handler
+            // registered here for a type already wired above wins on resolution (last registration), so a test can
+            // substitute a coordinator-driven handler for the default recorder.
+            configureServices?.Invoke(services);
 
             var provider = services.BuildServiceProvider();
 

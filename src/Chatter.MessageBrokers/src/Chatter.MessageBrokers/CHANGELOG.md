@@ -6,6 +6,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+## [0.13.0] - 2026-06-09
+
+### Added
+
+- Real concurrent message processing bounded by `MaxConcurrentCalls`: `BrokeredMessageReceiver` now fans out up to `MaxConcurrentCalls` concurrent processing workers, gated by a semaphore (default `MaxConcurrentCalls = 1` preserves the existing sequential behavior unchanged). Satisfies the "not yet delivered (#147)" caveat carried in the 0.12.0 release notes — real parallelism is now delivered and test-verified (#147).
+
 ## [0.12.0] - 2026-06-09
 
 ### Added
