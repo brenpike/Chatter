@@ -45,7 +45,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             return mock;
         }
 
-        private static ReceiverOptions BuildReceiverOptions(int maxReceiveAttempts = 10)
+        private static ReceiverOptions BuildReceiverOptions(int maxReceiveAttempts = 10, int maxConcurrentCalls = 1)
             => new ReceiverOptions
             {
                 InfrastructureType = InMemoryMessagingInfrastructureProvider.InfrastructureType,
@@ -55,6 +55,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 DeadLetterQueuePath = "deadletter-queue",
                 TransactionMode = TransactionMode.None,
                 MaxReceiveAttempts = maxReceiveAttempts,
+                MaxConcurrentCalls = maxConcurrentCalls,
             };
 
         // INVARIANT: body must deserialise cleanly as FakeMessage for non-poison tests.
@@ -265,6 +266,39 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             infraReceiver.CallLog.Should().NotContain(ReceiverCall.Nack);
             infraReceiver.CallLog.Should().NotContain(ReceiverCall.Ack);
             maxReceivesAction.Verify(a => a.ExecuteAsync(It.IsAny<FailureContext>()), Times.Once);
+        }
+
+        // ------------------------------------------------------------------ (MaxConcurrentCalls) honored at receiver init
+
+        [Fact]
+        public async Task MustReceiveSuccessfullyWhenMaxConcurrentCallsAboveDefault()
+        {
+            // StartReceiverImpl reads ReceiverOptions.MaxConcurrentCalls into the concurrency semaphore at init
+            // (_concurrentMessagesSemaphore = new SemaphoreSlim(maxConcurrentCalls, maxConcurrentCalls)). A value
+            // above the default 1 must be accepted and leave the receive→dispatch→Ack path working — proving the
+            // new option is wired through receiver startup without regressing the loop. (The single receive loop
+            // is sequential, so concurrency throughput is not observable through the in-memory double; this pins
+            // that a >1 value is honored at init rather than rejected.)
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 1);
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            infraReceiver.Enqueue(BuildContext());
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            using var cts = new CancellationTokenSource();
+            var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls: 4), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
+            await WaitForDispositionAsync(infraReceiver, ReceiverCall.Ack, watchdog.Token);
+
+            cts.Cancel();
+            await loop;
+
+            infraReceiver.CallLog.Should().Contain(ReceiverCall.Ack);
+            dispatcher.Verify(
+                d => d.DispatchAsync(It.IsAny<FakeMessage>(), It.IsAny<MessageBrokerContext>(), It.IsAny<CancellationToken>()),
+                Times.Once);
         }
     }
 }

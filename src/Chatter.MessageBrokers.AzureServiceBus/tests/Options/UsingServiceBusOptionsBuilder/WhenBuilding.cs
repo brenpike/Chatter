@@ -235,6 +235,70 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             options.PrefetchCount.Should().Be(0);
         }
 
+        // -------------------------------------------------- (F5) explicit fluent value wins over config binding
+
+        [Fact]
+        public void MustPreferExplicitDefaultMaxConcurrentCallsOverConfigValue()
+        {
+            // F5 nullable-backing-field guard: WithMaxConcurrentCalls(1) is the DEFAULT value, but calling it
+            // explicitly must still win over a config-bound non-default value. A plain int backing field
+            // defaulting to 1 could not distinguish "called with 1" from "never called" and would silently
+            // drop the explicit override, leaving the config-bound 5 in place.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:MaxConcurrentCalls"] = "5",
+            });
+            var options = Create(new ServiceCollection(), config)
+                .WithMaxConcurrentCalls(1)
+                .Build();
+            options.MaxConcurrentCalls.Should().Be(1);
+        }
+
+        [Fact]
+        public void MustPreserveConfigMaxConcurrentCallsWhenFluentNotCalled()
+        {
+            // F5: WithMaxConcurrentCalls NOT called leaves the config-bound value untouched — the nullable
+            // backing field stays null so no fluent override is applied.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:MaxConcurrentCalls"] = "5",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.MaxConcurrentCalls.Should().Be(5);
+        }
+
+        [Fact]
+        public void MustPreferExplicitDefaultPrefetchCountOverConfigValue()
+        {
+            // F5 nullable-backing-field guard: WithPrefetchCount(0) is the DEFAULT value, but calling it
+            // explicitly must still win over a config-bound non-default value (10), exactly as
+            // MaxConcurrentCalls does.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:PrefetchCount"] = "10",
+            });
+            var options = Create(new ServiceCollection(), config)
+                .WithPrefetchCount(0)
+                .Build();
+            options.PrefetchCount.Should().Be(0);
+        }
+
+        [Fact]
+        public void MustPreserveConfigPrefetchCountWhenFluentNotCalled()
+        {
+            // F5: WithPrefetchCount NOT called leaves the config-bound value untouched.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:PrefetchCount"] = "10",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.PrefetchCount.Should().Be(10);
+        }
+
         [Fact]
         public void MustNotApplyTokenCredentialWhenConnectionStringHasSas()
         {
