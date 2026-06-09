@@ -10,7 +10,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Added
 
-- `ReceiverOptions.MaxConcurrentCalls` (default 1) — concurrency is now a live, honored option instead of hard-coded to 1.
+- `ReceiverOptions.MaxConcurrentCalls` (default 1) — is now carried through as a source-of-truth value (previously hard-coded to 1) and sizes the receive-loop semaphore. NOTE: actual parallel message processing is not yet delivered; the value is honored at receiver init but the receive loop still processes one message at a time. Real concurrency is tracked as a follow-up (#147).
+- `IReceiveMessages.ReceivingStarted` (`Task`) — completes when a receiver transitions to the receiving state, enabling host startup to await go-live without polling.
 - `IDiscoveredReceiverRegistry` / `DiscoveredReceiverRegistry` — a generic, infrastructure-agnostic seam that retains discovered receiver options so any messaging infrastructure (in-repo, out-of-repo, or consumer-built) can participate in its own startup bookkeeping without re-scanning assemblies.
 
 ### Fixed

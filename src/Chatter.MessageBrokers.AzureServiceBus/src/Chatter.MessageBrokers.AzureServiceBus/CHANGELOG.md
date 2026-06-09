@@ -16,7 +16,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
-- The global `ServiceBusOptions.MaxConcurrentCalls` is now propagated to receivers (was previously a dead option — receivers always ran single-threaded).
+- The global `ServiceBusOptions.MaxConcurrentCalls` is now propagated to receivers as a source-of-truth value (previously a dead option). NOTE: this does not yet enable parallel message processing — that is tracked as a follow-up (#147).
 
 ### Fixed
 
