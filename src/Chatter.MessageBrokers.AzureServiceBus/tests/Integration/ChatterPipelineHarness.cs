@@ -71,6 +71,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             var configuration = new ConfigurationBuilder().Build();
             var services = new ServiceCollection();
 
+            // A real host (Host.CreateDefaultBuilder / WebApplication) registers logging automatically; this
+            // bare ServiceCollection does not. Chatter's receiver graph (MessagingInfrastructureProvider and
+            // the BrokeredMessageReceiverBackgroundService<T> hosted services it backs) depends on ILogger<T>,
+            // so without AddLogging the hosted-service activation throws "Unable to resolve service for type
+            // ILogger`1[...]". Register it up front so the whole Chatter graph resolves.
+            services.AddLogging();
+
             var registry = new HandlerSignalRegistry();
             services.AddSingleton(registry);
 
