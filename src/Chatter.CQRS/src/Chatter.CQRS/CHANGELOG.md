@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.8.1] - 2026-06-08
+
+### Fixed
+
+- Assembly-source scan no longer throws `ReflectionTypeLoadException` when a loaded assembly (e.g. a dynamic-proxy/mock assembly) contains unloadable types; it now uses the loadable types.
+
 ## [0.8.0] - 2026-05-30
 
 ### Changed

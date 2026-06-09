@@ -51,8 +51,26 @@ namespace Chatter.CQRS.DependencyInjection
             => ExplictAssemblies.Union(GetAssembliesThatMatchNamespaceSelector());
 
         private IEnumerable<Assembly> GetAssembliesThatMatchNamespaceSelector()
-            => AssemblySourceProvider.GetSourceAssemblies().Where(assembly => assembly.GetTypes()
+            => AssemblySourceProvider.GetSourceAssemblies().Where(assembly => SafeGetLoadableTypes(assembly)
                 .Any(type => IsMatchingNamespaceSelector(type.Namespace)) || IsMatchingNamespaceSelector(assembly.FullName));
+
+        /// <summary>
+        /// Returns the types defined in <paramref name="assembly"/>, falling back to the loadable subset when the
+        /// assembly contains unloadable types. A loaded assembly with unloadable types (e.g. a dynamic-proxy/mock
+        /// assembly such as DynamicProxyGenAssembly2) would otherwise cause <see cref="Assembly.GetTypes"/> to throw
+        /// <see cref="ReflectionTypeLoadException"/> and abort the entire assembly-source scan.
+        /// </summary>
+        internal static IEnumerable<Type> SafeGetLoadableTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                return ex.Types.Where(type => type is not null)!;
+            }
+        }
 
         private bool IsMatchingNamespaceSelector(string comparator)
             => string.IsNullOrWhiteSpace(NamespaceSelector)
