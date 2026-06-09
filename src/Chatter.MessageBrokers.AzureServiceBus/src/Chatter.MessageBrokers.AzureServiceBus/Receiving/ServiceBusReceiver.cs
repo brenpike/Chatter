@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
@@ -19,6 +20,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // description is capped at this length (matching the SDK's char-based validation) before dispatch.
         private const int MaxDeadLetterErrorDescriptionLength = 4096;
         private const string DeadLetterErrorDescriptionTruncationMarker = "…[truncated]";
+        // The AMQP-level signal Azure Service Bus returns when a cross-entity-transaction client touches a
+        // second top-level entity. The SDK surfaces this as a non-transient ServiceBusException (or an
+        // InvalidOperationException from the client-side enlistment guard); the message text is the stable
+        // discriminator across SDK versions and exception shapes.
+        private const string CrossEntityTransactionRejectionMarker = "multiple top-level entities";
 
         readonly object _syncLock;
         private readonly ILogger<ServiceBusReceiver> _logger;
@@ -142,6 +148,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
                 return null;
             }
+            catch (Exception e) when (IsCrossEntityTransactionRejection(e))
+            {
+                // Defense-in-depth behind the DI-time startup guard: when cross-entity transactions are on,
+                // Azure Service Bus pins the shared client to the first top-level entity it touches and
+                // rejects a second receiver on a different top-level entity ("cannot span multiple top-level
+                // entities"). This is fatal and non-recoverable, so it is rethrown as CriticalReceiverException
+                // to stop the core receive loop loudly instead of being retried as a transient failure.
+                _logger.LogCritical(e, "Azure Service Bus rejected the receiver because cross-entity transactions cannot span multiple top-level entities");
+                throw new CriticalReceiverException(e);
+            }
             catch (Exception e)
             {
                 _logger.LogError(e, "Failure to receive message from Azure Serivce Bus");
@@ -236,6 +252,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             var headLength = MaxDeadLetterErrorDescriptionLength - DeadLetterErrorDescriptionTruncationMarker.Length;
             return deadLetterErrorDescription.Substring(0, headLength) + DeadLetterErrorDescriptionTruncationMarker;
+        }
+
+        // Classifies a receive-path exception as the fatal cross-entity-transaction rejection. Matches both
+        // the non-transient ServiceBusException and the InvalidOperationException shapes the SDK may raise, on
+        // the stable "multiple top-level entities" message marker. A transient ServiceBusException is NOT
+        // matched here — it is handled by the dedicated transient branch above.
+        private static bool IsCrossEntityTransactionRejection(Exception exception)
+        {
+            if (exception is ServiceBusException sbe && sbe.IsTransient)
+            {
+                return false;
+            }
+
+            return (exception is ServiceBusException || exception is InvalidOperationException)
+                && exception.Message != null
+                && exception.Message.IndexOf(CrossEntityTransactionRejectionMarker, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         public TransactionScope CreateLocalTransaction(TransactionContext context)
