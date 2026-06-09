@@ -31,6 +31,12 @@ namespace Chatter.MessageBrokers.Receiving
         private readonly IMaxReceivesExceededAction _failedRecoveryAction;
         private readonly ICriticalFailureNotifier _criticalFailureNotifier;
 
+        // INVARIANT: completed exactly once, at the IsReceiving = true seam in StartReceiverImpl. Backs the
+        // ReceivingStarted startup-completion signal so callers gate on go-live without polling IsReceiving.
+        // RunContinuationsAsynchronously keeps the awaiter's continuation off the receive-loop start path.
+        private readonly TaskCompletionSource<bool> _receivingStartedSource =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
         /// <summary>
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
         /// </summary>
@@ -63,6 +69,9 @@ namespace Chatter.MessageBrokers.Receiving
         /// Indicates if the <see cref="BrokeredMessageReceiverBackgroundService{TMessage}"/> is currently receiving messages
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
+
+        ///<inheritdoc/>
+        public Task ReceivingStarted => _receivingStartedSource.Task;
 
         public string SendingPath { get; private set; }
         public string MessageReceiverPath { get; private set; }
@@ -138,6 +147,7 @@ namespace Chatter.MessageBrokers.Receiving
 
             _messageReceiverLoop = MessageReceiverLoopAsync();
             this.IsReceiving = true;
+            _receivingStartedSource.TrySetResult(true);
             _logger.LogInformation("'{executingFunction}' has started receiving messages of type '{receiverMessageType}'.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
             await _messageReceiverLoop;
             _logger.LogInformation("'{executingFunction}' for messages of type '{receiverMessageType}' is shutting down.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);

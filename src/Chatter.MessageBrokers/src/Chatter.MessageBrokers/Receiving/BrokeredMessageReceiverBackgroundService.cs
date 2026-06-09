@@ -52,21 +52,27 @@ namespace Chatter.MessageBrokers.Receiving
                 return;
             }
 
-            while (!_receiver.IsReceiving)
-            {
-                if (executeTask.IsCompleted)
-                {
-                    // Faulted before going live => startup-fatal. Awaiting re-throws the original exception
-                    // (e.g. the cross-entity guard's InvalidOperationException) so host startup aborts.
-                    // A clean completion before going live means the receiver shut down during startup with
-                    // nothing to run, so there is nothing left to await for the lifetime.
-                    await executeTask.ConfigureAwait(false);
-                    return;
-                }
+            // Wait — without busy-polling IsReceiving — for the first of three ordering signals:
+            //   - ReceivingStarted: the receiver went live (IsReceiving became true); startup succeeded.
+            //   - executeTask: ExecuteAsync completed/faulted before going live; a fault is startup-fatal.
+            //   - cancellationToken: host startup was cancelled.
+            var startedSignal = _receiver.ReceivingStarted;
+            var cancellationSignal = Task.Delay(Timeout.Infinite, cancellationToken);
+            await Task.WhenAny(startedSignal, executeTask, cancellationSignal).ConfigureAwait(false);
 
-                cancellationToken.ThrowIfCancellationRequested();
-                await Task.Yield();
+            if (executeTask.IsCompleted && !startedSignal.IsCompleted)
+            {
+                // ExecuteAsync ended before the receiver signalled go-live. Awaiting re-throws a startup-fatal
+                // fault (e.g. the cross-entity guard's InvalidOperationException) so .NET aborts host startup
+                // loudly. A clean completion before going live means the receiver shut down during startup with
+                // nothing to run, so there is nothing left to await for the lifetime.
+                await executeTask.ConfigureAwait(false);
+                return;
             }
+
+            // Either the receiver went live (return so ExecuteAsync keeps running for the receiver's lifetime)
+            // or startup was cancelled (surface the OperationCanceledException as the prior code did).
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         ///<inheritdoc/>
