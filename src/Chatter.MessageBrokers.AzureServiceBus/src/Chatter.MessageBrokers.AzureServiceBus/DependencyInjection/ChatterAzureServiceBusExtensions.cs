@@ -219,6 +219,18 @@ namespace Microsoft.Extensions.DependencyInjection
         // registration time (no provider build) — the same object the receivers' hosted-service closures
         // captured. Stamping MaxConcurrentCalls on a retained instance is therefore visible when
         // BrokeredMessageReceiver reads ReceiverOptions.MaxConcurrentCalls at init.
+        //
+        // INVARIANT: a blank/empty ReceiverOptions.InfrastructureType is resolved by the core
+        // MessagingInfrastructureProvider to the FIRST-REGISTERED IMessagingInfrastructure (its _default =
+        // infrastructures.FirstOrDefault()), NOT unconditionally to ASB. This method runs BEFORE ASB registers
+        // its OWN IMessagingInfrastructure descriptor (the AddSingleton<IMessagingInfrastructure> in
+        // AddAzureServiceBus, below this call), so ANY IMessagingInfrastructure descriptor already present in
+        // `services` at this point belongs to an EARLIER-registered broker. If one exists, that earlier broker —
+        // not ASB — is the core's default, so blank-typed receivers are NOT ASB's and must not be claimed.
+        // `asbIsDefault` reproduces the core's first-registered-wins resolution BY CONSTRUCTION at ASB's own
+        // registration time. ACCEPTED BOUNDARY: a consumer that reorders registrations by adding an
+        // IMessagingInfrastructure AFTER AddAzureServiceBus would shift the core default away from ASB; this
+        // method only sees the descriptors present when AddAzureServiceBus runs.
         private static void PopulateFromDiscoveredReceivers(IServiceCollection services, ServiceBusReceiverRegistry receiverRegistry, ServiceBusOptions options)
         {
             var discoveredRegistry = services
@@ -229,9 +241,11 @@ namespace Microsoft.Extensions.DependencyInjection
                 return;
             }
 
+            var asbIsDefault = !services.Any(d => d.ServiceType == typeof(IMessagingInfrastructure));
+
             foreach (var receiverOptions in discoveredRegistry.DiscoveredReceivers)
             {
-                if (!IsAzureServiceBusReceiver(receiverOptions.InfrastructureType))
+                if (!IsAzureServiceBusReceiver(receiverOptions.InfrastructureType, asbIsDefault))
                 {
                     continue;
                 }
@@ -254,11 +268,15 @@ namespace Microsoft.Extensions.DependencyInjection
             }
         }
 
-        // An ASB receiver is one explicitly typed to ASB OR one left on the default infrastructure (empty
-        // InfrastructureType), which the runtime resolves to the FIRST registered infrastructure
-        // (MessagingInfrastructureProvider). Receivers typed to a DIFFERENT infrastructure are excluded.
-        private static bool IsAzureServiceBusReceiver(string infrastructureType)
-            => string.IsNullOrWhiteSpace(infrastructureType)
+        // An ASB receiver is one EXPLICITLY typed to ASB (always claimed) OR one left on the default
+        // infrastructure (blank/empty InfrastructureType) ONLY WHEN ASB is the core's resolved default. The core
+        // MessagingInfrastructureProvider resolves a blank InfrastructureType to the FIRST-REGISTERED
+        // IMessagingInfrastructure, so a blank-typed receiver is ASB's only when no earlier broker registered its
+        // own infrastructure first (asbIsDefault == true). When an earlier broker is the default, blank-typed
+        // receivers belong to it and are excluded here, matching the runtime's attribution. Receivers typed to a
+        // DIFFERENT non-ASB infrastructure are always excluded.
+        private static bool IsAzureServiceBusReceiver(string infrastructureType, bool asbIsDefault)
+            => (asbIsDefault && string.IsNullOrWhiteSpace(infrastructureType))
             || string.Equals(infrastructureType, ASBMessageContext.InfrastructureType, StringComparison.Ordinal);
 
         // Mirrors AzureServiceBusEntityPathBuilder's queue-vs-subscription inference: a queue receiver's

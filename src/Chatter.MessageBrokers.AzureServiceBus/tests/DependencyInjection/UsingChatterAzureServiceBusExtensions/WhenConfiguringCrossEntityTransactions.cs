@@ -3,6 +3,7 @@ using Chatter.MessageBrokers.AzureServiceBus;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -505,6 +506,147 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
                 .Single(r => r.MessageReceiverPath == "core-queue-a");
 
             asbReceiver.MaxConcurrentCalls.Should().Be(1);
+        }
+
+        // ----------------------------------------------------------------- default-infrastructure resolution (multi-broker)
+
+        // A non-ASB IMessagingInfrastructure whose Type is a distinct key. Registering this BEFORE AddAzureServiceBus
+        // makes it the core MessagingInfrastructureProvider's default (_default = infrastructures.FirstOrDefault()),
+        // so a blank-InfrastructureType receiver resolves to THIS broker, not ASB. Only the Type is exercised by
+        // these DI-time guard tests; the factory members are never invoked, so they are left unimplemented.
+        private sealed class PriorInfrastructure : IMessagingInfrastructure
+        {
+            public const string PriorInfrastructureType = "prior-broker-test";
+
+            public string Type => PriorInfrastructureType;
+
+            public IMessagingInfrastructureReceiver ReceiveInfrastructure
+                => throw new NotImplementedException();
+
+            public IMessagingInfrastructureDispatcher DispatchInfrastructure
+                => throw new NotImplementedException();
+
+            public IBrokeredMessagePathBuilder PathBuilder
+                => throw new NotImplementedException();
+        }
+
+        // Builds services where a non-ASB IMessagingInfrastructure is registered (via the core message-broker seam)
+        // BEFORE AddAzureServiceBus runs, plus core-route receivers. The prior infrastructure is added inside the
+        // AddMessageBrokers(configureReceivers) delegate, which the harness invokes before AddAzureServiceBus, so at
+        // PopulateFromDiscoveredReceivers time an earlier IMessagingInfrastructure descriptor already exists and ASB
+        // is NOT the resolved default — exactly the multi-broker ordering the default-resolution guard depends on.
+        private static ServiceCollection BuildServicesWithPriorInfrastructureAndCoreReceivers(
+            Action<ServiceBusOptionsBuilder> configureServiceBus,
+            Action<MessageBrokerOptionsBuilder> configureReceivers)
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+
+            services.AddChatterCqrs(EmptyConfig(), typeof(WhenConfiguringCrossEntityTransactions))
+                    .AddMessageBrokers(mb =>
+                    {
+                        mb.Services.AddSingleton<IMessagingInfrastructure>(new PriorInfrastructure());
+                        configureReceivers(mb);
+                    })
+                    .AddAzureServiceBus(sb =>
+                    {
+                        sb.WithConnectionString(_connectionString);
+                        configureServiceBus(sb);
+                    });
+
+            return services;
+        }
+
+        [Fact]
+        public async Task MustNotFoldBlankTypedReceiverIntoGuardWhenAnotherInfrastructureIsDefault()
+        {
+            // (a) A non-ASB broker is registered FIRST, so the core resolves blank-InfrastructureType receivers to
+            // IT, not ASB. A blank-typed receiver on a 2nd distinct top-level entity (under cross-entity-effective
+            // mode via global FullAtomicity) must NOT be folded into ASB's single-top-level-entity guard: only the
+            // single ASB-typed receiver counts, so the client is constructed and the guard does NOT throw.
+            await using var provider = BuildServicesWithPriorInfrastructureAndCoreReceivers(
+                sb => { },
+                mb =>
+                {
+                    mb.WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure);
+                    mb.AddReceiver<FirstCommand>("asb-queue-a", senderPath: "asb-queue-a", infrastructureType: ASBMessageContext.InfrastructureType);
+                    mb.AddReceiver<SecondCommand>("other-queue-b", senderPath: "other-queue-b");
+                }).BuildServiceProvider();
+
+            var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
+
+            resolveClient.Should().NotThrow();
+            resolveClient().Should().NotBeNull();
+        }
+
+        [Fact]
+        public async Task MustNotStampMaxConcurrentCallsOntoBlankTypedReceiverWhenAnotherInfrastructureIsDefault()
+        {
+            // (a) The non-ASB-default blank-typed receiver is also NOT stamped with ASB's global MaxConcurrentCalls:
+            // with WithMaxConcurrentCalls(7) configured, the ASB-typed receiver is stamped to 7 but the blank-typed
+            // (other-broker) receiver keeps the default 1 — proving the stamp is gated by ASB-default resolution.
+            await using var provider = BuildServicesWithPriorInfrastructureAndCoreReceivers(
+                sb => sb.WithMaxConcurrentCalls(7),
+                mb =>
+                {
+                    mb.AddReceiver<FirstCommand>("asb-queue-a", senderPath: "asb-queue-a", infrastructureType: ASBMessageContext.InfrastructureType);
+                    mb.AddReceiver<SecondCommand>("other-queue-b", senderPath: "other-queue-b");
+                }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            var asbReceiver = discoveredRegistry.DiscoveredReceivers.Single(r => r.MessageReceiverPath == "asb-queue-a");
+            var blankReceiver = discoveredRegistry.DiscoveredReceivers.Single(r => r.MessageReceiverPath == "other-queue-b");
+
+            asbReceiver.MaxConcurrentCalls.Should().Be(7);
+            blankReceiver.MaxConcurrentCalls.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task MustStillFoldBlankTypedReceiverIntoGuardWhenAsbIsSoleInfrastructure()
+        {
+            // (b) Regression: when ASB is the SOLE/first infrastructure (no prior broker), a blank-InfrastructureType
+            // receiver IS still claimed — two blank-typed receivers on distinct top-level entities under cross-entity
+            // -effective mode trip the guard exactly as before, proving single-broker fold-in behavior is preserved.
+            await using var provider = BuildServicesWithCoreReceivers(
+                sb => { },
+                mb =>
+                {
+                    mb.WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure);
+                    mb.AddReceiver<FirstCommand>("blank-queue-a", senderPath: "blank-queue-a");
+                    mb.AddReceiver<SecondCommand>("blank-queue-b", senderPath: "blank-queue-b");
+                }).BuildServiceProvider();
+
+            var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
+
+            resolveClient.Should()
+                .Throw<InvalidOperationException>()
+                .WithMessage("*single top-level receiver entity*")
+                .WithMessage("*blank-queue-a*")
+                .WithMessage("*blank-queue-b*");
+        }
+
+        [Fact]
+        public async Task MustAlwaysFoldExplicitlyAsbTypedReceiverEvenWhenAnotherInfrastructureIsDefault()
+        {
+            // Edge: a receiver EXPLICITLY typed to ASB is always claimed regardless of which broker is the default.
+            // With a prior non-ASB infrastructure registered first, two explicitly-ASB-typed receivers on distinct
+            // top-level entities under cross-entity-effective mode still trip ASB's guard — explicit typing overrides
+            // the blank-default resolution.
+            await using var provider = BuildServicesWithPriorInfrastructureAndCoreReceivers(
+                sb => sb.WithCrossEntityTransactions(),
+                mb =>
+                {
+                    mb.AddReceiver<FirstCommand>("asb-queue-a", senderPath: "asb-queue-a", infrastructureType: ASBMessageContext.InfrastructureType);
+                    mb.AddReceiver<SecondCommand>("asb-queue-b", senderPath: "asb-queue-b", infrastructureType: ASBMessageContext.InfrastructureType);
+                }).BuildServiceProvider();
+
+            var resolveClient = () => provider.GetRequiredService<ServiceBusClient>();
+
+            resolveClient.Should()
+                .Throw<InvalidOperationException>()
+                .WithMessage("*single top-level receiver entity*")
+                .WithMessage("*asb-queue-a*")
+                .WithMessage("*asb-queue-b*");
         }
 
         private sealed class FirstEvent : CQRS.Events.IEvent { }
