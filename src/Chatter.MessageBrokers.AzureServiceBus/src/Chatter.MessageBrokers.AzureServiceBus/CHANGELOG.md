@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.3.0] - 2026-06-09
+
+### Changed
+
+- Real concurrent message processing bounded by `MaxConcurrentCalls` is now delivered end-to-end: the `MaxConcurrentCalls` value propagated from `ServiceBusOptions` in 1.2.0 now drives actual parallel processing workers in `BrokeredMessageReceiver` (default `MaxConcurrentCalls = 1` preserves sequential behavior). Satisfies the "not yet delivered (#147)" caveat carried in the 1.2.0 release notes (#147).
+
 ## [1.2.0] - 2026-06-09
 
 ### Changed
