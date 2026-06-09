@@ -249,12 +249,37 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static void AddReceiverImpl(this IServiceCollection services, ReceiverOptions options, Type closedBrokeredMessageReceiverInterface, Type closedConcreteBrokeredMessageReceiver, Type closedConcreteReceiverBackgroundService)
         {
+            // Retain the LIVE options instance — the SAME one captured into the hosted-service closure below —
+            // in the infrastructure-agnostic registry. Both registration routes (the [BrokeredMessageAttribute]
+            // assembly scan via GetAllReceiverTypes and the explicit AddReceiver<TMessage> overload) converge
+            // here, so retaining at this single seam covers both. An infrastructure package can read these
+            // options post-build and mutate a retained instance (e.g. stamp an infrastructure-resolved value)
+            // such that the mutation is visible when the receiver reads its options at init.
+            GetOrAddDiscoveredReceiverRegistry(services).Register(options);
+
             services.AddScoped(closedBrokeredMessageReceiverInterface, closedConcreteBrokeredMessageReceiver);
             services.AddSingleton(typeof(IHostedService), sp =>
             {
                 using var scope = sp.CreateScope();
                 return Activator.CreateInstance(closedConcreteReceiverBackgroundService, options, scope.ServiceProvider);
             });
+        }
+
+        // Resolves the single DiscoveredReceiverRegistry instance shared across all receiver registrations,
+        // registering it on first use. The instance is captured directly into the singleton descriptor so the
+        // same object is both written here (at registration) and resolved from DI by infrastructure packages
+        // (post-build) — mirroring how each receiver's live ReceiverOptions is retained here and read at init.
+        private static IDiscoveredReceiverRegistry GetOrAddDiscoveredReceiverRegistry(IServiceCollection services)
+        {
+            var existing = services.FirstOrDefault(d => d.ServiceType == typeof(IDiscoveredReceiverRegistry));
+            if (existing?.ImplementationInstance is IDiscoveredReceiverRegistry registry)
+            {
+                return registry;
+            }
+
+            registry = new DiscoveredReceiverRegistry();
+            services.AddSingleton(registry);
+            return registry;
         }
 
         private static void AddReceiverImpl(this IServiceCollection services, Type messageTypeToReceive, ReceiverOptions options)
