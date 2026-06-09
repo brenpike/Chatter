@@ -130,7 +130,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             try
             {
-                message = await this.InnerReceiver.ReceiveAsync();
+                message = await this.InnerReceiver.ReceiveAsync(cancellationToken);
             }
             catch (ServiceBusException sbe) when (sbe.IsTransient)
             {
@@ -157,6 +157,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 // to stop the core receive loop loudly instead of being retried as a transient failure.
                 _logger.LogCritical(e, "Azure Service Bus rejected the receiver because cross-entity transactions cannot span multiple top-level entities");
                 throw new CriticalReceiverException(e);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Teardown path: the core receive loop cancelled its token to stop the pump, and the inner
+                // ASB receive observed it. Treat this as "nothing received" so the loop releases its slot and
+                // exits via its IsCancellationRequested guard — no error log, no nack/settle. TaskCanceledException
+                // is a subclass of OperationCanceledException, so it is covered here too.
+                return null;
             }
             catch (Exception e)
             {

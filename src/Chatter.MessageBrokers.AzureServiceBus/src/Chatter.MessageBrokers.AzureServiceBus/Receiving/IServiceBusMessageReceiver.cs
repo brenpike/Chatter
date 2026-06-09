@@ -1,5 +1,6 @@
 using Azure.Messaging.ServiceBus;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
@@ -21,7 +22,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// <summary>True once the underlying receiver has been closed (or disposed).</summary>
         bool IsClosedOrClosing { get; }
 
-        Task<ServiceBusReceivedMessage> ReceiveAsync();
+        Task<ServiceBusReceivedMessage> ReceiveAsync(CancellationToken cancellationToken);
         Task CompleteAsync(ServiceBusReceivedMessage message);
         Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify);
         Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription);
