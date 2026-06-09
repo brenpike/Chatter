@@ -39,11 +39,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             await sender.SendMessageAsync(new ServiceBusMessage(body));
         }
 
-        private static async Task<ServiceBusReceivedMessage> PeekLockReceiveAsync(ServiceBusClient client, string queue)
+        // Assertion-only read helper: callers only assert on the returned message and never settle it.
+        // Uses ReceiveAndDelete (NOT PeekLock) so the message is removed on receipt and cannot reappear
+        // once its PeekLock lock would expire. The emulator fixture reuses the same queue across test
+        // methods with a 10-second lock duration, so a peeked-but-unsettled message would otherwise become
+        // visible again and be consumed by a later test, causing order/timing-dependent cross-test leakage.
+        private static async Task<ServiceBusReceivedMessage> ReceiveForAssertionAsync(ServiceBusClient client, string queue)
         {
             var receiver = client.CreateReceiver(queue, new ServiceBusReceiverOptions
             {
-                ReceiveMode = ServiceBusReceiveMode.PeekLock,
+                ReceiveMode = ServiceBusReceiveMode.ReceiveAndDelete,
             });
             return await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(10));
         }
@@ -84,12 +89,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
                 scope.Complete();
             }
 
-            var delivered = await PeekLockReceiveAsync(client, ServiceBusEmulatorFixture.QueueB);
+            var delivered = await ReceiveForAssertionAsync(client, ServiceBusEmulatorFixture.QueueB);
             delivered.Should().NotBeNull("the forwarded message must be delivered to queue B after the scope commits");
             delivered.Body.ToString().Should().Be("forwarded-commit");
 
             // Source message was completed inside the committed scope, so A holds nothing more.
-            var leftoverOnA = await PeekLockReceiveAsync(client, ServiceBusEmulatorFixture.QueueA);
+            var leftoverOnA = await ReceiveForAssertionAsync(client, ServiceBusEmulatorFixture.QueueA);
             leftoverOnA.Should().BeNull("the source message must be consumed when the scope commits");
         }
 
@@ -104,7 +109,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             var sender = client.CreateSender(ServiceBusEmulatorFixture.QueueB);
             await sender.SendMessageAsync(new ServiceBusMessage("non-atomic"));
 
-            var delivered = await PeekLockReceiveAsync(client, ServiceBusEmulatorFixture.QueueB);
+            var delivered = await ReceiveForAssertionAsync(client, ServiceBusEmulatorFixture.QueueB);
             delivered.Should().NotBeNull("a send outside any cross-entity scope must still deliver");
             delivered.Body.ToString().Should().Be("non-atomic");
         }
@@ -140,7 +145,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
 
             // The seed was completed and the follow-up was sent in one committed scope, so the only message
             // left on B is the follow-up.
-            var delivered = await PeekLockReceiveAsync(client, ServiceBusEmulatorFixture.QueueB);
+            var delivered = await ReceiveForAssertionAsync(client, ServiceBusEmulatorFixture.QueueB);
             delivered.Should().NotBeNull("the follow-up message must be delivered to queue B after the scope commits");
             delivered.Body.ToString().Should().Be("forwarded-single-entity");
         }
@@ -191,10 +196,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             // Abandon to release the lock immediately rather than waiting out LockDuration.
             await receiver.AbandonMessageAsync(received);
 
-            var deliveredToB = await PeekLockReceiveAsync(client, ServiceBusEmulatorFixture.QueueB);
+            var deliveredToB = await ReceiveForAssertionAsync(client, ServiceBusEmulatorFixture.QueueB);
             deliveredToB.Should().BeNull("the forwarded send must roll back when the scope does not complete");
 
-            var redeliveredOnA = await PeekLockReceiveAsync(client, ServiceBusEmulatorFixture.QueueA);
+            var redeliveredOnA = await ReceiveForAssertionAsync(client, ServiceBusEmulatorFixture.QueueA);
             redeliveredOnA.Should().NotBeNull("the source message must be redelivered when the settle rolls back");
         }
     }
