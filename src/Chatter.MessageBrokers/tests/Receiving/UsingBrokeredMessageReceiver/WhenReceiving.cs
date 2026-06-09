@@ -300,5 +300,51 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 d => d.DispatchAsync(It.IsAny<FakeMessage>(), It.IsAny<MessageBrokerContext>(), It.IsAny<CancellationToken>()),
                 Times.Once);
         }
+
+        // ------------------------------------------------------------------ (startup signal) internal seam + public-surface guard
+
+        // INVARIANT: the go-live startup signal lives on the INTERNAL IReceiverStartupSignal seam (reachable here
+        // via InternalsVisibleTo("Chatter.MessageBrokers.Tests")), NOT the public IReceiveMessages contract. The
+        // concrete receiver produces it; BrokeredMessageReceiverBackgroundService is its only consumer.
+        [Fact]
+        public async Task MustCompleteReceivingStartedSignalOnGoLive()
+        {
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 1);
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            infraReceiver.Enqueue(BuildContext());
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            sut.Should().BeAssignableTo<IReceiverStartupSignal>(
+                "the go-live signal lives on the internal IReceiverStartupSignal seam");
+            var startupSignal = (IReceiverStartupSignal)sut;
+            startupSignal.ReceivingStarted.IsCompleted.Should().BeFalse("the receiver has not started yet");
+
+            using var cts = new CancellationTokenSource();
+            var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(), cts.Token));
+
+            // Drained fires once the receive loop is live; go-live (IsReceiving = true) is set on the same path
+            // immediately before the loop is awaited, so ReceivingStarted has completed by the time it drains.
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AwaitDrainedAsync(infraReceiver, watchdog.Token);
+            await WaitForDispositionAsync(infraReceiver, ReceiverCall.Ack, watchdog.Token);
+
+            sut.IsReceiving.Should().BeTrue();
+            startupSignal.ReceivingStarted.IsCompletedSuccessfully
+                .Should().BeTrue("the signal completes exactly when the receiver goes live");
+
+            cts.Cancel();
+            await loop;
+        }
+
+        // INVARIANT: public-API-shape guard. ReceivingStarted must NOT be a member of the public IReceiveMessages
+        // contract — it was reverted off the public surface to keep 0.12.0 a non-breaking MINOR. This guard fails
+        // if the breaking member is ever silently re-added to the public interface.
+        [Fact]
+        public void MustNotExposeReceivingStartedOnPublicReceiveMessagesContract()
+        {
+            typeof(IReceiveMessages).GetProperty("ReceivingStarted")
+                .Should().BeNull("ReceivingStarted lives on the internal IReceiverStartupSignal seam, not the public contract");
+        }
     }
 }

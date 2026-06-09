@@ -56,7 +56,16 @@ namespace Chatter.MessageBrokers.Receiving
             //   - ReceivingStarted: the receiver went live (IsReceiving became true); startup succeeded.
             //   - executeTask: ExecuteAsync completed/faulted before going live; a fault is startup-fatal.
             //   - cancellationToken: host startup was cancelled.
-            var startedSignal = _receiver.ReceivingStarted;
+            // The startup-completion signal lives on the internal IReceiverStartupSignal seam, not the public
+            // IBrokeredMessageReceiver<TMessage> surface. The only registered receiver is the concrete
+            // BrokeredMessageReceiver<TMessage>, which implements it; cast to reach the signal.
+            if (_receiver is not IReceiverStartupSignal startupSignal)
+            {
+                throw new InvalidOperationException(
+                    $"Receiver '{_receiver.GetType().Name}' does not implement {nameof(IReceiverStartupSignal)}; host startup cannot gate on receiver go-live.");
+            }
+
+            var startedSignal = startupSignal.ReceivingStarted;
             var cancellationSignal = Task.Delay(Timeout.Infinite, cancellationToken);
             await Task.WhenAny(startedSignal, executeTask, cancellationSignal).ConfigureAwait(false);
 
