@@ -133,19 +133,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         }
 
         [Fact]
-        public async Task MustRethrowObjectDisposedWhenCancellationRequested()
-        {
-            var inMemory = new InMemoryServiceBusMessageReceiver { IsClosedOrClosing = true };
-            inMemory.EnqueueThrow(new ObjectDisposedException("receiver"));
-            var sut = await InitializedPeekLockSutAsync(inMemory);
-            var cancelled = new CancellationToken(canceled: true);
-
-            Func<Task> act = () => sut.ReceiveMessageAsync(new TransactionContext("receiver"), cancelled);
-
-            await act.Should().ThrowAsync<ObjectDisposedException>();
-        }
-
-        [Fact]
         public async Task MustCompleteMessageOnAckInPeekLock()
         {
             var inMemory = new InMemoryServiceBusMessageReceiver();
@@ -194,6 +181,36 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             deadlettered.message.Should().BeSameAs(message);
             deadlettered.reason.Should().Be("reason");
             deadlettered.description.Should().Be("description");
+        }
+
+        [Fact]
+        public async Task MustPassReceiveTokenThroughToInnerReceiver()
+        {
+            var inMemory = new InMemoryServiceBusMessageReceiver();
+            inMemory.EnqueueMessage(ServiceBusMessageFactory.ReceivedMessage());
+            var sut = await InitializedPeekLockSutAsync(inMemory);
+            using var cts = new CancellationTokenSource();
+
+            await sut.ReceiveMessageAsync(new TransactionContext("receiver"), cts.Token);
+
+            inMemory.LastReceiveToken.Should().Be(cts.Token);
+        }
+
+        [Fact]
+        public async Task MustReturnNullWithoutErrorOrSettleWhenTokenCancelledOnReceive()
+        {
+            var inMemory = new InMemoryServiceBusMessageReceiver();
+            var message = ServiceBusMessageFactory.ReceivedMessage();
+            inMemory.EnqueueMessage(message);
+            var sut = await InitializedPeekLockSutAsync(inMemory);
+            var cancelled = new CancellationToken(canceled: true);
+
+            var result = await sut.ReceiveMessageAsync(new TransactionContext("receiver"), cancelled);
+
+            result.Should().BeNull();
+            inMemory.AbandonedMessages.Should().BeEmpty();
+            inMemory.DeadLetteredMessages.Should().BeEmpty();
+            inMemory.CompletedMessages.Should().BeEmpty();
         }
 
         [Fact]

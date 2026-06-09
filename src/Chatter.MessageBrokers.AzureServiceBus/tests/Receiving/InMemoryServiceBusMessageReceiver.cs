@@ -2,6 +2,7 @@ using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Azure.Messaging.ServiceBus;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
@@ -24,6 +25,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
         public int ReceiveCount { get; private set; }
         public int CloseCount { get; private set; }
 
+        // The cancellation token observed on the most recent ReceiveAsync call, captured so tests can assert
+        // that ServiceBusReceiver.ReceiveMessageAsync passes its loop token straight through to the inner port.
+        public CancellationToken LastReceiveToken { get; private set; }
+
         public bool IsClosedOrClosing { get; set; }
 
         public void EnqueueMessage(ServiceBusReceivedMessage message) => _receiveResults.Enqueue(() => message);
@@ -32,9 +37,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
 
         public void EnqueueThrow(Exception exception) => _receiveResults.Enqueue(() => throw exception);
 
-        public Task<ServiceBusReceivedMessage> ReceiveAsync()
+        public Task<ServiceBusReceivedMessage> ReceiveAsync(CancellationToken cancellationToken)
         {
             ReceiveCount++;
+            LastReceiveToken = cancellationToken;
+            cancellationToken.ThrowIfCancellationRequested();
             if (_receiveResults.Count == 0)
             {
                 return Task.FromResult<ServiceBusReceivedMessage>(null);
