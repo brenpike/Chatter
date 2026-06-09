@@ -11,6 +11,7 @@ using Moq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -337,14 +338,25 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             await loop;
         }
 
-        // INVARIANT: public-API-shape guard. ReceivingStarted must NOT be a member of the public IReceiveMessages
-        // contract — it was reverted off the public surface to keep 0.12.0 a non-breaking MINOR. This guard fails
-        // if the breaking member is ever silently re-added to the public interface.
+        // INVARIANT: public-API-shape guard. ReceivingStarted must NOT be reachable on ANY public surface — not the
+        // IReceiveMessages contract, not the IBrokeredMessageReceiver<> contract, and not the public concrete
+        // BrokeredMessageReceiver<> type. It was relocated to the internal IReceiverStartupSignal seam (implemented
+        // explicitly on the concrete receiver) to keep 0.12.0 a non-breaking MINOR. This guard fails if the member
+        // is ever silently re-added to a public interface OR re-exposed as a public/implicit member on the concrete
+        // receiver (e.g. by reverting the explicit interface implementation).
         [Fact]
         public void MustNotExposeReceivingStartedOnPublicReceiveMessagesContract()
         {
-            typeof(IReceiveMessages).GetProperty("ReceivingStarted")
-                .Should().BeNull("ReceivingStarted lives on the internal IReceiverStartupSignal seam, not the public contract");
+            const BindingFlags PublicInstance = BindingFlags.Public | BindingFlags.Instance;
+
+            typeof(IReceiveMessages).GetProperty("ReceivingStarted", PublicInstance)
+                .Should().BeNull("ReceivingStarted lives on the internal IReceiverStartupSignal seam, not the public IReceiveMessages contract");
+
+            typeof(IBrokeredMessageReceiver<>).GetProperty("ReceivingStarted", PublicInstance)
+                .Should().BeNull("ReceivingStarted must not leak onto the public IBrokeredMessageReceiver<> contract");
+
+            typeof(BrokeredMessageReceiver<>).GetProperty("ReceivingStarted", PublicInstance)
+                .Should().BeNull("ReceivingStarted must be an explicit IReceiverStartupSignal implementation, not a public member of the concrete receiver");
         }
     }
 }

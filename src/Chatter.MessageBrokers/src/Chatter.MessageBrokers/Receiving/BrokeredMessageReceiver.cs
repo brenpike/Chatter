@@ -70,8 +70,11 @@ namespace Chatter.MessageBrokers.Receiving
         /// </summary>
         public bool IsReceiving { get; private set; } = false;
 
-        ///<inheritdoc/>
-        public Task ReceivingStarted => _receivingStartedSource.Task;
+        // EXPLICIT interface implementation: the go-live signal is reachable ONLY through the internal
+        // IReceiverStartupSignal seam, never as a member of the public BrokeredMessageReceiver<TMessage> surface.
+        // This keeps the relocated signal fully off the public contract (the public-API regression guard asserts
+        // its absence from IReceiveMessages, IBrokeredMessageReceiver<>, and this concrete type).
+        Task IReceiverStartupSignal.ReceivingStarted => _receivingStartedSource.Task;
 
         public string SendingPath { get; private set; }
         public string MessageReceiverPath { get; private set; }

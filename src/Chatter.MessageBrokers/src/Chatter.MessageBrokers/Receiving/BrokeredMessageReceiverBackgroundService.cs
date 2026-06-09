@@ -35,7 +35,19 @@ namespace Chatter.MessageBrokers.Receiving
             // startup-fatal receiver failure (e.g. the Azure Service Bus cross-entity-transactions guard's
             // InvalidOperationException) would be silently dropped and the host would keep running broken.
             //
-            // Start the base BackgroundService first (this assigns the ExecuteAsync Task), then await until the
+            // Resolve the startup-completion signal BEFORE starting the receive loop. The signal lives on the
+            // internal IReceiverStartupSignal seam, not the public IBrokeredMessageReceiver<TMessage> surface. The
+            // only registered receiver is the concrete BrokeredMessageReceiver<TMessage>, which implements it.
+            // Validating the cast here — before base.StartAsync kicks off ExecuteAsync — fails fast on an
+            // unsupported receiver so the receive loop is never started outside the go-live/executeTask
+            // observation path, leaving nothing stranded when host startup aborts.
+            if (_receiver is not IReceiverStartupSignal startupSignal)
+            {
+                throw new InvalidOperationException(
+                    $"Receiver '{_receiver.GetType().Name}' does not implement {nameof(IReceiverStartupSignal)}; host startup cannot gate on receiver go-live.");
+            }
+
+            // Start the base BackgroundService (this assigns the ExecuteAsync Task), then await until the
             // receiver either:
             //   - goes live (IsReceiving == true) — the startup phase succeeded; return so the receive loop
             //     keeps running for the receiver's lifetime, and
@@ -56,15 +68,6 @@ namespace Chatter.MessageBrokers.Receiving
             //   - ReceivingStarted: the receiver went live (IsReceiving became true); startup succeeded.
             //   - executeTask: ExecuteAsync completed/faulted before going live; a fault is startup-fatal.
             //   - cancellationToken: host startup was cancelled.
-            // The startup-completion signal lives on the internal IReceiverStartupSignal seam, not the public
-            // IBrokeredMessageReceiver<TMessage> surface. The only registered receiver is the concrete
-            // BrokeredMessageReceiver<TMessage>, which implements it; cast to reach the signal.
-            if (_receiver is not IReceiverStartupSignal startupSignal)
-            {
-                throw new InvalidOperationException(
-                    $"Receiver '{_receiver.GetType().Name}' does not implement {nameof(IReceiverStartupSignal)}; host startup cannot gate on receiver go-live.");
-            }
-
             var startedSignal = startupSignal.ReceivingStarted;
             var cancellationSignal = Task.Delay(Timeout.Infinite, cancellationToken);
             await Task.WhenAny(startedSignal, executeTask, cancellationSignal).ConfigureAwait(false);
