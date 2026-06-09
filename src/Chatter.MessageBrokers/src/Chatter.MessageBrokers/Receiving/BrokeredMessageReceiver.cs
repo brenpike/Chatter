@@ -176,21 +176,52 @@ namespace Chatter.MessageBrokers.Receiving
         {
             _messageReceiverLoopTokenSource?.Cancel();
 
-            if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
+            try
             {
-                await _messageReceiverLoop;
+                // The loop now treats loop-token cancellation as a NORMAL completion (it swallows the cancellation
+                // OperationCanceledException/ObjectDisposedException), so under the parallelized design — where the loop
+                // commonly parks in WaitAsync with workers in flight — awaiting it completes rather than throwing.
+                // Still guard the await: a FAULTED loop is skipped (mirrors the original), and any residual exception
+                // from awaiting must NOT abort teardown. Stopping/disposing infrastructure and shared primitives MUST
+                // happen regardless, so it lives in the finally below.
+                if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
+                {
+                    await _messageReceiverLoop;
+                }
             }
+            catch (OperationCanceledException)
+            {
+                // Loop-shutdown cancellation surfaced from the await: benign, teardown still runs in the finally.
+            }
+            finally
+            {
+                // INVARIANT: drain any worker tasks still in flight before disposing the semaphore / token source so no
+                // worker touches a disposed SemaphoreSlim. When the loop completed normally its own finally already
+                // drained; this is the belt-and-suspenders path for a faulted loop (the await above is skipped) and is
+                // a no-op once the set is empty. Teardown lives in the finally so a parked-loop cancellation can never
+                // abort StopReceiver before the infrastructure is stopped and the shared primitives are disposed.
+                await DrainInFlightWorkersAsync();
 
-            // INVARIANT: drain any worker tasks still in flight before disposing the semaphore / token source so no
-            // worker touches a disposed SemaphoreSlim. When the loop completed normally its own finally already
-            // drained; this is the belt-and-suspenders path for a faulted loop (the await above is skipped) and is
-            // a no-op once the set is empty.
-            await DrainInFlightWorkersAsync();
+                await _infrastructureReceiver.StopReceiver();
 
-            await _infrastructureReceiver.StopReceiver();
+                _concurrentMessagesSemaphore?.Dispose();
+                _messageReceiverLoopTokenSource?.Dispose();
+            }
+        }
 
-            _concurrentMessagesSemaphore?.Dispose();
-            _messageReceiverLoopTokenSource?.Dispose();
+        // INVARIANT: cancel the loop token to wake a loop parked in WaitAsync OR a receive that does not honor the
+        // token, so a worker-published critical fault is observed promptly instead of after the next message. Called
+        // only by the FIRST fault publisher. Guarded against a token source already disposed by a concurrent teardown
+        // (a detached worker can outlive Dispose), where cancelling is a no-op the shutdown path already covers.
+        void SignalLoopCriticalFault()
+        {
+            try
+            {
+                _messageReceiverLoopTokenSource?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
 
         async Task MessageReceiverLoopAsync()
@@ -206,6 +237,24 @@ namespace Chatter.MessageBrokers.Receiving
                     ThrowIfWorkerCriticalFault();
 
                     await _concurrentMessagesSemaphore.WaitAsync(_messageReceiverLoopTokenSource.Token);
+
+                    // INVARIANT: re-observe the worker critical fault IMMEDIATELY after the semaphore is acquired and
+                    // BEFORE any receive. When all slots are full the loop parks inside WaitAsync above; a worker can
+                    // publish a CriticalReceiverException while we are parked, and the slot it releases is what wakes
+                    // this WaitAsync. Without this second check the loop would proceed straight into ReceiveMessageAsync
+                    // and admit one more receive after a critical failure (and, on infrastructures whose receive does
+                    // not honor the loop token, stall the notifier path until another message arrives). Release the slot
+                    // we just took before rethrowing so the fault routes through the outer catch / notifier path with no
+                    // leaked slot. The pre-WaitAsync check above still covers the all-slots-free fast path.
+                    try
+                    {
+                        ThrowIfWorkerCriticalFault();
+                    }
+                    catch (CriticalReceiverException)
+                    {
+                        ReleaseConcurrencySlot();
+                        throw; //stop receiver loop
+                    }
 
                     // INVARIANT: the per-message TransactionContext is constructed PER-TURN and its ownership transfers
                     // to the spawned worker, so concurrent workers never share a TransactionContext and cannot
@@ -268,14 +317,44 @@ namespace Chatter.MessageBrokers.Receiving
             }
             catch (CriticalReceiverException e)
             {
-                _logger.LogCritical(e, "Receiver is unable continue due to critical error");
-                await _criticalFailureNotifier.Notify(new FailureContext(null, this.ErrorQueueName, "Critical error occurred", e, -1, null));
+                // The loop thread itself observed the fault (pre/post-WaitAsync recheck or an inline receive). Record
+                // it as the authoritative fault so the notify-exactly-once epilogue fires for it and a worker-published
+                // fault is not ALSO re-notified.
+                Interlocked.CompareExchange(ref _workerCriticalFault, e, null);
+            }
+            catch (OperationCanceledException) when (_messageReceiverLoopTokenSource.IsCancellationRequested)
+            {
+                // Cancellation of the loop token is a NORMAL shutdown signal (StopReceiver/Dispose cancel it, and a
+                // worker critical fault now cancels it too via SignalLoopCriticalFault). The loop commonly parks in
+                // WaitAsync once all slots are full, so cancellation most often surfaces THERE — outside the inner
+                // receive try/catch. Swallow it here so the loop task completes NORMALLY rather than propagating an
+                // OperationCanceledException out of MessageReceiverLoopAsync, which would otherwise abort StopReceiver
+                // before it stops/disposes the infrastructure and shared primitives. Any published critical fault is
+                // still surfaced by the notify-once epilogue below.
+            }
+            catch (ObjectDisposedException) when (_messageReceiverLoopTokenSource.IsCancellationRequested)
+            {
+                // Same shutdown rationale as the cancellation catch: a primitive observed disposed mid-teardown while
+                // cancellation is in progress is a benign race, not a loop fault to propagate.
             }
             finally
             {
                 // Drain any still-running workers before the loop task completes so callers that await the loop
                 // (StartReceiverImpl / StopReceiver) observe a fully-quiesced receiver.
                 await DrainInFlightWorkersAsync();
+
+                // INVARIANT: notify EXACTLY ONCE on a critical fault, regardless of HOW the loop exited. A worker
+                // fault now also cancels the loop token (SignalLoopCriticalFault), so the loop can exit either by
+                // rethrowing the CriticalReceiverException (caught above) OR via OperationCanceledException from the
+                // cancelled token while a worker fault sits in _workerCriticalFault. Both routes converge here: if a
+                // fault was published by ANY path, fire the single notifier. The first-writer-wins field guarantees
+                // one fault value and the catch above never double-notifies (it only records into the same field).
+                var criticalFault = Interlocked.CompareExchange(ref _workerCriticalFault, null, null);
+                if (criticalFault != null)
+                {
+                    _logger.LogCritical(criticalFault, "Receiver is unable continue due to critical error");
+                    await _criticalFailureNotifier.Notify(new FailureContext(null, this.ErrorQueueName, "Critical error occurred", criticalFault, -1, null));
+                }
             }
         }
 
@@ -326,7 +405,17 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 // First writer wins: publish to the loop-observed fault field so the loop stops and the existing
                 // outer-handler _criticalFailureNotifier.Notify path fires. Never lost in fire-and-forget.
-                Interlocked.CompareExchange(ref _workerCriticalFault, e, null);
+                if (Interlocked.CompareExchange(ref _workerCriticalFault, e, null) == null)
+                {
+                    // Only the FIRST publisher wakes the loop. Cancel the loop token so a loop parked in WaitAsync OR
+                    // inside a receive that does not otherwise honor the token unblocks promptly: the loop's existing
+                    // OperationCanceledException-when-cancelled branch releases its slot and falls through to the
+                    // shutdown path, where the post-loop ThrowIfWorkerCriticalFault / outer handler still routes the
+                    // fault to _criticalFailureNotifier.Notify. Without this, a last-worker fault could sit unobserved
+                    // while the receiver idles waiting for the next message. Guarded against a disposed source during
+                    // teardown (the worker may outlive a Dispose that already disposed the source).
+                    SignalLoopCriticalFault();
+                }
             }
             catch (OperationCanceledException) when (workerToken.IsCancellationRequested)
             {
@@ -557,6 +646,19 @@ namespace Chatter.MessageBrokers.Receiving
                 if (disposing)
                 {
                     _messageReceiverLoopTokenSource?.Cancel();
+
+                    // INVARIANT: the synchronous Dispose path must QUIESCE the receiver before disposing any
+                    // worker-touched primitive, exactly like the async StopReceiver/DisposeAsync paths — otherwise a
+                    // worker already past its token check could still be inside DispatchReceivedMessageAsync or an
+                    // Ack/Nack/Deadletter and would race a disposed infrastructure receiver / semaphore / token source
+                    // (the ReleaseConcurrencySlot ObjectDisposedException swallow only hides ONE symptom; it does not
+                    // protect the infrastructure receiver or the in-flight message's settlement). The loop already
+                    // treats loop-token cancellation as a clean completion, so awaiting it here completes rather than
+                    // throwing; block synchronously (no SynchronizationContext is captured on the loop/worker paths, so
+                    // GetAwaiter().GetResult() cannot deadlock) so the wait-then-dispose ordering matches the async
+                    // paths' drain-before-dispose guarantee.
+                    QuiesceForSyncDispose();
+
                     _infrastructureReceiver?.Dispose();
                     _concurrentMessagesSemaphore?.Dispose();
                     _messageReceiverLoopTokenSource?.Dispose();
@@ -564,6 +666,33 @@ namespace Chatter.MessageBrokers.Receiving
 
                 _infrastructureReceiver = null;
                 _disposedValue = true;
+            }
+        }
+
+        // INVARIANT: synchronously wait for the receive loop AND every in-flight worker to quiesce so the sync Dispose
+        // path honors the same drain-before-dispose guarantee as StopReceiver/DisposeAsync. Caller has already
+        // requested cancellation. Awaiting the loop completes cleanly (the loop swallows shutdown cancellation); the
+        // drain then waits for detached workers. All worker faults are already handled inside the worker body, so any
+        // exception observed here is benign teardown noise and is swallowed — Dispose must not throw.
+        void QuiesceForSyncDispose()
+        {
+            try
+            {
+                if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
+                {
+                    _messageReceiverLoop.GetAwaiter().GetResult();
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                DrainInFlightWorkersAsync().GetAwaiter().GetResult();
+            }
+            catch
+            {
             }
         }
 
