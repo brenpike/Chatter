@@ -164,7 +164,15 @@ namespace Chatter.MessageBrokers.Receiving
             _concurrentMessagesSemaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
             _messageReceiverLoopTokenSource = CancellationTokenSource.CreateLinkedTokenSource(receiverTerminationToken);
 
-            _messageReceiverLoop = MessageReceiverLoopAsync();
+            // INVARIANT: start the receive loop on the thread pool (Task.Run) rather than inline so its body and
+            // every continuation run on the default TaskScheduler and NEVER capture a caller SynchronizationContext.
+            // If StartReceiver is invoked under a single-threaded context, an inline-started loop could post its
+            // cancellation/finally continuation back to that context; the synchronous Dispose path then blocks that
+            // same thread on _messageReceiverLoop.GetAwaiter().GetResult() and deadlocks. Detaching the loop onto the
+            // pool (workers already use Task.Run) makes the synchronous teardown wait safe. The Task.Run(Func<Task>)
+            // overload returns a proxy Task that completes only when the loop body completes, so await/GetResult on
+            // the assigned Task observe the real loop completion (drain + notify-once included).
+            _messageReceiverLoop = Task.Run(MessageReceiverLoopAsync);
             this.IsReceiving = true;
             _receivingStartedSource.TrySetResult(true);
             _logger.LogInformation("'{executingFunction}' has started receiving messages of type '{receiverMessageType}'.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
@@ -340,8 +348,10 @@ namespace Chatter.MessageBrokers.Receiving
             finally
             {
                 // Drain any still-running workers before the loop task completes so callers that await the loop
-                // (StartReceiverImpl / StopReceiver) observe a fully-quiesced receiver.
-                await DrainInFlightWorkersAsync();
+                // (StartReceiverImpl / StopReceiver) observe a fully-quiesced receiver. ConfigureAwait(false): the
+                // loop already runs on the pool, but keep teardown context-free as defense-in-depth so the
+                // synchronous Dispose wait can never deadlock on a captured context.
+                await DrainInFlightWorkersAsync().ConfigureAwait(false);
 
                 // INVARIANT: notify EXACTLY ONCE on a critical fault, regardless of HOW the loop exited. A worker
                 // fault now also cancels the loop token (SignalLoopCriticalFault), so the loop can exit either by
@@ -353,7 +363,7 @@ namespace Chatter.MessageBrokers.Receiving
                 if (criticalFault != null)
                 {
                     _logger.LogCritical(criticalFault, "Receiver is unable continue due to critical error");
-                    await _criticalFailureNotifier.Notify(new FailureContext(null, this.ErrorQueueName, "Critical error occurred", criticalFault, -1, null));
+                    await _criticalFailureNotifier.Notify(new FailureContext(null, this.ErrorQueueName, "Critical error occurred", criticalFault, -1, null)).ConfigureAwait(false);
                 }
             }
         }
@@ -624,16 +634,35 @@ namespace Chatter.MessageBrokers.Receiving
 
         public async ValueTask DisposeAsync()
         {
-            // INVARIANT: signal cancellation and drain in-flight workers BEFORE the semaphore / token source are
-            // disposed so no worker touches a disposed SemaphoreSlim. Dispose(disposing: false) below does not
-            // dispose the managed semaphore/token source, so this is the async path's authoritative drain.
+            // INVARIANT: mirror StopReceiver's quiesce-before-dispose ordering. Draining only the in-flight worker
+            // SNAPSHOT is not enough: the loop may still be inside WaitAsync / ReceiveMessageAsync, or in the gap after
+            // receiving a message but before SpawnProcessingWorker has added the worker to _inFlightTasks — in those
+            // races the snapshot is empty or stale and disposing the infrastructure receiver / semaphore / token source
+            // here would race a loop that is about to receive, spawn, notify, or release. So cancel, then await the
+            // LOOP to completion first (it treats loop-token cancellation as a clean exit, so this completes rather
+            // than throwing; a faulted loop is skipped and a benign shutdown cancellation is swallowed), THEN drain any
+            // residual workers in the finally, and only then dispose. ConfigureAwait(false) keeps teardown context-free.
             _messageReceiverLoopTokenSource?.Cancel();
-            await DrainInFlightWorkersAsync();
 
-            await _infrastructureReceiver.DisposeAsync();
+            try
+            {
+                if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
+                {
+                    await _messageReceiverLoop.ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            finally
+            {
+                await DrainInFlightWorkersAsync().ConfigureAwait(false);
 
-            _concurrentMessagesSemaphore?.Dispose();
-            _messageReceiverLoopTokenSource?.Dispose();
+                await _infrastructureReceiver.DisposeAsync().ConfigureAwait(false);
+
+                _concurrentMessagesSemaphore?.Dispose();
+                _messageReceiverLoopTokenSource?.Dispose();
+            }
 
             Dispose(disposing: false);
             GC.SuppressFinalize(this);
@@ -654,9 +683,11 @@ namespace Chatter.MessageBrokers.Receiving
                     // (the ReleaseConcurrencySlot ObjectDisposedException swallow only hides ONE symptom; it does not
                     // protect the infrastructure receiver or the in-flight message's settlement). The loop already
                     // treats loop-token cancellation as a clean completion, so awaiting it here completes rather than
-                    // throwing; block synchronously (no SynchronizationContext is captured on the loop/worker paths, so
-                    // GetAwaiter().GetResult() cannot deadlock) so the wait-then-dispose ordering matches the async
-                    // paths' drain-before-dispose guarantee.
+                    // throwing; block synchronously so the wait-then-dispose ordering matches the async paths'
+                    // drain-before-dispose guarantee. The loop is started via Task.Run (default scheduler) and its
+                    // teardown awaits use ConfigureAwait(false), and the workers are started via Task.Run, so NEITHER
+                    // the loop nor the worker drain captures a caller SynchronizationContext — GetAwaiter().GetResult()
+                    // therefore cannot deadlock even when Dispose is called from a single-threaded context.
                     QuiesceForSyncDispose();
 
                     _infrastructureReceiver?.Dispose();
