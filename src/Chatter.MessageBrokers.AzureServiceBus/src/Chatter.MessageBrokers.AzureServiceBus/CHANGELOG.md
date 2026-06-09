@@ -12,6 +12,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.1.0] - 2026-06-09
+
+### Added
+
+- `ServiceBusOptions.EnableCrossEntityTransactions` (default `false`) and `ServiceBusOptionsBuilder.WithCrossEntityTransactions()` opt-in for explicitly enabling cross-entity transaction support.
+- Startup guard that fails fast with a clear error when cross-entity transactions are enabled alongside more than one distinct top-level receiver entity.
+
+### Changed
+
+- `EnableCrossEntityTransactions` now defaults to `false` and is auto-enabled only when a `FullAtomicityViaInfrastructure` receiver is registered (previously always on).
+
+### Fixed
+
+- Cross-entity transactions are no longer forced on, so a host can run multiple queue receivers on distinct entities again (regression introduced in 1.0.0 by the Azure.Messaging.ServiceBus migration).
+- The fatal cross-entity rejection now surfaces as a `CriticalReceiverException` instead of hanging silently.
+
 ## [1.0.0] - 2026-06-08
 
 ### Changed
