@@ -276,6 +276,60 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             resolveClient().Should().NotBeNull();
         }
 
+        [Fact]
+        public async Task MustHonorExplicitFluentDisableOverConfigEnabled()
+        {
+            // Regression guard (Codex P2): config binds EnableCrossEntityTransactions = true, but the app
+            // explicitly calls WithCrossEntityTransactions(false) to force it off. The explicit fluent value
+            // must win over the config-bound value, so the resolved option is false.
+            await using var provider = BuildServicesFromConfig(
+                CrossEntityConfig(enableCrossEntityTransactions: true),
+                sb => sb.WithCrossEntityTransactions(false)).BuildServiceProvider();
+
+            var options = provider.GetRequiredService<ServiceBusOptions>();
+
+            options.EnableCrossEntityTransactions.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task MustKeepConfigEnabledWhenNoFluentCall()
+        {
+            // Config binds EnableCrossEntityTransactions = true and no fluent WithCrossEntityTransactions()
+            // call is made: the config-bound value is left untouched, so the resolved option stays true.
+            await using var provider = BuildServicesFromConfig(
+                CrossEntityConfig(enableCrossEntityTransactions: true),
+                sb => { }).BuildServiceProvider();
+
+            var options = provider.GetRequiredService<ServiceBusOptions>();
+
+            options.EnableCrossEntityTransactions.Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task MustEnableViaFluentWhenNoConfig()
+        {
+            // No config opt-in, but the app explicitly calls WithCrossEntityTransactions(true): the explicit
+            // fluent value applies, so the resolved option is true.
+            await using var provider = BuildServices(
+                sb => sb.WithCrossEntityTransactions(true)).BuildServiceProvider();
+
+            var options = provider.GetRequiredService<ServiceBusOptions>();
+
+            options.EnableCrossEntityTransactions.Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task MustDefaultToDisabledWhenNoConfigAndNoFluentCall()
+        {
+            // Neither config opt-in nor a fluent WithCrossEntityTransactions() call: the option falls back to
+            // its default of false.
+            await using var provider = BuildServices(sb => { }).BuildServiceProvider();
+
+            var options = provider.GetRequiredService<ServiceBusOptions>();
+
+            options.EnableCrossEntityTransactions.Should().BeFalse();
+        }
+
         private sealed class FirstEvent : CQRS.Events.IEvent { }
         private sealed class SecondEvent : CQRS.Events.IEvent { }
     }

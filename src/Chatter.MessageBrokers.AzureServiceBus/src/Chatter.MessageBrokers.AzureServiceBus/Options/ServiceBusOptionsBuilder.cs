@@ -18,11 +18,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         private int _prefetchCount = _defaultPrefetchCount;
         private ServiceBusRetryOptions _retryOptions = null;
         private IConfigurationSection _serviceBusOptionsSection = null;
-        private bool _enableCrossEntityTransactions = _defaultEnableCrossEntityTransactions;
+        // INVARIANT: null means WithCrossEntityTransactions was never called, so the config-bound value is
+        // left untouched. A non-null value means the fluent method was called and its value overrides any
+        // config-bound value in EITHER direction (explicit false overrides config true, explicit true
+        // overrides config false). This distinguishes "fluent method not called" from "called with the
+        // default value" — a plain bool defaulting to false could not tell those apart, which silently
+        // dropped an explicit WithCrossEntityTransactions(false) when config bound true.
+        private bool? _enableCrossEntityTransactions = null;
 
         private const int _defaultMaxConcurrentCalls = 1;
         private const int _defaultPrefetchCount = 0;
-        private const bool _defaultEnableCrossEntityTransactions = false;
 
         public static ServiceBusOptionsBuilder Create(IServiceCollection services, IConfiguration configuration)
             => new ServiceBusOptionsBuilder(services, configuration);
@@ -206,9 +211,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 options.PrefetchCount = _prefetchCount;
             }
 
-            if (_enableCrossEntityTransactions != _defaultEnableCrossEntityTransactions)
+            // Explicit fluent call wins over configuration: apply the fluent value only when
+            // WithCrossEntityTransactions was actually called, leaving the config-bound value untouched
+            // otherwise.
+            if (_enableCrossEntityTransactions.HasValue)
             {
-                options.EnableCrossEntityTransactions = _enableCrossEntityTransactions;
+                options.EnableCrossEntityTransactions = _enableCrossEntityTransactions.Value;
             }
 
             Services.AddSingleton(options);

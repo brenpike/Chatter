@@ -29,6 +29,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - The fatal cross-entity rejection now surfaces as a `CriticalReceiverException` instead of hanging silently.
 - A global `WithTransactionMode(FullAtomicityViaInfrastructure)` now correctly auto-enables cross-entity transactions on the shared client; previously only per-receiver transaction modes were honored, so receivers inheriting the global atomicity mode silently lost the cross-entity guarantee.
 - `ServiceBusOptions.EnableCrossEntityTransactions` now has a public setter so the cross-entity opt-in binds from configuration (`Chatter:Infrastructure:AzureServiceBus:EnableCrossEntityTransactions`); previously the `internal` setter meant `ConfigurationBinder` silently skipped it and config-only opt-in was ignored.
+- An explicit `WithCrossEntityTransactions(false)` now overrides a config-bound `EnableCrossEntityTransactions = true`; previously the fluent value was applied only when it differed from the default, so an explicit disable was silently ignored when configuration enabled it.
 
 ## [1.0.0] - 2026-06-08
 
