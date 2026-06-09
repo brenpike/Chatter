@@ -12,6 +12,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.2.0] - 2026-06-09
+
+### Changed
+
+- The global `ServiceBusOptions.MaxConcurrentCalls` is now propagated to receivers (was previously a dead option — receivers always ran single-threaded).
+
+### Fixed
+
+- (F3) Attribute-registered (`[BrokeredMessage]`) receivers are now included in the cross-entity-transactions single-top-level-entity startup guard via the new discovered-receiver seam — previously they bypassed the registry and were unprotected.
+- (F4) A cross-entity startup guard violation now fails host startup with a plain `InvalidOperationException` instead of being silently swallowed by the core receiver.
+- (F5) Explicit `WithMaxConcurrentCalls(...)` / `WithPrefetchCount(...)` calls set to the default value are no longer silently dropped in favor of configuration (nullable builder backing fields distinguish "unset" from "set-to-default").
+
 ## [1.1.0] - 2026-06-09
 
 ### Added

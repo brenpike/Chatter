@@ -6,6 +6,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-09
+
+### Added
+
+- `ReceiverOptions.MaxConcurrentCalls` (default 1) — concurrency is now a live, honored option instead of hard-coded to 1.
+- `IDiscoveredReceiverRegistry` / `DiscoveredReceiverRegistry` — a generic, infrastructure-agnostic seam that retains discovered receiver options so any messaging infrastructure (in-repo, out-of-repo, or consumer-built) can participate in its own startup bookkeeping without re-scanning assemblies.
+
+### Fixed
+
+- Startup-fatal receiver errors (e.g. an infrastructure's cross-entity startup guard) now propagate out of `IHostedService.StartAsync` to abort host startup loudly instead of being silently swallowed (the receiver no longer stops silently while the host keeps running).
+
 ## [0.11.1] - 2026-06-09
 
 ### Changed
