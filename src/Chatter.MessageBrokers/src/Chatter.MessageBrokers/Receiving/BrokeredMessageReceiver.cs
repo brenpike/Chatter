@@ -24,7 +24,7 @@ namespace Chatter.MessageBrokers.Receiving
         private SemaphoreSlim _concurrentMessagesSemaphore;
         CancellationTokenSource _messageReceiverLoopTokenSource;
         private Task _messageReceiverLoop;
-        private readonly int _maxConcurrentCalls = 1; //TODO: add configuration for maxconcurrentcalls to messagebrokeroptions and/or receiveroptions
+        private int _maxConcurrentCalls = 1;
         private readonly MessageBrokerOptions _messageBrokerOptions;
         private readonly IRecoveryStrategy _recoveryStrategy;
         private readonly IReceivedMessageDispatcher _receivedMessageDispatcher;
@@ -101,6 +101,7 @@ namespace Chatter.MessageBrokers.Receiving
 
             options.TransactionMode ??= _messageBrokerOptions.TransactionMode;
             _options = options;
+            _maxConcurrentCalls = _options.MaxConcurrentCalls;
 
             _logger.LogTrace("Initializing messaging infrastructure");
             await _infrastructureReceiver.InitializeAsync(_options, receiverTerminationToken);

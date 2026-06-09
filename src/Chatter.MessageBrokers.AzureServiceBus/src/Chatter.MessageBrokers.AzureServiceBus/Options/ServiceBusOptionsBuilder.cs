@@ -14,8 +14,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         private string _connectionString = null;
         private string _azureServiceBusSectionName = null;
         private IConfiguration _configuration;
-        private int _maxConcurrentCalls = _defaultMaxConcurrentCalls;
-        private int _prefetchCount = _defaultPrefetchCount;
+        // INVARIANT: null means WithMaxConcurrentCalls was never called, so the config-bound value is
+        // left untouched. A non-null value means the fluent method was called and its value overrides any
+        // config-bound value in EITHER direction (explicit 1 overrides config 5, explicit 0 overrides
+        // config 1). This distinguishes "fluent method not called" from "called with the default value"
+        // — a plain int defaulting to 1 could not tell those apart, silently dropping an explicit
+        // WithMaxConcurrentCalls(1) when config bound something else.
+        private int? _maxConcurrentCalls = null;
+        // INVARIANT: null means WithPrefetchCount was never called, so the config-bound value is
+        // left untouched. A non-null value means the fluent method was called and its value overrides
+        // any config-bound value in EITHER direction (explicit 0 overrides config 10).
+        private int? _prefetchCount = null;
         private ServiceBusRetryOptions _retryOptions = null;
         private IConfigurationSection _serviceBusOptionsSection = null;
         // INVARIANT: null means WithCrossEntityTransactions was never called, so the config-bound value is
@@ -201,14 +210,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 options.TokenCredential = _tokenCredential;
             }
 
-            if (_maxConcurrentCalls != _defaultMaxConcurrentCalls)
+            // Explicit fluent call wins over configuration: apply the fluent value only when
+            // WithMaxConcurrentCalls was actually called, leaving the config-bound value untouched
+            // otherwise.
+            if (_maxConcurrentCalls.HasValue)
             {
-                options.MaxConcurrentCalls = _maxConcurrentCalls;
+                options.MaxConcurrentCalls = _maxConcurrentCalls.Value;
             }
 
-            if (_prefetchCount != _defaultPrefetchCount)
+            // Explicit fluent call wins over configuration: apply the fluent value only when
+            // WithPrefetchCount was actually called, leaving the config-bound value untouched
+            // otherwise.
+            if (_prefetchCount.HasValue)
             {
-                options.PrefetchCount = _prefetchCount;
+                options.PrefetchCount = _prefetchCount.Value;
             }
 
             // Explicit fluent call wins over configuration: apply the fluent value only when

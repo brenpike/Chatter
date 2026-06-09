@@ -45,5 +45,11 @@
         /// comparing actual receive attempts to the max will not execute.
         /// </summary>
         public int MaxReceiveAttempts { get; set; } = 10;
+
+        /// <summary>
+        /// The maximum number of messages the receiver will process concurrently. Defaults to 1, preserving
+        /// single-call (sequential) receive behavior for any receiver that does not configure it.
+        /// </summary>
+        public int MaxConcurrentCalls { get; set; } = 1;
     }
 }
