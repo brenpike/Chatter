@@ -16,7 +16,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
-- `BrokeredMessageReceiver.StopReceiver` no longer lets a non-cancellation fault from the receive loop (notably a fault raised by the critical-failure notify epilogue) escape and abort teardown; worker drain, infrastructure stop, and primitive disposal now always complete. Resolves a net8.0-specific flaky shutdown.
+- `BrokeredMessageReceiver` teardown is now a single idempotent, `ObjectDisposedException`-tolerant quiesce-before-dispose contract shared by `StopReceiver`, `DisposeAsync`, and `Dispose`. Repeated or concurrent teardown no longer throws `ObjectDisposedException` or double-disposes; the loop-await `IsFaulted` time-of-check/time-of-use race is removed from all paths; a residual non-cancellation receive-loop fault (notably one raised by the critical-failure notify epilogue) is observed-and-swallowed uniformly; and worker drain, infrastructure stop/dispose, and shared-primitive disposal always complete. Resolves a net8.0-specific flaky shutdown.
 
 ## [0.13.0] - 2026-06-09
 
