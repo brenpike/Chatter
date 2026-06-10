@@ -181,7 +181,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
             }
             else
             {
-                recoveryOptions.MaxRetryAttempts = _defaultMaxRetryAttempts;
+                recoveryOptions.MaxRetryAttempts = _maxRetryAttempts;
                 recoveryOptions.CircuitBreakerOptions = _circuitBreakerOptions;
             }
 

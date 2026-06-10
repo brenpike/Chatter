@@ -37,15 +37,13 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
         }
 
         [Fact]
-        public void MustNotReflectWithMaxRetryAttemptsOnNonConfigPath()
+        public void MustReflectWithMaxRetryAttemptsOnNonConfigPath()
         {
-            // CHARACTERIZATION: on the non-config Build() path the builder overwrites MaxRetryAttempts
-            // with the default (5), discarding any value supplied via WithMaxRetryAttempts. Pinned as-is.
             var services = new ServiceCollection();
 
             var options = RecoveryOptionsBuilder.Create(services).WithMaxRetryAttempts(99).Build();
 
-            options.MaxRetryAttempts.Should().Be(5);
+            options.MaxRetryAttempts.Should().Be(99);
         }
     }
 }

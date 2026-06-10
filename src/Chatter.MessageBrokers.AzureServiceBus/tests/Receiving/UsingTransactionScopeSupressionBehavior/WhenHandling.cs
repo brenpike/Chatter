@@ -63,7 +63,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingTransactio
                 return Task.CompletedTask;
             };
 
-            await behavior.Handle(Mock.Of<ICommand>(), context, next);
+            // Establish an ambient transaction around Handle so the suppression assertion is
+            // meaningful: without an outer scope Transaction.Current is already null inside next,
+            // which would pass even if the behavior suppressed nothing.
+            using (var outerScope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
+            {
+                Transaction.Current.Should().NotBeNull();
+
+                await behavior.Handle(Mock.Of<ICommand>(), context, next);
+
+                outerScope.Complete();
+            }
 
             invocationCount.Should().Be(1);
             ambientDuringNext.Should().BeNull();
