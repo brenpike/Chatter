@@ -283,5 +283,96 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
                 .Should().Be(1, "repeated teardown must remain idempotent and record Dispose exactly once");
         }
+
+        // ------------------------------------------------------------------ (e) repeated StopReceiver is single-flight idempotent
+
+        [Fact]
+        public async Task MustRecordStopOnceWhenStopReceiverCalledTwice()
+        {
+            const int maxConcurrentCalls = 3;
+            const int messageCount = 6;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: messageCount);
+            for (var i = 0; i < messageCount; i++)
+                infraReceiver.Enqueue(BuildContext());
+
+            var inFlight = new StrongBox<int>(0);
+            using var releaseGate = new SemaphoreSlim(0, messageCount);
+            var dispatcher = GatedDispatcher(releaseGate, inFlight);
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            using var cts = new CancellationTokenSource();
+            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+            // Drive the loop to a known in-flight state, then release the gate so the first StopReceiver's drain can
+            // complete.
+            await WaitUntilAsync(() => Volatile.Read(ref inFlight.Value) == maxConcurrentCalls, watchdog.Token);
+            releaseGate.Release(messageCount);
+
+            var first = sut.StopReceiver();
+            var firstCompleted = await Task.WhenAny(first, Task.Delay(TimeSpan.FromSeconds(15)));
+            firstCompleted.Should().BeSameAs(first, "the first StopReceiver must drain in-flight workers and complete cleanly");
+            await first;
+
+            // The second StopReceiver observes the already-completed teardown via the single-flight guard: it must NOT
+            // throw ObjectDisposedException over the disposed token source/semaphore, and must complete promptly.
+            var second = sut.StopReceiver();
+            var secondCompleted = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(15)));
+            secondCompleted.Should().BeSameAs(second, "the second StopReceiver must observe the completed teardown and return without throwing");
+            await second; // surface any ObjectDisposedException
+
+            // Without the single-flight guard the fake's RecordCall would log Stop on BOTH entrypoints; exactly one
+            // proves only the first caller ran the teardown body and the second short-circuited.
+            infraReceiver.CallLog.Count(c => c == ReceiverCall.Stop)
+                .Should().Be(1, "repeated StopReceiver must be single-flight and stop the infrastructure receiver exactly once");
+        }
+
+        // ------------------------------------------------------------------ (f) concurrent StopReceiver + DisposeAsync is single-flight
+
+        [Fact]
+        public async Task MustQuiesceOnceWhenStopReceiverAndDisposeAsyncRaceConcurrently()
+        {
+            const int maxConcurrentCalls = 3;
+            const int messageCount = 6;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: messageCount);
+            for (var i = 0; i < messageCount; i++)
+                infraReceiver.Enqueue(BuildContext());
+
+            var inFlight = new StrongBox<int>(0);
+            using var releaseGate = new SemaphoreSlim(0, messageCount);
+            var dispatcher = GatedDispatcher(releaseGate, inFlight);
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            using var cts = new CancellationTokenSource();
+            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await WaitUntilAsync(() => Volatile.Read(ref inFlight.Value) == maxConcurrentCalls, watchdog.Token);
+
+            // Release the gate, then race StopReceiver and DisposeAsync at the same teardown: the single-flight guard
+            // must let exactly one caller run the drain+infra-teardown while the other observes its completion via the
+            // shared TaskCompletionSource. Neither may surface an ObjectDisposedException over the Exchange-and-disposed
+            // token source/semaphore.
+            releaseGate.Release(messageCount);
+            var race = Task.WhenAll(sut.StopReceiver(), sut.DisposeAsync().AsTask());
+            var completed = await Task.WhenAny(race, Task.Delay(TimeSpan.FromSeconds(15)));
+            completed.Should().BeSameAs(race, "concurrent StopReceiver and DisposeAsync must both quiesce and complete cleanly");
+            await race; // surface any ObjectDisposedException from either entrypoint
+
+            Volatile.Read(ref inFlight.Value).Should().Be(0, "all in-flight workers must have quiesced before the racing teardowns return");
+
+            // Which caller wins admission is nondeterministic, so the divergent per-entrypoint infra call is either
+            // Stop (StopReceiver won) OR Dispose (DisposeAsync won) — never both. The single-flight witness is that the
+            // SUM of the two divergent teardown calls is exactly one: only the admitted caller ran a teardown body and
+            // the loser observed its completion via the shared TaskCompletionSource without re-running infra teardown.
+            var snapshot = infraReceiver.CallLog;
+            var divergentTeardownCalls = snapshot.Count(c => c == ReceiverCall.Stop || c == ReceiverCall.Dispose);
+            divergentTeardownCalls.Should().Be(1, "exactly one racing entrypoint may run the per-entrypoint infrastructure teardown (Stop or Dispose), proving single-flight admission");
+        }
     }
 }
