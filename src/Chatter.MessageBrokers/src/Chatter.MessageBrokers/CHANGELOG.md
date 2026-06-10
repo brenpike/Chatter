@@ -16,7 +16,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
-- `BrokeredMessageReceiver` teardown is now a single idempotent, `ObjectDisposedException`-tolerant quiesce-before-dispose contract shared by `StopReceiver`, `DisposeAsync`, and `Dispose`. Repeated or concurrent teardown no longer throws `ObjectDisposedException` or double-disposes; the loop-await `IsFaulted` time-of-check/time-of-use race is removed from all paths; a residual non-cancellation receive-loop fault (notably one raised by the critical-failure notify epilogue) is observed-and-swallowed uniformly; and worker drain, infrastructure stop/dispose, and shared-primitive disposal always complete. Resolves a net8.0-specific flaky shutdown.
+- `BrokeredMessageReceiver` teardown is now an explicit lifecycle+strength state machine (`NotStarted` → `Starting` → `Live` → `TornDown`) shared by `StopReceiver`, `DisposeAsync`, and `Dispose`. The state machine guarantees: (a) teardown observed during the startup window (`Starting`) fully tears down partially-initialized infrastructure rather than dropping it; (b) a disposal request that races a concurrent Stop always wins via monotonic teardown-strength promotion — infrastructure is never left in a merely-Stopped state; (c) a faulted teardown attempt is retried on the next call rather than permanently latching teardown out; and (d) repeated or concurrent `StopReceiver`/`DisposeAsync`/`Dispose` calls remain idempotent (quiesce-before-dispose runs exactly once on success). Resolves the original non-OCE receive-loop-fault TOCTOU that caused a net8.0-specific flaky shutdown (`WhenReceiveLoopFaults`).
 
 ## [0.13.0] - 2026-06-09
 
