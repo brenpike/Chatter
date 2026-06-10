@@ -27,6 +27,19 @@ namespace Chatter.MessageBrokers.Receiving
         private Task _messageReceiverLoop;
         private int _maxConcurrentCalls = 1;
 
+        // INVARIANT: single-flight teardown admission. Every teardown entrypoint (StopReceiver, DisposeAsync, the
+        // synchronous Dispose path) routes through QuiesceAsync, which runs the cancel/await-loop/drain/infra-teardown/
+        // dispose-primitives body EXACTLY ONCE. The FIRST caller flips _teardownState 0->1 via Interlocked and runs the
+        // body; concurrent or repeated callers lose the race and instead OBSERVE the first caller's quiesce Task to
+        // completion, so a returning StopReceiver/DisposeAsync still implies a fully-quiesced receiver. The completion
+        // is published through _teardownCompletionSource (RunContinuationsAsynchronously to keep late-entrant
+        // continuations off the first caller's teardown thread). Admission is lock-free Interlocked ONLY — never a
+        // SemaphoreSlim/lock that the synchronous Dispose path could block on while the async path holds it, which
+        // would reintroduce the teardown deadlock the loop's Task.Run detachment was designed to avoid.
+        private int _teardownState;
+        private readonly TaskCompletionSource<bool> _teardownCompletionSource =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
         // INVARIANT: every per-message worker task admitted by the concurrency semaphore is tracked here for the
         // lifetime of its processing. The loop prunes completed tasks each turn (bounded accumulation) and the
         // shutdown path (StopReceiver/Dispose) drains the live set before disposing the semaphore or token source,
@@ -180,58 +193,33 @@ namespace Chatter.MessageBrokers.Receiving
             _logger.LogInformation("'{executingFunction}' for messages of type '{receiverMessageType}' is shutting down.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
         }
 
-        public async Task StopReceiver()
+        // INVARIANT: the per-entrypoint infrastructure teardown call differs (StopReceiver stops the receiver,
+        // DisposeAsync disposes it asynchronously, the synchronous Dispose path disposes it synchronously) while the
+        // surrounding cancel/await-loop/drain/dispose-primitives skeleton is shared. The shared quiesce routine takes
+        // this enum and dispatches the correct infrastructure call at the single seam where the paths diverge, so the
+        // concurrency-sensitive skeleton lives in exactly one place.
+        private enum InfrastructureTeardown
         {
-            _messageReceiverLoopTokenSource?.Cancel();
-
-            try
-            {
-                // The loop now treats loop-token cancellation as a NORMAL completion (it swallows the cancellation
-                // OperationCanceledException/ObjectDisposedException), so under the parallelized design — where the loop
-                // commonly parks in WaitAsync with workers in flight — awaiting it completes rather than throwing.
-                // INVARIANT: any residual exception from awaiting the loop — benign shutdown cancellation OR a non-OCE
-                // loop fault (e.g. the loop's notify epilogue throwing) — is observed-and-swallowed here and must NOT
-                // abort teardown. The previous `!IsFaulted` guard was a TOCTOU race: a fault that surfaced between the
-                // check and the await escaped, since only OperationCanceledException was caught. Catching ALL exceptions
-                // makes the guard redundant and removes the race; the loop's own epilogue already logged/notified any
-                // fault. Stopping/disposing infrastructure and shared primitives MUST happen regardless, so it lives in
-                // the finally below (whose teardown calls keep their normal propagation — they are not wrapped here).
-                if (_messageReceiverLoop != null)
-                {
-                    await _messageReceiverLoop;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // Loop-shutdown cancellation surfaced from the await: benign, teardown still runs in the finally.
-            }
-            catch (Exception ex)
-            {
-                // A non-OCE loop fault surfaced from the await. The loop epilogue already LogCritical'd it, so log only
-                // at Trace here (loud re-logging would double-report); observe-and-swallow so teardown completes.
-                _logger.LogTrace(ex, "Receive loop faulted during shutdown; observed and swallowed so teardown completes.");
-            }
-            finally
-            {
-                // INVARIANT: drain any worker tasks still in flight before disposing the semaphore / token source so no
-                // worker touches a disposed SemaphoreSlim. When the loop completed normally its own finally already
-                // drained; this is the belt-and-suspenders path for a faulted loop (the await above is skipped) and is
-                // a no-op once the set is empty. Teardown lives in the finally so a parked-loop cancellation can never
-                // abort StopReceiver before the infrastructure is stopped and the shared primitives are disposed.
-                await DrainInFlightWorkersAsync();
-
-                await _infrastructureReceiver.StopReceiver();
-
-                _concurrentMessagesSemaphore?.Dispose();
-                _messageReceiverLoopTokenSource?.Dispose();
-            }
+            Stop,
+            DisposeAsync,
+            DisposeSync
         }
+
+        public Task StopReceiver()
+            => QuiesceAsync(InfrastructureTeardown.Stop);
 
         // INVARIANT: cancel the loop token to wake a loop parked in WaitAsync OR a receive that does not honor the
         // token, so a worker-published critical fault is observed promptly instead of after the next message. Called
-        // only by the FIRST fault publisher. Guarded against a token source already disposed by a concurrent teardown
-        // (a detached worker can outlive Dispose), where cancelling is a no-op the shutdown path already covers.
-        void SignalLoopCriticalFault()
+        // only by the FIRST fault publisher. Routes through GuardedCancel so a token source already disposed by a
+        // concurrent teardown (a detached worker can outlive Dispose) is a no-op the shutdown path already covers.
+        void SignalLoopCriticalFault() => GuardedCancel();
+
+        // INVARIANT: every teardown entrypoint cancels the loop token through here. A prior teardown's body disposes
+        // the token source while LEAVING the field non-null (the Interlocked.Exchange-to-null happens in the same body
+        // AFTER the dispose, but a concurrent caller can still observe the field before that exchange), so an unguarded
+        // Cancel() on a repeated OR concurrent teardown — and on a detached worker's SignalLoopCriticalFault that
+        // outlives Dispose — would throw ObjectDisposedException before quiesce ran. Swallow that one benign race.
+        void GuardedCancel()
         {
             try
             {
@@ -239,6 +227,113 @@ namespace Chatter.MessageBrokers.Receiving
             }
             catch (ObjectDisposedException)
             {
+            }
+        }
+
+        // INVARIANT: single shared quiesce-before-dispose contract for ALL teardown entrypoints. The FIRST caller wins
+        // admission (Interlocked 0->1) and runs QuiesceCoreAsync exactly once; concurrent or repeated callers observe
+        // the first caller's completion via _teardownCompletionSource so a returning StopReceiver/DisposeAsync still
+        // guarantees a fully-quiesced receiver. Late entrants OBSERVE-AND-SWALLOW any teardown fault (the first caller
+        // already drove the body to completion and its disposition logs faults), consistent with the broadened
+        // disposition the entrypoints share.
+        async Task QuiesceAsync(InfrastructureTeardown infrastructureTeardown)
+        {
+            if (Interlocked.CompareExchange(ref _teardownState, 1, 0) != 0)
+            {
+                // Lost the admission race: a teardown is already in progress (or completed). Observe its completion so
+                // this returning caller still implies a fully-quiesced receiver; swallow any fault it published.
+                try
+                {
+                    await _teardownCompletionSource.Task.ConfigureAwait(false);
+                }
+                catch
+                {
+                }
+                return;
+            }
+
+            try
+            {
+                await QuiesceCoreAsync(infrastructureTeardown).ConfigureAwait(false);
+                _teardownCompletionSource.TrySetResult(true);
+            }
+            catch (Exception ex)
+            {
+                // Publish the fault to late entrants (they observe-and-swallow), then re-surface it to THIS first caller
+                // so the entrypoint's own disposition is unchanged.
+                _teardownCompletionSource.TrySetException(ex);
+                throw;
+            }
+        }
+
+        // INVARIANT: the shared quiesce body, run exactly once by the admitted teardown caller. Cancel (guarded) ->
+        // await the loop OBSERVING-AND-SWALLOWING all residual exceptions (no !IsFaulted check: an already-faulted loop
+        // is awaited inside the broadened try so its rethrow is swallowed; a non-OCE residual is logged at Trace,
+        // mirroring StopReceiver's prior disposition) -> drain in-flight workers -> per-entrypoint infrastructure
+        // teardown -> Interlocked.Exchange the shared primitives to null and Dispose the captured locals so a concurrent
+        // caller can never see a half-disposed SemaphoreSlim / CancellationTokenSource. ConfigureAwait(false) on every
+        // await keeps teardown context-free so the synchronous Dispose wait (GetAwaiter().GetResult()) cannot deadlock.
+        async Task QuiesceCoreAsync(InfrastructureTeardown infrastructureTeardown)
+        {
+            GuardedCancel();
+
+            try
+            {
+                // The loop treats loop-token cancellation as a NORMAL completion (it swallows the cancellation
+                // OperationCanceledException/ObjectDisposedException), so under the parallelized design — where the loop
+                // commonly parks in WaitAsync with workers in flight — awaiting it completes rather than throwing.
+                // INVARIANT: any residual exception from awaiting the loop — benign shutdown cancellation OR a non-OCE
+                // loop fault (e.g. the loop's notify epilogue throwing) — is observed-and-swallowed here and must NOT
+                // abort teardown. No `!IsFaulted` guard: that was a TOCTOU race (a fault surfacing between the check and
+                // the await escaped); awaiting an already-faulted loop inside this broadened try swallows its rethrow.
+                if (_messageReceiverLoop != null)
+                {
+                    await _messageReceiverLoop.ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Loop-shutdown cancellation surfaced from the await: benign, teardown still proceeds below.
+            }
+            catch (Exception ex)
+            {
+                // A non-OCE loop fault surfaced from the await. The loop epilogue already LogCritical'd it, so log only
+                // at Trace here (loud re-logging would double-report); observe-and-swallow so teardown completes.
+                _logger.LogTrace(ex, "Receive loop faulted during shutdown; observed and swallowed so teardown completes.");
+            }
+
+            // INVARIANT: drain any worker tasks still in flight before disposing the semaphore / token source so no
+            // worker touches a disposed SemaphoreSlim. When the loop completed normally its own finally already drained;
+            // this is the belt-and-suspenders path for a faulted loop (the await above swallowed) and is a no-op once
+            // the set is empty.
+            await DrainInFlightWorkersAsync().ConfigureAwait(false);
+
+            await TearDownInfrastructureAsync(infrastructureTeardown).ConfigureAwait(false);
+
+            // INVARIANT: exchange the shared primitives to null and dispose the CAPTURED locals so a concurrent caller
+            // (e.g. a detached worker's GuardedCancel/ReleaseConcurrencySlot) can never observe a half-disposed
+            // primitive through the field. The field is nulled BEFORE Dispose runs on the local.
+            var semaphore = Interlocked.Exchange(ref _concurrentMessagesSemaphore, null);
+            var loopTokenSource = Interlocked.Exchange(ref _messageReceiverLoopTokenSource, null);
+            semaphore?.Dispose();
+            loopTokenSource?.Dispose();
+        }
+
+        // INVARIANT: the ONE seam where teardown entrypoints diverge — keep each entrypoint's existing infrastructure
+        // call shape (Stop vs async Dispose vs sync Dispose). Everything around this call is shared by QuiesceCoreAsync.
+        async Task TearDownInfrastructureAsync(InfrastructureTeardown infrastructureTeardown)
+        {
+            switch (infrastructureTeardown)
+            {
+                case InfrastructureTeardown.Stop:
+                    await _infrastructureReceiver.StopReceiver().ConfigureAwait(false);
+                    break;
+                case InfrastructureTeardown.DisposeAsync:
+                    await _infrastructureReceiver.DisposeAsync().ConfigureAwait(false);
+                    break;
+                case InfrastructureTeardown.DisposeSync:
+                    _infrastructureReceiver?.Dispose();
+                    break;
             }
         }
 
@@ -682,35 +777,16 @@ namespace Chatter.MessageBrokers.Receiving
 
         public async ValueTask DisposeAsync()
         {
-            // INVARIANT: mirror StopReceiver's quiesce-before-dispose ordering. Draining only the in-flight worker
-            // SNAPSHOT is not enough: the loop may still be inside WaitAsync / ReceiveMessageAsync, or in the gap after
-            // receiving a message but before SpawnProcessingWorker has added the worker to _inFlightTasks — in those
-            // races the snapshot is empty or stale and disposing the infrastructure receiver / semaphore / token source
-            // here would race a loop that is about to receive, spawn, notify, or release. So cancel, then await the
-            // LOOP to completion first (it treats loop-token cancellation as a clean exit, so this completes rather
-            // than throwing; a faulted loop is skipped and a benign shutdown cancellation is swallowed), THEN drain any
-            // residual workers in the finally, and only then dispose. ConfigureAwait(false) keeps teardown context-free.
-            _messageReceiverLoopTokenSource?.Cancel();
-
-            try
-            {
-                if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
-                {
-                    await _messageReceiverLoop.ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            finally
-            {
-                await DrainInFlightWorkersAsync().ConfigureAwait(false);
-
-                await _infrastructureReceiver.DisposeAsync().ConfigureAwait(false);
-
-                _concurrentMessagesSemaphore?.Dispose();
-                _messageReceiverLoopTokenSource?.Dispose();
-            }
+            // INVARIANT: route through the single shared quiesce-before-dispose contract so DisposeAsync, StopReceiver,
+            // and the synchronous Dispose path all converge on ONE idempotent disposition. QuiesceAsync cancels (guarded
+            // against an already-disposed token source), awaits the LOOP to completion first — draining only the
+            // in-flight worker SNAPSHOT is not enough, since the loop may still be inside WaitAsync / ReceiveMessageAsync
+            // or in the gap after receiving but before SpawnProcessingWorker added the worker to _inFlightTasks, where
+            // the snapshot is empty or stale — then drains residual workers, then disposes the infrastructure receiver
+            // asynchronously, then exchanges-and-disposes the shared primitives. A repeated or concurrent DisposeAsync
+            // observes the first caller's quiesce completion instead of re-running it. ConfigureAwait(false) inside the
+            // contract keeps teardown context-free.
+            await QuiesceAsync(InfrastructureTeardown.DisposeAsync).ConfigureAwait(false);
 
             Dispose(disposing: false);
             GC.SuppressFinalize(this);
@@ -722,56 +798,35 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 if (disposing)
                 {
-                    _messageReceiverLoopTokenSource?.Cancel();
-
                     // INVARIANT: the synchronous Dispose path must QUIESCE the receiver before disposing any
                     // worker-touched primitive, exactly like the async StopReceiver/DisposeAsync paths — otherwise a
                     // worker already past its token check could still be inside DispatchReceivedMessageAsync or an
                     // Ack/Nack/Deadletter and would race a disposed infrastructure receiver / semaphore / token source
                     // (the ReleaseConcurrencySlot ObjectDisposedException swallow only hides ONE symptom; it does not
-                    // protect the infrastructure receiver or the in-flight message's settlement). The loop already
-                    // treats loop-token cancellation as a clean completion, so awaiting it here completes rather than
-                    // throwing; block synchronously so the wait-then-dispose ordering matches the async paths'
-                    // drain-before-dispose guarantee. The loop is started via Task.Run (default scheduler) and its
-                    // teardown awaits use ConfigureAwait(false), and the workers are started via Task.Run, so NEITHER
-                    // the loop nor the worker drain captures a caller SynchronizationContext — GetAwaiter().GetResult()
-                    // therefore cannot deadlock even when Dispose is called from a single-threaded context.
-                    QuiesceForSyncDispose();
-
-                    _infrastructureReceiver?.Dispose();
-                    _concurrentMessagesSemaphore?.Dispose();
-                    _messageReceiverLoopTokenSource?.Dispose();
+                    // protect the infrastructure receiver or the in-flight message's settlement). Route through the same
+                    // shared QuiesceAsync contract the async paths use, blocked synchronously: it cancels (guarded),
+                    // awaits the loop (which treats loop-token cancellation as a clean completion, so the wait completes
+                    // rather than throwing), drains detached workers, disposes the infrastructure receiver synchronously
+                    // (InfrastructureTeardown.DisposeSync), and exchanges-and-disposes the shared primitives — all
+                    // exactly once across repeated/concurrent teardowns. DEADLOCK-SAFETY: the loop is started via
+                    // Task.Run (default scheduler) and every await inside the contract uses ConfigureAwait(false), and
+                    // workers are started via Task.Run, so NEITHER the loop nor the drain captures a caller
+                    // SynchronizationContext — GetAwaiter().GetResult() cannot deadlock even from a single-threaded
+                    // context. Admission is lock-free Interlocked, never a lock/SemaphoreSlim the async path could hold,
+                    // so this synchronous block can never wait on a primitive an in-progress async teardown owns. Any
+                    // teardown fault re-surfaced by QuiesceAsync is benign teardown noise here and is swallowed —
+                    // Dispose must not throw.
+                    try
+                    {
+                        QuiesceAsync(InfrastructureTeardown.DisposeSync).GetAwaiter().GetResult();
+                    }
+                    catch
+                    {
+                    }
                 }
 
                 _infrastructureReceiver = null;
                 _disposedValue = true;
-            }
-        }
-
-        // INVARIANT: synchronously wait for the receive loop AND every in-flight worker to quiesce so the sync Dispose
-        // path honors the same drain-before-dispose guarantee as StopReceiver/DisposeAsync. Caller has already
-        // requested cancellation. Awaiting the loop completes cleanly (the loop swallows shutdown cancellation); the
-        // drain then waits for detached workers. All worker faults are already handled inside the worker body, so any
-        // exception observed here is benign teardown noise and is swallowed — Dispose must not throw.
-        void QuiesceForSyncDispose()
-        {
-            try
-            {
-                if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
-                {
-                    _messageReceiverLoop.GetAwaiter().GetResult();
-                }
-            }
-            catch
-            {
-            }
-
-            try
-            {
-                DrainInFlightWorkersAsync().GetAwaiter().GetResult();
-            }
-            catch
-            {
             }
         }
 
