@@ -403,5 +403,71 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 Times.Once,
                 "only the non-null received message must spawn a worker");
         }
+
+        // ------------------------------------------------------------------ (d) fault-resettable teardown admission: a thrown quiesce body lets a later teardown re-run
+
+        [Fact]
+        public async Task MustRetryTeardownWhenFirstQuiesceBodyThrowsThenSecondTeardownDisposes()
+        {
+            const int maxConcurrentCalls = 3;
+            const int messageCount = 6;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: messageCount);
+            for (var i = 0; i < messageCount; i++)
+                infraReceiver.Enqueue(BuildContext());
+
+            // Arm the fake so its FIRST infra teardown call (here, StopReceiver) throws once. The first StopReceiver's
+            // quiesce body therefore faults at the infra-teardown seam (after cancel + drain), so admission must RESET
+            // rather than latch terminally, letting a SECOND teardown re-run cleanup and actually dispose the infra.
+            infraReceiver.ArmThrowOnceOnTeardown();
+
+            var inFlight = new StrongBox<int>(0);
+            using var releaseGate = new SemaphoreSlim(0, messageCount);
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            dispatcher
+                .Setup(d => d.DispatchAsync(It.IsAny<FakeMessage>(), It.IsAny<MessageBrokerContext>(), It.IsAny<CancellationToken>()))
+                .Returns(async (FakeMessage _, MessageBrokerContext __, CancellationToken token) =>
+                {
+                    Interlocked.Increment(ref inFlight.Value);
+                    try
+                    {
+                        await releaseGate.WaitAsync(token);
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref inFlight.Value);
+                    }
+                });
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            using var cts = new CancellationTokenSource();
+            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await WaitUntilAsync(() => Volatile.Read(ref inFlight.Value) == maxConcurrentCalls, watchdog.Token);
+
+            // Release the gate so the first teardown's drain can quiesce the workers, then StopReceiver. The injected
+            // throw-once surfaces at the infra-teardown seam, so StopReceiver must SURFACE the fault per its entrypoint
+            // contract (it re-throws the quiesce fault to the caller).
+            releaseGate.Release(messageCount);
+
+            Func<Task> firstTeardown = () => sut.StopReceiver();
+            await firstTeardown.Should().ThrowAsync<InvalidOperationException>(
+                "the first quiesce body's infra-teardown threw, and StopReceiver surfaces that fault to its caller");
+
+            Volatile.Read(ref inFlight.Value).Should().Be(0, "the first teardown still drained the in-flight workers before its infra-teardown faulted");
+            infraReceiver.CallLog.Should().NotContain(ReceiverCall.Stop, "the throwing StopReceiver call must not have recorded a successful Stop");
+
+            // A SECOND teardown must win admission (the slot was reset, not latched), re-run the quiesce body, and dispose
+            // the infra — proving the thrown quiesce did not permanently latch the receiver out of teardown.
+            var second = sut.DisposeAsync().AsTask();
+            var secondCompleted = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(15)));
+            secondCompleted.Should().BeSameAs(second, "the second teardown must re-run cleanup and complete cleanly after the first faulted");
+            await second;
+
+            infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
+                .Should().Be(1, "the retrying teardown must dispose the infrastructure receiver exactly once");
+        }
     }
 }
