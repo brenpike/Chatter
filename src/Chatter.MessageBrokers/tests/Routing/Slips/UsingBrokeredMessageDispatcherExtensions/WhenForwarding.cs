@@ -16,7 +16,12 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingBrokeredMessageDispatc
         private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = new Mock<IBrokeredMessageDispatcher>();
 
         public WhenForwarding()
-            => _bodyConverter.SetupGet(c => c.ContentType).Returns("application/json");
+        {
+            _bodyConverter.SetupGet(c => c.ContentType).Returns("application/json");
+            _dispatcher
+                .Setup(d => d.Forward(It.IsAny<InboundBrokeredMessage>(), It.IsAny<string>(), It.IsAny<TransactionContext>()))
+                .Returns(Task.CompletedTask);
+        }
 
         private InboundBrokeredMessage CreateInbound()
             => new InboundBrokeredMessage("message-id", new byte[] { 1 }, new Dictionary<string, object>(), "receiver-path", _bodyConverter.Object);

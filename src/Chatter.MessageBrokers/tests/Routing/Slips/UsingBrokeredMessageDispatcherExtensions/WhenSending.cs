@@ -15,6 +15,11 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingBrokeredMessageDispatc
         private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = new Mock<IBrokeredMessageDispatcher>();
         private readonly FakeMessage _message = new FakeMessage();
 
+        public WhenSending()
+            => _dispatcher
+                .Setup(d => d.Send(It.IsAny<FakeMessage>(), It.IsAny<string>(), It.IsAny<TransactionContext>(), It.IsAny<SendOptions>()))
+                .Returns(Task.CompletedTask);
+
         private static RoutingSlip CreateSlip()
             => RoutingSlipBuilder.NewRoutingSlip(System.Guid.NewGuid())
                 .WithRoute("first")
