@@ -197,6 +197,100 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Sending.UsingSqlServiceB
                 "Dispatch must propagate the failure raised while owning its own transaction lifecycle");
         }
 
+        // --- Collection overload entered directly: open-count == 1 ---------------------------------
+
+        [Fact]
+        public async Task MustConsultConnectionSourceOnceWhenCollectionOverloadCalledDirectly()
+        {
+            // Enter through the collection overload with two messages. BeginTransactionAsync fires
+            // after the source is consulted (on the shared, unopened connection) and fails fast.
+            // Open-count must be 1: one connection originated through the port regardless of message count.
+            var connectionSource = new InMemorySqlConnectionSource();
+            var sender = CreateSender(connectionSource);
+
+            try
+            {
+                await sender.Dispatch(new[] { Message("A"), Message("B") }, transactionContext: null);
+            }
+            catch (InvalidOperationException)
+            {
+                // Expected: BeginTransactionAsync throws on the unopened connection (see class NOTE).
+            }
+
+            connectionSource.OpenCount.Should().Be(1,
+                "the collection overload originates a single connection through ISqlConnectionSource before fail-fast");
+        }
+
+        // --- Single→collection delegation: single overload wraps to one-element array (lines 138-139) --
+
+        [Fact]
+        public async Task MustConsultConnectionSourceOnceWhenSingleOverloadDelegates()
+        {
+            // SqlServiceBrokerSender.Dispatch(OutboundBrokeredMessage, TransactionContext) (lines 138-139)
+            // wraps the message in a one-element array and delegates to the collection overload.
+            // The source must still be consulted exactly once — the wrap-to-one-element-array delegation
+            // must not cause a second origination.
+            var connectionSource = new InMemorySqlConnectionSource();
+            var sender = CreateSender(connectionSource);
+
+            try
+            {
+                await sender.Dispatch(Message(), transactionContext: null);
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            connectionSource.OpenCount.Should().Be(1,
+                "single-message overload delegates via wrap-to-one-element-array; source must be consulted exactly once");
+        }
+
+        // --- Null transactionContext defaults to NewConnection ----------------------------------------
+
+        [Fact]
+        public async Task MustRouteToNewConnectionWhenTransactionContextIsNull()
+        {
+            // null transactionContext defaults to TransactionMode.None (lines 38-40 of SqlServiceBrokerSender.cs).
+            // OutboundTransactionPolicy resolves NewConnection when there is no context transaction, so the
+            // source must be consulted (open-count == 1) and fail-fast must propagate.
+            // INVARIANT: null context never reuses a context transaction.
+            var connectionSource = new InMemorySqlConnectionSource();
+            var sender = CreateSender(connectionSource);
+
+            try
+            {
+                await sender.Dispatch(Message(), transactionContext: null);
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            connectionSource.OpenCount.Should().Be(1,
+                "null transactionContext defaults to TransactionMode.None and routes to NewConnection");
+        }
+
+        // --- EndConversationAfterDispatch = false origin path ----------------------------------------
+
+        [Fact]
+        public async Task MustConsultConnectionSourceAndPropagateFailFastWhenEndConversationAfterDispatchIsFalse()
+        {
+            // EndConversationAfterDispatch = false suppresses the End-Dialog call in the loop body
+            // (SqlServiceBrokerSender.cs line 82), but that effect is DEFERRED behind a live
+            // ExecuteNonQueryAsync. The connection-origin path and fail-fast contract remain unit-reachable
+            // regardless of this option.
+            var connectionSource = new InMemorySqlConnectionSource();
+            var options = Options(endConversationAfterDispatch: false);
+            var sender = CreateSender(connectionSource, options);
+
+            Func<Task> act = () => sender.Dispatch(Message(), transactionContext: null);
+
+            await act.Should().ThrowAsync<InvalidOperationException>(
+                "fail-fast on the unopened connection must propagate regardless of EndConversationAfterDispatch");
+
+            connectionSource.OpenCount.Should().Be(1,
+                "source must be consulted once on the new-connection path even when EndConversationAfterDispatch is false");
+        }
+
         // ----------------------------------------------------------------------------------------------
         // REACHABLE-vs-DEFERRED LEDGER (so reviewers know exactly what unit scope pins here):
         //
@@ -207,6 +301,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Sending.UsingSqlServiceB
         //     FullAtomicityViaInfrastructure (the source is consulted in all three).
         //   * Fail-fast + propagate: BeginTransactionAsync on the unopened owned connection throws and the
         //     sender rethrows (does not swallow).
+        //   * Collection overload entered directly (multiple messages): source consulted once, fail-fast.
+        //   * Single→collection delegation (lines 138-139): single-message overload wraps to one-element
+        //     array; source still consulted exactly once.
+        //   * Null transactionContext defaults to TransactionMode.None (lines 38-40), routes NewConnection,
+        //     never reuses a context transaction — source consulted once.
+        //   * EndConversationAfterDispatch = false origin path: source consulted once + fail-fast propagates
+        //     regardless of the option (the End-Dialog loop-body effect stays DEFERRED, see below).
         //
         // DEFERRED to the end-to-end suite (require a live Service Broker / a real SqlTransaction, which
         // cannot be manufactured without a live connection):
@@ -219,7 +320,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Sending.UsingSqlServiceB
         //     ExecuteNonQueryAsync). The SQL SHAPE of each command is already pinned at the Scripts level
         //     (UsingBeginDialogConversationCommand / UsingSendOnConversationCommand /
         //     UsingEndDialogConversationCommand .Create()).
-        //   * EndConversationAfterDispatch gate firing an actual End Dialog (loop-body, post-Begin).
+        //   * EndConversationAfterDispatch gate firing an actual End Dialog (loop-body, post-Begin):
+        //     the End-Dialog call at line 82 is only reached after BeginConversation's live
+        //     ExecuteNonQueryAsync succeeds; unreachable at unit scope.
         //   * ChatterBrokeredMessageType body-conversion branch in SendMessageOnConversation (private,
         //     reached only after BeginConversation's live ExecuteNonQueryAsync succeeds).
         //   * Commit-on-success (transaction.Commit) on the owned path.
