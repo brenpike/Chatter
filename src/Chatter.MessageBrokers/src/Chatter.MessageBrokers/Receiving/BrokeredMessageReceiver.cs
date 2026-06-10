@@ -238,6 +238,21 @@ namespace Chatter.MessageBrokers.Receiving
         // disposition the entrypoints share.
         async Task QuiesceAsync(InfrastructureTeardown infrastructureTeardown)
         {
+            // INVARIANT: do NOT consume single-flight admission for a receiver that never went live. The receiver is
+            // commonly registered as a singleton; a host/DI graph can synchronously Dispose() the instance during
+            // resolution — BEFORE StartReceiverImpl has assigned _infrastructureReceiver or started the loop — and that
+            // premature teardown has nothing to quiesce. If such a call latched _teardownState 0->1 it would
+            // PERMANENTLY lock out the genuine post-startup teardown (the host's await-using DisposeAsync), so the live
+            // infrastructure receiver would never be stopped/disposed. Gate on go-live: until IsReceiving is true there
+            // is no loop, no in-flight worker, and no infrastructure receiver to tear down, so quiescing is a structural
+            // no-op that must leave admission untouched for the real teardown. Once IsReceiving is true it stays true,
+            // so a repeated/concurrent teardown of a STARTED receiver still falls through to the admission gate below
+            // and is deduplicated exactly once (idempotency preserved).
+            if (!IsReceiving)
+            {
+                return;
+            }
+
             if (Interlocked.CompareExchange(ref _teardownState, 1, 0) != 0)
             {
                 // Lost the admission race: a teardown is already in progress (or completed). Observe its completion so
