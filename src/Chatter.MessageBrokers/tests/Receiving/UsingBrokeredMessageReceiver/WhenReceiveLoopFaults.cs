@@ -198,6 +198,101 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             infraReceiver.CallLog.Should().Contain(ReceiverCall.Stop, "StopReceiver must stop the infrastructure receiver even when the loop faulted");
         }
 
+        // ------------------------------------------------------------------ (a') faulted-loop teardown via DisposeAsync (TOCTOU regression witness)
+
+        [Fact]
+        public async Task MustDisposeCleanlyWhenLoopTaskFaultedFromNotifyEpilogue()
+        {
+            const int maxConcurrentCalls = 2;
+            const int messageCount = 2;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: messageCount);
+            for (var i = 0; i < messageCount; i++)
+                infraReceiver.Enqueue(BuildContext());
+
+            // Exact twin of MustDrainAndStopCleanlyWhenLoopTaskFaultedFromNotifyEpilogue, but tears down via DisposeAsync.
+            // Regression witness for the now-fixed DisposeAsync TOCTOU: DisposeAsync previously had a !IsFaulted guard plus
+            // an OCE-only catch, so a NON-OCE faulted loop (here, the notify epilogue throwing InvalidOperationException)
+            // would either be skipped or escape. STEP-001 routed DisposeAsync through the shared observe-and-swallow quiesce
+            // contract, so DisposeAsync must now SKIP/observe the faulted-loop await, drain the gated sibling, tear down the
+            // infrastructure receiver, and complete without throwing.
+            using var siblingReleaseGate = new SemaphoreSlim(0, 1);
+            var siblingEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var inFlight = new StrongBox<int>(0);
+            var faultArmed = new StrongBox<int>(0);
+
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            dispatcher
+                .Setup(d => d.DispatchAsync(It.IsAny<FakeMessage>(), It.IsAny<MessageBrokerContext>(), It.IsAny<CancellationToken>()))
+                .Returns(async (FakeMessage _, MessageBrokerContext __, CancellationToken token) =>
+                {
+                    // The faulter waits until the sibling has entered (and is in the in-flight set) before throwing, so
+                    // the loop genuinely has a gated sibling left undrained when the notify epilogue faults the loop.
+                    if (Interlocked.Increment(ref faultArmed.Value) == 1)
+                    {
+                        await siblingEntered.Task;
+                        throw new CriticalReceiverException("boom");
+                    }
+
+                    Interlocked.Increment(ref inFlight.Value);
+                    siblingEntered.TrySetResult(true);
+                    try
+                    {
+                        // Wait WITHOUT the worker token so cancellation (SignalLoopCriticalFault) can NOT self-quiesce the
+                        // sibling. The ONLY release is the explicit gate release the test issues right before DisposeAsync,
+                        // so the sibling stays genuinely in-flight until DisposeAsync's belt-and-suspenders drain awaits it.
+                        await siblingReleaseGate.WaitAsync();
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref inFlight.Value);
+                    }
+                });
+
+            var loopFaulted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var criticalNotifier = new Mock<ICriticalFailureNotifier>();
+            criticalNotifier
+                .Setup(n => n.Notify(It.IsAny<FailureContext>()))
+                .Returns((FailureContext _) =>
+                {
+                    loopFaulted.TrySetResult(true);
+                    // Non-critical throw inside the epilogue: this escapes MessageReceiverLoopAsync's finally and faults
+                    // the loop Task before its own drain executes.
+                    throw new InvalidOperationException("notify failed");
+                });
+
+            var sut = CreateSut(infraReceiver, dispatcher, criticalNotifier: criticalNotifier);
+
+            using var cts = new CancellationTokenSource();
+            // Do NOT await StartReceiver's loop here: StartReceiverImpl awaits the (now faulting) loop, so the
+            // StartReceiver task would surface the InvalidOperationException unless IsReceiving has flipped. Run it
+            // detached; the receiver instance is reachable via sut for the teardown calls.
+            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+            var siblingCompleted = await Task.WhenAny(siblingEntered.Task, Task.Delay(TimeSpan.FromSeconds(15)));
+            siblingCompleted.Should().BeSameAs(siblingEntered.Task, "the sibling worker must gate in-flight");
+
+            var faultCompleted = await Task.WhenAny(loopFaulted.Task, Task.Delay(TimeSpan.FromSeconds(15)));
+            faultCompleted.Should().BeSameAs(loopFaulted.Task, "the notify epilogue must run (and then fault the loop)");
+            await loopFaulted.Task;
+
+            // Release the gate so the DisposeAsync drain can quiesce the sibling, then dispose. DisposeAsync must not throw
+            // despite the loop having faulted with a NON-OCE exception (the regression the TOCTOU fix closed).
+            siblingReleaseGate.Release();
+
+            var dispose = sut.DisposeAsync().AsTask();
+            var disposeCompleted = await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(15)));
+            disposeCompleted.Should().BeSameAs(dispose, "DisposeAsync must skip/observe the faulted loop, drain, and complete without throwing");
+            await dispose;
+
+            Volatile.Read(ref inFlight.Value).Should().Be(0, "the belt-and-suspenders drain must quiesce the gated sibling");
+            // DisposeAsync's infra teardown calls _infrastructureReceiver.DisposeAsync(), which the fake records as
+            // ReceiverCall.Dispose via RecordCallOnce (see InMemoryMessagingInfrastructureReceiver.DisposeAsync).
+            infraReceiver.CallLog.Should().Contain(ReceiverCall.Dispose, "DisposeAsync must tear down the infrastructure receiver even when the loop faulted");
+        }
+
         // ------------------------------------------------------------------ (b) inline receive-error ladder
 
         [Fact]
