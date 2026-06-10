@@ -1,3 +1,4 @@
+using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Slips;
@@ -13,15 +14,10 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingBrokeredMessageDispatc
     public class WhenForwarding : Testing.Core.Context
     {
         private readonly Mock<IBrokeredMessageBodyConverter> _bodyConverter = new Mock<IBrokeredMessageBodyConverter>();
-        private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = new Mock<IBrokeredMessageDispatcher>();
+        private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = RoutingSlipDispatcherMock.Completed<FakeMessage>();
 
         public WhenForwarding()
-        {
-            _bodyConverter.SetupGet(c => c.ContentType).Returns("application/json");
-            _dispatcher
-                .Setup(d => d.Forward(It.IsAny<InboundBrokeredMessage>(), It.IsAny<string>(), It.IsAny<TransactionContext>()))
-                .Returns(Task.CompletedTask);
-        }
+            => _bodyConverter.SetupGet(c => c.ContentType).Returns("application/json");
 
         private InboundBrokeredMessage CreateInbound()
             => new InboundBrokeredMessage("message-id", new byte[] { 1 }, new Dictionary<string, object>(), "receiver-path", _bodyConverter.Object);
@@ -67,5 +63,7 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingBrokeredMessageDispatc
 
             inbound.MessageContext.Should().ContainKey(MessageContext.RoutingSlip);
         }
+
+        private class FakeMessage : ICommand { }
     }
 }

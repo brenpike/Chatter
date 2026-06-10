@@ -17,7 +17,7 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingMessageHandlerContextE
     public class WhenSendingAndForwarding : Testing.Core.Context
     {
         private readonly Mock<IBrokeredMessageBodyConverter> _bodyConverter = new Mock<IBrokeredMessageBodyConverter>();
-        private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = new Mock<IBrokeredMessageDispatcher>();
+        private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = RoutingSlipDispatcherMock.Completed<FakeMessage>();
         private readonly FakeMessage _message = new FakeMessage();
 
         public WhenSendingAndForwarding()

@@ -12,13 +12,8 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingBrokeredMessageDispatc
 {
     public class WhenSending : Testing.Core.Context
     {
-        private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = new Mock<IBrokeredMessageDispatcher>();
+        private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = RoutingSlipDispatcherMock.Completed<FakeMessage>();
         private readonly FakeMessage _message = new FakeMessage();
-
-        public WhenSending()
-            => _dispatcher
-                .Setup(d => d.Send(It.IsAny<FakeMessage>(), It.IsAny<string>(), It.IsAny<TransactionContext>(), It.IsAny<SendOptions>()))
-                .Returns(Task.CompletedTask);
 
         private static RoutingSlip CreateSlip()
             => RoutingSlipBuilder.NewRoutingSlip(System.Guid.NewGuid())

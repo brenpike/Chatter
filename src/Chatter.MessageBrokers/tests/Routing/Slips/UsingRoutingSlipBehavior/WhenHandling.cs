@@ -19,7 +19,7 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingRoutingSlipBehavior
     public class WhenHandling : Testing.Core.Context
     {
         private readonly Mock<IBrokeredMessageBodyConverter> _bodyConverter = new Mock<IBrokeredMessageBodyConverter>();
-        private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = new Mock<IBrokeredMessageDispatcher>();
+        private readonly Mock<IBrokeredMessageDispatcher> _dispatcher = RoutingSlipDispatcherMock.Completed<FakeMessage>();
         private readonly RoutingSlipBehavior<FakeMessage> _sut
             = new RoutingSlipBehavior<FakeMessage>(NullLogger<RoutingSlipBehavior<FakeMessage>>.Instance);
         private readonly FakeMessage _message = new FakeMessage();
