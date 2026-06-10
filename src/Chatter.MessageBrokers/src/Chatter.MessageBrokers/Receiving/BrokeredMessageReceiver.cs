@@ -189,10 +189,14 @@ namespace Chatter.MessageBrokers.Receiving
                 // The loop now treats loop-token cancellation as a NORMAL completion (it swallows the cancellation
                 // OperationCanceledException/ObjectDisposedException), so under the parallelized design — where the loop
                 // commonly parks in WaitAsync with workers in flight — awaiting it completes rather than throwing.
-                // Still guard the await: a FAULTED loop is skipped (mirrors the original), and any residual exception
-                // from awaiting must NOT abort teardown. Stopping/disposing infrastructure and shared primitives MUST
-                // happen regardless, so it lives in the finally below.
-                if (_messageReceiverLoop != null && !_messageReceiverLoop.IsFaulted)
+                // INVARIANT: any residual exception from awaiting the loop — benign shutdown cancellation OR a non-OCE
+                // loop fault (e.g. the loop's notify epilogue throwing) — is observed-and-swallowed here and must NOT
+                // abort teardown. The previous `!IsFaulted` guard was a TOCTOU race: a fault that surfaced between the
+                // check and the await escaped, since only OperationCanceledException was caught. Catching ALL exceptions
+                // makes the guard redundant and removes the race; the loop's own epilogue already logged/notified any
+                // fault. Stopping/disposing infrastructure and shared primitives MUST happen regardless, so it lives in
+                // the finally below (whose teardown calls keep their normal propagation — they are not wrapped here).
+                if (_messageReceiverLoop != null)
                 {
                     await _messageReceiverLoop;
                 }
@@ -200,6 +204,12 @@ namespace Chatter.MessageBrokers.Receiving
             catch (OperationCanceledException)
             {
                 // Loop-shutdown cancellation surfaced from the await: benign, teardown still runs in the finally.
+            }
+            catch (Exception ex)
+            {
+                // A non-OCE loop fault surfaced from the await. The loop epilogue already LogCritical'd it, so log only
+                // at Trace here (loud re-logging would double-report); observe-and-swallow so teardown completes.
+                _logger.LogTrace(ex, "Receive loop faulted during shutdown; observed and swallowed so teardown completes.");
             }
             finally
             {
