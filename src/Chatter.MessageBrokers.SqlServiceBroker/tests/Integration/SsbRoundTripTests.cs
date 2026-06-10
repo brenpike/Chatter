@@ -43,9 +43,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         private ChatterSsbPipelineHarness BuildHarness()
             => ChatterSsbPipelineHarness.Build(
                 _fixture.GetAppConnectionString(),
+                ServiceBrokerProvisioning.RoundTripSet,
                 ssb => ssb.AddQueueReceiver<RoundTripCommand>(
-                    ServiceBrokerProvisioning.TargetQueuePathBracketed,
-                    deadLetterServicePath: ServiceBrokerProvisioning.DeadLetterServiceName),
+                    ServiceBrokerProvisioning.RoundTripSet.TargetQueuePathBracketed,
+                    deadLetterServicePath: ServiceBrokerProvisioning.RoundTripSet.DeadLetterServiceName),
                 typeof(RoundTripCommand));
 
         // Round-trip: a command sent through Chatter's dispatcher is delivered by Chatter's SSB pump to the
@@ -95,7 +96,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                 // target service, over the //Chatter contract, as the //Chatter/BrokeredMessage message type.
                 inbound.MessageContext.Should().ContainKey(SSBMessageContext.ServiceName);
                 inbound.MessageContext[SSBMessageContext.ServiceName]
-                    .Should().Be(ServiceBrokerProvisioning.TargetServiceName);
+                    .Should().Be(ServiceBrokerProvisioning.RoundTripSet.TargetServiceName);
 
                 inbound.MessageContext.Should().ContainKey(SSBMessageContext.ServiceContractName);
                 inbound.MessageContext[SSBMessageContext.ServiceContractName]

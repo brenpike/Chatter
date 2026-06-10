@@ -54,9 +54,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         private ChatterSsbPipelineHarness BuildHarness()
             => ChatterSsbPipelineHarness.Build(
                 _fixture.GetAppConnectionString(),
+                ServiceBrokerProvisioning.DialogSet,
                 ssb => ssb.AddQueueReceiver<DialogLifecycleCommand>(
-                    ServiceBrokerProvisioning.TargetQueuePathBracketed,
-                    deadLetterServicePath: ServiceBrokerProvisioning.DeadLetterServiceName),
+                    ServiceBrokerProvisioning.DialogSet.TargetQueuePathBracketed,
+                    deadLetterServicePath: ServiceBrokerProvisioning.DialogSet.DeadLetterServiceName),
                 typeof(DialogLifecycleCommand));
 
         // Test A — dialog begin/end + EndDialog auto-ack tolerance.

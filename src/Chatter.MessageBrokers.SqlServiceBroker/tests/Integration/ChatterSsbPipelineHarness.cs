@@ -30,7 +30,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
     // loops on a cancellable token, (b) exposes ONLY bounded wait helpers that throw on timeout, and (c) on
     // teardown cancels the pump CancellationTokenSource BEFORE stopping the host so a blocked/looping RECEIVE
     // unwinds via token cancellation (the only teardown signal that works).
-    public sealed class ChatterSsbPipelineHarness : IAsyncDisposable
+    internal sealed class ChatterSsbPipelineHarness : IAsyncDisposable
     {
         // Finite receiver timeout (milliseconds) handed to the production receiver. Small and finite so a
         // RECEIVE with no message returns an empty result set quickly and the pump loops on the pump token
@@ -41,30 +41,37 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         private readonly ServiceProvider _provider;
         private readonly IReadOnlyList<IHostedService> _hostedServices;
         private readonly CancellationTokenSource _pumpCts;
+        private readonly ServiceBrokerProvisioning.ObjectSet _objectSet;
         private bool _started;
 
         private ChatterSsbPipelineHarness(
             ServiceProvider provider,
             IReadOnlyList<IHostedService> hostedServices,
-            CancellationTokenSource pumpCts)
+            CancellationTokenSource pumpCts,
+            ServiceBrokerProvisioning.ObjectSet objectSet)
         {
             _provider = provider;
             _hostedServices = hostedServices;
             _pumpCts = pumpCts;
+            _objectSet = objectSet;
         }
 
         // The shared per-message-type signal registry. Tests call GetSignal<TMessage>() to obtain the same
         // HandlerSignal<TMessage> the DI-resolved RecordingMessageHandler<TMessage> reports through.
         public HandlerSignalRegistry Signals { get; private set; }
 
-        // Builds the harness. configureReceivers registers the receivers under test on the
-        // SqlServiceBrokerOptionsBuilder (e.g. ssb.AddQueueReceiver<MyCommand>("[chatter_ssb_it_target_queue]",
-        // deadLetterServicePath: "chatter_ssb_it_deadletter_service")). messageTypes are the IMessage types
-        // whose RecordingMessageHandler<TMessage> should be wired into Chatter's handler resolution; a closed
+        // Builds the harness. objectSet is the owning test class's RECEIVE-side Service Broker object set;
+        // SendAsync routes every dispatch to objectSet.TargetServiceName so each test class sends to / receives
+        // from its OWN target service and cross-test queue poisoning is impossible. configureReceivers registers
+        // the receivers under test on the SqlServiceBrokerOptionsBuilder (e.g.
+        // ssb.AddQueueReceiver<MyCommand>(objectSet.TargetQueuePathBracketed,
+        // deadLetterServicePath: objectSet.DeadLetterServiceName)). messageTypes are the IMessage types whose
+        // RecordingMessageHandler<TMessage> should be wired into Chatter's handler resolution; a closed
         // IMessageHandler<TMessage> is registered for each so Chatter's dispatcher resolves and invokes it on
         // the real receive path.
         public static ChatterSsbPipelineHarness Build(
             string connectionString,
+            ServiceBrokerProvisioning.ObjectSet objectSet,
             Action<SqlServiceBrokerOptionsBuilder> configureReceivers,
             params Type[] messageTypes)
         {
@@ -120,7 +127,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             var hostedServices = new List<IHostedService>(provider.GetServices<IHostedService>());
             var pumpCts = new CancellationTokenSource();
 
-            return new ChatterSsbPipelineHarness(provider, hostedServices, pumpCts)
+            return new ChatterSsbPipelineHarness(provider, hostedServices, pumpCts, objectSet)
             {
                 Signals = registry,
             };
@@ -153,12 +160,15 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             return scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>();
         }
 
-        // Sends a command through Chatter's dispatcher to the provisioned target service, stamping the
-        // SSBMessageContext headers the SqlServiceBrokerSender reads to BEGIN DIALOG / SEND on the provisioned
+        // Sends a command through Chatter's dispatcher to the OWNING object set's target service, stamping the
+        // SSBMessageContext headers the SqlServiceBrokerSender reads to BEGIN DIALOG / SEND on the SHARED
         // initiator service + //Chatter contract + //Chatter/BrokeredMessage message type. destinationPath is
-        // the BARE target service name (ServiceBrokerProvisioning.TargetServiceName): BeginDialogConversationCommand
-        // strips brackets from the target and uses it as "TO SERVICE", so the destination must name the target
-        // SERVICE, not the queue. Opens and disposes its own scope around the send.
+        // the BARE target service name (_objectSet.TargetServiceName): BeginDialogConversationCommand strips
+        // brackets from the target and uses it as "TO SERVICE", so the destination must name the target SERVICE,
+        // not the queue. Routing to the per-class target service is what makes cross-test isolation real — each
+        // class sends to its own service so a stale message can never bleed into another class's queue. The
+        // initiator stamp + contract + message type stay shared (the send side is common across all classes).
+        // Opens and disposes its own scope around the send.
         public async Task SendAsync<TMessage>(TMessage message) where TMessage : ICommand
         {
             var options = new SendOptions();
@@ -169,7 +179,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             var dispatcher = CreateDispatcher(out var scope);
             using (scope)
             {
-                await dispatcher.Send(message, ServiceBrokerProvisioning.TargetServiceName, options: options)
+                await dispatcher.Send(message, _objectSet.TargetServiceName, options: options)
                     .ConfigureAwait(false);
             }
         }

@@ -31,7 +31,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
     // MessageContext.InfrastructureType, MessageContext.ReceiveAttempts.
     //
     // HOW THE DLQ IS READ AT THE TEST EDGE: a raw ADO.NET RECEIVE from the deadletter queue
-    // (ServiceBrokerProvisioning.DeadLetterQueueName), mirroring production's decompress CASE so the
+    // (ServiceBrokerProvisioning.DeadLetterSet.DeadLetterQueueName), mirroring production's decompress CASE so the
     // message_body bytes are the raw envelope, then JsonUnicodeBodyConverter.Convert<OutboundBrokeredMessage>
     // deserializes the envelope EXACTLY as the SqlServiceBrokerSender wrote it (deadletter message type is
     // //Chatter/BrokeredMessage, so the body is the serialized OutboundBrokeredMessage envelope). The deadletter
@@ -62,11 +62,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         private ChatterSsbPipelineHarness BuildHarness()
             => ChatterSsbPipelineHarness.Build(
                 _fixture.GetAppConnectionString(),
+                ServiceBrokerProvisioning.DeadLetterSet,
                 // maxReceiveAttempts: 1 is the deadletter trigger lever — the first throw deadletters immediately
                 // because ReceiveAttempts (1) >= MaxReceiveAttempts (1).
                 ssb => ssb.AddQueueReceiver<DeadLetterCommand>(
-                    ServiceBrokerProvisioning.TargetQueuePathBracketed,
-                    deadLetterServicePath: ServiceBrokerProvisioning.DeadLetterServiceName,
+                    ServiceBrokerProvisioning.DeadLetterSet.TargetQueuePathBracketed,
+                    deadLetterServicePath: ServiceBrokerProvisioning.DeadLetterSet.DeadLetterServiceName,
                     maxReceiveAttempts: 1),
                 typeof(DeadLetterCommand));
 
@@ -161,7 +162,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                         "CASE WHEN SUBSTRING(message_body, 1, 2) = 0x1F8B " +
                         "THEN CAST(decompress(message_body) AS VARBINARY(MAX)) " +
                         "ELSE message_body END AS message_body, message_type_name " +
-                        $"FROM [{ServiceBrokerProvisioning.DeadLetterQueueName}]";
+                        $"FROM [{ServiceBrokerProvisioning.DeadLetterSet.DeadLetterQueueName}]";
 
                     await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
                     if (reader.Read() && !reader.IsDBNull(0))

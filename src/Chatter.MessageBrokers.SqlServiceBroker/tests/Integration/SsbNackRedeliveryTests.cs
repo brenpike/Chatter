@@ -42,9 +42,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         private ChatterSsbPipelineHarness BuildHarness()
             => ChatterSsbPipelineHarness.Build(
                 _fixture.GetAppConnectionString(),
+                ServiceBrokerProvisioning.NackSet,
                 ssb => ssb.AddQueueReceiver<NackRedeliveryCommand>(
-                    ServiceBrokerProvisioning.TargetQueuePathBracketed,
-                    deadLetterServicePath: ServiceBrokerProvisioning.DeadLetterServiceName),
+                    ServiceBrokerProvisioning.NackSet.TargetQueuePathBracketed,
+                    deadLetterServicePath: ServiceBrokerProvisioning.NackSet.DeadLetterServiceName),
                 typeof(NackRedeliveryCommand));
 
         // Nack→redelivery: when the handler throws, NackMessageAsync rolls back the RECEIVE transaction so the
