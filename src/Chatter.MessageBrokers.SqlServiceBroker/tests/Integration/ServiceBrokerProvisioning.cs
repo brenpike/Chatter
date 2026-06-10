@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Data.SqlClient;
 using System.Threading;
 using System.Threading.Tasks;
@@ -28,23 +29,60 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         public const string MessageTypeName = "//Chatter/BrokeredMessage";
         public const string ContractName = "//Chatter";
 
-        // Harness-chosen Service Broker SERVICE names. All three sit ON the //Chatter contract: the sender
-        // begins a dialog FROM the initiator TO the target ON CONTRACT, and the deadletter path begins a dialog
-        // TO the DLQ service ON the same contract, so every service must be contract-bound to be a valid target.
+        // Harness-chosen SHARED Service Broker objects. The initiator service+queue are the SEND side: the sender
+        // begins every dialog FROM this one initiator regardless of which test class is running, so they stay
+        // shared (and the message type + contract above stay shared) — only the RECEIVE side is partitioned.
         public const string InitiatorServiceName = "chatter_ssb_it_initiator_service";
-        public const string TargetServiceName = "chatter_ssb_it_target_service";
-        public const string DeadLetterServiceName = "chatter_ssb_it_deadletter_service";
-
-        // Harness-chosen Service Broker QUEUE names. The target queue is the one the receiver pump RECEIVEs
-        // from. ReceiveMessageFromQueueCommand interpolates the queue name directly into "FROM {queue}", so the
-        // STEP-004 fixture must hand the receiver the bracket-quoted form (TargetQueuePathBracketed).
         public const string InitiatorQueueName = "chatter_ssb_it_initiator_queue";
-        public const string TargetQueueName = "chatter_ssb_it_target_queue";
-        public const string DeadLetterQueueName = "chatter_ssb_it_deadletter_queue";
 
-        // Bracket-quoted target queue identifier suitable for direct interpolation into the receiver's
-        // "FROM {queue}" RECEIVE statement. STEP-004 sets ReceiverOptions.MessageReceiverPath to this value.
-        public const string TargetQueuePathBracketed = "[" + TargetQueueName + "]";
+        // An immutable per-test-class set of RECEIVE-side Service Broker objects. SSB queues are not partitioned by
+        // message type, so a stale message left by a failed prior scenario would otherwise be RECEIVEd by a later
+        // test sharing the same target queue. Each test class gets its OWN target queue+service and deadletter
+        // queue+service (all ON the shared //Chatter contract) so cross-test poisoning is impossible.
+        public readonly record struct ObjectSet(
+            string TargetQueueName,
+            string TargetServiceName,
+            string DeadLetterQueueName,
+            string DeadLetterServiceName)
+        {
+            // Bracket-quoted target queue identifier suitable for direct interpolation into the receiver's
+            // "FROM {queue}" RECEIVE statement. The STEP-004 fixture sets ReceiverOptions.MessageReceiverPath to
+            // this value for the owning test class.
+            public string TargetQueuePathBracketed => "[" + TargetQueueName + "]";
+        }
+
+        // Mints a per-class object set from a suffix, e.g. "roundtrip" yields chatter_ssb_it_target_queue_roundtrip
+        // / _target_service_roundtrip / _deadletter_queue_roundtrip / _deadletter_service_roundtrip.
+        private static ObjectSet CreateSet(string suffix)
+            => new ObjectSet(
+                TargetQueueName: $"chatter_ssb_it_target_queue_{suffix}",
+                TargetServiceName: $"chatter_ssb_it_target_service_{suffix}",
+                DeadLetterQueueName: $"chatter_ssb_it_deadletter_queue_{suffix}",
+                DeadLetterServiceName: $"chatter_ssb_it_deadletter_service_{suffix}");
+
+        // The four well-known per-test-class object sets, one per integration test class.
+        public static readonly ObjectSet RoundTripSet = CreateSet("roundtrip");
+        public static readonly ObjectSet NackSet = CreateSet("nack");
+        public static readonly ObjectSet DeadLetterSet = CreateSet("deadletter");
+        public static readonly ObjectSet DialogSet = CreateSet("dialog");
+
+        // Every object set, driving BOTH provisioning and teardown so the two loops can never diverge and leak.
+        public static readonly IReadOnlyList<ObjectSet> AllSets = new[]
+        {
+            RoundTripSet,
+            NackSet,
+            DeadLetterSet,
+            DialogSet,
+        };
+
+        // TEMPORARY back-compat aliases for the historic single-set constant names. STEP-002 migrates each
+        // consumer onto its owning set member and removes these. Aliased to RoundTripSet as a representative set;
+        // consumers that still reference these names are NOT yet isolated per-class.
+        public static readonly string TargetServiceName = RoundTripSet.TargetServiceName;
+        public static readonly string TargetQueueName = RoundTripSet.TargetQueueName;
+        public static readonly string DeadLetterServiceName = RoundTripSet.DeadLetterServiceName;
+        public static readonly string DeadLetterQueueName = RoundTripSet.DeadLetterQueueName;
+        public static readonly string TargetQueuePathBracketed = RoundTripSet.TargetQueuePathBracketed;
 
         // Bounded readiness retry. A freshly started SQL Server container can refuse connections or report the
         // broker not-yet-enabled for a brief window; these caps keep the retry short and finite.
@@ -68,16 +106,22 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             await using var connection = new SqlConnection(appConnectionString);
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
+            // Shared objects provisioned ONCE: message type, contract, and the single initiator queue+service.
             await ProvisionMessageTypeAsync(connection, cancellationToken).ConfigureAwait(false);
             await ProvisionContractAsync(connection, cancellationToken).ConfigureAwait(false);
-
             await ProvisionQueueAsync(connection, InitiatorQueueName, cancellationToken).ConfigureAwait(false);
-            await ProvisionQueueAsync(connection, TargetQueueName, cancellationToken).ConfigureAwait(false);
-            await ProvisionQueueAsync(connection, DeadLetterQueueName, cancellationToken).ConfigureAwait(false);
-
             await ProvisionServiceAsync(connection, InitiatorServiceName, InitiatorQueueName, cancellationToken).ConfigureAwait(false);
-            await ProvisionServiceAsync(connection, TargetServiceName, TargetQueueName, cancellationToken).ConfigureAwait(false);
-            await ProvisionServiceAsync(connection, DeadLetterServiceName, DeadLetterQueueName, cancellationToken).ConfigureAwait(false);
+
+            // Per-class RECEIVE-side objects: each set's target queue+service and deadletter queue+service, all ON
+            // the shared contract. Driven by AllSets so teardown drops exactly what provisioning created.
+            foreach (var set in AllSets)
+            {
+                await ProvisionQueueAsync(connection, set.TargetQueueName, cancellationToken).ConfigureAwait(false);
+                await ProvisionQueueAsync(connection, set.DeadLetterQueueName, cancellationToken).ConfigureAwait(false);
+
+                await ProvisionServiceAsync(connection, set.TargetServiceName, set.TargetQueueName, cancellationToken).ConfigureAwait(false);
+                await ProvisionServiceAsync(connection, set.DeadLetterServiceName, set.DeadLetterQueueName, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         // Drops every provisioned Service Broker object (services, queues, contract, message type) and the
@@ -102,13 +146,20 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                 await using var connection = new SqlConnection(appConnectionString);
                 await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-                await DropServiceAsync(connection, InitiatorServiceName, cancellationToken).ConfigureAwait(false);
-                await DropServiceAsync(connection, TargetServiceName, cancellationToken).ConfigureAwait(false);
-                await DropServiceAsync(connection, DeadLetterServiceName, cancellationToken).ConfigureAwait(false);
+                // Per-class objects first: drop each set's services then its queues (services reference queues so
+                // services must go first). Driven by the SAME AllSets enumerable provisioning used, so nothing leaks.
+                foreach (var set in AllSets)
+                {
+                    await DropServiceAsync(connection, set.TargetServiceName, cancellationToken).ConfigureAwait(false);
+                    await DropServiceAsync(connection, set.DeadLetterServiceName, cancellationToken).ConfigureAwait(false);
 
+                    await DropQueueAsync(connection, set.TargetQueueName, cancellationToken).ConfigureAwait(false);
+                    await DropQueueAsync(connection, set.DeadLetterQueueName, cancellationToken).ConfigureAwait(false);
+                }
+
+                // Shared objects last, in reverse dependency order: initiator service+queue, then contract+type.
+                await DropServiceAsync(connection, InitiatorServiceName, cancellationToken).ConfigureAwait(false);
                 await DropQueueAsync(connection, InitiatorQueueName, cancellationToken).ConfigureAwait(false);
-                await DropQueueAsync(connection, TargetQueueName, cancellationToken).ConfigureAwait(false);
-                await DropQueueAsync(connection, DeadLetterQueueName, cancellationToken).ConfigureAwait(false);
 
                 await DropContractAsync(connection, cancellationToken).ConfigureAwait(false);
                 await DropMessageTypeAsync(connection, cancellationToken).ConfigureAwait(false);
