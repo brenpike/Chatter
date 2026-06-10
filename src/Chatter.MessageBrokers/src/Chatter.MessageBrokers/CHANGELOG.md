@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.13.1] - 2026-06-09
+
+### Fixed
+
+- `BrokeredMessageReceiver.StopReceiver` no longer lets a non-cancellation fault from the receive loop (notably a fault raised by the critical-failure notify epilogue) escape and abort teardown; worker drain, infrastructure stop, and primitive disposal now always complete. Resolves a net8.0-specific flaky shutdown.
+
 ## [0.13.0] - 2026-06-09
 
 ### Added
