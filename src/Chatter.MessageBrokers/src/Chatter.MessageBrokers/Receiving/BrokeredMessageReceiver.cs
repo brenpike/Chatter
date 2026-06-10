@@ -41,8 +41,10 @@ namespace Chatter.MessageBrokers.Receiving
         //                observed in Starting tears the PARTIAL infra down — it does NOT return — so a teardown racing
         //                startup still stops/disposes whatever was constructed.
         //   Live       - the receive loop is running and ReceivingStarted has been published. Steady state.
-        //   TornDown   - a quiesce body ran to completion and latched the receiver terminally; further teardowns observe
-        //                the completed quiesce.
+        //   TornDown   - a QuiesceCoreAsync ran to completion UNDER THE GATE and latched the receiver terminally; further
+        //                teardowns observe TornDown under the gate and only escalate infra disposal if a stronger
+        //                strength was requested. NotStarted/Starting/Live advance via Interlocked.CompareExchange;
+        //                TornDown is written ONLY under _teardownGate after a successful quiesce.
         // Only NotStarted is a no-op. Starting and Live both admit a real quiesce.
         private const int LifecycleNotStarted = 0;
         private const int LifecycleStarting = 1;
@@ -50,22 +52,31 @@ namespace Chatter.MessageBrokers.Receiving
         private const int LifecycleTornDown = 3;
         private int _lifecycle = LifecycleNotStarted;
 
-        // INVARIANT: single-flight teardown admission overlaid on the lifecycle gate. The FIRST teardown to win
-        // admission (Interlocked CAS of _teardownInProgress 0->1) runs the cancel/await-loop/drain/infra-teardown/
-        // dispose-primitives body; concurrent or repeated callers lose the race and OBSERVE the winner's quiesce Task to
-        // completion, so a returning StopReceiver/DisposeAsync still implies a fully-quiesced receiver. The completion is
-        // published through _teardownCompletionSource (RunContinuationsAsynchronously to keep late-entrant continuations
-        // off the winner's teardown thread). Admission is lock-free Interlocked ONLY — never a SemaphoreSlim/lock that
-        // the synchronous Dispose path could block on while the async path holds it, which would reintroduce the
-        // teardown deadlock the loop's Task.Run detachment was designed to avoid.
+        // INVARIANT: a single SemaphoreSlim(1,1) serializes the teardown critical section AND the startup go-live
+        // rendezvous, so they never interleave. Every teardown entrypoint (StopReceiver/DisposeAsync/synchronous Dispose)
+        // and the abandoned-startup partial cleanup acquire this gate before running QuiesceCoreAsync; StartReceiverImpl
+        // acquires it around its primitive construction + go-live transition. Because both sides take the SAME gate, a
+        // teardown racing startup either runs entirely BEFORE the primitives are constructed (it sees only the infra
+        // receiver, torn down via the null-guarded core) or entirely AFTER go-live (it sees the FULL constructed set) —
+        // there is no window where it observes a half-built set. The three former race classes (stale single-flight
+        // loser, startup/teardown rendezvous-orphan, sync-dispose latch) are closed by CONSTRUCTION here rather than by
+        // patching each path.
         //
-        // FAULT-RESETTABLE: a QuiesceCoreAsync that THROWS releases the slot (CAS _teardownInProgress back to 0 and
-        // install a fresh non-faulted completion source) so a LATER teardown can retry; only a SUCCESSFUL quiesce latches
-        // _lifecycle to TornDown terminally. _teardownCompletionSource is therefore volatile/swappable, read once per
-        // admission attempt into a local.
-        private int _teardownInProgress;
-        private volatile TaskCompletionSource<bool> _teardownCompletionSource =
-            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // FAULT-RESETTABLE: a QuiesceCoreAsync that THROWS under the gate PROPAGATES without latching _lifecycle to
+        // TornDown — the gate is released in the finally and the terminal field is never set, so the NEXT caller to
+        // acquire the gate re-runs the quiesce cleanly. There is no completion source to strand. Only a SUCCESSFUL
+        // QuiesceCoreAsync writes _lifecycle = TornDown (the monotonic terminal field, written ONLY under the gate).
+        //
+        // DEADLOCK-SAFETY: SemaphoreSlim.WaitAsync()/Wait() and the synchronous Dispose path's GetAwaiter().GetResult()
+        // capture no SynchronizationContext; the loop and workers run on Task.Run (default scheduler) and every internal
+        // await uses ConfigureAwait(false), so an async teardown holding the gate never needs the blocked synchronous
+        // thread to make progress. The synchronous wait is therefore bounded by teardown completion and cannot deadlock.
+        //
+        // GATE LIFETIME: NEVER disposed — left for GC. Disposing it would risk a concurrent teardown calling WaitAsync on
+        // a disposed gate under interleaved Dispose/DisposeAsync (the _disposedValue fast path narrows but cannot fully
+        // close that race). A SemaphoreSlim used only via async WaitAsync (no timeout, no AvailableWaitHandle) allocates
+        // no native handle, so leaving it for GC leaks nothing requiring deterministic release.
+        private readonly SemaphoreSlim _teardownGate = new SemaphoreSlim(1, 1);
 
         // INVARIANT: monotonic teardown strength. Stop (weakest) < DisposeAsync/DisposeSync (strongest). The admitted
         // quiesce records the strongest strength requested by ANY participating entrypoint via Interlocked.Max-by-CAS.
@@ -192,11 +203,11 @@ namespace Chatter.MessageBrokers.Receiving
             _logger.LogInformation("Initializing '{executingFunction}' of type '{receiverMessageType}'.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
 
             // INVARIANT: enter the Starting state BEFORE assigning _infrastructureReceiver, so a teardown that lands
-            // anywhere from here through go-live observes Starting (not NotStarted) and tears the partial infra down
-            // instead of no-op'ing. The CAS only advances NotStarted -> Starting; if a teardown already latched the
-            // receiver TornDown (a premature Dispose that, under the new state machine, was admitted because startup had
-            // begun) this CAS fails and we abandon startup — there is nothing live to construct over a torn-down
-            // receiver. NotStarted is the only legal predecessor of Starting.
+            // anywhere from here through go-live observes Starting (not NotStarted), serializes on the teardown gate, and
+            // tears the partial infra down instead of no-op'ing. The CAS only advances NotStarted -> Starting; a teardown
+            // cannot set TornDown while the lifecycle is still NotStarted (QuiesceAsync returns early on NotStarted
+            // without touching the gate), so the only way this CAS fails is a duplicate StartReceiver call over an
+            // already-started receiver — abandon that. NotStarted is the only legal predecessor of Starting.
             if (Interlocked.CompareExchange(ref _lifecycle, LifecycleStarting, LifecycleNotStarted) != LifecycleNotStarted)
             {
                 _logger.LogInformation("'{executingFunction}' of type '{receiverMessageType}' was torn down before startup could begin; abandoning startup.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
@@ -236,35 +247,48 @@ namespace Chatter.MessageBrokers.Receiving
             _logger.LogDebug("Receiver options: Infrastructure type: '{infrastructureType}', Transaction Mode: '{transactionMode}', Message receiver: '{messageReceiverPath}', Deadletter queue: '{deadLetterQueuePath}', Error queue: '{errorQueuePath}', Max receive attempts: '{maxReceiveAttempts}', Message sent from: '{sendingPath}', Max Concurrent Receives: '{maxConcurrentCalls}'",
                 _options.InfrastructureType, options.TransactionMode, options.MessageReceiverPath, options.DeadLetterQueuePath, options.ErrorQueuePath, options.MaxReceiveAttempts, options.SendingPath, _maxConcurrentCalls);
 
-            _concurrentMessagesSemaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
-            _messageReceiverLoopTokenSource = CancellationTokenSource.CreateLinkedTokenSource(receiverTerminationToken);
-
-            // INVARIANT: start the receive loop on the thread pool (Task.Run) rather than inline so its body and
-            // every continuation run on the default TaskScheduler and NEVER capture a caller SynchronizationContext.
-            // If StartReceiver is invoked under a single-threaded context, an inline-started loop could post its
-            // cancellation/finally continuation back to that context; the synchronous Dispose path then blocks that
-            // same thread on _messageReceiverLoop.GetAwaiter().GetResult() and deadlocks. Detaching the loop onto the
-            // pool (workers already use Task.Run) makes the synchronous teardown wait safe. The Task.Run(Func<Task>)
-            // overload returns a proxy Task that completes only when the loop body completes, so await/GetResult on
-            // the assigned Task observe the real loop completion (drain + notify-once included).
-            _messageReceiverLoop = Task.Run(MessageReceiverLoopAsync);
-
-            // INVARIANT: the go-live seam — advance Starting -> Live ONLY via CAS. A teardown that won admission while we
-            // were still Starting may have already run its quiesce body and latched the receiver TornDown; in that case
-            // this CAS fails. The teardown ran while these primitives (semaphore/token source/loop) were being
-            // constructed, so it may have observed them as null and NOT disposed them — this abandoned startup therefore
-            // OWNS the cleanup of what it just built. Run the SAME idempotent quiesce body (cancel -> await loop -> drain
-            // -> strength-aware infra teardown -> exchange-and-dispose primitives); the Interlocked.Exchange-to-null
-            // primitive disposal and the _infrastructureDisposed CAS make it a safe no-op for anything the teardown
-            // already disposed. Do NOT publish ReceivingStarted (the receiver never went live).
-            if (Interlocked.CompareExchange(ref _lifecycle, LifecycleLive, LifecycleStarting) != LifecycleStarting)
+            // INVARIANT: construct the receive-loop primitives and perform the go-live transition UNDER THE TEARDOWN
+            // GATE so startup and teardown serialize on one gate. A teardown that landed mid-InitializeAsync blocks on
+            // the gate until this block either reaches go-live (publishing the FULL constructed set) or — if a teardown
+            // already latched the receiver TornDown before this block acquired the gate — this block itself observes
+            // TornDown under the gate, abandons the partial set, and disposes whatever it just built. Either way a racing
+            // teardown can never observe a half-built set: it runs entirely before construction (infra-only, null-guarded
+            // core) or entirely after go-live (full set). The loop is started via Task.Run (default scheduler) so its
+            // body/continuations never capture a caller SynchronizationContext — required for the synchronous Dispose
+            // wait to stay deadlock-free.
+            var wentLive = false;
+            await _teardownGate.WaitAsync().ConfigureAwait(false);
+            try
             {
-                _logger.LogInformation("'{executingFunction}' of type '{receiverMessageType}' was torn down during startup; cleaning up partial startup without going live.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
-                await QuiesceCoreAsync().ConfigureAwait(false);
+                if (Volatile.Read(ref _lifecycle) == LifecycleTornDown)
+                {
+                    // A teardown ran to completion (on the infra-only partial set) while we were initializing. The
+                    // receiver is terminal; do not construct over it or go live. There are no loop/semaphore primitives
+                    // yet (we have not constructed them in this block), so there is nothing further to dispose here.
+                    _logger.LogInformation("'{executingFunction}' of type '{receiverMessageType}' was torn down during startup; abandoning go-live without constructing the receive loop.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
+                    return;
+                }
+
+                _concurrentMessagesSemaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
+                _messageReceiverLoopTokenSource = CancellationTokenSource.CreateLinkedTokenSource(receiverTerminationToken);
+                _messageReceiverLoop = Task.Run(MessageReceiverLoopAsync);
+
+                // Go-live seam: advance Starting -> Live. This CAS runs under the gate, so no teardown can have latched
+                // TornDown between the check above and here. ReceivingStarted publishes the live signal at this seam.
+                Interlocked.CompareExchange(ref _lifecycle, LifecycleLive, LifecycleStarting);
+                _receivingStartedSource.TrySetResult(true);
+                wentLive = true;
+            }
+            finally
+            {
+                _teardownGate.Release();
+            }
+
+            if (!wentLive)
+            {
                 return;
             }
 
-            _receivingStartedSource.TrySetResult(true);
             _logger.LogInformation("'{executingFunction}' has started receiving messages of type '{receiverMessageType}'.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
             await _messageReceiverLoop;
             _logger.LogInformation("'{executingFunction}' for messages of type '{receiverMessageType}' is shutting down.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
@@ -330,71 +354,65 @@ namespace Chatter.MessageBrokers.Receiving
             while (Interlocked.CompareExchange(ref _requestedTeardownStrength, strength, current) != current);
         }
 
-        // INVARIANT: single shared quiesce-before-dispose contract for ALL teardown entrypoints, now with monotonic
-        // teardown strength. Every caller first records its requested strength (Stop < Dispose). The FIRST caller to win
-        // admission (Interlocked _teardownInProgress 0->1) runs the cancel/await-loop/drain skeleton ONCE and then tears
-        // infra down at the strongest-recorded strength; concurrent or repeated callers observe the winner's completion
-        // via the captured completion source. THEN — after observing completion — any caller (winner or loser) whose
-        // strongest-recorded strength now exceeds what was actually disposed ESCALATES infra disposal, so a Dispose that
-        // lost the race to a Stop winner still leaves the infra Disposed, never merely Stopped (dissolves the
-        // disposal-strength-loss defect). A NotStarted receiver is a structural no-op that leaves admission untouched
-        // (preserves b91b751). A throwing quiesce releases admission for a later retry (fault-resettable); only a
-        // successful quiesce latches the receiver TornDown.
+        // INVARIANT: single shared quiesce-before-dispose contract for ALL teardown entrypoints, serialized on
+        // _teardownGate, with monotonic teardown strength. Every caller first records its requested strength
+        // (Stop < Dispose). Callers then serialize on the gate: the holder runs the cancel/await-loop/drain/infra-teardown
+        // skeleton ONCE (QuiesceCoreAsync) and, on success, writes _lifecycle = TornDown; a later caller that acquires the
+        // gate and observes TornDown skips the body. AFTER releasing the gate, every caller (the one that ran the body and
+        // every later one) escalates infra disposal if its strongest-recorded strength exceeds what was actually disposed,
+        // so a Dispose that followed a Stop still leaves the infra Disposed, never merely Stopped (dissolves the
+        // disposal-strength-loss defect). A NotStarted receiver is a structural no-op that never touches the gate
+        // (preserves b91b751: a DI-singleton premature Dispose during graph resolution must not consume admission and
+        // lock out the host's later await-using DisposeAsync). A throwing QuiesceCoreAsync PROPAGATES with TornDown unset,
+        // so the next gate acquirer re-runs cleanly (fault-resettable retry is inherent to the gate + terminal field —
+        // there is no completion source to strand).
         async Task QuiesceAsync(InfrastructureTeardown infrastructureTeardown)
         {
             RaiseRequestedStrength(StrengthOf(infrastructureTeardown));
 
-            // INVARIANT: do NOT consume admission for a receiver that never started. The receiver is commonly registered
-            // as a singleton; a host/DI graph can synchronously Dispose() the instance during resolution — BEFORE
+            // INVARIANT: do NOT touch the gate for a receiver that never started. The receiver is commonly registered as
+            // a singleton; a host/DI graph can synchronously Dispose() the instance during resolution — BEFORE
             // StartReceiverImpl entered its startup body (lifecycle still NotStarted) — and that premature teardown has
-            // nothing to quiesce. Latching admission here would PERMANENTLY lock out the genuine post-startup teardown
-            // (the host's await-using DisposeAsync). Only NotStarted is a no-op; Starting and Live both admit a real
-            // quiesce, so a teardown landing in the startup window tears the PARTIAL infra down rather than no-op'ing.
+            // nothing to quiesce. Only NotStarted is a no-op; Starting and Live both admit a real quiesce, so a teardown
+            // landing in the startup window serializes on the gate against go-live and tears the PARTIAL infra down
+            // rather than no-op'ing.
             if (Volatile.Read(ref _lifecycle) == LifecycleNotStarted)
             {
                 return;
             }
 
-            // Capture the completion source for THIS admission attempt up front; a fault-reset installs a fresh one, so
-            // late entrants must observe the source that was live when the winning attempt started.
-            var completionSource = _teardownCompletionSource;
-
-            if (Interlocked.CompareExchange(ref _teardownInProgress, 1, 0) != 0)
+            // Fully-disposed fast path: once a synchronous Dispose (or the Dispose(false) reached from a completed
+            // DisposeAsync) has latched _disposedValue, the receiver is terminal and its infra is already disposed (the
+            // strength-aware teardown ran before _disposedValue latched). Short-circuit before the gate — there is
+            // nothing left to quiesce. (The gate itself is left for GC, never disposed, so this is a fast path, not a
+            // safety against a disposed gate.)
+            if (Volatile.Read(ref _disposedValue))
             {
-                // Lost the admission race: a teardown is in progress or completed. Observe its completion so this
-                // returning caller still implies a fully-quiesced receiver; swallow any fault it published. THEN escalate
-                // if this caller's strength exceeds what the winner actually disposed (e.g. a Dispose that lost to a Stop
-                // winner must still dispose the infra).
-                try
-                {
-                    await completionSource.Task.ConfigureAwait(false);
-                }
-                catch
-                {
-                }
-
-                await EscalateInfrastructureDisposalIfRequiredAsync().ConfigureAwait(false);
                 return;
             }
 
+            await _teardownGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                await QuiesceCoreAsync().ConfigureAwait(false);
-                // Successful quiesce latches the receiver TornDown terminally and publishes completion to late entrants.
-                Volatile.Write(ref _lifecycle, LifecycleTornDown);
-                completionSource.TrySetResult(true);
+                // The terminal-state check under the gate is the single stop latch: only the FIRST caller to acquire the
+                // gate against a not-yet-torn-down receiver runs the quiesce body; later callers observe TornDown and skip
+                // it. A throw from QuiesceCoreAsync propagates WITHOUT writing TornDown, so the gate releases in the
+                // finally and the next acquirer re-runs the body cleanly (fault-resettable retry).
+                if (Volatile.Read(ref _lifecycle) != LifecycleTornDown)
+                {
+                    await QuiesceCoreAsync().ConfigureAwait(false);
+                    Volatile.Write(ref _lifecycle, LifecycleTornDown);
+                }
             }
-            catch (Exception ex)
+            finally
             {
-                // Fault-resettable admission: this quiesce threw, so release the slot and install a fresh, non-faulted
-                // completion source BEFORE publishing the fault, so a LATER teardown can win admission and retry. Publish
-                // the fault to any late entrant that already captured THIS source (they observe-and-swallow), then
-                // re-surface it to THIS caller so the entrypoint's own disposition is unchanged.
-                _teardownCompletionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                Volatile.Write(ref _teardownInProgress, 0);
-                completionSource.TrySetException(ex);
-                throw;
+                _teardownGate.Release();
             }
+
+            // After releasing the gate: escalate infra disposal if this (or any) caller requested a strength stronger than
+            // what the quiesce body actually disposed (e.g. a Dispose following a Stop). Single-flight via the
+            // _infrastructureDisposed CAS inside the escalation, so it is a safe no-op once the infra is already disposed.
+            await EscalateInfrastructureDisposalIfRequiredAsync().ConfigureAwait(false);
         }
 
         // INVARIANT: escalate infra disposal when the strongest requested strength is Dispose but only a weaker teardown
@@ -980,7 +998,7 @@ namespace Chatter.MessageBrokers.Receiving
 
         protected virtual void Dispose(bool disposing)
         {
-            if (!_disposedValue)
+            if (!Volatile.Read(ref _disposedValue))
             {
                 if (disposing)
                 {
@@ -990,25 +1008,29 @@ namespace Chatter.MessageBrokers.Receiving
                     // Ack/Nack/Deadletter and would race a disposed infrastructure receiver / semaphore / token source
                     // (the ReleaseConcurrencySlot ObjectDisposedException swallow only hides ONE symptom; it does not
                     // protect the infrastructure receiver or the in-flight message's settlement). Route through the same
-                    // shared QuiesceAsync contract the async paths use, blocked synchronously: it cancels (guarded),
-                    // awaits the loop (which treats loop-token cancellation as a clean completion, so the wait completes
-                    // rather than throwing), drains detached workers, disposes the infrastructure receiver at
-                    // Dispose-strength (the strength-aware teardown seam uses the infra's async DisposeAsync under
-                    // ConfigureAwait(false), so the synchronous wait stays deadlock-free), and exchanges-and-disposes the
-                    // shared primitives — all exactly once across repeated/concurrent teardowns. DEADLOCK-SAFETY: the loop is started via
-                    // Task.Run (default scheduler) and every await inside the contract uses ConfigureAwait(false), and
-                    // workers are started via Task.Run, so NEITHER the loop nor the drain captures a caller
-                    // SynchronizationContext — GetAwaiter().GetResult() cannot deadlock even from a single-threaded
-                    // context. Admission is lock-free Interlocked, never a lock/SemaphoreSlim the async path could hold,
-                    // so this synchronous block can never wait on a primitive an in-progress async teardown owns. Any
-                    // teardown fault re-surfaced by QuiesceAsync is benign teardown noise here and is swallowed —
-                    // Dispose must not throw.
+                    // shared QuiesceAsync contract the async paths use, blocked synchronously: it serializes on
+                    // _teardownGate, cancels (guarded), awaits the loop (which treats loop-token cancellation as a clean
+                    // completion, so the wait completes rather than throwing), drains detached workers, disposes the
+                    // infrastructure receiver at Dispose-strength (the strength-aware teardown seam uses the infra's async
+                    // DisposeAsync under ConfigureAwait(false)), and exchanges-and-disposes the shared primitives.
+                    // DEADLOCK-SAFETY: the loop is started via Task.Run (default scheduler) and every await inside the
+                    // contract uses ConfigureAwait(false), and workers are started via Task.Run, so NEITHER the loop nor
+                    // the drain captures a caller SynchronizationContext; SemaphoreSlim.WaitAsync/GetAwaiter().GetResult()
+                    // capture none either — so an async teardown holding the gate never needs this blocked thread and
+                    // GetAwaiter().GetResult() cannot deadlock even from a single-threaded context.
+                    //
+                    // FAULT-RESETTABLE LATCH: if the quiesce THROWS (e.g. the infra teardown faulted), do NOT latch
+                    // _disposedValue and do NOT null the infra receiver — leave the synchronous Dispose retryable so a
+                    // SECOND Dispose() re-runs the gate body and actually disposes the infra. Mirrors the async
+                    // fault-resettable contract (a thrown QuiesceCoreAsync leaves TornDown unset). The throw is swallowed
+                    // here (Dispose must not throw); the unset _disposedValue is what makes the retry happen.
                     try
                     {
                         QuiesceAsync(InfrastructureTeardown.DisposeSync).GetAwaiter().GetResult();
                     }
                     catch
                     {
+                        return;
                     }
                 }
 
@@ -1024,7 +1046,18 @@ namespace Chatter.MessageBrokers.Receiving
                     _infrastructureReceiver = null;
                 }
 
-                _disposedValue = true;
+                // INVARIANT: latch _disposedValue ONLY once the receiver is terminal (a quiesce ran to completion and set
+                // TornDown). A NotStarted premature synchronous Dispose (the DI-singleton case) quiesced nothing — its
+                // QuiesceAsync no-op'd on NotStarted and left the lifecycle NotStarted — so it must NOT latch, or the
+                // _disposedValue fast path in QuiesceAsync would lock the host's later genuine teardown out (b91b751). The
+                // sync-fault path already returned above without reaching here, so a faulting quiesce never latches
+                // either. A successful sync Dispose and the Dispose(false) reached from a completed DisposeAsync both
+                // observe TornDown and latch, making repeated synchronous Dispose a no-op. The gate itself is left for GC
+                // (never disposed), so latching here does not strand a concurrent WaitAsync.
+                if (Volatile.Read(ref _lifecycle) == LifecycleTornDown)
+                {
+                    Volatile.Write(ref _disposedValue, true);
+                }
             }
         }
 

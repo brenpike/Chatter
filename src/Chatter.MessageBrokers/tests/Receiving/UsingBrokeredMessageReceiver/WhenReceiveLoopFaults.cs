@@ -469,5 +469,101 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
                 .Should().Be(1, "the retrying teardown must dispose the infrastructure receiver exactly once");
         }
+
+        // ------------------------------------------------------------------ (e) STALE-LOSER: concurrent teardowns racing a faulting gate-holder strand no caller
+        //
+        // RACE-CLASS WITNESS #1 (stale single-flight loser). Under the former hand-rolled lock-free admission a losing
+        // caller awaited the winner's swappable TaskCompletionSource; if the winner's quiesce body THREW, the loser could
+        // observe a stranded/swapped TCS and hang. The SemaphoreSlim teardown gate makes that class structurally
+        // impossible: every caller serializes on the gate, a thrown QuiesceCoreAsync leaves the terminal lifecycle UNSET
+        // (no TCS to strand), and the gate's finally Release lets the NEXT caller re-run cleanly. Here two concurrent
+        // teardowns race the first (faulting) admission; the watchdog turns any stranded-caller hang into a deterministic
+        // Timeout, and a subsequent teardown must dispose the infra exactly once.
+        [Fact]
+        public async Task MustNotStrandConcurrentTeardownsWhenGateHolderQuiesceFaultsOnce()
+        {
+            const int maxConcurrentCalls = 3;
+            const int messageCount = 6;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: messageCount);
+            for (var i = 0; i < messageCount; i++)
+                infraReceiver.Enqueue(BuildContext());
+
+            // The FIRST infra teardown call throws once at the infra-teardown seam, so whichever caller acquires the gate
+            // first faults its quiesce body. The gate's finally releases admission with the terminal lifecycle unset, so
+            // the remaining racers (and a later teardown) must re-run cleanly rather than strand.
+            infraReceiver.ArmThrowOnceOnTeardown();
+
+            var inFlight = new StrongBox<int>(0);
+            using var releaseGate = new SemaphoreSlim(0, messageCount);
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            dispatcher
+                .Setup(d => d.DispatchAsync(It.IsAny<FakeMessage>(), It.IsAny<MessageBrokerContext>(), It.IsAny<CancellationToken>()))
+                .Returns(async (FakeMessage _, MessageBrokerContext __, CancellationToken token) =>
+                {
+                    Interlocked.Increment(ref inFlight.Value);
+                    try
+                    {
+                        await releaseGate.WaitAsync(token);
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref inFlight.Value);
+                    }
+                });
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            using var cts = new CancellationTokenSource();
+            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await WaitUntilAsync(() => Volatile.Read(ref inFlight.Value) == maxConcurrentCalls, watchdog.Token);
+
+            // Release the gate so the drains can quiesce the workers, then race THREE teardowns concurrently against the
+            // single throw-once. Exactly one of them faults at the infra-teardown seam; the others either short-circuit on
+            // the terminal lifecycle (if a sibling already latched it) or re-run cleanly. None may hang — the watchdog
+            // converts a stranded-caller regression into a Timeout. Faults are captured per-task and asserted on after.
+            releaseGate.Release(messageCount);
+
+            async Task<Exception> Teardown(Func<Task> teardown)
+            {
+                try
+                {
+                    await teardown();
+                    return null;
+                }
+                catch (Exception e)
+                {
+                    return e;
+                }
+            }
+
+            var racers = Task.WhenAll(
+                Teardown(() => sut.StopReceiver()),
+                Teardown(() => sut.StopReceiver()),
+                Teardown(() => sut.DisposeAsync().AsTask()));
+
+            var racersCompleted = await Task.WhenAny(racers, Task.Delay(TimeSpan.FromSeconds(15)));
+            racersCompleted.Should().BeSameAs(racers, "no teardown may strand on a faulting gate-holder — a stranded caller would never complete");
+            var faults = await racers;
+
+            // Exactly one racer ran the faulting infra-teardown body (the throw-once), so exactly one surfaces the
+            // simulated fault; the others short-circuited on the terminal lifecycle or re-ran cleanly without faulting.
+            faults.Count(f => f is InvalidOperationException)
+                .Should().Be(1, "only the single gate-holder that hit the throw-once may surface the simulated teardown fault");
+
+            Volatile.Read(ref inFlight.Value).Should().Be(0, "all in-flight workers must have quiesced across the racing teardowns");
+
+            // A subsequent teardown after the throw-once is consumed must dispose the infra exactly once, proving the
+            // faulting admission did not permanently latch the receiver out of teardown (no stranded-TCS analogue).
+            var settle = sut.DisposeAsync().AsTask();
+            var settleCompleted = await Task.WhenAny(settle, Task.Delay(TimeSpan.FromSeconds(15)));
+            settleCompleted.Should().BeSameAs(settle, "a later teardown must re-run cleanly after the faulting admission released the gate");
+            await settle;
+
+            infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
+                .Should().Be(1, "the infrastructure receiver must end disposed exactly once despite the faulting gate-holder and racing teardowns");
+        }
     }
 }
