@@ -25,6 +25,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         // provisions.
         private const string SqlServerImage = "mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04";
 
+        // Bounds container start + provisioning so a wedged Docker pull/start or a hung provisioning DDL fails
+        // fast instead of hanging the test collection. Generous because a cold image pull is slow; still finite.
+        private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(5);
+
+        // Bounds the best-effort teardown so a hung object drop cannot block container disposal indefinitely.
+        private static readonly TimeSpan TeardownTimeout = TimeSpan.FromSeconds(30);
+
         private MsSqlContainer _container;
 
         // The master connection string for the running container. Throws if the container was not started
@@ -61,11 +68,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                 return;
             }
 
+            using var startupCts = new CancellationTokenSource(StartupTimeout);
+
             _container = new MsSqlBuilder(SqlServerImage).Build();
-            await _container.StartAsync().ConfigureAwait(false);
+            await _container.StartAsync(startupCts.Token).ConfigureAwait(false);
 
             await ServiceBrokerProvisioning
-                .SetupAsync(_container.GetConnectionString(), CancellationToken.None)
+                .SetupAsync(_container.GetConnectionString(), startupCts.Token)
                 .ConfigureAwait(false);
         }
 
@@ -78,14 +87,15 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
 
             try
             {
+                using var teardownCts = new CancellationTokenSource(TeardownTimeout);
                 await ServiceBrokerProvisioning
-                    .TeardownAsync(_container.GetConnectionString(), CancellationToken.None)
+                    .TeardownAsync(_container.GetConnectionString(), teardownCts.Token)
                     .ConfigureAwait(false);
             }
             catch (Exception)
             {
                 // Best-effort teardown: the container is disposed below regardless, so a provisioning-object
-                // drop failure must not mask container disposal.
+                // drop failure (or a teardown that exceeded TeardownTimeout) must not mask container disposal.
             }
 
             await _container.DisposeAsync().ConfigureAwait(false);

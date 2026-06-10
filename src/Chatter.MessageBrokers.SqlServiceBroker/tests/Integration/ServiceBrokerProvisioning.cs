@@ -75,15 +75,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             DialogSet,
         };
 
-        // TEMPORARY back-compat aliases for the historic single-set constant names. STEP-002 migrates each
-        // consumer onto its owning set member and removes these. Aliased to RoundTripSet as a representative set;
-        // consumers that still reference these names are NOT yet isolated per-class.
-        public static readonly string TargetServiceName = RoundTripSet.TargetServiceName;
-        public static readonly string TargetQueueName = RoundTripSet.TargetQueueName;
-        public static readonly string DeadLetterServiceName = RoundTripSet.DeadLetterServiceName;
-        public static readonly string DeadLetterQueueName = RoundTripSet.DeadLetterQueueName;
-        public static readonly string TargetQueuePathBracketed = RoundTripSet.TargetQueuePathBracketed;
-
         // Bounded readiness retry. A freshly started SQL Server container can refuse connections or report the
         // broker not-yet-enabled for a brief window; these caps keep the retry short and finite.
         private const int MaxConnectAttempts = 10;

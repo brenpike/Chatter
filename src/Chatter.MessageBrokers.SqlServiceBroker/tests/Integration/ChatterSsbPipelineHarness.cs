@@ -38,6 +38,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         // and any seconds-interpretation of the SQL WAITFOR parameter.
         private const int FiniteReceiverTimeoutInMilliseconds = 5;
 
+        // Bounds every residual teardown/send await that would otherwise pass CancellationToken.None, so a wedged
+        // host-stop or dispatcher send fails fast instead of hanging CI. Matches the 30s operation waits the
+        // tests already use (DeadLetterWait et al). This does NOT replace the WAITFOR-hang guard: the pump token
+        // cancellation in DisposeAsync is still what unwinds a blocked RECEIVE; this is a finite ceiling on the
+        // best-effort StopAsync drain and on the dispatcher send.
+        private static readonly TimeSpan TeardownTimeout = TimeSpan.FromSeconds(30);
+
         private readonly ServiceProvider _provider;
         private readonly IReadOnlyList<IHostedService> _hostedServices;
         private readonly CancellationTokenSource _pumpCts;
@@ -178,9 +185,21 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
 
             var dispatcher = CreateDispatcher(out var scope);
             using (scope)
+            using (var sendCts = new CancellationTokenSource(TeardownTimeout))
             {
-                await dispatcher.Send(message, _objectSet.TargetServiceName, options: options)
+                // Bound the dispatcher send so a wedged BEGIN DIALOG / SEND fails fast. The dispatcher Send
+                // overload takes no token, so race it against a finite delay rather than passing CancellationToken
+                // .None to an unbounded await.
+                var send = dispatcher.Send(message, _objectSet.TargetServiceName, options: options);
+                var completed = await Task.WhenAny(send, Task.Delay(Timeout.Infinite, sendCts.Token))
                     .ConfigureAwait(false);
+                if (completed != send)
+                {
+                    throw new TimeoutException(
+                        $"Timed out after {TeardownTimeout} sending a '{typeof(TMessage).Name}' through the dispatcher.");
+                }
+
+                await send.ConfigureAwait(false);
             }
         }
 
@@ -237,20 +256,22 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
 
             if (_started)
             {
+                using var stopCts = new CancellationTokenSource(TeardownTimeout);
                 foreach (var hostedService in _hostedServices)
                 {
                     try
                     {
-                        await hostedService.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                        await hostedService.StopAsync(stopCts.Token).ConfigureAwait(false);
                     }
                     catch (Exception)
                     {
-                        // Best-effort drain on teardown: a receiver already faulted/cancelled must not mask
-                        // disposal of the provider below.
+                        // Best-effort drain on teardown: a receiver already faulted/cancelled (or a stop that
+                        // exceeded TeardownTimeout) must not mask disposal of the provider below.
                     }
                 }
             }
 
+            // _provider.DisposeAsync() takes no CancellationToken, so it is left unbounded here (not cancelable).
             await _provider.DisposeAsync().ConfigureAwait(false);
             _pumpCts.Dispose();
         }

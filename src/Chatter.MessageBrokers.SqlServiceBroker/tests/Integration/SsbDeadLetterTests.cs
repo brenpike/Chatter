@@ -146,12 +146,17 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             var bodyConverter = new JsonUnicodeBodyConverter();
             var deadline = DateTime.UtcNow + timeout;
 
+            // Bound the per-operation DB awaits to the same deadline the poll loop enforces, so a wedged
+            // OpenAsync/ExecuteReaderAsync fails fast instead of awaiting on CancellationToken.None forever.
+            using var operationCts = new CancellationTokenSource(timeout);
+            var operationToken = operationCts.Token;
+
             await using var connection = new SqlConnection(_fixture.GetAppConnectionString());
-            await connection.OpenAsync().ConfigureAwait(false);
+            await connection.OpenAsync(operationToken).ConfigureAwait(false);
 
             while (DateTime.UtcNow < deadline)
             {
-                await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
+                await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(operationToken).ConfigureAwait(false);
 
                 byte[] messageBody = null;
                 await using (var command = connection.CreateCommand())
@@ -164,7 +169,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                         "ELSE message_body END AS message_body, message_type_name " +
                         $"FROM [{ServiceBrokerProvisioning.DeadLetterSet.DeadLetterQueueName}]";
 
-                    await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+                    await using var reader = await command.ExecuteReaderAsync(operationToken).ConfigureAwait(false);
                     if (reader.Read() && !reader.IsDBNull(0))
                     {
                         messageBody = reader.GetSqlBytes(0).Buffer;
