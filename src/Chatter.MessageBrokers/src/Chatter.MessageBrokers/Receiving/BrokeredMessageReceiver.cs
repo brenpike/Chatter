@@ -94,6 +94,13 @@ namespace Chatter.MessageBrokers.Receiving
         // Stopped). Gates both the strength-escalation path (EscalateInfrastructureDisposalIfRequiredAsync) and the
         // strength-aware infra teardown inside QuiesceCoreAsync, so the infra is disposed at most once across a Stop-then-
         // Dispose escalation and the synchronous Dispose(bool) only nulls the field after a quiesce that disposed it.
+        // GATE-SERIALIZED CLAIM: both writers run UNDER _teardownGate (the escalation is folded into QuiesceAsync's gated
+        // try, and TearDownInfrastructureAsync runs from QuiesceCoreAsync which is itself gated). The claim->dispose->reset
+        // sequence is therefore atomic under the gate: a concurrent teardown blocked on the gate can NEVER observe an
+        // in-flight 0->1 claim as a completed disposal, so a faulting in-flight DisposeAsync that resets the claim 1->0
+        // cannot leave a loser having already latched _disposedValue / nulled the infra over the in-flight claim. The
+        // synchronous Dispose(bool) field-null keys off this flag == 1, now set ONLY by a dispose that actually completed
+        // under the gate (never by a still-in-flight claim).
         private int _infrastructureDisposed;
 
         // INVARIANT: every per-message worker task admitted by the concurrency semaphore is tracked here for the
@@ -358,14 +365,18 @@ namespace Chatter.MessageBrokers.Receiving
         // _teardownGate, with monotonic teardown strength. Every caller first records its requested strength
         // (Stop < Dispose). Callers then serialize on the gate: the holder runs the cancel/await-loop/drain/infra-teardown
         // skeleton ONCE (QuiesceCoreAsync) and, on success, writes _lifecycle = TornDown; a later caller that acquires the
-        // gate and observes TornDown skips the body. AFTER releasing the gate, every caller (the one that ran the body and
-        // every later one) escalates infra disposal if its strongest-recorded strength exceeds what was actually disposed,
-        // so a Dispose that followed a Stop still leaves the infra Disposed, never merely Stopped (dissolves the
-        // disposal-strength-loss defect). A NotStarted receiver is a structural no-op that never touches the gate
-        // (preserves b91b751: a DI-singleton premature Dispose during graph resolution must not consume admission and
-        // lock out the host's later await-using DisposeAsync). A throwing QuiesceCoreAsync PROPAGATES with TornDown unset,
-        // so the next gate acquirer re-runs cleanly (fault-resettable retry is inherent to the gate + terminal field —
-        // there is no completion source to strand).
+        // gate and observes TornDown skips the body. STILL UNDER THE GATE — on BOTH the body-ran path and the TornDown-loser
+        // path — every caller escalates infra disposal if its strongest-recorded strength exceeds what was actually
+        // disposed, so a Dispose that followed a Stop still leaves the infra Disposed, never merely Stopped (dissolves the
+        // disposal-strength-loss defect). Folding the escalation INSIDE the gate makes the claim->dispose->reset sequence
+        // atomic under the gate: a loser can never observe an in-flight _infrastructureDisposed claim as a completed
+        // disposal, so a concurrent in-flight DisposeAsync that FAULTS resets the claim with no loser having latched
+        // _disposedValue or nulled the infra over the in-flight claim — the infra is never leaked unretryably. A NotStarted
+        // receiver is a structural no-op that never touches the gate (preserves b91b751: a DI-singleton premature Dispose
+        // during graph resolution must not consume admission and lock out the host's later await-using DisposeAsync). A
+        // throwing QuiesceCoreAsync (or a throwing gated escalation) PROPAGATES with TornDown unset where applicable, so
+        // the next gate acquirer re-runs cleanly (fault-resettable retry is inherent to the gate + terminal field — there
+        // is no completion source to strand).
         async Task QuiesceAsync(InfrastructureTeardown infrastructureTeardown)
         {
             RaiseRequestedStrength(StrengthOf(infrastructureTeardown));
@@ -403,24 +414,31 @@ namespace Chatter.MessageBrokers.Receiving
                     await QuiesceCoreAsync().ConfigureAwait(false);
                     Volatile.Write(ref _lifecycle, LifecycleTornDown);
                 }
+
+                // STILL UNDER THE GATE: escalate infra disposal if this (or any) caller requested a strength stronger than
+                // what the quiesce body actually disposed (e.g. a Dispose following a Stop). Runs unconditionally after the
+                // if-block so it fires on BOTH the body-ran path AND the TornDown-loser path (a loser that skipped the
+                // quiesce body must STILL run the gated escalation). Because it runs under the same single gate acquisition,
+                // the claim->dispose->reset sequence is atomic: a concurrent teardown cannot observe an in-flight
+                // _infrastructureDisposed claim as a completed disposal. Single acquisition only — no nested WaitAsync.
+                await EscalateInfrastructureDisposalIfRequiredAsync().ConfigureAwait(false);
             }
             finally
             {
                 _teardownGate.Release();
             }
-
-            // After releasing the gate: escalate infra disposal if this (or any) caller requested a strength stronger than
-            // what the quiesce body actually disposed (e.g. a Dispose following a Stop). Single-flight via the
-            // _infrastructureDisposed CAS inside the escalation, so it is a safe no-op once the infra is already disposed.
-            await EscalateInfrastructureDisposalIfRequiredAsync().ConfigureAwait(false);
         }
 
         // INVARIANT: escalate infra disposal when the strongest requested strength is Dispose but only a weaker teardown
-        // (Stop) actually disposed the infra. Single-flight via Interlocked on _infrastructureDisposed: the first caller
-        // to observe a Dispose-strength request against an as-yet-undisposed infra runs DisposeAsync exactly once; all
-        // others short-circuit. Safe to call from winner and losers alike and any number of times — it is a no-op unless
-        // a Dispose strength was requested AND the infra has not yet been disposed. The infra receiver is captured into a
-        // local before the null/disposed checks so a concurrent Dispose(bool) that nulls the field cannot NRE this path.
+        // (Stop) actually disposed the infra. Called ONLY from inside the _teardownGate (folded into QuiesceAsync's gated
+        // try), so the claim->dispose->reset sequence below is gate-serialized and atomic — a concurrent teardown blocked
+        // on the gate can never observe the in-flight _infrastructureDisposed claim as a completed disposal. Single-flight
+        // via Interlocked on _infrastructureDisposed: the first gated caller to observe a Dispose-strength request against
+        // an as-yet-undisposed infra runs DisposeAsync exactly once; a later gated caller (after this returns and the gate
+        // is re-acquired) observes _infrastructureDisposed == 1 and short-circuits. Safe to call from winner and losers
+        // alike and any number of times — it is a no-op unless a Dispose strength was requested AND the infra has not yet
+        // been disposed. The infra receiver is captured into a local before the null/disposed checks so a concurrent
+        // Dispose(bool) that nulls the field cannot NRE this path.
         async Task EscalateInfrastructureDisposalIfRequiredAsync()
         {
             if (Volatile.Read(ref _requestedTeardownStrength) < TeardownStrengthDispose)
