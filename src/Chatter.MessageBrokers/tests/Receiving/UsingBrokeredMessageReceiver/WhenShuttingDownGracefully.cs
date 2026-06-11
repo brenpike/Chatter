@@ -387,7 +387,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Should().Be(1, "strength escalation must dispose the infrastructure receiver exactly once");
         }
 
-        // ------------------------------------------------------------------ (g) teardown in the Starting window tears the partial infra down
+        // ------------------------------------------------------------------ (g) teardown in the Starting window defers disposal to startup's surrender path
 
         [Fact]
         public async Task MustTearDownPartialInfrastructureWhenDisposeRacesStartupBeforeGoLive()
@@ -396,36 +396,50 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
 
             var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 0);
 
-            // Arm the gate so InitializeAsync blocks: the SUT will have assigned _infrastructureReceiver and advanced to
-            // the Starting lifecycle state, but will NOT reach go-live (IsReceiving stays false) until we release.
+            // Arm the gate so InitializeAsync blocks: under the ownership/handoff model the infra receiver is resolved and
+            // InitializeAsync'd into a STARTUP-OWNED LOCAL, never published to the shared _infrastructureReceiver field
+            // during this window. The SUT has advanced to the Starting lifecycle state but has NOT reached go-live
+            // (IsReceiving stays false) until we release.
             var initializeEntered = infraReceiver.ArmInitializeGate();
 
             var dispatcher = new Mock<IReceivedMessageDispatcher>();
             var sut = CreateSut(infraReceiver, dispatcher);
 
             using var cts = new CancellationTokenSource();
-            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+            var startup = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
 
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
-            // Wait until Initialize has been recorded: the receiver is now pinned in the Starting window (infra receiver
-            // assigned, not yet live).
+            // Wait until Initialize has been recorded: the receiver is now pinned in the Starting window (startup-owned
+            // local being InitializeAsync'd, _infrastructureReceiver field still null, not yet live).
             await WaitUntilAsync(() => infraReceiver.CallLog.Contains(ReceiverCall.Initialize), watchdog.Token);
             sut.IsReceiving.Should().BeFalse("the receiver is parked in the Starting window before go-live");
 
-            // Tear down WHILE in the Starting window. The teardown must NOT no-op (only NotStarted is a no-op); it tears
-            // the partial infra down. Release the gate first so the awaited InitializeAsync completes and the abandoned
-            // startup path unwinds, letting the synchronous quiesce drain to completion.
+            // Tear down WHILE in the Starting window. The teardown must NOT no-op (only NotStarted is a no-op): it sees a
+            // null _infrastructureReceiver field, quiesces nothing observable, latches TornDown, and records its strength.
+            // Release the gate so InitializeAsync completes and startup observes TornDown at the handoff and SURRENDERS its
+            // startup-owned local — disposing the real receiver on startup's surrender path (deferred disposal).
             var dispose = sut.DisposeAsync().AsTask();
             infraReceiver.ReleaseInitializeGate();
 
-            var completed = await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(15)));
-            completed.Should().BeSameAs(dispose, "a teardown landing in the Starting window must tear the partial infra down and complete cleanly");
-            await dispose;
+            // Await BOTH the teardown caller AND the startup task: the caller's DisposeAsync latched TornDown over the null
+            // field and returned without itself disposing; the disposal is deferred to startup's surrender path. Awaiting
+            // startup too pins that disposal to a deterministic completion point instead of racing the assertion.
+            var teardowns = Task.WhenAll(dispose, startup);
+            var completed = await Task.WhenAny(teardowns, Task.Delay(TimeSpan.FromSeconds(15)));
+            completed.Should().BeSameAs(teardowns, "a teardown landing in the Starting window must complete cleanly once startup surrenders the startup-owned local");
+            await teardowns;
 
             sut.IsReceiving.Should().BeFalse("a receiver torn down during startup must never report live");
-            infraReceiver.CallLog.Should().Contain(ReceiverCall.Dispose,
-                "a Dispose landing in the Starting window must dispose the partial infrastructure, not no-op like a NotStarted teardown");
+
+            // The Starting-window teardown deferred disposal to startup's surrender path. Spin to the bounded watchdog so a
+            // leak surfaces as a prompt OperationCanceledException rather than a flaky read; the partial infra must end
+            // disposed exactly once (RecordCallOnce records Dispose at most once, so this also proves no double-dispose),
+            // never no-op'd like a NotStarted teardown.
+            await WaitUntilAsync(() => infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose) == 1, watchdog.Token);
+
+            infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
+                .Should().Be(1, "a Dispose landing in the Starting window must dispose the partial infrastructure via startup's surrender path exactly once, not no-op like a NotStarted teardown");
         }
 
         // ------------------------------------------------------------------ (h) NotStarted premature Dispose is a clean no-op that does not latch out a later real teardown
@@ -473,19 +487,21 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Should().Be(1, "the premature NotStarted Dispose must not latch the terminal lifecycle out of the genuine teardown, which disposes the infra exactly once");
         }
 
-        // ------------------------------------------------------------------ (i) RENDEZVOUS-ORPHAN: a teardown landing mid-startup tears the full partial set down with no double-fire
+        // ------------------------------------------------------------------ (i) RENDEZVOUS-ORPHAN: teardowns landing mid-startup defer disposal to startup's surrender path with no double-fire
         //
         // RACE-CLASS WITNESS #2 (startup/teardown rendezvous-orphan). Under the former lock-free design a teardown could
         // win admission while StartReceiverImpl was constructing the loop primitives, observe some of them as null, and
-        // leave an orphaned semaphore/token source/loop behind (or double-fire the infra Stop). The SemaphoreSlim gate
-        // closes the class by CONSTRUCTION: StartReceiverImpl constructs the primitives and goes live UNDER the gate, and
-        // every teardown serializes on the SAME gate, so a teardown either runs entirely BEFORE construction (it sees the
-        // infra-only partial set, torn down via the null-guarded core) or entirely AFTER go-live (the full set) — never a
-        // half-built set. Here ArmInitializeGate pins the receiver in the Starting window (infra assigned, primitives not
-        // yet constructed); concurrent Dispose+Stop teardowns land there, then the gate is released. The infra must be
-        // disposed exactly once (the strongest Dispose strength always wins, whether the gate-holder disposed directly or
-        // a Stop ran first and the Dispose escalated), and IsReceiving must never go true. The infra Dispose is recorded
-        // at most once by the fake (RecordCallOnce), so an exactly-once count also proves there is no double-dispose.
+        // leave an orphaned semaphore/token source/loop behind (or double-fire the infra Stop). The SemaphoreSlim gate plus
+        // the ownership/handoff model close the class by CONSTRUCTION: StartReceiverImpl resolves and InitializeAsync's the
+        // infra receiver into a STARTUP-OWNED LOCAL with the gate NOT held, and never publishes it to _infrastructureReceiver
+        // before the gated publish-or-surrender handoff. So a teardown racing the Starting window sees only a null
+        // _infrastructureReceiver field: it quiesces nothing observable, latches TornDown, and records its strength. At the
+        // handoff startup observes that TornDown and SURRENDERS its local at the recorded (strongest) strength — never a
+        // half-built set. Here ArmInitializeGate pins the receiver in the Starting window (startup-owned local being
+        // InitializeAsync'd, field still null); concurrent Dispose+Stop teardowns land there, then the gate is released so
+        // startup surrenders. The infra must be disposed exactly once (the strongest Dispose strength always wins on the
+        // surrender path) and IsReceiving must never go true. The infra Dispose is recorded at most once by the fake
+        // (RecordCallOnce), so an exactly-once count also proves there is no double-dispose.
         [Fact]
         public async Task MustTearDownFullPartialSetWithNoDoubleFireWhenTeardownRacesStartupInStartingWindow()
         {
@@ -493,37 +509,112 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
 
             var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 0);
 
-            // Pin the receiver in the Starting window: InitializeAsync blocks until released, so the SUT has assigned the
-            // infra receiver and advanced to Starting but has NOT constructed the loop primitives or gone live.
+            // Pin the receiver in the Starting window: InitializeAsync blocks until released, so the SUT is InitializeAsync'ing
+            // its startup-owned local and has advanced to Starting but has NOT published the infra receiver, constructed the
+            // loop primitives, or gone live.
             _ = infraReceiver.ArmInitializeGate();
 
             var dispatcher = new Mock<IReceivedMessageDispatcher>();
             var sut = CreateSut(infraReceiver, dispatcher);
 
             using var cts = new CancellationTokenSource();
-            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+            var startup = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
 
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             await WaitUntilAsync(() => infraReceiver.CallLog.Contains(ReceiverCall.Initialize), watchdog.Token);
             sut.IsReceiving.Should().BeFalse("the receiver is parked in the Starting window before go-live");
 
-            // Race a Dispose and a Stop into the Starting window concurrently, THEN release the gate so the abandoned
-            // startup unwinds. Both teardowns serialize on the gate against the go-live block; the strongest (Dispose)
-            // disposition wins. No teardown may surface an ObjectDisposedException.
+            // Race a Dispose and a Stop into the Starting window concurrently, THEN release the gate so startup runs the
+            // publish-or-surrender handoff. Both teardowns see a null field, quiesce nothing, latch TornDown and record
+            // their strengths; startup observes TornDown at the handoff and surrenders the startup-owned local at the
+            // strongest (Dispose) strength. No teardown may surface an ObjectDisposedException.
             var dispose = sut.DisposeAsync().AsTask();
             var stop = sut.StopReceiver();
             infraReceiver.ReleaseInitializeGate();
 
-            var race = Task.WhenAll(dispose, stop);
+            // Await the racing teardowns AND the startup task: the teardown callers latched TornDown over the null field
+            // and returned without themselves disposing; the disposal is deferred to startup's surrender path. Awaiting
+            // startup too pins that disposal to a deterministic completion point instead of racing the assertion.
+            var race = Task.WhenAll(dispose, stop, startup);
             var completed = await Task.WhenAny(race, Task.Delay(TimeSpan.FromSeconds(15)));
-            completed.Should().BeSameAs(race, "teardowns racing the Starting window must serialize on the gate and complete cleanly");
+            completed.Should().BeSameAs(race, "teardowns racing the Starting window must serialize on the gate and complete cleanly once startup surrenders the local");
             await race;
 
             sut.IsReceiving.Should().BeFalse("a receiver torn down during startup must never report live");
+
+            // The Starting-window teardowns deferred disposal to startup's surrender path. Spin to the bounded watchdog so a
+            // leak surfaces as a prompt OperationCanceledException rather than a flaky read; the partial infra must end
+            // disposed exactly once (RecordCallOnce records Dispose at most once, so this also proves no double-dispose).
+            await WaitUntilAsync(() => infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose) == 1, watchdog.Token);
+
             infraReceiver.CallLog.Should().Contain(ReceiverCall.Dispose,
-                "a Dispose-strength teardown participated, so the partial infrastructure must end disposed, never merely stopped");
+                "a Dispose-strength teardown participated, so the partial infrastructure must end disposed via startup's surrender path, never merely stopped");
             infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
-                .Should().Be(1, "the Starting-window teardown must dispose the partial infrastructure exactly once (no double-dispose)");
+                .Should().Be(1, "the Starting-window teardown must dispose the partial infrastructure via startup's surrender path exactly once (no double-dispose)");
+        }
+
+        // ------------------------------------------------------------------ (iter3) INITIALIZING INFRA: a Dispose racing DURING InitializeAsync defers disposal to startup's surrender path
+        //
+        // RACE-CLASS WITNESS (initializing-infrastructure handoff). The ownership/handoff model resolves and InitializeAsync's
+        // the infra receiver into a STARTUP-OWNED LOCAL with the teardown gate NOT held, and never publishes it to the shared
+        // _infrastructureReceiver field until the gated publish-or-surrender handoff AFTER InitializeAsync returns. This witness
+        // pins the receiver mid-InitializeAsync (init blocked on the gate) and issues a Dispose-strength teardown WHILE init is
+        // still in flight. Because the blocking InitializeAsync I/O runs with the gate NOT held, the Dispose acquires the gate,
+        // sees a null _infrastructureReceiver field, quiesces nothing observable, latches TornDown + records Dispose strength,
+        // and RETURNS without itself disposing the still-initializing local. When the gate is released InitializeAsync completes
+        // and startup's handoff observes TornDown and SURRENDERS the startup-owned local at Dispose strength — disposing the real
+        // receiver exactly once on startup's surrender path (deferred disposal). This FAILS on the pre-STEP-001 gate-after-await
+        // structure (where init ran UNDER the gate, so a concurrent teardown could not acquire it during init, or the field was
+        // published before init so the teardown disposed an initializing receiver) and PASSES on the handoff model.
+        [Fact]
+        public async Task MustTearDownInitializingInfrastructureWhenDisposeRacesDuringInitializeAsync()
+        {
+            const int maxConcurrentCalls = 1;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 0);
+
+            // Arm the gate so InitializeAsync blocks: the SUT pins mid-InitializeAsync on its startup-owned local, with the
+            // teardown gate NOT held (the blocking init I/O runs outside the gate under the handoff model).
+            var initializeEntered = infraReceiver.ArmInitializeGate();
+
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            using var cts = new CancellationTokenSource();
+            var startup = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+            // Wait until Initialize has been recorded: the receiver is now pinned mid-InitializeAsync (startup-owned local
+            // being initialized, _infrastructureReceiver field still null, not yet live).
+            await WaitUntilAsync(() => infraReceiver.CallLog.Contains(ReceiverCall.Initialize), watchdog.Token);
+            sut.IsReceiving.Should().BeFalse("the receiver is parked mid-InitializeAsync before go-live");
+
+            // Issue a Dispose-strength teardown WHILE init is still blocked. Because init holds NO teardown gate, the Dispose
+            // acquires the gate, sees a null field, latches TornDown + records Dispose strength, and returns without disposing
+            // the still-initializing local. THEN release the gate so InitializeAsync completes and startup surrenders.
+            var dispose = sut.DisposeAsync().AsTask();
+            infraReceiver.ReleaseInitializeGate();
+
+            // Await BOTH the teardown task AND the startup task: the caller's DisposeAsync latched TornDown over the null
+            // field and deferred disposal to startup's surrender path. Awaiting startup pins that disposal to a deterministic
+            // completion point instead of racing the assertion.
+            var teardowns = Task.WhenAll(dispose, startup);
+            var completed = await Task.WhenAny(teardowns, Task.Delay(TimeSpan.FromSeconds(15)));
+            completed.Should().BeSameAs(teardowns, "a Dispose racing during InitializeAsync must complete cleanly once startup surrenders the startup-owned local");
+            await teardowns;
+
+            sut.IsReceiving.Should().BeFalse("a receiver torn down while initializing must never report live");
+
+            // The mid-init Dispose deferred disposal to startup's surrender path. Spin to the bounded watchdog so a leak
+            // surfaces as a prompt OperationCanceledException; the initializing infra must end disposed exactly once
+            // (RecordCallOnce records Dispose at most once, so this also proves no double-dispose), with no
+            // ObjectDisposedException surfaced by either the teardown caller or the startup surrender path (both were awaited
+            // clean above).
+            await WaitUntilAsync(() => infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose) == 1, watchdog.Token);
+
+            infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
+                .Should().Be(1, "a Dispose racing during InitializeAsync must dispose the initializing infrastructure via startup's surrender path exactly once");
         }
 
         // ------------------------------------------------------------------ (i2) NULL-RECEIVER CLAIM WINDOW: a Dispose landing before the infra receiver is assigned must not latch the claim over null and leak the real receiver

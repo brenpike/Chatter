@@ -36,10 +36,15 @@ namespace Chatter.MessageBrokers.Receiving
         //                (no infra receiver, no loop, no workers); it is a structural no-op that MUST leave admission
         //                untouched for the genuine post-startup teardown (preserves b91b751: a DI singleton Dispose()d
         //                during graph resolution must not latch out the host's later await-using DisposeAsync).
-        //   Starting   - StartReceiverImpl has begun startup; _infrastructureReceiver MAY be assigned and partial infra
-        //                (semaphore, token source, loop) may exist, but go-live has not been published. A teardown
-        //                observed in Starting tears the PARTIAL infra down — it does NOT return — so a teardown racing
-        //                startup still stops/disposes whatever was constructed.
+        //   Starting   - StartReceiverImpl has begun startup. OWNERSHIP/HANDOFF MODEL: the infrastructure receiver is
+        //                resolved and InitializeAsync'd into a STARTUP-OWNED LOCAL, never published to the shared
+        //                _infrastructureReceiver field during this window — so the field is still null and NO infra
+        //                object, partial or complete, is reachable by teardown until the single atomic handoff at the
+        //                go-live seam. A teardown observed in Starting therefore quiesces a null infra (a structural
+        //                no-op), latches TornDown, and records its strength; StartReceiverImpl observes that TornDown at
+        //                the handoff and SURRENDERS its local at the recorded strength. This dissolves the "teardown
+        //                reaches infra during the Starting window" race class by construction rather than by guarding
+        //                each partial-state access.
         //   Live       - the receive loop is running and ReceivingStarted has been published. Steady state.
         //   TornDown   - a QuiesceCoreAsync ran to completion UNDER THE GATE and latched the receiver terminally; further
         //                teardowns observe TornDown under the gate and only escalate infra disposal if a stronger
@@ -52,15 +57,21 @@ namespace Chatter.MessageBrokers.Receiving
         private const int LifecycleTornDown = 3;
         private int _lifecycle = LifecycleNotStarted;
 
-        // INVARIANT: a single SemaphoreSlim(1,1) serializes the teardown critical section AND the startup go-live
-        // rendezvous, so they never interleave. Every teardown entrypoint (StopReceiver/DisposeAsync/synchronous Dispose)
-        // and the abandoned-startup partial cleanup acquire this gate before running QuiesceCoreAsync; StartReceiverImpl
-        // acquires it around its primitive construction + go-live transition. Because both sides take the SAME gate, a
-        // teardown racing startup either runs entirely BEFORE the primitives are constructed (it sees only the infra
-        // receiver, torn down via the null-guarded core) or entirely AFTER go-live (it sees the FULL constructed set) —
-        // there is no window where it observes a half-built set. The three former race classes (stale single-flight
-        // loser, startup/teardown rendezvous-orphan, sync-dispose latch) are closed by CONSTRUCTION here rather than by
-        // patching each path.
+        // INVARIANT: a single SemaphoreSlim(1,1) serializes the teardown critical section AND the startup publish-or-
+        // surrender handoff, so they never interleave. Every teardown entrypoint (StopReceiver/DisposeAsync/synchronous
+        // Dispose) acquires this gate before running QuiesceCoreAsync; StartReceiverImpl acquires it ONLY for the atomic
+        // handoff of its startup-owned infra local (field writes, primitive construction, CAS — NO blocking I/O await).
+        //
+        // OWNERSHIP/HANDOFF MODEL: StartReceiverImpl resolves and InitializeAsync's the infra receiver into a LOCAL with
+        // the gate NOT held, and never publishes it to _infrastructureReceiver before that gated handoff. So during the
+        // Starting window the shared field is null and NOTHING reachable by teardown exists — teardown cannot reach a
+        // not-yet-published, startup-owned infra object. Because both sides take the SAME gate, a teardown racing startup
+        // either runs entirely BEFORE the handoff (it sees a null field, quiesces nothing, latches TornDown + records its
+        // strength, and the startup handoff then SURRENDERS its local at that strength) or entirely AFTER go-live (it sees
+        // the FULL published set) — there is no window where it observes a half-built set. Holding NO blocking await under
+        // the gate also means a hung InitializeAsync can never block a concurrent teardown. The race classes (stale
+        // single-flight loser, startup/teardown rendezvous-orphan, sync-dispose latch, AND the "teardown reaches infra
+        // during the Starting window") are closed by CONSTRUCTION here rather than by patching each path.
         //
         // FAULT-RESETTABLE: a QuiesceCoreAsync that THROWS under the gate PROPAGATES without latching _lifecycle to
         // TornDown — the gate is released in the finally and the terminal field is never set, so the NEXT caller to
@@ -213,20 +224,28 @@ namespace Chatter.MessageBrokers.Receiving
         {
             _logger.LogInformation("Initializing '{executingFunction}' of type '{receiverMessageType}'.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
 
-            // INVARIANT: enter the Starting state BEFORE assigning _infrastructureReceiver, so a teardown that lands
-            // anywhere from here through go-live observes Starting (not NotStarted), serializes on the teardown gate, and
-            // tears the partial infra down instead of no-op'ing. The CAS only advances NotStarted -> Starting; a teardown
-            // cannot set TornDown while the lifecycle is still NotStarted (QuiesceAsync returns early on NotStarted
-            // without touching the gate), so the only way this CAS fails is a duplicate StartReceiver call over an
-            // already-started receiver — abandon that. NotStarted is the only legal predecessor of Starting.
+            // INVARIANT: enter the Starting state BEFORE resolving or initializing the infrastructure receiver, so a
+            // teardown that lands anywhere from here through go-live observes Starting (not NotStarted), serializes on the
+            // teardown gate, and latches TornDown rather than no-op'ing. The CAS only advances NotStarted -> Starting; a
+            // teardown cannot set TornDown while the lifecycle is still NotStarted (QuiesceAsync returns early on
+            // NotStarted without touching the gate), so the only way this CAS fails is a duplicate StartReceiver call over
+            // an already-started receiver — abandon that. NotStarted is the only legal predecessor of Starting.
             if (Interlocked.CompareExchange(ref _lifecycle, LifecycleStarting, LifecycleNotStarted) != LifecycleNotStarted)
             {
                 _logger.LogInformation("'{executingFunction}' of type '{receiverMessageType}' was torn down before startup could begin; abandoning startup.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
                 return;
             }
 
+            // OWNERSHIP/HANDOFF MODEL: resolve and InitializeAsync the infrastructure receiver into a STARTUP-OWNED LOCAL
+            // — NEVER into the shared _infrastructureReceiver field — with _teardownGate NOT held. This dissolves the
+            // "teardown reaches infra during the Starting window" race class by CONSTRUCTION: a teardown racing startup
+            // sees only a null _infrastructureReceiver field, so it cannot reach this not-yet-published, startup-owned
+            // infra object. Nothing reachable by teardown exists during Starting until the single atomic handoff below.
+            // Because the blocking InitializeAsync I/O runs here with the gate NOT held, a hung init can never block a
+            // concurrent teardown — teardown latches TornDown against the null field and returns; startup observes
+            // TornDown at the handoff and surrenders this local. (No partial of THIS local is observable to teardown.)
             options.Description ??= options.MessageReceiverPath;
-            _infrastructureReceiver = _infrastructureProvider.GetReceiver(options.InfrastructureType);
+            var infra = _infrastructureProvider.GetReceiver(options.InfrastructureType);
             options.MessageReceiverPath = _infrastructureProvider.GetInfrastructure(options.InfrastructureType).PathBuilder.GetMessageReceivingPath(options.SendingPath, options.MessageReceiverPath);
 
             this.SendingPath = options.SendingPath;
@@ -244,7 +263,8 @@ namespace Chatter.MessageBrokers.Receiving
             // reach 'new SemaphoreSlim(count, count)' below and throw an opaque ArgumentOutOfRangeException at
             // receiver startup. Validate here so a misconfigured value fails fast with a message that names the
             // bad value and its source, surfaced through the same startup-fatal propagation path as the
-            // cross-entity guard rather than as an obscure semaphore error.
+            // cross-entity guard rather than as an obscure semaphore error. Runs BEFORE the InitializeAsync I/O and
+            // before any publish, so a startup-fatal value leaves nothing published and nothing to surrender.
             if (_maxConcurrentCalls < 1)
             {
                 throw new InvalidOperationException(
@@ -252,46 +272,54 @@ namespace Chatter.MessageBrokers.Receiving
             }
 
             _logger.LogTrace("Initializing messaging infrastructure");
-            await _infrastructureReceiver.InitializeAsync(_options, receiverTerminationToken);
+            // INVARIANT: blocking infrastructure I/O on the startup-owned LOCAL, gate NOT held. If this throws
+            // (startup-fatal), nothing was ever published to _infrastructureReceiver, there is nothing to surrender, the
+            // local is GC'd, IsReceiving never becomes true, and the exception propagates to the caller exactly as before.
+            await infra.InitializeAsync(_options, receiverTerminationToken);
             _logger.LogTrace("Successfully initialized messaging infrastructure");
 
             _logger.LogDebug("Receiver options: Infrastructure type: '{infrastructureType}', Transaction Mode: '{transactionMode}', Message receiver: '{messageReceiverPath}', Deadletter queue: '{deadLetterQueuePath}', Error queue: '{errorQueuePath}', Max receive attempts: '{maxReceiveAttempts}', Message sent from: '{sendingPath}', Max Concurrent Receives: '{maxConcurrentCalls}'",
                 _options.InfrastructureType, options.TransactionMode, options.MessageReceiverPath, options.DeadLetterQueuePath, options.ErrorQueuePath, options.MaxReceiveAttempts, options.SendingPath, _maxConcurrentCalls);
 
-            // INVARIANT: construct the receive-loop primitives and perform the go-live transition UNDER THE TEARDOWN
-            // GATE so startup and teardown serialize on one gate. A teardown that landed mid-InitializeAsync blocks on
-            // the gate until this block either reaches go-live (publishing the FULL constructed set) or — if a teardown
-            // already latched the receiver TornDown before this block acquired the gate — this block itself observes
-            // TornDown under the gate, abandons the partial set, and disposes whatever it just built. Either way a racing
-            // teardown can never observe a half-built set: it runs entirely before construction (infra-only, null-guarded
-            // core) or entirely after go-live (full set). The loop is started via Task.Run (default scheduler) so its
-            // body/continuations never capture a caller SynchronizationContext — required for the synchronous Dispose
-            // wait to stay deadlock-free.
+            // ATOMIC PUBLISH-OR-SURRENDER HANDOFF: a SINGLE non-blocking _teardownGate critical section — containing NO
+            // blocking I/O await, only field writes, primitive construction, and CAS — performs the handoff of the
+            // startup-owned infra local. Reading _requestedTeardownStrength and the lifecycle UNDER the gate guarantees we
+            // observe any racing teardown's recorded strength / TornDown latch.
+            //   - lifecycle != TornDown: no teardown raced (or one tried, saw the null field, and a teardown does not
+            //     advance Starting -> TornDown except via the gated quiesce we are holding the gate against). PUBLISH the
+            //     local to _infrastructureReceiver, construct the loop primitives, CAS Starting -> Live, signal start.
+            //   - lifecycle == TornDown: a teardown arrived during init, saw a null _infrastructureReceiver, quiesced the
+            //     partial (a no-op — nothing of THIS local was reachable), latched TornDown, and recorded its strength.
+            //     SURRENDER: PUBLISH the local to _infrastructureReceiver FIRST (so TryClaimAndDisposeInfrastructureAsync
+            //     remains the SOLE 0->1 writer of _infrastructureDisposed and no new local-taking overload is needed),
+            //     THEN dispose it at the strongest recorded strength via the shared strength-aware seam
+            //     TearDownInfrastructureAsync (Stop-strength -> infra.StopReceiver(); Dispose-strength ->
+            //     TryClaimAndDisposeInfrastructureAsync). Do NOT go live.
+            // Either way a racing teardown can never observe a half-built set: it ran entirely against the null field
+            // (latching TornDown) or this handoff runs entirely before it can next acquire the gate.
             var wentLive = false;
             await _teardownGate.WaitAsync().ConfigureAwait(false);
             try
             {
                 if (Volatile.Read(ref _lifecycle) == LifecycleTornDown)
                 {
-                    // A teardown ran to completion while we were initializing. The receiver is terminal; do not
-                    // construct the loop/semaphore primitives over it or go live. There are no such primitives yet
-                    // (we have not constructed them in this block), so there is nothing of that set to dispose here.
-                    //
-                    // INVARIANT: that completed teardown may have run on the infra-only PARTIAL set BEFORE
-                    // _infrastructureReceiver was assigned — i.e. it landed after the NotStarted -> Starting CAS but
-                    // before line ~225 assigned the receiver. In that window TearDownInfrastructureAsync observed a null
-                    // infra and disposed nothing, leaving _infrastructureDisposed unclaimed, yet THIS block then resolved
-                    // and InitializeAsync'd a real _infrastructureReceiver. Without disposing it here, startup abandons
-                    // go-live and the just-initialized infra is LEAKED (future teardowns short-circuit on _disposedValue).
-                    // Tear it down NOW under the same gate, at the strongest strength any teardown recorded, via the
-                    // single strength-aware seam. TearDownInfrastructureAsync is idempotent (CAS on _infrastructureDisposed):
-                    // if the completed teardown DID dispose a real infra (it raced after assignment), the claim is already
-                    // taken and this is a no-op.
-                    _logger.LogInformation("'{executingFunction}' of type '{receiverMessageType}' was torn down during startup; disposing the infrastructure receiver constructed in this startup and abandoning go-live without constructing the receive loop.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
+                    // A teardown ran to completion while we were initializing the local. The receiver is terminal; do not
+                    // publish for go-live or construct the loop/semaphore primitives. Publish the startup-owned local to
+                    // the field FIRST so the indivisible claim primitive (TryClaimAndDisposeInfrastructureAsync) stays the
+                    // sole 0->1 writer of _infrastructureDisposed, THEN surrender it at the strongest recorded strength via
+                    // the single strength-aware seam. The teardown that latched TornDown observed a null field and disposed
+                    // nothing (its claim is unclaimed), so this is the path that actually quiesces the real infra.
+                    // TearDownInfrastructureAsync is idempotent (CAS on _infrastructureDisposed) and runs under this same
+                    // gate acquisition, so the claim->dispose->reset sequence stays gate-serialized and atomic.
+                    _logger.LogInformation("'{executingFunction}' of type '{receiverMessageType}' was torn down during startup; surrendering the startup-owned infrastructure receiver at the recorded teardown strength and abandoning go-live without constructing the receive loop.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
+                    _infrastructureReceiver = infra;
                     await TearDownInfrastructureAsync().ConfigureAwait(false);
                     return;
                 }
 
+                // No teardown raced: hand the startup-owned local off to the shared field and go live. This is the SINGLE
+                // point at which the infra object becomes reachable by teardown — only after it is fully initialized.
+                _infrastructureReceiver = infra;
                 _concurrentMessagesSemaphore = new SemaphoreSlim(_maxConcurrentCalls, _maxConcurrentCalls);
                 _messageReceiverLoopTokenSource = CancellationTokenSource.CreateLinkedTokenSource(receiverTerminationToken);
                 _messageReceiverLoop = Task.Run(MessageReceiverLoopAsync);
