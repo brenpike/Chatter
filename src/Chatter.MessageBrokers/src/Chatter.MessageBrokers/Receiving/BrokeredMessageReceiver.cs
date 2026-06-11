@@ -89,13 +89,23 @@ namespace Chatter.MessageBrokers.Receiving
         // no native handle, so leaving it for GC leaks nothing requiring deterministic release.
         private readonly SemaphoreSlim _teardownGate = new SemaphoreSlim(1, 1);
 
-        // INVARIANT: monotonic teardown strength. Stop (weakest) < DisposeAsync/DisposeSync (strongest). The admitted
-        // quiesce records the strongest strength requested by ANY participating entrypoint via Interlocked.Max-by-CAS.
-        // When a Dispose-strength entrypoint participates in a race a Stop winner ran, the Dispose observes the Stop's
-        // completion and THEN escalates: because the strongest-recorded strength is now Dispose, infra disposal runs so
-        // the infrastructure receiver is actually Disposed, never left merely Stopped. This dissolves the
-        // disposal-strength-loss defect (a Dispose losing the single-flight race to a Stop winner used to leave the infra
-        // un-disposed).
+        // INVARIANT: EPOCH-SCOPED teardown strength (NOT process-monotonic). Stop (weakest) < DisposeAsync/DisposeSync
+        // (strongest). Recorded by RaiseRequestedStrength AFTER the NotStarted no-op fast-path in QuiesceAsync, so a
+        // premature teardown of a still-NotStarted receiver (the DI-singleton Dispose during graph resolution) records
+        // NOTHING and leaves this field at None — the receiver stays restartable in a fresh epoch and a later genuine
+        // teardown re-derives strength from scratch. WITHIN one epoch the recording is still monotonic (Interlocked.Max
+        // by CAS), so a Stop-then-Dispose racing in ONE teardown still escalates to Dispose: both record after the no-op
+        // gate, both before the completion reset. The admitted quiesce records the strongest strength requested by ANY
+        // participating entrypoint; when a Dispose-strength entrypoint participates in a race a Stop winner ran, the
+        // Dispose observes the Stop's completion and THEN escalates so the infra is actually Disposed, never left merely
+        // Stopped (dissolves the disposal-strength-loss defect). RESET to None when an epoch's teardown COMPLETES against
+        // a REAL (non-null) infra receiver — under the SAME single _teardownGate acquisition, after QuiesceCoreAsync +
+        // EscalateInfrastructureDisposalIfRequiredAsync — so the strength does not leak across epochs (an earlier Stop
+        // epoch's recording cannot later escalate a genuine StopReceiver into a Dispose). The reset is conditioned on a
+        // non-null infra so it NEVER pre-empts the Starting-window surrender consumer: a teardown that raced the Starting
+        // window quiesced a null field (disposed nothing real) and must leave the strength intact for StartReceiverImpl's
+        // separate-gate surrender to read. A throwing QuiesceCoreAsync/escalation leaves the strength UNRESET so the retry
+        // re-derives it.
         private const int TeardownStrengthNone = 0;
         private const int TeardownStrengthStop = 1;
         private const int TeardownStrengthDispose = 2;
@@ -388,9 +398,13 @@ namespace Chatter.MessageBrokers.Receiving
         private static int StrengthOf(InfrastructureTeardown infrastructureTeardown)
             => infrastructureTeardown == InfrastructureTeardown.Stop ? TeardownStrengthStop : TeardownStrengthDispose;
 
-        // INVARIANT: monotonically raise the recorded requested strength to at least the caller's. Lock-free CAS loop
-        // (Interlocked.Max). Returns nothing; the strongest value is read back from _requestedTeardownStrength at the
-        // infra-teardown seam.
+        // INVARIANT: monotonically raise the recorded requested strength to at least the caller's, WITHIN the current
+        // epoch. Lock-free CAS loop (Interlocked.Max). Called from QuiesceAsync ONLY AFTER the NotStarted no-op fast-path,
+        // so a premature teardown of a still-NotStarted receiver never records here (the field stays None and the receiver
+        // stays restartable). The strongest value is read back from _requestedTeardownStrength at the infra-teardown seam
+        // (TearDownInfrastructureAsync / EscalateInfrastructureDisposalIfRequiredAsync) and the field is reset to None when
+        // an epoch's teardown completes against a real infra (see QuiesceAsync), so the raise is epoch-scoped, not
+        // process-monotonic.
         void RaiseRequestedStrength(int strength)
         {
             int current;
@@ -406,35 +420,43 @@ namespace Chatter.MessageBrokers.Receiving
         }
 
         // INVARIANT: single shared quiesce-before-dispose contract for ALL teardown entrypoints, serialized on
-        // _teardownGate, with monotonic teardown strength. Every caller first records its requested strength
-        // (Stop < Dispose). Callers then serialize on the gate: the holder runs the cancel/await-loop/drain/infra-teardown
-        // skeleton ONCE (QuiesceCoreAsync) and, on success, writes _lifecycle = TornDown; a later caller that acquires the
-        // gate and observes TornDown skips the body. STILL UNDER THE GATE — on BOTH the body-ran path and the TornDown-loser
-        // path — every caller escalates infra disposal if its strongest-recorded strength exceeds what was actually
-        // disposed, so a Dispose that followed a Stop still leaves the infra Disposed, never merely Stopped (dissolves the
-        // disposal-strength-loss defect). Folding the escalation INSIDE the gate makes the claim->dispose->reset sequence
-        // atomic under the gate: a loser can never observe an in-flight _infrastructureDisposed claim as a completed
-        // disposal, so a concurrent in-flight DisposeAsync that FAULTS resets the claim with no loser having latched
-        // _disposedValue or nulled the infra over the in-flight claim — the infra is never leaked unretryably. A NotStarted
+        // _teardownGate, with EPOCH-SCOPED teardown strength. A teardown of a still-NotStarted receiver records NO strength
+        // and is a structural no-op (the RaiseRequestedStrength call sits AFTER the NotStarted fast-path), so a DI-singleton
+        // premature Dispose leaves the field at None and the receiver RESTARTABLE in a fresh epoch. Teardowns that actually
+        // run (Starting/Live) record their requested strength (Stop < Dispose) after that fast-path, then serialize on the
+        // gate: the holder runs the cancel/await-loop/drain/infra-teardown skeleton ONCE (QuiesceCoreAsync) and, on success,
+        // writes _lifecycle = TornDown; a later caller that acquires the gate and observes TornDown skips the body. STILL
+        // UNDER THE GATE — on BOTH the body-ran path and the TornDown-loser path — every caller escalates infra disposal if
+        // its strongest-recorded strength exceeds what was actually disposed, so a Dispose that followed a Stop still leaves
+        // the infra Disposed, never merely Stopped (dissolves the disposal-strength-loss defect). Folding the escalation
+        // INSIDE the gate makes the claim->dispose->reset sequence atomic under the gate: a loser can never observe an
+        // in-flight _infrastructureDisposed claim as a completed disposal, so a concurrent in-flight DisposeAsync that
+        // FAULTS resets the claim with no loser having latched _disposedValue or nulled the infra over the in-flight claim —
+        // the infra is never leaked unretryably. EPOCH RESET: after the gated teardown completes against a REAL (non-null)
+        // infra receiver, reset _requestedTeardownStrength to None so the strength does not leak across epochs. The reset is
+        // conditioned on a non-null infra so it never pre-empts the Starting-window surrender consumer (StartReceiverImpl
+        // reads the recorded strength under a SEPARATE gate acquisition AFTER publishing the surrendered local; the teardown
+        // that fed it quiesced a null field, so the reset is skipped and the strength survives for the surrender). A NotStarted
         // receiver is a structural no-op that never touches the gate (preserves b91b751: a DI-singleton premature Dispose
         // during graph resolution must not consume admission and lock out the host's later await-using DisposeAsync). A
-        // throwing QuiesceCoreAsync (or a throwing gated escalation) PROPAGATES with TornDown unset where applicable, so
-        // the next gate acquirer re-runs cleanly (fault-resettable retry is inherent to the gate + terminal field — there
-        // is no completion source to strand).
+        // throwing QuiesceCoreAsync (or a throwing gated escalation) PROPAGATES with TornDown unset where applicable AND with
+        // the strength UNRESET, so the next gate acquirer re-runs cleanly and re-derives the strength (fault-resettable retry
+        // is inherent to the gate + terminal field — there is no completion source to strand).
         async Task QuiesceAsync(InfrastructureTeardown infrastructureTeardown)
         {
-            RaiseRequestedStrength(StrengthOf(infrastructureTeardown));
-
-            // INVARIANT: do NOT touch the gate for a receiver that never started. The receiver is commonly registered as
-            // a singleton; a host/DI graph can synchronously Dispose() the instance during resolution — BEFORE
-            // StartReceiverImpl entered its startup body (lifecycle still NotStarted) — and that premature teardown has
-            // nothing to quiesce. Only NotStarted is a no-op; Starting and Live both admit a real quiesce, so a teardown
-            // landing in the startup window serializes on the gate against go-live and tears the PARTIAL infra down
-            // rather than no-op'ing.
+            // INVARIANT: do NOT touch the gate OR record strength for a receiver that never started. The receiver is
+            // commonly registered as a singleton; a host/DI graph can synchronously Dispose() the instance during
+            // resolution — BEFORE StartReceiverImpl entered its startup body (lifecycle still NotStarted) — and that
+            // premature teardown has nothing to quiesce and must record NO strength, leaving the receiver restartable in a
+            // fresh epoch. Only NotStarted is a no-op; Starting and Live both admit a real quiesce, so a teardown landing in
+            // the startup window serializes on the gate against go-live and tears the PARTIAL infra down rather than
+            // no-op'ing. RaiseRequestedStrength therefore runs AFTER this fast-path, never before it.
             if (Volatile.Read(ref _lifecycle) == LifecycleNotStarted)
             {
                 return;
             }
+
+            RaiseRequestedStrength(StrengthOf(infrastructureTeardown));
 
             // Fully-disposed fast path: once a synchronous Dispose (or the Dispose(false) reached from a completed
             // DisposeAsync) has latched _disposedValue, the receiver is terminal and its infra is already disposed (the
@@ -466,6 +488,22 @@ namespace Chatter.MessageBrokers.Receiving
                 // the claim->dispose->reset sequence is atomic: a concurrent teardown cannot observe an in-flight
                 // _infrastructureDisposed claim as a completed disposal. Single acquisition only — no nested WaitAsync.
                 await EscalateInfrastructureDisposalIfRequiredAsync().ConfigureAwait(false);
+
+                // EPOCH RESET (still under the gate, after the quiesce body + escalation both consumed the recorded
+                // strength): reset _requestedTeardownStrength to None so a completed epoch's strength does not leak into a
+                // later one. Conditioned on a REAL (non-null) infra receiver so the reset NEVER pre-empts the Starting-window
+                // surrender consumer: a teardown that raced the Starting window quiesced a null _infrastructureReceiver
+                // (StartReceiverImpl had not yet published the startup-owned local), disposed nothing real, and must leave
+                // the strength intact for StartReceiverImpl's SEPARATE-gate surrender (which publishes the local THEN reads
+                // the strength via TearDownInfrastructureAsync). On the genuine Live/published path the field is non-null at
+                // this point — TearDownInfrastructureAsync stopped/disposed it and Dispose(bool) nulls it only LATER — so the
+                // reset fires and the consumers above have already read the value. A throwing body/escalation never reaches
+                // here, so the strength stays UNRESET for the fault-resettable retry. No new gate, no await: a plain field
+                // write under the single acquisition already held.
+                if (_infrastructureReceiver != null)
+                {
+                    Volatile.Write(ref _requestedTeardownStrength, TeardownStrengthNone);
+                }
             }
             finally
             {

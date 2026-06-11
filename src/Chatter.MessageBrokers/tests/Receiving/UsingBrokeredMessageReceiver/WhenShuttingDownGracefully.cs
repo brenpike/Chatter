@@ -846,6 +846,67 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Should().Be(1, "after the in-flight escalation DisposeAsync faulted, a later teardown must retry and dispose the infra exactly once — never leak it unretryably");
         }
 
+        // ------------------------------------------------------------------ (l) CROSS-EPOCH STRENGTH LEAK: a pre-start Dispose-strength must not leak into a later genuine Stop
+        //
+        // EPOCH-SCOPED STRENGTH WITNESS. The teardown-strength primitive must be scoped to a single started epoch, not a
+        // process-wide monotonic max. Under the OLD monotonic-leak primitive a premature SYNCHRONOUS Dispose on a NotStarted
+        // receiver recorded a Dispose strength (2) that survived into the next started epoch; when the host then genuinely
+        // started the receiver, drove it in-flight, and issued a genuine StopReceiver, that Stop's quiesce body observed the
+        // STALE Dispose strength and ESCALATED to a Dispose — leaving the infra DISPOSED instead of merely STOPPED. The fix
+        // (STEP-001) raises requested strength only AFTER the NotStarted no-op fast-path (so a premature Dispose records NO
+        // strength) and resets requested strength to None when a real teardown completes, scoping strength to the epoch. Here
+        // the premature Dispose records no infra call at all (NotStarted no-op), then a genuine Stop on the SAME instance must
+        // end the infra STOPPED, never DISPOSED. On the old primitive the leaked Dispose=2 makes the later Stop escalate to a
+        // Dispose, so NotContain(Dispose) fails — that is the falsifiability.
+        [Fact]
+        public async Task MustNotLeakPreStartDisposeStrengthIntoLaterGenuineStop()
+        {
+            const int maxConcurrentCalls = 3;
+            const int messageCount = 6;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: messageCount);
+            for (var i = 0; i < messageCount; i++)
+                infraReceiver.Enqueue(BuildContext());
+
+            var inFlight = new StrongBox<int>(0);
+            using var releaseGate = new SemaphoreSlim(0, messageCount);
+            var dispatcher = GatedDispatcher(releaseGate, inFlight);
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            // Premature synchronous Dispose BEFORE StartReceiver is ever called: the receiver is NotStarted, so this is a
+            // structural no-op that records NO infrastructure call AND (post STEP-001) records NO teardown strength — the
+            // RaiseRequestedStrength now runs only after the NotStarted no-op fast-path. Assert the CallLog is empty of any
+            // infra teardown at this point.
+            sut.Dispose();
+            infraReceiver.CallLog.Should().NotContain(ReceiverCall.Stop, "a NotStarted Dispose must not stop a non-existent infra receiver");
+            infraReceiver.CallLog.Should().NotContain(ReceiverCall.Dispose, "a NotStarted Dispose must not dispose a non-existent infra receiver");
+
+            // Now the host genuinely starts the receiver, drives it to in-flight, and tears it down via a genuine StopReceiver
+            // on the SAME instance. The premature Dispose must not have leaked a Dispose strength into this fresh epoch.
+            using var cts = new CancellationTokenSource();
+            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await WaitUntilAsync(() => Volatile.Read(ref inFlight.Value) == maxConcurrentCalls, watchdog.Token);
+
+            releaseGate.Release(messageCount);
+            var stop = sut.StopReceiver();
+            var completed = await Task.WhenAny(stop, Task.Delay(TimeSpan.FromSeconds(15)));
+            completed.Should().BeSameAs(stop, "the genuine StopReceiver must drain in-flight workers and complete cleanly despite the earlier premature Dispose");
+            await stop;
+
+            Volatile.Read(ref inFlight.Value).Should().Be(0, "all in-flight workers must have quiesced before the genuine StopReceiver returns");
+
+            // CROSS-EPOCH ASSERTION: a pre-start Dispose-strength must not leak into a later genuine Stop; infra must end
+            // STOPPED, not DISPOSED. On the old monotonic-leak primitive the stale Dispose=2 makes this Stop escalate to a
+            // Dispose, so NotContain(Dispose) fails.
+            var snapshot = infraReceiver.CallLog;
+            snapshot.Should().Contain(ReceiverCall.Stop, "the genuine StopReceiver must stop the infrastructure receiver");
+            snapshot.Should().NotContain(ReceiverCall.Dispose,
+                "a pre-start Dispose-strength must not leak into a later genuine Stop; infra must end STOPPED, not DISPOSED");
+        }
+
         // INVARIANT: awaits a teardown task to completion and returns the surfaced exception (or null), so the witness can
         // classify outcomes (tolerate the injected InvalidOperationException, fail on ObjectDisposedException) without an
         // unobserved faulted task tearing the test down.
