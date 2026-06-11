@@ -526,6 +526,80 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Should().Be(1, "the Starting-window teardown must dispose the partial infrastructure exactly once (no double-dispose)");
         }
 
+        // ------------------------------------------------------------------ (i2) NULL-RECEIVER CLAIM WINDOW: a Dispose landing before the infra receiver is assigned must not latch the claim over null and leak the real receiver
+        //
+        // RACE-CLASS WITNESS #4 (null-receiver disposal-claim leak). The InitializeAsync gate (facts g/i) can only pin the
+        // SUT AFTER _infrastructureReceiver is assigned; it cannot reach the narrower window between the NotStarted->Starting
+        // CAS and the synchronous GetReceiver assignment, where _infrastructureReceiver is still null. The GetReceiver gate
+        // pins exactly there. A Dispose-strength teardown landing in that window must NOT claim _infrastructureDisposed 0->1
+        // over a null receiver: pre-fix the disposal primitive latched the claim BEFORE the null check, so when GetReceiver
+        // then returned the real receiver and startup InitializeAsync'd it, the go-live TornDown teardown found the claim
+        // already latched and skipped disposing it — leaking the real receiver un-disposed (Dispose count 0). Post-fix the
+        // primitive captures the receiver to a local and returns with NO claim when null, so the later teardown disposes the
+        // real receiver exactly once.
+        [Fact]
+        public async Task MustNotLatchClaimOverNullReceiverWhenDisposeLandsBeforeInfraReceiverAssigned()
+        {
+            const int maxConcurrentCalls = 1;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 0);
+
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            var provider = new InMemoryMessagingInfrastructureProvider(infraReceiver);
+
+            // Arm the GetReceiver gate BEFORE constructing/starting the SUT so the synchronous GetReceiver blocks: the SUT
+            // will have advanced NotStarted->Starting but NOT yet assigned _infrastructureReceiver (this call's return), so a
+            // teardown lands in the null-receiver window the InitializeAsync gate cannot reach.
+            var getReceiverEntered = provider.ArmGetReceiverGate();
+
+            var sut = new BrokeredMessageReceiver<FakeMessage>(
+                infrastructureProvider: provider,
+                messageBrokerOptions: BuildOptions(),
+                logger: NullLogger<BrokeredMessageReceiver<FakeMessage>>.Instance,
+                recoveryAction: new Mock<IMaxReceivesExceededAction>().Object,
+                criticalFailureNotifier: new Mock<ICriticalFailureNotifier>().Object,
+                recoveryStrategy: PassThroughRecovery().Object,
+                receivedMessageDispatcher: dispatcher.Object);
+
+            using var cts = new CancellationTokenSource();
+            var startup = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+            // Wait until GetReceiver has parked: the receiver is now pinned in the null-receiver window (Starting reached,
+            // _infrastructureReceiver still null).
+            var entered = await Task.WhenAny(getReceiverEntered, Task.Delay(TimeSpan.FromSeconds(15)));
+            entered.Should().BeSameAs(getReceiverEntered, "the synchronous GetReceiver must reach the gate before the infra receiver is assigned");
+            await getReceiverEntered;
+            sut.IsReceiving.Should().BeFalse("the receiver is parked in the null-receiver window before the infra receiver is assigned");
+
+            // Issue a Dispose-strength teardown WHILE _infrastructureReceiver is still null, THEN release the gate so
+            // GetReceiver returns the real receiver and startup InitializeAsync's it and reaches the go-live TornDown branch.
+            var dispose = sut.DisposeAsync().AsTask();
+            provider.ReleaseGetReceiverGate();
+
+            // Await BOTH the teardown caller AND the startup task: when the Dispose lands in the null-receiver window it
+            // latches the receiver TornDown and returns, deferring the real receiver's disposal to startup's go-live
+            // TornDown branch (the caller's DisposeAsync did not itself dispose the not-yet-assigned receiver). Awaiting
+            // startup too pins that disposal to a deterministic completion point instead of racing the assertion.
+            var teardowns = Task.WhenAll(dispose, startup);
+            var completed = await Task.WhenAny(teardowns, Task.Delay(TimeSpan.FromSeconds(15)));
+            completed.Should().BeSameAs(teardowns, "a teardown landing in the null-receiver window must complete cleanly once startup resolves the real receiver");
+            await teardowns;
+
+            sut.IsReceiving.Should().BeFalse("a receiver torn down during startup must never report live");
+
+            // The Dispose landing over a null receiver must NOT have latched the claim: once startup InitializeAsync's the
+            // real receiver, the go-live TornDown branch must dispose it exactly once. Spin to the bounded watchdog so a leak
+            // surfaces as a prompt OperationCanceledException rather than a flaky read. Pre-fix the null-window Dispose latched
+            // the claim over null, so the go-live TornDown branch found the claim already taken and skipped disposing the real
+            // receiver — Dispose count stays 0 and this spin times out.
+            await WaitUntilAsync(() => infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose) == 1, watchdog.Token);
+
+            infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
+                .Should().Be(1, "a Dispose-strength teardown landing before the receiver was assigned must not latch the claim over null and leak the real receiver built afterward");
+        }
+
         // ------------------------------------------------------------------ (j) SYNC-DISPOSE FAULT-RETRY: a faulting synchronous Dispose does not latch, so a second Dispose re-runs
         //
         // RACE-CLASS WITNESS #3 (sync-dispose latch composes with fault-reset). Under the former design the synchronous

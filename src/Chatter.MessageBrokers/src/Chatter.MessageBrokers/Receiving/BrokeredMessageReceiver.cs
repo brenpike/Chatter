@@ -91,16 +91,20 @@ namespace Chatter.MessageBrokers.Receiving
         private int _requestedTeardownStrength = TeardownStrengthNone;
 
         // INVARIANT: latched 0->1 exactly once when the infrastructure receiver has actually been DISPOSED (not merely
-        // Stopped). Gates both the strength-escalation path (EscalateInfrastructureDisposalIfRequiredAsync) and the
-        // strength-aware infra teardown inside QuiesceCoreAsync, so the infra is disposed at most once across a Stop-then-
-        // Dispose escalation and the synchronous Dispose(bool) only nulls the field after a quiesce that disposed it.
-        // GATE-SERIALIZED CLAIM: both writers run UNDER _teardownGate (the escalation is folded into QuiesceAsync's gated
-        // try, and TearDownInfrastructureAsync runs from QuiesceCoreAsync which is itself gated). The claim->dispose->reset
-        // sequence is therefore atomic under the gate: a concurrent teardown blocked on the gate can NEVER observe an
-        // in-flight 0->1 claim as a completed disposal, so a faulting in-flight DisposeAsync that resets the claim 1->0
-        // cannot leave a loser having already latched _disposedValue / nulled the infra over the in-flight claim. The
-        // synchronous Dispose(bool) field-null keys off this flag == 1, now set ONLY by a dispose that actually completed
-        // under the gate (never by a still-in-flight claim).
+        // Stopped). SINGLE WRITER: the flag is written 0->1 by exactly ONE primitive, TryClaimAndDisposeInfrastructureAsync.
+        // Both Dispose-strength teardown sites — EscalateInfrastructureDisposalIfRequiredAsync (strength-escalation path)
+        // and the Dispose branch of TearDownInfrastructureAsync (strength-aware teardown inside QuiesceCoreAsync) — delegate
+        // their claim+dispose to that one primitive instead of running their own inline CAS, so the infra is disposed at
+        // most once across a Stop-then-Dispose escalation and the construct exists in one place. The synchronous
+        // Dispose(bool) field-null is the only OTHER site and merely READS this flag (== 1) — it never writes it 0->1.
+        // GATE-SERIALIZED CLAIM: the primitive is called ONLY under _teardownGate (the escalation is folded into
+        // QuiesceAsync's gated try, and TearDownInfrastructureAsync runs from QuiesceCoreAsync which is itself gated). The
+        // claim->dispose->reset sequence inside the primitive is therefore atomic under the gate: a concurrent teardown
+        // blocked on the gate can NEVER observe an in-flight 0->1 claim as a completed disposal, so a faulting in-flight
+        // DisposeAsync that resets the claim 1->0 cannot leave a loser having already latched _disposedValue / nulled the
+        // infra over the in-flight claim. The synchronous Dispose(bool) field-null keys off this flag == 1, set ONLY by a
+        // dispose that actually completed under the gate (never by a still-in-flight claim, and never by a null infra —
+        // the primitive captures-then-null-checks BEFORE claiming).
         private int _infrastructureDisposed;
 
         // INVARIANT: every per-message worker task admitted by the concurrency semaphore is tracked here for the
@@ -441,19 +445,23 @@ namespace Chatter.MessageBrokers.Receiving
             }
         }
 
-        // INVARIANT: escalate infra disposal when the strongest requested strength is Dispose but only a weaker teardown
-        // (Stop) actually disposed the infra. Called ONLY from inside the _teardownGate (folded into QuiesceAsync's gated
-        // try), so the claim->dispose->reset sequence below is gate-serialized and atomic — a concurrent teardown blocked
-        // on the gate can never observe the in-flight _infrastructureDisposed claim as a completed disposal. Single-flight
-        // via Interlocked on _infrastructureDisposed: the first gated caller to observe a Dispose-strength request against
-        // an as-yet-undisposed infra runs DisposeAsync exactly once; a later gated caller (after this returns and the gate
-        // is re-acquired) observes _infrastructureDisposed == 1 and short-circuits. Safe to call from winner and losers
-        // alike and any number of times — it is a no-op unless a Dispose strength was requested AND the infra has not yet
-        // been disposed. The infra receiver is captured into a local before the null/disposed checks so a concurrent
-        // Dispose(bool) that nulls the field cannot NRE this path.
-        async Task EscalateInfrastructureDisposalIfRequiredAsync()
+        // INVARIANT: the SOLE writer of _infrastructureDisposed 0->1. Both Dispose-strength teardown sites
+        // (EscalateInfrastructureDisposalIfRequiredAsync and the Dispose branch of TearDownInfrastructureAsync) delegate
+        // here so the claim->dispose->reset construct lives in exactly ONE place. The primitive does claim+dispose ONLY —
+        // it NEVER re-checks teardown strength; strength gating stays at the CALL SITES. Called ONLY under _teardownGate
+        // (both call sites run gated: the escalation is folded into QuiesceAsync's gated try, and TearDownInfrastructureAsync
+        // runs from the gated QuiesceCoreAsync), so the claim->dispose->reset sequence is gate-serialized and atomic — a
+        // concurrent teardown blocked on the gate can never observe the in-flight claim as a completed disposal.
+        // ORDER IS LOAD-BEARING: capture _infrastructureReceiver into a local FIRST; if it is null, return immediately with
+        // NO claim (a null infra was never disposed, so latching the flag would falsely record a disposal — this is the
+        // former escalation-path claim-before-null-check defect). Only on a non-null local does it run the single-flight CAS
+        // and DisposeAsync. On a faulting DisposeAsync it resets the claim 1->0 and rethrows so a later teardown retries
+        // (fault-resettable). Capturing into a local first also means a concurrent Dispose(bool) that nulls the field
+        // cannot NRE this path.
+        async Task TryClaimAndDisposeInfrastructureAsync()
         {
-            if (Volatile.Read(ref _requestedTeardownStrength) < TeardownStrengthDispose)
+            var infrastructureReceiver = _infrastructureReceiver;
+            if (infrastructureReceiver == null)
             {
                 return;
             }
@@ -463,20 +471,35 @@ namespace Chatter.MessageBrokers.Receiving
                 return;
             }
 
-            var infrastructureReceiver = _infrastructureReceiver;
-            if (infrastructureReceiver != null)
+            try
             {
-                try
-                {
-                    await infrastructureReceiver.DisposeAsync().ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Fault-resettable: reset the claim so a later teardown can retry the disposal.
-                    Volatile.Write(ref _infrastructureDisposed, 0);
-                    throw;
-                }
+                await infrastructureReceiver.DisposeAsync().ConfigureAwait(false);
             }
+            catch
+            {
+                // Fault-resettable: reset the claim so a later teardown can retry the disposal.
+                Volatile.Write(ref _infrastructureDisposed, 0);
+                throw;
+            }
+        }
+
+        // INVARIANT: escalate infra disposal when the strongest requested strength is Dispose but only a weaker teardown
+        // (Stop) actually disposed the infra. Called ONLY from inside the _teardownGate (folded into QuiesceAsync's gated
+        // try). Keeps the strength gate at this CALL SITE (the < TeardownStrengthDispose early return) and then delegates
+        // the claim+dispose to TryClaimAndDisposeInfrastructureAsync — the single sole-writer of _infrastructureDisposed
+        // 0->1 — so the primitive captures-then-null-checks BEFORE claiming and never falsely latches the flag on a null
+        // infra. Single-flight is enforced by the primitive's CAS: the first gated caller against an as-yet-undisposed
+        // infra runs DisposeAsync exactly once; a later gated caller observes _infrastructureDisposed == 1 and short-circuits.
+        // Safe to call from winner and losers alike and any number of times — a no-op unless a Dispose strength was requested
+        // AND the infra has not yet been disposed.
+        async Task EscalateInfrastructureDisposalIfRequiredAsync()
+        {
+            if (Volatile.Read(ref _requestedTeardownStrength) < TeardownStrengthDispose)
+            {
+                return;
+            }
+
+            await TryClaimAndDisposeInfrastructureAsync().ConfigureAwait(false);
         }
 
         // INVARIANT: the shared quiesce body, run exactly once by the admitted teardown caller. Cancel (guarded) ->
@@ -534,10 +557,13 @@ namespace Chatter.MessageBrokers.Receiving
 
         // INVARIANT: the ONE seam where teardown entrypoints diverge — driven now by the STRONGEST recorded teardown
         // strength rather than the admitted caller's own entrypoint, so a Dispose racing a Stop winner still disposes the
-        // infra (strongest-wins). Stop-strength stops the receiver; Dispose-strength disposes it and latches
-        // _infrastructureDisposed 0->1 so the later escalation path (EscalateInfrastructureDisposalIfRequiredAsync) and
-        // the synchronous Dispose(bool) field-null both see that the infra is already disposed. The infra receiver is
-        // captured into a local first so a concurrent Dispose(bool) field-null cannot NRE this path.
+        // infra (strongest-wins). The strength gate stays at THIS CALL SITE: the Dispose-strength branch delegates the
+        // claim+dispose to TryClaimAndDisposeInfrastructureAsync — the single sole-writer of _infrastructureDisposed 0->1 —
+        // so the later escalation path (EscalateInfrastructureDisposalIfRequiredAsync) and the synchronous Dispose(bool)
+        // field-null both observe a flag set ONLY by a dispose that actually completed. The Stop-strength else branch
+        // stops the receiver and claims nothing. The top-of-method null-guard keeps a concurrent Dispose(bool) field-null
+        // from reaching either branch on a null infra; the primitive re-captures into its own local for the same reason.
+        // Called ONLY from the gated QuiesceCoreAsync, so the delegated claim->dispose->reset is gate-serialized.
         async Task TearDownInfrastructureAsync()
         {
             var infrastructureReceiver = _infrastructureReceiver;
@@ -548,22 +574,7 @@ namespace Chatter.MessageBrokers.Receiving
 
             if (Volatile.Read(ref _requestedTeardownStrength) >= TeardownStrengthDispose)
             {
-                // Claim the dispose via CAS so concurrent escalation/teardown paths run DisposeAsync at most once. INVARIANT
-                // (fault-resettable): if DisposeAsync THROWS, RESET the claim so a later teardown can retry the disposal —
-                // latching the flag only on a SUCCESSFUL dispose is what lets the fault-resettable-retry path actually
-                // re-dispose. The throw propagates so QuiesceAsync's fault-reset releases admission.
-                if (Interlocked.CompareExchange(ref _infrastructureDisposed, 1, 0) == 0)
-                {
-                    try
-                    {
-                        await infrastructureReceiver.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        Volatile.Write(ref _infrastructureDisposed, 0);
-                        throw;
-                    }
-                }
+                await TryClaimAndDisposeInfrastructureAsync().ConfigureAwait(false);
             }
             else
             {
