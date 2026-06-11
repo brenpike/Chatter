@@ -269,10 +269,22 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 if (Volatile.Read(ref _lifecycle) == LifecycleTornDown)
                 {
-                    // A teardown ran to completion (on the infra-only partial set) while we were initializing. The
-                    // receiver is terminal; do not construct over it or go live. There are no loop/semaphore primitives
-                    // yet (we have not constructed them in this block), so there is nothing further to dispose here.
-                    _logger.LogInformation("'{executingFunction}' of type '{receiverMessageType}' was torn down during startup; abandoning go-live without constructing the receive loop.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
+                    // A teardown ran to completion while we were initializing. The receiver is terminal; do not
+                    // construct the loop/semaphore primitives over it or go live. There are no such primitives yet
+                    // (we have not constructed them in this block), so there is nothing of that set to dispose here.
+                    //
+                    // INVARIANT: that completed teardown may have run on the infra-only PARTIAL set BEFORE
+                    // _infrastructureReceiver was assigned — i.e. it landed after the NotStarted -> Starting CAS but
+                    // before line ~225 assigned the receiver. In that window TearDownInfrastructureAsync observed a null
+                    // infra and disposed nothing, leaving _infrastructureDisposed unclaimed, yet THIS block then resolved
+                    // and InitializeAsync'd a real _infrastructureReceiver. Without disposing it here, startup abandons
+                    // go-live and the just-initialized infra is LEAKED (future teardowns short-circuit on _disposedValue).
+                    // Tear it down NOW under the same gate, at the strongest strength any teardown recorded, via the
+                    // single strength-aware seam. TearDownInfrastructureAsync is idempotent (CAS on _infrastructureDisposed):
+                    // if the completed teardown DID dispose a real infra (it raced after assignment), the claim is already
+                    // taken and this is a no-op.
+                    _logger.LogInformation("'{executingFunction}' of type '{receiverMessageType}' was torn down during startup; disposing the infrastructure receiver constructed in this startup and abandoning go-live without constructing the receive loop.", nameof(BrokeredMessageReceiver<TMessage>), typeof(TMessage).Name);
+                    await TearDownInfrastructureAsync().ConfigureAwait(false);
                     return;
                 }
 
