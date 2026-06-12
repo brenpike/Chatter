@@ -404,10 +404,18 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 "only the non-null received message must spawn a worker");
         }
 
-        // ------------------------------------------------------------------ (d) fault-resettable teardown admission: a thrown quiesce body lets a later teardown re-run
-
+        // ------------------------------------------------------------------ (d) SWALLOW-AND-FINALIZE: a thrown quiesce body is swallowed, the receiver reaches a clean terminal, and a second teardown is a no-op
+        //
+        // SWALLOW-AND-FINALIZE WITNESS (StopReceiver entrypoint). Per the .NET dispose guideline "Dispose must not throw /
+        // is not retryable," a throwing infra teardown is CAUGHT, LogError'd, and swallowed at the infra seam; the swallowed
+        // fault still latches the terminal state, so teardown is single-shot, not retryable. Here ArmThrowOnceOnTeardown
+        // faults the FIRST StopReceiver's infra-teardown seam (after cancel + drain). The contract under test (changed from
+        // the removed retryability expectation): StopReceiver does NOT throw, the receiver reaches a clean terminal
+        // (IsReceiving false), and a SUBSEQUENT teardown is a safe no-op that neither re-disposes nor throws. The prior
+        // assertions ("StopReceiver surfaces the fault; the second teardown re-runs and disposes exactly once") were dropped
+        // — engineered retryability and fault-propagation were deliberately removed in STEP-001.
         [Fact]
-        public async Task MustRetryTeardownWhenFirstQuiesceBodyThrowsThenSecondTeardownDisposes()
+        public async Task MustSwallowQuiesceBodyFaultAndReachCleanTerminalThenSecondTeardownNoOps()
         {
             const int maxConcurrentCalls = 3;
             const int messageCount = 6;
@@ -417,8 +425,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 infraReceiver.Enqueue(BuildContext());
 
             // Arm the fake so its FIRST infra teardown call (here, StopReceiver) throws once. The first StopReceiver's
-            // quiesce body therefore faults at the infra-teardown seam (after cancel + drain), so admission must RESET
-            // rather than latch terminally, letting a SECOND teardown re-run cleanup and actually dispose the infra.
+            // quiesce body therefore faults at the infra-teardown seam (after cancel + drain); swallow-and-finalize must
+            // catch it and still latch the terminal state so a SECOND teardown is a safe single-shot no-op.
             infraReceiver.ArmThrowOnceOnTeardown();
 
             var inFlight = new StrongBox<int>(0);
@@ -448,39 +456,66 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             await WaitUntilAsync(() => Volatile.Read(ref inFlight.Value) == maxConcurrentCalls, watchdog.Token);
 
             // Release the gate so the first teardown's drain can quiesce the workers, then StopReceiver. The injected
-            // throw-once surfaces at the infra-teardown seam, so StopReceiver must SURFACE the fault per its entrypoint
-            // contract (it re-throws the quiesce fault to the caller).
+            // throw-once surfaces at the infra-teardown seam; swallow-and-finalize must CATCH it so StopReceiver does NOT
+            // throw (Dispose must not throw) and returns having latched the terminal state.
             releaseGate.Release(messageCount);
 
-            Func<Task> firstTeardown = () => sut.StopReceiver();
-            await firstTeardown.Should().ThrowAsync<InvalidOperationException>(
-                "the first quiesce body's infra-teardown threw, and StopReceiver surfaces that fault to its caller");
+            Exception firstFault = null;
+            try
+            {
+                var firstTeardown = sut.StopReceiver();
+                var firstCompleted = await Task.WhenAny(firstTeardown, Task.Delay(TimeSpan.FromSeconds(15)));
+                firstCompleted.Should().BeSameAs(firstTeardown, "the faulting StopReceiver must swallow the fault and complete without hanging");
+                await firstTeardown;
+            }
+            catch (Exception e)
+            {
+                firstFault = e;
+            }
 
+            firstFault.Should().BeNull("swallow-and-finalize catches the infra teardown fault at the seam, so NO caller surfaces it (StopReceiver must not throw)");
             Volatile.Read(ref inFlight.Value).Should().Be(0, "the first teardown still drained the in-flight workers before its infra-teardown faulted");
-            infraReceiver.CallLog.Should().NotContain(ReceiverCall.Stop, "the throwing StopReceiver call must not have recorded a successful Stop");
+            sut.IsReceiving.Should().BeFalse("a swallowed infra-teardown fault must still drive the receiver to a clean terminal");
 
-            // A SECOND teardown must win admission (the slot was reset, not latched), re-run the quiesce body, and dispose
-            // the infra — proving the thrown quiesce did not permanently latch the receiver out of teardown.
-            var second = sut.DisposeAsync().AsTask();
-            var secondCompleted = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(15)));
-            secondCompleted.Should().BeSameAs(second, "the second teardown must re-run cleanup and complete cleanly after the first faulted");
-            await second;
+            // The swallowed fault latched the terminal state at Stop-strength, so the infra was Stopped-not-disposed and
+            // _infrastructureDisposed was never claimed. A SUBSEQUENT Dispose-strength teardown therefore observes TornDown
+            // with a stronger requested strength and ESCALATES — genuinely disposing the infra exactly once. It must NOT
+            // throw (Dispose must not throw) and must NOT hang. Escalation runs at most once (the _infrastructureDisposed
+            // 0->1 CAS), so the infra ends disposed exactly once, never re-disposed.
+            Exception secondFault = null;
+            try
+            {
+                var second = sut.DisposeAsync().AsTask();
+                var secondCompleted = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(15)));
+                secondCompleted.Should().BeSameAs(second, "the second teardown must escalate disposal and return without hanging");
+                await second;
+            }
+            catch (Exception e)
+            {
+                secondFault = e;
+            }
 
+            secondFault.Should().BeNull("the second teardown must surface no exception (and in particular no ObjectDisposedException)");
             infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
-                .Should().Be(1, "the retrying teardown must dispose the infrastructure receiver exactly once");
+                .Should().Be(1, "the Stop-strength fault left the infra stopped-not-disposed, so the subsequent Dispose-strength teardown escalates and disposes the infra exactly once");
         }
 
-        // ------------------------------------------------------------------ (e) STALE-LOSER: concurrent teardowns racing a faulting gate-holder strand no caller
+        // ------------------------------------------------------------------ (e) SWALLOW-AND-FINALIZE: concurrent teardowns racing a faulting gate-holder strand no caller and none surface the fault
         //
-        // RACE-CLASS WITNESS #1 (stale single-flight loser). Under the former hand-rolled lock-free admission a losing
-        // caller awaited the winner's swappable TaskCompletionSource; if the winner's quiesce body THREW, the loser could
-        // observe a stranded/swapped TCS and hang. The SemaphoreSlim teardown gate makes that class structurally
-        // impossible: every caller serializes on the gate, a thrown QuiesceCoreAsync leaves the terminal lifecycle UNSET
-        // (no TCS to strand), and the gate's finally Release lets the NEXT caller re-run cleanly. Here two concurrent
-        // teardowns race the first (faulting) admission; the watchdog turns any stranded-caller hang into a deterministic
-        // Timeout, and a subsequent teardown must dispose the infra exactly once.
+        // RACE-CLASS WITNESS #1 (stale single-flight loser, swallow-and-finalize). Under the former hand-rolled lock-free
+        // admission a losing caller awaited the winner's swappable TaskCompletionSource; if the winner's quiesce body THREW,
+        // the loser could observe a stranded/swapped TCS and hang. The SemaphoreSlim teardown gate makes that class
+        // structurally impossible: every caller serializes on the gate, and the gate's finally Release lets the NEXT caller
+        // observe the latched terminal. Per the .NET dispose guideline "Dispose must not throw / is not retryable," the
+        // gate-holder that hits the throw-once SWALLOWS the injected fault at the infra seam and latches the terminal state.
+        // The contract under test (changed from the removed retryability/fault-propagation expectation): NO caller hangs;
+        // ZERO callers surface the injected fault (the old "exactly one surfaces InvalidOperationException" became "zero");
+        // and the receiver reaches a clean terminal (IsReceiving false). A SUBSEQUENT Dispose-strength teardown must not
+        // throw or hang; the infra ends disposed AT MOST ONCE (the _infrastructureDisposed CAS keeps disposal single-shot
+        // regardless of which racer consumed the throw-once — never double-disposed). The dropped assertion ("exactly one
+        // racer surfaces the fault") encoded the removed fault-propagation.
         [Fact]
-        public async Task MustNotStrandConcurrentTeardownsWhenGateHolderQuiesceFaultsOnce()
+        public async Task MustSwallowGateHolderQuiesceFaultWithoutStrandingConcurrentTeardowns()
         {
             const int maxConcurrentCalls = 3;
             const int messageCount = 6;
@@ -521,8 +556,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             await WaitUntilAsync(() => Volatile.Read(ref inFlight.Value) == maxConcurrentCalls, watchdog.Token);
 
             // Release the gate so the drains can quiesce the workers, then race THREE teardowns concurrently against the
-            // single throw-once. Exactly one of them faults at the infra-teardown seam; the others either short-circuit on
-            // the terminal lifecycle (if a sibling already latched it) or re-run cleanly. None may hang — the watchdog
+            // single throw-once. Whichever gate-holder hits the throw-once SWALLOWS it at the infra-teardown seam and
+            // latches the terminal; the others short-circuit on the terminal lifecycle. None may hang — the watchdog
             // converts a stranded-caller regression into a Timeout. Faults are captured per-task and asserted on after.
             releaseGate.Release(messageCount);
 
@@ -548,22 +583,41 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             racersCompleted.Should().BeSameAs(racers, "no teardown may strand on a faulting gate-holder — a stranded caller would never complete");
             var faults = await racers;
 
-            // Exactly one racer ran the faulting infra-teardown body (the throw-once), so exactly one surfaces the
-            // simulated fault; the others short-circuited on the terminal lifecycle or re-ran cleanly without faulting.
-            faults.Count(f => f is InvalidOperationException)
-                .Should().Be(1, "only the single gate-holder that hit the throw-once may surface the simulated teardown fault");
+            // Swallow-and-finalize catches the injected fault at the infra seam, so ZERO racers surface it (Dispose must not
+            // throw), and in particular none may surface an ObjectDisposedException over a disposed primitive.
+            faults.Should().NotContain(f => f is InvalidOperationException,
+                "swallow-and-finalize catches the injected teardown fault at the seam, so no racing teardown caller may surface it");
+            faults.Should().OnlyContain(f => f == null,
+                "no teardown entrypoint may surface any exception (and in particular no ObjectDisposedException) across the racing teardowns");
 
             Volatile.Read(ref inFlight.Value).Should().Be(0, "all in-flight workers must have quiesced across the racing teardowns");
+            sut.IsReceiving.Should().BeFalse("the swallowed gate-holder fault must still drive the receiver to a clean terminal");
 
-            // A subsequent teardown after the throw-once is consumed must dispose the infra exactly once, proving the
-            // faulting admission did not permanently latch the receiver out of teardown (no stranded-TCS analogue).
-            var settle = sut.DisposeAsync().AsTask();
-            var settleCompleted = await Task.WhenAny(settle, Task.Delay(TimeSpan.FromSeconds(15)));
-            settleCompleted.Should().BeSameAs(settle, "a later teardown must re-run cleanly after the faulting admission released the gate");
-            await settle;
+            // The swallowed fault latched the terminal state, so a SUBSEQUENT Dispose-strength teardown must settle cleanly
+            // (no hang, no ObjectDisposedException). Dispose must not throw per the .NET guideline.
+            Exception settleFault = null;
+            try
+            {
+                var settle = sut.DisposeAsync().AsTask();
+                var settleCompleted = await Task.WhenAny(settle, Task.Delay(TimeSpan.FromSeconds(15)));
+                settleCompleted.Should().BeSameAs(settle, "the subsequent teardown must settle within the watchdog, not hang");
+                await settle;
+            }
+            catch (Exception e)
+            {
+                settleFault = e;
+            }
 
+            settleFault.Should().BeNull("the subsequent teardown must complete cleanly without surfacing any exception (and in particular no ObjectDisposedException)");
+
+            // SINGLE-SHOT DISPOSAL (the interleave-stable invariant). Which racer consumes the throw-once is
+            // scheduling-dependent: if a STOP-strength racer consumes it the infra ends Stopped-not-disposed and the final
+            // Dispose-strength settle escalates to dispose it; if the DISPOSE-strength racer consumes it the
+            // _infrastructureDisposed claim latches at 1 (swallow-and-finalize is single-shot, NOT retried) so the infra is
+            // never re-disposed. Either way the infra is disposed AT MOST ONCE — the _infrastructureDisposed 0->1 CAS makes
+            // disposal single-shot, so it is never double-disposed across the race plus the final settle.
             infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose)
-                .Should().Be(1, "the infrastructure receiver must end disposed exactly once despite the faulting gate-holder and racing teardowns");
+                .Should().BeLessOrEqualTo(1, "the _infrastructureDisposed CAS makes infra disposal single-shot: it is never re-attempted/double-disposed regardless of which racer consumed the throw-once");
         }
     }
 }
