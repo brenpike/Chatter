@@ -1040,6 +1040,89 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             await syncDispose; // surface any ObjectDisposedException
         }
 
+        // ------------------------------------------------------------------ (iter6) STRENGTH-STRADDLE COLLAPSE: a Dispose landing as a TornDown-loser AFTER a Stop holder ran the body must end DISPOSED, not Stopped
+        //
+        // FALSIFIABLE WITNESS (gate-owned monotonic disposition, per STEP-001b). The exact iter6 race: a Dispose-strength
+        // teardown landing concurrently with a Stop holder must end DISPOSED, never merely Stopped. Under the OLD
+        // strength-straddle model the Stop holder's in-gate reset could erase a Dispose raise that landed between the
+        // escalation-read and the reset, ending Stopped; the gate-owned, monotonic, never-reset _teardownDisposition makes
+        // that interleave unrepresentable — disposition is recorded/consumed only under the teardown gate and the post-body
+        // "dispose-if-disposition-is-Dispose" step runs UNCONDITIONALLY on both the body-ran and TornDown-loser paths.
+        //
+        // Determinism without the deleted reset's timing: the old timing-specific interleave no longer exists, so the OUTCOME
+        // is pinned, not the interleave. Awaiting the Stop to FULL COMPLETION is the deterministic gating hook (same idiom as
+        // fact (k), which runs Stop to completion before the escalating Disposes): the Stop acquires the teardown gate, runs
+        // the quiesce body at Stop-strength (infra Stopped, NOT disposed), and latches TornDown. The subsequently-issued
+        // Dispose then lands as a pure TornDown-LOSER — the lifecycle is already TornDown when it acquires the gate. The
+        // folded post-body dispose must still escalate that loser to DISPOSED.
+        //
+        // FALSIFIABILITY: this asserts the folded post-body dispose runs on the TornDown-loser path. If that escalation were
+        // gated only inside an `if (_lifecycle != TornDown)` block (the regression the cerebrate flagged), the loser Dispose
+        // would NOT dispose and the infra would end merely Stopped (Dispose count 0) — this spin times out and the
+        // Contains(Dispose) assertion fails. So it is a real witness for the collapse's load-bearing invariant.
+        [Fact]
+        public async Task MustEscalateTornDownLoserDisposeToDisposedNotStopped()
+        {
+            const int maxConcurrentCalls = 3;
+            const int messageCount = 6;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: messageCount);
+            for (var i = 0; i < messageCount; i++)
+                infraReceiver.Enqueue(BuildContext());
+
+            var inFlight = new StrongBox<int>(0);
+            using var releaseGate = new SemaphoreSlim(0, messageCount);
+            var dispatcher = GatedDispatcher(releaseGate, inFlight);
+
+            var sut = CreateSut(infraReceiver, dispatcher);
+
+            using var cts = new CancellationTokenSource();
+            _ = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxConcurrentCalls), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await WaitUntilAsync(() => Volatile.Read(ref inFlight.Value) == maxConcurrentCalls, watchdog.Token);
+
+            // Drain the workers, then run a Stop FIRST and await it to FULL COMPLETION: the Stop acquires the teardown gate,
+            // runs the quiesce body at Stop-strength (infra Stopped, NOT disposed), and latches TornDown. Awaiting to
+            // completion is the deterministic hook (no wall-clock sleep) that guarantees the subsequent Dispose lands as a
+            // pure TornDown-LOSER rather than racing the body.
+            releaseGate.Release(messageCount);
+            var stop = sut.StopReceiver();
+            var stopCompleted = await Task.WhenAny(stop, Task.Delay(TimeSpan.FromSeconds(15)));
+            stopCompleted.Should().BeSameAs(stop, "the Stop holder must drain in-flight workers and run the quiesce body at Stop-strength before the loser Dispose lands");
+            await stop;
+
+            Volatile.Read(ref inFlight.Value).Should().Be(0, "all in-flight workers must have quiesced before the loser Dispose lands");
+            infraReceiver.CallLog.Should().Contain(ReceiverCall.Stop, "the Stop holder ran the quiesce body at Stop-strength, leaving the infra stopped-not-disposed");
+            infraReceiver.CallLog.Should().NotContain(ReceiverCall.Dispose, "the Stop holder must not have disposed the infra: the disposition is still Stop, so the loser Dispose must escalate it");
+
+            // A Dispose-strength teardown now lands as a pure TornDown-LOSER (the lifecycle is already TornDown). It records
+            // Dispose disposition under the gate, finds the body already run, and must take the folded post-body dispose to
+            // escalate the infra from Stopped to DISPOSED. It must NOT hang and must NOT surface an ObjectDisposedException
+            // over the Stop holder's already-disposed primitives.
+            var loserDispose = SettleAsync(sut.DisposeAsync().AsTask());
+            var loserCompleted = await Task.WhenAny(loserDispose, Task.Delay(TimeSpan.FromSeconds(15)));
+            loserCompleted.Should().BeSameAs(loserDispose, "the TornDown-loser Dispose must escalate and settle within the watchdog, not hang");
+
+            var loserOutcome = await loserDispose;
+            loserOutcome.Should().BeNull("the TornDown-loser Dispose must surface no exception (and in particular no ObjectDisposedException over the Stop holder's disposed primitives)");
+
+            sut.IsReceiving.Should().BeFalse("a torn-down receiver must never report live");
+
+            // STRENGTH-STRADDLE-COLLAPSE WITNESS: the folded post-body dispose must have run on the TornDown-loser path, so
+            // the infra ends DISPOSED exactly once — never left merely Stopped. Spin to the bounded watchdog so a regression
+            // (escalation gated inside `if (_lifecycle != TornDown)`) surfaces as a prompt OperationCanceledException rather
+            // than a flaky read. RecordCallOnce records Dispose at most once, so an exactly-once count also proves no
+            // double-dispose.
+            await WaitUntilAsync(() => infraReceiver.CallLog.Count(c => c == ReceiverCall.Dispose) == 1, watchdog.Token);
+
+            var snapshot = infraReceiver.CallLog;
+            snapshot.Should().Contain(ReceiverCall.Dispose,
+                "a Dispose-strength teardown landing as a TornDown-loser must escalate the infra to DISPOSED via the folded post-body dispose, never leave it merely Stopped");
+            snapshot.Count(c => c == ReceiverCall.Dispose)
+                .Should().Be(1, "the TornDown-loser escalation must dispose the infrastructure receiver exactly once (no double-dispose)");
+        }
+
         // INVARIANT: awaits a teardown task to completion and returns the surfaced exception (or null), so the witness can
         // classify outcomes (tolerate the injected InvalidOperationException, fail on ObjectDisposedException) without an
         // unobserved faulted task tearing the test down.
