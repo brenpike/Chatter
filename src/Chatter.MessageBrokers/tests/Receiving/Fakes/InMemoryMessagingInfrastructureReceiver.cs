@@ -25,6 +25,27 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         private int _receiveCallCount;
         private bool _disposed;
 
+        // INVARIANT: optional opt-in gate that holds InitializeAsync until released, making the receiver's Starting
+        // lifecycle window (after the SUT assigns _infrastructureReceiver, before go-live) observable to a test. Default
+        // null so the many existing tests that construct this fake are unaffected; only the startup-window test sets it.
+        private TaskCompletionSource<bool> _initializeGate;
+
+        // INVARIANT: optional opt-in latch that makes the FIRST infra teardown call (StopReceiver or DisposeAsync) throw
+        // exactly once, then behave normally on subsequent calls. Lets the fault-resettable-retry test force the first
+        // quiesce body to throw and assert a later teardown re-runs cleanup. Default 0 (disarmed) so existing tests are
+        // unaffected; armed via ArmThrowOnceOnTeardown.
+        private int _throwOnceOnTeardownArmed;
+
+        // INVARIANT: optional opt-in hook that makes the FIRST DisposeAsync call park on a test-releasable gate, then throw
+        // exactly once after the gate is released; subsequent DisposeAsync calls behave normally (record Dispose). Lets the
+        // residual-escalation-race test deterministically PARK the first in-flight DisposeAsync open long enough for a
+        // concurrent teardown to reach the escalation short-circuit, then release so the parked DisposeAsync throws once.
+        // StopReceiver is NEVER affected by this hook. Default DISARMED (null fields) so all existing tests and the
+        // existing ArmThrowOnceOnTeardown / ThrowOnceIfArmed paths are byte-unchanged; armed via ArmGateThenThrowOnceOnDisposeAsync.
+        private TaskCompletionSource<bool> _disposeAsyncGate;
+        private TaskCompletionSource<bool> _disposeAsyncGateEntered;
+        private int _gateThenThrowOnceOnDisposeArmed;
+
         /// <param name="expectedMessageCount">
         /// Number of messages the test will enqueue; <see cref="Drained"/> completes after this
         /// many <see cref="ReceiveMessageAsync"/> calls return a non-null context.
@@ -80,12 +101,64 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
             _messageQueue.Enqueue(context);
         }
 
+        /// <summary>
+        /// Arms an opt-in gate that holds <see cref="InitializeAsync"/> until <see cref="ReleaseInitializeGate"/> is
+        /// called, so a test can pin the receiver in its Starting lifecycle window (infra receiver assigned, not yet
+        /// live) and exercise a teardown landing there. Records <see cref="ReceiverCall.Initialize"/> on entry as usual.
+        /// </summary>
+        public Task ArmInitializeGate()
+        {
+            _initializeGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return _initializeGate.Task;
+        }
+
+        /// <summary>Releases the gate armed by <see cref="ArmInitializeGate"/> so <see cref="InitializeAsync"/> returns.</summary>
+        public void ReleaseInitializeGate() => _initializeGate?.TrySetResult(true);
+
+        /// <summary>
+        /// Arms a one-shot latch so the FIRST <see cref="StopReceiver"/> or <see cref="DisposeAsync"/> call throws an
+        /// <see cref="InvalidOperationException"/>, then subsequent teardown calls behave normally. Used to drive the
+        /// fault-resettable-retry path: the first quiesce body faults and a later teardown must re-run and dispose.
+        /// </summary>
+        public void ArmThrowOnceOnTeardown() => Interlocked.Exchange(ref _throwOnceOnTeardownArmed, 1);
+
+        /// <summary>
+        /// Arms a one-shot hook so the FIRST <see cref="DisposeAsync"/> call (a) awaits a test-releasable gate, then
+        /// (b) throws an <see cref="InvalidOperationException"/> exactly once; subsequent <see cref="DisposeAsync"/> calls
+        /// behave normally (record <see cref="ReceiverCall.Dispose"/>). <see cref="StopReceiver"/> is never affected.
+        /// Returns the gate handle; the test releases it via <see cref="ReleaseDisposeAsyncGate"/> once a concurrent
+        /// teardown has reached the escalation short-circuit, making the residual-race interleave deterministic.
+        /// </summary>
+        public void ArmGateThenThrowOnceOnDisposeAsync()
+        {
+            _disposeAsyncGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _disposeAsyncGateEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Interlocked.Exchange(ref _gateThenThrowOnceOnDisposeArmed, 1);
+        }
+
+        /// <summary>
+        /// Completes when the FIRST armed <see cref="DisposeAsync"/> has parked on the gate. The test awaits this to
+        /// sequence a concurrent teardown deterministically (no wall-clock sleep) before releasing via
+        /// <see cref="ReleaseDisposeAsyncGate"/>.
+        /// </summary>
+        public Task DisposeAsyncGateEntered => _disposeAsyncGateEntered?.Task ?? Task.CompletedTask;
+
+        /// <summary>Releases the gate armed by <see cref="ArmGateThenThrowOnceOnDisposeAsync"/> so the parked first DisposeAsync proceeds to throw once.</summary>
+        public void ReleaseDisposeAsyncGate() => _disposeAsyncGate?.TrySetResult(true);
+
         // ------------------------------------------------------------------ IMessagingInfrastructureReceiver
 
-        public Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
+        public async Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
         {
             RecordCall(ReceiverCall.Initialize);
-            return Task.CompletedTask;
+
+            // When a test arms the gate, hold here — the SUT has already assigned _infrastructureReceiver and advanced to
+            // the Starting lifecycle state but has not reached go-live, so the test can observe and tear down that window.
+            var gate = _initializeGate;
+            if (gate != null)
+            {
+                await gate.Task.ConfigureAwait(false);
+            }
         }
 
         public async Task<MessageBrokerContext> ReceiveMessageAsync(TransactionContext transactionContext, CancellationToken cancellationToken)
@@ -131,6 +204,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
 
         public Task StopReceiver()
         {
+            ThrowOnceIfArmed();
             RecordCall(ReceiverCall.Stop);
             return Task.CompletedTask;
         }
@@ -145,10 +219,28 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
 
         // ------------------------------------------------------------------ IAsyncDisposable / IDisposable
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
+            // INVARIANT: when the gate-then-throw-once hook is armed, the FIRST DisposeAsync claims the one-shot atomically,
+            // parks on the test-releasable gate (so a concurrent teardown can reach the escalation short-circuit while this
+            // dispose is in flight), then throws exactly once after release. Subsequent DisposeAsync calls fall through to
+            // the normal record path. Disarm via Interlocked.Exchange so exactly one call is parked-and-thrown even under a
+            // concurrent teardown race. Default DISARMED, so the normal path below is byte-identical to before.
+            if (Interlocked.Exchange(ref _gateThenThrowOnceOnDisposeArmed, 0) == 1)
+            {
+                _disposeAsyncGateEntered?.TrySetResult(true);
+
+                var gate = _disposeAsyncGate;
+                if (gate != null)
+                {
+                    await gate.Task.ConfigureAwait(false);
+                }
+
+                throw new InvalidOperationException("Simulated in-flight DisposeAsync failure (gate-then-throw-once).");
+            }
+
+            ThrowOnceIfArmed();
             RecordCallOnce(ReceiverCall.Dispose);
-            return ValueTask.CompletedTask;
         }
 
         public void Dispose()
@@ -157,6 +249,16 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         }
 
         // ------------------------------------------------------------------ helpers
+
+        // INVARIANT: if the throw-once latch is armed, atomically disarm it and throw on this single call; otherwise no-op.
+        // Interlocked.Exchange makes exactly one teardown call throw even under a concurrent teardown race.
+        private void ThrowOnceIfArmed()
+        {
+            if (Interlocked.Exchange(ref _throwOnceOnTeardownArmed, 0) == 1)
+            {
+                throw new InvalidOperationException("Simulated infrastructure teardown failure (throw-once).");
+            }
+        }
 
         private void RecordCall(ReceiverCall call)
         {
