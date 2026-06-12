@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.11.1] - 2026-06-12
+
+### Fixed
+
+- Renamed the SQL parameter `@timeoutInSeconds` to `@timeoutInMilliseconds` in `ReceiveMessageFromQueueCommand` to reflect that the value passed to `WAITFOR ... TIMEOUT` is in milliseconds, not seconds. Pure rename; no change to wait duration or behavior. (#181)
+
 ## [0.11.0] - 2026-06-07
 
 ### Changed

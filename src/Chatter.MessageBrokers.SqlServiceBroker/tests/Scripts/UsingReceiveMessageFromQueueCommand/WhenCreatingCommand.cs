@@ -75,21 +75,30 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingReceiveMess
         [Fact]
         public void MustNotAddTimeoutParameterForDefaultTimeout()
             => CreateCommandWith().Parameters.Cast<SqlParameter>()
-                .Should().NotContain(p => p.ParameterName == "@timeoutInSeconds");
+                .Should().NotContain(p => p.ParameterName == "@timeoutInMilliseconds");
 
         [Fact]
         public void MustEmitTimeoutClauseAfterClosingParenForPositiveTimeout()
             => CreateCommandWith(timeout: 5).CommandText
-                .Should().Contain("FROM TestQueue), TIMEOUT @timeoutInSeconds");
+                .Should().Contain("FROM TestQueue), TIMEOUT @timeoutInMilliseconds");
 
         [Fact]
         public void MustAddTimeoutParameterForPositiveTimeout()
             => CreateCommandWith(timeout: 5).Parameters.Cast<SqlParameter>()
-                .Should().Contain(p => p.ParameterName == "@timeoutInSeconds");
+                .Should().Contain(p => p.ParameterName == "@timeoutInMilliseconds");
 
         [Fact]
         public void MustEmitWhereClauseBeforeTimeoutClauseWhenBothPresent()
             => CreateCommandWith(timeout: 5, conversationHandle: Guid.NewGuid()).CommandText
-                .Should().Contain(" WHERE conversation_handle = @conversationHandle), TIMEOUT @timeoutInSeconds");
+                .Should().Contain(" WHERE conversation_handle = @conversationHandle), TIMEOUT @timeoutInMilliseconds");
+
+        [Fact]
+        public void MustNotContainSecondsInTimeoutParameterNameForPositiveTimeout()
+        {
+            var command = CreateCommandWith(timeout: 5);
+            command.CommandText.Should().NotContain("Seconds");
+            command.Parameters.Cast<SqlParameter>()
+                .Should().Contain(p => p.ParameterName == "@timeoutInMilliseconds");
+        }
     }
 }

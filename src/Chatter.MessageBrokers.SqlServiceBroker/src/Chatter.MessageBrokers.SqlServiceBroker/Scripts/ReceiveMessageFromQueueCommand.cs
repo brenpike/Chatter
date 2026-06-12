@@ -74,10 +74,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
             }
 
             query.Append(")");
+            // INVARIANT: WAITFOR ... TIMEOUT value is in milliseconds; -1 (or <= 0) means wait forever.
             if (_timeout > 0)
             {
-                query.Append(", TIMEOUT @timeoutInSeconds");
-                receiveCommand.Parameters.Add(new SqlParameter("@timeoutInSeconds", _timeout));
+                query.Append(", TIMEOUT @timeoutInMilliseconds");
+                receiveCommand.Parameters.Add(new SqlParameter("@timeoutInMilliseconds", _timeout));
             }
 
             receiveCommand.CommandText = query.ToString();
