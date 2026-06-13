@@ -36,11 +36,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     [Collection(ServiceBusEmulatorCollection.Name)]
     public class PipelineConcurrencyTests
     {
-        // Reuse an existing emulator queue (no new Config.json entity). MaxDeliveryCount is 10 so the broker does
-        // not deadletter before the handlers are released; LockDuration (PT10S) comfortably covers the time the
-        // handlers stay latched waiting for the concurrency signal. xUnit runs classes within a collection
-        // serially, so reusing this queue cannot collide with the deadletter class that also references it.
-        private const string ConcurrencyQueue = "chatter.attempts";
+        // Dedicated emulator queue for this class. MaxDeliveryCount is 10 so the broker does not deadletter
+        // before the handlers are released; LockDuration (PT10S) comfortably covers the time the handlers stay
+        // latched waiting for the concurrency signal.
+        private const string ConcurrencyQueue = "chatter.concurrency";
 
         // The global concurrency cap under test (> 1) and the number of messages sent (M > N), so the loop must
         // hold more messages than it can process at once — proving the gate admits exactly N, not 1 and not M.

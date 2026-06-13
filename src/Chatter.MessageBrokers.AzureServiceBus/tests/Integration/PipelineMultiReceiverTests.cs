@@ -32,11 +32,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     [Collection(ServiceBusEmulatorCollection.Name)]
     public class PipelineMultiReceiverTests
     {
-        // Two DISTINCT top-level queue entities, reused from the existing emulator Config.json (no new
-        // entities). xUnit runs classes within a collection serially, so reusing these queues cannot collide
-        // with the round-trip / transaction-mode classes that also reference them.
-        private const string QueueA = "chatter.roundtrip";
-        private const string QueueB = "chatter.receiveonly";
+        // Two DISTINCT top-level queue entities dedicated to this class — one per receiver — so no other test
+        // class can send to or receive from these queues concurrently.
+        private const string QueueA = "chatter.multireceiver.a";
+        private const string QueueB = "chatter.multireceiver.b";
 
         // Generous on purpose: two receivers must each deliver against the slow emulator, where a full
         // integration run takes minutes. 90s per handler gives headroom without masking a real wiring failure
