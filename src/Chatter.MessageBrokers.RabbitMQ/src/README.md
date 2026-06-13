@@ -175,7 +175,7 @@ The adapter supports the broker-agnostic transaction modes that map cleanly onto
 
 | Mode | Support |
 | --- | --- |
-| `TransactionMode.None` | Supported. No transactional coupling between receive and handler. |
+| `TransactionMode.None` | Supported, **at-most-once**. The consumer registers with `autoAck` (the AMQP ReceiveAndDelete equivalent, matching the Azure Service Bus adapter), so the broker removes the delivery at receive — a handler failure or a process crash drops the message rather than redelivering it. |
 | `TransactionMode.ReceiveOnly` | Supported. Ack/nack scope the receive only. |
 | `TransactionMode.FullAtomicityViaInfrastructure` | **Rejected at startup.** RabbitMQ offers no atomic receive-and-send across the consume and a downstream publish. Use the **Outbox** for transactional send. |
 

@@ -21,6 +21,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public IAsyncBasicConsumer RegisteredConsumer { get; private set; }
         public ushort? LastQosPrefetchCount { get; private set; }
 
+        // The autoAck flag the receiver registered the consumer with, so a test can assert TransactionMode.None
+        // registers with autoAck:true (the AMQP ReceiveAndDelete equivalent) and every other mode with autoAck:false.
+        public bool? LastConsumeAutoAck { get; private set; }
+
         // The consumer tags cancelled via BasicCancelAsync, in cancel order, so a teardown test can assert the
         // source cancelled the registered consumer (rather than just disposing the channel) before completing.
         public List<string> CancelledConsumerTags { get; } = new List<string>();
@@ -76,6 +80,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public Task<string> BasicConsumeAsync(string queue, bool autoAck, string consumerTag, bool noLocal, bool exclusive, IDictionary<string, object> arguments, IAsyncBasicConsumer consumer, CancellationToken cancellationToken = default)
         {
             RegisteredConsumer = consumer;
+            LastConsumeAutoAck = autoAck;
             return Task.FromResult("in-memory-consumer-tag");
         }
 

@@ -225,14 +225,33 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
         }
 
-        // --- TransactionMode.None is at-most-once: failures drop (ack) instead of retry/deadletter (r3408422003) ---
+        // --- TransactionMode.None is at-most-once via autoAck:true (ReceiveAndDelete equivalent) (r3408501700) ---
 
-        // Under TransactionMode.None the enum contract is at-most-once ("if an error occurs after a message is
-        // received, it will be lost"), matching ASB (ReceiveAndDelete) and SSB (no transaction). The consumer is
-        // always registered with manual ack, so a handler-failure nack must ACK the delivery (dropping it) rather
-        // than requeue it — the message is NOT retried.
+        // Under TransactionMode.None the consumer is registered with autoAck:true so the broker removes the delivery
+        // at RECEIVE time (the AMQP ReceiveAndDelete equivalent the sibling ASB adapter uses), closing the crash/kill
+        // window that manual-ack would leave open. Every other mode keeps manual ack (autoAck:false).
         [Fact]
-        public async Task MustAckInsteadOfRequeueOnNackForQuorumWhenTransactionModeNone()
+        public void MustRegisterConsumerWithAutoAckUnderTransactionModeNone()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum, transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.None);
+
+            harness.ConnectionSource.ReceiveChannel.LastConsumeAutoAck
+                .Should().BeTrue("None is at-most-once: the broker must delete the delivery at receive (autoAck), not after the handler");
+        }
+
+        [Fact]
+        public void MustRegisterConsumerWithManualAckWhenTransactionModeIsNotNone()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum, transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.ReceiveOnly);
+
+            harness.ConnectionSource.ReceiveChannel.LastConsumeAutoAck
+                .Should().BeFalse("only None auto-acks; every other mode keeps manual ack for the epoch-guarded settlement + retry/deadletter paths");
+        }
+
+        // Under None the delivery was already auto-acked (removed) at receive, so a handler-failure nack has nothing
+        // to settle: it is a no-op — NOT a manual ack, NOT a requeue, NOT a republish. The message is already gone.
+        [Fact]
+        public async Task MustNoOpOnNackForQuorumWhenTransactionModeNone()
         {
             var harness = ReceiverHarness.Create(QueueType.Quorum, transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.None);
             await harness.PushAsync(deliveryTag: 5);
@@ -241,15 +260,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             var nacked = await harness.Receiver.NackMessageAsync(context, noneTx, CancellationToken.None);
 
-            nacked.Should().BeTrue();
-            harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(5UL, "None drops the message by acking it, not retrying");
+            nacked.Should().BeFalse("under None the broker already removed the delivery at receive (autoAck); the nack is a no-op");
+            harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("no manual delivery tag exists to ack under autoAck");
             harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("at-most-once must not requeue on failure");
         }
 
-        // Under None a classic-queue nack likewise drops the delivery (ack) rather than republishing-with-incremented
-        // -count to the receiver queue, so there is no retry hop.
+        // Under None a classic-queue nack likewise is a no-op: no manual ack and no republish-with-incremented-count
+        // retry hop, because the delivery was auto-acked at receive.
         [Fact]
-        public async Task MustAckInsteadOfRepublishOnNackForClassicWhenTransactionModeNone()
+        public async Task MustNoOpOnNackForClassicWhenTransactionModeNone()
         {
             var harness = ReceiverHarness.Create(QueueType.Classic, transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.None);
             await harness.PushAsync(deliveryTag: 9);
@@ -258,15 +277,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             var nacked = await harness.Receiver.NackMessageAsync(context, noneTx, CancellationToken.None);
 
-            nacked.Should().BeTrue();
-            harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(9UL, "None drops the classic message by acking it, not republishing for retry");
+            nacked.Should().BeFalse("under None the delivery was auto-acked at receive; the classic nack is a no-op");
+            harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("no manual delivery tag exists to ack under autoAck");
             harness.ConnectionSource.PublishChannels.Should().BeEmpty("at-most-once must not republish a retry copy");
         }
 
-        // Under None a poison message is LOST, not deadlettered: deadletter ACKS the delivery (dropping it) instead
-        // of republishing to the DLQ/error path.
+        // Under None a poison message is LOST, not deadlettered: deadletter is a no-op (no manual ack, no DLQ
+        // republish) because the delivery was auto-acked at receive.
         [Fact]
-        public async Task MustAckInsteadOfRepublishOnDeadletterWhenTransactionModeNone()
+        public async Task MustNoOpOnDeadletterWhenTransactionModeNone()
         {
             var harness = ReceiverHarness.Create(deadLetterQueuePath: ReceiverHarness.DeadLetterPath, transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.None);
             await harness.PushAsync(deliveryTag: 11);
@@ -275,8 +294,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             var deadlettered = await harness.Receiver.DeadletterMessageAsync(context, noneTx, "poisoned", "bad", CancellationToken.None);
 
-            deadlettered.Should().BeTrue();
-            harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(11UL, "None drops the poison message by acking it, not deadlettering");
+            deadlettered.Should().BeFalse("under None the delivery was auto-acked at receive; the deadletter is a no-op");
+            harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("no manual delivery tag exists to ack under autoAck");
             harness.ConnectionSource.PublishChannels.Should().BeEmpty("at-most-once must not republish to the DLQ");
         }
 

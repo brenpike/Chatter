@@ -36,6 +36,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// the message, and the settlement is a no-op (never a false-ack against a recycled delivery tag).
     /// INVARIANT: <see cref="MessageContext.ReceiveAttempts"/> is stamped (as <see cref="int"/>) on every
     /// received message — the core's default <c>MessageDeliveryCountAsync</c> casts it unguarded.
+    /// INVARIANT (TransactionMode.None at-most-once): under <see cref="TransactionMode.None"/> the consumer is
+    /// registered with autoAck:true — the AMQP ReceiveAndDelete equivalent the sibling ASB adapter uses — so the
+    /// broker removes the delivery as it pushes it, BEFORE the handler runs, closing the crash/kill-window
+    /// redelivery that manual-ack would leave open. With no manual delivery tag to settle, ack/nack/deadletter are
+    /// no-ops under None (the message is already gone). Every other mode keeps manual ack (autoAck:false) and the
+    /// epoch-guarded settlement + retry/deadletter paths.
     /// </remarks>
     public sealed class RabbitMqReceiver : IMessagingInfrastructureReceiver
     {
@@ -50,6 +56,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         private Channel<ReceivedMessage> _buffer;
         private ReceiverOptions _options;
         private int _prefetch;
+        // TransactionMode.None is at-most-once: the broker must drop the delivery as it is pushed (no crash-window
+        // redelivery), so the consumer registers with autoAck:true — the AMQP ReceiveAndDelete equivalent the
+        // sibling ASB adapter uses for None. Resolved ONCE in InitializeAsync from the (core-normalized) options
+        // and read by RegisterConsumerAsync on every (re)registration and by the settlement no-op guard.
+        private bool _autoAck;
 
         public RabbitMqReceiver(IRabbitMqConnectionSource connectionSource,
                                 RabbitMqOptions rabbitOptions,
@@ -65,6 +76,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         public async Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
+
+            // TransactionMode.None is at-most-once ("if an error occurs after a message is received, it will be
+            // lost"). The handler-failure path already drops (acks) under None, but a process CRASH/KILL while the
+            // handler runs leaves a manual-ack delivery UNacked, so the broker redelivers it on reconnect — that is
+            // at-least-once, NOT at-most-once, and it diverges from the sibling ASB adapter (which receives None in
+            // ReceiveAndDelete, deleting the delivery at receive). Close the crash window by construction: register
+            // the consumer with autoAck:true under None so the broker removes the delivery as it pushes it, BEFORE
+            // the handler runs. There is then no manual delivery tag to settle, so Ack/Nack/Deadletter become
+            // no-ops under None (the message is already gone). _options.TransactionMode is core-normalized before
+            // InitializeAsync runs, so it is authoritative here.
+            _autoAck = _options.TransactionMode == TransactionMode.None;
 
             // FAIL FAST AT REGISTRATION: a poison message that exhausts MaxReceiveAttempts is deadlettered via an
             // explicit publish to the configured DeadLetterQueuePath/ErrorQueuePath. When NEITHER is configured the
@@ -133,8 +155,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             // Return the broker-assigned consumer tag so the source stores it and owns cancellation. The tag may
             // change across recovery as the consumer is re-registered; the source re-captures it each (re)creation.
+            // autoAck:true ONLY under TransactionMode.None (at-most-once: the broker deletes the delivery as it is
+            // pushed, closing the crash-window redelivery). Every other mode keeps manual ack so the epoch-guarded
+            // settlement + retry/deadletter paths own delivery acknowledgement.
             return await channel.BasicConsumeAsync(queue: _options.MessageReceiverPath,
-                                                   autoAck: false,
+                                                   autoAck: _autoAck,
                                                    consumerTag: string.Empty,
                                                    noLocal: false,
                                                    exclusive: false,
@@ -296,6 +321,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         public Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
+            // TransactionMode.None registers the consumer with autoAck:true, so the broker already removed the
+            // delivery at receive time — there is no manual delivery tag to ack. The settlement is a no-op (the
+            // at-most-once contract is already satisfied by the auto-ack).
+            if (IsAtMostOnce(transactionContext))
+            {
+                return Task.FromResult(false);
+            }
+
             if (!TryGetReceivedMessage(context, out var received))
             {
                 _logger.LogTrace("No {receivedMessage} contained in context; nothing to acknowledge.", nameof(ReceivedMessage));
@@ -308,21 +341,21 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         public Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
+            // TransactionMode.None is at-most-once (the enum contract: "if an error occurs after a message is
+            // received, it will be lost"), matching the sibling adapters — ASB receives in ReceiveAndDelete and
+            // SSB skips the transaction so a rollback cannot redeliver. Under None the consumer registers with
+            // autoAck:true, so the broker already removed the delivery at RECEIVE time (before the handler ran),
+            // closing the crash-window redelivery. A handler-failure nack therefore has nothing to settle — the
+            // message is already gone, NOT requeued or republished — so this is a no-op (the message is dropped).
+            if (IsAtMostOnce(transactionContext))
+            {
+                return Task.FromResult(false);
+            }
+
             if (!TryGetReceivedMessage(context, out var received))
             {
                 _logger.LogTrace("No {receivedMessage} contained in context; nothing to negatively acknowledge.", nameof(ReceivedMessage));
                 return Task.FromResult(false);
-            }
-
-            // TransactionMode.None is at-most-once (the enum contract: "if an error occurs after a message is
-            // received, it will be lost"), matching the sibling adapters — ASB receives in ReceiveAndDelete and
-            // SSB skips the transaction so a rollback cannot redeliver. The consumer is always registered with
-            // manual ack (autoAck:false) so we settle that contract here: a handler failure under None ACKS the
-            // delivery (dropping it) instead of requeuing/republishing, so it is NOT retried or deadlettered.
-            if (IsAtMostOnce(transactionContext))
-            {
-                return SettleOnReceiveChannelAsync(received, (channel) =>
-                    channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken);
             }
 
             if (_rabbitOptions.QueueType == QueueType.Classic)
@@ -346,19 +379,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         public Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
+            // TransactionMode.None is at-most-once: a poison message is LOST, not deadlettered (the enum contract
+            // and the sibling adapters' behaviour). Under None the consumer registers with autoAck:true, so the
+            // broker already removed the delivery at RECEIVE time — there is no delivery to ack and nothing to
+            // republish to the DLQ, so this is a no-op (the message is dropped). This also makes the InitializeAsync
+            // poison-target gate inapplicable under None (see InitializeAsync).
+            if (IsAtMostOnce(transactionContext))
+            {
+                return Task.FromResult(false);
+            }
+
             if (!TryGetReceivedMessage(context, out var received))
             {
                 _logger.LogTrace("No {receivedMessage} contained in context; nothing to deadletter.", nameof(ReceivedMessage));
                 return Task.FromResult(false);
-            }
-
-            // TransactionMode.None is at-most-once: a poison message is LOST, not deadlettered (the enum contract
-            // and the sibling adapters' behaviour). ACK the delivery to drop it instead of republishing to the DLQ.
-            // This also makes the InitializeAsync poison-target gate inapplicable under None (see InitializeAsync).
-            if (IsAtMostOnce(transactionContext))
-            {
-                return SettleOnReceiveChannelAsync(received, (channel) =>
-                    channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken);
             }
 
             // Explicit republish (SSB-style) to the attribute-declared deadletter / error path, authoritative over
