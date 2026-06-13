@@ -10,6 +10,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
+- Lifecycle-authority collapse for `RabbitMqConnectionSource` (ADR 0003): the source's liveness is now a single monotonic authority (`Live` → `Disposing` → `Disposed`) advanced only by an atomic compare-and-swap, replacing the former standalone `_disposed` flag that each mutual-exclusion domain read independently. The `IConnection` is now created and disposed under the SAME gate, so connection creation and disposal are mutually exclusive by construction (the dedicated connection-init gate is removed). A publish-or-surrender handoff makes an operation suspended mid-connection/channel-creation across a completing `DisposeAsync` surrender the just-created resource (dispose it and throw `ObjectDisposedException`) instead of resurrecting it onto a torn-down source — closing the connection-lifecycle-disposal race as a class rather than per site. The ADR 0002 receive-channel epoch lifecycle, publisher-confirm settlement, multi-receiver guard, and publish-permit conservation are preserved unchanged.
+
 ### Fixed
 
 - Dispose-coordination hardening for `RabbitMqConnectionSource`: every receive-gated and publish-permit entrypoint now observes `_disposed` on BOTH sides of gate/permit acquisition via a single coordination primitive. A gated receive operation queued behind `DisposeAsync` no longer resurrects a connection/channel or overwrites the stored consumer registration past teardown — it throws `ObjectDisposedException`. The publish permit is now ALWAYS released on return, so a publish acquire stranded behind a saturated pool at disposal is woken and throws rather than hanging forever.

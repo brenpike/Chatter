@@ -1,7 +1,9 @@
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Chatter.MessageBrokers.RabbitMQ.Receiving;
 using FluentAssertions;
+using Moq;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using System;
 using System.Reflection;
 using System.Threading;
@@ -33,6 +35,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
             .GetField("_publishPoolGate", BindingFlags.Instance | BindingFlags.NonPublic);
         private static readonly FieldInfo RegisterConsumerField = typeof(RabbitMqConnectionSource)
             .GetField("_registerConsumer", BindingFlags.Instance | BindingFlags.NonPublic);
+        // Lifecycle authority replaces the former bool _disposed: a single monotonic int (Live=0, Disposing=1,
+        // Disposed=2). Tests read it to prove a surrendered op never advanced the source past its expected state.
+        private static readonly FieldInfo LifecycleField = typeof(RabbitMqConnectionSource)
+            .GetField("_lifecycle", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo ConnectionField = typeof(RabbitMqConnectionSource)
+            .GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo CreateConnectionHookField = typeof(RabbitMqConnectionSource)
+            .GetField("_createConnectionForTest", BindingFlags.Instance | BindingFlags.NonPublic);
 
         private static SemaphoreSlim ReceiveGate(RabbitMqConnectionSource source)
             => (SemaphoreSlim)ReceiveChannelGateField.GetValue(source);
@@ -42,6 +52,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
 
         private static Func<IChannel, long, CancellationToken, Task> RegisteredConsumer(RabbitMqConnectionSource source)
             => (Func<IChannel, long, CancellationToken, Task>)RegisterConsumerField.GetValue(source);
+
+        private static int Lifecycle(RabbitMqConnectionSource source)
+            => (int)LifecycleField.GetValue(source);
+
+        private static IConnection Connection(RabbitMqConnectionSource source)
+            => (IConnection)ConnectionField.GetValue(source);
+
+        private static void SetCreateConnectionHook(RabbitMqConnectionSource source, Func<CancellationToken, Task<IConnection>> hook)
+            => CreateConnectionHookField.SetValue(source, hook);
 
         // A rental created via AcquirePublishChannelAsync always corresponds to ONE taken permit, so ReturnPublishChannel
         // is balanced. These broker-free tests construct the rental out-of-band, so they reflectively take the permit
@@ -190,6 +209,147 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
 
             gate.CurrentCount.Should().Be(1,
                 "the woken acquire must release the permit it transiently held so the count is conserved");
+        }
+
+        private const int LifecycleDisposed = 2;
+
+        private static readonly TimeSpan RaceTimeout = TimeSpan.FromSeconds(5);
+
+        // Waits for the task to settle (complete or fault) within RaceTimeout; if it does not, fails the test rather
+        // than hanging the suite, so a regression that re-opens the create-vs-dispose race FAILS FAST. Does NOT
+        // propagate the task's exception — the caller re-awaits the task for its own throw/no-throw assertion.
+        private static async Task AwaitBoundedAsync(Task task, string because)
+        {
+            var completed = await Task.WhenAny(task, Task.Delay(RaceTimeout));
+            completed.Should().BeSameAs(task, because);
+        }
+
+        // (a) PUBLISH-OR-SURRENDER (closed-by-construction): an AcquirePublishChannelAsync suspended INSIDE connection
+        // creation across a completing DisposeAsync must SURRENDER — throw ObjectDisposedException, return NO live
+        // rental, leave _connection null, NOT subscribe recovery, and conserve the publish permit — rather than
+        // resurrecting a connection past teardown. The connection-create step runs UNDER the receive gate, so the
+        // suspended acquire holds the gate and DisposeAsync must be admitted (CAS to Disposing) but left queued on the
+        // gate until the acquire resumes-and-surrenders. Uses the authorized internal connection-create seam to suspend
+        // mid-creation deterministically; timeout-bounded so a regression fails fast instead of hanging.
+        [Fact]
+        public async Task MustSurrenderWhenPublishAcquireSuspendedMidConnectionCreationRacesDispose()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"), publishChannelPoolCapacity: 1);
+
+            // The seam suspends the connection-create step until the test releases it, then returns a fake connection
+            // (IsOpen == false so EnsureConnectionAsync does not early-return). The fake records its own disposal so we
+            // can prove the surrendered connection is disposed, not leaked.
+            var creationReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseCreation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connectionMock = new Mock<IConnection>();
+            connectionMock.SetupGet(c => c.IsOpen).Returns(false);
+            SetCreateConnectionHook(source, async _ =>
+            {
+                creationReached.SetResult();
+                await releaseCreation.Task;
+                return connectionMock.Object;
+            });
+
+            // Start the publish acquire; it takes the permit, acquires the receive gate to read-or-create the
+            // connection (the connection-create step runs UNDER the receive gate), and suspends inside that step while
+            // STILL HOLDING the receive gate.
+            var acquireTask = source.AcquirePublishChannelAsync(CancellationToken.None);
+            await creationReached.Task; // connection creation is now in flight, suspended on the seam, receive gate held
+
+            // Admit DisposeAsync WITHOUT awaiting it to completion: its admission CAS (Live->Disposing) runs
+            // synchronously before its first await, so the source is immediately torn, but its receive-gate wait is now
+            // QUEUED behind the suspended acquire (which holds the gate). Awaiting dispose here would deadlock — the
+            // acquire only releases the gate once it resumes, and it only resumes once the seam is released below.
+            var disposeTask = source.DisposeAsync().AsTask();
+
+            // Release the create step: the acquire resumes, observes the source torn (Disposing), surrenders the
+            // just-created connection, throws, and releases the receive gate — which lets DisposeAsync complete.
+            releaseCreation.SetResult();
+            await AwaitBoundedAsync(acquireTask, "the suspended publish acquire must resume and surrender, not hang");
+
+            Func<Task> awaitAcquire = async () => await acquireTask;
+            await awaitAcquire.Should().ThrowAsync<ObjectDisposedException>(
+                "a publish acquire suspended mid-creation across a completing dispose must surrender, not return a rental");
+
+            await AwaitBoundedAsync(disposeTask, "DisposeAsync must complete once the surrendering acquire releases the gate");
+            Lifecycle(source).Should().Be(LifecycleDisposed, "DisposeAsync completed after the acquire surrendered");
+
+            connectionMock.Verify(c => c.DisposeAsync(), Times.Once,
+                "the connection created mid-dispose must be disposed (surrendered), not leaked or assigned");
+            connectionMock.VerifyAdd(c => c.RecoverySucceededAsync += It.IsAny<AsyncEventHandler<AsyncEventArgs>>(), Times.Never,
+                "a surrendered connection must NOT have the recovery handler subscribed");
+            Connection(source).Should().BeNull("the surrendered connection must never be assigned to _connection");
+            PublishGate(source).CurrentCount.Should().Be(1,
+                "the surrendering acquire must release its permit so the count is conserved");
+        }
+
+        // (b) The receive path's EnsureConnectionAsync suspended mid-creation across a completing DisposeAsync must
+        // SURRENDER: the resumed op throws ObjectDisposedException, does NOT assign _connection (stays null), and does
+        // NOT subscribe RecoverySucceededAsync (the connection mock is disposed, never wired). Here the receive gate is
+        // HELD by the suspended op, so DisposeAsync's gate wait is queued behind it — the admission CAS to Disposing
+        // still happens first, so the post-resume surrender re-check observes the torn source. Timeout-bounded.
+        [Fact]
+        public async Task MustSurrenderWhenReceiveConnectionCreationSuspendedRacesDispose()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+
+            var creationReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseCreation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connectionMock = new Mock<IConnection>();
+            connectionMock.SetupGet(c => c.IsOpen).Returns(false);
+            SetCreateConnectionHook(source, async _ =>
+            {
+                creationReached.SetResult();
+                await releaseCreation.Task;
+                return connectionMock.Object;
+            });
+
+            // StartReceivingAsync holds the receive gate and suspends inside connection creation.
+            var startTask = source.StartReceivingAsync((_, _, _) => Task.CompletedTask, CancellationToken.None);
+            await creationReached.Task;
+
+            // DisposeAsync admits (CAS Live->Disposing) then queues on the receive gate the suspended op holds.
+            var disposeTask = source.DisposeAsync().AsTask();
+
+            // Release the create step: the receive op resumes, sees the source torn (Disposing was CAS'd), surrenders
+            // the connection, throws, and releases the gate — which lets DisposeAsync complete.
+            releaseCreation.SetResult();
+
+            Func<Task> awaitStart = async () => await startTask;
+            await awaitStart.Should().ThrowAsync<ObjectDisposedException>(
+                "a receive-path connection creation suspended across a completing dispose must surrender");
+
+            await AwaitBoundedAsync(disposeTask, "DisposeAsync must complete once the surrendering op releases the gate");
+
+            Connection(source).Should().BeNull("the surrendered connection must never be assigned to _connection");
+            connectionMock.Verify(c => c.DisposeAsync(), Times.Once,
+                "the surrendered connection must be disposed");
+            connectionMock.VerifyAdd(c => c.RecoverySucceededAsync += It.IsAny<AsyncEventHandler<AsyncEventArgs>>(), Times.Never,
+                "a surrendered connection must NOT have the recovery handler subscribed");
+        }
+
+        // (c) Recovery-vs-dispose: a recovery callback entering the gated recreate while disposal is queued is a clean
+        // no-op — no resurrection, no throw out of the client's event dispatch. Mirrors
+        // WhenRecreatingReceiveChannelOnRecovery.MustNotThrowWhenRecoveryFiresAfterDisposal but pins it from the
+        // disposing side and asserts the source ends Disposed with no connection resurrected.
+        [Fact]
+        public async Task MustNoOpRecoveryThatRacesDispose()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+            var recoveryHandlerField = typeof(RabbitMqConnectionSource)
+                .GetMethod("OnRecoverySucceededAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var handler = (AsyncEventHandler<AsyncEventArgs>)Delegate.CreateDelegate(
+                typeof(AsyncEventHandler<AsyncEventArgs>), source, recoveryHandlerField);
+
+            await source.DisposeAsync();
+
+            // Recovery firing after the source is torn must short-circuit (not throw, not resurrect a connection).
+            Func<Task> raiseAfterDispose = () => handler(new Mock<IConnection>().Object, new AsyncEventArgs(CancellationToken.None));
+            await raiseAfterDispose.Should().NotThrowAsync(
+                "recovery firing after disposal must be a clean no-op out of the client's event dispatch");
+
+            Lifecycle(source).Should().Be(LifecycleDisposed);
+            Connection(source).Should().BeNull("recovery after dispose must not resurrect a connection");
         }
     }
 }
