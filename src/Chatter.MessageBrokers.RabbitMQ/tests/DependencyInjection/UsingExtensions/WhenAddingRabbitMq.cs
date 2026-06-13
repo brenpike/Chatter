@@ -2,15 +2,20 @@ using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.RabbitMQ;
+using Chatter.MessageBrokers.RabbitMQ.Receiving;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Retry;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using RabbitMQ.Client;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensions
@@ -300,6 +305,99 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             });
 
             act.Should().NotThrow();
+        }
+
+        // --- Hosted-receiver factory must NOT dispose the singleton source at factory return -------------
+
+        // REGRESSION (codex P1, PR #194): the IMessagingInfrastructure receiver factory delegate must NOT
+        // open-resolve-and-DISPOSE a transient scope per Create() call. RabbitMqReceiver
+        // (IMessagingInfrastructureReceiver : IDisposable) ESCALATES its Dispose to the SINGLETON
+        // IRabbitMqConnectionSource's full teardown, so a per-call `using var scope` would dispose the
+        // returned receiver — and with it the shared singleton source — before InitializeAsync ever runs,
+        // and normal receiver startup would get back an already-disposed source (ObjectDisposedException).
+        // The receiver scope must live for the (singleton) infrastructure lifetime. This is the deliberate
+        // divergence from the SqlServiceBroker/ASB folds, whose Scoped source makes the per-call dispose a no-op.
+        private static IServiceProvider BuildProviderWithSpyConnectionSource(out SpyRabbitMqConnectionSource spy)
+        {
+            var services = new ServiceCollection();
+            var filter = AssemblySourceFilterBuilder.New().Build();
+            var builder = ChatterBuilder.Create(services, EmptyConfig(), filter);
+            builder.AddRabbitMq(o => o.AddRabbitMqOptions(hostName: "localhost"));
+
+            // Swap the production singleton source for a disposal-recording spy (still a SINGLETON + IDisposable,
+            // faithfully reproducing the production lifecycle the receiver's Dispose escalates to).
+            var capturedSpy = new SpyRabbitMqConnectionSource();
+            for (var i = services.Count - 1; i >= 0; i--)
+            {
+                if (services[i].ServiceType == typeof(IRabbitMqConnectionSource))
+                {
+                    services.RemoveAt(i);
+                }
+            }
+            services.AddSingleton<IRabbitMqConnectionSource>(capturedSpy);
+            // RabbitMqReceiver needs an IBodyConverterFactory and a logger to resolve from the container.
+            services.AddSingleton<IBodyConverterFactory>(
+                new BodyConverterFactory(new IBrokeredMessageBodyConverter[] { new RabbitMqBodyConverter(), new JsonBodyConverter() }));
+            services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
+
+            spy = capturedSpy;
+            return services.BuildServiceProvider();
+        }
+
+        [Fact]
+        public void MustNotDisposeSingletonConnectionSourceWhenResolvingReceiveInfrastructure()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out var spy);
+
+            var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
+            var receiver = infrastructure.ReceiveInfrastructure;
+
+            receiver.Should().NotBeNull();
+            spy.DisposeCount.Should().Be(0, "the receiver factory must keep its scope alive for the receiver "
+                + "lifetime — disposing it would tear down the shared singleton connection source before "
+                + "InitializeAsync runs");
+        }
+
+        [Fact]
+        public void MustResolveReceiveInfrastructureRepeatedlyWithoutDisposingTheSource()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out var spy);
+
+            var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
+            _ = infrastructure.ReceiveInfrastructure;
+            _ = infrastructure.ReceiveInfrastructure;
+
+            spy.DisposeCount.Should().Be(0);
+        }
+
+        // A disposal-recording IRabbitMqConnectionSource spy. Implements BOTH IDisposable (the sync container
+        // teardown path RabbitMqReceiver.Dispose escalates to) and IAsyncDisposable, matching the production
+        // source. All AMQP operations throw — the regression test only resolves and reads ReceiveInfrastructure.
+        private sealed class SpyRabbitMqConnectionSource : IRabbitMqConnectionSource, IDisposable
+        {
+            public int DisposeCount { get; private set; }
+
+            public long CurrentReceiveChannelEpoch => 0;
+
+            public void Dispose() => DisposeCount++;
+
+            public ValueTask DisposeAsync()
+            {
+                DisposeCount++;
+                return default;
+            }
+
+            public Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task<string>> registerConsumer,
+                                            CancellationToken cancellationToken) => throw new NotImplementedException();
+
+            public Task StopReceivingAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
+
+            public Task<TResult> RunOnReceiveChannelAsync<TResult>(Func<IChannel, long, Task<TResult>> operation,
+                                                                   CancellationToken cancellationToken)
+                => throw new NotImplementedException();
+
+            public Task<RabbitMqPublishChannelRental> AcquirePublishChannelAsync(CancellationToken cancellationToken)
+                => throw new NotImplementedException();
         }
 
         private sealed class StubDiscoveredReceiverRegistry : IDiscoveredReceiverRegistry
