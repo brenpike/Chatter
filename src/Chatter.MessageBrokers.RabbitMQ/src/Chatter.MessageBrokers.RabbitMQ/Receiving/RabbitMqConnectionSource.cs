@@ -19,11 +19,18 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// INVARIANT: the receive channel is only ever touched while the gate is held; AMQP channels are not
     /// thread-safe. INVARIANT: the receive-channel epoch is incremented whenever the receive channel is
     /// (re)created, and it is read under the same gate that hands out the channel, so callers observe the
-    /// epoch and the channel atomically. INVARIANT: the epoch is ALSO incremented on every successful
-    /// automatic recovery (RabbitMQ.Client transparently recovers the SAME <see cref="IChannel"/>, so the
-    /// (re)create path above does not run and would otherwise leave the epoch stale), closing the
-    /// post-recovery false-ack window where an in-flight pre-recovery delivery tag — invalid on the recovered
-    /// session — would otherwise pass the stale-epoch settle guard.
+    /// epoch and the channel atomically.
+    /// INVARIANT (closed-by-construction epoch lifecycle): the source OWNS the receive channel and consumer
+    /// lifecycle. Connection-level automatic recovery stays ENABLED but TOPOLOGY (consumer) recovery is
+    /// DISABLED, so the client never silently re-binds the old consumer. On every receive-channel
+    /// (re)creation — cold start, lazy recreate, and automatic recovery — the source, UNDER THE RECEIVE GATE
+    /// and as ONE atomic event, disposes any old channel, creates a fresh one, increments the epoch, and
+    /// re-runs the stored consume-registration delegate against the new channel with the freshly-bumped
+    /// epoch. Because the bump and the re-registration are the SAME gated event, a delivery's stamped epoch
+    /// always equals the epoch of the session that delivered it. A pre-recovery in-flight delivery carries
+    /// the old epoch (correctly no-ops at settle); a post-recovery delivery is stamped by the freshly
+    /// re-registered consumer (correctly settles). This eliminates both the recovery-stale-epoch false-ack
+    /// and the topology-recovery stale-closure no-op-settle classes by construction, race-free.
     /// </remarks>
     public sealed class RabbitMqConnectionSource : IRabbitMqConnectionSource
     {
@@ -44,6 +51,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         private IChannel _receiveChannel;
         private long _receiveChannelEpoch;
         private bool _disposed;
+
+        // The receiver-supplied consume-registration delegate. Stored by StartReceivingAsync and re-run by the
+        // source on every receive-channel (re)creation (cold start, lazy recreate, recovery) under the receive
+        // gate, AFTER the epoch bump, so the re-registered consumer always closes over the current epoch.
+        private Func<IChannel, long, CancellationToken, Task> _registerConsumer;
 
         public RabbitMqConnectionSource(RabbitMqOptions options)
             : this(options, _defaultPublishChannelPoolCapacity)
@@ -87,6 +99,32 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             }
         }
 
+        public async Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task> registerConsumer,
+                                              CancellationToken cancellationToken)
+        {
+            if (registerConsumer is null)
+            {
+                throw new ArgumentNullException(nameof(registerConsumer));
+            }
+
+            ThrowIfDisposed();
+
+            await _receiveChannelGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                // Store the delegate FIRST so EnsureReceiveChannelAsync re-runs it on this and every later
+                // (re)creation. EnsureReceiveChannelAsync bumps the epoch and invokes the stored delegate against
+                // the fresh channel with the bumped epoch, so the initial registration is itself the first atomic
+                // bump+register event.
+                _registerConsumer = registerConsumer;
+                await EnsureReceiveChannelAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _receiveChannelGate.Release();
+            }
+        }
+
         public async Task<RabbitMqPublishChannelRental> AcquirePublishChannelAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -109,7 +147,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             }
         }
 
-        // INVARIANT: only ever called from RunOnReceiveChannelAsync while the receive gate is held.
+        // INVARIANT: only ever called while the receive gate is held (from RunOnReceiveChannelAsync,
+        // StartReceivingAsync, or RecreateReceiveChannelAsync). When it (re)creates the channel it ALSO bumps the
+        // epoch and re-runs the stored consume-registration delegate against the new channel with the bumped
+        // epoch, as one atomic gated event, so the re-registered consumer always closes over the current epoch.
         private async Task<IChannel> EnsureReceiveChannelAsync(CancellationToken cancellationToken)
         {
             if (_receiveChannel is { IsOpen: true })
@@ -117,6 +158,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 return _receiveChannel;
             }
 
+            await RecreateReceiveChannelAsync(cancellationToken).ConfigureAwait(false);
+            return _receiveChannel;
+        }
+
+        // INVARIANT: only ever called while the receive gate is held. Disposes any existing receive channel,
+        // creates a fresh one, bumps the epoch, then re-runs the stored consume-registration delegate (when set)
+        // against the new channel with the bumped epoch. The bump and the re-registration are this single gated
+        // event, so a delivery the new consumer stamps always carries the epoch of the channel that delivered it.
+        private async Task RecreateReceiveChannelAsync(CancellationToken cancellationToken)
+        {
             if (_receiveChannel is not null)
             {
                 await _receiveChannel.DisposeAsync().ConfigureAwait(false);
@@ -132,7 +183,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             _receiveChannel = channel;
             Interlocked.Increment(ref _receiveChannelEpoch);
-            return _receiveChannel;
+
+            // Re-register the consumer on the fresh channel with the freshly-bumped epoch. Null only before
+            // StartReceivingAsync stores the delegate (cold start has nothing to re-register yet).
+            if (_registerConsumer is not null)
+            {
+                await _registerConsumer(_receiveChannel, Interlocked.Read(ref _receiveChannelEpoch), cancellationToken).ConfigureAwait(false);
+            }
         }
 
         private async Task<IChannel> CreatePublishChannelAsync(CancellationToken cancellationToken)
@@ -169,10 +226,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 var factory = CreateConnectionFactory();
                 _connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                // AutomaticRecoveryEnabled is true, so RabbitMQ.Client transparently recovers the SAME receive
-                // IChannel on reconnect: EnsureReceiveChannelAsync then early-returns without recreating it, so the
-                // epoch would stay stale. Subscribe so each successful recovery advances the epoch, invalidating any
-                // delivery tag captured under the pre-recovery epoch (the false-ack guard the epoch exists for).
+                // AutomaticRecoveryEnabled is true (connection/channel transport recovers) but TopologyRecoveryEnabled
+                // is false, so the client does NOT re-bind the old consumer. Subscribe so each successful recovery
+                // recreates the receive channel, bumps the epoch, and re-registers the consumer under the gate — the
+                // source OWNS consumer lifecycle. This makes both the stale-epoch false-ack AND the stale-closure
+                // no-op-settle impossible by construction (see the type remarks).
                 _connection.RecoverySucceededAsync += OnRecoverySucceededAsync;
                 return _connection;
             }
@@ -182,11 +240,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             }
         }
 
-        // INVARIANT: advances the receive-channel epoch under the SAME gate RunOnReceiveChannelAsync holds, so the
-        // bump is atomic against an in-flight settlement: a delivery tag captured under a pre-recovery epoch can
-        // never equal the post-recovery epoch, so the stale settle no-ops. Guards against firing after disposal —
-        // the gate is disposed in DisposeAsync, and a recovery callback can still be queued at that point — so a
-        // late recovery is dropped rather than throwing ObjectDisposedException out of the library's event dispatch.
+        // INVARIANT: recreates the receive channel, bumps the epoch, and re-registers the consumer under the SAME
+        // gate RunOnReceiveChannelAsync holds, all as one atomic event. The bump is atomic against an in-flight
+        // settlement (a delivery tag captured under a pre-recovery epoch can never equal the post-recovery epoch,
+        // so the stale settle no-ops) AND the re-registration runs only after the bump, so the new consumer stamps
+        // the new epoch — closing both the false-ack and the stale-closure no-op-settle windows. Forces a recreate
+        // (RecreateReceiveChannelAsync, not EnsureReceiveChannelAsync) because with topology recovery off the
+        // transport-recovered channel may report IsOpen but carries NO consumer; an early-return would leave it
+        // consumer-less. Guards against firing after disposal — the gate is disposed in DisposeAsync, and a recovery
+        // callback can still be queued at that point — so a late recovery is dropped rather than throwing
+        // ObjectDisposedException out of the library's event dispatch.
         private async Task OnRecoverySucceededAsync(object sender, AsyncEventArgs eventArgs)
         {
             if (_disposed)
@@ -200,13 +263,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             }
             catch (ObjectDisposedException)
             {
-                // The source was disposed between the _disposed check and the wait; nothing left to advance.
+                // The source was disposed between the _disposed check and the wait; nothing left to recreate.
                 return;
             }
 
             try
             {
-                Interlocked.Increment(ref _receiveChannelEpoch);
+                // Re-check under the gate: DisposeAsync may have run between the wait acquiring and here, in which
+                // case the channel is gone and recreating it would resurrect resources past disposal.
+                if (_disposed)
+                {
+                    return;
+                }
+
+                await RecreateReceiveChannelAsync(CancellationToken.None).ConfigureAwait(false);
             }
             finally
             {
@@ -218,7 +288,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         {
             var factory = new ConnectionFactory
             {
-                AutomaticRecoveryEnabled = true
+                // Connection/channel transport recovery stays on, but TOPOLOGY recovery is off: the source owns
+                // consumer re-registration on recovery (RecreateReceiveChannelAsync), so the client must NOT
+                // silently re-bind the old consumer under the stale pre-recovery epoch. This is the closed-by-
+                // construction guarantee that a delivery's stamped epoch equals its delivering session's epoch.
+                AutomaticRecoveryEnabled = true,
+                TopologyRecoveryEnabled = false
             };
 
             if (!string.IsNullOrWhiteSpace(_options.Uri))

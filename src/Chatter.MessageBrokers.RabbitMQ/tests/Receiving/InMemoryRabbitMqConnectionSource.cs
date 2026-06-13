@@ -11,26 +11,38 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 {
     // In-memory IRabbitMqConnectionSource double that drives RabbitMqReceiver/RabbitMqSender without a live
-    // broker. It mirrors the real seam exactly: a settable receive-channel epoch (so a test can FORCE a stale
-    // epoch and pin the false-ack guard), a RunOnReceiveChannelAsync that invokes the operation with a single
-    // recording IChannel and the CURRENT epoch (read at invocation time, like the production gate), and an
-    // AcquirePublishChannelAsync that hands back a recording publish channel through the real
-    // RabbitMqPublishChannelRental. The same RecordingChannel records every ack/nack/publish so receiver and
-    // sender behavior is asserted off the recordings. Deliveries are pushed by capturing the receiver's
-    // AsyncEventingBasicConsumer at BasicConsumeAsync and raising its ReceivedAsync via HandleBasicDeliverAsync.
+    // broker. It mirrors the real seam exactly, INCLUDING the closed-by-construction epoch lifecycle: the source
+    // OWNS the receive channel + consumer lifecycle, re-running a stored consume-registration delegate on every
+    // (re)creation with the freshly-bumped epoch. A test can FORCE a bare stale epoch (AdvanceEpoch, no
+    // re-register) to pin the false-ack guard on an already-buffered delivery, OR SimulateRecoveryAsync to model a
+    // real recovery (new channel + bumped epoch + re-registered consumer) so a post-recovery PushDeliveryAsync is
+    // stamped with the NEW epoch (settles) while a delivery buffered before recovery keeps the OLD epoch (no-ops).
+    // RunOnReceiveChannelAsync invokes the operation with the CURRENT recording channel and the CURRENT epoch
+    // (read at invocation time, like the production gate). AcquirePublishChannelAsync hands back a recording
+    // publish channel through the real RabbitMqPublishChannelRental. RecordingChannel records every ack/nack/
+    // publish so behavior is asserted off the recordings. Deliveries are pushed by raising the registered
+    // consumer's ReceivedAsync via HandleBasicDeliverAsync.
     internal sealed class InMemoryRabbitMqConnectionSource : IRabbitMqConnectionSource
     {
         private long _currentReceiveChannelEpoch;
         private readonly RabbitMqPublishChannelRentalFactory _rentalFactory = new RabbitMqPublishChannelRentalFactory();
+
+        // The stored consume-registration delegate, mirroring the production source. Re-run on every receive
+        // channel (re)creation with the freshly-bumped epoch.
+        private Func<IChannel, long, CancellationToken, Task> _registerConsumer;
 
         public InMemoryRabbitMqConnectionSource()
         {
             ReceiveChannel = new RecordingChannel();
         }
 
-        // The single serialized receive channel handed to RunOnReceiveChannelAsync. Records ack/nack and
-        // captures the consumer registered by the receiver's InitializeAsync.
-        public RecordingChannel ReceiveChannel { get; }
+        // The CURRENT serialized receive channel handed to RunOnReceiveChannelAsync. Records ack/nack and
+        // captures the consumer registered by the receiver. Replaced by SimulateRecoveryAsync to model a recycle.
+        public RecordingChannel ReceiveChannel { get; private set; }
+
+        // Every receive channel created across the source's life, in creation order, so a recovery test can assert
+        // that the pre-recovery channel was disposed and the post-recovery one carries the re-registered consumer.
+        public List<RecordingChannel> ReceiveChannels { get; } = new List<RecordingChannel> { };
 
         // The publish channels handed out by AcquirePublishChannelAsync, in acquisition order, so a sender or
         // republish test can assert the publish recordings.
@@ -41,10 +53,52 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
         public long CurrentReceiveChannelEpoch => Interlocked.Read(ref _currentReceiveChannelEpoch);
 
-        // Forces the receive-channel epoch forward, modelling a channel recycle (e.g. after automatic recovery)
-        // so a settlement carrying the prior epoch becomes stale and the receiver's guard makes it a no-op.
+        // Forces the receive-channel epoch forward WITHOUT recreating the channel or re-registering the consumer,
+        // modelling the moment a channel has been recycled but an ALREADY-BUFFERED delivery still carries the prior
+        // epoch — so the receiver's settle guard makes that delivery's ack a no-op. This is the bare false-ack-guard
+        // probe; use SimulateRecoveryAsync to model a full recovery that also re-stamps NEW deliveries.
         public void AdvanceEpoch()
             => Interlocked.Increment(ref _currentReceiveChannelEpoch);
+
+        // Models a real automatic recovery exactly as the production source does: under one atomic step, swap in a
+        // fresh recording channel, bump the epoch, and re-run the stored consume-registration delegate with the NEW
+        // epoch. A delivery pushed AFTER this is stamped with the new epoch (settles); a delivery buffered BEFORE it
+        // keeps the old epoch (no-ops at settle). Disposes the prior channel, mirroring the source's recreate.
+        public async Task SimulateRecoveryAsync()
+        {
+            if (_registerConsumer is null)
+            {
+                throw new InvalidOperationException("No consumer registered; call the receiver's InitializeAsync first.");
+            }
+
+            await ReceiveChannel.DisposeAsync().ConfigureAwait(false);
+
+            ReceiveChannel = new RecordingChannel();
+            ReceiveChannels.Add(ReceiveChannel);
+            Interlocked.Increment(ref _currentReceiveChannelEpoch);
+
+            await _registerConsumer(ReceiveChannel, Interlocked.Read(ref _currentReceiveChannelEpoch), CancellationToken.None).ConfigureAwait(false);
+        }
+
+        public async Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task> registerConsumer,
+                                              CancellationToken cancellationToken)
+        {
+            if (registerConsumer is null)
+            {
+                throw new ArgumentNullException(nameof(registerConsumer));
+            }
+
+            // Store the delegate first, then run it once against the current channel with the current epoch — the
+            // production source's StartReceivingAsync -> EnsureReceiveChannelAsync ordering, where the cold channel
+            // already exists (epoch 0). ReceiveChannels tracks this initial channel as the first session.
+            _registerConsumer = registerConsumer;
+            if (ReceiveChannels.Count == 0)
+            {
+                ReceiveChannels.Add(ReceiveChannel);
+            }
+
+            await registerConsumer(ReceiveChannel, Interlocked.Read(ref _currentReceiveChannelEpoch), cancellationToken).ConfigureAwait(false);
+        }
 
         public Task<TResult> RunOnReceiveChannelAsync<TResult>(Func<IChannel, long, Task<TResult>> operation,
                                                                CancellationToken cancellationToken)

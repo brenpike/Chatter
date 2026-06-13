@@ -21,8 +21,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// </summary>
     /// <remarks>
     /// INVARIANT: every receive-channel operation (consume registration, ack, nack, deadletter ack) runs only
-    /// under the connection-source gate via <see cref="IRabbitMqConnectionSource.RunOnReceiveChannelAsync{TResult}"/>,
-    /// because AMQP channels are not thread-safe and a delivery tag is valid only on its owning channel.
+    /// under the connection-source gate — settlement via <see cref="IRabbitMqConnectionSource.RunOnReceiveChannelAsync{TResult}"/>,
+    /// consume registration via <see cref="IRabbitMqConnectionSource.StartReceivingAsync"/> — because AMQP
+    /// channels are not thread-safe and a delivery tag is valid only on its owning channel.
+    /// INVARIANT (closed-by-construction epoch): the receiver hands the source a consume-registration delegate;
+    /// the source re-runs it on every receive-channel (re)creation (cold start, lazy recreate, recovery) with the
+    /// freshly-bumped epoch, which the delegate stamps onto every delivery it buffers. The delegate does NOT close
+    /// over a one-time epoch — each (re)registration receives the current epoch as a parameter — so a
+    /// post-recovery delivery always carries the post-recovery epoch and a pre-recovery in-flight delivery keeps
+    /// the pre-recovery epoch. The bounded <c>_buffer</c> is created ONCE in InitializeAsync and is NOT recreated
+    /// on re-registration, so deliveries buffered before recovery survive the consumer swap.
     /// INVARIANT: ack/nack/deadletter are epoch-guarded — if the delivery's carried channel-epoch no longer
     /// matches the current receive-channel epoch the channel was recycled, the broker has already redelivered
     /// the message, and the settlement is a no-op (never a false-ack against a recycled delivery tag).
@@ -71,28 +79,37 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                     FullMode = BoundedChannelFullMode.Wait
                 });
 
-            // Register the push consumer on the serialized receive channel under the gate. The consumer captures
-            // the channel-epoch at registration time and stamps it on every buffered delivery so a later ack can
-            // detect a recycled channel.
-            _consumerTag = await _connectionSource.RunOnReceiveChannelAsync(async (channel, epoch) =>
-            {
-                await channel.BasicQosAsync(prefetchSize: 0,
-                                            prefetchCount: (ushort)_prefetch,
-                                            global: false,
-                                            cancellationToken: cancellationToken).ConfigureAwait(false);
+            // Hand the source the consume-registration delegate. The source runs it now and re-runs it on every
+            // receive-channel (re)creation (lazy recreate, recovery) under the gate, passing the FRESH epoch each
+            // time. The delegate stamps that per-invocation epoch onto every buffered delivery, so a later ack can
+            // detect a recycled channel. The epoch is NOT closed over once at InitializeAsync — it is the per-call
+            // parameter the source supplies, so a post-recovery re-registration stamps the post-recovery epoch.
+            await _connectionSource.StartReceivingAsync(RegisterConsumerAsync, cancellationToken).ConfigureAwait(false);
+        }
 
-                var consumer = new AsyncEventingBasicConsumer(channel);
-                consumer.ReceivedAsync += (sender, delivery) => BufferDeliveryAsync(delivery, epoch);
+        // INVARIANT: invoked by the connection source under the receive gate on every (re)creation of the receive
+        // channel, with <paramref name="epoch"/> being the freshly-bumped epoch of that channel. Registers a fresh
+        // push consumer that stamps THIS epoch onto every delivery it buffers. The bounded buffer is NOT recreated
+        // here (it is created once in InitializeAsync) so in-flight pre-recovery deliveries survive the swap.
+        private async Task RegisterConsumerAsync(IChannel channel, long epoch, CancellationToken cancellationToken)
+        {
+            await channel.BasicQosAsync(prefetchSize: 0,
+                                        prefetchCount: (ushort)_prefetch,
+                                        global: false,
+                                        cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                return await channel.BasicConsumeAsync(queue: _options.MessageReceiverPath,
-                                                       autoAck: false,
-                                                       consumerTag: string.Empty,
-                                                       noLocal: false,
-                                                       exclusive: false,
-                                                       arguments: null,
-                                                       consumer: consumer,
-                                                       cancellationToken: cancellationToken).ConfigureAwait(false);
-            }, cancellationToken).ConfigureAwait(false);
+            var consumer = new AsyncEventingBasicConsumer(channel);
+            consumer.ReceivedAsync += (sender, delivery) => BufferDeliveryAsync(delivery, epoch);
+
+            // Capture the latest consumer tag — it may change across recovery as the consumer is re-registered.
+            _consumerTag = await channel.BasicConsumeAsync(queue: _options.MessageReceiverPath,
+                                                           autoAck: false,
+                                                           consumerTag: string.Empty,
+                                                           noLocal: false,
+                                                           exclusive: false,
+                                                           arguments: null,
+                                                           consumer: consumer,
+                                                           cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
         // INVARIANT: the push consumer's only job is to wrap the delivery (carrying the registration-time epoch)
