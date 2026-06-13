@@ -6,6 +6,7 @@ using Moq;
 using RabbitMQ.Client;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Xunit;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
@@ -544,6 +545,189 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
         {
             Action act = () => RabbitMqMessageTranslator.ToAmqp(null, "application/json");
             act.Should().Throw<ArgumentNullException>();
+        }
+
+        // --- reflection-derived disposition map: every core key dispositioned, no byte[] leaks under a core key ---
+
+        // The authoritative core-key registry: MessageContext's public static readonly string fields, read the same
+        // way the marshaller's static initializer derives its completeness set (the core registry as ground truth).
+        // ChatterBaseHeader ("Chatter") is in this set and carries a Drop disposition, so it is included.
+        private static IEnumerable<string> CoreContextKeys()
+            => typeof(MessageContext)
+                .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                .Where(field => field.FieldType == typeof(string))
+                .Select(field => (string)field.GetValue(null));
+
+        // Builds a delivered header table carrying a single raw AMQP longstr (byte[]) value under one key — the shape
+        // a real broker surfaces an application header as.
+        private static Dictionary<string, object> ByteArrayHeader(string key, string value)
+            => new Dictionary<string, object> { [key] = System.Text.Encoding.UTF8.GetBytes(value) };
+
+        // (a) REGRESSION (root finding): a delivery carrying a raw Chatter.TimeToLive longstr byte[] header and NO
+        // native Expiration must not throw on ToCore, and the resulting core context must not surface a byte[] under
+        // TimeToLive — otherwise OutboundBrokeredMessage.GetTimeToLive()'s (string) cast throws InvalidCastException.
+        // With the key dropped, GetTimeToLive() returns null.
+        [Fact]
+        public void MustDropForeignTimeToLiveHeaderSoGetTimeToLiveDoesNotThrowOnReceive()
+        {
+            var headers = ByteArrayHeader(MessageContext.TimeToLive, "90000");
+
+            (IDictionary<string, object> coreContext, string _) result = default;
+            Action translate = () => result = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            translate.Should().NotThrow();
+            result.coreContext.Should().NotContainKey(MessageContext.TimeToLive,
+                "a foreign TimeToLive header is dropped; the authoritative value is the native Expiration lift");
+
+            var outbound = new OutboundBrokeredMessage(
+                Guid.NewGuid().ToString(), new byte[] { 1 }, result.coreContext, Destination, new RabbitMqBodyConverter());
+
+            Action getTtl = () => outbound.GetTimeToLive();
+            getTtl.Should().NotThrow("a dropped key leaves no byte[] for the (string) cast in GetTimeToLive to choke on");
+            outbound.GetTimeToLive().Should().BeNull();
+        }
+
+        // (b) NEXT LANDMINE: a delivery carrying a raw Chatter.IsError longstr byte[] header must not surface a byte[]
+        // under IsError. InboundBrokeredMessage.IsError reads the key as (bool) via GetMessageContextByKey<bool>, which
+        // returns default(bool) == false on an absent key; a byte[] under the key would fault that cast. We prove the
+        // load-bearing invariant — the key is dropped — directly at the translator seam (InboundBrokeredMessage's ctor
+        // is internal to Chatter.MessageBrokers and not constructable here).
+        [Fact]
+        public void MustDropForeignIsErrorHeaderSoBoolCastHoldsOnReceive()
+        {
+            var headers = ByteArrayHeader(MessageContext.IsError, "true");
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext.Should().NotContainKey(MessageContext.IsError,
+                "IsError is receiver-derived; a foreign copy is dropped so the core's (bool) cast reads default(false)");
+
+            // Mirror InboundBrokeredMessage.IsError's read path: an absent key yields default(bool) == false, never a
+            // byte[] cast.
+            coreContext.TryGetValue(MessageContext.IsError, out var raw).Should().BeFalse();
+            var isError = raw is bool flag ? flag : default;
+            isError.Should().BeFalse();
+        }
+
+        // (c) DecodeString representative beyond Subject (Via): a raw byte[] header decodes to a CLR string in core.
+        [Fact]
+        public void MustDecodeViaStringTypedHeaderFromByteArrayOnReceive()
+        {
+            var headers = ByteArrayHeader(MessageContext.Via, "receiver-a,receiver-b");
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext[MessageContext.Via].Should().BeOfType<string>().Which.Should().Be("receiver-a,receiver-b");
+        }
+
+        // (c) DecodeString representative (RoutingSlip): a raw byte[] header decodes to a CLR string in core.
+        [Fact]
+        public void MustDecodeRoutingSlipStringTypedHeaderFromByteArrayOnReceive()
+        {
+            var headers = ByteArrayHeader(MessageContext.RoutingSlip, "{\"slip\":\"data\"}");
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext[MessageContext.RoutingSlip].Should().BeOfType<string>().Which.Should().Be("{\"slip\":\"data\"}");
+        }
+
+        // (c) Drop keys carrying a raw foreign byte[] header (native frame ABSENT) must not appear as a byte[] in core:
+        // the key is either absent or a proper type, never a raw byte[]. TimeToLive/IsError are covered by (a)/(b); this
+        // covers the remaining Drop keys CorrelationId, ContentType, ReceiveAttempts.
+        [Theory]
+        [InlineData("CorrelationId")]
+        [InlineData("ContentType")]
+        [InlineData("ReceiveAttempts")]
+        public void MustNotSurfaceForeignDropKeyHeaderAsByteArrayOnReceive(string dropKeyName)
+        {
+            var dropKey = DropKeyByName(dropKeyName);
+            var headers = ByteArrayHeader(dropKey, "foreign-value");
+
+            // Native frame ABSENT (Delivered carries no correlationId/contentType frame): only the foreign header is
+            // present, so the descriptor loop has no native value and no surviving header copy to re-source from.
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            if (coreContext.TryGetValue(dropKey, out var value))
+            {
+                value.Should().NotBeOfType<byte[]>(
+                    "a Drop key must never surface a raw foreign byte[] under the core key");
+            }
+        }
+
+        private static string DropKeyByName(string name)
+        {
+            switch (name)
+            {
+                case "CorrelationId": return MessageContext.CorrelationId;
+                case "ContentType": return MessageContext.ContentType;
+                case "ReceiveAttempts": return MessageContext.ReceiveAttempts;
+                default: throw new ArgumentOutOfRangeException(nameof(name), name, "Unknown Drop key.");
+            }
+        }
+
+        // (d) CUSTOM VERBATIM: a genuine non-core custom key carrying byte[] survives unchanged (the flexible-storage
+        // premise). Companion to the existing MustPreserveUnknownHeaderVerbatimOnReceive, asserting byte[] identity.
+        [Fact]
+        public void MustPreserveCustomBinaryHeaderVerbatimOnReceive()
+        {
+            var binary = new byte[] { 0x01, 0x02, 0x03, 0xFF };
+            var headers = new Dictionary<string, object> { ["custom-binary"] = binary };
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext["custom-binary"].Should().BeSameAs(binary, "a genuine custom binary header is preserved verbatim");
+        }
+
+        // (d) NEAR-MISS: a Chatter-ish name that is NOT an exact core key is preserved verbatim, proving only the
+        // EXACT reflected registry set is gated (not a prefix match).
+        [Fact]
+        public void MustPreserveNearMissChatterNamedHeaderVerbatimOnReceive()
+        {
+            var binary = new byte[] { 0xCA, 0xFE, 0xBA, 0xBE };
+            var headers = new Dictionary<string, object> { ["Chatter.NotARealCoreKey"] = binary };
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext["Chatter.NotARealCoreKey"].Should().BeSameAs(binary,
+                "only the exact reflected core-key set is gated; a near-miss Chatter-ish name is custom and verbatim");
+        }
+
+        // (e) COMPLETENESS GUARD (executable closed-by-construction acceptance gate): for EVERY core key in the
+        // reflected MessageContext registry, feeding it as a raw byte[] longstr header must never leave a byte[] under
+        // that key in the core context. This locks the static-init completeness invariant from the test side: a future
+        // core key added without a disposition fails the marshaller's static init (TypeInitializationException), and
+        // this test documents that no dispositioned core key ever leaks a raw byte[].
+        [Fact]
+        public void MustNeverSurfaceByteArrayUnderAnyReflectedCoreKeyOnReceive()
+        {
+            foreach (var coreKey in CoreContextKeys())
+            {
+                var headers = ByteArrayHeader(coreKey, "wire-value");
+
+                var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                    RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                    headers);
+
+                if (coreContext.TryGetValue(coreKey, out var value))
+                {
+                    value.Should().NotBeOfType<byte[]>(
+                        $"core key '{coreKey}' must carry an explicit disposition that never leaks a raw byte[]");
+                }
+            }
         }
     }
 }

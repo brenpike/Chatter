@@ -28,16 +28,20 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// NEW core key added to <see cref="MessageContext"/> cannot ship without an explicit disposition decision — it
     /// fails this type's static init (surfacing as <see cref="TypeInitializationException"/>) until dispositioned.
     /// The three dispositions: <see cref="HeaderDisposition.DecodeString"/> rehydrates a byte[]/string AMQP longstr to
-    /// a <c>string</c> (the inbound receive path casts these keys straight to <c>string</c>);
+    /// a <c>string</c> (the inbound receive path casts these keys straight to <c>string</c>); this includes
+    /// CorrelationId and ContentType — string-typed DECISION-D dual-home keys whose decoded header copy must survive in
+    /// the core context as a fallback for the translator's native-frame assignment (the translator re-sources them from
+    /// the native frame when present and overwrites; when the native frame is absent the decoded copy is the
+    /// authoritative value — <c>Drop</c> removed that copy and broke the fallback);
     /// <see cref="HeaderDisposition.DecodeDateTime"/> parses the wire value back to a <c>DateTime</c> (so the core's
     /// <c>(DateTime?)</c> cast in <c>OutboundBrokeredMessage.RefreshTimeToLive</c> on
     /// <see cref="MessageContext.ExpiryTimeUtc"/> holds after a round trip), null-dropping on a malformed value;
     /// <see cref="HeaderDisposition.Drop"/> omits the key from the core context entirely because its authoritative value
-    /// comes from elsewhere (the translator owns CorrelationId/ContentType as native-frame fields; TimeToLive is lifted
-    /// onto native Expiration; ReceiveAttempts is the numeric delivery-count path owned by
-    /// <c>RabbitMqReceiver.ReadHeaderAsLong</c>; IsError is receiver-derived; <see cref="MessageContext.ChatterBaseHeader"/>
-    /// is a namespace prefix, not a real header) so a foreign copy of it is untrusted. A NON-core key (genuine custom or
-    /// binary header) is preserved VERBATIM — the flexible-storage premise — so real binary headers are never corrupted.
+    /// comes from elsewhere (TimeToLive is lifted onto native Expiration; ReceiveAttempts is the numeric delivery-count
+    /// path owned by <c>RabbitMqReceiver.ReadHeaderAsLong</c>; IsError is receiver-derived;
+    /// <see cref="MessageContext.ChatterBaseHeader"/> is a namespace prefix, not a real header) so a foreign copy of
+    /// it is untrusted. A NON-core key (genuine custom or binary header) is preserved VERBATIM — the flexible-storage
+    /// premise — so real binary headers are never corrupted.
     /// </remarks>
     /// <remarks>
     /// OUTBOUND (<see cref="ToHeaderTable"/>): the AMQP 0-9-1 field table the client can encode admits only
@@ -75,12 +79,16 @@ namespace Chatter.MessageBrokers.RabbitMQ
         // INVARIANT: an EXPLICIT disposition for EVERY core MessageContext key. The reflected core-key set (see the
         // static initializer) is asserted to be a SUBSET of these entries' keys at type init; a reflected core key
         // missing here throws naming the offender, so a new core key cannot ship without an explicit disposition.
-        // DecodeString (10): the string-typed routing/failure keys the inbound receive path casts straight to (string)
-        //   and a real broker surfaces as a byte[] longstr.
+        // DecodeString (12): the string-typed routing/failure keys the inbound receive path casts straight to (string)
+        //   and a real broker surfaces as a byte[] longstr — plus CorrelationId and ContentType, which are
+        //   string-typed DECISION-D dual-home keys: the translator re-sources them from the native frame when present
+        //   (overwrites), and falls back to the decoded header copy when the native frame is absent. Drop would remove
+        //   that fallback copy; DecodeString preserves it safely (byte[]→string is exactly the (string) cast the core
+        //   uses) and eliminates raw byte[] under a core key.
         // DecodeDateTime (1): ExpiryTimeUtc, a non-string (DateTime) core key.
-        // Drop (6): TimeToLive (lifted onto native Expiration), CorrelationId + ContentType (translator owns them as
-        //   native-frame fields), ReceiveAttempts (numeric delivery-count path owned by RabbitMqReceiver), IsError
-        //   (receiver-derived), ChatterBaseHeader (the "Chatter" namespace prefix, not a real header).
+        // Drop (4): TimeToLive (lifted onto native Expiration), ReceiveAttempts (numeric delivery-count path owned by
+        //   RabbitMqReceiver), IsError (receiver-derived), ChatterBaseHeader (the "Chatter" namespace prefix, not a
+        //   real header).
         private static readonly IReadOnlyDictionary<string, HeaderDisposition> _dispositions =
             new Dictionary<string, HeaderDisposition>
             {
@@ -97,9 +105,10 @@ namespace Chatter.MessageBrokers.RabbitMQ
 
                 [MessageContext.ExpiryTimeUtc] = HeaderDisposition.DecodeDateTime,
 
+                [MessageContext.CorrelationId] = HeaderDisposition.DecodeString,
+                [MessageContext.ContentType] = HeaderDisposition.DecodeString,
+
                 [MessageContext.TimeToLive] = HeaderDisposition.Drop,
-                [MessageContext.CorrelationId] = HeaderDisposition.Drop,
-                [MessageContext.ContentType] = HeaderDisposition.Drop,
                 [MessageContext.ReceiveAttempts] = HeaderDisposition.Drop,
                 [MessageContext.IsError] = HeaderDisposition.Drop,
                 [MessageContext.ChatterBaseHeader] = HeaderDisposition.Drop
