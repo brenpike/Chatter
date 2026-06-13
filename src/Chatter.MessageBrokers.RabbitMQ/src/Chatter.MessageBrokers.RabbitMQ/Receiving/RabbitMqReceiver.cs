@@ -286,6 +286,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 ? _options.ErrorQueuePath
                 : _options.DeadLetterQueuePath;
 
+            // FAIL FAST when neither a deadletter nor an error path is configured: the republish below uses
+            // `destination` as the default-exchange routing key with `mandatory: true`, so a null/blank destination
+            // would be unroutable and surface a PublishException AFTER the message has already exhausted its retry
+            // budget — leaving the original delivery un-acked and redelivered indefinitely (a poison-message hot
+            // loop). Surfacing the misconfiguration here, with the queue that produced it, is actionable; an opaque
+            // unroutable-publish fault on the Nth redelivery is not.
+            if (string.IsNullOrWhiteSpace(destination))
+            {
+                throw new InvalidOperationException(
+                    $"Cannot deadletter a message from queue '{_options.MessageReceiverPath}': neither a dead-letter queue " +
+                    $"({nameof(ReceiverOptions.DeadLetterQueuePath)}) nor an error queue ({nameof(ReceiverOptions.ErrorQueuePath)}) " +
+                    "is configured for the receiver. Configure one so poison messages have a valid destination instead of being redelivered indefinitely.");
+            }
+
             var headerOverrides = new Dictionary<string, object>
             {
                 [MessageContext.FailureDetails] = deadLetterReason,

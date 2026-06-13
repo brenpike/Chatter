@@ -2,6 +2,7 @@ using Chatter.MessageBrokers.RabbitMQ;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using FluentAssertions;
 using RabbitMQ.Client;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -178,6 +179,28 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             harness.ConnectionSource.PublishChannels.Single().Publishes.Single()
                 .RoutingKey.Should().Be(ReceiverHarness.ErrorPath);
+        }
+
+        // REPRODUCTION (r3407616994): when a receiver is registered with neither a dead-letter nor an error path,
+        // `destination` resolves to null/blank. The deadletter republish uses it as the default-exchange routing key
+        // with `mandatory: true`, so the publish would be UNROUTABLE and fault only AFTER the message exhausted its
+        // retry budget — leaving the original delivery un-acked and redelivered indefinitely (a poison-message hot
+        // loop). The receiver now FAILS FAST with an actionable misconfiguration error naming the queue, and does NOT
+        // attempt the unroutable publish or ack the original.
+        [Fact]
+        public async Task MustFailFastWhenNeitherDeadLetterNorErrorPathConfigured()
+        {
+            var harness = ReceiverHarness.Create(deadLetterQueuePath: null, errorQueuePath: null);
+            await harness.PushAsync(deliveryTag: 13);
+            var context = await harness.ReceiveAsync();
+
+            var act = async () => await harness.Receiver.DeadletterMessageAsync(
+                context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .WithMessage($"*{ReceiverHarness.ReceiverPath}*");
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty();
+            harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
         }
 
         [Fact]
