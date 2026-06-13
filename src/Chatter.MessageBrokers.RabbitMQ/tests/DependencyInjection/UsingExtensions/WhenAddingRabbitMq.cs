@@ -1,0 +1,424 @@
+using Chatter.CQRS.DependencyInjection;
+using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.Configuration;
+using Chatter.MessageBrokers.RabbitMQ;
+using Chatter.MessageBrokers.RabbitMQ.Receiving;
+using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Recovery.Retry;
+using FluentAssertions;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using RabbitMQ.Client;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Xunit;
+
+namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensions
+{
+    // Pins the OBSERVABLE wiring contract of AddRabbitMq at the IServiceCollection descriptor level (the SSB
+    // approach): which service types are registered, at which lifetimes, that IMessagingInfrastructure is a
+    // Singleton factory descriptor, and that FullAtomicityViaInfrastructure is rejected at registration.
+    // AddRabbitMq runs against a BARE ChatterBuilder (no AddChatterCqrs/AddMessageBrokers, so no
+    // AssemblySourceFilter.Apply() AppDomain scan), mirroring WhenAddingSqlServiceBroker.
+    public class WhenAddingRabbitMq : Testing.Core.Context
+    {
+        private static IConfiguration EmptyConfig()
+            => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>()).Build();
+
+        private static IServiceCollection BuildRegistration(Action<IServiceCollection> preconfigure = null)
+        {
+            var services = new ServiceCollection();
+            preconfigure?.Invoke(services);
+            var filter = AssemblySourceFilterBuilder.New().Build();
+            var builder = ChatterBuilder.Create(services, EmptyConfig(), filter);
+
+            builder.AddRabbitMq(o => o.AddRabbitMqOptions(hostName: "localhost"));
+
+            return services;
+        }
+
+        private static ServiceDescriptor Single(IServiceCollection services, Type serviceType)
+            => services.Single(d => d.ServiceType == serviceType);
+
+        private static Type ConnectionSourceType()
+            => typeof(RabbitMqMessageContext).Assembly.GetType(
+                "Chatter.MessageBrokers.RabbitMQ.Receiving.IRabbitMqConnectionSource", throwOnError: true);
+
+        [Fact]
+        public void MustRegisterMessagingInfrastructureAsSingletonViaFactory()
+        {
+            var services = BuildRegistration();
+
+            var descriptor = Single(services, typeof(IMessagingInfrastructure));
+
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationFactory.Should().NotBeNull();
+            descriptor.ImplementationInstance.Should().BeNull();
+            descriptor.ImplementationType.Should().BeNull();
+        }
+
+        // INVARIANT: the one deliberate lifetime divergence from the SSB fold — the AMQP connection source is a
+        // process SINGLETON (SSB's connection source is Scoped), because one IConnection is owned per process.
+        [Fact]
+        public void MustRegisterConnectionSourceAsSingleton()
+        {
+            var services = BuildRegistration();
+
+            Single(services, ConnectionSourceType()).Lifetime.Should().Be(ServiceLifetime.Singleton);
+        }
+
+        [Fact]
+        public void MustRegisterReceiverAndSenderAsScoped()
+        {
+            var services = BuildRegistration();
+
+            var brokerAssembly = typeof(RabbitMqMessageContext).Assembly;
+            var receiverType = brokerAssembly.GetType(
+                "Chatter.MessageBrokers.RabbitMQ.Receiving.RabbitMqReceiver", throwOnError: true);
+            var senderType = brokerAssembly.GetType(
+                "Chatter.MessageBrokers.RabbitMQ.Sending.RabbitMqSender", throwOnError: true);
+
+            Single(services, receiverType).Lifetime.Should().Be(ServiceLifetime.Scoped);
+            Single(services, senderType).Lifetime.Should().Be(ServiceLifetime.Scoped);
+        }
+
+        [Fact]
+        public void MustRegisterPredicateProvidersAsSingleton()
+        {
+            var services = BuildRegistration();
+
+            Single(services, typeof(ICircuitBreakerExceptionPredicatesProvider))
+                .Lifetime.Should().Be(ServiceLifetime.Singleton);
+            Single(services, typeof(IRetryExceptionPredicatesProvider))
+                .Lifetime.Should().Be(ServiceLifetime.Singleton);
+        }
+
+        [Fact]
+        public void MustRegisterPathBuilderAsSingleton()
+        {
+            var services = BuildRegistration();
+
+            var pathBuilderType = typeof(RabbitMqMessageContext).Assembly.GetType(
+                "Chatter.MessageBrokers.RabbitMQ.RabbitMqPathBuilder", throwOnError: true);
+
+            Single(services, pathBuilderType).Lifetime.Should().Be(ServiceLifetime.Singleton);
+        }
+
+        [Fact]
+        public void MustRegisterBodyConverterAsScoped()
+        {
+            var services = BuildRegistration();
+
+            Single(services, typeof(IBrokeredMessageBodyConverter))
+                .Lifetime.Should().Be(ServiceLifetime.Scoped);
+        }
+
+        // The RabbitMqBodyConverter is registered as an IBrokeredMessageBodyConverter PROVIDER so the core
+        // BodyConverterFactory enumerates it and keys it under its ContentType — that is what lets the sender and
+        // receiver resolve it through IBodyConverterFactory keyed on RabbitMqOptions.MessageBodyType.
+        [Fact]
+        public void MustRegisterRabbitMqBodyConverterAsTheBodyConverterProvider()
+        {
+            var services = BuildRegistration();
+
+            Single(services, typeof(IBrokeredMessageBodyConverter))
+                .ImplementationType.Should().Be<RabbitMqBodyConverter>();
+        }
+
+        // The core BodyConverterFactory built over the registered provider resolves a JSON-capable converter for the
+        // default MessageBodyType ("application/json; charset=utf-8") — the RabbitMqBodyConverter keyed under its
+        // own ContentType — confirming the option selects a real converter rather than being ignored.
+        [Fact]
+        public void MustResolveJsonCapableConverterForDefaultBodyTypeViaFactory()
+        {
+            var factory = new Chatter.MessageBrokers.BodyConverterFactory(new IBrokeredMessageBodyConverter[]
+            {
+                new RabbitMqBodyConverter(),
+                new JsonBodyConverter()
+            });
+
+            var converter = factory.CreateBodyConverter("application/json; charset=utf-8");
+
+            converter.Should().BeOfType<RabbitMqBodyConverter>();
+            converter.ContentType.Should().Be("application/json; charset=utf-8");
+        }
+
+        [Fact]
+        public void MustRegisterRabbitMqOptionsAsSingletonInstance()
+        {
+            var services = BuildRegistration();
+
+            var descriptor = Single(services, typeof(Chatter.MessageBrokers.RabbitMQ.Configuration.RabbitMqOptions));
+
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationInstance.Should()
+                .BeOfType<Chatter.MessageBrokers.RabbitMQ.Configuration.RabbitMqOptions>()
+                .Which.HostName.Should().Be("localhost");
+        }
+
+        // --- FullAtomicityViaInfrastructure rejection at registration -----------------------------------
+
+        // MessageBrokerOptions.TransactionMode has an internal setter (set by core configuration); set it via
+        // reflection to model a host that configured the global mode to FullAtomicityViaInfrastructure.
+        private static MessageBrokerOptions GlobalOptions(TransactionMode mode)
+        {
+            var options = new MessageBrokerOptions();
+            typeof(MessageBrokerOptions).GetProperty(nameof(MessageBrokerOptions.TransactionMode))
+                .SetValue(options, mode);
+            return options;
+        }
+
+        [Fact]
+        public void MustThrowWhenGlobalTransactionModeIsFullAtomicity()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddSingleton(GlobalOptions(TransactionMode.FullAtomicityViaInfrastructure)));
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustThrowWhenAnAttributedRabbitMqReceiverRequestsFullAtomicity()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                        TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                    })));
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustNotThrowWhenReceiverRequestsReceiveOnly()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                        TransactionMode = TransactionMode.ReceiveOnly
+                    })));
+
+            act.Should().NotThrow();
+        }
+
+        [Fact]
+        public void MustNotThrowWhenGlobalTransactionModeIsNone()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddSingleton(GlobalOptions(TransactionMode.None)));
+
+            act.Should().NotThrow();
+        }
+
+        // A non-RabbitMQ receiver requesting FullAtomicity must NOT be claimed by AddRabbitMq when RabbitMQ is
+        // not the resolved default (it cannot be — an IMessagingInfrastructure descriptor already exists).
+        [Fact]
+        public void MustNotThrowWhenAtomicReceiverBelongsToAnotherInfrastructure()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IMessagingInfrastructure>(new ForeignMessagingInfrastructure());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = "Chatter.Infrastructure.SomeOtherBroker",
+                        TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                    }));
+            });
+
+            act.Should().NotThrow();
+        }
+
+        // --- Multiple-RabbitMQ-receiver rejection at registration --------------------------------------
+
+        // Two RabbitMQ-attributed receivers must throw at registration: the singleton connection source owns one
+        // receive channel and one consumer registration, so a second receiver would clobber the first.
+        [Fact]
+        public void MustThrowWhenMoreThanOneRabbitMqReceiverIsDiscovered()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        })));
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustNotThrowWhenExactlyOneRabbitMqReceiverIsDiscovered()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                        TransactionMode = TransactionMode.ReceiveOnly
+                    })));
+
+            act.Should().NotThrow();
+        }
+
+        // Receivers belonging to ANOTHER infrastructure must NOT count toward the single-RabbitMQ-receiver limit. A
+        // ForeignMessagingInfrastructure descriptor exists, so RabbitMQ is not the resolved default and the two
+        // foreign receivers are not claimed: only the one RabbitMQ receiver counts, so no throw.
+        [Fact]
+        public void MustNotThrowWhenAdditionalReceiversBelongToAnotherInfrastructure()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IMessagingInfrastructure>(new ForeignMessagingInfrastructure());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = "Chatter.Infrastructure.SomeOtherBroker",
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = "Chatter.Infrastructure.SomeOtherBroker",
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        }));
+            });
+
+            act.Should().NotThrow();
+        }
+
+        // --- Hosted-receiver factory must NOT dispose the singleton source at factory return -------------
+
+        // REGRESSION (codex P1, PR #194): the IMessagingInfrastructure receiver factory delegate must NOT
+        // open-resolve-and-DISPOSE a transient scope per Create() call. RabbitMqReceiver
+        // (IMessagingInfrastructureReceiver : IDisposable) ESCALATES its Dispose to the SINGLETON
+        // IRabbitMqConnectionSource's full teardown, so a per-call `using var scope` would dispose the
+        // returned receiver — and with it the shared singleton source — before InitializeAsync ever runs,
+        // and normal receiver startup would get back an already-disposed source (ObjectDisposedException).
+        // The receiver scope must live for the (singleton) infrastructure lifetime. This is the deliberate
+        // divergence from the SqlServiceBroker/ASB folds, whose Scoped source makes the per-call dispose a no-op.
+        private static IServiceProvider BuildProviderWithSpyConnectionSource(out SpyRabbitMqConnectionSource spy)
+        {
+            var services = new ServiceCollection();
+            var filter = AssemblySourceFilterBuilder.New().Build();
+            var builder = ChatterBuilder.Create(services, EmptyConfig(), filter);
+            builder.AddRabbitMq(o => o.AddRabbitMqOptions(hostName: "localhost"));
+
+            // Swap the production singleton source for a disposal-recording spy (still a SINGLETON + IDisposable,
+            // faithfully reproducing the production lifecycle the receiver's Dispose escalates to).
+            var capturedSpy = new SpyRabbitMqConnectionSource();
+            for (var i = services.Count - 1; i >= 0; i--)
+            {
+                if (services[i].ServiceType == typeof(IRabbitMqConnectionSource))
+                {
+                    services.RemoveAt(i);
+                }
+            }
+            services.AddSingleton<IRabbitMqConnectionSource>(capturedSpy);
+            // RabbitMqReceiver needs an IBodyConverterFactory and a logger to resolve from the container.
+            services.AddSingleton<IBodyConverterFactory>(
+                new BodyConverterFactory(new IBrokeredMessageBodyConverter[] { new RabbitMqBodyConverter(), new JsonBodyConverter() }));
+            services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
+
+            spy = capturedSpy;
+            return services.BuildServiceProvider();
+        }
+
+        [Fact]
+        public void MustNotDisposeSingletonConnectionSourceWhenResolvingReceiveInfrastructure()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out var spy);
+
+            var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
+            var receiver = infrastructure.ReceiveInfrastructure;
+
+            receiver.Should().NotBeNull();
+            spy.DisposeCount.Should().Be(0, "the receiver factory must keep its scope alive for the receiver "
+                + "lifetime — disposing it would tear down the shared singleton connection source before "
+                + "InitializeAsync runs");
+        }
+
+        [Fact]
+        public void MustResolveReceiveInfrastructureRepeatedlyWithoutDisposingTheSource()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out var spy);
+
+            var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
+            _ = infrastructure.ReceiveInfrastructure;
+            _ = infrastructure.ReceiveInfrastructure;
+
+            spy.DisposeCount.Should().Be(0);
+        }
+
+        // A disposal-recording IRabbitMqConnectionSource spy. Implements BOTH IDisposable (the sync container
+        // teardown path RabbitMqReceiver.Dispose escalates to) and IAsyncDisposable, matching the production
+        // source. All AMQP operations throw — the regression test only resolves and reads ReceiveInfrastructure.
+        private sealed class SpyRabbitMqConnectionSource : IRabbitMqConnectionSource, IDisposable
+        {
+            public int DisposeCount { get; private set; }
+
+            public long CurrentReceiveChannelEpoch => 0;
+
+            public void Dispose() => DisposeCount++;
+
+            public ValueTask DisposeAsync()
+            {
+                DisposeCount++;
+                return default;
+            }
+
+            public Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task<string>> registerConsumer,
+                                            CancellationToken cancellationToken) => throw new NotImplementedException();
+
+            public Task StopReceivingAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
+
+            public Task<TResult> RunOnReceiveChannelAsync<TResult>(Func<IChannel, long, Task<TResult>> operation,
+                                                                   CancellationToken cancellationToken)
+                => throw new NotImplementedException();
+
+            public Task<RabbitMqPublishChannelRental> AcquirePublishChannelAsync(CancellationToken cancellationToken)
+                => throw new NotImplementedException();
+        }
+
+        private sealed class StubDiscoveredReceiverRegistry : IDiscoveredReceiverRegistry
+        {
+            private readonly List<ReceiverOptions> _receivers = new List<ReceiverOptions>();
+
+            public StubDiscoveredReceiverRegistry(params ReceiverOptions[] receivers)
+                => _receivers.AddRange(receivers);
+
+            public void Register(ReceiverOptions options) => _receivers.Add(options);
+            public IReadOnlyCollection<ReceiverOptions> DiscoveredReceivers => _receivers;
+        }
+
+        // A stand-in IMessagingInfrastructure so RabbitMQ is NOT the resolved default in the foreign-receiver
+        // test (the default is "first-registered" and is decided by descriptor presence, not resolution).
+        private sealed class ForeignMessagingInfrastructure : IMessagingInfrastructure
+        {
+            public string Type => "Chatter.Infrastructure.SomeOtherBroker";
+            public IMessagingInfrastructureReceiver ReceiveInfrastructure => throw new NotImplementedException();
+            public Chatter.MessageBrokers.Sending.IMessagingInfrastructureDispatcher DispatchInfrastructure => throw new NotImplementedException();
+            public IBrokeredMessagePathBuilder PathBuilder => throw new NotImplementedException();
+        }
+    }
+}
