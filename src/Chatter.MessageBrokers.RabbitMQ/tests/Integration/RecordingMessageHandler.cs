@@ -45,6 +45,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         // message, exercising Chatter's receiver retry/deadletter path.
         public Func<Exception> ThrowOnHandle { get; set; }
 
+        // When non-null, the handler AWAITS this task (after recording, before completing) so a test can hold the
+        // first delivery in-flight — the receive channel has an unacked delivery — while it forces a broker
+        // connection drop / automatic recovery, then completes the task to let the (now stale) ack run. Used by
+        // the recovery-epoch integration proof; null on the happy path so the handler returns immediately.
+        public Func<int, Task> BlockOnHandle { get; set; }
+
         public Task<HandledRecord<TMessage>> Handled => _handled.Task;
 
         // The total number of times Chatter's pipeline has invoked the handler for TMessage. Lets a test
@@ -88,18 +94,22 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         public RecordingMessageHandler(HandlerSignalRegistry registry)
             => _registry = registry ?? throw new ArgumentNullException(nameof(registry));
 
-        public Task Handle(TMessage message, IMessageHandlerContext context)
+        public async Task Handle(TMessage message, IMessageHandlerContext context)
         {
             var signal = _registry.GetOrAdd<TMessage>();
             signal.Record(new HandledRecord<TMessage>(message, context as IMessageBrokerContext));
+
+            var blocker = signal.BlockOnHandle;
+            if (blocker != null)
+            {
+                await blocker(signal.InvocationCount).ConfigureAwait(false);
+            }
 
             var thrower = signal.ThrowOnHandle;
             if (thrower != null)
             {
                 throw thrower();
             }
-
-            return Task.CompletedTask;
         }
     }
 }

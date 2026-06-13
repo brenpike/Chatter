@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 {
@@ -18,7 +19,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// INVARIANT: the receive channel is only ever touched while the gate is held; AMQP channels are not
     /// thread-safe. INVARIANT: the receive-channel epoch is incremented whenever the receive channel is
     /// (re)created, and it is read under the same gate that hands out the channel, so callers observe the
-    /// epoch and the channel atomically.
+    /// epoch and the channel atomically. INVARIANT: the epoch is ALSO incremented on every successful
+    /// automatic recovery (RabbitMQ.Client transparently recovers the SAME <see cref="IChannel"/>, so the
+    /// (re)create path above does not run and would otherwise leave the epoch stale), closing the
+    /// post-recovery false-ack window where an in-flight pre-recovery delivery tag — invalid on the recovered
+    /// session — would otherwise pass the stale-epoch settle guard.
     /// </remarks>
     public sealed class RabbitMqConnectionSource : IRabbitMqConnectionSource
     {
@@ -156,17 +161,56 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
                 if (_connection is not null)
                 {
+                    _connection.RecoverySucceededAsync -= OnRecoverySucceededAsync;
                     await _connection.DisposeAsync().ConfigureAwait(false);
                     _connection = null;
                 }
 
                 var factory = CreateConnectionFactory();
                 _connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                // AutomaticRecoveryEnabled is true, so RabbitMQ.Client transparently recovers the SAME receive
+                // IChannel on reconnect: EnsureReceiveChannelAsync then early-returns without recreating it, so the
+                // epoch would stay stale. Subscribe so each successful recovery advances the epoch, invalidating any
+                // delivery tag captured under the pre-recovery epoch (the false-ack guard the epoch exists for).
+                _connection.RecoverySucceededAsync += OnRecoverySucceededAsync;
                 return _connection;
             }
             finally
             {
                 _connectionInitGate.Release();
+            }
+        }
+
+        // INVARIANT: advances the receive-channel epoch under the SAME gate RunOnReceiveChannelAsync holds, so the
+        // bump is atomic against an in-flight settlement: a delivery tag captured under a pre-recovery epoch can
+        // never equal the post-recovery epoch, so the stale settle no-ops. Guards against firing after disposal —
+        // the gate is disposed in DisposeAsync, and a recovery callback can still be queued at that point — so a
+        // late recovery is dropped rather than throwing ObjectDisposedException out of the library's event dispatch.
+        private async Task OnRecoverySucceededAsync(object sender, AsyncEventArgs eventArgs)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            try
+            {
+                await _receiveChannelGate.WaitAsync().ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                // The source was disposed between the _disposed check and the wait; nothing left to advance.
+                return;
+            }
+
+            try
+            {
+                Interlocked.Increment(ref _receiveChannelEpoch);
+            }
+            finally
+            {
+                _receiveChannelGate.Release();
             }
         }
 
@@ -247,6 +291,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             if (_connection is not null)
             {
+                // Unsubscribe BEFORE disposing so no recovery callback can be dispatched into a half-torn-down
+                // source; combined with the _disposed flag (set above) and the ObjectDisposedException guard in
+                // the handler, this guarantees no handler touches the gate after it is disposed below.
+                _connection.RecoverySucceededAsync -= OnRecoverySucceededAsync;
                 await _connection.DisposeAsync().ConfigureAwait(false);
                 _connection = null;
             }
