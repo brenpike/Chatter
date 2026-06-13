@@ -27,7 +27,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     [Collection(ServiceBusEmulatorCollection.Name)]
     public class PipelineScheduledDeliveryTests
     {
-        private const string ScheduledQueue = "chatter.roundtrip";
+        private const string ScheduledQueue = "chatter.scheduled";
         // How far in the future the message is scheduled. Long enough that the "not yet" assertion is meaningful
         // against the slow emulator, short enough to keep the test quick.
         private static readonly TimeSpan ScheduleDelay = TimeSpan.FromSeconds(10);
