@@ -34,7 +34,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     [Collection(ServiceBusEmulatorCollection.Name)]
     public class PipelineComplexPayloadTests
     {
-        private const string ComplexQueue = "chatter.roundtrip";
+        private const string ComplexQueue = "chatter.complexpayload";
         private static readonly TimeSpan HandlerWait = TimeSpan.FromSeconds(30);
 
         private readonly ServiceBusEmulatorFixture _emulator;
