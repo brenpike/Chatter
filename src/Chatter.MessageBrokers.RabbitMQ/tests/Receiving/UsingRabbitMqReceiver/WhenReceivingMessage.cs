@@ -29,6 +29,41 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             context.BrokeredMessage.MessageContext[RabbitMqMessageContext.DeliveryTag].Should().Be(42UL);
         }
 
+        // REPRODUCTION (r3407975403): AMQP prefetch is a ushort on the wire. A configured Prefetch above 65,535 would
+        // WRAP on the (ushort) cast at the BasicQosAsync call site — e.g. 65,536 -> 0, which RabbitMQ reads as
+        // UNLIMITED prefetch, silently removing all backpressure. The resolved prefetch is now clamped to
+        // [1, ushort.MaxValue] BEFORE the cast, so an over-large configuration saturates at the maximum supported
+        // prefetch instead of wrapping to 0.
+        [Fact]
+        public void MustClampPrefetchAboveUShortMaxBeforeQosCastSoItDoesNotWrapToUnlimited()
+        {
+            var harness = ReceiverHarness.Create(prefetch: 65_536);
+
+            harness.ConnectionSource.ReceiveChannel.LastQosPrefetchCount
+                .Should().Be(ushort.MaxValue, "a prefetch above ushort.MaxValue must saturate, never wrap to 0 (unlimited)");
+        }
+
+        // MaxConcurrentCalls is floored into the prefetch as well, so an over-large MaxConcurrentCalls is clamped
+        // by the same guard rather than wrapping the QoS cast.
+        [Fact]
+        public void MustClampPrefetchWhenMaxConcurrentCallsExceedsUShortMax()
+        {
+            var harness = ReceiverHarness.Create(maxConcurrentCalls: 70_000);
+
+            harness.ConnectionSource.ReceiveChannel.LastQosPrefetchCount
+                .Should().Be(ushort.MaxValue);
+        }
+
+        // A normal in-range prefetch is unaffected by the clamp: it reaches QoS exactly as configured.
+        [Fact]
+        public void MustPassThroughInRangePrefetchUnchanged()
+        {
+            var harness = ReceiverHarness.Create(prefetch: 50);
+
+            harness.ConnectionSource.ReceiveChannel.LastQosPrefetchCount
+                .Should().Be((ushort)50);
+        }
+
         [Fact]
         public async Task MustSurfaceChannelEpochOnContext()
         {

@@ -66,10 +66,34 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
 
+            // FAIL FAST AT REGISTRATION: a poison message that exhausts MaxReceiveAttempts is deadlettered via an
+            // explicit publish to the configured DeadLetterQueuePath/ErrorQueuePath. When NEITHER is configured the
+            // deadletter has no valid destination, so the original delivery can never be settled and is redelivered
+            // indefinitely (a poison-message hot loop). DeadletterMessageAsync still throws on that misconfiguration
+            // as defense-in-depth, but the core BrokeredMessageReceiver.TryDeadletterWithRecoveryAsync CATCHES any
+            // DeadletterMessageAsync exception and merely logs it — so the deadletter-time throw alone cannot stop the
+            // hot loop. Rejecting here, BEFORE StartReceivingAsync registers the AMQP consumer, makes the
+            // unconfigured-poison-target class unreachable: the receiver never begins consuming without a valid poison
+            // destination, surfacing the misconfiguration at startup (naming the queue) instead of silently looping.
+            if (string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath) && string.IsNullOrWhiteSpace(_options.ErrorQueuePath))
+            {
+                throw new InvalidOperationException(
+                    $"Cannot start the RabbitMQ receiver for queue '{_options.MessageReceiverPath}': neither a dead-letter queue " +
+                    $"({nameof(ReceiverOptions.DeadLetterQueuePath)}) nor an error queue ({nameof(ReceiverOptions.ErrorQueuePath)}) " +
+                    "is configured. A poison message that exhausts MaxReceiveAttempts would otherwise have no valid deadletter " +
+                    "destination and be redelivered indefinitely. Configure a dead-letter or error queue before receiving.");
+            }
+
             // Prefetch must keep enough unacknowledged deliveries in flight to saturate the core's workers, so
             // floor it at MaxConcurrentCalls. The bounded buffer mirrors that prefetch so the consumer never
             // accepts more than the broker is willing to leave unacknowledged.
-            _prefetch = Math.Max(Math.Max(1, _rabbitOptions.Prefetch), options.MaxConcurrentCalls);
+            // AMQP prefetch is a ushort on the wire: BasicQosAsync takes a ushort prefetchCount, so the resolved
+            // int MUST be clamped to [1, ushort.MaxValue] BEFORE it is cast. The public options (RabbitMqOptions.Prefetch
+            // and ReceiverOptions.MaxConcurrentCalls) do not reject high values, so without this clamp a configured
+            // value above 65,535 would WRAP on the cast — e.g. 65,536 -> 0, which RabbitMQ interprets as UNLIMITED
+            // prefetch (removing all backpressure), and other large values would silently under-prefetch. Saturate
+            // at ushort.MaxValue instead so a misconfiguration degrades to the maximum supported prefetch, never to 0.
+            _prefetch = ClampPrefetch(Math.Max(Math.Max(1, _rabbitOptions.Prefetch), options.MaxConcurrentCalls));
             _buffer = System.Threading.Channels.Channel.CreateBounded<ReceivedMessage>(
                 new BoundedChannelOptions(_prefetch)
                 {
@@ -225,6 +249,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             var priorDeliveries = SaturateToNonNegativeInt(ReadHeaderAsLong(received.Headers, headerKey, 0L));
             return priorDeliveries == int.MaxValue ? int.MaxValue : priorDeliveries + 1;
+        }
+
+        // Clamp the resolved prefetch into the AMQP-wire ushort range [1, ushort.MaxValue] so the (ushort) cast at
+        // the BasicQosAsync call site cannot wrap. A configured value above 65,535 saturates at ushort.MaxValue
+        // (maximum supported prefetch) rather than wrapping to 0 (unlimited, no backpressure) or a much smaller
+        // value than requested; the floor of 1 keeps at least one delivery in flight.
+        private static int ClampPrefetch(int value)
+        {
+            if (value < 1)
+            {
+                return 1;
+            }
+
+            return value > ushort.MaxValue ? ushort.MaxValue : value;
         }
 
         // Clamp an untrusted broker-supplied counter into [0, int.MaxValue]: negatives become 0 and values above

@@ -41,16 +41,49 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
         public static ReceiverHarness Create(QueueType queueType = QueueType.Quorum,
                                              string deadLetterQueuePath = null,
-                                             string errorQueuePath = ErrorPath)
+                                             string errorQueuePath = ErrorPath,
+                                             int prefetch = 1,
+                                             int maxConcurrentCalls = 1)
         {
-            var options = new RabbitMqOptions(hostName: "localhost", queueType: queueType);
+            var options = new RabbitMqOptions(hostName: "localhost", prefetch: prefetch, queueType: queueType);
+            var receiverOptions = new ReceiverOptions
+            {
+                MessageReceiverPath = ReceiverPath,
+                DeadLetterQueuePath = deadLetterQueuePath,
+                ErrorQueuePath = errorQueuePath,
+                MaxConcurrentCalls = maxConcurrentCalls
+            };
+            return new ReceiverHarness(options, receiverOptions);
+        }
+
+        // Drives ONLY InitializeAsync against a fresh receiver, returning the thrown exception (or null), so a test
+        // can assert the receiver REJECTS a misconfiguration at registration time — before any delivery is consumed —
+        // without the ctor's GetAwaiter().GetResult() surfacing the throw as a harness-construction failure.
+        public static System.Exception CaptureInitException(string deadLetterQueuePath, string errorQueuePath)
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var bodyConverterFactory = new BodyConverterFactory(new IBrokeredMessageBodyConverter[]
+            {
+                new RabbitMqBodyConverter(),
+                new JsonBodyConverter()
+            });
+            var receiver = new RabbitMqReceiver(connectionSource, new RabbitMqOptions(hostName: "localhost"), bodyConverterFactory, Mock.Of<ILogger<RabbitMqReceiver>>());
             var receiverOptions = new ReceiverOptions
             {
                 MessageReceiverPath = ReceiverPath,
                 DeadLetterQueuePath = deadLetterQueuePath,
                 ErrorQueuePath = errorQueuePath
             };
-            return new ReceiverHarness(options, receiverOptions);
+
+            try
+            {
+                receiver.InitializeAsync(receiverOptions, CancellationToken.None).GetAwaiter().GetResult();
+                return null;
+            }
+            catch (System.Exception ex)
+            {
+                return ex;
+            }
         }
 
         public Task PushAsync(ulong deliveryTag,

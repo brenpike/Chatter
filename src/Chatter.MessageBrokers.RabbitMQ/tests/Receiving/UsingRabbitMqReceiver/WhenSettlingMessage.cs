@@ -181,26 +181,31 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 .RoutingKey.Should().Be(ReceiverHarness.ErrorPath);
         }
 
-        // REPRODUCTION (r3407616994): when a receiver is registered with neither a dead-letter nor an error path,
-        // `destination` resolves to null/blank. The deadletter republish uses it as the default-exchange routing key
-        // with `mandatory: true`, so the publish would be UNROUTABLE and fault only AFTER the message exhausted its
-        // retry budget — leaving the original delivery un-acked and redelivered indefinitely (a poison-message hot
-        // loop). The receiver now FAILS FAST with an actionable misconfiguration error naming the queue, and does NOT
-        // attempt the unroutable publish or ack the original.
+        // REPRODUCTION (r3407975400, refining r3407616994): when a receiver is registered with neither a dead-letter
+        // nor an error path, a poison message that exhausts MaxReceiveAttempts has no valid deadletter destination.
+        // DeadletterMessageAsync still throws on that misconfiguration as defense-in-depth, but the core
+        // BrokeredMessageReceiver.TryDeadletterWithRecoveryAsync CATCHES any DeadletterMessageAsync exception and only
+        // logs it — so the deadletter-time throw alone cannot stop the resulting redeliver-indefinitely hot loop. The
+        // receiver therefore FAILS FAST AT INITIALIZATION (before StartReceivingAsync registers the AMQP consumer),
+        // making the unconfigured-poison-target class unreachable: the receiver never begins consuming without a valid
+        // poison destination. The startup error names the receiver queue so the misconfiguration is actionable.
         [Fact]
-        public async Task MustFailFastWhenNeitherDeadLetterNorErrorPathConfigured()
+        public void MustFailFastAtInitializationWhenNeitherDeadLetterNorErrorPathConfigured()
         {
-            var harness = ReceiverHarness.Create(deadLetterQueuePath: null, errorQueuePath: null);
-            await harness.PushAsync(deliveryTag: 13);
-            var context = await harness.ReceiveAsync();
+            var ex = ReceiverHarness.CaptureInitException(deadLetterQueuePath: null, errorQueuePath: null);
 
-            var act = async () => await harness.Receiver.DeadletterMessageAsync(
-                context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+            ex.Should().BeOfType<InvalidOperationException>("the receiver must reject an unconfigured poison target before consumption starts, not after a poison message has already exhausted its retry budget")
+              .Which.Message.Should().Contain(ReceiverHarness.ReceiverPath);
+        }
 
-            (await act.Should().ThrowAsync<InvalidOperationException>())
-                .WithMessage($"*{ReceiverHarness.ReceiverPath}*");
-            harness.ConnectionSource.PublishChannels.Should().BeEmpty();
-            harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
+        // The init-time guard accepts a receiver configured with only an error path (or only a dead-letter path):
+        // either valid poison destination is sufficient, so initialization succeeds and the receiver consumes.
+        [Fact]
+        public void MustInitializeWhenOnlyErrorPathConfigured()
+        {
+            var ex = ReceiverHarness.CaptureInitException(deadLetterQueuePath: null, errorQueuePath: ReceiverHarness.ErrorPath);
+
+            ex.Should().BeNull("a configured error path is a valid poison destination, so initialization must succeed");
         }
 
         [Fact]
