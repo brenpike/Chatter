@@ -1,3 +1,22 @@
 # Memory Index
 
 - [MessageBrokers characterization-test constraints](project_messagebrokers-characterization.md) — non-obvious gotchas pinning Routers/Dispatchers behavior with Moq
+- [Materializer cross-assembly visibility](project_materializer-cross-assembly-visibility.md) — why MaterializePersistedContext is public not internal (SSB can't see MB internals)
+- [ASB SDK migration](project_asb-sdk-migration.md) — multi-step refactor to Azure.Messaging.ServiceBus 7.20.1; restore side-effect: revert sibling lock files after --force-evaluate
+- [ASB integration tests](project_asb-integration-tests.md) — Testcontainers SB emulator; Docker-probe must ping /_ping (socket-connect is a WSL false positive); emulator cross-entity-txn support unverified
+- [ASB shared-queue contamination](project_asb-shared-queue-contamination.md) — integration classes reuse emulator queues; leftover messages cross-contaminate receivers -> fast non-null/wrong-shape flake (NOT a serializer bug)
+- [ASB attribute-scan test hazard](project_asb-attribute-scan-test-hazard.md) — never put real [BrokeredMessage] classes in ASB test assembly; use core AddReceiver route for F3 guard tests
+- [Receiver startup-signal placement](project_receiver-startup-signal-placement.md) — ReceivingStarted lives on internal IReceiverStartupSignal, not public IReceiveMessages (keeps 0.12.0 non-breaking)
+- [RabbitMQ receiver core constraints](project_rabbitmq-receiver-core.md) — 7.2.1 ValueTask settle methods, field-based delivery args, weak header typing, epoch no-op, predicate shape
+- [RabbitMQ DI fold](project_rabbitmq-di-fold.md) — AddRabbitMq mirrors SSB; SINGLETON connection-source divergence; FullAtomicity rejected at registration via IServiceCollection-read guard
+- [RabbitMQ unit test suite](project_rabbitmq-unit-test-suite.md) — in-memory IRabbitMqConnectionSource double + hand-rolled RecordingChannel; rental-gate balance trick; predicate-exception ctor hazards
+- [RabbitMQ integration tests](project_rabbitmq-integration-tests.md) — Testcontainers 4.12.0 image-ctor; in-test topology declare; Quorum+Classic deadletter proof; --force-evaluate sibling-lock revert; docker-gate env nuance
+- [RabbitMQ inbound routing leak](project_rabbitmq-routing-leak.md) — receiver must NEVER stamp inbound delivery exchange/routing-key onto TargetExchange/RoutingKey (outbound override leak)
+- [RabbitMQ recovery-epoch lifecycle](project_rabbitmq-recovery-epoch.md) — closed-by-construction redesign: TopologyRecoveryEnabled=false + source-owned StartReceivingAsync re-registration; supersedes bump-only fix
+- [RabbitMQ dispose-coordination](project_rabbitmq-dispose-coordination.md) — RunReceiveGatedAsync observes _disposed both sides of every gate/permit; ReturnPublishChannel always-releases; supersedes incomplete c09ba72
+- [RabbitMQ header marshaller](project_rabbitmq-header-marshaller.md) — single type-aware AMQP boundary: outbound TimeSpan->Expiration/ulong->long coercion, inbound byte[]->string decode for known string keys (unknown verbatim); closes PR #194 P1+P2
+- [RabbitMQ lifecycle-authority](project_rabbitmq-lifecycle-authority.md) — ADR 0003 collapse: single monotonic _lifecycle, connection create+dispose share receive gate, publish-or-surrender; test-seam-under-gate deadlock hazard; supersedes dispose-coordination
+- [RabbitMQ native-prop propagation](project_rabbitmq-native-prop-propagation.md) — closed-by-construction: ReceivedMessage carries curated native AMQP props, one BuildRepublishProperties builder all republish hops route through; deadletter drops Expiration, nack preserves it; closes r3407577438
+- [RabbitMQ translation contract](project_rabbitmq-translation-contract.md) — RabbitMqMessageTranslator: ONE bidirectional core<->AMQP field-map table all 3 boundaries route through; closes the 7-asymmetry root-cluster (GAP A/B + DECISION-B/D/E); marshaller demoted to header helper
+- [RabbitMQ receiver teardown](project_rabbitmq-receiver-teardown.md) — ADR-0005 terminal surgical stop: StopReceivingAsync cancels consumer + tears down receive channel under the gate, NEVER connection/pool; consumer-tag ownership moved into source; closes r3407966808
+- [RabbitMQ header symmetric coercion](project_rabbitmq-header-symmetric-coercion.md) — HeaderCoercion table (Encode CLR->wire + Decode wire->original-CLR per descriptor); closed ExpiryTimeUtc DateTime round-trip cast bug; 0.1.2

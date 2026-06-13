@@ -43,7 +43,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                                              string deadLetterQueuePath = null,
                                              string errorQueuePath = ErrorPath,
                                              int prefetch = 1,
-                                             int maxConcurrentCalls = 1)
+                                             int maxConcurrentCalls = 1,
+                                             TransactionMode? transactionMode = null)
         {
             var options = new RabbitMqOptions(hostName: "localhost", prefetch: prefetch, queueType: queueType);
             var receiverOptions = new ReceiverOptions
@@ -51,7 +52,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 MessageReceiverPath = ReceiverPath,
                 DeadLetterQueuePath = deadLetterQueuePath,
                 ErrorQueuePath = errorQueuePath,
-                MaxConcurrentCalls = maxConcurrentCalls
+                MaxConcurrentCalls = maxConcurrentCalls,
+                // The core normalizes ReceiverOptions.TransactionMode (folding in the global default) BEFORE it
+                // calls InitializeAsync; the production receiver reads it for the at-most-once init gate, so the
+                // harness sets it directly to exercise that normalized state.
+                TransactionMode = transactionMode
             };
             return new ReceiverHarness(options, receiverOptions);
         }

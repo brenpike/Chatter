@@ -225,6 +225,80 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
         }
 
+        // --- TransactionMode.None is at-most-once: failures drop (ack) instead of retry/deadletter (r3408422003) ---
+
+        // Under TransactionMode.None the enum contract is at-most-once ("if an error occurs after a message is
+        // received, it will be lost"), matching ASB (ReceiveAndDelete) and SSB (no transaction). The consumer is
+        // always registered with manual ack, so a handler-failure nack must ACK the delivery (dropping it) rather
+        // than requeue it — the message is NOT retried.
+        [Fact]
+        public async Task MustAckInsteadOfRequeueOnNackForQuorumWhenTransactionModeNone()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum, transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.None);
+            await harness.PushAsync(deliveryTag: 5);
+            var context = await harness.ReceiveAsync();
+            var noneTx = new Chatter.MessageBrokers.Context.TransactionContext(ReceiverHarness.ReceiverPath, Chatter.MessageBrokers.Receiving.TransactionMode.None);
+
+            var nacked = await harness.Receiver.NackMessageAsync(context, noneTx, CancellationToken.None);
+
+            nacked.Should().BeTrue();
+            harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(5UL, "None drops the message by acking it, not retrying");
+            harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("at-most-once must not requeue on failure");
+        }
+
+        // Under None a classic-queue nack likewise drops the delivery (ack) rather than republishing-with-incremented
+        // -count to the receiver queue, so there is no retry hop.
+        [Fact]
+        public async Task MustAckInsteadOfRepublishOnNackForClassicWhenTransactionModeNone()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic, transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.None);
+            await harness.PushAsync(deliveryTag: 9);
+            var context = await harness.ReceiveAsync();
+            var noneTx = new Chatter.MessageBrokers.Context.TransactionContext(ReceiverHarness.ReceiverPath, Chatter.MessageBrokers.Receiving.TransactionMode.None);
+
+            var nacked = await harness.Receiver.NackMessageAsync(context, noneTx, CancellationToken.None);
+
+            nacked.Should().BeTrue();
+            harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(9UL, "None drops the classic message by acking it, not republishing for retry");
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty("at-most-once must not republish a retry copy");
+        }
+
+        // Under None a poison message is LOST, not deadlettered: deadletter ACKS the delivery (dropping it) instead
+        // of republishing to the DLQ/error path.
+        [Fact]
+        public async Task MustAckInsteadOfRepublishOnDeadletterWhenTransactionModeNone()
+        {
+            var harness = ReceiverHarness.Create(deadLetterQueuePath: ReceiverHarness.DeadLetterPath, transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.None);
+            await harness.PushAsync(deliveryTag: 11);
+            var context = await harness.ReceiveAsync();
+            var noneTx = new Chatter.MessageBrokers.Context.TransactionContext(ReceiverHarness.ReceiverPath, Chatter.MessageBrokers.Receiving.TransactionMode.None);
+
+            var deadlettered = await harness.Receiver.DeadletterMessageAsync(context, noneTx, "poisoned", "bad", CancellationToken.None);
+
+            deadlettered.Should().BeTrue();
+            harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(11UL, "None drops the poison message by acking it, not deadlettering");
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty("at-most-once must not republish to the DLQ");
+        }
+
+        // Because None never deadletters, it has no poison target to require: the init-time fail-fast gate (which
+        // rejects a receiver with neither a dead-letter nor an error path) must NOT fire under None.
+        [Fact]
+        public void MustNotRequirePoisonTargetAtInitializationWhenTransactionModeNone()
+        {
+            System.Exception captured = null;
+            try
+            {
+                ReceiverHarness.Create(deadLetterQueuePath: null, errorQueuePath: null,
+                    transactionMode: Chatter.MessageBrokers.Receiving.TransactionMode.None);
+            }
+            catch (System.Exception ex)
+            {
+                captured = ex;
+            }
+
+            captured.Should().BeNull("TransactionMode.None drops poison messages rather than deadlettering, so no poison destination is required");
+        }
+
         // --- native-property propagation across republish hops (closes the TTL-propagation root-cluster) ---
 
         // The single shared builder re-applies every carried native AMQP property on the classic nack-republish

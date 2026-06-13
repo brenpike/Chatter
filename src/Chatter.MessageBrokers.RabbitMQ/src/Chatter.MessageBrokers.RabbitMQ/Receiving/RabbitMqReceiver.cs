@@ -75,7 +75,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // hot loop. Rejecting here, BEFORE StartReceivingAsync registers the AMQP consumer, makes the
             // unconfigured-poison-target class unreachable: the receiver never begins consuming without a valid poison
             // destination, surfacing the misconfiguration at startup (naming the queue) instead of silently looping.
-            if (string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath) && string.IsNullOrWhiteSpace(_options.ErrorQueuePath))
+            // EXCEPTION: TransactionMode.None is at-most-once — a poison message is dropped (acked), never republished
+            // to a deadletter/error queue (see NackMessageAsync/DeadletterMessageAsync), so None has no poison target
+            // to require. The core normalizes _options.TransactionMode (folding in the global default) BEFORE this
+            // runs, so it is authoritative here.
+            if (_options.TransactionMode != TransactionMode.None
+                && string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath) && string.IsNullOrWhiteSpace(_options.ErrorQueuePath))
             {
                 throw new InvalidOperationException(
                     $"Cannot start the RabbitMQ receiver for queue '{_options.MessageReceiverPath}': neither a dead-letter queue " +
@@ -309,6 +314,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 return Task.FromResult(false);
             }
 
+            // TransactionMode.None is at-most-once (the enum contract: "if an error occurs after a message is
+            // received, it will be lost"), matching the sibling adapters — ASB receives in ReceiveAndDelete and
+            // SSB skips the transaction so a rollback cannot redeliver. The consumer is always registered with
+            // manual ack (autoAck:false) so we settle that contract here: a handler failure under None ACKS the
+            // delivery (dropping it) instead of requeuing/republishing, so it is NOT retried or deadlettered.
+            if (IsAtMostOnce(transactionContext))
+            {
+                return SettleOnReceiveChannelAsync(received, (channel) =>
+                    channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken);
+            }
+
             if (_rabbitOptions.QueueType == QueueType.Classic)
             {
                 // Classic queues have no native redelivery counter: republish to the receiver's own queue with an
@@ -334,6 +350,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             {
                 _logger.LogTrace("No {receivedMessage} contained in context; nothing to deadletter.", nameof(ReceivedMessage));
                 return Task.FromResult(false);
+            }
+
+            // TransactionMode.None is at-most-once: a poison message is LOST, not deadlettered (the enum contract
+            // and the sibling adapters' behaviour). ACK the delivery to drop it instead of republishing to the DLQ.
+            // This also makes the InitializeAsync poison-target gate inapplicable under None (see InitializeAsync).
+            if (IsAtMostOnce(transactionContext))
+            {
+                return SettleOnReceiveChannelAsync(received, (channel) =>
+                    channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken);
             }
 
             // Explicit republish (SSB-style) to the attribute-declared deadletter / error path, authoritative over
@@ -489,6 +514,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             received = null;
             return context?.Container.TryGet(out received) ?? false;
         }
+
+        // TransactionMode.None ⇒ at-most-once: an error after receive loses the message. The core stamps the
+        // effective mode onto the TransactionContext it passes to every settlement call, so the receiver reads it
+        // here rather than capturing it at construction. ReceiveOnly / FullAtomicityViaInfrastructure (the latter
+        // rejected at startup) both keep the retry+deadletter path.
+        private static bool IsAtMostOnce(TransactionContext transactionContext)
+            => transactionContext?.TransactionMode == TransactionMode.None;
 
         // INVARIANT (TERMINAL receive teardown, mirrors core BrokeredMessageReceiver.StopReceiver — one-way, not
         // restartable): cancel the AMQP consumer on the SHARED source FIRST so no new delivery can race the buffer
