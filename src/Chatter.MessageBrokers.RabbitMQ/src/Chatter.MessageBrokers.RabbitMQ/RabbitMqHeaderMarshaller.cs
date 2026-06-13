@@ -8,10 +8,12 @@ using System.Text;
 namespace Chatter.MessageBrokers.RabbitMQ
 {
     /// <summary>
-    /// The sole type-aware marshalling boundary between core <see cref="MessageContext"/> CLR values and the
-    /// AMQP field-table wire types RabbitMQ.Client 7.2.1 can encode. Both publish and receive (and the
-    /// republish on nack/deadletter) route their header bag through this type so an uncoerced value can never
-    /// cross the wire boundary in either direction.
+    /// The header-coercion HELPER that <see cref="RabbitMqMessageTranslator"/>'s header-home fields delegate to.
+    /// Coerces each core <see cref="MessageContext"/> CLR value to an AMQP-field-table-legal wire type outbound
+    /// (<see cref="ToHeaderTable"/>) and decodes the string-typed header keys back to <c>string</c> inbound
+    /// (<see cref="ToContext"/>), so an uncoerced value can never cross the header boundary in either direction.
+    /// The translator owns the native-frame fields and routes every header bag through this helper; this type is
+    /// no longer a standalone boundary but the header arm of the single translation contract.
     /// </summary>
     /// <remarks>
     /// OUTBOUND (<see cref="ToHeaderTable"/>): the AMQP 0-9-1 field table the client can encode admits only
@@ -20,34 +22,34 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// <c>ulong</c>, <c>byte</c>, <c>uint</c>, or <c>ushort</c>. The core stamps several of those CLR types
     /// onto the context (most notably <see cref="MessageContext.TimeToLive"/> as a <see cref="TimeSpan"/> via
     /// <c>OutboundBrokeredMessage.WithTimeToLive</c>), so a raw copy of the context into the header table threw
-    /// at publish. This boundary coerces each value to a table-legal form and never throws and never silently drops
-    /// a populated value. TTL lifting is NOT owned here: the caller (the sender) lifts <see cref="MessageContext.TimeToLive"/>
+    /// at publish. This helper coerces each value to a table-legal form and never throws and never silently drops
+    /// a populated value. TTL lifting is NOT owned here: the translator lifts <see cref="MessageContext.TimeToLive"/>
     /// onto the native <see cref="BasicProperties.Expiration"/> from the core's authoritative
-    /// <c>OutboundBrokeredMessage.GetTimeToLive()</c> (tolerant of a live <see cref="TimeSpan"/> AND an outbox-replayed
-    /// string form), and the republish path re-applies the carried native Expiration; this boundary only DROPS the
-    /// un-encodable <see cref="MessageContext.TimeToLive"/> key so it never reaches the table in any form.
+    /// <c>OutboundBrokeredMessage.GetTimeToLive()</c>; this helper only DROPS the un-encodable
+    /// <see cref="MessageContext.TimeToLive"/> key so it never reaches the table in any form.
     /// INBOUND (<see cref="ToContext"/>): a real broker delivers a string application header as an AMQP longstr,
     /// which RabbitMQ.Client surfaces as a <c>byte[]</c>. The core casts a fixed set of string-typed context keys
-    /// straight to <c>string</c> (e.g. <c>InboundBrokeredMessage</c> casts <see cref="MessageContext.CorrelationId"/>
-    /// at construction), so a raw copy of the received headers left those keys as <c>byte[]</c> and the unguarded
-    /// <c>(string)</c> cast threw <see cref="InvalidCastException"/> before the handler ran. This boundary decodes
-    /// the known string-typed keys from <c>byte[]</c> to <c>string</c> while preserving every unknown key verbatim,
-    /// so genuine binary headers are never corrupted and the numeric delivery-count path (owned by
-    /// <c>RabbitMqReceiver.ReadHeaderAsLong</c>) is left untouched.
+    /// straight to <c>string</c> (e.g. <c>InboundBrokeredMessage</c> casts <see cref="MessageContext.Via"/> reads),
+    /// so a raw copy of the received headers left those keys as <c>byte[]</c> and the unguarded <c>(string)</c>
+    /// cast threw <see cref="InvalidCastException"/> before the handler ran. This helper decodes the string-typed
+    /// header keys from <c>byte[]</c> to <c>string</c> while preserving every unknown key verbatim, so genuine
+    /// binary headers are never corrupted and the numeric delivery-count path (owned by
+    /// <c>RabbitMqReceiver.ReadHeaderAsLong</c>) is left untouched. CorrelationId and ContentType are NOT in this
+    /// set: the translator owns them as native-frame fields and reads them off the frame inbound, so a decoded
+    /// header copy is not the inbound source for them.
     /// </remarks>
     internal static class RabbitMqHeaderMarshaller
     {
-        // INVARIANT: the core context keys whose values the inbound receive path casts straight to (string)
-        // (InboundBrokeredMessage.CorrelationId / Via, OutboxProcessor ContentType, the routing reads of
-        // RouteToSelfPath / ReplyTo* / RoutingSlip, and the failure-detail strings). A real broker surfaces a
-        // string application header as a byte[] (AMQP longstr), so each of these must be decoded back to string
-        // before the unguarded cast runs. Maintained as a documented constant set so adding a string-typed core
-        // key is a single edit here. InfrastructureType is included for consistency even though the receiver
-        // overwrites it with a fresh stamp.
-        private static readonly HashSet<string> _knownStringTypedKeys = new HashSet<string>
+        // INVARIANT: the core context keys that have a HEADER home and whose values the inbound receive path casts
+        // straight to (string) (the routing reads of Via / RouteToSelfPath / ReplyTo* / RoutingSlip / GroupId /
+        // Subject and the failure-detail strings). A real broker surfaces a string application header as a byte[]
+        // (AMQP longstr), so each must be decoded back to string before the unguarded cast runs. CorrelationId and
+        // ContentType are DELIBERATELY ABSENT: RabbitMqMessageTranslator owns them as native-frame fields (it sets
+        // the native frame outbound and reads the native frame inbound), so the header copy is not their decode
+        // source. InfrastructureType is included for consistency even though the receiver overwrites it.
+        // This is the single string-typed-header-key declaration; adding a string-typed header key is one edit here.
+        private static readonly HashSet<string> _stringTypedHeaderKeys = new HashSet<string>
         {
-            MessageContext.CorrelationId,
-            MessageContext.ContentType,
             MessageContext.Subject,
             MessageContext.GroupId,
             MessageContext.Via,
@@ -170,7 +172,7 @@ namespace Chatter.MessageBrokers.RabbitMQ
 
             foreach (var entry in headers)
             {
-                if (_knownStringTypedKeys.Contains(entry.Key))
+                if (_stringTypedHeaderKeys.Contains(entry.Key))
                 {
                     context[entry.Key] = DecodeStringTypedValue(entry.Value);
                     continue;
@@ -183,6 +185,14 @@ namespace Chatter.MessageBrokers.RabbitMQ
 
             return context;
         }
+
+        /// <summary>
+        /// The inbound header-value decode helper the translator delegates to for a native-frame field whose value
+        /// is sourced from its decoded header copy when the native frame is absent (e.g. the dual-home CorrelationId
+        /// delivered only as a header). A string-typed value arrives as a byte[] (longstr) from a real broker or as
+        /// a string from an in-process double; decode the byte[] as UTF-8 and pass a string through unchanged.
+        /// </summary>
+        public static object DecodeHeaderValue(object value) => DecodeStringTypedValue(value);
 
         // A string-typed key's value arrives as a byte[] (longstr) from a real broker or as a string from an
         // in-process double; decode the byte[] as UTF-8 and pass a string through unchanged. Any other type (e.g.

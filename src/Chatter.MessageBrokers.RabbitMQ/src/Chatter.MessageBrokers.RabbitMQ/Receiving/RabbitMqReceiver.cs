@@ -115,14 +115,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // INVARIANT: the push consumer's only job is to wrap the delivery (carrying the registration-time epoch)
         // and enqueue it into the bounded buffer. When the buffer is full WriteAsync async-parks here, which
         // back-pressures the broker exactly to prefetch.
-        // INVARIANT: the curated native AMQP property set is captured here ONCE from the delivery's
-        // IReadOnlyBasicProperties using its Is*Present() guards (absent => null, never a spurious default), so
-        // every native property the broker delivered survives onto ReceivedMessage and can be re-applied on a
-        // republish hop. Without this capture the republish rebuilt BasicProperties from scratch and dropped
-        // every delivered native property (e.g. a classic-queue per-message TTL lost on the first redelivery).
+        // INVARIANT: the curated native AMQP property set is captured here ONCE through the single translation
+        // contract (RabbitMqMessageTranslator.CaptureFacts) from the delivery's IReadOnlyBasicProperties, so every
+        // native property the broker delivered survives onto ReceivedMessage as the republish-carry facts and is
+        // re-applied through the translator on a republish hop. Without this capture the republish rebuilt
+        // BasicProperties from scratch and dropped every delivered native property (e.g. a classic-queue per-message
+        // TTL lost on the first redelivery).
         private async Task BufferDeliveryAsync(BasicDeliverEventArgs delivery, long epoch)
         {
             var properties = delivery.BasicProperties;
+            var facts = RabbitMqMessageTranslator.CaptureFacts(properties);
 
             var received = new ReceivedMessage(body: delivery.Body.ToArray(),
                                                deliveryTag: delivery.DeliveryTag,
@@ -133,15 +135,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                                                exchange: delivery.Exchange,
                                                routingKey: delivery.RoutingKey,
                                                redelivered: delivery.Redelivered,
-                                               messageId: properties?.MessageId,
-                                               expiration: properties?.IsExpirationPresent() == true ? properties.Expiration : null,
-                                               priority: properties?.IsPriorityPresent() == true ? properties.Priority : (byte?)null,
-                                               timestamp: properties?.IsTimestampPresent() == true ? properties.Timestamp : (AmqpTimestamp?)null,
-                                               type: properties?.IsTypePresent() == true ? properties.Type : null,
-                                               appId: properties?.IsAppIdPresent() == true ? properties.AppId : null,
-                                               contentEncoding: properties?.IsContentEncodingPresent() == true ? properties.ContentEncoding : null,
-                                               contentType: properties?.IsContentTypePresent() == true ? properties.ContentType : null,
-                                               correlationId: properties?.IsCorrelationIdPresent() == true ? properties.CorrelationId : null);
+                                               messageId: facts.MessageId,
+                                               expiration: facts.Expiration,
+                                               priority: facts.Priority,
+                                               timestamp: facts.Timestamp,
+                                               type: facts.Type,
+                                               appId: facts.AppId,
+                                               contentEncoding: facts.ContentEncoding,
+                                               contentType: facts.ContentType,
+                                               correlationId: facts.CorrelationId);
 
             await _buffer.Writer.WriteAsync(received, delivery.CancellationToken).ConfigureAwait(false);
         }
@@ -154,16 +156,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             var receiveAttempts = ResolveReceiveAttempts(received);
 
-            // Seed the context from the inbound AMQP application headers FIRST so custom / correlation context the
-            // publisher stamped (RabbitMqSender publishes OutboundBrokeredMessage.MessageContext as headers) survives
-            // the first receive hop, matching the other adapters that copy inbound application properties before
-            // adding infrastructure stamps. Infrastructure keys are then stamped ON TOP, so a fresh DeliveryTag /
-            // ChannelEpoch / InfrastructureType / ReceiveAttempts always wins over any inbound value of the same key.
-            // INVARIANT: the marshaller is the sole boundary that decodes known string-typed keys delivered as a
-            // byte[] (AMQP longstr) back to string BEFORE the core's unguarded (string) cast (e.g.
-            // InboundBrokeredMessage casts CorrelationId at construction), so a self-published round-trip no longer
-            // throws InvalidCastException.
-            var headers = new Dictionary<string, object>(RabbitMqHeaderMarshaller.ToContext(received.Headers));
+            // Seed the context through the SINGLE translation contract: the delivered header table is decoded
+            // (string-typed header keys byte[]->string so the core's unguarded (string) cast holds), the native
+            // frame fields with a core concept are surfaced (ContentType -> GAP B, CorrelationId dual-home), and
+            // the native Expiration is reconstituted into MessageContext.TimeToLive (GAP A). The C-family natives
+            // stay on the facts only (DECISION-B), never in the core context. This matches the other adapters that
+            // copy inbound application properties before adding infrastructure stamps. Infrastructure keys are then
+            // stamped ON TOP, so a fresh DeliveryTag / ChannelEpoch / InfrastructureType / ReceiveAttempts always
+            // wins over any inbound value of the same key.
+            var (headers, deliveredContentType) = RabbitMqMessageTranslator.ToCore(FactsFrom(received), received.Headers);
 
             // INVARIANT: the OUTBOUND dispatch-override command keys (TargetExchange / RoutingKey) must NEVER be
             // carried from an inbound delivery. Only .WithRabbitMqRouting writes them and the sender reads them; the
@@ -183,10 +184,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             headers[MessageContext.ReceiveAttempts] = receiveAttempts;
 
             var messageId = string.IsNullOrEmpty(received.MessageId) ? Guid.NewGuid().ToString() : received.MessageId;
-            // Resolve the body converter through the core factory keyed on the configured MessageBodyType so the
-            // emitted context deserializes with the converter the option selects (unknown types fall back to the
-            // core JsonBodyConverter), rather than a hardwired concrete converter.
-            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_rabbitOptions.MessageBodyType);
+            // GAP B: pick the body converter from the DELIVERED content-type when the delivery carried one, so the
+            // emitted context deserializes with the converter that matches what the publisher actually serialized.
+            // Fall back to the converter resolved for the configured MessageBodyType otherwise; an unknown
+            // content-type falls back to the core JsonBodyConverter inside the factory (never throws).
+            var bodyConverterContentType = string.IsNullOrWhiteSpace(deliveredContentType)
+                ? _rabbitOptions.MessageBodyType
+                : deliveredContentType;
+            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(bodyConverterContentType);
             var messageContext = new MessageBrokerContext(messageId,
                                                           received.Body,
                                                           headers,
@@ -324,7 +329,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         {
             await using var rental = await _connectionSource.AcquirePublishChannelAsync(cancellationToken).ConfigureAwait(false);
 
-            var properties = BuildRepublishProperties(received, headerOverrides, preserveExpiration);
+            // REPUBLISH boundary: route through the SINGLE translation contract so no hop rebuilds BasicProperties
+            // independently. The carried facts (every delivered native, including the C-family — DECISION-B) and the
+            // merged header overrides are re-emitted exactly like a fresh publish; preserveExpiration is the only
+            // per-hop difference (true on nack-redelivery, false on deadletter).
+            var properties = RabbitMqMessageTranslator.ToRepublishAmqp(
+                FactsFrom(received),
+                received.Headers,
+                new RabbitMqMessageTranslator.RepublishOptions(preserveExpiration, headerOverrides));
 
             // Default-exchange convention: routing key == destination queue name.
             await rental.Channel.BasicPublishAsync(exchange: string.Empty,
@@ -338,73 +350,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken).ConfigureAwait(false);
         }
 
-        // INVARIANT: the SINGLE outbound-property builder every republish hop routes through, so no hop can drop a
-        // delivered native AMQP property by rebuilding BasicProperties from scratch. Re-applies each carried native
-        // property when present and routes the merged header bag through the marshaller (the sole field-table
-        // boundary) exactly like a fresh publish. <paramref name="preserveExpiration"/> is the ONLY per-hop
-        // difference: true on the nack-redelivery hop (keep the per-message TTL across the republish), false on the
-        // deadletter hop (a DLQ message must not auto-expire via the original TTL). All OTHER carried native props
-        // travel on BOTH hops. The native CorrelationId / ContentType frame fields are authoritative on republish
-        // (re-applied from the carried native value); the decoded header copies remain in the table, consistent
-        // with a fresh publish where the sender sets the native field and the marshaller writes the header.
-        private static BasicProperties BuildRepublishProperties(ReceivedMessage received,
-                                                                IReadOnlyDictionary<string, object> headerOverrides,
-                                                                bool preserveExpiration)
-        {
-            var properties = new BasicProperties
-            {
-                Persistent = true
-            };
-
-            // INVARIANT: the merged header bag is routed through the marshaller (the sole boundary) so a
-            // republished delivery is field-table-legal in exactly the same way a fresh publish is — any override
-            // value that is not natively encodable is coerced rather than faulting the republish. The
-            // DeliveryCountHeader long override and ReadHeaderAsLong's numeric tolerance are preserved: a long is
-            // table-legal and passes through unchanged.
-            properties.Headers = RabbitMqHeaderMarshaller.ToHeaderTable(MergeHeaders(received.Headers, headerOverrides), properties);
-
-            if (!string.IsNullOrEmpty(received.MessageId))
-            {
-                properties.MessageId = received.MessageId;
-            }
-
-            // Re-apply each carried native AMQP property when the delivery carried one (absent => null => skip, so
-            // a republish never stamps a spurious default). Expiration ONLY when preserveExpiration.
-            if (preserveExpiration && received.Expiration != null)
-            {
-                properties.Expiration = received.Expiration;
-            }
-            if (received.Priority.HasValue)
-            {
-                properties.Priority = received.Priority.Value;
-            }
-            if (received.Timestamp.HasValue)
-            {
-                properties.Timestamp = received.Timestamp.Value;
-            }
-            if (received.Type != null)
-            {
-                properties.Type = received.Type;
-            }
-            if (received.AppId != null)
-            {
-                properties.AppId = received.AppId;
-            }
-            if (received.ContentEncoding != null)
-            {
-                properties.ContentEncoding = received.ContentEncoding;
-            }
-            if (received.ContentType != null)
-            {
-                properties.ContentType = received.ContentType;
-            }
-            if (received.CorrelationId != null)
-            {
-                properties.CorrelationId = received.CorrelationId;
-            }
-
-            return properties;
-        }
+        // Projects the curated native AMQP properties carried on a buffered ReceivedMessage back into the
+        // translator's NativeFacts carrier, so the receive translation (ToCore) and the republish translation
+        // (ToRepublishAmqp) consume the SAME native-property shape the single capture point (CaptureFacts) produced.
+        private static RabbitMqMessageTranslator.NativeFacts FactsFrom(ReceivedMessage received)
+            => new RabbitMqMessageTranslator.NativeFacts(
+                messageId: received.MessageId,
+                expiration: received.Expiration,
+                priority: received.Priority,
+                timestamp: received.Timestamp,
+                type: received.Type,
+                appId: received.AppId,
+                contentEncoding: received.ContentEncoding,
+                contentType: received.ContentType,
+                correlationId: received.CorrelationId);
 
         // INVARIANT: runs the settlement under the receive-channel gate and compares the delivery's carried epoch
         // to the current channel epoch. On a mismatch the channel was recycled since delivery — the delivery tag
@@ -438,26 +397,6 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             {
                 [RabbitMqMessageContext.DeliveryCountHeader] = (long)next
             };
-        }
-
-        private static Dictionary<string, object> MergeHeaders(IReadOnlyDictionary<string, object> source,
-                                                               IReadOnlyDictionary<string, object> overrides)
-        {
-            var merged = new Dictionary<string, object>();
-            foreach (var entry in source)
-            {
-                merged[entry.Key] = entry.Value;
-            }
-
-            if (overrides != null)
-            {
-                foreach (var entry in overrides)
-                {
-                    merged[entry.Key] = entry.Value;
-                }
-            }
-
-            return merged;
         }
 
         // AMQP integer headers arrive boxed as int/long/short/byte; a string-typed header arrives as a byte[].

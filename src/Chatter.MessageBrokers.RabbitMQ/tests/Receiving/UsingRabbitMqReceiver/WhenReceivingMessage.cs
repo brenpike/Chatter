@@ -260,6 +260,80 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             public string Name { get; set; }
         }
 
+        // GAP B: when the delivery carries a native ContentType, it is surfaced onto the context so the receiver
+        // selects the inbound body converter from the DELIVERED content-type rather than always the configured
+        // MessageBodyType. The harness registers the RabbitMqBodyConverter ("application/json; charset=utf-8"); a
+        // delivery advertising that content type round-trips a JSON body, proving the delivered type drove selection.
+        [Fact]
+        public async Task MustSurfaceDeliveredContentTypeAndSelectConverterFromIt()
+        {
+            var harness = ReceiverHarness.Create();
+            var jsonBody = System.Text.Encoding.UTF8.GetBytes("{\"Name\":\"orders\"}");
+            await harness.PushAsync(deliveryTag: 1, body: jsonBody, contentType: "application/json; charset=utf-8");
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ContentType].Should().Be("application/json; charset=utf-8");
+            context.BrokeredMessage.GetMessageFromBody<ContentTypePayload>().Name.Should().Be("orders");
+        }
+
+        // GAP B fallback: a delivery whose native content-type is UNKNOWN to the factory still receives without
+        // throwing — the factory falls back to the core JsonBodyConverter, preserving the unknown-content-type
+        // fallback rather than failing the receive.
+        [Fact]
+        public async Task MustFallBackToJsonConverterWhenDeliveredContentTypeUnknown()
+        {
+            var harness = ReceiverHarness.Create();
+            var jsonBody = System.Text.Encoding.UTF8.GetBytes("{\"Name\":\"orders\"}");
+            await harness.PushAsync(deliveryTag: 1, body: jsonBody, contentType: "application/x-unknown");
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.GetMessageFromBody<ContentTypePayload>().Name.Should().Be("orders");
+        }
+
+        private sealed class ContentTypePayload
+        {
+            public string Name { get; set; }
+        }
+
+        // GAP A: a delivered native Expiration (per-message TTL, ms string) is reconstituted onto the received
+        // context as a TimeSpan MessageContext.TimeToLive, so the core concept survives the receive hop (a
+        // downstream re-send can read it). Before the single translator the receive path discarded it entirely.
+        [Fact]
+        public async Task MustReconstituteNativeExpirationIntoTimeToLiveOnReceive()
+        {
+            var harness = ReceiverHarness.Create();
+            await harness.PushAsync(deliveryTag: 1, expiration: "1500");
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.TimeToLive].Should().Be(System.TimeSpan.FromMilliseconds(1500));
+        }
+
+        // The C-family carry-only natives (Priority / Timestamp / Type / AppId / ContentEncoding) are NEVER
+        // surfaced into the received core context (DECISION-B) even when the delivery carried them — they exist
+        // only as republish-carry facts on the ReceivedMessage.
+        [Fact]
+        public async Task MustNotSurfaceCarryOnlyNativePropsIntoReceivedContext()
+        {
+            var harness = ReceiverHarness.Create();
+            await harness.PushAsync(deliveryTag: 1,
+                                    priority: 4,
+                                    timestamp: new global::RabbitMQ.Client.AmqpTimestamp(1718000000L),
+                                    type: "OrderPlaced",
+                                    appId: "orders-svc",
+                                    contentEncoding: "gzip");
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext.Should().NotContainKey("Priority");
+            context.BrokeredMessage.MessageContext.Should().NotContainKey("Timestamp");
+            context.BrokeredMessage.MessageContext.Should().NotContainKey("Type");
+            context.BrokeredMessage.MessageContext.Should().NotContainKey("AppId");
+            context.BrokeredMessage.MessageContext.Should().NotContainKey("ContentEncoding");
+        }
+
         [Fact]
         public async Task MustUseBrokerMessageIdWhenPresent()
         {

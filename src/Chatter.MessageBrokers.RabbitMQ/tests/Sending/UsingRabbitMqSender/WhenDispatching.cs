@@ -358,17 +358,19 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
             publish.Headers[RabbitMqMessageContext.DeliveryTag].Should().Be(7L);
         }
 
-        // Full boundary round-trip: a published header bag, coerced to the field table by ToHeaderTable, then
-        // longstr-coerced to byte[] the way a real broker delivers it, then projected back through ToContext, must
-        // restore the known string-typed keys (CorrelationId) AND custom unknown string keys to a CLR string —
-        // proving the two halves of the single boundary compose.
+        // The marshaller header arm round-trip: a published header bag, coerced to the field table by ToHeaderTable,
+        // then longstr-coerced to byte[] the way a real broker delivers it, then projected back through ToContext,
+        // restores the STRING-TYPED HEADER keys (Subject) to a CLR string while preserving an unknown string key
+        // verbatim — proving the two halves of the header arm compose. CorrelationId is no longer asserted here: it
+        // is a NATIVE-FRAME field owned by RabbitMqMessageTranslator (decoded off the frame, not the header), so the
+        // full-message round-trip across all three boundaries is pinned in WhenTranslatingRoundTrip instead.
         [Fact]
         public void MustRoundTripStringHeadersThroughBoundaryToClrString()
         {
             var properties = new BasicProperties();
             var context = new Dictionary<string, object>
             {
-                [MessageContext.CorrelationId] = "corr-123",
+                [MessageContext.Subject] = "order-subject",
                 ["custom-string-header"] = "custom-value"
             };
 
@@ -385,8 +387,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
 
             var roundTripped = RabbitMqHeaderMarshaller.ToContext(onWire);
 
-            // The known string-typed key is decoded back to a CLR string.
-            roundTripped[MessageContext.CorrelationId].Should().Be("corr-123");
+            // The string-typed header key is decoded back to a CLR string.
+            roundTripped[MessageContext.Subject].Should().Be("order-subject");
             // The unknown string key is preserved verbatim as the byte[] the broker delivered (never force-decoded).
             roundTripped["custom-string-header"].Should().BeEquivalentTo(System.Text.Encoding.UTF8.GetBytes("custom-value"));
         }
