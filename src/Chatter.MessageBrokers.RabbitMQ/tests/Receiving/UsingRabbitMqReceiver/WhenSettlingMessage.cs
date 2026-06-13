@@ -12,9 +12,12 @@ using Xunit;
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 {
     // Pins RabbitMqReceiver settlement: ack on a matching epoch acks the carried delivery tag; nack requeues
-    // (Quorum) or republishes-with-incremented-count-then-acks (Classic); deadletter republishes to the
-    // attribute-declared deadletter/error path then acks; and EVERY settlement is epoch-guarded — a settlement
-    // carrying a stale epoch (forced via the in-memory source's AdvanceEpoch) is a no-op (the false-ack guard).
+    // (Quorum) or republishes-with-incremented-count-then-acks (Classic); deadletter republishes-confirmed to the
+    // attribute-declared deadletter/error path then acks (DLQ path returns true so the core ALSO forwards an
+    // error-queue copy; error-only path returns FALSE to suppress the core's ErrorQueueDispatcher so exactly one
+    // error-queue copy exists); and EVERY settlement is epoch-guarded — a settlement carrying a stale epoch (forced
+    // via the in-memory source's AdvanceEpoch) makes the ACK a no-op (the false-ack guard) while the republish is
+    // publisher-confirmed regardless, so the durable copy survives and the broker redelivers the original.
     // The republish-then-ack ordering is asserted: the confirmed republish is recorded BEFORE the original ack.
     public class WhenSettlingMessage : Testing.Core.Context
     {
@@ -170,13 +173,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         // OWNERSHIP (r3408649034): the dead-letter queue is the ADAPTER's responsibility; the ERROR queue is the
         // CORE's. On max-receives the core runs deadletter FIRST and, ONLY when it returns true, ALSO runs its
         // error-recovery action (ErrorQueueDispatcher → IForwardMessages) which forwards the inbound message to the
-        // error queue via this same RabbitMQ infrastructure. So for an ERROR-ONLY config (no dead-letter queue) the
-        // adapter must NOT republish to the error queue itself — doing so collided with the core's error action and
-        // wrote the poison record to the error queue TWICE. DeadletterMessageAsync therefore ACKS the original WITHOUT
-        // any republish and returns true, leaving the single error-queue copy to the core. (The DLQ-configured path is
-        // unchanged and pinned by MustRepublishToDeadLetterPathThenAck above.)
+        // error queue via this same RabbitMQ infrastructure. For an ERROR-ONLY config (no dead-letter queue) the
+        // adapter republishes-confirmed the single durable copy to the error queue ITSELF (confirm-before-ack so the
+        // poison record is never lost) and then returns FALSE so the core's error action does NOT also forward —
+        // returning true here would write the poison record to the error queue TWICE. So exactly one error-queue copy
+        // exists, written by the adapter, with no loss. (The DLQ-configured path returns true and is pinned by
+        // MustRepublishToDeadLetterPathThenAck above.)
         [Fact]
-        public async Task MustNotRepublishToErrorPathWhenNoDeadLetterPathConfigured()
+        public async Task MustRepublishToErrorPathThenAckAndReturnFalseWhenNoDeadLetterPathConfigured()
         {
             var harness = ReceiverHarness.Create(deadLetterQueuePath: null, errorQueuePath: ReceiverHarness.ErrorPath);
             await harness.PushAsync(deliveryTag: 12);
@@ -185,23 +189,26 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             var deadlettered = await harness.Receiver.DeadletterMessageAsync(
                 context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
 
-            // (a) Exactly ONE error-queue copy: the adapter publishes NOTHING (no republish hop), so the core's
-            // error-recovery action delivers the single copy. A republish here would be the duplicate.
-            harness.ConnectionSource.PublishChannels.Should().BeEmpty(
-                "the adapter must not republish to the error queue — the core's error-recovery action owns that single copy");
-            // (b)/(c) The original is still settled (epoch-guarded ack of the carried delivery tag, NOT a requeue/
-            // republish) so it is not redelivered, and the method returns true so the core runs its error action.
-            deadlettered.Should().BeTrue(
-                "the method must return true so the core's error-recovery action runs and delivers the single error-queue copy");
+            // (a) Exactly ONE error-queue copy: the adapter republishes-confirmed a single copy to the error path.
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.RoutingKey.Should().Be(ReceiverHarness.ErrorPath);
+            // (b) The original is settled by an epoch-guarded ack of the carried delivery tag AFTER the confirmed
+            // republish (NOT a requeue/republish-back), so it is not redelivered.
             harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(12UL);
             harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("the error-only deadletter acks; it does not requeue");
+            // (c) Returns false so the core's ErrorQueueDispatcher is suppressed — the adapter already wrote the
+            // single copy; letting the core forward again would be the duplicate.
+            deadlettered.Should().BeFalse(
+                "the method must return false so the core's error-recovery action is suppressed and the adapter's single error-queue copy is not duplicated");
         }
 
-        // No message loss in the error-only path under a stale epoch: the ack is epoch-guarded exactly like every
-        // other settlement, so a recycled receive channel makes it a no-op and the broker redelivers (the core's
-        // error action then routes the redelivered copy). The adapter never publishes on this path regardless.
+        // No message loss in the error-only path under a stale epoch: the republish is publisher-confirmed REGARDLESS
+        // of epoch (a durable copy lands in the error queue), but the original ack is epoch-guarded exactly like every
+        // other settlement — a recycled receive channel makes the ack a no-op so the broker redelivers the original.
+        // The error queue therefore holds the durable copy and the redelivered original is the (absorbed) duplicate;
+        // nothing is lost. The method returns false either way (the error-only path never returns true).
         [Fact]
-        public async Task MustNotAckErrorOnlyDeadletterWhenEpochStale()
+        public async Task MustRepublishButNotAckErrorOnlyDeadletterWhenEpochStale()
         {
             var harness = ReceiverHarness.Create(deadLetterQueuePath: null, errorQueuePath: ReceiverHarness.ErrorPath);
             await harness.PushAsync(deliveryTag: 12);
@@ -212,9 +219,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             var deadlettered = await harness.Receiver.DeadletterMessageAsync(
                 context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
 
-            deadlettered.Should().BeFalse("a settlement carrying a stale epoch must be a no-op (the false-ack guard)");
+            deadlettered.Should().BeFalse("the error-only deadletter returns false; under a stale epoch the ack is additionally a no-op (the false-ack guard)");
+            // The durable error-queue copy is confirmed regardless of epoch — this is what prevents loss.
+            harness.ConnectionSource.PublishChannels.Single().Publishes.Should().ContainSingle("the error-only deadletter republishes-confirmed a durable copy even under a stale epoch");
+            // The ack is epoch-guarded: a recycled receive channel makes it a no-op so the broker redelivers.
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
-            harness.ConnectionSource.PublishChannels.Should().BeEmpty("the error-only deadletter never republishes");
         }
 
         // REPRODUCTION (r3407975400, refining r3407616994): when a receiver is registered with neither a dead-letter
