@@ -139,20 +139,29 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             var receiveAttempts = ResolveReceiveAttempts(received);
 
-            // INVARIANT: the broker-supplied inbound delivery.Exchange / delivery.RoutingKey are NOT stamped onto
-            // the context. TargetExchange / RoutingKey are OUTBOUND dispatch-override command keys that only
-            // .WithRabbitMqRouting writes and the sender reads; the core seeds an outbound send's options from the
-            // inbound context, so stamping the inbound delivery's address here would silently re-route every
-            // receive-then-send follow-up back toward the inbound queue.
-            var headers = new Dictionary<string, object>
-            {
-                [RabbitMqMessageContext.DeliveryTag] = received.DeliveryTag,
-                [RabbitMqMessageContext.ChannelEpoch] = received.ChannelEpoch,
-                [MessageContext.InfrastructureType] = RabbitMqMessageContext.InfrastructureType,
-                // MANDATORY: stamped on EVERY message as an int. The core's default MessageDeliveryCountAsync
-                // casts this value to (int) without a guard, so an absent or non-int value would throw there.
-                [MessageContext.ReceiveAttempts] = receiveAttempts
-            };
+            // Seed the context from the inbound AMQP application headers FIRST so custom / correlation context the
+            // publisher stamped (RabbitMqSender publishes OutboundBrokeredMessage.MessageContext as headers) survives
+            // the first receive hop, matching the other adapters that copy inbound application properties before
+            // adding infrastructure stamps. Infrastructure keys are then stamped ON TOP, so a fresh DeliveryTag /
+            // ChannelEpoch / InfrastructureType / ReceiveAttempts always wins over any inbound value of the same key.
+            var headers = new Dictionary<string, object>(received.Headers);
+
+            // INVARIANT: the OUTBOUND dispatch-override command keys (TargetExchange / RoutingKey) must NEVER be
+            // carried from an inbound delivery. Only .WithRabbitMqRouting writes them and the sender reads them; the
+            // core seeds an outbound send's options from the inbound context, so preserving an inbound copy of these
+            // would silently re-route every receive-then-send follow-up back toward the inbound queue. They are
+            // stripped here (a round-tripped message can carry them because the sender publishes the full context as
+            // headers), independent of the broker-supplied delivery.Exchange / delivery.RoutingKey, which are also
+            // never stamped.
+            headers.Remove(RabbitMqMessageContext.TargetExchange);
+            headers.Remove(RabbitMqMessageContext.RoutingKey);
+
+            headers[RabbitMqMessageContext.DeliveryTag] = received.DeliveryTag;
+            headers[RabbitMqMessageContext.ChannelEpoch] = received.ChannelEpoch;
+            headers[MessageContext.InfrastructureType] = RabbitMqMessageContext.InfrastructureType;
+            // MANDATORY: stamped on EVERY message as an int. The core's default MessageDeliveryCountAsync
+            // casts this value to (int) without a guard, so an absent or non-int value would throw there.
+            headers[MessageContext.ReceiveAttempts] = receiveAttempts;
 
             var messageId = string.IsNullOrEmpty(received.MessageId) ? Guid.NewGuid().ToString() : received.MessageId;
             // Resolve the body converter through the core factory keyed on the configured MessageBodyType so the

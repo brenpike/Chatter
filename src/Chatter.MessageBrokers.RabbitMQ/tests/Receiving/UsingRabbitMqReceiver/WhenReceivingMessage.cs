@@ -97,6 +97,71 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             outbound.MessageContext[RabbitMqMessageContext.RoutingKey].Should().Be("orders.created");
         }
 
+        // BEHAVIOR: inbound AMQP application headers (custom / correlation context the publisher stamped) survive
+        // the first receive hop instead of being discarded, matching the other adapters that copy inbound
+        // application properties before adding infrastructure stamps.
+        [Fact]
+        public async Task MustPreserveInboundApplicationHeadersOnContext()
+        {
+            var harness = ReceiverHarness.Create();
+            var headers = new Dictionary<string, object>
+            {
+                ["x-correlation-id"] = "corr-123",
+                ["custom-app-header"] = "app-value"
+            };
+            await harness.PushAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-123");
+            context.BrokeredMessage.MessageContext["custom-app-header"].Should().Be("app-value");
+        }
+
+        // REGRESSION: copying inbound headers must NOT reintroduce the outbound routing-override command keys. A
+        // round-tripped message can carry TargetExchange / RoutingKey because the sender publishes the full context
+        // as headers; if preserved on receive, the core would re-route a receive-then-send follow-up back toward the
+        // inbound queue. The receiver strips them while still preserving other inbound application headers.
+        [Fact]
+        public async Task MustStripInboundRoutingOverrideKeysWhilePreservingOtherHeaders()
+        {
+            var harness = ReceiverHarness.Create();
+            var headers = new Dictionary<string, object>
+            {
+                [RabbitMqMessageContext.TargetExchange] = "stale-exchange",
+                [RabbitMqMessageContext.RoutingKey] = "stale.routing.key",
+                ["x-correlation-id"] = "corr-123"
+            };
+            await harness.PushAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.TargetExchange);
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.RoutingKey);
+            context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-123");
+        }
+
+        // The freshly-stamped infrastructure keys win over any inbound header carrying the same key, so a
+        // round-tripped delivery cannot poison DeliveryTag / ChannelEpoch / InfrastructureType / ReceiveAttempts.
+        [Fact]
+        public async Task MustOverwriteInboundInfrastructureKeysWithFreshStamps()
+        {
+            var harness = ReceiverHarness.Create();
+            var headers = new Dictionary<string, object>
+            {
+                [RabbitMqMessageContext.DeliveryTag] = 999UL,
+                [RabbitMqMessageContext.ChannelEpoch] = 999L,
+                [MessageContext.InfrastructureType] = "stale-infrastructure-type"
+            };
+            await harness.PushAsync(deliveryTag: 7, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[RabbitMqMessageContext.DeliveryTag].Should().Be(7UL);
+            context.BrokeredMessage.MessageContext[RabbitMqMessageContext.ChannelEpoch].Should().Be(0L);
+            context.BrokeredMessage.MessageContext[MessageContext.InfrastructureType]
+                .Should().Be(RabbitMqMessageContext.InfrastructureType);
+        }
+
         [Fact]
         public async Task MustStampRabbitMqInfrastructureTypeOnContext()
         {
