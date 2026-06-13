@@ -32,3 +32,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - `IRabbitMqConnectionSource` seam — sole originator of the singleton `IConnection`, serialized receive channel (with epoch), and pooled publish channels; substituted by an in-memory double in unit tests.
 - `RabbitMqBodyConverter` — UTF-8 JSON body encoding/decoding through the shared `ChatterJson.Options`.
 - `RabbitMqPathBuilder` — resolves `SendingPath`, `ReceiverName`, `ErrorQueueName`, and `DeadletterQueueName` from `BrokeredMessageAttribute` fields.
+
+### Fixed
+
+- Inbound delivery exchange and routing-key no longer leak into outbound routing overrides — the receiver no longer stamps the broker-supplied inbound address into the `.WithRabbitMqRouting` command keys, preventing a handler that receives-then-sends from being silently re-routed back to the originating exchange.
+- Receive-channel epoch now advances on RabbitMQ automatic recovery — closes the post-recovery false-ack window where an in-flight pre-recovery delivery tag could be acknowledged on the recovered session.
