@@ -46,7 +46,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// rather than resurrecting a connection/channel past disposal. So a resource reachable past teardown is
     /// UNREPRESENTABLE rather than guarded at each site.
     /// </remarks>
-    public sealed class RabbitMqConnectionSource : IRabbitMqConnectionSource
+    public sealed class RabbitMqConnectionSource : IRabbitMqConnectionSource, IDisposable
     {
         // INVARIANT: prefetch must be >= MaxConcurrentCalls so the broker keeps enough unacknowledged
         // deliveries in flight to saturate the core's workers. MaxConcurrentCalls is not available at
@@ -582,6 +582,55 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             while (_publishChannels.TryTake(out var publishChannel))
             {
                 await publishChannel.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        // SYNCHRONOUS disposal path for Microsoft.Extensions.DependencyInjection. The container disposes resolved
+        // singletons synchronously when the root ServiceProvider is disposed via the sync Dispose() (the common
+        // `using var provider = services.BuildServiceProvider()` path); a service that exposes only IAsyncDisposable
+        // throws InvalidOperationException on that path. Implementing IDisposable lets sync container teardown shut the
+        // source down cleanly. Both IChannel and IConnection implement IDisposable (RabbitMQ.Client 7.x), so this drives
+        // a fully synchronous teardown with no sync-over-async block.
+        //
+        // SHARES the SAME single-admission lifecycle as DisposeAsync: the Live->Disposing CAS is the SINGLE admission
+        // gate, so Dispose() and DisposeAsync() are mutually exclusive and idempotent against each other — whichever
+        // runs first wins admission; the other (and any repeat call) is a clean no-op. Teardown is serialized through
+        // the SAME _receiveChannelGate (acquired synchronously via Wait()), so connection create and dispose stay
+        // mutually exclusive by construction exactly as on the async path. The terminal Disposed write is monotonic
+        // under the gate, and the publish pool is drained outside the gate after quiesce.
+        public void Dispose()
+        {
+            if (Interlocked.CompareExchange(ref _lifecycle, LifecycleDisposing, LifecycleLive) != LifecycleLive)
+            {
+                return;
+            }
+
+            _receiveChannelGate.Wait();
+            try
+            {
+                if (_receiveChannel is not null)
+                {
+                    _receiveChannel.Dispose();
+                    _receiveChannel = null;
+                }
+
+                if (_connection is not null)
+                {
+                    _connection.RecoverySucceededAsync -= OnRecoverySucceededAsync;
+                    _connection.Dispose();
+                    _connection = null;
+                }
+
+                Volatile.Write(ref _lifecycle, LifecycleDisposed);
+            }
+            finally
+            {
+                _receiveChannelGate.Release();
+            }
+
+            while (_publishChannels.TryTake(out var publishChannel))
+            {
+                publishChannel.Dispose();
             }
         }
     }

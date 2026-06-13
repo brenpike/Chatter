@@ -62,6 +62,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
         private static void SetCreateConnectionHook(RabbitMqConnectionSource source, Func<CancellationToken, Task<IConnection>> hook)
             => CreateConnectionHookField.SetValue(source, hook);
 
+        private static void SetConnection(RabbitMqConnectionSource source, IConnection connection)
+            => ConnectionField.SetValue(source, connection);
+
         // A rental created via AcquirePublishChannelAsync always corresponds to ONE taken permit, so ReturnPublishChannel
         // is balanced. These broker-free tests construct the rental out-of-band, so they reflectively take the permit
         // first to mirror a real acquire — otherwise the unconditional Release in ReturnPublishChannel would overflow a
@@ -113,6 +116,87 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
             Func<Task> disposeAgain = async () => await source.DisposeAsync();
 
             await disposeAgain.Should().NotThrowAsync();
+        }
+
+        // SYNC DISPOSAL (Microsoft DI shutdown contract): Microsoft.Extensions.DependencyInjection disposes a resolved
+        // singleton SYNCHRONOUSLY when the root ServiceProvider is disposed via Dispose() (the common
+        // `using var provider = services.BuildServiceProvider()` path). A service exposing only IAsyncDisposable throws
+        // InvalidOperationException on that path, so the source implements IDisposable too. These tests pin that the
+        // synchronous Dispose() is exposed, tears the source down, and shares the SAME single-admission lifecycle as
+        // DisposeAsync (idempotent against itself AND against DisposeAsync — whichever runs first wins admission).
+
+        // The source must be assignable to IDisposable so the synchronous container-dispose path resolves it: that is the
+        // whole point of the finding (an IAsyncDisposable-only singleton throws on sync ServiceProvider.Dispose()).
+        [Fact]
+        public void MustExposeSynchronousDisposable()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+
+            source.Should().BeAssignableTo<IDisposable>(
+                "Microsoft DI sync container disposal requires IDisposable; an IAsyncDisposable-only singleton throws");
+        }
+
+        // Synchronous Dispose() tears the source down: it advances the lifecycle to Disposed and disposes the connection
+        // (and unsubscribes recovery) exactly as the async path does. The connection is assigned directly through the
+        // reflection seam so the teardown has a real connection to dispose without driving the channel-creation path.
+        [Fact]
+        public void MustTearDownSourceOnSynchronousDispose()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+            var connectionMock = new Mock<IConnection>();
+            connectionMock.SetupGet(c => c.IsOpen).Returns(true);
+            SetConnection(source, connectionMock.Object);
+
+            source.Dispose();
+
+            Lifecycle(source).Should().Be(LifecycleDisposed, "synchronous Dispose() must advance the lifecycle to Disposed");
+            Connection(source).Should().BeNull("synchronous Dispose() must dispose and clear the connection");
+            connectionMock.Verify(c => c.Dispose(), Times.Once, "synchronous Dispose() must dispose the connection synchronously");
+            connectionMock.VerifyRemove(c => c.RecoverySucceededAsync -= It.IsAny<AsyncEventHandler<AsyncEventArgs>>(), Times.Once,
+                "synchronous Dispose() must unsubscribe the recovery handler before disposing the connection");
+        }
+
+        // Synchronous Dispose() is idempotent (single-admission CAS): a second call short-circuits and is a clean no-op.
+        [Fact]
+        public void MustNotThrowWhenSynchronouslyDisposedTwice()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+
+            source.Dispose();
+
+            Action disposeAgain = () => source.Dispose();
+
+            disposeAgain.Should().NotThrow();
+            Lifecycle(source).Should().Be(LifecycleDisposed);
+        }
+
+        // The sync and async dispose paths share ONE admission gate: whichever wins the Live->Disposing CAS tears the
+        // source down, the other is a clean no-op. Async-first-then-sync must not throw and must leave the source Disposed.
+        [Fact]
+        public async Task MustNotThrowWhenSynchronousDisposeFollowsDisposeAsync()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+
+            await source.DisposeAsync();
+
+            Action syncDisposeAfter = () => source.Dispose();
+
+            syncDisposeAfter.Should().NotThrow("Dispose() and DisposeAsync() share one admission CAS; the loser is a no-op");
+            Lifecycle(source).Should().Be(LifecycleDisposed);
+        }
+
+        // The reverse ordering: sync-first-then-async must also be a clean no-op on the async side.
+        [Fact]
+        public async Task MustNotThrowWhenDisposeAsyncFollowsSynchronousDispose()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+
+            source.Dispose();
+
+            Func<Task> asyncDisposeAfter = async () => await source.DisposeAsync();
+
+            await asyncDisposeAfter.Should().NotThrowAsync("the async path must no-op when sync Dispose() already won admission");
+            Lifecycle(source).Should().Be(LifecycleDisposed);
         }
 
         // Finding 1 (resurrection-after-dispose): a receive-gated entrypoint queued BEHIND DisposeAsync must observe
