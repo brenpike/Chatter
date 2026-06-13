@@ -12,6 +12,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+- Dispose-coordination hardening for `RabbitMqConnectionSource`: every receive-gated and publish-permit entrypoint now observes `_disposed` on BOTH sides of gate/permit acquisition via a single coordination primitive. A gated receive operation queued behind `DisposeAsync` no longer resurrects a connection/channel or overwrites the stored consumer registration past teardown — it throws `ObjectDisposedException`. The publish permit is now ALWAYS released on return, so a publish acquire stranded behind a saturated pool at disposal is woken and throws rather than hanging forever.
+
 ## [0.1.0] - 2026-06-12
 
 ### Added

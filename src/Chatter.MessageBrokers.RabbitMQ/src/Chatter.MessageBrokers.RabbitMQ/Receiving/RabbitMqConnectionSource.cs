@@ -77,59 +77,95 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         public long CurrentReceiveChannelEpoch => Interlocked.Read(ref _receiveChannelEpoch);
 
-        public async Task<TResult> RunOnReceiveChannelAsync<TResult>(Func<IChannel, long, Task<TResult>> operation,
-                                                                     CancellationToken cancellationToken)
+        // INVARIANT (disposed-observed-on-both-sides): EVERY receive-gated entrypoint routes its gate acquisition
+        // through this single coordination primitive, so no raw _receiveChannelGate.WaitAsync survives outside it.
+        // It checks _disposed BEFORE the wait (fail-fast for an already-disposed source) AND re-checks UNDER the gate
+        // AFTER the wait (a caller queued behind DisposeAsync observes _disposed once teardown releases the gate and
+        // throws rather than resurrecting a connection/channel or overwriting _registerConsumer on a disposed
+        // singleton). The gate is ALWAYS released. Gated bodies run the existing logic verbatim; this helper wraps
+        // gate acquisition only and never touches the epoch-lifecycle / recovery recreate logic.
+        private async Task<TResult> RunReceiveGatedAsync<TResult>(Func<CancellationToken, Task<TResult>> body,
+                                                                  CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+
+            await _receiveChannelGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(RabbitMqConnectionSource));
+                }
+
+                return await body(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _receiveChannelGate.Release();
+            }
+        }
+
+        private Task RunReceiveGatedAsync(Func<CancellationToken, Task> body, CancellationToken cancellationToken)
+            => RunReceiveGatedAsync<object>(async ct =>
+            {
+                await body(ct).ConfigureAwait(false);
+                return null;
+            }, cancellationToken);
+
+        public Task<TResult> RunOnReceiveChannelAsync<TResult>(Func<IChannel, long, Task<TResult>> operation,
+                                                               CancellationToken cancellationToken)
         {
             if (operation is null)
             {
                 throw new ArgumentNullException(nameof(operation));
             }
 
-            ThrowIfDisposed();
-
-            await _receiveChannelGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            return RunReceiveGatedAsync(async ct =>
             {
-                var channel = await EnsureReceiveChannelAsync(cancellationToken).ConfigureAwait(false);
+                var channel = await EnsureReceiveChannelAsync(ct).ConfigureAwait(false);
                 return await operation(channel, Interlocked.Read(ref _receiveChannelEpoch)).ConfigureAwait(false);
-            }
-            finally
-            {
-                _receiveChannelGate.Release();
-            }
+            }, cancellationToken);
         }
 
-        public async Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task> registerConsumer,
-                                              CancellationToken cancellationToken)
+        public Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task> registerConsumer,
+                                        CancellationToken cancellationToken)
         {
             if (registerConsumer is null)
             {
                 throw new ArgumentNullException(nameof(registerConsumer));
             }
 
-            ThrowIfDisposed();
-
-            await _receiveChannelGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            return RunReceiveGatedAsync(async ct =>
             {
-                // Store the delegate FIRST so EnsureReceiveChannelAsync re-runs it on this and every later
-                // (re)creation. EnsureReceiveChannelAsync bumps the epoch and invokes the stored delegate against
-                // the fresh channel with the bumped epoch, so the initial registration is itself the first atomic
-                // bump+register event.
+                // Store the delegate INSIDE the gated body so a caller queued behind DisposeAsync — which the helper's
+                // post-wait _disposed re-check rejects — cannot overwrite _registerConsumer on a disposed singleton.
+                // EnsureReceiveChannelAsync re-runs it on this and every later (re)creation: it bumps the epoch and
+                // invokes the stored delegate against the fresh channel with the bumped epoch, so the initial
+                // registration is itself the first atomic bump+register event.
                 _registerConsumer = registerConsumer;
-                await EnsureReceiveChannelAsync(cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                _receiveChannelGate.Release();
-            }
+                await EnsureReceiveChannelAsync(ct).ConfigureAwait(false);
+            }, cancellationToken);
         }
 
+        // INVARIANT (publish-permit disposed-observed-on-both-sides + exactly-one-release): checks _disposed BEFORE
+        // the wait (fail-fast) AND re-checks UNDER the permit AFTER the wait. A waiter stranded behind a saturated
+        // pool when DisposeAsync runs is woken by the unconditional Release in ReturnPublishChannel / the drain, then
+        // observes _disposed here, RELEASES the permit it just acquired, and throws — so no publish waiter hangs
+        // across teardown. EXACTLY-ONE-RELEASE per acquired permit on every exit path: disposed-recheck-throw releases
+        // here; a create failure releases in the catch; a successful acquire transfers the permit to the rental, which
+        // releases it via ReturnPublishChannel. No path double-releases (SemaphoreFullException) nor under-releases.
         public async Task<RabbitMqPublishChannelRental> AcquirePublishChannelAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
 
             await _publishPoolGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            if (_disposed)
+            {
+                _publishPoolGate.Release();
+                throw new ObjectDisposedException(nameof(RabbitMqConnectionSource));
+            }
+
             try
             {
                 if (!_publishChannels.TryTake(out var channel) || !channel.IsOpen)
@@ -247,11 +283,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // the new epoch — closing both the false-ack and the stale-closure no-op-settle windows. Forces a recreate
         // (RecreateReceiveChannelAsync, not EnsureReceiveChannelAsync) because with topology recovery off the
         // transport-recovered channel may report IsOpen but carries NO consumer; an early-return would leave it
-        // consumer-less. Guards against firing after disposal: a recovery callback can still be queued as the source
-        // tears down, so the _disposed checks drop a late recovery rather than recreating resources past disposal.
-        // The gate is NEVER disposed (see DisposeAsync GATE LIFETIME), so the catch on the WaitAsync below is now
-        // defense-in-depth rather than load-bearing; it is retained for robustness against any future gate-lifetime
-        // change.
+        // consumer-less.
+        //
+        // MUST stay a NO-OP-ON-DISPOSED: this runs inside the client's async event dispatch and MUST NOT throw out of
+        // it (pinned by WhenRecreatingReceiveChannelOnRecovery.MustNotThrowWhenRecoveryFiresAfterDisposal). It routes
+        // its gate acquisition through RunReceiveGatedAsync like every other gated entrypoint, but SWALLOWS the
+        // ObjectDisposedException the helper throws when the post-wait re-check observes a disposed source — that
+        // disposed-after-the-fact case is a clean no-op for recovery, not an error. The pre-wait _disposed fast path
+        // and the catch (kept as defense-in-depth) drop a late recovery rather than recreating resources past disposal.
         private async Task OnRecoverySucceededAsync(object sender, AsyncEventArgs eventArgs)
         {
             if (_disposed)
@@ -261,28 +300,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             try
             {
-                await _receiveChannelGate.WaitAsync().ConfigureAwait(false);
+                await RunReceiveGatedAsync(
+                    ct => RecreateReceiveChannelAsync(ct),
+                    CancellationToken.None).ConfigureAwait(false);
             }
             catch (ObjectDisposedException)
             {
-                // The source was disposed between the _disposed check and the wait; nothing left to recreate.
-                return;
-            }
-
-            try
-            {
-                // Re-check under the gate: DisposeAsync may have run between the wait acquiring and here, in which
-                // case the channel is gone and recreating it would resurrect resources past disposal.
-                if (_disposed)
-                {
-                    return;
-                }
-
-                await RecreateReceiveChannelAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            finally
-            {
-                _receiveChannelGate.Release();
+                // The source was disposed before or during the gated recreate; nothing left to recreate. A clean
+                // no-op so recovery never throws out of the client's async event dispatch.
             }
         }
 
@@ -321,29 +346,26 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             return factory;
         }
 
-        // INVARIANT: invoked only by RabbitMqPublishChannelRental.DisposeAsync to return a rented channel.
-        // A rental can outlive the source (the source is disposed while a publish is still in flight): in that
-        // case the source is _disposed and the publish pool has been (or is being) drained by DisposeAsync, so a
-        // returning rental must dispose its orphaned channel and return WITHOUT adding it back to the pool or
-        // releasing _publishPoolGate — the pool is gone, so there is nothing to release back into. _publishPoolGate
-        // is NEVER disposed (see DisposeAsync GATE LIFETIME), so the _disposed short-circuit here is now
-        // defense-in-depth against a release-into-a-drained-pool rather than a guard against releasing a disposed
-        // semaphore; it is retained to preserve the orphan-dispose contract.
+        // INVARIANT (permit conservation): invoked only by RabbitMqPublishChannelRental.DisposeAsync to return a
+        // rented channel. The permit acquired in AcquirePublishChannelAsync is ALWAYS released here — exactly once
+        // per acquired permit — REGARDLESS of disposed state, so a publish waiter stranded behind a saturated pool at
+        // teardown is woken (it then observes _disposed in AcquirePublishChannelAsync, releases, and throws) and no
+        // permit is leaked. A rental can outlive the source (the source is disposed while a publish is still in
+        // flight): in that case the returning channel is orphaned — it is disposed and NOT re-pooled (the pool is
+        // being drained by DisposeAsync) — but the permit is still released. _publishPoolGate is NEVER disposed (see
+        // DisposeAsync GATE LIFETIME), so releasing into the never-disposed semaphore is always safe.
         internal void ReturnPublishChannel(IChannel channel)
         {
-            if (_disposed)
+            if (_disposed || channel is not { IsOpen: true })
             {
+                // Disposed source: the pool is gone, so dispose the orphaned channel instead of re-pooling. Closed
+                // channel: it cannot serve a future rental, so dispose rather than re-pool. Either way, fall through
+                // to the unconditional Release below so the permit count is conserved.
                 channel?.Dispose();
-                return;
-            }
-
-            if (channel is { IsOpen: true })
-            {
-                _publishChannels.Add(channel);
             }
             else
             {
-                channel?.Dispose();
+                _publishChannels.Add(channel);
             }
 
             _publishPoolGate.Release();
@@ -358,15 +380,23 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // gated op completing (the intended quiesce), and every internal await uses ConfigureAwait(false), so the
         // teardown cannot deadlock on a captured context.
         //
+        // DISPOSED OBSERVED ON BOTH SIDES BY CONSTRUCTION: every receive-gated entrypoint (RunOnReceiveChannelAsync,
+        // StartReceivingAsync, OnRecoverySucceededAsync) acquires the receive gate ONLY through RunReceiveGatedAsync,
+        // which checks _disposed before AND under the gate; and AcquirePublishChannelAsync re-checks _disposed under
+        // the acquired publish permit. So a caller queued behind this DisposeAsync observes _disposed once teardown
+        // releases the gate/permit and throws ObjectDisposedException rather than resurrecting a channel/connection,
+        // overwriting _registerConsumer, or proceeding to publish past teardown. The publish permit is ALWAYS released
+        // (ReturnPublishChannel and the disposed-recheck path both Release), so a publish waiter stranded behind a
+        // saturated pool at teardown is woken and throws instead of hanging — no waiter is stranded across disposal.
+        //
         // GATE LIFETIME: the three SemaphoreSlims (_receiveChannelGate, _connectionInitGate, _publishPoolGate) are
         // NEVER disposed — left for GC, mirroring the core BrokeredMessageReceiver._teardownGate ("GATE LIFETIME"
         // comment in src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs).
         // Disposing a gate that a concurrent waiter (a queued recovery callback, an in-flight AcquirePublishChannelAsync,
-        // or a rental returning via ReturnPublishChannel) may still touch is the hazard; the _disposed fast path
-        // narrows but cannot fully close that race. A SemaphoreSlim used only via async WaitAsync (no timeout, no
-        // AvailableWaitHandle) allocates no native handle, so leaving it for GC leaks nothing requiring deterministic
-        // release. Because the gates outlive teardown, the existing ObjectDisposedException guards in
-        // OnRecoverySucceededAsync and ReturnPublishChannel are now defense-in-depth rather than load-bearing.
+        // or a rental returning via ReturnPublishChannel) may still touch is the hazard; the disposed checks above
+        // narrow the window but disposing the gate would still race that waiter, so the gates are left for GC. A
+        // SemaphoreSlim used only via async WaitAsync (no timeout, no AvailableWaitHandle) allocates no native handle,
+        // so leaving it for GC leaks nothing requiring deterministic release.
         public async ValueTask DisposeAsync()
         {
             if (_disposed)
