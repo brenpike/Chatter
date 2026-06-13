@@ -450,9 +450,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 TopologyRecoveryEnabled = false
             };
 
+            // The AMQP URI takes precedence over the discrete host/credential settings (RabbitMqOptions.Uri
+            // contract). When a URI is supplied it fully determines host, vhost, and credentials, so the discrete
+            // settings MUST NOT overwrite the URI-parsed values — otherwise stale host-based options carried alongside
+            // a later WithUri (or both passed to AddRabbitMqOptions) would silently redirect the connection to the
+            // wrong host or stale credentials. Apply the discrete settings ONLY when no URI is configured.
             if (!string.IsNullOrWhiteSpace(_options.Uri))
             {
                 factory.Uri = new Uri(_options.Uri);
+                return factory;
             }
 
             if (!string.IsNullOrWhiteSpace(_options.HostName))

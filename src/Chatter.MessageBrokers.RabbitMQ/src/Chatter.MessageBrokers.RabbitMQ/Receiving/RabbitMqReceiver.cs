@@ -168,22 +168,24 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         }
 
         // Quorum queues expose the broker's native x-delivery-count (number of prior redeliveries); attempts is
-        // that count + 1. Classic queues carry the adapter's own x-chatter-delivery-count, advanced on the
-        // republish path; attempts is that header value (0 when absent on first delivery).
+        // that count + 1. Classic queues carry the adapter's own x-chatter-delivery-count holding the number of PRIOR
+        // deliveries (0 when absent on the first delivery, advanced on each republish); attempts is likewise that
+        // count + 1. BOTH paths floor the first delivery at attempt 1 — the shared receiver contract treats an actual
+        // delivery as at least the first attempt, and the core deadletters only when deliveryCount >= MaxReceiveAttempts,
+        // so without the +1 a classic poison message with maxReceiveAttempts: 1 would be handled twice before
+        // deadlettering, unlike quorum.
         // The delivery-count headers are broker-supplied and untrusted: a negative or oversized value would, if
         // cast straight to int, stamp a negative or wrapped ReceiveAttempts that the core compares to
         // MaxReceiveAttempts — letting a poison message dodge deadlettering or get a bogus retry budget. Saturate
-        // the raw long into a non-negative int before stamping. Quorum attempts is floored at 1 (an actual
-        // delivery is at least the first attempt).
+        // the raw long into a non-negative int before stamping.
         private int ResolveReceiveAttempts(ReceivedMessage received)
         {
-            if (_rabbitOptions.QueueType == QueueType.Quorum)
-            {
-                var priorRedeliveries = SaturateToNonNegativeInt(ReadHeaderAsLong(received.Headers, _nativeDeliveryCountHeader, 0L));
-                return priorRedeliveries == int.MaxValue ? int.MaxValue : priorRedeliveries + 1;
-            }
+            var headerKey = _rabbitOptions.QueueType == QueueType.Quorum
+                ? _nativeDeliveryCountHeader
+                : RabbitMqMessageContext.DeliveryCountHeader;
 
-            return SaturateToNonNegativeInt(ReadHeaderAsLong(received.Headers, RabbitMqMessageContext.DeliveryCountHeader, 0L));
+            var priorDeliveries = SaturateToNonNegativeInt(ReadHeaderAsLong(received.Headers, headerKey, 0L));
+            return priorDeliveries == int.MaxValue ? int.MaxValue : priorDeliveries + 1;
         }
 
         // Clamp an untrusted broker-supplied counter into [0, int.MaxValue]: negatives become 0 and values above

@@ -193,20 +193,22 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(6);
         }
 
-        // Classic: attempts == adapter x-chatter-delivery-count (0 when absent on first delivery).
+        // Classic: attempts == adapter x-chatter-delivery-count (prior deliveries) + 1, so the first delivery
+        // (header absent -> 0 prior) is attempt 1 — matching quorum and the shared receiver contract, where an
+        // actual delivery is at least the first attempt.
         [Fact]
-        public async Task MustStampClassicAttemptsAsZeroWhenNoAdapterHeader()
+        public async Task MustStampClassicAttemptsAsOneWhenNoAdapterHeader()
         {
             var harness = ReceiverHarness.Create(QueueType.Classic);
             await harness.PushAsync(deliveryTag: 1);
 
             var context = await harness.ReceiveAsync();
 
-            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(0);
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(1);
         }
 
         [Fact]
-        public async Task MustStampClassicAttemptsFromAdapterHeader()
+        public async Task MustStampClassicAttemptsFromAdapterHeaderPlusOne()
         {
             var harness = ReceiverHarness.Create(QueueType.Classic);
             var headers = new Dictionary<string, object> { [RabbitMqMessageContext.DeliveryCountHeader] = 2 };
@@ -214,7 +216,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             var context = await harness.ReceiveAsync();
 
-            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(2);
+            // 2 prior deliveries -> attempt 3.
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(3);
         }
 
         // The adapter header survives as a UTF-8 byte[] across a hop; the receiver parses it tolerantly.
@@ -230,7 +233,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             var context = await harness.ReceiveAsync();
 
-            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(7);
+            // 7 prior deliveries -> attempt 8.
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(8);
         }
 
         // --- Untrusted delivery-count header hardening ---
@@ -238,9 +242,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         // stamp a negative or wrapped ReceiveAttempts (which the core compares to MaxReceiveAttempts, so a poison
         // value could dodge deadlettering). The receiver saturates the raw count into [0, int.MaxValue].
 
-        // Classic: a negative adapter header is clamped to 0 rather than stamped as a negative attempt count.
+        // Classic: a negative adapter header is clamped to 0 prior deliveries, so attempts floors at 1 (this
+        // delivery) rather than being stamped as a negative attempt count.
         [Fact]
-        public async Task MustClampNegativeClassicAdapterHeaderToZero()
+        public async Task MustFloorNegativeClassicAdapterHeaderToOne()
         {
             var harness = ReceiverHarness.Create(QueueType.Classic);
             var headers = new Dictionary<string, object> { [RabbitMqMessageContext.DeliveryCountHeader] = -5L };
@@ -248,7 +253,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             var context = await harness.ReceiveAsync();
 
-            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(0);
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(1);
         }
 
         // Classic: a value above int.MaxValue saturates instead of wrapping to a negative via the long->int cast.
