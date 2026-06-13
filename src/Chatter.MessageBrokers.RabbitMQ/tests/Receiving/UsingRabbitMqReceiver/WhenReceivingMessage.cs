@@ -185,5 +185,62 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(7);
         }
+
+        // --- Untrusted delivery-count header hardening ---
+        // The delivery-count headers are broker-supplied and hostile: a negative or oversized value must never
+        // stamp a negative or wrapped ReceiveAttempts (which the core compares to MaxReceiveAttempts, so a poison
+        // value could dodge deadlettering). The receiver saturates the raw count into [0, int.MaxValue].
+
+        // Classic: a negative adapter header is clamped to 0 rather than stamped as a negative attempt count.
+        [Fact]
+        public async Task MustClampNegativeClassicAdapterHeaderToZero()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic);
+            var headers = new Dictionary<string, object> { [RabbitMqMessageContext.DeliveryCountHeader] = -5L };
+            await harness.PushAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(0);
+        }
+
+        // Classic: a value above int.MaxValue saturates instead of wrapping to a negative via the long->int cast.
+        [Fact]
+        public async Task MustSaturateOversizedClassicAdapterHeader()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic);
+            var headers = new Dictionary<string, object> { [RabbitMqMessageContext.DeliveryCountHeader] = (long)int.MaxValue + 100L };
+            await harness.PushAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(int.MaxValue);
+        }
+
+        // Quorum: a negative native count clamps to 0 prior redeliveries, so attempts floors at 1 (this delivery).
+        [Fact]
+        public async Task MustFloorQuorumAttemptsAtOneWhenNativeCountNegative()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object> { [ReceiverHarness.NativeDeliveryCountHeader] = -3L };
+            await harness.PushAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(1);
+        }
+
+        // Quorum: an int.MaxValue native count saturates rather than overflowing to a negative on the +1.
+        [Fact]
+        public async Task MustSaturateQuorumAttemptsWhenNativeCountAtMax()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object> { [ReceiverHarness.NativeDeliveryCountHeader] = (long)int.MaxValue };
+            await harness.PushAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(int.MaxValue);
+        }
     }
 }

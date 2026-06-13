@@ -150,14 +150,32 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // Quorum queues expose the broker's native x-delivery-count (number of prior redeliveries); attempts is
         // that count + 1. Classic queues carry the adapter's own x-chatter-delivery-count, advanced on the
         // republish path; attempts is that header value (0 when absent on first delivery).
+        // The delivery-count headers are broker-supplied and untrusted: a negative or oversized value would, if
+        // cast straight to int, stamp a negative or wrapped ReceiveAttempts that the core compares to
+        // MaxReceiveAttempts — letting a poison message dodge deadlettering or get a bogus retry budget. Saturate
+        // the raw long into a non-negative int before stamping. Quorum attempts is floored at 1 (an actual
+        // delivery is at least the first attempt).
         private int ResolveReceiveAttempts(ReceivedMessage received)
         {
             if (_rabbitOptions.QueueType == QueueType.Quorum)
             {
-                return (int)ReadHeaderAsLong(received.Headers, _nativeDeliveryCountHeader, 0L) + 1;
+                var priorRedeliveries = SaturateToNonNegativeInt(ReadHeaderAsLong(received.Headers, _nativeDeliveryCountHeader, 0L));
+                return priorRedeliveries == int.MaxValue ? int.MaxValue : priorRedeliveries + 1;
             }
 
-            return (int)ReadHeaderAsLong(received.Headers, RabbitMqMessageContext.DeliveryCountHeader, 0L);
+            return SaturateToNonNegativeInt(ReadHeaderAsLong(received.Headers, RabbitMqMessageContext.DeliveryCountHeader, 0L));
+        }
+
+        // Clamp an untrusted broker-supplied counter into [0, int.MaxValue]: negatives become 0 and values above
+        // int.MaxValue saturate, so a malformed header can never produce a negative or wrapped attempt count.
+        private static int SaturateToNonNegativeInt(long value)
+        {
+            if (value <= 0L)
+            {
+                return 0;
+            }
+
+            return value >= int.MaxValue ? int.MaxValue : (int)value;
         }
 
         public Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
@@ -274,12 +292,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             }, cancellationToken);
         }
 
+        // Normalize the untrusted incoming x-chatter-delivery-count the same way ResolveReceiveAttempts does
+        // before incrementing it back onto the republished copy, so a hostile negative/oversized header cannot
+        // poison the counter we stamp (which would otherwise let the message dodge or distort deadlettering).
         private IReadOnlyDictionary<string, object> BuildClassicRedeliveryHeaders(ReceivedMessage received)
         {
-            var current = ReadHeaderAsLong(received.Headers, RabbitMqMessageContext.DeliveryCountHeader, 0L);
+            var current = SaturateToNonNegativeInt(ReadHeaderAsLong(received.Headers, RabbitMqMessageContext.DeliveryCountHeader, 0L));
+            var next = current == int.MaxValue ? int.MaxValue : current + 1;
             return new Dictionary<string, object>
             {
-                [RabbitMqMessageContext.DeliveryCountHeader] = current + 1
+                [RabbitMqMessageContext.DeliveryCountHeader] = (long)next
             };
         }
 

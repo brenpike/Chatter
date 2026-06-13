@@ -104,8 +104,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public Task TxRollbackAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task TxSelectAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
 
-        public void Dispose() { }
-        public ValueTask DisposeAsync() => default;
+        // Records whether the channel was disposed, so a test can assert an orphaned rental disposed its channel.
+        public bool Disposed { get; private set; }
+
+        public void Dispose() => Disposed = true;
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return default;
+        }
     }
 
     internal readonly struct AckRecord

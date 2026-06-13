@@ -201,12 +201,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         }
 
         // INVARIANT: invoked only by RabbitMqPublishChannelRental.DisposeAsync to return a rented channel.
+        // A rental can outlive the source (the source is disposed while a publish is still in flight): in that
+        // case _publishPoolGate has already been disposed by DisposeAsync, so releasing it would throw
+        // ObjectDisposedException out of the rental's DisposeAsync. Dispose the orphaned channel and return
+        // WITHOUT touching the disposed semaphore — the pool is gone, so there is nothing to release back into.
         internal void ReturnPublishChannel(IChannel channel)
         {
             if (_disposed)
             {
                 channel?.Dispose();
-                _publishPoolGate.Release();
                 return;
             }
 
