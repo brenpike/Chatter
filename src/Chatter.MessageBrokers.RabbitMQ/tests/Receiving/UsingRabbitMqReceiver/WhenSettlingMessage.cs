@@ -167,18 +167,54 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(11UL);
         }
 
+        // OWNERSHIP (r3408649034): the dead-letter queue is the ADAPTER's responsibility; the ERROR queue is the
+        // CORE's. On max-receives the core runs deadletter FIRST and, ONLY when it returns true, ALSO runs its
+        // error-recovery action (ErrorQueueDispatcher → IForwardMessages) which forwards the inbound message to the
+        // error queue via this same RabbitMQ infrastructure. So for an ERROR-ONLY config (no dead-letter queue) the
+        // adapter must NOT republish to the error queue itself — doing so collided with the core's error action and
+        // wrote the poison record to the error queue TWICE. DeadletterMessageAsync therefore ACKS the original WITHOUT
+        // any republish and returns true, leaving the single error-queue copy to the core. (The DLQ-configured path is
+        // unchanged and pinned by MustRepublishToDeadLetterPathThenAck above.)
         [Fact]
-        public async Task MustRepublishToErrorPathWhenNoDeadLetterPathConfigured()
+        public async Task MustNotRepublishToErrorPathWhenNoDeadLetterPathConfigured()
         {
             var harness = ReceiverHarness.Create(deadLetterQueuePath: null, errorQueuePath: ReceiverHarness.ErrorPath);
             await harness.PushAsync(deliveryTag: 12);
             var context = await harness.ReceiveAsync();
 
-            await harness.Receiver.DeadletterMessageAsync(
+            var deadlettered = await harness.Receiver.DeadletterMessageAsync(
                 context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
 
-            harness.ConnectionSource.PublishChannels.Single().Publishes.Single()
-                .RoutingKey.Should().Be(ReceiverHarness.ErrorPath);
+            // (a) Exactly ONE error-queue copy: the adapter publishes NOTHING (no republish hop), so the core's
+            // error-recovery action delivers the single copy. A republish here would be the duplicate.
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty(
+                "the adapter must not republish to the error queue — the core's error-recovery action owns that single copy");
+            // (b)/(c) The original is still settled (epoch-guarded ack of the carried delivery tag, NOT a requeue/
+            // republish) so it is not redelivered, and the method returns true so the core runs its error action.
+            deadlettered.Should().BeTrue(
+                "the method must return true so the core's error-recovery action runs and delivers the single error-queue copy");
+            harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(12UL);
+            harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("the error-only deadletter acks; it does not requeue");
+        }
+
+        // No message loss in the error-only path under a stale epoch: the ack is epoch-guarded exactly like every
+        // other settlement, so a recycled receive channel makes it a no-op and the broker redelivers (the core's
+        // error action then routes the redelivered copy). The adapter never publishes on this path regardless.
+        [Fact]
+        public async Task MustNotAckErrorOnlyDeadletterWhenEpochStale()
+        {
+            var harness = ReceiverHarness.Create(deadLetterQueuePath: null, errorQueuePath: ReceiverHarness.ErrorPath);
+            await harness.PushAsync(deliveryTag: 12);
+            var context = await harness.ReceiveAsync();
+
+            harness.ConnectionSource.AdvanceEpoch();
+
+            var deadlettered = await harness.Receiver.DeadletterMessageAsync(
+                context, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+
+            deadlettered.Should().BeFalse("a settlement carrying a stale epoch must be a no-op (the false-ack guard)");
+            harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty("the error-only deadletter never republishes");
         }
 
         // REPRODUCTION (r3407975400, refining r3407616994): when a receiver is registered with neither a dead-letter

@@ -395,25 +395,27 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 return Task.FromResult(false);
             }
 
-            // Explicit republish (SSB-style) to the attribute-declared deadletter / error path, authoritative over
-            // any broker-side DLX. The republish is publisher-confirmed BEFORE the original is acked so a crash
-            // between the two yields at-most a duplicate, never loss.
-            var destination = string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath)
-                ? _options.ErrorQueuePath
-                : _options.DeadLetterQueuePath;
-
-            // FAIL FAST when neither a deadletter nor an error path is configured: the republish below uses
-            // `destination` as the default-exchange routing key with `mandatory: true`, so a null/blank destination
-            // would be unroutable and surface a PublishException AFTER the message has already exhausted its retry
-            // budget — leaving the original delivery un-acked and redelivered indefinitely (a poison-message hot
-            // loop). Surfacing the misconfiguration here, with the queue that produced it, is actionable; an opaque
-            // unroutable-publish fault on the Nth redelivery is not.
-            if (string.IsNullOrWhiteSpace(destination))
+            // OWNERSHIP: the dead-letter queue is the ADAPTER's responsibility (explicit republish, SSB-style); the
+            // ERROR queue is the CORE's responsibility. On max-receives the core runs deadletter FIRST and, ONLY when
+            // it returns true, ALSO runs its error-recovery action (ErrorQueueDispatcher → IForwardMessages) which
+            // forwards the inbound message to ErrorQueueName via this same RabbitMQ infrastructure. So this method must
+            // target the DEAD-LETTER queue ONLY and NEVER fall back to the error queue: a fallback republish here would
+            // collide with the core's error action and write the poison record to the error queue TWICE (the duplicate
+            // r3408649034 flagged). The sibling adapters confirm the contract — ASB deadletters to the native DL
+            // sub-queue, SSB deadletters to DeadLetterQueuePath ONLY; neither falls back to ErrorQueuePath.
+            if (string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath))
             {
-                throw new InvalidOperationException(
-                    $"Cannot deadletter a message from queue '{_options.MessageReceiverPath}': neither a dead-letter queue " +
-                    $"({nameof(ReceiverOptions.DeadLetterQueuePath)}) nor an error queue ({nameof(ReceiverOptions.ErrorQueuePath)}) " +
-                    "is configured for the receiver. Configure one so poison messages have a valid destination instead of being redelivered indefinitely.");
+                // ERROR-ONLY config (no dead-letter queue): do NOT republish here — the core's error-recovery action
+                // owns delivering the single copy to the error queue. Just settle the original delivery (epoch-guarded
+                // ack, NOT a requeue/republish) so it is not redelivered, and return true so the core runs that error
+                // action. An ack-without-republish has nothing to publisher-confirm, so the confirm-before-ack
+                // invariant (which exists only to make a republish durable before settling) does not apply here. The
+                // at-most-once None path and the epoch guard are preserved (None already returned above; the ack flows
+                // through the same SettleOnReceiveChannelAsync epoch guard as every other settlement). The
+                // neither-configured misconfiguration is already rejected at InitializeAsync's startup gate, so this
+                // branch only runs for the legitimate error-only config and must NOT throw.
+                return SettleOnReceiveChannelAsync(received, (channel) =>
+                    channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken);
             }
 
             var headerOverrides = new Dictionary<string, object>
@@ -422,10 +424,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 [MessageContext.FailureDescription] = deadLetterErrorDescription
             };
 
+            // DEAD-LETTER queue configured: explicit republish (SSB-style) to it, authoritative over any broker-side
+            // DLX, publisher-confirmed BEFORE the original is acked so a crash between the two yields at-most a
+            // duplicate, never loss.
             // The delivered native Expiration is DROPPED on the deadletter hop: a dead-letter queue is for
             // inspection, so a dead-lettered message must NOT auto-expire via the original per-message TTL. All
             // other carried native props travel (useful for DLQ inspection).
-            return RepublishThenAckAsync(received, destination, headerOverrides, preserveExpiration: false, cancellationToken);
+            return RepublishThenAckAsync(received, _options.DeadLetterQueuePath, headerOverrides, preserveExpiration: false, cancellationToken);
         }
 
         // INVARIANT: the republish (confirms-enabled publish channel) MUST complete before the original delivery
