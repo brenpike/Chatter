@@ -398,8 +398,13 @@ namespace Chatter.MessageBrokers.RabbitMQ
             return milliseconds.ToString(CultureInfo.InvariantCulture);
         }
 
-        // GAP A: reconstitute the native Expiration (ms string) back into a TimeSpan TimeToLive. A malformed or
-        // negative value is ignored (returns null) rather than stamping a bogus TimeToLive.
+        // GAP A: reconstitute the native Expiration (ms string) back into a TimeSpan TimeToLive. A malformed,
+        // negative, or out-of-range value is ignored (returns null) rather than stamping a bogus TimeToLive or
+        // throwing. An Expiration that parses as a long but exceeds TimeSpan.MaxValue in milliseconds would make
+        // TimeSpan.FromMilliseconds throw an OverflowException AFTER the delivery has been removed from the local
+        // buffer but BEFORE a MessageBrokerContext is returned, leaving no ack/nack/deadletter path to run — with
+        // the default prefetch of 1 the unacked message holds the only broker credit and stalls the receiver. An
+        // out-of-range value is therefore treated identically to a malformed one: the key is dropped.
         private static TimeSpan? ReconstituteTimeToLive(string expiration)
         {
             if (expiration is null)
@@ -408,13 +413,18 @@ namespace Chatter.MessageBrokers.RabbitMQ
             }
 
             if (!long.TryParse(expiration, NumberStyles.Integer, CultureInfo.InvariantCulture, out var milliseconds)
-                || milliseconds < 0L)
+                || milliseconds < 0L
+                || milliseconds > MaxTimeToLiveMilliseconds)
             {
                 return null;
             }
 
             return TimeSpan.FromMilliseconds(milliseconds);
         }
+
+        // The largest whole-millisecond value TimeSpan.FromMilliseconds accepts without overflowing. Floored to a
+        // whole millisecond so the long comparison above never lets a value through that the conversion would reject.
+        private static readonly long MaxTimeToLiveMilliseconds = (long)TimeSpan.MaxValue.TotalMilliseconds;
 
         private static Dictionary<string, object> MergeHeaders(IReadOnlyDictionary<string, object> source,
                                                                IReadOnlyDictionary<string, object> overrides)

@@ -246,6 +246,25 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
             coreContext.Should().NotContainKey(MessageContext.TimeToLive);
         }
 
+        // An Expiration that parses as a long but exceeds TimeSpan.MaxValue in milliseconds must be treated like a
+        // malformed value (dropped) rather than throwing OverflowException — otherwise the delivery, already removed
+        // from the local buffer, would have no ack/nack/deadletter path and (with prefetch 1) would stall the receiver.
+        [Fact]
+        public void MustIgnoreOutOfRangeNativeExpirationOnReceive()
+        {
+            var act = () =>
+            {
+                var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                    RabbitMqMessageTranslator.CaptureFacts(
+                        Delivered(expiration: long.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture))),
+                    new Dictionary<string, object>());
+
+                coreContext.Should().NotContainKey(MessageContext.TimeToLive);
+            };
+
+            act.Should().NotThrow();
+        }
+
         // --- DECISION-B: C-family carry-only natives never surfaced into core, re-applied on republish ---
 
         [Fact]
