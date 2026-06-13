@@ -1,7 +1,10 @@
+using Chatter.CQRS.Context;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.RabbitMQ;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
+using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
+using Moq;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Xunit;
@@ -38,16 +41,60 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             context.BrokeredMessage.MessageContext[RabbitMqMessageContext.ChannelEpoch].Should().Be(0L);
         }
 
+        // REGRESSION: the broker-supplied inbound delivery exchange / routing key must NOT leak into the OUTBOUND
+        // routing-override command keys (TargetExchange / RoutingKey). The core seeds an outbound send's options
+        // from the inbound context, so if these were stamped from the inbound delivery a receive-then-send
+        // follow-up would be silently re-routed back toward the inbound queue. Only WithRabbitMqRouting may set them.
         [Fact]
-        public async Task MustSurfaceExchangeAndRoutingKeyOnContext()
+        public async Task MustNotLeakInboundExchangeIntoOutboundRoutingKeys()
+        {
+            var harness = ReceiverHarness.Create();
+            await harness.ConnectionSource.PushDeliveryAsync(
+                deliveryTag: 1,
+                body: new byte[] { 1, 2, 3 },
+                exchange: "inbound-exchange",
+                routingKey: "inbound.routing.key");
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.TargetExchange);
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.RoutingKey);
+        }
+
+        // Default-exchange (exchange "") delivery: the command keys are still left unset on the inbound context.
+        [Fact]
+        public async Task MustNotStampOutboundRoutingKeysForDefaultExchangeDelivery()
         {
             var harness = ReceiverHarness.Create();
             await harness.PushAsync(deliveryTag: 1);
 
             var context = await harness.ReceiveAsync();
 
-            context.BrokeredMessage.MessageContext[RabbitMqMessageContext.TargetExchange].Should().Be("");
-            context.BrokeredMessage.MessageContext[RabbitMqMessageContext.RoutingKey].Should().Be(ReceiverHarness.ReceiverPath);
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.TargetExchange);
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.RoutingKey);
+        }
+
+        // An EXPLICIT WithRabbitMqRouting override on a follow-up outbound message survives now that no inbound
+        // delivery value clobbers the command keys.
+        [Fact]
+        public async Task MustPreserveExplicitWithRabbitMqRoutingOverrideAfterReceive()
+        {
+            var harness = ReceiverHarness.Create();
+            await harness.ConnectionSource.PushDeliveryAsync(
+                deliveryTag: 1,
+                body: new byte[] { 1, 2, 3 },
+                exchange: "inbound-exchange",
+                routingKey: "inbound.routing.key");
+            await harness.ReceiveAsync();
+
+            var bodyConverter = new Mock<IBrokeredMessageBodyConverter>();
+            bodyConverter.SetupGet(c => c.ContentType).Returns("application/json; charset=utf-8");
+            var outbound = new OutboundBrokeredMessage("message-id", new byte[] { 1 }, new Dictionary<string, object>(), "receiver-path", bodyConverter.Object);
+
+            outbound.WithRabbitMqRouting("orders-exchange", "orders.created");
+
+            outbound.MessageContext[RabbitMqMessageContext.TargetExchange].Should().Be("orders-exchange");
+            outbound.MessageContext[RabbitMqMessageContext.RoutingKey].Should().Be("orders.created");
         }
 
         [Fact]

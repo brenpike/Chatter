@@ -122,12 +122,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             var receiveAttempts = ResolveReceiveAttempts(received);
 
+            // INVARIANT: the broker-supplied inbound delivery.Exchange / delivery.RoutingKey are NOT stamped onto
+            // the context. TargetExchange / RoutingKey are OUTBOUND dispatch-override command keys that only
+            // .WithRabbitMqRouting writes and the sender reads; the core seeds an outbound send's options from the
+            // inbound context, so stamping the inbound delivery's address here would silently re-route every
+            // receive-then-send follow-up back toward the inbound queue.
             var headers = new Dictionary<string, object>
             {
                 [RabbitMqMessageContext.DeliveryTag] = received.DeliveryTag,
                 [RabbitMqMessageContext.ChannelEpoch] = received.ChannelEpoch,
-                [RabbitMqMessageContext.TargetExchange] = received.Exchange,
-                [RabbitMqMessageContext.RoutingKey] = received.RoutingKey,
                 [MessageContext.InfrastructureType] = RabbitMqMessageContext.InfrastructureType,
                 // MANDATORY: stamped on EVERY message as an int. The core's default MessageDeliveryCountAsync
                 // casts this value to (int) without a guard, so an absent or non-int value would throw there.

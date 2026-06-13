@@ -14,11 +14,17 @@ namespace Chatter.MessageBrokers.RabbitMQ
         /// </summary>
         public static readonly string ChannelEpoch = $"{RabbitMqBaseHeader}.ChannelEpoch";
         /// <summary>
-        /// The target exchange a message is published to.
+        /// Outbound publish-override only: the target exchange an outbound message is published to, set exclusively
+        /// by <c>WithRabbitMqRouting(...)</c> and read by the sender at dispatch time. NEVER stamped from an inbound
+        /// delivery — doing so would leak the inbound delivery's address into the outbound routing the core seeds
+        /// from the inbound context, silently re-routing receive-then-send follow-ups.
         /// </summary>
         public static readonly string TargetExchange = $"{RabbitMqBaseHeader}.TargetExchange";
         /// <summary>
-        /// The routing key a message is published with.
+        /// Outbound publish-override only: the routing key an outbound message is published with, set exclusively by
+        /// <c>WithRabbitMqRouting(...)</c> and read by the sender at dispatch time. NEVER stamped from an inbound
+        /// delivery — doing so would leak the inbound delivery's address into the outbound routing the core seeds
+        /// from the inbound context, silently re-routing receive-then-send follow-ups.
         /// </summary>
         public static readonly string RoutingKey = $"{RabbitMqBaseHeader}.RoutingKey";
 
