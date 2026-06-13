@@ -163,18 +163,58 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
 
         // An UNKNOWN configured content type resolves the core JsonBodyConverter fallback, so the sender advertises
         // that fallback's ContentType ("application/json") rather than a hardwired string — the option now drives
-        // the advertised type end to end.
+        // the advertised type end to end. With ContentType now sourced from the core's actual-serialization stamp,
+        // the stamp is removed here so the sender's resolved-converter fallback (the path this test pins) engages.
         [Fact]
         public async Task MustAdvertiseFallbackContentTypeWhenConfiguredBodyTypeIsUnknown()
         {
             var connectionSource = new InMemoryRabbitMqConnectionSource();
             var sender = CreateSender(connectionSource,
                 new RabbitMqOptions(hostName: "localhost", messageBodyType: "application/x-unknown"));
+            var message = Message();
+            message.MessageContext.Remove(MessageContext.ContentType);
 
-            await sender.Dispatch(Message(), transactionContext: null);
+            await sender.Dispatch(message, transactionContext: null);
 
             connectionSource.PublishChannels.Single().Publishes.Single()
                 .ContentType.Should().Be("application/json");
+        }
+
+        // REPRODUCTION (r3407587284): BuildProperties advertised _bodyConverter.ContentType (the sender's resolved
+        // converter) rather than the content type the core ACTUALLY stamped on the context when it serialized the
+        // body. An outbox-replayed message can carry a content-type stamp from a different converter than the one
+        // the sender resolves; the published frame mislabelled the body. The sender now sources ContentType from the
+        // authoritative MessageContext.ContentType stamp. The ctor stamps the converter's ContentType, so the custom
+        // stamp is written AFTER construction to isolate the stamp-vs-converter distinction.
+        [Fact]
+        public async Task MustAdvertiseStampedContentTypeOverResolvedConverter()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            var message = Message();
+            message.MessageContext[MessageContext.ContentType] = "application/x-custom";
+
+            await sender.Dispatch(message, transactionContext: null);
+
+            connectionSource.PublishChannels.Single().Publishes.Single()
+                .ContentType.Should().Be("application/x-custom");
+        }
+
+        // When the content-type stamp is absent/whitespace the sender falls back to its resolved converter's
+        // ContentType, so the unstamped path is unchanged.
+        [Fact]
+        public async Task MustFallBackToResolvedConverterContentTypeWhenStampAbsent()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            var message = Message();
+            // Clear the ctor-written stamp to model a context built without an actual-serialization content type.
+            message.MessageContext.Remove(MessageContext.ContentType);
+
+            await sender.Dispatch(message, transactionContext: null);
+
+            connectionSource.PublishChannels.Single().Publishes.Single()
+                .ContentType.Should().Be(new RabbitMqBodyConverter().ContentType);
         }
 
         [Fact]
@@ -252,6 +292,53 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
             var publish = connectionSource.PublishChannels.Single().Publishes.Single();
             publish.Expiration.Should().Be("0");
             publish.Headers.Should().NotContainKey(MessageContext.TimeToLive);
+        }
+
+        // REPRODUCTION (r3407587282): an outbox-replayed context materializes TimeToLive as a STRING (no live
+        // TimeSpan, no WithTimeToLive call). The prior marshaller TTL branch matched only `is TimeSpan`, so the
+        // string form was missed and Expiration was never set. The sender now sources TTL from the core's
+        // tolerant OutboundBrokeredMessage.GetTimeToLive(), so the string form lifts onto Expiration identically
+        // to the live TimeSpan and the key never reaches the table.
+        [Fact]
+        public async Task MustLiftStringFormTimeToLiveOntoNativeExpiration()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            var context = new Dictionary<string, object> { [MessageContext.TimeToLive] = "00:00:01.5000000" };
+
+            await sender.Dispatch(Message(messageContext: context), transactionContext: null);
+
+            var publish = connectionSource.PublishChannels.Single().Publishes.Single();
+            publish.Expiration.Should().Be("1500");
+            publish.Headers.Should().NotContainKey(MessageContext.TimeToLive);
+        }
+
+        // A string-form non-positive TimeToLive floors at "0" exactly like the live-TimeSpan path.
+        [Fact]
+        public async Task MustFloorNonPositiveStringFormTimeToLiveExpirationAtZero()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            var context = new Dictionary<string, object> { [MessageContext.TimeToLive] = "00:00:00" };
+
+            await sender.Dispatch(Message(messageContext: context), transactionContext: null);
+
+            var publish = connectionSource.PublishChannels.Single().Publishes.Single();
+            publish.Expiration.Should().Be("0");
+            publish.Headers.Should().NotContainKey(MessageContext.TimeToLive);
+        }
+
+        // An absent TimeToLive leaves the native Expiration unset rather than emitting a spurious default.
+        [Fact]
+        public async Task MustLeaveExpirationUnsetWhenTimeToLiveAbsent()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+
+            await sender.Dispatch(Message(), transactionContext: null);
+
+            var publish = connectionSource.PublishChannels.Single().Publishes.Single();
+            publish.Expiration.Should().BeNull();
         }
 
         // A round-tripped ulong (e.g. a stale RabbitMqMessageContext.DeliveryTag carried in the context) is widened

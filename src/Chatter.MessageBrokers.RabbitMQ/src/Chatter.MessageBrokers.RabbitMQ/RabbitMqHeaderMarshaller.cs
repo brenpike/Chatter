@@ -20,9 +20,12 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// <c>ulong</c>, <c>byte</c>, <c>uint</c>, or <c>ushort</c>. The core stamps several of those CLR types
     /// onto the context (most notably <see cref="MessageContext.TimeToLive"/> as a <see cref="TimeSpan"/> via
     /// <c>OutboundBrokeredMessage.WithTimeToLive</c>), so a raw copy of the context into the header table threw
-    /// at publish. This boundary coerces each value to a table-legal form, lifting <see cref="MessageContext.TimeToLive"/>
-    /// onto the native <see cref="BasicProperties.Expiration"/> (ms) instead of the table, and never throws and
-    /// never silently drops a populated value.
+    /// at publish. This boundary coerces each value to a table-legal form and never throws and never silently drops
+    /// a populated value. TTL lifting is NOT owned here: the caller (the sender) lifts <see cref="MessageContext.TimeToLive"/>
+    /// onto the native <see cref="BasicProperties.Expiration"/> from the core's authoritative
+    /// <c>OutboundBrokeredMessage.GetTimeToLive()</c> (tolerant of a live <see cref="TimeSpan"/> AND an outbox-replayed
+    /// string form), and the republish path re-applies the carried native Expiration; this boundary only DROPS the
+    /// un-encodable <see cref="MessageContext.TimeToLive"/> key so it never reaches the table in any form.
     /// INBOUND (<see cref="ToContext"/>): a real broker delivers a string application header as an AMQP longstr,
     /// which RabbitMQ.Client surfaces as a <c>byte[]</c>. The core casts a fixed set of string-typed context keys
     /// straight to <c>string</c> (e.g. <c>InboundBrokeredMessage</c> casts <see cref="MessageContext.CorrelationId"/>
@@ -59,8 +62,11 @@ namespace Chatter.MessageBrokers.RabbitMQ
 
         /// <summary>
         /// Projects an outbound <see cref="MessageContext"/> dictionary into an AMQP-field-table-legal header bag,
-        /// lifting native-property values (TimeToLive) onto <paramref name="properties"/> rather than the table.
-        /// Never throws on an unencodable value and never silently drops a populated value.
+        /// dropping the un-encodable <see cref="MessageContext.TimeToLive"/> key (TTL lifting onto the native
+        /// <paramref name="properties"/>.Expiration is owned by the caller via
+        /// <c>OutboundBrokeredMessage.GetTimeToLive()</c>). Never throws on an unencodable value and never silently
+        /// drops a populated value. <paramref name="properties"/> is retained for parity with the republish call site
+        /// and for any future native-property lift.
         /// </summary>
         public static IDictionary<string, object> ToHeaderTable(IEnumerable<KeyValuePair<string, object>> context, BasicProperties properties)
         {
@@ -72,13 +78,12 @@ namespace Chatter.MessageBrokers.RabbitMQ
 
             foreach (var entry in context)
             {
-                // TimeToLive is a TimeSpan the field table cannot encode; lift it onto the native Expiration (ms
-                // string) and DROP the key so a TimeSpan never reaches the table. TTL <= 0 floors at "0";
-                // fractional milliseconds are floored by the (long) truncation.
-                if (entry.Key == MessageContext.TimeToLive && entry.Value is TimeSpan ttl)
+                // TimeToLive is a TimeSpan the field table cannot encode (and an outbox-replayed context carries it as
+                // a string). The native Expiration lift is owned by the caller via OutboundBrokeredMessage.GetTimeToLive()
+                // (the republish path re-applies the carried native Expiration), so this boundary UNCONDITIONALLY DROPS
+                // the key in ANY form so it never reaches the table.
+                if (entry.Key == MessageContext.TimeToLive)
                 {
-                    var milliseconds = ttl.TotalMilliseconds <= 0d ? 0L : (long)ttl.TotalMilliseconds;
-                    properties.Expiration = milliseconds.ToString(CultureInfo.InvariantCulture);
                     continue;
                 }
 

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -121,14 +122,25 @@ namespace Chatter.MessageBrokers.RabbitMQ.Sending
             {
                 // Durable delivery so a message survives a broker restart on a durable queue.
                 Persistent = true,
-                ContentType = _bodyConverter.ContentType
+                // Advertise the content type the core ACTUALLY stamped on the context when it serialized the body
+                // (OutboundBrokeredMessage's ctor stamps MessageContext[ContentType] = converter.ContentType), so a
+                // live message and an outbox-replayed one both advertise the same content type. Fall back to the
+                // sender's resolved converter only when the stamp is absent (e.g. a context built without a converter).
+                ContentType = ResolveContentType(brokeredMessage)
             };
 
-            // INVARIANT: the context is never raw-copied onto the field table — the marshaller is the sole
-            // boundary that coerces each value to a table-legal type (and lifts TimeToLive onto the native
-            // Expiration on THIS same properties instance), so an unencodable CLR value (e.g. the TimeSpan
-            // TimeToLive) can no longer reach the table and fault the publish.
+            // INVARIANT: the context is never raw-copied onto the field table — the marshaller is the sole boundary
+            // that coerces each value to a table-legal type and drops the un-encodable TimeToLive key. The native
+            // Expiration is now lifted HERE from the core's authoritative OutboundBrokeredMessage.GetTimeToLive()
+            // (tolerant of a live TimeSpan AND an outbox-replayed string form) rather than re-interpreted by the
+            // marshaller, so a string-form TTL is no longer missed.
             properties.Headers = RabbitMqHeaderMarshaller.ToHeaderTable(brokeredMessage.MessageContext, properties);
+
+            var expiration = ResolveExpiration(brokeredMessage);
+            if (expiration != null)
+            {
+                properties.Expiration = expiration;
+            }
 
             if (!string.IsNullOrWhiteSpace(brokeredMessage.MessageId))
             {
@@ -141,6 +153,29 @@ namespace Chatter.MessageBrokers.RabbitMQ.Sending
             }
 
             return properties;
+        }
+
+        // Source the advertised content type from the actual-serialization stamp the core wrote onto the context
+        // (MessageContext.ContentType), falling back to the sender's resolved converter when that stamp is missing.
+        private string ResolveContentType(OutboundBrokeredMessage brokeredMessage)
+        {
+            var stampedContentType = brokeredMessage.GetMessageContextByKey<string>(MessageContext.ContentType);
+            return string.IsNullOrWhiteSpace(stampedContentType) ? _bodyConverter.ContentType : stampedContentType;
+        }
+
+        // Lift TimeToLive onto the native Expiration (ms string) from the core's authoritative accessor, which is
+        // tolerant of both a live TimeSpan and an outbox-replayed string form. A non-positive TTL floors at "0";
+        // fractional milliseconds are floored by the (long) truncation. Null TimeToLive leaves Expiration unset.
+        private static string ResolveExpiration(OutboundBrokeredMessage brokeredMessage)
+        {
+            var timeToLive = brokeredMessage.GetTimeToLive();
+            if (timeToLive == null)
+            {
+                return null;
+            }
+
+            var milliseconds = timeToLive.Value.TotalMilliseconds <= 0d ? 0L : (long)timeToLive.Value.TotalMilliseconds;
+            return milliseconds.ToString(CultureInfo.InvariantCulture);
         }
     }
 }
