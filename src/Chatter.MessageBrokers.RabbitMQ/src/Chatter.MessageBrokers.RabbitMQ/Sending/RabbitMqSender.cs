@@ -1,4 +1,6 @@
+using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Chatter.MessageBrokers.RabbitMQ.Receiving;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Extensions.Logging;
@@ -28,15 +30,28 @@ namespace Chatter.MessageBrokers.RabbitMQ.Sending
     public sealed class RabbitMqSender : IMessagingInfrastructureDispatcher
     {
         private readonly IRabbitMqConnectionSource _connectionSource;
-        private readonly RabbitMqBodyConverter _bodyConverter;
+        private readonly IBrokeredMessageBodyConverter _bodyConverter;
         private readonly ILogger<RabbitMqSender> _logger;
 
         public RabbitMqSender(IRabbitMqConnectionSource connectionSource,
-                              RabbitMqBodyConverter bodyConverter,
+                              IBodyConverterFactory bodyConverterFactory,
+                              RabbitMqOptions rabbitOptions,
                               ILogger<RabbitMqSender> logger)
         {
             _connectionSource = connectionSource ?? throw new ArgumentNullException(nameof(connectionSource));
-            _bodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
+            if (bodyConverterFactory is null)
+            {
+                throw new ArgumentNullException(nameof(bodyConverterFactory));
+            }
+
+            if (rabbitOptions is null)
+            {
+                throw new ArgumentNullException(nameof(rabbitOptions));
+            }
+
+            // MessageBodyType is fixed per options, so resolve the converter once here; the resolved converter
+            // governs BOTH the bytes written and the advertised ContentType so the option can no longer be ignored.
+            _bodyConverter = bodyConverterFactory.CreateBodyConverter(rabbitOptions.MessageBodyType);
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 

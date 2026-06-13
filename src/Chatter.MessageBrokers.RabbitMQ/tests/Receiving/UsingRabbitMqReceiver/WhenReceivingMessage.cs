@@ -121,6 +121,26 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             context.BrokeredMessage.Body.Should().Equal(body);
         }
 
+        // BEHAVIOR: the emitted context carries the converter the core factory resolves for the configured
+        // MessageBodyType (default JSON), so GetMessageFromBody round-trips a UTF-8 JSON payload — proving the
+        // option drives deserialization rather than a hardwired concrete converter.
+        [Fact]
+        public async Task MustDeserializeBodyViaFactoryResolvedConverterForConfiguredBodyType()
+        {
+            var harness = ReceiverHarness.Create();
+            var jsonBody = System.Text.Encoding.UTF8.GetBytes("{\"Name\":\"orders\"}");
+            await harness.PushAsync(deliveryTag: 1, body: jsonBody);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.GetMessageFromBody<BodyPayload>().Name.Should().Be("orders");
+        }
+
+        private sealed class BodyPayload
+        {
+            public string Name { get; set; }
+        }
+
         [Fact]
         public async Task MustUseBrokerMessageIdWhenPresent()
         {

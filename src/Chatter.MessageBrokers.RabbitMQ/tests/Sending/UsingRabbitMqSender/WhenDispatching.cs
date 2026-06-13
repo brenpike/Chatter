@@ -2,6 +2,7 @@ using Chatter.CQRS.Context;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.RabbitMQ;
+using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Chatter.MessageBrokers.RabbitMQ.Sending;
 using Chatter.MessageBrokers.RabbitMQ.Tests.Receiving;
 using Chatter.MessageBrokers.Sending;
@@ -24,8 +25,21 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
     {
         private const string Destination = "target-queue";
 
-        private static RabbitMqSender CreateSender(InMemoryRabbitMqConnectionSource connectionSource)
-            => new RabbitMqSender(connectionSource, new RabbitMqBodyConverter(), Mock.Of<ILogger<RabbitMqSender>>());
+        // The real core factory over the RabbitMQ + core JSON converters, so the sender resolves the same converter
+        // the production wiring would for the configured MessageBodyType.
+        private static IBodyConverterFactory BodyConverterFactory()
+            => new BodyConverterFactory(new IBrokeredMessageBodyConverter[]
+            {
+                new RabbitMqBodyConverter(),
+                new JsonBodyConverter()
+            });
+
+        private static RabbitMqSender CreateSender(InMemoryRabbitMqConnectionSource connectionSource,
+                                                   RabbitMqOptions options = null)
+            => new RabbitMqSender(connectionSource,
+                                  BodyConverterFactory(),
+                                  options ?? new RabbitMqOptions(hostName: "localhost"),
+                                  Mock.Of<ILogger<RabbitMqSender>>());
 
         private static OutboundBrokeredMessage Message(
             string destination = Destination,
@@ -43,21 +57,28 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
         [Fact]
         public void MustThrowWhenConnectionSourceNull()
         {
-            Action act = () => new RabbitMqSender(null, new RabbitMqBodyConverter(), Mock.Of<ILogger<RabbitMqSender>>());
+            Action act = () => new RabbitMqSender(null, BodyConverterFactory(), new RabbitMqOptions(hostName: "localhost"), Mock.Of<ILogger<RabbitMqSender>>());
             act.Should().Throw<ArgumentNullException>();
         }
 
         [Fact]
-        public void MustThrowWhenBodyConverterNull()
+        public void MustThrowWhenBodyConverterFactoryNull()
         {
-            Action act = () => new RabbitMqSender(new InMemoryRabbitMqConnectionSource(), null, Mock.Of<ILogger<RabbitMqSender>>());
+            Action act = () => new RabbitMqSender(new InMemoryRabbitMqConnectionSource(), null, new RabbitMqOptions(hostName: "localhost"), Mock.Of<ILogger<RabbitMqSender>>());
+            act.Should().Throw<ArgumentNullException>();
+        }
+
+        [Fact]
+        public void MustThrowWhenOptionsNull()
+        {
+            Action act = () => new RabbitMqSender(new InMemoryRabbitMqConnectionSource(), BodyConverterFactory(), null, Mock.Of<ILogger<RabbitMqSender>>());
             act.Should().Throw<ArgumentNullException>();
         }
 
         [Fact]
         public void MustThrowWhenLoggerNull()
         {
-            Action act = () => new RabbitMqSender(new InMemoryRabbitMqConnectionSource(), new RabbitMqBodyConverter(), null);
+            Action act = () => new RabbitMqSender(new InMemoryRabbitMqConnectionSource(), BodyConverterFactory(), new RabbitMqOptions(hostName: "localhost"), null);
             act.Should().Throw<ArgumentNullException>();
         }
 
@@ -122,16 +143,36 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
 
         // --- properties: content type, mandatory, headers, body ---
 
+        // The advertised ContentType comes from the converter the core factory resolves for the configured
+        // MessageBodyType. The default ("application/json; charset=utf-8") resolves the RabbitMqBodyConverter, whose
+        // ContentType the sender stamps — proving the option is no longer ignored.
         [Fact]
-        public async Task MustSetContentTypeFromBodyConverter()
+        public async Task MustSetContentTypeFromFactoryResolvedConverterForConfiguredBodyType()
         {
             var connectionSource = new InMemoryRabbitMqConnectionSource();
-            var sender = CreateSender(connectionSource);
+            var sender = CreateSender(connectionSource,
+                new RabbitMqOptions(hostName: "localhost", messageBodyType: "application/json; charset=utf-8"));
 
             await sender.Dispatch(Message(), transactionContext: null);
 
             connectionSource.PublishChannels.Single().Publishes.Single()
                 .ContentType.Should().Be("application/json; charset=utf-8");
+        }
+
+        // An UNKNOWN configured content type resolves the core JsonBodyConverter fallback, so the sender advertises
+        // that fallback's ContentType ("application/json") rather than a hardwired string — the option now drives
+        // the advertised type end to end.
+        [Fact]
+        public async Task MustAdvertiseFallbackContentTypeWhenConfiguredBodyTypeIsUnknown()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource,
+                new RabbitMqOptions(hostName: "localhost", messageBodyType: "application/x-unknown"));
+
+            await sender.Dispatch(Message(), transactionContext: null);
+
+            connectionSource.PublishChannels.Single().Publishes.Single()
+                .ContentType.Should().Be("application/json");
         }
 
         [Fact]

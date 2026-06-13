@@ -113,6 +113,36 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
                 .Lifetime.Should().Be(ServiceLifetime.Scoped);
         }
 
+        // The RabbitMqBodyConverter is registered as an IBrokeredMessageBodyConverter PROVIDER so the core
+        // BodyConverterFactory enumerates it and keys it under its ContentType — that is what lets the sender and
+        // receiver resolve it through IBodyConverterFactory keyed on RabbitMqOptions.MessageBodyType.
+        [Fact]
+        public void MustRegisterRabbitMqBodyConverterAsTheBodyConverterProvider()
+        {
+            var services = BuildRegistration();
+
+            Single(services, typeof(IBrokeredMessageBodyConverter))
+                .ImplementationType.Should().Be<RabbitMqBodyConverter>();
+        }
+
+        // The core BodyConverterFactory built over the registered provider resolves a JSON-capable converter for the
+        // default MessageBodyType ("application/json; charset=utf-8") — the RabbitMqBodyConverter keyed under its
+        // own ContentType — confirming the option selects a real converter rather than being ignored.
+        [Fact]
+        public void MustResolveJsonCapableConverterForDefaultBodyTypeViaFactory()
+        {
+            var factory = new Chatter.MessageBrokers.BodyConverterFactory(new IBrokeredMessageBodyConverter[]
+            {
+                new RabbitMqBodyConverter(),
+                new JsonBodyConverter()
+            });
+
+            var converter = factory.CreateBodyConverter("application/json; charset=utf-8");
+
+            converter.Should().BeOfType<RabbitMqBodyConverter>();
+            converter.ContentType.Should().Be("application/json; charset=utf-8");
+        }
+
         [Fact]
         public void MustRegisterRabbitMqOptionsAsSingletonInstance()
         {

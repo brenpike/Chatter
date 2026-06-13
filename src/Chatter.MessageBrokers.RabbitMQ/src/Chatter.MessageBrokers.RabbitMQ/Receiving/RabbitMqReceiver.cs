@@ -44,7 +44,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         private readonly IRabbitMqConnectionSource _connectionSource;
         private readonly RabbitMqOptions _rabbitOptions;
-        private readonly RabbitMqBodyConverter _bodyConverter;
+        private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly ILogger<RabbitMqReceiver> _logger;
 
         private Channel<ReceivedMessage> _buffer;
@@ -54,12 +54,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         public RabbitMqReceiver(IRabbitMqConnectionSource connectionSource,
                                 RabbitMqOptions rabbitOptions,
-                                RabbitMqBodyConverter bodyConverter,
+                                IBodyConverterFactory bodyConverterFactory,
                                 ILogger<RabbitMqReceiver> logger)
         {
             _connectionSource = connectionSource ?? throw new ArgumentNullException(nameof(connectionSource));
             _rabbitOptions = rabbitOptions ?? throw new ArgumentNullException(nameof(rabbitOptions));
-            _bodyConverter = bodyConverter ?? throw new ArgumentNullException(nameof(bodyConverter));
+            _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
@@ -155,12 +155,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             };
 
             var messageId = string.IsNullOrEmpty(received.MessageId) ? Guid.NewGuid().ToString() : received.MessageId;
+            // Resolve the body converter through the core factory keyed on the configured MessageBodyType so the
+            // emitted context deserializes with the converter the option selects (unknown types fall back to the
+            // core JsonBodyConverter), rather than a hardwired concrete converter.
+            var bodyConverter = _bodyConverterFactory.CreateBodyConverter(_rabbitOptions.MessageBodyType);
             var messageContext = new MessageBrokerContext(messageId,
                                                           received.Body,
                                                           headers,
                                                           _options.MessageReceiverPath,
                                                           cancellationToken,
-                                                          _bodyConverter);
+                                                          bodyConverter);
             // Carry the raw delivery so the settlement methods recover the delivery tag and epoch.
             messageContext.Container.Include(received);
 

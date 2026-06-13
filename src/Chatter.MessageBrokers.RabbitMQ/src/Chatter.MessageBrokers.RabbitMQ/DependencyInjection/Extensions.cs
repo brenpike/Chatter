@@ -76,12 +76,11 @@ namespace Microsoft.Extensions.DependencyInjection
                 return new MessagingInfrastructure(RabbitMqMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory, pathBuilder);
             });
 
-            // RabbitMqSender and RabbitMqReceiver depend on the CONCRETE RabbitMqBodyConverter, so it must be
-            // registered as itself — the default container will not satisfy a concrete constructor parameter from an
-            // interface-only registration. Register the concrete type once and resolve the IBrokeredMessageBodyConverter
-            // port to that same instance so both the concrete and interface consumers share one converter per scope.
-            builder.Services.AddScoped<RabbitMqBodyConverter>();
-            builder.Services.AddScoped<IBrokeredMessageBodyConverter>(sp => sp.GetRequiredService<RabbitMqBodyConverter>());
+            // Register RabbitMqBodyConverter as an IBrokeredMessageBodyConverter PROVIDER so the core
+            // BodyConverterFactory enumerates it and keys it under its ContentType. The sender and receiver no longer
+            // depend on the concrete converter — they resolve through IBodyConverterFactory keyed on
+            // RabbitMqOptions.MessageBodyType — so no concrete registration is needed.
+            builder.Services.AddScoped<IBrokeredMessageBodyConverter, RabbitMqBodyConverter>();
             builder.Services.AddSingleton(options);
 
             return builder;

@@ -1,3 +1,4 @@
+using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Chatter.MessageBrokers.RabbitMQ.Receiving;
 using Chatter.MessageBrokers.RabbitMQ.Tests.Receiving;
@@ -27,7 +28,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
         private ReceiverHarness(RabbitMqOptions options, ReceiverOptions receiverOptions)
         {
-            Receiver = new RabbitMqReceiver(ConnectionSource, options, new RabbitMqBodyConverter(), Mock.Of<ILogger<RabbitMqReceiver>>());
+            // The real core factory over the RabbitMQ + core JSON converters, so the receiver resolves the same
+            // converter the production wiring would for the configured MessageBodyType.
+            var bodyConverterFactory = new BodyConverterFactory(new IBrokeredMessageBodyConverter[]
+            {
+                new RabbitMqBodyConverter(),
+                new JsonBodyConverter()
+            });
+            Receiver = new RabbitMqReceiver(ConnectionSource, options, bodyConverterFactory, Mock.Of<ILogger<RabbitMqReceiver>>());
             Receiver.InitializeAsync(receiverOptions, CancellationToken.None).GetAwaiter().GetResult();
         }
 
