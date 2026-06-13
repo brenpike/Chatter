@@ -729,5 +729,120 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
                 }
             }
         }
+
+        // --- type-total disposition: a non-string NON-byte[] wire value never surfaces under a core key as its raw type ---
+
+        // Builds a delivered header table carrying a single raw AMQP wire value (the field table admits int/bool/long
+        // etc. as native wire types) under one key — the shape a broker surfaces a non-longstr application header as.
+        private static Dictionary<string, object> WireValueHeader(string key, object wireValue)
+            => new Dictionary<string, object> { [key] = wireValue };
+
+        // (a) DecodeString totality (CorrelationId via header-only fallback, non-string wire value): a delivery carrying
+        // CorrelationId ONLY as a header (native frame ABSENT) with a non-string wire value (int / bool) surfaces a CLR
+        // string under the core key, and the translator's native-frame fallback path (which casts to string) yields a
+        // usable value — building an InboundBrokeredMessage / the unguarded (string) cast must NOT throw.
+        [Theory]
+        [InlineData(42)]
+        [InlineData(true)]
+        public void MustCoerceNonStringCorrelationIdHeaderToStringWhenFrameAbsentOnReceive(object wireValue)
+        {
+            var headers = WireValueHeader(MessageContext.CorrelationId, wireValue);
+
+            // Native frame ABSENT (Delivered carries no correlationId): the descriptor loop has no native value and
+            // re-sources from the decoded header copy, which the type-total DecodeString already coerced to a string.
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext[MessageContext.CorrelationId].Should().BeOfType<string>(
+                "a non-string CorrelationId wire value must be coerced to a string, never left as its raw type");
+
+            // The unguarded (string) cast the core uses (InboundBrokeredMessage casts CorrelationId at ctor) must hold.
+            Action cast = () => _ = (string)coreContext[MessageContext.CorrelationId];
+            cast.Should().NotThrow("the type-total DecodeString guarantees the core's (string) cast never faults");
+        }
+
+        // (a) DecodeString totality (Via, non-string wire value): a raw int wire value surfaces as a CLR string under
+        // the core Via key, never the raw int type.
+        [Fact]
+        public void MustCoerceNonStringViaHeaderToStringOnReceive()
+        {
+            var headers = WireValueHeader(MessageContext.Via, 42);
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext[MessageContext.Via].Should().BeOfType<string>(
+                "a non-string Via wire value is coerced to a string, never surfaced as its raw type");
+        }
+
+        // (a) DecodeString NULL case: a DecodeString core key whose header value is null is DROPPED (absent from the
+        // core context), NOT coerced to an empty string — locking the null-guard-before-coerce in DecodeStringTypedValue.
+        [Fact]
+        public void MustDropNullValuedDecodeStringHeaderRatherThanCoerceToEmptyStringOnReceive()
+        {
+            var headers = new Dictionary<string, object> { [MessageContext.Subject] = null };
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext.Should().NotContainKey(MessageContext.Subject,
+                "a null DecodeString header value drops the key (null-guard before coerce), never stamps an empty string");
+        }
+
+        // (b) DecodeDateTime totality: an ExpiryTimeUtc header carrying an unexpected wire TYPE (int — neither
+        // string/byte[]/DateTime) is DROPPED (key absent), never surfaced as the raw type and never throwing. Companion
+        // to MustDropMalformedExpiryTimeUtcOnReceive (which covers a malformed STRING); this covers a wrong wire TYPE.
+        [Fact]
+        public void MustDropUnexpectedWireTypeExpiryTimeUtcOnReceive()
+        {
+            var headers = WireValueHeader(MessageContext.ExpiryTimeUtc, 42);
+
+            (IDictionary<string, object> coreContext, string _) result = default;
+            Action translate = () => result = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            translate.Should().NotThrow();
+            result.coreContext.Should().NotContainKey(MessageContext.ExpiryTimeUtc,
+                "an unexpected-wire-TYPE ExpiryTimeUtc is dropped exactly like a malformed string, never surfaced raw");
+        }
+
+        // (c) TOTALITY GUARD (generalizes MustNeverSurfaceByteArrayUnderAnyReflectedCoreKeyOnReceive from byte[] to ANY
+        // non-string non-byte[] wire type): for EVERY reflected core key, feeding a representative non-string non-byte[]
+        // wire value (int 42, bool true) must leave the resulting core value (if present) EITHER its declared CLR type
+        // for that disposition (DecodeDateTime -> DateTime; every other dispositioned key is DecodeString -> string) OR
+        // the key absent (Drop / null-drop) — NEVER the raw wire type (int/bool). This is the test-side lock of the
+        // type-total invariant across the whole disposition set.
+        [Theory]
+        [InlineData(42)]
+        [InlineData(true)]
+        public void MustNeverSurfaceRawWireTypeUnderAnyReflectedCoreKeyOnReceive(object wireValue)
+        {
+            foreach (var coreKey in CoreContextKeys())
+            {
+                var headers = WireValueHeader(coreKey, wireValue);
+
+                var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                    RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                    headers);
+
+                if (!coreContext.TryGetValue(coreKey, out var value))
+                {
+                    // Absent (Drop or null-drop disposition) is permitted.
+                    continue;
+                }
+
+                // ExpiryTimeUtc is the lone DecodeDateTime key; for an unexpected wire TYPE it drops (handled above), so
+                // a present value here is never the raw wire type. Every other dispositioned key is DecodeString and
+                // must surface a coerced string. Either way, the raw int/bool wire type must NEVER appear under the key.
+                value.Should().Match(v => v is string || v is DateTime,
+                    $"core key '{coreKey}' must surface its declared CLR type (string or DateTime), never the raw wire type");
+                value.Should().NotBeOfType(wireValue.GetType(),
+                    $"core key '{coreKey}' must never surface the raw wire type {wireValue.GetType().Name}");
+            }
+        }
     }
 }
