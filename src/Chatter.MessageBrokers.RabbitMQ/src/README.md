@@ -175,6 +175,14 @@ The adapter supports the broker-agnostic transaction modes that map cleanly onto
 
 `FullAtomicityViaInfrastructure` is rejected at registration time — the application will not start — with a message directing you to `TransactionMode.None` or `TransactionMode.ReceiveOnly` and the Outbox.
 
+## Known limitations
+
+### Single RabbitMQ queue receiver per process (0.1.0)
+
+0.1.0 supports exactly **one RabbitMQ queue receiver per process**. Registering more than one RabbitMQ queue receiver fails fast at startup with `NotSupportedException` — the connection source owns one receive channel and one consumer registration, so a second receiver would clobber the first and recovery would re-register only the last. There is no silent stall: the error surfaces immediately at `AddRabbitMq(...)` registration time, before the host starts.
+
+Full multi-receiver support is tracked for a future minor release.
+
 ## Required topology
 
 This package is a **transport over existing RabbitMQ topology** — it **provisions nothing**. All exchanges, queues, bindings, and dead-letter routing must be created and owned externally before the application starts. The adapter assumes they exist.

@@ -43,3 +43,7 @@ _Avoid_: dispatcher (reserved for the Message Brokers Brokered Message Dispatche
 
 - **Quorum vs Classic delivery-count semantics**: quorum queues count redeliveries natively; classic queues do not, so the count is carried in a republish header (ADR 0001) with a rare-duplicate trade-off.
 - **Default-exchange-as-queue-name convention**: when no Exchange override is given, publishing uses the default exchange with Routing Key equal to the destination Queue name — Routing Key and Queue name coincide only under this convention.
+
+## Known limitations
+
+- **Single RabbitMQ queue receiver per process (0.1.0)**: the connection source owns one receive channel and one consumer registration. Registering more than one RabbitMQ queue receiver fails fast at startup with `NotSupportedException`; recovery would otherwise re-register only the last receiver. Full multi-receiver support is tracked for a future minor release.

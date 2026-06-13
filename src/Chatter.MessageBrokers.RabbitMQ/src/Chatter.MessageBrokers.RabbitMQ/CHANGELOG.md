@@ -32,3 +32,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - `IRabbitMqConnectionSource` seam — sole originator of the singleton `IConnection`, serialized receive channel (with epoch), and pooled publish channels; substituted by an in-memory double in unit tests.
 - `RabbitMqBodyConverter` — UTF-8 JSON body encoding/decoding through the shared `ChatterJson.Options`.
 - `RabbitMqPathBuilder` — resolves `SendingPath`, `ReceiverName`, `ErrorQueueName`, and `DeadletterQueueName` from `BrokeredMessageAttribute` fields.
+
+### Known Limitations
+
+- **Single RabbitMQ queue receiver per process.** 0.1.0 supports exactly one RabbitMQ queue receiver per process. Registering more than one fails fast at startup with `NotSupportedException` — the connection source owns one receive channel and one consumer registration, so a second receiver would clobber the first and recovery would re-register only the last. Full multi-receiver support is tracked for a future minor release.
