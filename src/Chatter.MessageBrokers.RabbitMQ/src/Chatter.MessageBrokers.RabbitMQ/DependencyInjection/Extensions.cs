@@ -166,7 +166,6 @@ namespace Microsoft.Extensions.DependencyInjection
             "RabbitMQ supports only a single queue receiver per process: the connection source owns one receive "
             + "channel and one consumer registration, so a second receiver would clobber the first and recovery "
             + "would re-register only the last. A single RabbitMQ queue receiver per process is a 0.1.0 limitation; "
-            + "see the multi-receiver tracking issue (single RabbitMQ queue receiver per process is a 0.1.0 "
-            + "limitation).";
+            + "full multi-receiver support is tracked in https://github.com/brenpike/Chatter/issues/195.";
     }
 }
