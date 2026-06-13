@@ -55,6 +55,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // the configured Prefetch (default 1) is applied as-is.
         private const int _defaultPublishChannelPoolCapacity = 8;
 
+        // INVARIANT (recovery recreate is RETRIED, never silently abandoned): a non-ObjectDisposedException fault while
+        // recreating the receive channel mid-recovery (e.g. BasicQosAsync or BasicConsumeAsync throwing on the freshly
+        // transport-recovered channel) must NOT leave the receiver permanently idle. The receiver's pull loop is parked
+        // on the buffer reader and nothing re-drives EnsureReceiveChannelAsync without a delivery, but no delivery
+        // arrives without a registered consumer — a chicken-and-egg silent idle. OnRecoverySucceededAsync therefore
+        // retries the gated recreate up to this many times so a transient fault re-establishes consumption rather than
+        // being abandoned. If every attempt faults the final fault is re-thrown out of the handler (NOT swallowed) so
+        // the client's callback-exception dispatch surfaces it — an observable failure instead of a silent idle.
+        private const int _recoveryRecreateMaxAttempts = 3;
+
         // INVARIANT (single monotonic lifecycle authority): the SOLE liveness state, advanced ONLY via
         // Interlocked.CompareExchange and totally ordered as written. Replaces the former `bool _disposed` that each
         // mutual-exclusion domain read independently — a model where disposal could never exclude connection-creation
@@ -535,28 +545,59 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // consumer-less.
         //
         // MUST stay a NO-OP-ON-DISPOSED: this runs inside the client's async event dispatch and MUST NOT throw out of
-        // it (pinned by WhenRecreatingReceiveChannelOnRecovery.MustNotThrowWhenRecoveryFiresAfterDisposal). It routes
-        // its gate acquisition through RunReceiveGatedAsync like every other gated entrypoint, but SWALLOWS the
-        // ObjectDisposedException the helper throws when the post-wait re-check observes a torn source — that
-        // disposed-after-the-fact case is a clean no-op for recovery, not an error. The pre-wait not-Live fast path
-        // and the catch (kept as defense-in-depth) drop a late recovery rather than recreating resources past disposal.
+        // it WHEN THE SOURCE IS TORN (pinned by WhenRecreatingReceiveChannelOnRecovery.MustNotThrowWhenRecoveryFiresAfterDisposal
+        // and WhenDisposing.MustNoOpRecoveryThatRacesDispose). It routes its gate acquisition through RunReceiveGatedAsync
+        // like every other gated entrypoint, but SWALLOWS the ObjectDisposedException the helper throws when the post-wait
+        // re-check observes a torn source — that disposed-after-the-fact case (a recovery racing dispose, or a late
+        // recovery after a terminal StopReceivingAsync cleared the registration delegate) is a clean no-op for recovery,
+        // not an error. The pre-wait not-Live fast path drops a late recovery rather than recreating resources past
+        // disposal.
+        //
+        // NO-SILENT-IDLE (bounded retry then surface): a NON-ObjectDisposedException fault from the gated recreate
+        // (e.g. BasicQosAsync or BasicConsumeAsync throwing on the freshly transport-recovered channel) means the
+        // receive channel + consumer were NOT re-established. RecreateReceiveChannelAsync's transactional guarantee left
+        // _receiveChannel null on that fault, but the receiver's pull loop is parked on the buffer reader and nothing
+        // re-drives EnsureReceiveChannelAsync without a delivery (and no delivery arrives without a consumer) — so a
+        // swallowed fault here is a permanent silent idle until process restart. To GUARANTEE the receiver either
+        // re-establishes consumption OR fails observably, a transient fault is RETRIED (bounded, under the gate via the
+        // same RunReceiveGatedAsync path, so the retry stays mutually exclusive with dispose/stop/settle and re-observes
+        // the lifecycle each attempt). If a retry's gate re-check observes a torn source the ObjectDisposedException is
+        // swallowed as the clean no-op above. If every attempt faults with a non-ODE the FINAL fault is re-thrown out of
+        // the handler — the client's callback-exception dispatch then surfaces it, an observable failure rather than a
+        // silent idle. Re-throwing only happens on a LIVE source whose registration genuinely cannot be re-established;
+        // the torn-source paths never re-throw, preserving the no-throw-on-disposed contract.
         private async Task OnRecoverySucceededAsync(object sender, AsyncEventArgs eventArgs)
         {
-            if (IsTorn)
+            for (var attempt = 1; ; attempt++)
             {
-                return;
-            }
+                if (IsTorn)
+                {
+                    return;
+                }
 
-            try
-            {
-                await RunReceiveGatedAsync(
-                    ct => RecreateReceiveChannelAsync(ct),
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (ObjectDisposedException)
-            {
-                // The source was disposed before or during the gated recreate; nothing left to recreate. A clean
-                // no-op so recovery never throws out of the client's async event dispatch.
+                try
+                {
+                    await RunReceiveGatedAsync(
+                        ct => RecreateReceiveChannelAsync(ct),
+                        CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The source was disposed before or during the gated recreate (recovery racing dispose, or a late
+                    // recovery after a terminal stop): nothing left to recreate. A clean no-op so recovery never throws
+                    // out of the client's async event dispatch on a torn source.
+                    return;
+                }
+                catch (Exception) when (attempt < _recoveryRecreateMaxAttempts)
+                {
+                    // A non-ODE recreate fault on a LIVE source (e.g. a transient QoS/consume fault on the just-
+                    // recovered channel). RecreateReceiveChannelAsync already disposed the partial channel and left
+                    // _receiveChannel null (its transactional guarantee), so the next attempt runs a fresh full
+                    // recreate-and-register. Retry rather than abandon so a transient fault re-establishes consumption.
+                }
+                // The final attempt's non-ODE fault falls through UNCAUGHT and propagates out of the handler so the
+                // client surfaces it — an observable failure instead of a silent idle.
             }
         }
 

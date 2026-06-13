@@ -5,7 +5,9 @@ using FluentAssertions;
 using Moq;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -176,5 +178,204 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
 
             await raiseAfterDispose.Should().NotThrowAsync();
         }
+
+        // NO-SILENT-IDLE (bounded retry re-establishes consumption): a non-ObjectDisposedException fault while
+        // recreating the receive channel mid-recovery (here BasicConsumeAsync throwing on the freshly-recovered
+        // channel) must NOT leave the receiver permanently idle. The handler retries the gated recreate, so a transient
+        // fault that clears on a later attempt re-establishes the consumer — the recovery completes without throwing and
+        // a fresh channel carrying a registered consumer is committed. Drives the PRODUCTION RabbitMqConnectionSource's
+        // real OnRecoverySucceededAsync via the InternalsVisibleTo reflection seam + the connection-create seam, with a
+        // channel that faults on its first consume attempt and succeeds thereafter — broker-free and deterministic.
+        [Fact]
+        public async Task MustRetryAndReEstablishConsumerWhenRecoveryRecreateFaultsTransiently()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+
+            // Each CreateChannelAsync hands back a fresh fault-injecting channel; the first TWO consume attempts (the
+            // cold-start StartReceivingAsync channel succeeds, then the FIRST recovery recreate channel faults) drive
+            // the scenario. Fault the recovery channel's consume once, then let the retry's channel succeed.
+            var channelFaults = new Queue<Exception>();
+            var createdChannels = new List<FaultInjectingChannel>();
+            var connectionMock = new Mock<IConnection>();
+            connectionMock.SetupGet(c => c.IsOpen).Returns(true);
+            connectionMock
+                .Setup(c => c.CreateChannelAsync(It.IsAny<CreateChannelOptions>(), It.IsAny<CancellationToken>()))
+                .Returns<CreateChannelOptions, CancellationToken>((_, _) =>
+                {
+                    var consumeFault = channelFaults.Count > 0 ? channelFaults.Dequeue() : null;
+                    var channel = new FaultInjectingChannel(consumeFault);
+                    createdChannels.Add(channel);
+                    return Task.FromResult<IChannel>(channel);
+                });
+            SetCreateConnectionHook(source, _ => Task.FromResult(connectionMock.Object));
+
+            // The registration delegate calls BasicConsumeAsync on the supplied channel exactly as the real
+            // RabbitMqReceiver.RegisterConsumerAsync does, so a FaultInjectingChannel whose consume faults makes the
+            // recreate's registration step throw — the production fault path under test.
+            Func<IChannel, long, CancellationToken, Task<string>> registerConsumer = (channel, _, ct) =>
+                channel.BasicConsumeAsync(queue: "q", autoAck: false, consumerTag: string.Empty, noLocal: false,
+                    exclusive: false, arguments: null, consumer: new AsyncEventingBasicConsumer(channel), cancellationToken: ct);
+
+            // Cold start: stores the registration delegate and creates the first (clean) channel.
+            await source.StartReceivingAsync(registerConsumer, CancellationToken.None);
+            var epochAfterStart = source.CurrentReceiveChannelEpoch;
+
+            // The FIRST recovery recreate's channel faults its consume once; the retry's channel succeeds.
+            channelFaults.Enqueue(new OperationInterruptedException());
+
+            var handler = (AsyncEventHandler<AsyncEventArgs>)Delegate.CreateDelegate(
+                typeof(AsyncEventHandler<AsyncEventArgs>), source, RecoveryHandler);
+
+            Func<Task> raiseRecovery = () => handler(connectionMock.Object, new AsyncEventArgs(CancellationToken.None));
+
+            await raiseRecovery.Should().NotThrowAsync(
+                "a transient recreate fault must be retried so the recovery re-establishes consumption, not throw");
+
+            source.CurrentReceiveChannelEpoch.Should().Be(epochAfterStart + 1,
+                "the successful retry commits exactly one epoch bump for the recovery");
+            createdChannels.Last().RegisteredConsumer.Should().NotBeNull(
+                "the retry must re-register the consumer on the freshly-created channel so the receiver is not idle");
+            createdChannels.First(c => c.ConsumeFaulted).Disposed.Should().BeTrue(
+                "the faulted recovery channel must be disposed by the transactional recreate before the retry");
+
+            await source.DisposeAsync();
+        }
+
+        // NO-SILENT-IDLE (fault surfaced, not swallowed): a non-ObjectDisposedException fault that PERSISTS across every
+        // bounded retry must be SURFACED out of the recovery handler (so the client's callback-exception dispatch makes
+        // it observable) rather than swallowed into a permanent silent idle. The source stays LIVE throughout, so the
+        // disposed-no-op path never applies; the persistent fault propagates. Contrast with
+        // MustNotThrowWhenRecoveryFiresAfterDisposal, where a TORN source's recreate ODE is the clean no-op.
+        [Fact]
+        public async Task MustSurfaceFaultWhenRecoveryRecreatePersistentlyFaults()
+        {
+            var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
+
+            var faultEveryConsumeAfterStart = false;
+            var connectionMock = new Mock<IConnection>();
+            connectionMock.SetupGet(c => c.IsOpen).Returns(true);
+            connectionMock
+                .Setup(c => c.CreateChannelAsync(It.IsAny<CreateChannelOptions>(), It.IsAny<CancellationToken>()))
+                .Returns<CreateChannelOptions, CancellationToken>((_, _) =>
+                {
+                    var consumeFault = faultEveryConsumeAfterStart
+                        ? new OperationInterruptedException()
+                        : null;
+                    return Task.FromResult<IChannel>(new FaultInjectingChannel(consumeFault));
+                });
+            SetCreateConnectionHook(source, _ => Task.FromResult(connectionMock.Object));
+
+            Func<IChannel, long, CancellationToken, Task<string>> registerConsumer = (channel, _, ct) =>
+                channel.BasicConsumeAsync(queue: "q", autoAck: false, consumerTag: string.Empty, noLocal: false,
+                    exclusive: false, arguments: null, consumer: new AsyncEventingBasicConsumer(channel), cancellationToken: ct);
+
+            // Cold start succeeds (no fault), then EVERY subsequent recovery recreate consume faults.
+            await source.StartReceivingAsync(registerConsumer, CancellationToken.None);
+            var epochAfterStart = source.CurrentReceiveChannelEpoch;
+            faultEveryConsumeAfterStart = true;
+
+            var handler = (AsyncEventHandler<AsyncEventArgs>)Delegate.CreateDelegate(
+                typeof(AsyncEventHandler<AsyncEventArgs>), source, RecoveryHandler);
+
+            Func<Task> raiseRecovery = () => handler(connectionMock.Object, new AsyncEventArgs(CancellationToken.None));
+
+            await raiseRecovery.Should().ThrowAsync<OperationInterruptedException>(
+                "a persistent recreate fault must surface out of the handler (observable failure), not be swallowed into a silent idle");
+
+            source.CurrentReceiveChannelEpoch.Should().Be(epochAfterStart,
+                "no recreate committed, so the observable epoch is unchanged by the failed recovery");
+
+            await source.DisposeAsync();
+        }
+
+        // A fault-injecting IChannel for the production-source recovery tests: it captures consume registration and
+        // QoS like RecordingChannel but can fault its consume (modelling BasicConsumeAsync throwing on the freshly
+        // transport-recovered channel). Every other member throws NotImplementedException so an untested path surfaces.
+        private sealed class FaultInjectingChannel : IChannel
+        {
+            private readonly Exception _consumeFault;
+
+            public FaultInjectingChannel(Exception consumeFault)
+            {
+                _consumeFault = consumeFault;
+            }
+
+            public IAsyncBasicConsumer RegisteredConsumer { get; private set; }
+            public bool ConsumeFaulted { get; private set; }
+            public bool Disposed { get; private set; }
+
+            public Task BasicQosAsync(uint prefetchSize, ushort prefetchCount, bool global, CancellationToken cancellationToken = default)
+                => Task.CompletedTask;
+
+            public Task<string> BasicConsumeAsync(string queue, bool autoAck, string consumerTag, bool noLocal, bool exclusive, IDictionary<string, object> arguments, IAsyncBasicConsumer consumer, CancellationToken cancellationToken = default)
+            {
+                if (_consumeFault is not null)
+                {
+                    ConsumeFaulted = true;
+                    throw _consumeFault;
+                }
+
+                RegisteredConsumer = consumer;
+                return Task.FromResult("in-memory-consumer-tag");
+            }
+
+            public void Dispose() => Disposed = true;
+            public ValueTask DisposeAsync()
+            {
+                Disposed = true;
+                return default;
+            }
+
+            public bool IsOpen => true;
+            public bool IsClosed => false;
+
+            // --- Unused IChannel surface: a production path reaching any of these is untested by design ---------
+            public int ChannelNumber => throw new NotImplementedException();
+            public ShutdownEventArgs CloseReason => throw new NotImplementedException();
+            public IAsyncBasicConsumer DefaultConsumer { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
+            public string CurrentQueue => throw new NotImplementedException();
+            public TimeSpan ContinuationTimeout { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
+
+            public event AsyncEventHandler<BasicAckEventArgs> BasicAcksAsync { add { } remove { } }
+            public event AsyncEventHandler<BasicNackEventArgs> BasicNacksAsync { add { } remove { } }
+            public event AsyncEventHandler<BasicReturnEventArgs> BasicReturnAsync { add { } remove { } }
+            public event AsyncEventHandler<CallbackExceptionEventArgs> CallbackExceptionAsync { add { } remove { } }
+            public event AsyncEventHandler<FlowControlEventArgs> FlowControlAsync { add { } remove { } }
+            public event AsyncEventHandler<ShutdownEventArgs> ChannelShutdownAsync { add { } remove { } }
+
+            public ValueTask BasicAckAsync(ulong deliveryTag, bool multiple, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public ValueTask BasicNackAsync(ulong deliveryTag, bool multiple, bool requeue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public ValueTask BasicPublishAsync<TProperties>(string exchange, string routingKey, bool mandatory, TProperties basicProperties, ReadOnlyMemory<byte> body, CancellationToken cancellationToken = default) where TProperties : IReadOnlyBasicProperties, IAmqpHeader => throw new NotImplementedException();
+            public ValueTask BasicPublishAsync<TProperties>(CachedString exchange, CachedString routingKey, bool mandatory, TProperties basicProperties, ReadOnlyMemory<byte> body, CancellationToken cancellationToken = default) where TProperties : IReadOnlyBasicProperties, IAmqpHeader => throw new NotImplementedException();
+            public ValueTask<ulong> GetNextPublishSequenceNumberAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task BasicCancelAsync(string consumerTag, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task<BasicGetResult> BasicGetAsync(string queue, bool autoAck, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public ValueTask BasicRejectAsync(ulong deliveryTag, bool requeue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task CloseAsync(ushort replyCode, string replyText, bool abort, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task CloseAsync(ShutdownEventArgs reason, bool abort) => throw new NotImplementedException();
+            public Task CloseAsync(ShutdownEventArgs reason, bool abort, CancellationToken cancellationToken) => throw new NotImplementedException();
+            public Task ExchangeDeclareAsync(string exchange, string type, bool durable, bool autoDelete, IDictionary<string, object> arguments = null, bool passive = false, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task ExchangeDeclarePassiveAsync(string exchange, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task ExchangeDeleteAsync(string exchange, bool ifUnused = false, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task ExchangeBindAsync(string destination, string source, string routingKey, IDictionary<string, object> arguments = null, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task ExchangeUnbindAsync(string destination, string source, string routingKey, IDictionary<string, object> arguments = null, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task<QueueDeclareOk> QueueDeclareAsync(string queue, bool durable, bool exclusive, bool autoDelete, IDictionary<string, object> arguments = null, bool passive = false, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task<QueueDeclareOk> QueueDeclarePassiveAsync(string queue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task<uint> QueueDeleteAsync(string queue, bool ifUnused, bool ifEmpty, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task<uint> QueuePurgeAsync(string queue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task QueueBindAsync(string queue, string exchange, string routingKey, IDictionary<string, object> arguments = null, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task QueueUnbindAsync(string queue, string exchange, string routingKey, IDictionary<string, object> arguments = null, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task<uint> MessageCountAsync(string queue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task<uint> ConsumerCountAsync(string queue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task TxCommitAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task TxRollbackAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
+            public Task TxSelectAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        }
+
+        private static readonly FieldInfo CreateConnectionHookField = typeof(RabbitMqConnectionSource)
+            .GetField("_createConnectionForTest", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        private static void SetCreateConnectionHook(RabbitMqConnectionSource source, Func<CancellationToken, Task<IConnection>> hook)
+            => CreateConnectionHookField.SetValue(source, hook);
     }
 }
