@@ -247,9 +247,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // the new epoch — closing both the false-ack and the stale-closure no-op-settle windows. Forces a recreate
         // (RecreateReceiveChannelAsync, not EnsureReceiveChannelAsync) because with topology recovery off the
         // transport-recovered channel may report IsOpen but carries NO consumer; an early-return would leave it
-        // consumer-less. Guards against firing after disposal — the gate is disposed in DisposeAsync, and a recovery
-        // callback can still be queued at that point — so a late recovery is dropped rather than throwing
-        // ObjectDisposedException out of the library's event dispatch.
+        // consumer-less. Guards against firing after disposal: a recovery callback can still be queued as the source
+        // tears down, so the _disposed checks drop a late recovery rather than recreating resources past disposal.
+        // The gate is NEVER disposed (see DisposeAsync GATE LIFETIME), so the catch on the WaitAsync below is now
+        // defense-in-depth rather than load-bearing; it is retained for robustness against any future gate-lifetime
+        // change.
         private async Task OnRecoverySucceededAsync(object sender, AsyncEventArgs eventArgs)
         {
             if (_disposed)
@@ -321,9 +323,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         // INVARIANT: invoked only by RabbitMqPublishChannelRental.DisposeAsync to return a rented channel.
         // A rental can outlive the source (the source is disposed while a publish is still in flight): in that
-        // case _publishPoolGate has already been disposed by DisposeAsync, so releasing it would throw
-        // ObjectDisposedException out of the rental's DisposeAsync. Dispose the orphaned channel and return
-        // WITHOUT touching the disposed semaphore — the pool is gone, so there is nothing to release back into.
+        // case the source is _disposed and the publish pool has been (or is being) drained by DisposeAsync, so a
+        // returning rental must dispose its orphaned channel and return WITHOUT adding it back to the pool or
+        // releasing _publishPoolGate — the pool is gone, so there is nothing to release back into. _publishPoolGate
+        // is NEVER disposed (see DisposeAsync GATE LIFETIME), so the _disposed short-circuit here is now
+        // defense-in-depth against a release-into-a-drained-pool rather than a guard against releasing a disposed
+        // semaphore; it is retained to preserve the orphan-dispose contract.
         internal void ReturnPublishChannel(IChannel channel)
         {
             if (_disposed)
@@ -344,6 +349,24 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             _publishPoolGate.Release();
         }
 
+        // INVARIANT: teardown of the receive channel and connection is SERIALIZED through _receiveChannelGate — the
+        // same gate that serializes RunOnReceiveChannelAsync / StartReceivingAsync / OnRecoverySucceededAsync. Under
+        // the gate this sets _disposed, unsubscribes the recovery handler, and disposes the receive channel and the
+        // connection. So a concurrent gated op (settle, cold start, recovery recreate) either runs to completion
+        // BEFORE teardown acquires the gate, or observes _disposed UNDER THE SAME GATE after teardown released it and
+        // short-circuits — there is no torn-down-resource window for a gated op. The wait is bounded by the in-flight
+        // gated op completing (the intended quiesce), and every internal await uses ConfigureAwait(false), so the
+        // teardown cannot deadlock on a captured context.
+        //
+        // GATE LIFETIME: the three SemaphoreSlims (_receiveChannelGate, _connectionInitGate, _publishPoolGate) are
+        // NEVER disposed — left for GC, mirroring the core BrokeredMessageReceiver._teardownGate ("GATE LIFETIME"
+        // comment in src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs).
+        // Disposing a gate that a concurrent waiter (a queued recovery callback, an in-flight AcquirePublishChannelAsync,
+        // or a rental returning via ReturnPublishChannel) may still touch is the hazard; the _disposed fast path
+        // narrows but cannot fully close that race. A SemaphoreSlim used only via async WaitAsync (no timeout, no
+        // AvailableWaitHandle) allocates no native handle, so leaving it for GC leaks nothing requiring deterministic
+        // release. Because the gates outlive teardown, the existing ObjectDisposedException guards in
+        // OnRecoverySucceededAsync and ReturnPublishChannel are now defense-in-depth rather than load-bearing.
         public async ValueTask DisposeAsync()
         {
             if (_disposed)
@@ -351,32 +374,48 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 return;
             }
 
-            _disposed = true;
-
-            if (_receiveChannel is not null)
+            // Serialize receive-channel + connection teardown against the gated ops. Setting _disposed UNDER the gate
+            // means a concurrent gated op that acquired the gate first completes before teardown proceeds, and one that
+            // acquires it after teardown observes _disposed and short-circuits.
+            await _receiveChannelGate.WaitAsync().ConfigureAwait(false);
+            try
             {
-                await _receiveChannel.DisposeAsync().ConfigureAwait(false);
-                _receiveChannel = null;
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+
+                if (_receiveChannel is not null)
+                {
+                    await _receiveChannel.DisposeAsync().ConfigureAwait(false);
+                    _receiveChannel = null;
+                }
+
+                if (_connection is not null)
+                {
+                    // Unsubscribe BEFORE disposing so no recovery callback can be dispatched into a half-torn-down
+                    // source; combined with the _disposed flag (set above, under this gate) this guarantees a queued
+                    // recovery callback either ran before this teardown or observes _disposed and short-circuits.
+                    _connection.RecoverySucceededAsync -= OnRecoverySucceededAsync;
+                    await _connection.DisposeAsync().ConfigureAwait(false);
+                    _connection = null;
+                }
+            }
+            finally
+            {
+                _receiveChannelGate.Release();
             }
 
+            // Drain the publish pool OUTSIDE the receive gate (the publish pool is governed by _publishPoolGate, not
+            // the receive gate). A rental still in flight returns via ReturnPublishChannel, which observes _disposed
+            // (set above) and disposes its orphaned channel WITHOUT touching _publishPoolGate, so the drain and a
+            // late rental return cannot both add to / take from the bag in a way that loses a channel.
             while (_publishChannels.TryTake(out var publishChannel))
             {
                 await publishChannel.DisposeAsync().ConfigureAwait(false);
             }
-
-            if (_connection is not null)
-            {
-                // Unsubscribe BEFORE disposing so no recovery callback can be dispatched into a half-torn-down
-                // source; combined with the _disposed flag (set above) and the ObjectDisposedException guard in
-                // the handler, this guarantees no handler touches the gate after it is disposed below.
-                _connection.RecoverySucceededAsync -= OnRecoverySucceededAsync;
-                await _connection.DisposeAsync().ConfigureAwait(false);
-                _connection = null;
-            }
-
-            _connectionInitGate.Dispose();
-            _receiveChannelGate.Dispose();
-            _publishPoolGate.Dispose();
         }
 
         private void ThrowIfDisposed()

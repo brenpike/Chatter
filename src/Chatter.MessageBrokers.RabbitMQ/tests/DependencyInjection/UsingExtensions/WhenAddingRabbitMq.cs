@@ -203,6 +203,75 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             act.Should().NotThrow();
         }
 
+        // --- Multiple-RabbitMQ-receiver rejection at registration --------------------------------------
+
+        // Two RabbitMQ-attributed receivers must throw at registration: the singleton connection source owns one
+        // receive channel and one consumer registration, so a second receiver would clobber the first.
+        [Fact]
+        public void MustThrowWhenMoreThanOneRabbitMqReceiverIsDiscovered()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        })));
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustNotThrowWhenExactlyOneRabbitMqReceiverIsDiscovered()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                        TransactionMode = TransactionMode.ReceiveOnly
+                    })));
+
+            act.Should().NotThrow();
+        }
+
+        // Receivers belonging to ANOTHER infrastructure must NOT count toward the single-RabbitMQ-receiver limit. A
+        // ForeignMessagingInfrastructure descriptor exists, so RabbitMQ is not the resolved default and the two
+        // foreign receivers are not claimed: only the one RabbitMQ receiver counts, so no throw.
+        [Fact]
+        public void MustNotThrowWhenAdditionalReceiversBelongToAnotherInfrastructure()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IMessagingInfrastructure>(new ForeignMessagingInfrastructure());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = "Chatter.Infrastructure.SomeOtherBroker",
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = "Chatter.Infrastructure.SomeOtherBroker",
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        }));
+            });
+
+            act.Should().NotThrow();
+        }
+
         private sealed class StubDiscoveredReceiverRegistry : IDiscoveredReceiverRegistry
         {
             private readonly List<ReceiverOptions> _receivers = new List<ReceiverOptions>();

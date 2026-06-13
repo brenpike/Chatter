@@ -31,6 +31,14 @@ namespace Microsoft.Extensions.DependencyInjection
             // silently degrade at first send. None/ReceiveOnly are supported.
             RejectFullAtomicity(builder.Services);
 
+            // The singleton IRabbitMqConnectionSource owns ONE receive channel and ONE consume-registration delegate,
+            // but core creates one BrokeredMessageReceiver per discovered receiver. Two-or-more RabbitMQ queue
+            // receivers would have the second StartReceivingAsync clobber the first, and on recovery only the last
+            // would re-register — silently stalling the others. Multi-receiver support is DEFERRED; until then this
+            // fails fast at registration. RejectFullAtomicity runs first to preserve the existing FullAtomicity-guard
+            // test expectations.
+            RejectMultipleReceivers(builder.Services);
+
             // INVARIANT: one IConnection per process — IRabbitMqConnectionSource is a SINGLETON. This is the one
             // deliberate lifetime divergence from the SqlServiceBroker fold (whose ISqlConnectionSource is Scoped):
             // the AMQP connection, its serialized receive channel, and its pooled publish channels are process-wide
@@ -117,6 +125,32 @@ namespace Microsoft.Extensions.DependencyInjection
             }
         }
 
+        // Fails fast at registration when MORE THAN ONE RabbitMQ-attributed receiver is discovered. The singleton
+        // connection source owns one receive channel and one registration delegate, so a second receiver clobbers the
+        // first and recovery only re-registers the last. Uses the SAME IServiceCollection-read (no provider built) and
+        // the SAME RabbitMQ attribution (IsRabbitMqReceiver + the first-registered-IMessagingInfrastructure default
+        // rule) as RejectFullAtomicity. No-op when the registry is absent or has 0/1 RabbitMQ receivers.
+        private static void RejectMultipleReceivers(IServiceCollection services)
+        {
+            var discoveredRegistry = services
+                .FirstOrDefault(d => d.ServiceType == typeof(IDiscoveredReceiverRegistry))?
+                .ImplementationInstance as IDiscoveredReceiverRegistry;
+            if (discoveredRegistry is null)
+            {
+                return;
+            }
+
+            var rabbitMqIsDefault = !services.Any(d => d.ServiceType == typeof(IMessagingInfrastructure));
+
+            var rabbitMqReceiverCount = discoveredRegistry.DiscoveredReceivers
+                .Count(receiverOptions => IsRabbitMqReceiver(receiverOptions.InfrastructureType, rabbitMqIsDefault));
+
+            if (rabbitMqReceiverCount > 1)
+            {
+                throw new NotSupportedException(MultipleReceiversMessage);
+            }
+        }
+
         // A RabbitMQ receiver is one EXPLICITLY typed to RabbitMQ (always claimed) OR one left on the default
         // infrastructure (blank/empty InfrastructureType) ONLY WHEN RabbitMQ is the core's resolved default.
         private static bool IsRabbitMqReceiver(string infrastructureType, bool rabbitMqIsDefault)
@@ -127,5 +161,12 @@ namespace Microsoft.Extensions.DependencyInjection
             "RabbitMQ does not support TransactionMode.FullAtomicityViaInfrastructure: there is no atomic "
             + "receive-and-send across the consume and a downstream publish. Use TransactionMode.None or "
             + "TransactionMode.ReceiveOnly, and the Outbox for transactional send.";
+
+        private const string MultipleReceiversMessage =
+            "RabbitMQ supports only a single queue receiver per process: the connection source owns one receive "
+            + "channel and one consumer registration, so a second receiver would clobber the first and recovery "
+            + "would re-register only the last. A single RabbitMQ queue receiver per process is a 0.1.0 limitation; "
+            + "see the multi-receiver tracking issue (single RabbitMQ queue receiver per process is a 0.1.0 "
+            + "limitation).";
     }
 }
