@@ -56,12 +56,42 @@ descriptor declares the field's AMQP home, its core binding, and its coercion:
 | CorrelationId | native `BasicProperties.CorrelationId` **+ header copy** | `OutboundBrokeredMessage.CorrelationId` | `MessageContext.CorrelationId` | DECISION-D dual-home; inbound the native frame wins, else the decoded header copy (byte[]->string) |
 | TimeToLive / Expiration | native `BasicProperties.Expiration` (ms string) | `OutboundBrokeredMessage.GetTimeToLive()` (TimeSpan) | `MessageContext.TimeToLive` | GAP A: dedicated arm — TimeSpan<->ms-string; the un-encodable `TimeToLive` header key is dropped; reconstituted to a TimeSpan inbound |
 
-Header-home fields are **not** enumerated as descriptors: they are every remaining context entry,
-coerced table-legal outbound and decoded inbound through `RabbitMqHeaderMarshaller`. There is no
-per-key allowlist gate in the translator — the marshaller's `IsStringTypedKey` set is the single
-declaration of which header keys decode byte[]->string inbound (GAP F: table/descriptor-driven
-decode, not a per-key branch), and the translator's descriptors own the native-home keys, so a
-header field cannot drift its home.
+Header-home fields are **not** enumerated as native descriptors: they are every remaining context
+entry, coerced table-legal outbound and rehydrated inbound through `RabbitMqHeaderMarshaller`.
+There is no per-key allowlist gate in the translator — the marshaller's single per-descriptor
+**symmetric-coercion table** (`HeaderCoercion`, keyed by core context key) is the sole declaration
+of which header keys carry a known CLR coercion (GAP F: table/descriptor-driven, not a per-key
+branch), and the translator's descriptors own the native-home keys, so a header field cannot drift
+its home.
+
+The header coercion is now **bidirectional-symmetric per descriptor**: each `HeaderCoercion`
+carries an `Encode` (core CLR -> field-table-legal wire form) **and** a `Decode` (received wire
+value -> the SAME original CLR type), declared once and paired by construction. The ten string-typed
+routing/failure keys encode string-identity outbound and decode `byte[]`/`string` -> `string`
+inbound (the prior behaviour, now expressed as descriptors). **ExpiryTimeUtc** — a non-string
+(`DateTime`) core key with a header home — is a descriptor in this table:
+
+| Header key | Outbound encode | Inbound decode | Notes |
+| --- | --- | --- | --- |
+| ExpiryTimeUtc | `DateTime` -> ISO-8601 (`"O"`, invariant) string | wire `byte[]`/`string` -> `DateTime` (`RoundtripKind`); a malformed/unparseable value **drops the key** | OPTION (a): kept as a header field with symmetric coercion — it is the absolute-expiry-instant core concept, distinct from the relative TTL on `BasicProperties.Expiration`; the inbound decode restores the `DateTime` so `OutboundBrokeredMessage.RefreshTimeToLive`'s `(DateTime?)` cast holds after a round trip |
+
+This **extends the closed class** the contract dissolves: the original class was "a semantic field
+translated inconsistently across boundaries (native-vs-header home mismatch)"; the symmetric
+header coercion additionally closes **"a header-home core key whose inbound decode does not restore
+its original CLR type"**. ExpiryTimeUtc was the recurrence of that class for a non-string CLR type —
+it was encoded `DateTime` -> ISO string outbound but stayed `byte[]`/`string` on receive, so
+`RefreshTimeToLive`'s `(DateTime?)` cast threw `InvalidCastException` (the same class as the prior
+CorrelationId `byte[]` cast bug, for a non-string CLR type). Because Encode and Decode are paired in
+one descriptor, a non-string header key **cannot** be added with an encode but no matching decode,
+so this asymmetry cannot recur on a new byte/field/path.
+
+OPTION (a) — **keep ExpiryTimeUtc as a header field** (rather than dropping it or mapping it onto a
+native frame field) — was chosen because ExpiryTimeUtc is the absolute-expiry-**instant** concept,
+which is distinct from the relative TTL the contract already lifts onto `BasicProperties.Expiration`
+(GAP A); it is not redundant with that native Expiration. Dropping it would re-open a cross-boundary
+asymmetry: the sibling Azure Service Bus adapter surfaces the broker's `ExpiresAtUtc` into the core
+`ExpiryTimeUtc` key inbound, so ExpiryTimeUtc is a real inbound core key in the suite, and parity
+keeps the RabbitMQ adapter from silently losing it on a round trip.
 
 ### The flow
 
@@ -120,8 +150,9 @@ asymmetry shape on a new byte/field/path because there is no per-boundary copy l
   natives (DECISION-B), GAP D (CorrelationId dual-home), GAP E (persistence hardcoded), and GAP F
   (table/descriptor-driven header decode, no per-key allowlist branch in the translator).
 - Adding a native-home field with a core concept is one descriptor in the field-map table; adding
-  a string-typed header key is one entry in the marshaller's `IsStringTypedKey` set. Neither
-  requires touching the three boundary methods.
+  a header-home core key is one entry in the marshaller's per-descriptor symmetric-coercion table
+  (a `HeaderCoercion` carrying both its `Encode` and `Decode`). Neither requires touching the three
+  boundary methods, and a non-string header key cannot be added without its inbound decode.
 - **Cross-references.** ADR 0001 (classic-queue delivery-count counting) stays **out of this
   table**: `ReceiveAttempts` / the `x-chatter-delivery-count` republish counter are owned by the
   receiver's delivery-counting path, not the field-map, because they are computed per-delivery

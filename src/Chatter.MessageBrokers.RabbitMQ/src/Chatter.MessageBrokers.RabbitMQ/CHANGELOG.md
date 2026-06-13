@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.1.2] - 2026-06-13
+
+### Fixed
+
+- `MessageContext.ExpiryTimeUtc` (a `DateTime` core key) was encoded to an ISO-8601 string outbound but never rehydrated on receive — it stayed a `byte[]`/`string` from the wire — so after a self-published round trip `OutboundBrokeredMessage.RefreshTimeToLive()`'s `(DateTime?)` cast on it threw `InvalidCastException` (the same class as the prior `CorrelationId` `byte[]` cast bug, here for a non-string CLR type). Fixed by replacing the marshaller's one-directional string-typed-key set with a per-descriptor **symmetric** encode/decode coercion table keyed by core context key: each known header key now declares both its CLR→wire encode and its wire→original-CLR decode, so any non-string core key routed through a header rehydrates to its original CLR type by construction (ExpiryTimeUtc decodes `byte[]`/`string`→`DateTime`; a malformed value drops the key so the core's null-guard short-circuits). The ten existing string-typed routing/failure keys are unchanged. A non-string header key can no longer be added with an encode but no matching decode, closing the asymmetry class on ADR 0004's translation contract.
+
 ## [0.1.1] - 2026-06-13
 
 ### Changed

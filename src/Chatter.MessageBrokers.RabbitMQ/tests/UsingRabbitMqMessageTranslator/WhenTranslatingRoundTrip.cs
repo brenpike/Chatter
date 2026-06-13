@@ -397,6 +397,129 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
             coreContext["custom-binary"].Should().BeEquivalentTo(binary);
         }
 
+        // --- ExpiryTimeUtc header key: symmetric DateTime<->ISO("O") coercion (closes the encoded-only asymmetry) ---
+
+        // A delivery carrying ExpiryTimeUtc as a UTF-8 byte[] of an ISO("O") DateTime (how a real broker surfaces the
+        // ISO string the send path wrote) rehydrates to a CLR DateTime on receive, so the core's (DateTime?) cast in
+        // RefreshTimeToLive does not throw. Reproduces + proves the cast-break fix.
+        [Fact]
+        public void MustRehydrateExpiryTimeUtcFromByteArrayOnReceive()
+        {
+            var expiry = new DateTime(2026, 6, 13, 12, 0, 0, DateTimeKind.Utc);
+            var headers = new Dictionary<string, object>
+            {
+                [MessageContext.ExpiryTimeUtc] =
+                    System.Text.Encoding.UTF8.GetBytes(expiry.ToString("O", System.Globalization.CultureInfo.InvariantCulture))
+            };
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            coreContext[MessageContext.ExpiryTimeUtc].Should().BeOfType<DateTime>().Which.Should().Be(expiry);
+
+            Action cast = () => _ = (DateTime?)coreContext[MessageContext.ExpiryTimeUtc];
+            cast.Should().NotThrow("the core's RefreshTimeToLive (DateTime?) cast must hold after a round trip");
+        }
+
+        // send -> wire -> receive: a DateTime ExpiryTimeUtc on the outbound context is encoded to an ISO string on the
+        // wire table, byte[]-ized as a real broker would, and restored to the original DateTime on receive.
+        [Fact]
+        public void MustRoundTripExpiryTimeUtcSendThenReceive()
+        {
+            var expiry = new DateTime(2026, 6, 13, 18, 30, 45, DateTimeKind.Utc);
+            var message = Message(new Dictionary<string, object> { [MessageContext.ExpiryTimeUtc] = expiry });
+
+            var sent = RabbitMqMessageTranslator.ToAmqp(message, "application/json");
+            sent.Headers[MessageContext.ExpiryTimeUtc].Should().BeOfType<string>("the field table cannot encode a DateTime");
+
+            // Model the broker surfacing the longstr header as a byte[].
+            var deliveredHeaders = new Dictionary<string, object>
+            {
+                [MessageContext.ExpiryTimeUtc] = System.Text.Encoding.UTF8.GetBytes((string)sent.Headers[MessageContext.ExpiryTimeUtc])
+            };
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: deliveredHeaders)),
+                deliveredHeaders);
+
+            coreContext[MessageContext.ExpiryTimeUtc].Should().Be(expiry);
+        }
+
+        // end-to-end: a rehydrated context feeds OutboundBrokeredMessage.RefreshTimeToLive() without throwing and
+        // yields a positive TimeSpan TTL for a future expiry.
+        [Fact]
+        public void MustFeedRehydratedExpiryTimeUtcIntoRefreshTimeToLiveWithoutThrowing()
+        {
+            var expiry = DateTime.UtcNow.AddMinutes(10);
+            var headers = new Dictionary<string, object>
+            {
+                [MessageContext.ExpiryTimeUtc] =
+                    System.Text.Encoding.UTF8.GetBytes(expiry.ToString("O", System.Globalization.CultureInfo.InvariantCulture))
+            };
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            var outbound = new OutboundBrokeredMessage(
+                Guid.NewGuid().ToString(), new byte[] { 1 }, coreContext, Destination, new RabbitMqBodyConverter());
+
+            Action refresh = () => outbound.RefreshTimeToLive();
+            refresh.Should().NotThrow();
+            outbound.GetTimeToLive().Should().NotBeNull();
+            outbound.GetTimeToLive().Value.Should().BeGreaterThan(TimeSpan.Zero);
+        }
+
+        // A malformed (non-ISO) ExpiryTimeUtc is DROPPED on receive (key absent), never throwing and never stamping a
+        // bogus DateTime, so the core's null-guard short-circuits cleanly.
+        [Fact]
+        public void MustDropMalformedExpiryTimeUtcOnReceive()
+        {
+            var headers = new Dictionary<string, object>
+            {
+                [MessageContext.ExpiryTimeUtc] = System.Text.Encoding.UTF8.GetBytes("not-a-date")
+            };
+
+            (IDictionary<string, object> coreContext, string _) result = default;
+            Action translate = () => result = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
+                headers);
+
+            translate.Should().NotThrow();
+            result.coreContext.Should().NotContainKey(MessageContext.ExpiryTimeUtc);
+        }
+
+        // General symmetry over the public translate seam: for the non-string ExpiryTimeUtc descriptor and a
+        // representative string-typed descriptor, the encoded-then-decoded value restores the original CLR type and
+        // value (exercising ToAmqp/ToCore rather than reflecting over the private table).
+        [Fact]
+        public void MustRestoreOriginalClrTypeForEachDescriptorThroughTranslateSeam()
+        {
+            var expiry = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+            var message = Message(new Dictionary<string, object>
+            {
+                [MessageContext.ExpiryTimeUtc] = expiry,
+                [MessageContext.Subject] = "order-subject"
+            });
+
+            var sent = RabbitMqMessageTranslator.ToAmqp(message, "application/json");
+
+            // Model the broker surfacing each longstr header as a byte[].
+            var deliveredHeaders = new Dictionary<string, object>
+            {
+                [MessageContext.ExpiryTimeUtc] = System.Text.Encoding.UTF8.GetBytes((string)sent.Headers[MessageContext.ExpiryTimeUtc]),
+                [MessageContext.Subject] = System.Text.Encoding.UTF8.GetBytes((string)sent.Headers[MessageContext.Subject])
+            };
+
+            var (coreContext, _) = RabbitMqMessageTranslator.ToCore(
+                RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: deliveredHeaders)),
+                deliveredHeaders);
+
+            coreContext[MessageContext.ExpiryTimeUtc].Should().BeOfType<DateTime>().Which.Should().Be(expiry);
+            coreContext[MessageContext.Subject].Should().BeOfType<string>().Which.Should().Be("order-subject");
+        }
+
         [Fact]
         public void MustThrowWhenSendMessageNull()
         {

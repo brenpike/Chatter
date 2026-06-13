@@ -36,11 +36,17 @@ services.AddChatterCqrs(Configuration, builder =>
             rmq.AddRabbitMqOptions(hostName: "localhost",
                                    userName: "guest",
                                    password: "guest")
-               // register a receiver for a message type bound to a RabbitMQ queue
-               .AddQueueReceiver<MyIntegrationEvent>("my-integration-event");
+               // register a receiver for a message type bound to a RabbitMQ queue, with a
+               // poison target — the receiver fails fast at startup without a dead-letter
+               // or error queue path configured
+               .AddQueueReceiver<MyIntegrationEvent>(
+                   queueName: "my-integration-event",
+                   deadLetterQueuePath: "my-integration-event-deadletter");
         });
 });
 ```
+
+> The dead-letter (or error) queue is provisioned externally — see [Required topology](#required-topology).
 
 Alternatively, connect via AMQP URI:
 

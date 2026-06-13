@@ -10,11 +10,22 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// <summary>
     /// The header-coercion HELPER that <see cref="RabbitMqMessageTranslator"/>'s header-home fields delegate to.
     /// Coerces each core <see cref="MessageContext"/> CLR value to an AMQP-field-table-legal wire type outbound
-    /// (<see cref="ToHeaderTable"/>) and decodes the string-typed header keys back to <c>string</c> inbound
+    /// (<see cref="ToHeaderTable"/>) and rehydrates a known core header key back to its ORIGINAL CLR type inbound
     /// (<see cref="ToContext"/>), so an uncoerced value can never cross the header boundary in either direction.
     /// The translator owns the native-frame fields and routes every header bag through this helper; this type is
     /// no longer a standalone boundary but the header arm of the single translation contract.
     /// </summary>
+    /// <remarks>
+    /// Each known core header key is governed by a SINGLE <see cref="HeaderCoercion"/> descriptor carrying a
+    /// SYMMETRIC bidirectional coercion: <see cref="HeaderCoercion.Encode"/> maps the core CLR value to a
+    /// field-table-legal wire form outbound AND <see cref="HeaderCoercion.Decode"/> maps the received wire value
+    /// back to the SAME original CLR type inbound. The pairing is the closed-by-construction invariant: a non-string
+    /// core key (e.g. <see cref="MessageContext.ExpiryTimeUtc"/>, a <see cref="DateTime"/>) cannot be added to the
+    /// table with an encode but no matching decode, so it necessarily rehydrates to its original CLR type after a
+    /// round trip and the core's typed cast on it (e.g. <c>OutboundBrokeredMessage.RefreshTimeToLive</c>'s
+    /// <c>(DateTime?)</c> cast on ExpiryTimeUtc) holds — closing the asymmetry class that left an encoded-only
+    /// non-string key as a <c>byte[]</c>/<c>string</c> on receive.
+    /// </remarks>
     /// <remarks>
     /// OUTBOUND (<see cref="ToHeaderTable"/>): the AMQP 0-9-1 field table the client can encode admits only
     /// <c>string</c>, <c>bool</c>, <c>sbyte</c>, <c>int</c>, <c>long</c>, <c>decimal</c>, <c>byte[]</c>, and a
@@ -28,39 +39,73 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// <c>OutboundBrokeredMessage.GetTimeToLive()</c>; this helper only DROPS the un-encodable
     /// <see cref="MessageContext.TimeToLive"/> key so it never reaches the table in any form.
     /// INBOUND (<see cref="ToContext"/>): a real broker delivers a string application header as an AMQP longstr,
-    /// which RabbitMQ.Client surfaces as a <c>byte[]</c>. The core casts a fixed set of string-typed context keys
-    /// straight to <c>string</c> (e.g. <c>InboundBrokeredMessage</c> casts <see cref="MessageContext.Via"/> reads),
-    /// so a raw copy of the received headers left those keys as <c>byte[]</c> and the unguarded <c>(string)</c>
-    /// cast threw <see cref="InvalidCastException"/> before the handler ran. This helper decodes the string-typed
-    /// header keys from <c>byte[]</c> to <c>string</c> while preserving every unknown key verbatim, so genuine
-    /// binary headers are never corrupted and the numeric delivery-count path (owned by
+    /// which RabbitMQ.Client surfaces as a <c>byte[]</c>, and a non-string core key encoded outbound (ExpiryTimeUtc
+    /// as an ISO-8601 string) likewise arrives as a <c>byte[]</c>/<c>string</c>. The core casts each known core key
+    /// straight to its expected CLR type (e.g. <c>InboundBrokeredMessage</c> casts <see cref="MessageContext.Via"/>
+    /// to <c>string</c>; <c>OutboundBrokeredMessage.RefreshTimeToLive</c> casts ExpiryTimeUtc to <c>(DateTime?)</c>),
+    /// so a raw copy of the received headers left those keys mistyped and the unguarded cast threw
+    /// <see cref="InvalidCastException"/> before the handler ran. This helper rehydrates each known core header key
+    /// to its ORIGINAL CLR type via that key's symmetric coercion Decode (string-typed keys decode to <c>string</c>;
+    /// ExpiryTimeUtc decodes to <c>DateTime</c>) while preserving every unknown key verbatim, so genuine binary
+    /// headers are never corrupted and the numeric delivery-count path (owned by
     /// <c>RabbitMqReceiver.ReadHeaderAsLong</c>) is left untouched. CorrelationId and ContentType are NOT in this
     /// set: the translator owns them as native-frame fields and reads them off the frame inbound, so a decoded
     /// header copy is not the inbound source for them.
     /// </remarks>
     internal static class RabbitMqHeaderMarshaller
     {
-        // INVARIANT: the core context keys that have a HEADER home and whose values the inbound receive path casts
-        // straight to (string) (the routing reads of Via / RouteToSelfPath / ReplyTo* / RoutingSlip / GroupId /
-        // Subject and the failure-detail strings). A real broker surfaces a string application header as a byte[]
-        // (AMQP longstr), so each must be decoded back to string before the unguarded cast runs. CorrelationId and
-        // ContentType are DELIBERATELY ABSENT: RabbitMqMessageTranslator owns them as native-frame fields (it sets
-        // the native frame outbound and reads the native frame inbound), so the header copy is not their decode
-        // source. InfrastructureType is included for consistency even though the receiver overwrites it.
-        // This is the single string-typed-header-key declaration; adding a string-typed header key is one edit here.
-        private static readonly HashSet<string> _stringTypedHeaderKeys = new HashSet<string>
+        // A SYMMETRIC bidirectional coercion for one known core header key: Encode maps the core CLR value to a
+        // field-table-legal wire form outbound, Decode maps the received wire value back to the SAME original CLR
+        // type inbound. INVARIANT: the two arms are paired by construction — a key cannot be added with an encode
+        // but no matching decode, so any non-string core header key necessarily rehydrates to its original CLR type
+        // after a round trip (closing the encoded-only-then-uncast asymmetry class).
+        private sealed class HeaderCoercion
         {
-            MessageContext.Subject,
-            MessageContext.GroupId,
-            MessageContext.Via,
-            MessageContext.RouteToSelfPath,
-            MessageContext.ReplyToAddress,
-            MessageContext.ReplyToGroupId,
-            MessageContext.RoutingSlip,
-            MessageContext.FailureDetails,
-            MessageContext.FailureDescription,
-            MessageContext.InfrastructureType
-        };
+            public HeaderCoercion(Func<object, object> encode, Func<object, object> decode)
+            {
+                Encode = encode;
+                Decode = decode;
+            }
+
+            // CLR -> field-table-legal wire form (outbound). Never throws; returns null to drop the key.
+            public Func<object, object> Encode { get; }
+            // Wire value -> the SAME original CLR type (inbound). Never throws; returns null to drop the key.
+            public Func<object, object> Decode { get; }
+        }
+
+        // INVARIANT: the core context keys that have a HEADER home, each governed by ONE symmetric coercion. The ten
+        // string-typed routing/failure keys (Via / RouteToSelfPath / ReplyTo* / RoutingSlip / GroupId / Subject /
+        // the failure-detail strings + InfrastructureType) encode string-identity outbound and decode byte[]/string
+        // -> string inbound, because the inbound receive path casts them straight to (string) and a real broker
+        // surfaces a string application header as a byte[] (AMQP longstr). ExpiryTimeUtc is a non-string (DateTime)
+        // core key: it encodes DateTime -> ISO-8601 ("O") string outbound and decodes the wire value back to a
+        // DateTime inbound, so the core's (DateTime?) cast in RefreshTimeToLive holds after a round trip.
+        // CorrelationId and ContentType are DELIBERATELY ABSENT: RabbitMqMessageTranslator owns them as native-frame
+        // fields (it sets the native frame outbound and reads the native frame inbound), so the header copy is not
+        // their decode source. This is the single header-key coercion declaration; a non-string header key cannot be
+        // added without its decode (the symmetric pairing is enforced by the descriptor shape).
+        // The shared string-typed coercion the ten routing/failure keys use: encode = the general outbound coercion
+        // (a string passes through identity), decode = byte[]/string -> string. Behaviour-preserving vs the prior
+        // _stringTypedHeaderKeys HashSet (CoerceOutboundValue outbound, DecodeStringTypedValue inbound). Declared
+        // BEFORE _headerCoercions so the static field initializers (run in textual order) see it populated.
+        private static readonly HeaderCoercion StringTypedCoercion =
+            new HeaderCoercion(CoerceOutboundValue, DecodeStringTypedValue);
+
+        private static readonly IReadOnlyDictionary<string, HeaderCoercion> _headerCoercions =
+            new Dictionary<string, HeaderCoercion>
+            {
+                [MessageContext.Subject] = StringTypedCoercion,
+                [MessageContext.GroupId] = StringTypedCoercion,
+                [MessageContext.Via] = StringTypedCoercion,
+                [MessageContext.RouteToSelfPath] = StringTypedCoercion,
+                [MessageContext.ReplyToAddress] = StringTypedCoercion,
+                [MessageContext.ReplyToGroupId] = StringTypedCoercion,
+                [MessageContext.RoutingSlip] = StringTypedCoercion,
+                [MessageContext.FailureDetails] = StringTypedCoercion,
+                [MessageContext.FailureDescription] = StringTypedCoercion,
+                [MessageContext.InfrastructureType] = StringTypedCoercion,
+                [MessageContext.ExpiryTimeUtc] = new HeaderCoercion(EncodeExpiryTimeUtc, DecodeExpiryTimeUtc)
+            };
 
         /// <summary>
         /// Projects an outbound <see cref="MessageContext"/> dictionary into an AMQP-field-table-legal header bag,
@@ -89,15 +134,11 @@ namespace Chatter.MessageBrokers.RabbitMQ
                     continue;
                 }
 
-                // ExpiryTimeUtc is a DateTime the field table cannot encode; emit it as a round-trippable ISO-8601
-                // ("O") string in the table (it has no native AMQP property the way TimeToLive does).
-                if (entry.Key == MessageContext.ExpiryTimeUtc && entry.Value is DateTime expiry)
-                {
-                    table[entry.Key] = expiry.ToString("O", CultureInfo.InvariantCulture);
-                    continue;
-                }
-
-                table[entry.Key] = CoerceOutboundValue(entry.Value);
+                // A known core header key routes through its symmetric coercion's Encode (e.g. ExpiryTimeUtc's
+                // DateTime -> ISO-8601 ("O") string); every other key falls through to the general outbound coercion.
+                table[entry.Key] = _headerCoercions.TryGetValue(entry.Key, out var coercion)
+                    ? coercion.Encode(entry.Value)
+                    : CoerceOutboundValue(entry.Value);
             }
 
             // Drop any null-coerced entries: a null value is not field-table-legal, and the core treats an absent
@@ -157,10 +198,12 @@ namespace Chatter.MessageBrokers.RabbitMQ
         }
 
         /// <summary>
-        /// Projects a received AMQP header bag into a core-ready context dictionary: known string-typed keys that
-        /// arrived as a <c>byte[]</c> (AMQP longstr) are decoded to <c>string</c> so the core's unguarded cast
-        /// holds; every other key is preserved verbatim so genuine binary headers and the numeric delivery-count
-        /// path are untouched.
+        /// Projects a received AMQP header bag into a core-ready context dictionary: a known core header key is
+        /// rehydrated to its ORIGINAL CLR type via its symmetric coercion's Decode (a string-typed key arriving as a
+        /// <c>byte[]</c> AMQP longstr decodes to <c>string</c>; ExpiryTimeUtc decodes back to a <c>DateTime</c>) so
+        /// the core's typed cast holds; every other key is preserved verbatim so genuine binary headers and the
+        /// numeric delivery-count path are untouched. A coercion whose Decode returns null (e.g. a malformed
+        /// ExpiryTimeUtc that cannot parse) DROPS the key so the core's null-guard short-circuits cleanly.
         /// </summary>
         public static IDictionary<string, object> ToContext(IEnumerable<KeyValuePair<string, object>> headers)
         {
@@ -172,9 +215,15 @@ namespace Chatter.MessageBrokers.RabbitMQ
 
             foreach (var entry in headers)
             {
-                if (_stringTypedHeaderKeys.Contains(entry.Key))
+                if (_headerCoercions.TryGetValue(entry.Key, out var coercion))
                 {
-                    context[entry.Key] = DecodeStringTypedValue(entry.Value);
+                    var decoded = coercion.Decode(entry.Value);
+                    if (decoded != null)
+                    {
+                        context[entry.Key] = decoded;
+                    }
+                    // A null decode (e.g. a malformed ExpiryTimeUtc) DROPS the key: the core treats an absent key the
+                    // same as null and its null-guard short-circuits, rather than stamping a bogus value or faulting.
                     continue;
                 }
 
@@ -208,6 +257,39 @@ namespace Chatter.MessageBrokers.RabbitMQ
                 default:
                     return value;
             }
+        }
+
+        // ExpiryTimeUtc ENCODE (outbound): a DateTime the field table cannot encode is rendered to a round-trippable
+        // ISO-8601 ("O") invariant string (it has no native AMQP property the way TimeToLive does). A non-DateTime
+        // value falls back to the general outbound coercion so the publish never throws.
+        private static object EncodeExpiryTimeUtc(object value)
+            => value is DateTime expiry ? expiry.ToString("O", CultureInfo.InvariantCulture) : CoerceOutboundValue(value);
+
+        // ExpiryTimeUtc DECODE (inbound): the wire value (a byte[] longstr from a real broker or a string from an
+        // in-process double) is parsed back to a DateTime so the core's (DateTime?) cast in RefreshTimeToLive holds.
+        // RoundtripKind preserves the "O" form's UTC/offset semantics. A malformed/unparseable value returns null so
+        // ToContext DROPS the key (the core's null-guard short-circuits) rather than stamping a bogus DateTime or
+        // faulting — NEVER throws.
+        private static object DecodeExpiryTimeUtc(object value)
+        {
+            string text;
+            switch (value)
+            {
+                case byte[] asBytes:
+                    text = Encoding.UTF8.GetString(asBytes);
+                    break;
+                case string asString:
+                    text = asString;
+                    break;
+                case DateTime asDateTime:
+                    return asDateTime;
+                default:
+                    return null;
+            }
+
+            return DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+                ? parsed
+                : (object)null;
         }
     }
 }

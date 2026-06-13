@@ -23,11 +23,13 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// emitted context (null when the field has no core key sink, e.g. MessageId which the receiver carries on the
     /// MessageBrokerContext itself).
     ///
-    /// HEADER-home fields are NOT enumerated as descriptors: they are every remaining context entry, coerced
-    /// table-legal outbound and decoded inbound through <see cref="RabbitMqHeaderMarshaller"/> (the header-coercion
-    /// helper). There is no per-key allowlist — the marshaller's <see cref="RabbitMqHeaderMarshaller.IsStringTypedKey"/>
-    /// is the single declaration of which header keys decode byte[]-&gt;string inbound, and this translator's
-    /// descriptors own the native-home keys, so a header field cannot drift its home.
+    /// HEADER-home fields are NOT enumerated as descriptors here: they are every remaining context entry, coerced
+    /// table-legal outbound and rehydrated inbound through <see cref="RabbitMqHeaderMarshaller"/> (the header-coercion
+    /// helper). There is no per-key allowlist in this translator — the marshaller's single per-descriptor
+    /// symmetric-coercion table is the sole declaration of which header keys carry a known CLR coercion (each encoding
+    /// CLR-&gt;wire outbound AND decoding wire-&gt;the SAME original CLR type inbound, so a non-string core key such as
+    /// ExpiryTimeUtc rehydrates by construction), and this translator's descriptors own the native-home keys, so a
+    /// header field cannot drift its home.
     ///
     /// DECISION-B (carry-only C-family — ContentEncoding / Type / AppId / Priority / Timestamp): these have a
     /// native frame home but NO core concept. They are captured inbound onto <see cref="ReceivedMessage"/> (the
