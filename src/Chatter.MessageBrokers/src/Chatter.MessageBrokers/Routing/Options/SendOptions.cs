@@ -7,7 +7,8 @@ namespace Chatter.MessageBrokers.Routing.Options
     {
         public SendOptions() { }
         private SendOptions(IDictionary<string, object> messageContext) : base(messageContext) { }
-        internal static SendOptions Create(IDictionary<string, object> messageContext) => new SendOptions(messageContext);
+        internal static SendOptions Create(IDictionary<string, object> messageContext)
+            => new SendOptions(messageContext is null ? null : new Dictionary<string, object>(messageContext));
         
         public SendOptions Merge(SendOptions optionsToMerge) => Merge(optionsToMerge?.MessageContext) as SendOptions;
 
