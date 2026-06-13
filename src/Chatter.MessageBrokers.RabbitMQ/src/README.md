@@ -112,23 +112,25 @@ Options are modeled by `RabbitMqOptions` and assembled with `RabbitMqOptionsBuil
 
 The RabbitMQ adapter uses a **default-exchange convention**: a bare `Destination` names a queue, and the sender publishes to RabbitMQ's default exchange (`""`) with a routing key equal to that queue name. Routing key and queue name coincide only under this convention.
 
-To route through a non-default exchange with an explicit routing key, use the `.WithRabbitMqRouting(exchange, routingKey)` extension on `OutboundBrokeredMessage`:
+To route through a non-default exchange with an explicit routing key on the handler path, pass a `SendOptions` (or `PublishOptions`) with `.WithRabbitMqRouting(exchange, routingKey)`:
 
 ```csharp
 using Chatter.CQRS.Context;
+using Chatter.MessageBrokers.Routing.Options;
 
 public class MyHandler : IMessageHandler<SomeCommand>
 {
     public Task Handle(SomeCommand message, IMessageHandlerContext context)
-    {
-        var outbound = new OutboundBrokeredMessage(new AnotherCommand(), "my-destination");
-        outbound.WithRabbitMqRouting("my.exchange", "my.routing.key");
-        return context.RabbitMq().Send(outbound);
-    }
+        => context.RabbitMq().Send(
+               new AnotherCommand(),
+               "my-destination",
+               new SendOptions().WithRabbitMqRouting("my.exchange", "my.routing.key"));
 }
 ```
 
-When `.WithRabbitMqRouting(...)` is present on the outbound message, the sender publishes to the specified exchange with the specified routing key instead of the default-exchange convention.
+`WithRabbitMqRouting` stamps the exchange and routing key into the options' message context; the core dispatcher merges that context into the outbound message before handing it to the sender, which then publishes to the specified exchange with the specified routing key instead of the default-exchange convention.
+
+For the explicit-outbound / outbox path (where you construct an `OutboundBrokeredMessage` directly), the `OutboundBrokeredMessage.WithRabbitMqRouting(exchange, routingKey)` extension remains available and stamps the context directly on the outbound instance.
 
 ## Delivery counting
 
