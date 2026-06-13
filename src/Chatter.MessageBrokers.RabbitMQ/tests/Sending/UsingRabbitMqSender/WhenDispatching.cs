@@ -9,6 +9,7 @@ using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
 using System;
 using System.Collections.Generic;
@@ -213,6 +214,94 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
 
             connectionSource.PublishChannels.Single().Publishes.Single()
                 .Body.Should().Equal(body);
+        }
+
+        // --- type-aware header marshalling (the single boundary) ---
+
+        // P2 REPRODUCTION: OutboundBrokeredMessage.WithTimeToLive stamps MessageContext.TimeToLive as a TimeSpan,
+        // which the RabbitMQ.Client 7.2.1 field table CANNOT encode — a raw copy of the context onto the header
+        // table threw at publish and the native BasicProperties.Expiration was never set. The marshaller lifts
+        // TimeToLive onto the native Expiration (ms string) and drops the key from the table, so the publish
+        // succeeds and the TTL is carried natively.
+        [Fact]
+        public async Task MustLiftTimeToLiveOntoNativeExpirationAndDropHeaderKey()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            var message = Message();
+            message.WithTimeToLive(TimeSpan.FromMilliseconds(1500));
+
+            await sender.Dispatch(message, transactionContext: null);
+
+            var publish = connectionSource.PublishChannels.Single().Publishes.Single();
+            publish.Expiration.Should().Be("1500");
+            publish.Headers.Should().NotContainKey(MessageContext.TimeToLive);
+        }
+
+        // A non-positive TimeToLive floors at "0" rather than emitting a negative expiration.
+        [Fact]
+        public async Task MustFloorNonPositiveTimeToLiveExpirationAtZero()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            var message = Message();
+            message.WithTimeToLive(TimeSpan.Zero);
+
+            await sender.Dispatch(message, transactionContext: null);
+
+            var publish = connectionSource.PublishChannels.Single().Publishes.Single();
+            publish.Expiration.Should().Be("0");
+            publish.Headers.Should().NotContainKey(MessageContext.TimeToLive);
+        }
+
+        // A round-tripped ulong (e.g. a stale RabbitMqMessageContext.DeliveryTag carried in the context) is widened
+        // to a table-legal long by the marshaller instead of faulting the publish, since the field table cannot
+        // encode a ulong.
+        [Fact]
+        public async Task MustPublishWhenContextCarriesRoundTrippedUlongValue()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            var context = new Dictionary<string, object> { [RabbitMqMessageContext.DeliveryTag] = 7UL };
+
+            Func<Task> act = () => sender.Dispatch(Message(messageContext: context), transactionContext: null);
+
+            await act.Should().NotThrowAsync();
+            var publish = connectionSource.PublishChannels.Single().Publishes.Single();
+            publish.Headers[RabbitMqMessageContext.DeliveryTag].Should().Be(7L);
+        }
+
+        // Full boundary round-trip: a published header bag, coerced to the field table by ToHeaderTable, then
+        // longstr-coerced to byte[] the way a real broker delivers it, then projected back through ToContext, must
+        // restore the known string-typed keys (CorrelationId) AND custom unknown string keys to a CLR string —
+        // proving the two halves of the single boundary compose.
+        [Fact]
+        public void MustRoundTripStringHeadersThroughBoundaryToClrString()
+        {
+            var properties = new BasicProperties();
+            var context = new Dictionary<string, object>
+            {
+                [MessageContext.CorrelationId] = "corr-123",
+                ["custom-string-header"] = "custom-value"
+            };
+
+            var table = RabbitMqHeaderMarshaller.ToHeaderTable(context, properties);
+
+            // Model the broker's on-the-wire longstr coercion: a string header is delivered as a UTF-8 byte[].
+            var onWire = new Dictionary<string, object>();
+            foreach (var entry in table)
+            {
+                onWire[entry.Key] = entry.Value is string asString
+                    ? System.Text.Encoding.UTF8.GetBytes(asString)
+                    : entry.Value;
+            }
+
+            var roundTripped = RabbitMqHeaderMarshaller.ToContext(onWire);
+
+            // The known string-typed key is decoded back to a CLR string.
+            roundTripped[MessageContext.CorrelationId].Should().Be("corr-123");
+            // The unknown string key is preserved verbatim as the byte[] the broker delivered (never force-decoded).
+            roundTripped["custom-string-header"].Should().BeEquivalentTo(System.Text.Encoding.UTF8.GetBytes("custom-value"));
         }
 
         // --- collection overload publishes each message ---

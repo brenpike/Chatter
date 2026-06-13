@@ -144,7 +144,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // the first receive hop, matching the other adapters that copy inbound application properties before
             // adding infrastructure stamps. Infrastructure keys are then stamped ON TOP, so a fresh DeliveryTag /
             // ChannelEpoch / InfrastructureType / ReceiveAttempts always wins over any inbound value of the same key.
-            var headers = new Dictionary<string, object>(received.Headers);
+            // INVARIANT: the marshaller is the sole boundary that decodes known string-typed keys delivered as a
+            // byte[] (AMQP longstr) back to string BEFORE the core's unguarded (string) cast (e.g.
+            // InboundBrokeredMessage casts CorrelationId at construction), so a self-published round-trip no longer
+            // throws InvalidCastException.
+            var headers = new Dictionary<string, object>(RabbitMqHeaderMarshaller.ToContext(received.Headers));
 
             // INVARIANT: the OUTBOUND dispatch-override command keys (TargetExchange / RoutingKey) must NEVER be
             // carried from an inbound delivery. Only .WithRabbitMqRouting writes them and the sender reads them; the
@@ -286,9 +290,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             var properties = new BasicProperties
             {
-                Persistent = true,
-                Headers = MergeHeaders(received.Headers, headerOverrides)
+                Persistent = true
             };
+            // INVARIANT: the merged header bag is routed through the marshaller (the sole boundary) so a
+            // republished delivery is field-table-legal in exactly the same way a fresh publish is — any override
+            // value that is not natively encodable is coerced rather than faulting the republish. The
+            // DeliveryCountHeader long override and ReadHeaderAsLong's numeric tolerance are preserved: a long is
+            // table-legal and passes through unchanged.
+            properties.Headers = RabbitMqHeaderMarshaller.ToHeaderTable(MergeHeaders(received.Headers, headerOverrides), properties);
             if (!string.IsNullOrEmpty(received.MessageId))
             {
                 properties.MessageId = received.MessageId;
@@ -340,8 +349,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             };
         }
 
-        private static IDictionary<string, object> MergeHeaders(IReadOnlyDictionary<string, object> source,
-                                                                IReadOnlyDictionary<string, object> overrides)
+        private static Dictionary<string, object> MergeHeaders(IReadOnlyDictionary<string, object> source,
+                                                               IReadOnlyDictionary<string, object> overrides)
         {
             var merged = new Dictionary<string, object>();
             foreach (var entry in source)

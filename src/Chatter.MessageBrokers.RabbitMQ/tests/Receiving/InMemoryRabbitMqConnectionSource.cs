@@ -128,13 +128,19 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
         // Pushes a delivery through the captured consumer, exactly as the broker's push consumer would, so the
         // receiver's BufferDeliveryAsync enqueues a ReceivedMessage carrying the registration-time epoch.
+        // By default a string header value is presented as a UTF-8 byte[] (the AMQP longstr coercion a REAL
+        // broker performs on the wire), STRING-ONLY — numeric and byte[] values are passed verbatim so the
+        // delivery-count / epoch tests are unaffected. A test that must observe a header at its CLR type pre-wire
+        // (e.g. a numeric stamp that should not be longstr-coerced anyway) can pass coerceStringHeadersToBytes:
+        // false to push the dictionary verbatim.
         public async Task PushDeliveryAsync(ulong deliveryTag,
                                             byte[] body,
                                             string exchange = "",
                                             string routingKey = "queue",
                                             IDictionary<string, object> headers = null,
                                             bool redelivered = false,
-                                            string messageId = null)
+                                            string messageId = null,
+                                            bool coerceStringHeadersToBytes = true)
         {
             if (ReceiveChannel.RegisteredConsumer is null)
             {
@@ -143,7 +149,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
             var properties = new BasicProperties
             {
-                Headers = headers,
+                Headers = coerceStringHeadersToBytes ? CoerceStringHeadersToLongstr(headers) : headers,
                 MessageId = messageId
             };
 
@@ -156,6 +162,27 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                 properties: properties,
                 body: new ReadOnlyMemory<byte>(body),
                 cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        }
+
+        // Models the broker's on-the-wire AMQP longstr coercion: a string header value is delivered as a UTF-8
+        // byte[]. STRING-ONLY — every other value type (numeric, byte[], bool) is passed verbatim so the
+        // delivery-count / epoch tests still see the CLR types they push. Returns null for a null dictionary.
+        private static IDictionary<string, object> CoerceStringHeadersToLongstr(IDictionary<string, object> headers)
+        {
+            if (headers is null)
+            {
+                return null;
+            }
+
+            var coerced = new Dictionary<string, object>(headers.Count);
+            foreach (var entry in headers)
+            {
+                coerced[entry.Key] = entry.Value is string asString
+                    ? System.Text.Encoding.UTF8.GetBytes(asString)
+                    : entry.Value;
+            }
+
+            return coerced;
         }
 
         public ValueTask DisposeAsync()

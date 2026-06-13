@@ -99,7 +99,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
         // BEHAVIOR: inbound AMQP application headers (custom / correlation context the publisher stamped) survive
         // the first receive hop instead of being discarded, matching the other adapters that copy inbound
-        // application properties before adding infrastructure stamps.
+        // application properties before adding infrastructure stamps. These are UNKNOWN (not core string-typed)
+        // keys, so the marshaller preserves them VERBATIM — pushed here pre-wire (no longstr coercion) to assert
+        // the value-preservation contract directly.
         [Fact]
         public async Task MustPreserveInboundApplicationHeadersOnContext()
         {
@@ -109,12 +111,28 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 ["x-correlation-id"] = "corr-123",
                 ["custom-app-header"] = "app-value"
             };
-            await harness.PushAsync(deliveryTag: 1, headers: headers);
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
 
             var context = await harness.ReceiveAsync();
 
             context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-123");
             context.BrokeredMessage.MessageContext["custom-app-header"].Should().Be("app-value");
+        }
+
+        // BEHAVIOR: an UNKNOWN-key string header that arrives as a byte[] (the AMQP longstr coercion a real broker
+        // performs) is preserved VERBATIM as a byte[] — the marshaller never force-decodes an unknown key, so a
+        // genuine binary header is never corrupted. Only the documented core string-typed keys are decoded.
+        [Fact]
+        public async Task MustPreserveUnknownByteArrayHeadersVerbatim()
+        {
+            var harness = ReceiverHarness.Create();
+            var binary = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF };
+            var headers = new Dictionary<string, object> { ["custom-binary-header"] = binary };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext["custom-binary-header"].Should().BeEquivalentTo(binary);
         }
 
         // REGRESSION: copying inbound headers must NOT reintroduce the outbound routing-override command keys. A
@@ -131,13 +149,49 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 [RabbitMqMessageContext.RoutingKey] = "stale.routing.key",
                 ["x-correlation-id"] = "corr-123"
             };
-            await harness.PushAsync(deliveryTag: 1, headers: headers);
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
 
             var context = await harness.ReceiveAsync();
 
             context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.TargetExchange);
             context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.RoutingKey);
             context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-123");
+        }
+
+        // P1 REPRODUCTION: a real broker delivers the string CorrelationId application header as an AMQP longstr
+        // (byte[]). The core's InboundBrokeredMessage casts MessageContext.CorrelationId straight to (string) at
+        // construction (which MessageBrokerContext does inside ReceiveMessageAsync), so before the marshaller a
+        // byte[] CorrelationId threw InvalidCastException on a self-published round-trip BEFORE the handler ran.
+        // The marshaller decodes the known string-typed key back to string, so the receive no longer throws and
+        // the decoded value is surfaced.
+        [Fact]
+        public async Task MustDecodeByteArrayCorrelationIdSoReceiveDoesNotThrow()
+        {
+            var harness = ReceiverHarness.Create();
+            var headers = new Dictionary<string, object> { [MessageContext.CorrelationId] = "corr-round-trip" };
+            // Default coercion models the broker: the string CorrelationId is delivered as a UTF-8 byte[].
+            await harness.PushAsync(deliveryTag: 1, headers: headers);
+
+            // Before the fix this threw InvalidCastException inside ReceiveMessageAsync -> InboundBrokeredMessage.
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.CorrelationId].Should().Be("corr-round-trip");
+            context.BrokeredMessage.CorrelationId.Should().Be("corr-round-trip");
+        }
+
+        // A custom string-typed core key (Subject) delivered as a byte[] longstr is likewise decoded to string by
+        // the marshaller, proving the decode covers the full documented known-string-typed-key set, not only
+        // CorrelationId.
+        [Fact]
+        public async Task MustDecodeByteArrayForKnownStringTypedKeys()
+        {
+            var harness = ReceiverHarness.Create();
+            var headers = new Dictionary<string, object> { [MessageContext.Subject] = "order-subject" };
+            await harness.PushAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.Subject].Should().Be("order-subject");
         }
 
         // The freshly-stamped infrastructure keys win over any inbound header carrying the same key, so a

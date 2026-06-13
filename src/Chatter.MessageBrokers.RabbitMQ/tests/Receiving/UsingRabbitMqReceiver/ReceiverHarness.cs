@@ -67,6 +67,24 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 redelivered: redelivered,
                 messageId: messageId);
 
+        // Pushes a delivery with its header values presented VERBATIM at their CLR type (no AMQP longstr
+        // coercion), for tests asserting the marshaller's verbatim-preservation of unknown keys or pushing a
+        // header at a specific pre-wire type.
+        public Task PushVerbatimAsync(ulong deliveryTag,
+                                      byte[] body = null,
+                                      IDictionary<string, object> headers = null,
+                                      bool redelivered = false,
+                                      string messageId = null)
+            => ConnectionSource.PushDeliveryAsync(
+                deliveryTag,
+                body ?? new byte[] { 1, 2, 3 },
+                exchange: "",
+                routingKey: ReceiverPath,
+                headers: headers,
+                redelivered: redelivered,
+                messageId: messageId,
+                coerceStringHeadersToBytes: false);
+
         public Task<Chatter.MessageBrokers.Context.MessageBrokerContext> ReceiveAsync()
             => Receiver.ReceiveMessageAsync(transactionContext: null, CancellationToken.None);
     }

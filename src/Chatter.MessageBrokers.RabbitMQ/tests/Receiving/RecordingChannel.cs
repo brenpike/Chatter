@@ -47,6 +47,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                 mandatory,
                 basicProperties.ContentType,
                 basicProperties.MessageId,
+                basicProperties.Expiration,
                 basicProperties.Headers is null ? null : new Dictionary<string, object>(basicProperties.Headers),
                 body.ToArray()));
 
@@ -154,13 +155,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
     internal sealed class PublishRecord
     {
-        public PublishRecord(string exchange, string routingKey, bool mandatory, string contentType, string messageId, IDictionary<string, object> headers, byte[] body)
+        public PublishRecord(string exchange, string routingKey, bool mandatory, string contentType, string messageId, string expiration, IDictionary<string, object> headers, byte[] body)
         {
             Exchange = exchange;
             RoutingKey = routingKey;
             Mandatory = mandatory;
             ContentType = contentType;
             MessageId = messageId;
+            Expiration = expiration;
             Headers = headers;
             Body = body;
         }
@@ -170,6 +172,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public bool Mandatory { get; }
         public string ContentType { get; }
         public string MessageId { get; }
+        // The native BasicProperties.Expiration (ms string) sourced from the publish, so a test can assert that
+        // a TimeSpan TimeToLive was lifted onto the native property rather than the field table.
+        public string Expiration { get; }
         public IDictionary<string, object> Headers { get; }
         public byte[] Body { get; }
     }

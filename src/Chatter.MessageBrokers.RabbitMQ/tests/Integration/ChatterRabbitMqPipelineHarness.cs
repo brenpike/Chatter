@@ -168,6 +168,26 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
             return SendAsync(message, workQueueName, options);
         }
 
+        // Sends a command through Chatter's dispatcher under the default-exchange convention WITH a TimeToLive and
+        // a custom string application header, so the integration round-trip exercises the type-aware header
+        // marshalling boundary against a REAL broker: WithTimeToLive stamps a TimeSpan (which the field table
+        // cannot encode — it must be lifted onto the native Expiration), and the string CorrelationId / custom
+        // header is delivered as an AMQP longstr (byte[]) that must decode back to string before the inbound
+        // (string) cast.
+        public Task SendToQueueWithTimeToLiveAndHeaderAsync<TMessage>(
+            TMessage message,
+            string workQueueName,
+            TimeSpan timeToLive,
+            string customHeaderKey,
+            string customHeaderValue) where TMessage : ICommand
+        {
+            var options = new SendOptions();
+            options.WithMessageContext(MessageContext.InfrastructureType, RabbitMqMessageContext.InfrastructureType);
+            options.WithMessageContext(MessageContext.TimeToLive, timeToLive);
+            options.WithMessageContext(customHeaderKey, customHeaderValue);
+            return SendAsync(message, workQueueName, options);
+        }
+
         private async Task SendAsync<TMessage>(TMessage message, string destinationPath, SendOptions options)
             where TMessage : ICommand
         {

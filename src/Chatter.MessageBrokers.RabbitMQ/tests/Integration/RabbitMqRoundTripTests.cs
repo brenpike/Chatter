@@ -108,6 +108,66 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
             }
         }
 
+        // P1 + P2 REPRODUCTION against a REAL broker: a command sent WITH a TimeToLive and a custom string
+        // application header must (a) publish without throwing — the TimeSpan TimeToLive is lifted onto the native
+        // BasicProperties.Expiration rather than the field table, which the client cannot encode (P2) — and
+        // (b) reach the handler with its auto-stamped string CorrelationId and the custom string header intact,
+        // even though a real broker delivers both as AMQP longstr (byte[]); the inbound (string) cast would
+        // otherwise throw InvalidCastException before the handler ran (P1). Both halves are proven through
+        // Chatter's own send + receive path, not raw RabbitMQ.Client types.
+        [RequiresDockerFact]
+        public async Task SentCommandWithTimeToLiveAndStringHeaderRoundTripsToHandler()
+        {
+            const string customHeaderKey = "x-chatter-it-custom";
+            const string customHeaderValue = "custom-round-trip-value";
+
+            var set = RabbitMqTopology.CreateSet("ttlheader", QueueType.Quorum);
+            await RabbitMqTopology.DeclareAsync(_fixture.GetAmqpConnectionString(), set, CancellationToken.None);
+
+            var harness = ChatterRabbitMqPipelineHarness.Build(
+                _fixture.GetAmqpConnectionString(),
+                QueueType.Quorum,
+                rmq => rmq.AddQueueReceiver<RoundTripCommand>(set.WorkQueueName, deadLetterQueuePath: set.DeadLetterQueueName),
+                typeof(RoundTripCommand));
+            try
+            {
+                await harness.StartAsync();
+
+                var sent = new RoundTripCommand { Name = "ttl-header-round-trip", Count = 9, Flag = false };
+                // A long TTL so the message does not expire before the in-process pump delivers it; the point is
+                // that the publish succeeds (TimeSpan lifted onto native Expiration) and the message still arrives.
+                await harness.SendToQueueWithTimeToLiveAndHeaderAsync(
+                    sent, set.WorkQueueName, TimeSpan.FromMinutes(5), customHeaderKey, customHeaderValue);
+
+                var handled = await harness.WaitForHandledAsync<RoundTripCommand>(HandlerWait);
+
+                handled.Message.Should().NotBeNull(
+                    "a message published with a TimeToLive must not fault at publish and must round-trip to the handler");
+                handled.Message.Name.Should().Be("ttl-header-round-trip");
+
+                var inbound = handled.Context.BrokeredMessage;
+
+                // P1: the auto-stamped string CorrelationId survives the longstr coercion and is surfaced as a CLR
+                // string — the receive would otherwise have thrown InvalidCastException before the handler ran.
+                inbound.CorrelationId.Should().NotBeNullOrEmpty(
+                    "the string CorrelationId must decode back to a CLR string on the real broker round-trip");
+
+                // The custom string header is an UNKNOWN key, so the marshaller preserves it verbatim; a real
+                // broker delivers it as the longstr byte[] it was published as.
+                inbound.MessageContext.Should().ContainKey(customHeaderKey);
+                var customHeader = inbound.MessageContext[customHeaderKey];
+                var customHeaderAsString = customHeader is byte[] bytes
+                    ? System.Text.Encoding.UTF8.GetString(bytes)
+                    : customHeader as string;
+                customHeaderAsString.Should().Be(customHeaderValue,
+                    "the custom string header must survive the round-trip (verbatim as a longstr byte[])");
+            }
+            finally
+            {
+                await harness.DisposeAsync();
+            }
+        }
+
         // WithRabbitMqRouting round-trip: a command sent with an explicit direct exchange + routing key is
         // delivered by Chatter's pump to the work queue bound under that key, proving the sender's
         // ResolveAddress override path (exchange != "" / routing key != Destination) reaches the bound queue.

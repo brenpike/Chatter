@@ -121,9 +121,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Sending
             {
                 // Durable delivery so a message survives a broker restart on a durable queue.
                 Persistent = true,
-                ContentType = _bodyConverter.ContentType,
-                Headers = new Dictionary<string, object>(brokeredMessage.MessageContext)
+                ContentType = _bodyConverter.ContentType
             };
+
+            // INVARIANT: the context is never raw-copied onto the field table — the marshaller is the sole
+            // boundary that coerces each value to a table-legal type (and lifts TimeToLive onto the native
+            // Expiration on THIS same properties instance), so an unencodable CLR value (e.g. the TimeSpan
+            // TimeToLive) can no longer reach the table and fault the publish.
+            properties.Headers = RabbitMqHeaderMarshaller.ToHeaderTable(brokeredMessage.MessageContext, properties);
 
             if (!string.IsNullOrWhiteSpace(brokeredMessage.MessageId))
             {
