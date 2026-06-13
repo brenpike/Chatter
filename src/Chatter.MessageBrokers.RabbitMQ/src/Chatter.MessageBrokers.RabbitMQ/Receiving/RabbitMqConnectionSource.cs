@@ -349,6 +349,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // creates a fresh one, bumps the epoch, then re-runs the stored consume-registration delegate (when set)
         // against the new channel with the bumped epoch. The bump and the re-registration are this single gated
         // event, so a delivery the new consumer stamps always carries the epoch of the channel that delivered it.
+        //
+        // PUBLISH-ONLY-AFTER-REGISTRATION (closed-by-construction): the fresh channel and epoch bump are NOT published
+        // onto the source until QoS AND consumer registration have BOTH succeeded. The channel is created and
+        // QoS-configured locally, then the epoch is bumped on a SCRATCH copy and the registration delegate is run
+        // against the local channel; only on success are _receiveChannel / _receiveChannelEpoch / _consumerTag
+        // committed, all under the gate. If CreateChannel/QoS/registration faults (e.g. BasicConsumeAsync faults during
+        // a startup retry or recovery), the partially-built channel is disposed and _receiveChannel stays null with the
+        // committed epoch unchanged, so the next EnsureReceiveChannelAsync re-runs a full recreate (rather than seeing a
+        // live-but-consumer-less channel via the IsOpen fast path and leaving the receiver permanently idle).
         private async Task RecreateReceiveChannelAsync(CancellationToken cancellationToken)
         {
             if (_receiveChannel is not null)
@@ -361,22 +370,42 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // create is serialized against connection dispose by the same gate — closed by construction.
             var connection = await EnsureConnectionAsync(cancellationToken).ConfigureAwait(false);
             var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            await channel.BasicQosAsync(prefetchSize: 0,
-                                        prefetchCount: (ushort)Math.Max(1, _options.Prefetch),
-                                        global: false,
-                                        cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            _receiveChannel = channel;
-            Interlocked.Increment(ref _receiveChannelEpoch);
-
-            // Re-register the consumer on the fresh channel with the freshly-bumped epoch and STORE the returned
-            // consumer tag so the source owns cancellation (StopReceivingAsync). Null only before
-            // StartReceivingAsync stores the delegate (cold start has nothing to re-register yet) OR after
-            // StopReceivingAsync cleared it terminally (a late recovery then re-creates nothing to consume on).
-            if (_registerConsumer is not null)
+            // Keep the channel, the bumped epoch, and the consumer tag LOCAL until registration succeeds. The epoch
+            // candidate is computed without mutating the published _receiveChannelEpoch, so a failure leaves the
+            // observable epoch untouched.
+            var candidateEpoch = Interlocked.Read(ref _receiveChannelEpoch) + 1;
+            string consumerTag = null;
+            try
             {
-                _consumerTag = await _registerConsumer(_receiveChannel, Interlocked.Read(ref _receiveChannelEpoch), cancellationToken).ConfigureAwait(false);
+                await channel.BasicQosAsync(prefetchSize: 0,
+                                            prefetchCount: (ushort)Math.Max(1, _options.Prefetch),
+                                            global: false,
+                                            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                // Re-register the consumer on the fresh channel with the candidate epoch. Null only before
+                // StartReceivingAsync stores the delegate (cold start has nothing to re-register yet) OR after
+                // StopReceivingAsync cleared it terminally (a late recovery then re-creates nothing to consume on).
+                if (_registerConsumer is not null)
+                {
+                    consumerTag = await _registerConsumer(channel, candidateEpoch, cancellationToken).ConfigureAwait(false);
+                }
             }
+            catch
+            {
+                // QoS or registration faulted: dispose the partially-built channel and leave _receiveChannel null and
+                // the committed epoch unchanged, so the next EnsureReceiveChannelAsync forces a fresh recreate rather
+                // than returning a live-but-consumer-less channel that would leave the receiver permanently idle.
+                await channel.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+
+            // COMMIT: QoS and registration both succeeded, so publish the channel, the bumped epoch, and the consumer
+            // tag together under the gate. The committed epoch now equals candidateEpoch, the epoch the just-registered
+            // consumer closed over, preserving the closed-by-construction epoch lifecycle (ADR 0002).
+            _receiveChannel = channel;
+            Interlocked.Exchange(ref _receiveChannelEpoch, candidateEpoch);
+            _consumerTag = consumerTag;
         }
 
         private async Task<IChannel> CreatePublishChannelAsync(CancellationToken cancellationToken)
