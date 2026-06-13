@@ -377,7 +377,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 channel.BasicNackAsync(received.DeliveryTag, multiple: false, requeue: true, cancellationToken), cancellationToken);
         }
 
-        public Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+        public async Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
             // TransactionMode.None is at-most-once: a poison message is LOST, not deadlettered (the enum contract
             // and the sibling adapters' behaviour). Under None the consumer registers with autoAck:true, so the
@@ -386,51 +386,45 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // poison-target gate inapplicable under None (see InitializeAsync).
             if (IsAtMostOnce(transactionContext))
             {
-                return Task.FromResult(false);
+                return false;
             }
 
             if (!TryGetReceivedMessage(context, out var received))
             {
                 _logger.LogTrace("No {receivedMessage} contained in context; nothing to deadletter.", nameof(ReceivedMessage));
-                return Task.FromResult(false);
+                return false;
             }
 
-            // OWNERSHIP: the dead-letter queue is the ADAPTER's responsibility (explicit republish, SSB-style); the
-            // ERROR queue is the CORE's responsibility. On max-receives the core runs deadletter FIRST and, ONLY when
-            // it returns true, ALSO runs its error-recovery action (ErrorQueueDispatcher → IForwardMessages) which
-            // forwards the inbound message to ErrorQueueName via this same RabbitMQ infrastructure. So this method must
-            // target the DEAD-LETTER queue ONLY and NEVER fall back to the error queue: a fallback republish here would
-            // collide with the core's error action and write the poison record to the error queue TWICE (the duplicate
-            // r3408649034 flagged). The sibling adapters confirm the contract — ASB deadletters to the native DL
-            // sub-queue, SSB deadletters to DeadLetterQueuePath ONLY; neither falls back to ErrorQueuePath.
-            if (string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath))
-            {
-                // ERROR-ONLY config (no dead-letter queue): do NOT republish here — the core's error-recovery action
-                // owns delivering the single copy to the error queue. Just settle the original delivery (epoch-guarded
-                // ack, NOT a requeue/republish) so it is not redelivered, and return true so the core runs that error
-                // action. An ack-without-republish has nothing to publisher-confirm, so the confirm-before-ack
-                // invariant (which exists only to make a republish durable before settling) does not apply here. The
-                // at-most-once None path and the epoch guard are preserved (None already returned above; the ack flows
-                // through the same SettleOnReceiveChannelAsync epoch guard as every other settlement). The
-                // neither-configured misconfiguration is already rejected at InitializeAsync's startup gate, so this
-                // branch only runs for the legitimate error-only config and must NOT throw.
-                return SettleOnReceiveChannelAsync(received, (channel) =>
-                    channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken);
-            }
-
+            // INVARIANT (both paths): republish-confirmed BEFORE the original is acked so a crash between the two
+            // yields at-most a duplicate copy in the target queue, never loss of the poison message. The epoch guard
+            // inside RepublishThenAckAsync makes the ack a no-op on a recycled channel; the broker redelivers the
+            // original, and the error/DLQ already holds a durable copy (at-most a duplicate, never loss).
             var headerOverrides = new Dictionary<string, object>
             {
                 [MessageContext.FailureDetails] = deadLetterReason,
                 [MessageContext.FailureDescription] = deadLetterErrorDescription
             };
 
-            // DEAD-LETTER queue configured: explicit republish (SSB-style) to it, authoritative over any broker-side
-            // DLX, publisher-confirmed BEFORE the original is acked so a crash between the two yields at-most a
-            // duplicate, never loss.
-            // The delivered native Expiration is DROPPED on the deadletter hop: a dead-letter queue is for
-            // inspection, so a dead-lettered message must NOT auto-expire via the original per-message TTL. All
-            // other carried native props travel (useful for DLQ inspection).
-            return RepublishThenAckAsync(received, _options.DeadLetterQueuePath, headerOverrides, preserveExpiration: false, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath))
+            {
+                // DEAD-LETTER queue configured: explicit republish (SSB-style) to it, authoritative over any
+                // broker-side DLX, publisher-confirmed BEFORE the original is acked. Returns true so the core ALSO
+                // runs its error-recovery action (ErrorQueueDispatcher → IForwardMessages) to forward a copy to
+                // ErrorQueueName when both queues are configured.
+                // The delivered native Expiration is DROPPED on the deadletter hop: a dead-letter queue is for
+                // inspection, so a dead-lettered message must NOT auto-expire via the original per-message TTL.
+                return await RepublishThenAckAsync(received, _options.DeadLetterQueuePath, headerOverrides, preserveExpiration: false, cancellationToken).ConfigureAwait(false);
+            }
+
+            // ERROR-ONLY config (no dead-letter queue): republish-confirmed to the error queue THEN epoch-guarded
+            // ack, so loss-safety is guaranteed on this path the same way it is on the DLQ path. Return false to
+            // suppress the core's ErrorQueueDispatcher — the adapter already wrote the single durable copy above;
+            // letting the core forward again would duplicate it. (Core BrokeredMessageReceiver only runs its
+            // error-recovery action when deadletter returns true; on false it does nothing — no nack, no requeue.)
+            // The neither-configured misconfiguration is rejected at InitializeAsync's startup gate, so this branch
+            // only runs for the legitimate error-only config.
+            await RepublishThenAckAsync(received, _options.ErrorQueuePath, headerOverrides, preserveExpiration: false, cancellationToken).ConfigureAwait(false);
+            return false;
         }
 
         // INVARIANT: the republish (confirms-enabled publish channel) MUST complete before the original delivery
