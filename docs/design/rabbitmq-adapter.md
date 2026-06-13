@@ -116,6 +116,14 @@ model:
   buffer is empty the read **asynchronously parks** the loop — no CPU, no polling — until the push
   consumer enqueues the next delivery or cancellation fires. This satisfies the blocking-pull
   contract: the call blocks until a delivery is buffered, then materializes a `MessageBrokerContext`.
+  The AMQP→core field mapping for that materialization is owned by the **single translation
+  contract**: the receiver captures the curated native AMQP properties once
+  (`RabbitMqMessageTranslator.CaptureFacts`) and calls `RabbitMqMessageTranslator.ToCore(...)`,
+  which decodes the delivered header table (the marshaller arm), surfaces the native-frame fields
+  with a core concept (the delivered ContentType drives the inbound body-converter selection — GAP
+  B; the dual-home CorrelationId — DECISION-D), and reconstitutes the native Expiration into
+  `MessageContext.TimeToLive` (GAP A). The infrastructure stamps (DeliveryTag, ChannelEpoch,
+  InfrastructureType, ReceiveAttempts) are then applied ON TOP. See §7 and ADR 0004.
 - The bounded buffer's capacity is tied to prefetch (see §4) so the consumer cannot run unboundedly
   ahead of the core's drain rate.
 
@@ -235,6 +243,13 @@ and all epoch-guarded:
   republish, authoritative over any broker-side DLX configuration), then **acks the original**. This
   mirrors the SSB deadletter-by-republish stance.
 
+Both republish hops (nack-redelivery and deadletter) rebuild the outbound AMQP representation
+through the SAME single translation contract — `RabbitMqMessageTranslator.ToRepublishAmqp(...)` —
+so the republish is field-table-legal exactly like a fresh publish and re-applies every carried
+native (including the carry-only C-family — DECISION-B). The per-hop `PreserveExpiration` knob keeps
+the per-message TTL on the redelivery hop and drops it on the deadletter hop (a DLQ message must not
+auto-expire via the original TTL). See ADR 0004.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Received: push consumer buffers delivery
@@ -286,6 +301,17 @@ flowchart TD
 ```
 
 ## 7. Sending & addressing
+
+> **Field mapping is owned by the single translation contract.** Every core `MessageContext` ↔ AMQP
+> wire mapping — on send, receive, AND republish — routes through ONE `RabbitMqMessageTranslator`
+> and its single declarative field-map table (ADR 0004). The sender does not hand-roll the
+> core→AMQP projection: `RabbitMqSender.Dispatch` calls `RabbitMqMessageTranslator.ToAmqp(...)`,
+> which sets the native `BasicProperties` frame fields (MessageId / ContentType / CorrelationId)
+> from the table, lifts TimeToLive onto the native Expiration (GAP A), writes the dual-home
+> CorrelationId header copy (DECISION-D), hardcodes `Persistent = true` (DECISION-E), and routes
+> the remaining context through the retained `RabbitMqHeaderMarshaller` (the header arm of the
+> contract). The sender only resolves addressing (below) and the ContentType fallback. This
+> supersedes any prior per-boundary, marshaller-only mapping description.
 
 - **Default-exchange convention.** With no routing override, the RabbitMq Sender publishes to the
   **default exchange (`""`)** with **Routing Key = Destination = Queue name**. Routing Key and Queue

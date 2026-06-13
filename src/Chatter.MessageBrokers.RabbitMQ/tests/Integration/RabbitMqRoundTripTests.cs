@@ -5,6 +5,7 @@ using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
@@ -50,6 +51,51 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         {
             public string Name { get; set; }
             public int Count { get; set; }
+        }
+
+        // Singleton probe the marker converter reports through: the converter is registered scoped (a fresh
+        // instance per receive scope), so the test cannot hold the instance — it observes selection through this
+        // shared singleton, mirroring how RecordingMessageHandler reports through the HandlerSignalRegistry.
+        public sealed class ContentTypeConverterSelection
+        {
+            private int _selected;
+
+            public bool WasSelected => Volatile.Read(ref _selected) != 0;
+
+            public void MarkSelected() => Interlocked.Exchange(ref _selected, 1);
+        }
+
+        // A marker IBrokeredMessageBodyConverter keyed under a custom content-type that records when it is invoked
+        // and otherwise delegates to the same UTF-8 JSON encoding the production RabbitMqBodyConverter uses. The
+        // core BodyConverterFactory keys converters by ContentType, so the receiver resolves THIS converter only
+        // when the delivered per-message content-type matches — recording its Convert<TBody> invocation is the
+        // GAP B observation that selection came from the delivered content-type.
+        public sealed class MarkerContentTypeBodyConverter : IBrokeredMessageBodyConverter
+        {
+            private readonly ContentTypeConverterSelection _selection;
+
+            public MarkerContentTypeBodyConverter(string contentType, ContentTypeConverterSelection selection)
+            {
+                ContentType = contentType;
+                _selection = selection;
+            }
+
+            public string ContentType { get; }
+
+            public TBody Convert<TBody>(byte[] body)
+            {
+                _selection.MarkSelected();
+                return System.Text.Json.JsonSerializer.Deserialize<TBody>(Stringify(body), ChatterJson.Options);
+            }
+
+            public byte[] Convert(object body) => GetBytes(Stringify(body));
+
+            public string Stringify(byte[] body) => System.Text.Encoding.UTF8.GetString(body);
+
+            public string Stringify(object body)
+                => System.Text.Json.JsonSerializer.Serialize(body, ChatterJson.Options);
+
+            public byte[] GetBytes(string body) => System.Text.Encoding.UTF8.GetBytes(body);
         }
 
         // Default-exchange round-trip: a command sent through Chatter's dispatcher to the work-queue name is
@@ -161,6 +207,77 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                     : customHeader as string;
                 customHeaderAsString.Should().Be(customHeaderValue,
                     "the custom string header must survive the round-trip (verbatim as a longstr byte[])");
+            }
+            finally
+            {
+                await harness.DisposeAsync();
+            }
+        }
+
+        // GAP B REPRODUCTION against a REAL broker: a command sent with an explicit per-message ContentType stamp
+        // must round-trip so the RECEIVE side selects the body converter from the DELIVERED per-message
+        // content-type (the native BasicProperties.ContentType the broker frame carried), NOT the converter
+        // resolved for the configured MessageBodyType. A marker IBrokeredMessageBodyConverter keyed under the
+        // custom content-type is registered alongside the default; the receiver must select it because the
+        // delivery carried that content-type, and the handler must still deserialize the payload exactly. The
+        // inbound MessageContext.ContentType must equal the delivered content-type so a downstream re-send carries
+        // the same stamp. (The string CorrelationId dual-home survival of the real broker's longstr coercion is
+        // already proven by SentCommandWithTimeToLiveAndStringHeaderRoundTripsToHandler above — not duplicated.)
+        [RequiresDockerFact]
+        public async Task SentCommandWithCustomContentTypeSelectsDeliveredConverterOnReceive()
+        {
+            const string customContentType = "application/vnd.chatter.it.roundtrip+json";
+
+            var set = RabbitMqTopology.CreateSet("contenttype", QueueType.Quorum);
+            await RabbitMqTopology.DeclareAsync(_fixture.GetAmqpConnectionString(), set, CancellationToken.None);
+
+            var converterSelection = new ContentTypeConverterSelection();
+
+            var harness = ChatterRabbitMqPipelineHarness.Build(
+                _fixture.GetAmqpConnectionString(),
+                QueueType.Quorum,
+                rmq => rmq.AddQueueReceiver<RoundTripCommand>(set.WorkQueueName, deadLetterQueuePath: set.DeadLetterQueueName),
+                services =>
+                {
+                    // Record the singleton selection probe and register a marker body converter keyed under the
+                    // custom content-type. The core BodyConverterFactory enumerates IBrokeredMessageBodyConverter
+                    // and keys each by its ContentType, so the receiver resolves THIS converter only when the
+                    // delivered per-message content-type matches — the GAP B proof.
+                    services.AddSingleton(converterSelection);
+                    services.AddScoped<IBrokeredMessageBodyConverter>(_ =>
+                        new MarkerContentTypeBodyConverter(customContentType, converterSelection));
+                },
+                typeof(RoundTripCommand));
+            try
+            {
+                await harness.StartAsync();
+
+                var sent = new RoundTripCommand { Name = "content-type-round-trip", Count = 13, Flag = true };
+                await harness.SendToQueueWithContentTypeAsync(sent, set.WorkQueueName, customContentType);
+
+                var handled = await harness.WaitForHandledAsync<RoundTripCommand>(HandlerWait);
+
+                // Payload must deserialize exactly through the DELIVERED-content-type converter.
+                handled.Message.Should().NotBeNull(
+                    "a message stamped with a custom content-type must still round-trip to the handler");
+                handled.Message.Name.Should().Be("content-type-round-trip");
+                handled.Message.Count.Should().Be(13);
+                handled.Message.Flag.Should().BeTrue();
+
+                var inbound = handled.Context.BrokeredMessage;
+
+                // GAP B: the receiver selected the body converter keyed under the DELIVERED per-message
+                // content-type — the marker converter recorded a Convert<TBody> invocation, proving selection came
+                // from the delivered frame content-type and not the configured MessageBodyType.
+                converterSelection.WasSelected.Should().BeTrue(
+                    "the receiver must pick the body converter from the delivered per-message content-type (GAP B)");
+
+                // The delivered content-type must surface into the inbound context so a downstream re-send carries
+                // the same stamp.
+                inbound.MessageContext.Should().ContainKey(MessageContext.ContentType);
+                inbound.MessageContext[MessageContext.ContentType]
+                    .Should().Be(customContentType,
+                        "the delivered content-type must reconstitute onto the inbound MessageContext.ContentType");
             }
             finally
             {

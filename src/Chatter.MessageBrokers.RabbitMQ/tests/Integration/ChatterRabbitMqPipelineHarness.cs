@@ -59,6 +59,18 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
             QueueType queueType,
             Action<RabbitMqOptionsBuilder> configureReceivers,
             params Type[] messageTypes)
+            => Build(amqpUri, queueType, configureReceivers, configureServices: null, messageTypes);
+
+        // Build overload that also lets a scenario register extra services onto the DI graph BEFORE the provider
+        // is built (e.g. a marker IBrokeredMessageBodyConverter for the GAP B delivered-content-type proof). The
+        // delegate runs after AddRabbitMq and after the RecordingMessageHandler<TMessage> registrations, so it can
+        // contribute additional enumerable services the core factories pick up.
+        public static ChatterRabbitMqPipelineHarness Build(
+            string amqpUri,
+            QueueType queueType,
+            Action<RabbitMqOptionsBuilder> configureReceivers,
+            Action<IServiceCollection> configureServices,
+            params Type[] messageTypes)
         {
             if (string.IsNullOrWhiteSpace(amqpUri))
             {
@@ -104,6 +116,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                 var handlerImplementation = typeof(RecordingMessageHandler<>).MakeGenericType(messageType);
                 services.AddTransient(handlerInterface, handlerImplementation);
             }
+
+            configureServices?.Invoke(services);
 
             var provider = services.BuildServiceProvider();
 
@@ -185,6 +199,22 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
             options.WithMessageContext(MessageContext.InfrastructureType, RabbitMqMessageContext.InfrastructureType);
             options.WithMessageContext(MessageContext.TimeToLive, timeToLive);
             options.WithMessageContext(customHeaderKey, customHeaderValue);
+            return SendAsync(message, workQueueName, options);
+        }
+
+        // Sends a command through Chatter's dispatcher under the default-exchange convention WITH an explicit
+        // per-message ContentType stamp, so the integration round-trip exercises GAP B against a REAL broker: the
+        // stamped content-type is lifted onto the native BasicProperties.ContentType by the translator, survives
+        // the broker frame round-trip, and on receive drives the RECEIVE-side body-converter selection from the
+        // DELIVERED per-message content-type (not the configured MessageBodyType).
+        public Task SendToQueueWithContentTypeAsync<TMessage>(
+            TMessage message,
+            string workQueueName,
+            string contentType) where TMessage : ICommand
+        {
+            var options = new SendOptions();
+            options.WithMessageContext(MessageContext.InfrastructureType, RabbitMqMessageContext.InfrastructureType);
+            options.WithMessageContext(MessageContext.ContentType, contentType);
             return SendAsync(message, workQueueName, options);
         }
 
