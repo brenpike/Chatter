@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <PackageId>Chatter.MessageBrokers.RabbitMQ</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Brennan Pike</Authors>
+    <Owners>Brennan Pike</Owners>
+    <Description>An implementation of the Chatter.MessageBrokers adapter library for RabbitMQ.</Description>
+    <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>.net;Core;RabbitMQ;Chatter</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <IsPackable>true</IsPackable>
+    <AssemblyName>Chatter.MessageBrokers.RabbitMQ</AssemblyName>
+    <RootNamespace>Chatter.MessageBrokers.RabbitMQ</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Chatter.MessageBrokers\src\Chatter.MessageBrokers\Chatter.MessageBrokers.csproj" />
+  </ItemGroup>
+
+</Project>
