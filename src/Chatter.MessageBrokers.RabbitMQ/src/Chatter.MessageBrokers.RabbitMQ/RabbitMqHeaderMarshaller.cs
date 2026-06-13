@@ -27,12 +27,15 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// closed-by-construction: NO header named after a core key is ever preserved verbatim into the core context, and a
     /// NEW core key added to <see cref="MessageContext"/> cannot ship without an explicit disposition decision — it
     /// fails this type's static init (surfacing as <see cref="TypeInitializationException"/>) until dispositioned.
-    /// The three dispositions: <see cref="HeaderDisposition.DecodeString"/> rehydrates a byte[]/string AMQP longstr to
-    /// a <c>string</c> (the inbound receive path casts these keys straight to <c>string</c>); this includes
-    /// CorrelationId and ContentType — string-typed DECISION-D dual-home keys whose decoded header copy must survive in
-    /// the core context as a fallback for the translator's native-frame assignment (the translator re-sources them from
-    /// the native frame when present and overwrites; when the native frame is absent the decoded copy is the
-    /// authoritative value — <c>Drop</c> removed that copy and broke the fallback);
+    /// The three dispositions: <see cref="HeaderDisposition.DecodeString"/> is type-total — output is always
+    /// <c>string</c> or <c>null</c> (drop): byte[] is UTF-8 decoded, string passes through, null drops the key,
+    /// and any other wire type is coerced via <c>Convert.ToString(InvariantCulture)</c> rather than passed
+    /// through verbatim (eliminates the class "non-declared-CLR-type value under a core key" that crashes the
+    /// core's unguarded <c>(string)</c> cast). The inbound receive path casts these keys straight to <c>string</c>.
+    /// This includes CorrelationId and ContentType — string-typed DECISION-D dual-home keys whose decoded header
+    /// copy must survive in the core context as a fallback for the translator's native-frame assignment (the
+    /// translator re-sources them from the native frame when present and overwrites; when the native frame is
+    /// absent the decoded copy is the authoritative value — <c>Drop</c> removed that copy and broke the fallback);
     /// <see cref="HeaderDisposition.DecodeDateTime"/> parses the wire value back to a <c>DateTime</c> (so the core's
     /// <c>(DateTime?)</c> cast in <c>OutboundBrokeredMessage.RefreshTimeToLive</c> on
     /// <see cref="MessageContext.ExpiryTimeUtc"/> holds after a round trip), null-dropping on a malformed value;
@@ -295,15 +298,23 @@ namespace Chatter.MessageBrokers.RabbitMQ
         /// <summary>
         /// The inbound header-value decode helper the translator delegates to for a native-frame field whose value
         /// is sourced from its decoded header copy when the native frame is absent (e.g. the dual-home CorrelationId
-        /// delivered only as a header). A string-typed value arrives as a byte[] (longstr) from a real broker or as
-        /// a string from an in-process double; decode the byte[] as UTF-8 and pass a string through unchanged. This
-        /// decodes the RAW delivered header value independently of <see cref="ToContext"/> output.
+        /// delivered only as a header). Delegates to <see cref="DecodeStringTypedValue"/>: output is ALWAYS
+        /// <c>string</c> or <c>null</c> (type-total). A non-string, non-byte[] wire value is coerced to its
+        /// invariant string form rather than passed through verbatim — eliminates the class
+        /// "non-declared-CLR-type value under a core key". This decodes the RAW delivered header value
+        /// independently of <see cref="ToContext"/> output.
         /// </summary>
         public static object DecodeHeaderValue(object value) => DecodeStringTypedValue(value);
 
-        // A string-typed key's value arrives as a byte[] (longstr) from a real broker or as a string from an
-        // in-process double; decode the byte[] as UTF-8 and pass a string through unchanged. Any other type (e.g.
-        // null) is preserved as-is rather than coerced.
+        // Type-total string decode: output is ALWAYS string or null — NEVER any other wire type.
+        // byte[] (AMQP longstr from a real broker) → UTF-8 string.
+        // string (in-process double) → pass through unchanged.
+        // null → return null so the caller DROPS the key (null-guard before the coercion default; do NOT let
+        //   null reach Convert.ToString, which would return "" and wrongly stamp an empty string).
+        // DEFAULT (any other wire type, e.g. int/bool/AMQP table) → Convert.ToString(value, InvariantCulture)
+        //   to coerce rather than pass through verbatim. This is the inbound mirror of CoerceOutboundValue's
+        //   catch-all: both render odd types to invariant string. Eliminates the class
+        //   "non-declared-CLR-type value under a core key" that crashed the core's unguarded (string) cast.
         private static object DecodeStringTypedValue(object value)
         {
             switch (value)
@@ -312,8 +323,10 @@ namespace Chatter.MessageBrokers.RabbitMQ
                     return Encoding.UTF8.GetString(asBytes);
                 case string asString:
                     return asString;
+                case null:
+                    return null;
                 default:
-                    return value;
+                    return Convert.ToString(value, CultureInfo.InvariantCulture);
             }
         }
 
