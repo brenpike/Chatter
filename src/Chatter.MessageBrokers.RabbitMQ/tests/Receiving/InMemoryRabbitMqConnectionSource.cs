@@ -140,18 +140,61 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                                             IDictionary<string, object> headers = null,
                                             bool redelivered = false,
                                             string messageId = null,
-                                            bool coerceStringHeadersToBytes = true)
+                                            bool coerceStringHeadersToBytes = true,
+                                            string expiration = null,
+                                            byte? priority = null,
+                                            AmqpTimestamp? timestamp = null,
+                                            string type = null,
+                                            string appId = null,
+                                            string contentEncoding = null,
+                                            string contentType = null,
+                                            string correlationId = null)
         {
             if (ReceiveChannel.RegisteredConsumer is null)
             {
                 throw new InvalidOperationException("No consumer registered; call the receiver's InitializeAsync first.");
             }
 
+            // Set only the native properties the caller supplied so the delivery's Is*Present() guards model a
+            // real broker delivery: an unsupplied property stays absent (Is*Present() false), exactly as the
+            // receiver's BufferDeliveryAsync capture expects (absent => null).
             var properties = new BasicProperties
             {
                 Headers = coerceStringHeadersToBytes ? CoerceStringHeadersToLongstr(headers) : headers,
                 MessageId = messageId
             };
+            if (expiration != null)
+            {
+                properties.Expiration = expiration;
+            }
+            if (priority.HasValue)
+            {
+                properties.Priority = priority.Value;
+            }
+            if (timestamp.HasValue)
+            {
+                properties.Timestamp = timestamp.Value;
+            }
+            if (type != null)
+            {
+                properties.Type = type;
+            }
+            if (appId != null)
+            {
+                properties.AppId = appId;
+            }
+            if (contentEncoding != null)
+            {
+                properties.ContentEncoding = contentEncoding;
+            }
+            if (contentType != null)
+            {
+                properties.ContentType = contentType;
+            }
+            if (correlationId != null)
+            {
+                properties.CorrelationId = correlationId;
+            }
 
             await ReceiveChannel.RegisteredConsumer.HandleBasicDeliverAsync(
                 consumerTag: "in-memory-consumer",

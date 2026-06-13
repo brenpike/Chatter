@@ -115,18 +115,33 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // INVARIANT: the push consumer's only job is to wrap the delivery (carrying the registration-time epoch)
         // and enqueue it into the bounded buffer. When the buffer is full WriteAsync async-parks here, which
         // back-pressures the broker exactly to prefetch.
+        // INVARIANT: the curated native AMQP property set is captured here ONCE from the delivery's
+        // IReadOnlyBasicProperties using its Is*Present() guards (absent => null, never a spurious default), so
+        // every native property the broker delivered survives onto ReceivedMessage and can be re-applied on a
+        // republish hop. Without this capture the republish rebuilt BasicProperties from scratch and dropped
+        // every delivered native property (e.g. a classic-queue per-message TTL lost on the first redelivery).
         private async Task BufferDeliveryAsync(BasicDeliverEventArgs delivery, long epoch)
         {
+            var properties = delivery.BasicProperties;
+
             var received = new ReceivedMessage(body: delivery.Body.ToArray(),
                                                deliveryTag: delivery.DeliveryTag,
                                                channelEpoch: epoch,
-                                               headers: delivery.BasicProperties?.Headers is { } headers
+                                               headers: properties?.Headers is { } headers
                                                    ? new Dictionary<string, object>(headers)
                                                    : new Dictionary<string, object>(),
                                                exchange: delivery.Exchange,
                                                routingKey: delivery.RoutingKey,
                                                redelivered: delivery.Redelivered,
-                                               messageId: delivery.BasicProperties?.MessageId);
+                                               messageId: properties?.MessageId,
+                                               expiration: properties?.IsExpirationPresent() == true ? properties.Expiration : null,
+                                               priority: properties?.IsPriorityPresent() == true ? properties.Priority : (byte?)null,
+                                               timestamp: properties?.IsTimestampPresent() == true ? properties.Timestamp : (AmqpTimestamp?)null,
+                                               type: properties?.IsTypePresent() == true ? properties.Type : null,
+                                               appId: properties?.IsAppIdPresent() == true ? properties.AppId : null,
+                                               contentEncoding: properties?.IsContentEncodingPresent() == true ? properties.ContentEncoding : null,
+                                               contentType: properties?.IsContentTypePresent() == true ? properties.ContentType : null,
+                                               correlationId: properties?.IsCorrelationIdPresent() == true ? properties.CorrelationId : null);
 
             await _buffer.Writer.WriteAsync(received, delivery.CancellationToken).ConfigureAwait(false);
         }
@@ -241,10 +256,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             {
                 // Classic queues have no native redelivery counter: republish to the receiver's own queue with an
                 // incremented x-chatter-delivery-count (publisher-confirmed) BEFORE acking the original, so the
-                // attempt count survives reconnect and horizontal scaling and the message is never lost.
+                // attempt count survives reconnect and horizontal scaling and the message is never lost. The
+                // delivered native Expiration is PRESERVED on this redelivery hop so a classic-queue message
+                // published with a per-message TTL keeps its TTL across the republish.
                 return RepublishThenAckAsync(received,
                                              destination: _options.MessageReceiverPath,
                                              headerOverrides: BuildClassicRedeliveryHeaders(received),
+                                             preserveExpiration: true,
                                              cancellationToken: cancellationToken);
             }
 
@@ -274,7 +292,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 [MessageContext.FailureDescription] = deadLetterErrorDescription
             };
 
-            return RepublishThenAckAsync(received, destination, headerOverrides, cancellationToken);
+            // The delivered native Expiration is DROPPED on the deadletter hop: a dead-letter queue is for
+            // inspection, so a dead-lettered message must NOT auto-expire via the original per-message TTL. All
+            // other carried native props travel (useful for DLQ inspection).
+            return RepublishThenAckAsync(received, destination, headerOverrides, preserveExpiration: false, cancellationToken);
         }
 
         // INVARIANT: the republish (confirms-enabled publish channel) MUST complete before the original delivery
@@ -284,24 +305,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         private async Task<bool> RepublishThenAckAsync(ReceivedMessage received,
                                                        string destination,
                                                        IReadOnlyDictionary<string, object> headerOverrides,
+                                                       bool preserveExpiration,
                                                        CancellationToken cancellationToken)
         {
             await using var rental = await _connectionSource.AcquirePublishChannelAsync(cancellationToken).ConfigureAwait(false);
 
-            var properties = new BasicProperties
-            {
-                Persistent = true
-            };
-            // INVARIANT: the merged header bag is routed through the marshaller (the sole boundary) so a
-            // republished delivery is field-table-legal in exactly the same way a fresh publish is — any override
-            // value that is not natively encodable is coerced rather than faulting the republish. The
-            // DeliveryCountHeader long override and ReadHeaderAsLong's numeric tolerance are preserved: a long is
-            // table-legal and passes through unchanged.
-            properties.Headers = RabbitMqHeaderMarshaller.ToHeaderTable(MergeHeaders(received.Headers, headerOverrides), properties);
-            if (!string.IsNullOrEmpty(received.MessageId))
-            {
-                properties.MessageId = received.MessageId;
-            }
+            var properties = BuildRepublishProperties(received, headerOverrides, preserveExpiration);
 
             // Default-exchange convention: routing key == destination queue name.
             await rental.Channel.BasicPublishAsync(exchange: string.Empty,
@@ -313,6 +322,74 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             return await SettleOnReceiveChannelAsync(received, (channel) =>
                 channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken).ConfigureAwait(false);
+        }
+
+        // INVARIANT: the SINGLE outbound-property builder every republish hop routes through, so no hop can drop a
+        // delivered native AMQP property by rebuilding BasicProperties from scratch. Re-applies each carried native
+        // property when present and routes the merged header bag through the marshaller (the sole field-table
+        // boundary) exactly like a fresh publish. <paramref name="preserveExpiration"/> is the ONLY per-hop
+        // difference: true on the nack-redelivery hop (keep the per-message TTL across the republish), false on the
+        // deadletter hop (a DLQ message must not auto-expire via the original TTL). All OTHER carried native props
+        // travel on BOTH hops. The native CorrelationId / ContentType frame fields are authoritative on republish
+        // (re-applied from the carried native value); the decoded header copies remain in the table, consistent
+        // with a fresh publish where the sender sets the native field and the marshaller writes the header.
+        private static BasicProperties BuildRepublishProperties(ReceivedMessage received,
+                                                                IReadOnlyDictionary<string, object> headerOverrides,
+                                                                bool preserveExpiration)
+        {
+            var properties = new BasicProperties
+            {
+                Persistent = true
+            };
+
+            // INVARIANT: the merged header bag is routed through the marshaller (the sole boundary) so a
+            // republished delivery is field-table-legal in exactly the same way a fresh publish is — any override
+            // value that is not natively encodable is coerced rather than faulting the republish. The
+            // DeliveryCountHeader long override and ReadHeaderAsLong's numeric tolerance are preserved: a long is
+            // table-legal and passes through unchanged.
+            properties.Headers = RabbitMqHeaderMarshaller.ToHeaderTable(MergeHeaders(received.Headers, headerOverrides), properties);
+
+            if (!string.IsNullOrEmpty(received.MessageId))
+            {
+                properties.MessageId = received.MessageId;
+            }
+
+            // Re-apply each carried native AMQP property when the delivery carried one (absent => null => skip, so
+            // a republish never stamps a spurious default). Expiration ONLY when preserveExpiration.
+            if (preserveExpiration && received.Expiration != null)
+            {
+                properties.Expiration = received.Expiration;
+            }
+            if (received.Priority.HasValue)
+            {
+                properties.Priority = received.Priority.Value;
+            }
+            if (received.Timestamp.HasValue)
+            {
+                properties.Timestamp = received.Timestamp.Value;
+            }
+            if (received.Type != null)
+            {
+                properties.Type = received.Type;
+            }
+            if (received.AppId != null)
+            {
+                properties.AppId = received.AppId;
+            }
+            if (received.ContentEncoding != null)
+            {
+                properties.ContentEncoding = received.ContentEncoding;
+            }
+            if (received.ContentType != null)
+            {
+                properties.ContentType = received.ContentType;
+            }
+            if (received.CorrelationId != null)
+            {
+                properties.CorrelationId = received.CorrelationId;
+            }
+
+            return properties;
         }
 
         // INVARIANT: runs the settlement under the receive-channel gate and compares the delivery's carried epoch

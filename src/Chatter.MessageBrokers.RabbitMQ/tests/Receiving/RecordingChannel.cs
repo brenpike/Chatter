@@ -48,6 +48,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                 basicProperties.ContentType,
                 basicProperties.MessageId,
                 basicProperties.Expiration,
+                basicProperties.IsPriorityPresent() ? basicProperties.Priority : (byte?)null,
+                basicProperties.IsTimestampPresent() ? basicProperties.Timestamp : (AmqpTimestamp?)null,
+                basicProperties.IsTypePresent() ? basicProperties.Type : null,
+                basicProperties.IsAppIdPresent() ? basicProperties.AppId : null,
+                basicProperties.IsContentEncodingPresent() ? basicProperties.ContentEncoding : null,
+                basicProperties.IsCorrelationIdPresent() ? basicProperties.CorrelationId : null,
                 basicProperties.Headers is null ? null : new Dictionary<string, object>(basicProperties.Headers),
                 body.ToArray()));
 
@@ -155,7 +161,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
     internal sealed class PublishRecord
     {
-        public PublishRecord(string exchange, string routingKey, bool mandatory, string contentType, string messageId, string expiration, IDictionary<string, object> headers, byte[] body)
+        public PublishRecord(string exchange,
+                             string routingKey,
+                             bool mandatory,
+                             string contentType,
+                             string messageId,
+                             string expiration,
+                             byte? priority,
+                             AmqpTimestamp? timestamp,
+                             string type,
+                             string appId,
+                             string contentEncoding,
+                             string correlationId,
+                             IDictionary<string, object> headers,
+                             byte[] body)
         {
             Exchange = exchange;
             RoutingKey = routingKey;
@@ -163,6 +182,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             ContentType = contentType;
             MessageId = messageId;
             Expiration = expiration;
+            Priority = priority;
+            Timestamp = timestamp;
+            Type = type;
+            AppId = appId;
+            ContentEncoding = contentEncoding;
+            CorrelationId = correlationId;
             Headers = headers;
             Body = body;
         }
@@ -173,8 +198,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public string ContentType { get; }
         public string MessageId { get; }
         // The native BasicProperties.Expiration (ms string) sourced from the publish, so a test can assert that
-        // a TimeSpan TimeToLive was lifted onto the native property rather than the field table.
+        // a TimeSpan TimeToLive was lifted onto the native property rather than the field table — and that a
+        // republish hop re-applied (or, on deadletter, dropped) the carried native Expiration.
         public string Expiration { get; }
+        // The remaining carried native AMQP properties sourced from the publish (null when the published
+        // BasicProperties did not set them), so a republish test can assert each travels (or is dropped) per hop.
+        public byte? Priority { get; }
+        public AmqpTimestamp? Timestamp { get; }
+        public string Type { get; }
+        public string AppId { get; }
+        public string ContentEncoding { get; }
+        public string CorrelationId { get; }
         public IDictionary<string, object> Headers { get; }
         public byte[] Body { get; }
     }

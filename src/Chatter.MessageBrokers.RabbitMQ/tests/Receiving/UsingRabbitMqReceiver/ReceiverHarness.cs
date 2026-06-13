@@ -57,7 +57,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                               byte[] body = null,
                               IDictionary<string, object> headers = null,
                               bool redelivered = false,
-                              string messageId = null)
+                              string messageId = null,
+                              string expiration = null,
+                              byte? priority = null,
+                              global::RabbitMQ.Client.AmqpTimestamp? timestamp = null,
+                              string type = null,
+                              string appId = null,
+                              string contentEncoding = null,
+                              string contentType = null,
+                              string correlationId = null)
             => ConnectionSource.PushDeliveryAsync(
                 deliveryTag,
                 body ?? new byte[] { 1, 2, 3 },
@@ -65,7 +73,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 routingKey: ReceiverPath,
                 headers: headers,
                 redelivered: redelivered,
-                messageId: messageId);
+                messageId: messageId,
+                expiration: expiration,
+                priority: priority,
+                timestamp: timestamp,
+                type: type,
+                appId: appId,
+                contentEncoding: contentEncoding,
+                contentType: contentType,
+                correlationId: correlationId);
 
         // Pushes a delivery with its header values presented VERBATIM at their CLR type (no AMQP longstr
         // coercion), for tests asserting the marshaller's verbatim-preservation of unknown keys or pushing a

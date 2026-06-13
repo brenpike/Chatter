@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
+using Chatter.MessageBrokers.RabbitMQ.Receiving;
 using FluentAssertions;
 using Xunit;
 
@@ -33,9 +34,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         public RabbitMqNackRedeliveryTests(RabbitMqFixture fixture)
             => _fixture = fixture;
 
+        private static readonly TimeSpan TtlPropagationWait = TimeSpan.FromSeconds(30);
+
         // Distinct command type so this test's queue state is independent of the other integration tests in the
         // collection.
         public sealed class NackRedeliveryCommand : ICommand
+        {
+            public string Marker { get; set; }
+        }
+
+        // Distinct command type for the classic TTL-propagation scenario so its queue state is independent.
+        public sealed class ClassicTtlRedeliveryCommand : ICommand
         {
             public string Marker { get; set; }
         }
@@ -97,6 +106,86 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
             finally
             {
                 harness.GetSignal<NackRedeliveryCommand>().ThrowOnHandle = null;
+                await harness.DisposeAsync();
+            }
+        }
+
+        // TTL-PROPAGATION proof against a REAL broker (closes the native-property-propagation root-cluster): a
+        // CLASSIC-queue message published WithTimeToLive must keep its per-message TTL across the classic
+        // nack-redelivery republish. On a classic queue NackMessageAsync rebuilds the outbound message via the
+        // shared BuildRepublishProperties helper, which now re-applies the carried native Expiration; before the
+        // fix the republish rebuilt BasicProperties from scratch and DROPPED the delivered native Expiration, so a
+        // classic-queue message lost its TTL on the first nack-redelivery (reviewer thread r3407577438).
+        //
+        // The redelivered copy's native Expiration is observed race-free at the handler edge: BufferDeliveryAsync
+        // captures the delivered native Expiration onto the ReceivedMessage, which the receiver includes in the
+        // MessageBrokerContext container, so the handler reads it directly off the SECOND (redelivered) invocation
+        // — no competing BasicGet against the pump-consumed work queue.
+        //
+        // ANTI-INFINITE-LOOP: ThrowOnHandle is flipped to null as soon as the first invocation is observed so the
+        // redelivered copy is acked before DisposeAsync drains the pump. MaxReceiveAttempts is left at the default
+        // (10), well above the single redelivery the test drives, so the message nacks/redelivers (never
+        // deadletters) in the window under test.
+        [RequiresDockerFact]
+        public async Task ClassicQueueRedeliveryPreservesNativeExpiration()
+        {
+            // 5 minutes in ms: long enough that the message does not expire before the in-process pump redelivers
+            // it, so the surviving TTL is asserted on the redelivered copy.
+            var timeToLive = TimeSpan.FromMinutes(5);
+            var expectedExpiration = ((long)timeToLive.TotalMilliseconds).ToString();
+
+            var set = RabbitMqTopology.CreateSet("ttlredelivery", QueueType.Classic);
+            await RabbitMqTopology.DeclareAsync(_fixture.GetAmqpConnectionString(), set, CancellationToken.None);
+
+            var harness = ChatterRabbitMqPipelineHarness.Build(
+                _fixture.GetAmqpConnectionString(),
+                QueueType.Classic,
+                rmq => rmq.AddQueueReceiver<ClassicTtlRedeliveryCommand>(set.WorkQueueName, deadLetterQueuePath: set.DeadLetterQueueName),
+                typeof(ClassicTtlRedeliveryCommand));
+            try
+            {
+                await harness.StartAsync();
+
+                // Throw on the FIRST delivery so NackMessageAsync runs the classic nack-republish (which must carry
+                // the native Expiration), then redelivers. A fresh exception instance per invocation matches the
+                // RecordingMessageHandler<T> contract.
+                harness.GetSignal<ClassicTtlRedeliveryCommand>().ThrowOnHandle =
+                    () => new InvalidOperationException("ttl-redelivery-test forced throw");
+
+                await harness.SendToQueueWithTimeToLiveAndHeaderAsync(
+                    new ClassicTtlRedeliveryCommand { Marker = "ttl-redelivery" },
+                    set.WorkQueueName,
+                    timeToLive,
+                    customHeaderKey: "x-chatter-it-ttl",
+                    customHeaderValue: "ttl-redelivery");
+
+                var observedCount = await harness.WaitForInvocationCountAsync<ClassicTtlRedeliveryCommand>(
+                    minCount: 2, TtlPropagationWait);
+
+                // ANTI-INFINITE-LOOP: stop throwing so the redelivered copy is acked on its delivery.
+                harness.GetSignal<ClassicTtlRedeliveryCommand>().ThrowOnHandle = null;
+
+                observedCount.Should().BeGreaterThanOrEqualTo(2,
+                    "the throwing handler must cause one classic nack-republish, so the message is delivered at " +
+                    "least twice: the original delivery plus the redelivered republished copy");
+
+                // The SECOND invocation is the redelivered republished copy. Its delivered native Expiration is
+                // carried on the ReceivedMessage the receiver included in the MessageBrokerContext container.
+                var records = harness.GetSignal<ClassicTtlRedeliveryCommand>().Records.ToList();
+                records.Count.Should().BeGreaterThanOrEqualTo(2);
+
+                var redelivered = records[1];
+                redelivered.Context.Should().NotBeNull();
+                redelivered.Context.Container.TryGet<ReceivedMessage>(out var receivedMessage).Should().BeTrue(
+                    "the receiver includes the ReceivedMessage carrying the delivered native AMQP properties in the context container");
+
+                receivedMessage.Expiration.Should().Be(expectedExpiration,
+                    "the classic nack-redelivery republish must re-apply the delivered native Expiration so the " +
+                    "per-message TTL survives the republish rather than being dropped");
+            }
+            finally
+            {
+                harness.GetSignal<ClassicTtlRedeliveryCommand>().ThrowOnHandle = null;
                 await harness.DisposeAsync();
             }
         }

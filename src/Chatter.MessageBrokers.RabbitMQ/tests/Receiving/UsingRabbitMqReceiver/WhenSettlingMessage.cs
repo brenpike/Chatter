@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers.RabbitMQ;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using FluentAssertions;
+using RabbitMQ.Client;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -194,6 +195,119 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             deadlettered.Should().BeFalse();
             harness.ConnectionSource.PublishChannels.Single().Publishes.Should().ContainSingle();
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
+        }
+
+        // --- native-property propagation across republish hops (closes the TTL-propagation root-cluster) ---
+
+        // The single shared builder re-applies every carried native AMQP property on the classic nack-republish
+        // hop, INCLUDING the native Expiration (per-message TTL), so a classic-queue message published with a TTL
+        // keeps its TTL across the redelivery republish rather than losing it on the first nack.
+        [Fact]
+        public async Task MustPreserveNativeExpirationAndSampledPropsOnNackRepublishForClassic()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic);
+            var timestamp = new AmqpTimestamp(1718000000L);
+            await harness.PushAsync(deliveryTag: 9,
+                                    expiration: "60000",
+                                    priority: 4,
+                                    timestamp: timestamp,
+                                    type: "OrderPlaced",
+                                    appId: "orders-svc",
+                                    contentEncoding: "gzip",
+                                    contentType: "application/json",
+                                    correlationId: "corr-123");
+            var context = await harness.ReceiveAsync();
+
+            var nacked = await harness.Receiver.NackMessageAsync(context, transactionContext: null, CancellationToken.None);
+
+            nacked.Should().BeTrue();
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Expiration.Should().Be("60000", "the nack-redelivery hop preserves the delivered per-message TTL");
+            republish.Priority.Should().Be((byte)4);
+            republish.Timestamp.Should().Be(timestamp);
+            republish.Type.Should().Be("OrderPlaced");
+            republish.AppId.Should().Be("orders-svc");
+            republish.ContentEncoding.Should().Be("gzip");
+            republish.ContentType.Should().Be("application/json");
+            republish.CorrelationId.Should().Be("corr-123");
+        }
+
+        // The deadletter hop DROPS the native Expiration (a DLQ is for inspection; a dead-lettered message must
+        // not auto-expire via the original TTL) but carries every OTHER native property, AND the failure-detail
+        // header overrides are still applied.
+        [Fact]
+        public async Task MustDropNativeExpirationButCarryOtherPropsAndFailureHeadersOnDeadletter()
+        {
+            var harness = ReceiverHarness.Create(deadLetterQueuePath: ReceiverHarness.DeadLetterPath);
+            var timestamp = new AmqpTimestamp(1718000000L);
+            await harness.PushAsync(deliveryTag: 11,
+                                    expiration: "60000",
+                                    priority: 4,
+                                    timestamp: timestamp,
+                                    type: "OrderPlaced",
+                                    appId: "orders-svc",
+                                    contentEncoding: "gzip",
+                                    contentType: "application/json",
+                                    correlationId: "corr-123");
+            var context = await harness.ReceiveAsync();
+
+            var deadlettered = await harness.Receiver.DeadletterMessageAsync(
+                context, transactionContext: null, "poisoned", "could not be handled", CancellationToken.None);
+
+            deadlettered.Should().BeTrue();
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Expiration.Should().BeNull("a dead-lettered message must not auto-expire via the original per-message TTL");
+            republish.Priority.Should().Be((byte)4);
+            republish.Timestamp.Should().Be(timestamp);
+            republish.Type.Should().Be("OrderPlaced");
+            republish.AppId.Should().Be("orders-svc");
+            republish.ContentEncoding.Should().Be("gzip");
+            republish.ContentType.Should().Be("application/json");
+            republish.CorrelationId.Should().Be("corr-123");
+            republish.Headers[MessageContext.FailureDetails].Should().Be("poisoned");
+            republish.Headers[MessageContext.FailureDescription].Should().Be("could not be handled");
+        }
+
+        // A delivery carrying NO native properties must not have a spurious default stamped on republish: an
+        // absent Expiration stays null (not "0"), an absent Priority stays null (not 0), and so on.
+        [Fact]
+        public async Task MustNotStampSpuriousDefaultsWhenDeliveryCarriesNoNativeProps()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic);
+            await harness.PushAsync(deliveryTag: 9);
+            var context = await harness.ReceiveAsync();
+
+            var nacked = await harness.Receiver.NackMessageAsync(context, transactionContext: null, CancellationToken.None);
+
+            nacked.Should().BeTrue();
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.Expiration.Should().BeNull("an absent native Expiration must not become a spurious default");
+            republish.Priority.Should().BeNull("an absent native Priority must not become a spurious 0");
+            republish.Timestamp.Should().BeNull();
+            republish.Type.Should().BeNull();
+            republish.AppId.Should().BeNull();
+            republish.ContentEncoding.Should().BeNull();
+            republish.CorrelationId.Should().BeNull();
+        }
+
+        // ContentType / CorrelationId are carried as the single native frame value and re-applied to the native
+        // frame field on republish; the marshaller writes its decoded header copy into the table. The native frame
+        // field is the authoritative one and is not double-applied in a conflicting way.
+        [Fact]
+        public async Task MustApplyContentTypeAndCorrelationIdToNativeFrameWithoutConflictOnRepublish()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic);
+            await harness.PushAsync(deliveryTag: 9,
+                                    contentType: "application/json",
+                                    correlationId: "corr-123");
+            var context = await harness.ReceiveAsync();
+
+            var nacked = await harness.Receiver.NackMessageAsync(context, transactionContext: null, CancellationToken.None);
+
+            nacked.Should().BeTrue();
+            var republish = harness.ConnectionSource.PublishChannels.Single().Publishes.Single();
+            republish.ContentType.Should().Be("application/json", "the carried native ContentType is the authoritative frame value on republish");
+            republish.CorrelationId.Should().Be("corr-123", "the carried native CorrelationId is the authoritative frame value on republish");
         }
     }
 }
