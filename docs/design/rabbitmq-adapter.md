@@ -169,29 +169,45 @@ topology is shaped around these two constraints.
 - **Prefetch (`BasicQos`) `>= MaxConcurrentCalls`** on the receive channel, so the broker keeps at
   least enough unacknowledged deliveries in flight to keep all core workers busy.
 
-### Reconnect epoch-guard
+### Reconnect epoch-guard (source-owned channel + consumer lifecycle)
 
-The RabbitMQ client recovers connections and channels automatically (§8). On recovery the receive
-channel is **replaced**, and **delivery tags from the old channel are meaningless on the new one** —
-acking an old tag on a new channel would either error or, worse, **falsely acknowledge an unrelated
-delivery** that happens to share the tag value.
+On recovery the receive channel is **replaced**, and **delivery tags from the old channel are
+meaningless on the new one** — acking an old tag on a new channel would either error or, worse,
+**falsely acknowledge an unrelated delivery** that happens to share the tag value. The adapter guards
+this with a **channel-epoch** stamped onto every delivery and re-checked at settle time.
 
-The adapter guards this with a **channel-epoch**:
+The decisive design choice (ADR 0002) is **how** the epoch is kept truthful across recovery: the
+source **owns the receive-channel and consumer lifecycle by construction** rather than relying on the
+client's topology auto-recovery.
 
-- Each receive channel is assigned a monotonically increasing **epoch** when it is created.
-- Every buffered delivery carries **both** its delivery tag **and** the epoch of the channel that
-  delivered it, stored together in the message context container.
-- At ack/nack/deadletter time, the adapter compares the delivery's epoch against the **current**
-  channel epoch under the async gate. If they differ, the channel has been replaced since delivery —
-  the operation is a **no-op**. The broker will have already redelivered the message on the new
-  channel (it was never acked), so the message is reprocessed, never false-acked and never lost.
+- The connection runs with **`AutomaticRecoveryEnabled = true`** (transport reconnects on its own) but
+  **`TopologyRecoveryEnabled = false`** for the receive channel — the client does **not** silently
+  re-bind the old consumer under a stale epoch.
+- On **every** receive-channel (re)creation — cold start, lazy recreate, and on each
+  `RecoverySucceededAsync` — the source, **under the receive gate and as one atomic event**, disposes
+  any old channel, creates a fresh one, **increments the epoch**, and **re-runs the stored
+  consume-registration delegate** against the new channel with the freshly-bumped epoch. The consume
+  registration is the **only** code that stamps an epoch onto a delivery, and it always runs **after**
+  the bump with the new epoch.
+- Because the **epoch bump and the consumer re-registration are the same gated event**, a delivery's
+  stamped epoch **always equals the epoch of the session that delivered it**:
+  - a **pre-recovery** in-flight delivery carries the **old** epoch → its settle correctly **no-ops**,
+    the broker redelivers it (never false-acked, never lost);
+  - a **post-recovery** delivery is stamped by the freshly re-registered consumer with the **new**
+    epoch → its settle **matches** and the message is **actually acked** (no duplicate loop).
+- The bounded buffer is created **once** and is **not** recreated on re-registration, so deliveries
+  buffered before recovery survive the consumer swap.
 
-INVARIANT: an ack whose carried epoch != current channel epoch is a no-op (redelivery path), never a
-false-ack against the wrong delivery tag.
+INVARIANT: a delivery's stamped epoch always equals the epoch of the session that delivered it. An
+ack whose carried epoch != current channel epoch is therefore a no-op only for genuinely pre-recovery
+deliveries (redelivery path); a post-recovery delivery's epoch matches and settles. This closes
+**both** the recovery-stale-epoch false-ack and the topology-recovery stale-closure no-op-settle (the
+post-recovery duplicate loop) **as a class, race-free** — there is no separate epoch sampling point to
+race against the bump.
 
 ```mermaid
 flowchart TB
-    Conn["IRabbitMqConnectionSource<br/>(singleton)"] --> IConn["single IConnection"]
+    Conn["IRabbitMqConnectionSource<br/>(singleton)<br/>AutomaticRecoveryEnabled=true<br/>TopologyRecoveryEnabled=false"] --> IConn["single IConnection"]
 
     IConn --> RecvCh["Receive channel (ONE)<br/>epoch = N<br/>consume + ack/nack/deadletter"]
     IConn --> Pool["Publish channel pool<br/>(SEPARATE, confirms enabled)"]
@@ -202,7 +218,7 @@ flowchart TB
     Pool --> P1["publish channel #1"]
     Pool --> P2["publish channel #2"]
 
-    RecvCh -. on reconnect .-> RecvCh2["Receive channel<br/>epoch = N+1<br/>(old tags now no-op)"]
+    RecvCh -. "on RecoverySucceededAsync:<br/>recreate channel + bump epoch +<br/>re-register consumer (ONE gated event)" .-> RecvCh2["Receive channel<br/>epoch = N+1<br/>(old tags no-op;<br/>new deliveries stamped N+1)"]
 ```
 
 ## 5. Acknowledgement & message lifecycle
@@ -303,9 +319,14 @@ flowchart LR
 Recovery flows through the **same `RetryWithCircuitBreakerStrategy` seam** the ASB adapter uses; the
 adapter adds nothing to the core recovery machinery.
 
-- The RabbitMQ client runs with **`AutomaticRecoveryEnabled`** (and topology recovery) so dropped
-  connections and channels reconnect on their own. Reconnect bumps the receive-channel epoch (§4),
-  so in-flight acks from the prior epoch become no-ops.
+- The RabbitMQ client runs with **`AutomaticRecoveryEnabled`** so dropped connections and channels
+  reconnect on their own, but **topology (consumer) recovery is DISABLED** for the receive channel
+  (ADR 0002). On each `RecoverySucceededAsync` the **source** recreates the receive channel, bumps the
+  epoch, and **re-registers the consumer** under the gate as one atomic event (§4) — the source owns
+  consumer lifecycle, the client does not silently re-bind it. Pre-recovery in-flight acks (old epoch)
+  no-op and redeliver; post-recovery deliveries (new epoch, stamped by the re-registered consumer)
+  settle normally. Publish channels keep ordinary connection recovery. ADR 0001's
+  republish-before-ack ordering still holds for genuinely pre-recovery deliveries.
 - `RabbitMqRetryExceptionPredicatesProvider` and `RabbitMqCircuitBreakerExceptionPredicatesProvider`
   classify **transient RabbitMQ faults** (e.g. `BrokerUnreachableException`,
   `AlreadyClosedException`, connection/channel-shutdown conditions) so the shared strategy retries

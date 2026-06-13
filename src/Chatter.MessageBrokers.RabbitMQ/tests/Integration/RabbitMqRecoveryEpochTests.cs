@@ -8,25 +8,35 @@ using Xunit;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
 {
-    // Recovery-epoch false-ack proof for the RabbitMQ adapter (R-STEP-003). The DEFECT: the receive channel rides
-    // an AutomaticRecoveryEnabled connection, so RabbitMQ.Client transparently recovers the SAME IChannel on a
-    // reconnect. EnsureReceiveChannelAsync then early-returns without recreating the channel, so absent the
-    // RecoverySucceededAsync subscription the receive-channel epoch stays stale — and an in-flight pre-recovery
-    // delivery tag (now INVALID on the recovered session) would pass the stale-epoch settle guard and be
-    // false-acked, swallowing the message even though the broker never saw the ack.
+    // Recovery-epoch BOTH-HALVES proof for the RabbitMQ adapter (E-STEP-006). The receive-channel epoch lifecycle
+    // is closed-by-construction (commit redesigning RabbitMqConnectionSource): the source runs with
+    // AutomaticRecoveryEnabled but TopologyRecoveryEnabled=false, and on every RecoverySucceededAsync it recreates
+    // the receive IChannel, bumps the epoch, and re-registers the consumer UNDER THE GATE as one atomic event. So a
+    // delivery's stamped epoch always equals the session that delivered it — pre-recovery deliveries carry the old
+    // epoch, post-recovery deliveries carry the new one.
+    //
+    // This test asserts BOTH halves of the invariant the design guarantees:
+    //   HALF 1 (false-ack is impossible): a pre-recovery in-flight delivery whose tag is meaningless on the
+    //     recovered session is NOT false-acked — the stale-epoch guard no-ops the settle and the broker redelivers
+    //     the requeued message (invocation count reaches >= 2).
+    //   HALF 2 (post-recovery settlement is NOT a no-op): the redelivered (post-recovery) delivery ACTUALLY
+    //     SETTLES — its tag carries the post-recovery epoch, so the ack reaches the broker, the message leaves the
+    //     queue, and the redelivery count CONVERGES (stops growing). Were post-recovery settlement still a no-op
+    //     (the superseded bump-only design's EDGE 2), the redelivered message would be redelivered again and again
+    //     in an unbounded duplicate loop, so the invocation count would keep climbing past 2.
     //
     // The SYSTEM UNDER TEST is the live Chatter receive path against a real broker. Scenario:
-    //   1. A command is delivered; the handler BLOCKS, holding the delivery in-flight (unacked) on the receive
-    //      channel and pinning the pre-recovery epoch on the buffered ReceivedMessage.
-    //   2. The test forcibly drops the broker connection (management API), so the client auto-recovers the SAME
-    //      receive channel. The source's RecoverySucceededAsync handler advances the epoch.
-    //   3. The handler unblocks; Chatter attempts to ack the original delivery tag. Because the tag's epoch is now
-    //      stale, the settle is a NO-OP — no ack reaches the (recovered) broker session.
-    //   4. The broker, having requeued the unacked delivery when the connection dropped, REDELIVERS the message,
-    //      so the handler is invoked AGAIN. This second delivery does not block and acks normally.
-    // The proof the epoch advanced and the false-ack was prevented is the redelivery: invocation count >= 2. Were
-    // the epoch left stale (the defect), the stale ack would have settled the original tag, the broker would have
-    // nothing to redeliver, and the handler would be invoked exactly once.
+    //   1. A command is delivered; the handler BLOCKS on the FIRST invocation, holding the delivery in-flight
+    //      (unacked) on the receive channel and pinning the pre-recovery epoch on the buffered ReceivedMessage.
+    //   2. The test forcibly drops the broker connection (management API), so the client auto-recovers and the
+    //      source's RecoverySucceededAsync handler recreates the channel + re-registers the consumer + bumps the
+    //      epoch atomically.
+    //   3. The handler unblocks; Chatter attempts to ack the original delivery tag. Its epoch is now stale, so the
+    //      settle is a NO-OP — no ack reaches the recovered session (HALF 1).
+    //   4. The broker, having requeued the unacked delivery when the connection dropped, REDELIVERS the message on
+    //      the recovered (re-registered) consumer. That redelivery does NOT block and acks normally; because it
+    //      carries the post-recovery epoch the ack settles and the message leaves the queue — so the count
+    //      converges and does not loop (HALF 2).
     //
     // Gated by [RequiresDockerFact] + Category=Integration: SKIPPED (never failed) when Docker is absent, so a
     // plain `dotnet test` stays green; the nightly RabbitMQ CI lane runs it for real. Mirrors the
@@ -39,6 +49,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         // requeue+redelivery all happen serially before the second invocation is observed.
         private static readonly TimeSpan RedeliveryWait = TimeSpan.FromSeconds(90);
         private static readonly TimeSpan FirstDeliveryWait = TimeSpan.FromSeconds(30);
+
+        // After the post-recovery redelivery settles, watch the invocation count for a quiet window. If
+        // post-recovery settlement were a no-op the message would be redelivered repeatedly, so the count would
+        // keep climbing across this window; a stable count proves the loop is closed and the message settled.
+        private static readonly TimeSpan ConvergenceWindow = TimeSpan.FromSeconds(20);
 
         private readonly RabbitMqFixture _fixture;
 
@@ -53,7 +68,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         }
 
         [RequiresDockerFact]
-        public async Task PostRecoverySettlementIsNoOpSoBrokerRedelivers()
+        public async Task PreRecoveryAckNoOpsAndPostRecoveryDeliverySettlesAndConverges()
         {
             var amqpUri = _fixture.GetAmqpConnectionString();
 
@@ -80,7 +95,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                 {
                     if (invocationCount > 1)
                     {
-                        // Redelivery: do not block, let it ack normally so the message finally settles.
+                        // Post-recovery redelivery: do not block, let it ack normally so the message finally
+                        // settles. This is the delivery whose successful settlement HALF 2 asserts.
                         return;
                     }
 
@@ -97,28 +113,45 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                 firstDelivery.Should().Be(firstDeliveryObserved.Task,
                     "the handler must receive the first delivery and block before the connection is dropped");
 
-                // Force automatic recovery: drop the broker connection out-of-band. The client recovers the SAME
-                // receive channel, and the source's RecoverySucceededAsync handler advances the epoch.
+                // Force automatic recovery: drop the broker connection out-of-band. The source's
+                // RecoverySucceededAsync handler recreates the receive channel, bumps the epoch, and re-registers
+                // the consumer under the gate.
                 var killed = await RabbitMqConnectionKiller.KillAllConnectionsAsync(amqpUri, CancellationToken.None);
                 killed.Should().BeGreaterThan(0,
                     "at least the receiver's broker connection must be dropped to trigger automatic recovery");
 
-                // Give the client a moment to complete recovery (epoch advance) before the blocked handler's ack
-                // runs, so the ack is evaluated against the post-recovery epoch.
+                // Give the client a moment to complete recovery (channel recreate + epoch bump + consumer
+                // re-registration) before the blocked handler's ack runs, so the ack is evaluated against the
+                // post-recovery epoch.
                 await Task.Delay(TimeSpan.FromSeconds(5));
 
                 // Release the first delivery: Chatter now attempts to ack the original (pre-recovery) delivery tag.
                 // The stale-epoch guard makes that ack a no-op, so the broker still has the message and redelivers.
                 recoveryForced.Release();
 
+                // HALF 1: the pre-recovery ack no-ops, so the broker redelivers and the handler is invoked again.
                 var observedCount = await harness.WaitForInvocationCountAsync<RecoveryEpochCommand>(
                     minCount: 2, RedeliveryWait);
 
                 observedCount.Should().BeGreaterThanOrEqualTo(2,
-                    "the post-recovery settlement of the pre-recovery delivery tag must be a no-op (stale epoch), so " +
+                    "the post-recovery settlement of the PRE-recovery delivery tag must be a no-op (stale epoch), so " +
                     "the broker redelivers the requeued message and the handler is invoked a second time; were the " +
-                    "epoch left stale on recovery the original ack would have settled the message and there would be " +
-                    "no redelivery");
+                    "epoch not advanced on recovery the original ack would have settled the message and there would " +
+                    "be no redelivery");
+
+                // HALF 2: the post-recovery redelivery carries the post-recovery epoch, so its ack settles and the
+                // message leaves the queue. Prove the duplicate loop is GONE by showing the invocation count
+                // CONVERGES — it stops growing across a quiet window. A no-op post-recovery settle (the superseded
+                // bump-only design's EDGE 2) would keep redelivering, so the count would keep climbing here.
+                var countAfterFirstRedelivery = harness.GetSignal<RecoveryEpochCommand>().InvocationCount;
+                await Task.Delay(ConvergenceWindow);
+                var countAfterConvergenceWindow = harness.GetSignal<RecoveryEpochCommand>().InvocationCount;
+
+                countAfterConvergenceWindow.Should().Be(countAfterFirstRedelivery,
+                    "the post-recovery redelivery must ACTUALLY SETTLE (its tag carries the post-recovery epoch), so " +
+                    "the message leaves the queue and the redelivery count CONVERGES; were post-recovery settlement " +
+                    "still a no-op the broker would redeliver the same message unboundedly and the invocation count " +
+                    "would keep climbing across the convergence window (the EDGE-2 duplicate loop)");
             }
             finally
             {
