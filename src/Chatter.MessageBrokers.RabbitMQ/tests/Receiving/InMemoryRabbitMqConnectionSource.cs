@@ -48,6 +48,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         // republish test can assert the publish recordings.
         public List<RecordingChannel> PublishChannels { get; } = new List<RecordingChannel>();
 
+        // Optional callback invoked with each newly-created publish channel immediately after it is recorded
+        // but before the rental is returned. Tests use this to inject a PublishFault (or other state) onto
+        // the channel before Dispatch awaits BasicPublishAsync.
+        public Action<RecordingChannel> OnPublishChannelCreated { get; set; }
+
         public int RunOnReceiveChannelCount { get; private set; }
         public int AcquirePublishChannelCount { get; private set; }
 
@@ -117,6 +122,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             AcquirePublishChannelCount++;
             var channel = new RecordingChannel();
             PublishChannels.Add(channel);
+            OnPublishChannelCreated?.Invoke(channel);
             return Task.FromResult(_rentalFactory.Create(channel));
         }
 

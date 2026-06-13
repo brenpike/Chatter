@@ -33,6 +33,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             return default;
         }
 
+        // Opt-in publish-fault seam: when non-null, BasicPublishAsync records the publish (so recording
+        // assertions hold), then faults the returned task with this exception — modeling the broker's
+        // 7.2.1 confirm-tracking fault on an unroutable mandatory basic.return. Default null = success.
+        public Exception PublishFault { get; set; }
+
         public ValueTask BasicPublishAsync<TProperties>(string exchange, string routingKey, bool mandatory, TProperties basicProperties, ReadOnlyMemory<byte> body, CancellationToken cancellationToken = default)
             where TProperties : IReadOnlyBasicProperties, IAmqpHeader
         {
@@ -44,6 +49,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                 basicProperties.MessageId,
                 basicProperties.Headers is null ? null : new Dictionary<string, object>(basicProperties.Headers),
                 body.ToArray()));
+
+            if (PublishFault is not null)
+            {
+                return ValueTask.FromException(PublishFault);
+            }
+
             return default;
         }
 

@@ -9,6 +9,7 @@ using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using RabbitMQ.Client.Exceptions;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -228,6 +229,64 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Sending.UsingRabbitMqSender
             connectionSource.PublishChannels
                 .Select(channel => channel.Publishes.Single().RoutingKey)
                 .Should().BeEquivalentTo(new[] { "A", "B" });
+        }
+
+        // --- publish-fault propagation + permit conservation ---
+
+        // Regression: pins that Dispatch does NOT swallow a faulted BasicPublishAsync. The seam faults
+        // with PublishException(isReturn:true), which is the exception RabbitMQ.Client 7.2.1 raises when
+        // confirm-tracking correlates a basic.return (unroutable mandatory publish) to a publish-sequence-
+        // number — so this test is constructable broker-free. The genuine broker fault-on-return path
+        // (confirm-tracking → HandleReturn → HandleNack(isReturn:true) → tcs.SetException) is provable only
+        // on the nightly Docker integration lane; this test pins the sender's non-swallow contract without
+        // a live broker.
+        [Fact]
+        public async Task MustPropagateFaultFromPublishChannelForSingleMessage()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            // publishSequenceNumber 1, isReturn:true models a basic.return for an unroutable mandatory publish.
+            var fault = new PublishException(publishSequenceNumber: 1, isReturn: true);
+
+            // Configure the fault BEFORE Dispatch acquires the rental, so the channel is pre-seeded.
+            // Dispatch calls AcquirePublishChannelAsync, which creates and records a new RecordingChannel;
+            // set the fault on that channel by hooking into the source before dispatch.
+            RecordingChannel publishChannel = null;
+            connectionSource.OnPublishChannelCreated = channel => { publishChannel = channel; channel.PublishFault = fault; };
+
+            Func<Task> act = () => sender.Dispatch(Message(), transactionContext: null);
+
+            await act.Should().ThrowAsync<PublishException>();
+
+            // The publish was still recorded before the fault was raised (seam records-then-faults).
+            publishChannel.Publishes.Should().HaveCount(1);
+
+            // Permit conservation: the rental's DisposeAsync (via await using) must have run, releasing the
+            // pool semaphore permit even on the fault path. The RecordingChannel.Disposed flag confirms
+            // ReturnPublishChannel disposed (not re-pooled) the channel, which also implies permit release.
+            publishChannel.Disposed.Should().BeTrue("the rental must dispose the channel on the fault path");
+        }
+
+        // Regression: same non-swallow + permit-conservation contract for the IEnumerable<> overload,
+        // which delegates to the single-message Dispatch in a foreach; the fault on the first message
+        // must propagate out of the collection dispatch as well.
+        [Fact]
+        public async Task MustPropagateFaultFromPublishChannelForCollectionDispatch()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var sender = CreateSender(connectionSource);
+            var fault = new PublishException(publishSequenceNumber: 1, isReturn: true);
+
+            connectionSource.OnPublishChannelCreated = channel => channel.PublishFault = fault;
+
+            Func<Task> act = () => sender.Dispatch(new[] { Message("A"), Message("B") }, transactionContext: null);
+
+            await act.Should().ThrowAsync<PublishException>();
+
+            // Only the first message's channel was acquired before the fault propagated.
+            var faultedChannel = connectionSource.PublishChannels.First();
+            faultedChannel.Publishes.Should().HaveCount(1);
+            faultedChannel.Disposed.Should().BeTrue("rental must dispose the channel on the fault path");
         }
     }
 }

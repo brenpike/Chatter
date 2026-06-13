@@ -82,9 +82,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Sending
 
             await using var rental = await _connectionSource.AcquirePublishChannelAsync(CancellationToken.None).ConfigureAwait(false);
 
-            // The rented channel has publisher confirms (with tracking) enabled, so this await only completes once
-            // the broker confirms the publish; an unconfirmed publish faults here and propagates. mandatory:true
-            // surfaces an unroutable return rather than silently dropping the message.
+            // RabbitMQ.Client 7.2.1 guarantee relied upon here: the rented channel is created with
+            // publisherConfirmationsEnabled + publisherConfirmationTrackingEnabled (see
+            // RabbitMqConnectionSource.CreatePublishChannelAsync). With tracking enabled, an unroutable
+            // mandatory publish triggers a basic.return from the broker; the client correlates the return
+            // to this publish by publish-sequence-number via HandleReturn -> HandleNack(isReturn:true) ->
+            // tcs.SetException(PublishException) — no BasicReturnAsync handler is needed. The bare await
+            // therefore faults with PublishException and propagates as a Dispatch failure: no silent loss.
+            // If RabbitMQ.Client is upgraded past 7.2.1, or if CreatePublishChannelAsync's
+            // CreateChannelOptions change, re-verify that this fault-on-return guarantee still holds.
             await rental.Channel.BasicPublishAsync(exchange: exchange,
                                                    routingKey: routingKey,
                                                    mandatory: true,

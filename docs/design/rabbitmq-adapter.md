@@ -294,9 +294,18 @@ flowchart TD
   extension carries an explicit exchange + routing key alongside the message (message-context data,
   **not** a new core contract and **not** a parsed compound destination string). When present, the
   sender publishes to that exchange with that routing key instead of the default-exchange convention.
-- **Publisher confirms.** Publish channels run in confirm mode; a publish is only treated as **sent**
-  once the broker confirms it. This also underpins the Classic republish counter's "confirmed before
-  ack" guarantee (§6, ADR 0001).
+- **Publisher confirms + unroutable-publish fault.** Publish channels run in confirm mode
+  (`publisherConfirmationsEnabled + publisherConfirmationTrackingEnabled` — see
+  `RabbitMqConnectionSource.CreatePublishChannelAsync`). A publish is only treated as **sent** once
+  the broker confirms it. With `mandatory:true` and tracking enabled, an unroutable publish triggers
+  a `basic.return`; RabbitMQ.Client 7.2.1 correlates the return to the publish by
+  publish-sequence-number (`HandleReturn → HandleNack(isReturn:true) → tcs.SetException`) and faults
+  the awaited `BasicPublishAsync` with `PublishException` — no `BasicReturnAsync` handler is needed.
+  The bare `await` in `RabbitMqSender.Dispatch` therefore surfaces an unroutable publish as a
+  `Dispatch` failure (no silent loss). **This guarantee is specific to RabbitMQ.Client 7.2.1
+  confirm-tracking semantics**: a major-version upgrade or a change to `CreateChannelOptions` requires
+  re-verifying that `mandatory:true` still faults rather than silently discards. This also underpins
+  the Classic republish counter's "confirmed before ack" guarantee (§6, ADR 0001).
 - **BrokeredMessageAttribute fields** (`SendingPath`, `ReceiverName`, `ErrorQueueName`,
   `DeadletterQueueName`) flow from the attribute through `RabbitMqOptions` (via
   `AddQueueReceiver<TMessage>(...)`) and the `RabbitMqPathBuilder` seam, which resolves the concrete
