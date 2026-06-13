@@ -31,5 +31,27 @@ jobs:
       - name: Integration test (SQL Service Broker)
         run: dotnet test 'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' -c Release --no-build --filter 'Category=Integration'
 
-  # Future sibling integration jobs (#176, #177) go here, following the same
+  rabbitmq-integration:
+    name: integration (rabbitmq)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+      - name: Restore
+        run: dotnet restore 'src/Chatter.MessageBrokers.RabbitMQ/tests/Chatter.MessageBrokers.RabbitMQ.Tests.csproj' --locked-mode
+      - name: Build
+        run: dotnet build 'src/Chatter.MessageBrokers.RabbitMQ/tests/Chatter.MessageBrokers.RabbitMQ.Tests.csproj' -c Release --no-restore
+      - name: Integration test (RabbitMQ)
+        run: dotnet test 'src/Chatter.MessageBrokers.RabbitMQ/tests/Chatter.MessageBrokers.RabbitMQ.Tests.csproj' -c Release --no-build --filter 'Category=Integration'
+
+  # Future sibling integration jobs (#177) go here, following the same
   # checkout + setup-dotnet + restore/build/test (Category=Integration) shape as ssb-integration above.
