@@ -49,7 +49,6 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         private Channel<ReceivedMessage> _buffer;
         private ReceiverOptions _options;
-        private string _consumerTag;
         private int _prefetch;
 
         public RabbitMqReceiver(IRabbitMqConnectionSource connectionSource,
@@ -89,9 +88,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         // INVARIANT: invoked by the connection source under the receive gate on every (re)creation of the receive
         // channel, with <paramref name="epoch"/> being the freshly-bumped epoch of that channel. Registers a fresh
-        // push consumer that stamps THIS epoch onto every delivery it buffers. The bounded buffer is NOT recreated
-        // here (it is created once in InitializeAsync) so in-flight pre-recovery deliveries survive the swap.
-        private async Task RegisterConsumerAsync(IChannel channel, long epoch, CancellationToken cancellationToken)
+        // push consumer that stamps THIS epoch onto every delivery it buffers, and RETURNS the broker-assigned
+        // consumer tag so the SOURCE — which owns the receive channel + consumer lifecycle — stores it and cancels
+        // it on StopReceivingAsync. The bounded buffer is NOT recreated here (it is created once in InitializeAsync)
+        // so in-flight pre-recovery deliveries survive the swap.
+        private async Task<string> RegisterConsumerAsync(IChannel channel, long epoch, CancellationToken cancellationToken)
         {
             await channel.BasicQosAsync(prefetchSize: 0,
                                         prefetchCount: (ushort)_prefetch,
@@ -101,15 +102,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += (sender, delivery) => BufferDeliveryAsync(delivery, epoch);
 
-            // Capture the latest consumer tag — it may change across recovery as the consumer is re-registered.
-            _consumerTag = await channel.BasicConsumeAsync(queue: _options.MessageReceiverPath,
-                                                           autoAck: false,
-                                                           consumerTag: string.Empty,
-                                                           noLocal: false,
-                                                           exclusive: false,
-                                                           arguments: null,
-                                                           consumer: consumer,
-                                                           cancellationToken: cancellationToken).ConfigureAwait(false);
+            // Return the broker-assigned consumer tag so the source stores it and owns cancellation. The tag may
+            // change across recovery as the consumer is re-registered; the source re-captures it each (re)creation.
+            return await channel.BasicConsumeAsync(queue: _options.MessageReceiverPath,
+                                                   autoAck: false,
+                                                   consumerTag: string.Empty,
+                                                   noLocal: false,
+                                                   exclusive: false,
+                                                   arguments: null,
+                                                   consumer: consumer,
+                                                   cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
         // INVARIANT: the push consumer's only job is to wrap the delivery (carrying the registration-time epoch)
@@ -438,10 +440,19 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             return context?.Container.TryGet(out received) ?? false;
         }
 
-        public Task StopReceiver()
+        // INVARIANT (TERMINAL receive teardown, mirrors core BrokeredMessageReceiver.StopReceiver — one-way, not
+        // restartable): cancel the AMQP consumer on the SHARED source FIRST so no new delivery can race the buffer
+        // completion (the source's StopReceivingAsync cancels the consumer and tears down the receive channel under
+        // its gate), THEN complete the buffer writer so the blocking ReceiveMessageAsync pull drains and unblocks.
+        // SURGICAL: StopReceivingAsync leaves the connection + publish pool intact (the singleton source is shared
+        // with the sender, which keeps publishing). Prefetched-but-unacked deliveries are NOT acked here — they are
+        // left for broker redelivery, consistent with the epoch guard that already no-ops a settle after the channel
+        // is torn down. A delivery that buffered after the cancel but before completion is drained by the reader;
+        // BufferDeliveryAsync writes cannot strand because the cancel precedes the channel teardown that stops them.
+        public async Task StopReceiver()
         {
+            await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
             _buffer?.Writer.TryComplete();
-            return Task.CompletedTask;
         }
 
         // CreateLocalTransaction returns null to match the core default; full-atomicity transaction handling is
@@ -449,13 +460,26 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         public TransactionScope CreateLocalTransaction(TransactionContext context)
             => null;
 
+        // Dispose ESCALATES beyond StopReceiver's surgical receive teardown to the source's FULL teardown (connection
+        // + publish pool), then completes the buffer. The source's Dispose()/DisposeAsync() share one single-admission
+        // lifecycle CAS and are idempotent, so the DI container's own later disposal of the singleton source is a
+        // clean no-op. Terminal: a disposed receiver does not restart.
+        // The seam is IAsyncDisposable; the production source ALSO implements IDisposable for the synchronous
+        // container-dispose path, so the sync Dispose() prefers the source's synchronous teardown when available.
         public void Dispose()
-            => _buffer?.Writer.TryComplete();
-
-        public ValueTask DisposeAsync()
         {
+            if (_connectionSource is IDisposable syncDisposable)
+            {
+                syncDisposable.Dispose();
+            }
+
             _buffer?.Writer.TryComplete();
-            return default;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _connectionSource.DisposeAsync().ConfigureAwait(false);
+            _buffer?.Writer.TryComplete();
         }
     }
 }

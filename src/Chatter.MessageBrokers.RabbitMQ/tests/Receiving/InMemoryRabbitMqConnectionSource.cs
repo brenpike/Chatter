@@ -28,8 +28,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         private readonly RabbitMqPublishChannelRentalFactory _rentalFactory = new RabbitMqPublishChannelRentalFactory();
 
         // The stored consume-registration delegate, mirroring the production source. Re-run on every receive
-        // channel (re)creation with the freshly-bumped epoch.
-        private Func<IChannel, long, CancellationToken, Task> _registerConsumer;
+        // channel (re)creation with the freshly-bumped epoch; returns the broker-assigned consumer tag the source
+        // stores so it owns cancellation. CLEARED by StopReceivingAsync (terminal stop) so a late recovery
+        // re-registers nothing — mirroring the production source.
+        private Func<IChannel, long, CancellationToken, Task<string>> _registerConsumer;
+
+        // The latest consumer tag the registration delegate returned, mirroring the production source's _consumerTag.
+        // StopReceivingAsync cancels this tag on the current receive channel.
+        private string _consumerTag;
 
         public InMemoryRabbitMqConnectionSource()
         {
@@ -71,21 +77,26 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         // keeps the old epoch (no-ops at settle). Disposes the prior channel, mirroring the source's recreate.
         public async Task SimulateRecoveryAsync()
         {
-            if (_registerConsumer is null)
+            // Mirror the production RecreateReceiveChannelAsync null guard: after a terminal stop the receive channel
+            // is already torn down (null), so a late recovery recreates a fresh channel but disposes nothing first.
+            if (ReceiveChannel is not null)
             {
-                throw new InvalidOperationException("No consumer registered; call the receiver's InitializeAsync first.");
+                await ReceiveChannel.DisposeAsync().ConfigureAwait(false);
             }
-
-            await ReceiveChannel.DisposeAsync().ConfigureAwait(false);
 
             ReceiveChannel = new RecordingChannel();
             ReceiveChannels.Add(ReceiveChannel);
             Interlocked.Increment(ref _currentReceiveChannelEpoch);
 
-            await _registerConsumer(ReceiveChannel, Interlocked.Read(ref _currentReceiveChannelEpoch), CancellationToken.None).ConfigureAwait(false);
+            // Mirror the production RecreateReceiveChannelAsync: re-register only when a delegate is still stored. A
+            // terminal StopReceivingAsync clears it, so a late recovery after stop re-registers NOTHING.
+            if (_registerConsumer is not null)
+            {
+                _consumerTag = await _registerConsumer(ReceiveChannel, Interlocked.Read(ref _currentReceiveChannelEpoch), CancellationToken.None).ConfigureAwait(false);
+            }
         }
 
-        public async Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task> registerConsumer,
+        public async Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task<string>> registerConsumer,
                                               CancellationToken cancellationToken)
         {
             if (registerConsumer is null)
@@ -102,8 +113,35 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                 ReceiveChannels.Add(ReceiveChannel);
             }
 
-            await registerConsumer(ReceiveChannel, Interlocked.Read(ref _currentReceiveChannelEpoch), cancellationToken).ConfigureAwait(false);
+            _consumerTag = await registerConsumer(ReceiveChannel, Interlocked.Read(ref _currentReceiveChannelEpoch), cancellationToken).ConfigureAwait(false);
         }
+
+        // Mirrors the production StopReceivingAsync: cancels the registered consumer on the current receive channel,
+        // tears down the receive channel, and CLEARS the stored delegate so a late recovery re-registers nothing —
+        // WITHOUT touching the fake connection or the publish pool (AcquirePublishChannelAsync keeps working, so a
+        // sender still publishes after the receiver stops). Idempotent: a double-stop finds a null channel + null
+        // delegate and no-ops.
+        public async Task StopReceivingAsync(CancellationToken cancellationToken)
+        {
+            if (ReceiveChannel is not null)
+            {
+                if (!string.IsNullOrEmpty(_consumerTag))
+                {
+                    await ReceiveChannel.BasicCancelAsync(_consumerTag, noWait: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+                }
+
+                await ReceiveChannel.DisposeAsync().ConfigureAwait(false);
+                ReceiveChannel = null;
+            }
+
+            _registerConsumer = null;
+            _consumerTag = null;
+            ReceivingStopped = true;
+        }
+
+        // True once StopReceivingAsync has terminally stopped receiving, so a test can assert the stop happened
+        // without reaching into the cleared delegate.
+        public bool ReceivingStopped { get; private set; }
 
         public Task<TResult> RunOnReceiveChannelAsync<TResult>(Func<IChannel, long, Task<TResult>> operation,
                                                                CancellationToken cancellationToken)
@@ -150,6 +188,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                                             string contentType = null,
                                             string correlationId = null)
         {
+            // After a terminal StopReceivingAsync the receive channel is torn down and the consumer cancelled, so a
+            // delivery the broker might still try to push is safely DROPPED here (a real cancelled consumer receives
+            // no further deliveries) rather than being forced into a completed buffer writer.
+            if (ReceiveChannel is null)
+            {
+                return;
+            }
+
             if (ReceiveChannel.RegisteredConsumer is null)
             {
                 throw new InvalidOperationException("No consumer registered; call the receiver's InitializeAsync first.");

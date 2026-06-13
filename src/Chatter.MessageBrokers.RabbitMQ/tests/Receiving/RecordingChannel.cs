@@ -21,6 +21,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public IAsyncBasicConsumer RegisteredConsumer { get; private set; }
         public ushort? LastQosPrefetchCount { get; private set; }
 
+        // The consumer tags cancelled via BasicCancelAsync, in cancel order, so a teardown test can assert the
+        // source cancelled the registered consumer (rather than just disposing the channel) before completing.
+        public List<string> CancelledConsumerTags { get; } = new List<string>();
+
         public ValueTask BasicAckAsync(ulong deliveryTag, bool multiple, CancellationToken cancellationToken = default)
         {
             Acks.Add(new AckRecord(deliveryTag, multiple));
@@ -99,7 +103,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public event AsyncEventHandler<ShutdownEventArgs> ChannelShutdownAsync { add { } remove { } }
 
         public ValueTask<ulong> GetNextPublishSequenceNumberAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
-        public Task BasicCancelAsync(string consumerTag, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public Task BasicCancelAsync(string consumerTag, bool noWait = false, CancellationToken cancellationToken = default)
+        {
+            CancelledConsumerTags.Add(consumerTag);
+            return Task.CompletedTask;
+        }
         public Task<BasicGetResult> BasicGetAsync(string queue, bool autoAck, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public ValueTask BasicRejectAsync(ulong deliveryTag, bool requeue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task CloseAsync(ushort replyCode, string replyText, bool abort, CancellationToken cancellationToken = default) => throw new NotImplementedException();

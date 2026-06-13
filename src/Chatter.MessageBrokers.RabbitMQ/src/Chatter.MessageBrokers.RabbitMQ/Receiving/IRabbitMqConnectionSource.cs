@@ -53,11 +53,32 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         /// </remarks>
         /// <param name="registerConsumer">
         /// Registers the push consumer on the supplied live <see cref="IChannel"/>, stamping the supplied
-        /// epoch onto every delivery it buffers. Invoked under the receive gate on every (re)creation.
+        /// epoch onto every delivery it buffers, and RETURNS the broker-assigned consumer tag. Invoked under
+        /// the receive gate on every (re)creation. The source stores the returned tag so it owns consumer
+        /// cancellation: <see cref="StopReceivingAsync"/> cancels the latest registered tag on the live channel.
         /// </param>
         /// <param name="cancellationToken">A token to cancel acquisition of the gate / initial registration.</param>
-        Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task> registerConsumer,
+        Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task<string>> registerConsumer,
                                  CancellationToken cancellationToken);
+
+        /// <summary>
+        /// TERMINALLY stops receiving on the SHARED singleton source without tearing down the connection or the
+        /// publish pool the sender keeps using. Under the receive gate (mutually exclusive with channel
+        /// (re)creation and recovery recreate by construction) it cancels the latest registered AMQP consumer
+        /// (<c>BasicCancelAsync</c>) on the current receive channel, disposes the receive channel, and CLEARS the
+        /// stored registration delegate so a later automatic-recovery callback cannot re-register a consumer —
+        /// teardown of receiving is one-way, mirroring the core <c>BrokeredMessageReceiver.StopReceiver</c>.
+        /// </summary>
+        /// <remarks>
+        /// SURGICAL: this MUST NOT dispose the <see cref="IConnection"/> or the publish channel pool. The source
+        /// is a process singleton shared with the sender, which keeps publishing after the receiver stops; only
+        /// full <see cref="IAsyncDisposable.DisposeAsync"/> tears the connection/pool down. Idempotent and safe to
+        /// interleave with <see cref="IAsyncDisposable.DisposeAsync"/> (whichever runs first wins; the other no-ops).
+        /// Prefetched-but-unacked deliveries are left for broker redelivery — consistent with the epoch guard, which
+        /// already no-ops a settle after the channel is torn down.
+        /// </remarks>
+        /// <param name="cancellationToken">A token to cancel acquisition of the gate.</param>
+        Task StopReceivingAsync(CancellationToken cancellationToken);
 
         /// <summary>
         /// Runs <paramref name="operation"/> against the single serialized receive channel while

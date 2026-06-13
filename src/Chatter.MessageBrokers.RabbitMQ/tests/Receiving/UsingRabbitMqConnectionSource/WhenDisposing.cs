@@ -50,8 +50,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
         private static SemaphoreSlim PublishGate(RabbitMqConnectionSource source)
             => (SemaphoreSlim)PublishPoolGateField.GetValue(source);
 
-        private static Func<IChannel, long, CancellationToken, Task> RegisteredConsumer(RabbitMqConnectionSource source)
-            => (Func<IChannel, long, CancellationToken, Task>)RegisterConsumerField.GetValue(source);
+        private static Func<IChannel, long, CancellationToken, Task<string>> RegisteredConsumer(RabbitMqConnectionSource source)
+            => (Func<IChannel, long, CancellationToken, Task<string>>)RegisterConsumerField.GetValue(source);
 
         private static int Lifecycle(RabbitMqConnectionSource source)
             => (int)LifecycleField.GetValue(source);
@@ -227,7 +227,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
 
             // StartReceivingAsync after teardown throws and does NOT overwrite _registerConsumer on the disposed singleton.
             Func<Task> startAfterDispose = async () =>
-                await source.StartReceivingAsync((_, _, _) => Task.CompletedTask, CancellationToken.None);
+                await source.StartReceivingAsync((_, _, _) => Task.FromResult<string>(null), CancellationToken.None);
             await startAfterDispose.Should().ThrowAsync<ObjectDisposedException>();
 
             RegisteredConsumer(source).Should().BeNull("a disposed-rejected StartReceivingAsync must not store the delegate");
@@ -248,7 +248,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
             // Queue DisposeAsync, then queue a receive op behind it — both block on the held gate, FIFO.
             var disposeTask = source.DisposeAsync().AsTask();
             Func<Task> queuedRun = async () =>
-                await source.StartReceivingAsync((_, _, _) => Task.CompletedTask, CancellationToken.None);
+                await source.StartReceivingAsync((_, _, _) => Task.FromResult<string>(null), CancellationToken.None);
             var runTask = queuedRun.Should().ThrowAsync<ObjectDisposedException>();
 
             // Release: DisposeAsync acquires first (sets _disposed under the gate), releases; the queued op then
@@ -389,7 +389,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
             });
 
             // StartReceivingAsync holds the receive gate and suspends inside connection creation.
-            var startTask = source.StartReceivingAsync((_, _, _) => Task.CompletedTask, CancellationToken.None);
+            var startTask = source.StartReceivingAsync((_, _, _) => Task.FromResult<string>(null), CancellationToken.None);
             await creationReached.Task;
 
             // DisposeAsync admits (CAS Live->Disposing) then queues on the receive gate the suspended op holds.

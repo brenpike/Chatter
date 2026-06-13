@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 {
@@ -95,8 +96,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         // The receiver-supplied consume-registration delegate. Stored by StartReceivingAsync and re-run by the
         // source on every receive-channel (re)creation (cold start, lazy recreate, recovery) under the receive
-        // gate, AFTER the epoch bump, so the re-registered consumer always closes over the current epoch.
-        private Func<IChannel, long, CancellationToken, Task> _registerConsumer;
+        // gate, AFTER the epoch bump, so the re-registered consumer always closes over the current epoch. The
+        // delegate RETURNS the broker-assigned consumer tag, which the source stores in _consumerTag so it owns
+        // consumer cancellation (StopReceivingAsync). CLEARED by StopReceivingAsync so a late recovery callback
+        // cannot re-register a consumer after a terminal stop.
+        private Func<IChannel, long, CancellationToken, Task<string>> _registerConsumer;
+
+        // INVARIANT: the latest consumer tag the registration delegate returned, only ever read/written under the
+        // receive gate (the delegate runs gated; StopReceivingAsync cancels it gated). The source — not the
+        // receiver — owns cancellation: it stores what its own re-registration produced (the tag changes across
+        // recovery) so StopReceivingAsync can cancel the consumer that is actually live on the current channel.
+        private string _consumerTag;
 
         public RabbitMqConnectionSource(RabbitMqOptions options)
             : this(options, _defaultPublishChannelPoolCapacity)
@@ -182,7 +192,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             }, cancellationToken);
         }
 
-        public Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task> registerConsumer,
+        public Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task<string>> registerConsumer,
                                         CancellationToken cancellationToken)
         {
             if (registerConsumer is null)
@@ -200,6 +210,64 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 _registerConsumer = registerConsumer;
                 await EnsureReceiveChannelAsync(ct).ConfigureAwait(false);
             }, cancellationToken);
+        }
+
+        // INVARIANT (SURGICAL terminal receive teardown, mirrors core BrokeredMessageReceiver.StopReceiver): cancels
+        // the latest registered consumer and tears down the RECEIVE CHANNEL ONLY, leaving the connection and the
+        // publish pool intact for the sender (the source is a process singleton shared with the sender). Routes its
+        // gate acquisition through RunReceiveGatedAsync like every other gated entrypoint, so cancel-and-teardown is
+        // mutually exclusive with channel (re)creation AND the recovery recreate BY CONSTRUCTION — a concurrent settle
+        // or recovery either ran to completion before stop acquired the gate, or observes the stopped condition
+        // (disposed channel + cleared _registerConsumer) after. Under the gate, as one atomic event:
+        //   1. BasicCancelAsync the stored consumer tag on the current receive channel (so no new delivery races the
+        //      teardown), guarded against AlreadyClosedException/ObjectDisposedException (mirrors the recovery swallow).
+        //   2. Dispose the receive channel and null it.
+        //   3. CLEAR _registerConsumer and _consumerTag — so a late OnRecoverySucceededAsync that wins the gate after
+        //      this stop recreates a channel but re-registers NOTHING (RecreateReceiveChannelAsync's null guard), the
+        //      TERMINAL one-way semantics the core receiver also enforces (no restart-after-stop).
+        // DELIBERATELY DOES NOT TOUCH: _connection, the publish pool / _publishChannels, or the gates (GATE LIFETIME —
+        // SemaphoreSlims are left for GC per the DisposeAsync invariant). It does NOT advance _lifecycle — the source
+        // stays Live so the sender's publish path keeps working; only DisposeAsync advances the lifecycle.
+        // IDEMPOTENT: a double-stop finds a null channel + null _registerConsumer and no-ops; a stop AFTER DisposeAsync
+        // observes not-Live (RunReceiveGatedAsync throws ObjectDisposedException) which is swallowed here as a clean
+        // no-op (a disposed source has nothing left to stop). DEADLOCK-FREE: the gated body acquires no nested gate and
+        // never waits on the publish pool, so it cannot deadlock against an in-flight gated op or self-deadlock.
+        public async Task StopReceivingAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await RunReceiveGatedAsync(async ct =>
+                {
+                    if (_receiveChannel is not null)
+                    {
+                        if (!string.IsNullOrEmpty(_consumerTag))
+                        {
+                            try
+                            {
+                                await _receiveChannel.BasicCancelAsync(_consumerTag, noWait: false, cancellationToken: ct).ConfigureAwait(false);
+                            }
+                            catch (Exception cancelError) when (cancelError is AlreadyClosedException or ObjectDisposedException)
+                            {
+                                // The channel/connection is already gone (e.g. a drop raced the stop): the consumer is
+                                // implicitly cancelled, so cancelling it explicitly is a no-op, not an error.
+                            }
+                        }
+
+                        await _receiveChannel.DisposeAsync().ConfigureAwait(false);
+                        _receiveChannel = null;
+                    }
+
+                    // TERMINAL: clear the registration so a late recovery recreate re-registers nothing, and forget the
+                    // tag so a double-stop is a no-op. The connection and publish pool are deliberately untouched.
+                    _registerConsumer = null;
+                    _consumerTag = null;
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                // The source was disposed before/while stopping; full teardown already tore the receive channel down.
+                // A terminal stop on an already-disposed source is a clean no-op.
+            }
         }
 
         // INVARIANT (publish-permit lifecycle-observed-on-both-sides + exactly-one-release): checks the lifecycle
@@ -301,11 +369,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             _receiveChannel = channel;
             Interlocked.Increment(ref _receiveChannelEpoch);
 
-            // Re-register the consumer on the fresh channel with the freshly-bumped epoch. Null only before
-            // StartReceivingAsync stores the delegate (cold start has nothing to re-register yet).
+            // Re-register the consumer on the fresh channel with the freshly-bumped epoch and STORE the returned
+            // consumer tag so the source owns cancellation (StopReceivingAsync). Null only before
+            // StartReceivingAsync stores the delegate (cold start has nothing to re-register yet) OR after
+            // StopReceivingAsync cleared it terminally (a late recovery then re-creates nothing to consume on).
             if (_registerConsumer is not null)
             {
-                await _registerConsumer(_receiveChannel, Interlocked.Read(ref _receiveChannelEpoch), cancellationToken).ConfigureAwait(false);
+                _consumerTag = await _registerConsumer(_receiveChannel, Interlocked.Read(ref _receiveChannelEpoch), cancellationToken).ConfigureAwait(false);
             }
         }
 
