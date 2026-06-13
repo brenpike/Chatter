@@ -120,6 +120,40 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
                 "every (re)created channel must carry a re-registered consumer");
         }
 
+        // (f) NO CONSUMERLESS COMMITTED CHANNEL: a recovery that fires BEFORE the first StartReceivingAsync (the
+        // publish-first scenario — the connection was materialized by a publish, then automatic recovery fires while
+        // no consume-registration delegate is stored) must NOT commit a receive channel. Committing an open-but-
+        // consumerless channel would let the eventual StartReceivingAsync take the IsOpen fast path in
+        // EnsureReceiveChannelAsync and return WITHOUT registering a consumer, leaving the receiver permanently idle.
+        // The recreate returns early leaving no committed channel, so the later registration runs a full
+        // recreate-and-register and the receiver ends up with a live consumer.
+        [Fact]
+        public async Task MustNotCommitConsumerlessChannelWhenRecoveryFiresBeforeReceivingStarts()
+        {
+            var source = new InMemoryRabbitMqConnectionSource();
+            var epochBefore = source.CurrentReceiveChannelEpoch;
+
+            // Recovery fires before any StartReceivingAsync: no delegate is stored yet, so nothing to register.
+            await source.SimulateRecoveryAsync();
+
+            source.ReceiveChannel.Should().BeNull(
+                "a recovery with no registration delegate stored must NOT commit a consumerless receive channel");
+            source.CurrentReceiveChannelEpoch.Should().Be(epochBefore,
+                "no channel was committed, so the observable epoch must be unchanged");
+
+            // Now the receiver starts: StartReceivingAsync stores the delegate and forces a recreate-and-register,
+            // so the source ends up with a live channel carrying a registered consumer (no permanently-idle receiver).
+            string registeredEpochCaptured = null;
+            await source.StartReceivingAsync((channel, epoch, ct) =>
+            {
+                registeredEpochCaptured = epoch.ToString();
+                return Task.FromResult("consumer-tag");
+            }, CancellationToken.None);
+
+            source.ReceiveChannel.Should().NotBeNull("StartReceivingAsync must create and commit a receive channel");
+            registeredEpochCaptured.Should().NotBeNull("the registration delegate must run on start");
+        }
+
         // (e) Recovery firing after disposal is a clean no-op on the PRODUCTION source: a recovery callback can
         // still be queued by the client as the source tears down, and invoking the handler after disposal (when the
         // receive gate is already disposed) must not throw ObjectDisposedException out of the library's event

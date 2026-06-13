@@ -193,6 +193,55 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-123");
         }
 
+        // REGRESSION: the adapter-owned delivery-count header (classic x-chatter-delivery-count) must NOT survive
+        // onto the emitted context. The core seeds a receive-then-send follow-up's options from this context and the
+        // sender republishes the full context as headers; a surviving counter would be re-stamped onto the outbound
+        // message and read back by ResolveReceiveAttempts on the next classic queue's first delivery as a stale
+        // redelivery, deadlettering a fresh message with too few attempts. ReceiveAttempts is still computed from the
+        // inbound value (3 prior deliveries -> attempt 4) before the strip; other inbound headers are preserved.
+        [Fact]
+        public async Task MustStripClassicDeliveryCountHeaderWhilePreservingOtherHeaders()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Classic);
+            var headers = new Dictionary<string, object>
+            {
+                [RabbitMqMessageContext.DeliveryCountHeader] = 3L,
+                ["x-correlation-id"] = "corr-123"
+            };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(RabbitMqMessageContext.DeliveryCountHeader,
+                "the adapter delivery counter must not ride the inbound context onto an outbound republish");
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(4,
+                "ReceiveAttempts is still resolved from the inbound counter (3 prior + 1) before the header is stripped");
+            context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-123");
+        }
+
+        // REGRESSION: the native quorum delivery-count header (x-delivery-count) must likewise NOT survive onto the
+        // emitted context, so it cannot be re-stamped onto an outbound send and misread as a redelivery on the next
+        // queue. ReceiveAttempts is still resolved from it (5 prior -> attempt 6) before the strip.
+        [Fact]
+        public async Task MustStripNativeDeliveryCountHeaderWhilePreservingOtherHeaders()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object>
+            {
+                [ReceiverHarness.NativeDeliveryCountHeader] = 5L,
+                ["x-correlation-id"] = "corr-456"
+            };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext.Should().NotContainKey(ReceiverHarness.NativeDeliveryCountHeader,
+                "the native delivery counter must not ride the inbound context onto an outbound republish");
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(6,
+                "ReceiveAttempts is still resolved from the native counter (5 prior + 1) before the header is stripped");
+            context.BrokeredMessage.MessageContext["x-correlation-id"].Should().Be("corr-456");
+        }
+
         // P1 REPRODUCTION: a real broker delivers the string CorrelationId application header as an AMQP longstr
         // (byte[]). The core's InboundBrokeredMessage casts MessageContext.CorrelationId straight to (string) at
         // construction (which MessageBrokerContext does inside ReceiveMessageAsync), so before the marshaller a

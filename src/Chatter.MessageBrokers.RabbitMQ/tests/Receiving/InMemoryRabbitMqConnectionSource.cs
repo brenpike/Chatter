@@ -77,23 +77,28 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         // keeps the old epoch (no-ops at settle). Disposes the prior channel, mirroring the source's recreate.
         public async Task SimulateRecoveryAsync()
         {
-            // Mirror the production RecreateReceiveChannelAsync null guard: after a terminal stop the receive channel
-            // is already torn down (null), so a late recovery recreates a fresh channel but disposes nothing first.
+            // Mirror the production RecreateReceiveChannelAsync: dispose any existing receive channel first.
             if (ReceiveChannel is not null)
             {
                 await ReceiveChannel.DisposeAsync().ConfigureAwait(false);
+                ReceiveChannel = null;
+            }
+
+            // NO CONSUMERLESS COMMITTED CHANNEL (mirrors production): when no delegate is stored — a recovery that
+            // raced ahead of the first StartReceivingAsync, or a late recovery after a terminal StopReceivingAsync
+            // cleared the delegate — do NOT create or commit a fresh receive channel. The production
+            // RecreateReceiveChannelAsync returns early in this case so a later StartReceivingAsync forces a full
+            // recreate-and-register rather than taking an IsOpen fast path onto a consumerless channel.
+            if (_registerConsumer is null)
+            {
+                return;
             }
 
             ReceiveChannel = new RecordingChannel();
             ReceiveChannels.Add(ReceiveChannel);
             Interlocked.Increment(ref _currentReceiveChannelEpoch);
 
-            // Mirror the production RecreateReceiveChannelAsync: re-register only when a delegate is still stored. A
-            // terminal StopReceivingAsync clears it, so a late recovery after stop re-registers NOTHING.
-            if (_registerConsumer is not null)
-            {
-                _consumerTag = await _registerConsumer(ReceiveChannel, Interlocked.Read(ref _currentReceiveChannelEpoch), CancellationToken.None).ConfigureAwait(false);
-            }
+            _consumerTag = await _registerConsumer(ReceiveChannel, Interlocked.Read(ref _currentReceiveChannelEpoch), CancellationToken.None).ConfigureAwait(false);
         }
 
         public async Task StartReceivingAsync(Func<IChannel, long, CancellationToken, Task<string>> registerConsumer,
@@ -105,10 +110,21 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             }
 
             // Store the delegate first, then run it once against the current channel with the current epoch — the
-            // production source's StartReceivingAsync -> EnsureReceiveChannelAsync ordering, where the cold channel
-            // already exists (epoch 0). ReceiveChannels tracks this initial channel as the first session.
+            // production source's StartReceivingAsync -> EnsureReceiveChannelAsync ordering. ReceiveChannels tracks
+            // this initial channel as the first session.
             _registerConsumer = registerConsumer;
-            if (ReceiveChannels.Count == 0)
+
+            // Mirror production EnsureReceiveChannelAsync -> RecreateReceiveChannelAsync: when no receive channel is
+            // committed (e.g. a recovery fired before this first StartReceivingAsync and — per the no-consumerless-
+            // committed-channel rule — committed nothing), create and commit a fresh channel here, bumping the epoch
+            // exactly as a real recreate would. When the cold channel already exists (epoch 0) it is reused in place.
+            if (ReceiveChannel is null)
+            {
+                ReceiveChannel = new RecordingChannel();
+                Interlocked.Increment(ref _currentReceiveChannelEpoch);
+            }
+
+            if (ReceiveChannels.Count == 0 || ReceiveChannels[ReceiveChannels.Count - 1] != ReceiveChannel)
             {
                 ReceiveChannels.Add(ReceiveChannel);
             }

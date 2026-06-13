@@ -202,6 +202,18 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             headers.Remove(RabbitMqMessageContext.TargetExchange);
             headers.Remove(RabbitMqMessageContext.RoutingKey);
 
+            // INVARIANT: the delivery-count headers are adapter-owned receive-attempt state, NEVER outbound payload.
+            // The core seeds a receive-then-send follow-up's options from THIS inbound context, and RabbitMqSender
+            // republishes the full context as headers, so a delivery-count header surviving here would ride onto the
+            // next send. After a classic-queue retry x-chatter-delivery-count is present on the delivery (likewise the
+            // native x-delivery-count on a quorum delivery); left in place it would be re-stamped onto an outbound
+            // message and read back by ResolveReceiveAttempts on the next classic queue's first delivery as a stale
+            // redelivery — inflating ReceiveAttempts and deadlettering a fresh message with too few attempts. Strip
+            // BOTH counter keys here (alongside the routing-override strip above) so receive-attempt state never leaks
+            // out of the receive boundary; ResolveReceiveAttempts above already read the value off received.Headers.
+            headers.Remove(RabbitMqMessageContext.DeliveryCountHeader);
+            headers.Remove(_nativeDeliveryCountHeader);
+
             headers[RabbitMqMessageContext.DeliveryTag] = received.DeliveryTag;
             headers[RabbitMqMessageContext.ChannelEpoch] = received.ChannelEpoch;
             headers[MessageContext.InfrastructureType] = RabbitMqMessageContext.InfrastructureType;

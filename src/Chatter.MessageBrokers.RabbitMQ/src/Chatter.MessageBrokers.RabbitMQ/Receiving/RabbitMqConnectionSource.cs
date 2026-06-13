@@ -345,10 +345,18 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             return _receiveChannel;
         }
 
-        // INVARIANT: only ever called while the receive gate is held. Disposes any existing receive channel,
-        // creates a fresh one, bumps the epoch, then re-runs the stored consume-registration delegate (when set)
-        // against the new channel with the bumped epoch. The bump and the re-registration are this single gated
-        // event, so a delivery the new consumer stamps always carries the epoch of the channel that delivered it.
+        // INVARIANT: only ever called while the receive gate is held. Disposes any existing receive channel, then —
+        // ONLY when a consume-registration delegate is stored — creates a fresh channel, bumps the epoch, and re-runs
+        // the delegate against the new channel with the bumped epoch. The bump and the re-registration are this single
+        // gated event, so a delivery the new consumer stamps always carries the epoch of the channel that delivered it.
+        //
+        // NO CONSUMERLESS COMMITTED CHANNEL (closed-by-construction): when _registerConsumer is null (a recovery that
+        // raced ahead of the first StartReceivingAsync on a publish-first-materialized connection, or a late recovery
+        // after a terminal StopReceivingAsync cleared the delegate) this returns EARLY without creating or committing
+        // a channel. Committing an open-but-consumerless _receiveChannel would let a later StartReceivingAsync ->
+        // EnsureReceiveChannelAsync take the IsOpen fast path and return without ever registering a consumer, leaving
+        // the receiver permanently idle. Leaving _receiveChannel null forces the eventual StartReceivingAsync (which
+        // stores the delegate first) to run a full recreate-and-register.
         //
         // PUBLISH-ONLY-AFTER-REGISTRATION (closed-by-construction): the fresh channel and epoch bump are NOT published
         // onto the source until QoS AND consumer registration have BOTH succeeded. The channel is created and
@@ -369,6 +377,23 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // EnsureConnectionAsync runs UNDER the receive gate (this method is only ever called gated), so connection
             // create is serialized against connection dispose by the same gate — closed by construction.
             var connection = await EnsureConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            // CLOSED-BY-CONSTRUCTION (no consumerless committed receive channel): a recreate with NO registration
+            // delegate stored must NOT commit a receive channel. This happens when the connection was materialized by
+            // the publish path BEFORE StartReceivingAsync (a publish-first), and an automatic recovery then fires
+            // OnRecoverySucceededAsync -> RecreateReceiveChannelAsync while _registerConsumer is still null. Committing
+            // an OPEN-but-consumerless _receiveChannel here would let the later StartReceivingAsync ->
+            // EnsureReceiveChannelAsync see the IsOpen fast path and return WITHOUT ever running the registration
+            // (BasicConsumeAsync), leaving the receiver permanently idle until another recovery/recreate. Leave
+            // _receiveChannel null and the committed epoch unchanged when there is nothing to register, so the eventual
+            // StartReceivingAsync (which stores the delegate, then calls EnsureReceiveChannelAsync) forces a full
+            // recreate-and-register. A cold start is unaffected: StartReceivingAsync stores the delegate BEFORE calling
+            // EnsureReceiveChannelAsync, so _registerConsumer is non-null on that path.
+            if (_registerConsumer is null)
+            {
+                return;
+            }
+
             var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
             // Keep the channel, the bumped epoch, and the consumer tag LOCAL until registration succeeds. The epoch
@@ -383,13 +408,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                                             global: false,
                                             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                // Re-register the consumer on the fresh channel with the candidate epoch. Null only before
-                // StartReceivingAsync stores the delegate (cold start has nothing to re-register yet) OR after
-                // StopReceivingAsync cleared it terminally (a late recovery then re-creates nothing to consume on).
-                if (_registerConsumer is not null)
-                {
-                    consumerTag = await _registerConsumer(channel, candidateEpoch, cancellationToken).ConfigureAwait(false);
-                }
+                // Re-register the consumer on the fresh channel with the candidate epoch. _registerConsumer is
+                // guaranteed non-null here: the null case (cold start before StartReceivingAsync stored the delegate,
+                // OR a recovery after StopReceivingAsync cleared it terminally) already returned early above WITHOUT
+                // creating or committing a channel, so a consumerless channel is never committed.
+                consumerTag = await _registerConsumer(channel, candidateEpoch, cancellationToken).ConfigureAwait(false);
             }
             catch
             {

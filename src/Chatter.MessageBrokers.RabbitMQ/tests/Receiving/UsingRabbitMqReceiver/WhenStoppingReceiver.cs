@@ -93,7 +93,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         }
 
         // TERMINAL: a late automatic recovery AFTER a stop must NOT re-register a consumer — the source cleared the
-        // stored registration delegate, so the recovered channel carries no consumer (no restart-after-stop).
+        // stored registration delegate. Per the no-consumerless-committed-channel rule, a recovery with no delegate
+        // stored commits NO channel at all (rather than committing an open-but-consumerless one), so there is nothing
+        // to consume on and no restart-after-stop.
         [Fact]
         public async Task MustNotReRegisterConsumerOnRecoveryAfterStop()
         {
@@ -102,8 +104,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             await harness.Receiver.StopReceiver();
             await harness.ConnectionSource.SimulateRecoveryAsync();
 
-            harness.ConnectionSource.ReceiveChannel.RegisteredConsumer.Should().BeNull(
-                "a recovery after a terminal stop must recreate the channel but re-register NO consumer");
+            harness.ConnectionSource.ReceiveChannel.Should().BeNull(
+                "a recovery after a terminal stop (no registration delegate stored) must commit NO receive channel, "
+                + "so no consumerless channel is left behind");
         }
     }
 }
