@@ -130,6 +130,8 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 | `PrefetchCount` | `0` | Number of messages eagerly fetched from the broker. |
 | `Policy` (`RetryPolicy`) | `RetryPolicy.Default` | ASB client-level retry policy derived from the `RetryPolicy` config section. |
 | `TokenProvider` | `NullTokenProvider` | AAD/token credential (see [Authentication](#authentication)). |
+| `SessionIdleTimeout` | `00:01:00` (60 s) | How long a held session may yield no message before it is released and the receiver rolls. Applies only to session-enabled receivers. |
+| `MaxSessionLockRenewalDuration` | `00:05:00` (5 min) | Ceiling on how long a held session's lock is renewed for long-running processing. Applies only to session-enabled receivers. |
 
 The `RetryPolicy` configuration section maps to an ASB `RetryExponential` policy via `MinimumBackoffInSeconds`, `MaximumBackoffInSeconds`, `DeltaBackoffInSeconds`, and `MaximumRetryCount`. When all values are `0`, `RetryPolicy.NoRetry` is used; when the section is absent, `RetryPolicy.Default` applies.
 
@@ -146,8 +148,12 @@ The `AddAzureServiceBus(asb => ...)` delegate exposes a `ServiceBusOptionsBuilde
 | `WithExponentialDelay(maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds, deltaBackoffInSeconds)` | Configures a `RetryExponential` client retry policy. |
 | `UseConfig(configSectionName)` | Binds `ServiceBusOptions` from the given configuration section (default `Chatter:Infrastructure:AzureServiceBus`). |
 | `AddTokenProvider(ITokenProvider)` / `AddTokenProvider(Func<ITokenProvider>)` | Supplies an AAD token provider (see [Authentication](#authentication)). |
+| `WithSessionIdleTimeout(TimeSpan)` | Overrides how long a held session may yield no message before rolling to the next. Default: 60 s. See [Sessions](#sessions). |
+| `WithMaxSessionLockRenewalDuration(TimeSpan)` | Overrides the ceiling on held-session lock renewal. Default: 5 min. See [Sessions](#sessions). |
 | `AddQueueReceiver<TMessage>(...)` | Registers a queue receiver for an `ICommand`. |
+| `AddSessionQueueReceiver<TMessage>(...)` | Registers a session-enabled queue receiver for an `ICommand`. See [Sessions](#sessions). |
 | `AddTopicSubscription<TMessage>(...)` | Registers a topic subscription receiver for an `IEvent`. |
+| `AddSessionTopicSubscription<TMessage>(...)` | Registers a session-enabled topic subscription receiver for an `IEvent`. See [Sessions](#sessions). |
 
 ### Retry and Circuit Breaker (receiving)
 
@@ -181,8 +187,131 @@ When the variable is unset (or blank) the tests are skipped at discovery time.
 
 **Run in CI:** the `real-namespace-integration` job in `.github/workflows/ci.yml` runs this lane. Configure a GitHub Actions **repository secret** named `CHATTER_ASB_REAL_NAMESPACE_CONNECTION_STRING` (Manage-claim connection string) for it to execute. Without the secret (forks, or repos that have not configured it) the job is a clean no-op and never fails CI.
 
+## Sessions
+
+Azure Service Bus message sessions deliver messages sharing the same `SessionId` to a single receiver in strict FIFO order. Chatter surfaces this through the existing Group Id term: inbound `SessionId` appears as `MessageContext.GroupId`; outbound session addressing reuses `SendOptions.WithGroupId`. No new session-specific API is introduced on the core.
+
+Session-enabled entities (queues or subscriptions with `RequiresSession = true`) must be provisioned externally. The adapter does not auto-create or auto-enable them, consistent with the module's no-auto-provision stance.
+
+### Registering a session-enabled receiver
+
+Use `AddSessionQueueReceiver` for Commands and `AddSessionTopicSubscription` for Events in place of their non-session counterparts:
+
+```csharp
+services
+    .AddChatterCqrs(configuration)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb =>
+    {
+        asb.WithConnectionString(configuration.GetConnectionString("ServiceBus"));
+
+        // session-enabled queue (Commands)
+        asb.AddSessionQueueReceiver<ProcessOrder>("orders-session-queue");
+
+        // session-enabled topic subscription (Events)
+        asb.AddSessionTopicSubscription<OrderPlaced>("order-events-topic", "order-placed-session-sub");
+    });
+```
+
+Each registered receiver processes one session at a time, holding it for FIFO delivery and rolling to the next when it is drained or goes idle. To increase throughput, run additional receiver instances; there is no max-concurrent-sessions knob.
+
+### Reading the session id in a handler
+
+The inbound `SessionId` is surfaced as `MessageContext.GroupId`. Handlers read it through the broker-agnostic `GroupId` property — no Azure-specific import is required:
+
+```csharp
+public class ProcessOrderHandler : IMessageHandler<ProcessOrder>
+{
+    public Task Handle(ProcessOrder message, IMessageHandlerContext context)
+    {
+        var sessionId = context.BrokeredMessage?.GetBrokeredMessageDetail()?.GroupId;
+        // use sessionId to correlate work within this session
+        return Task.CompletedTask;
+    }
+}
+```
+
+### Sending a message to a session
+
+Set `WithGroupId` on `SendOptions` to route the outbound message to the target session. Azure Service Bus requires `PartitionKey == SessionId` for session messages on partitioned entities; set `WithPartitionKey` to the same value, otherwise the broker will reject the message with `ArgumentOutOfRangeException`:
+
+```csharp
+public class DispatchOrderHandler : IMessageHandler<DispatchOrder>
+{
+    public async Task Handle(DispatchOrder message, IMessageHandlerContext context)
+    {
+        var options = new SendOptions()
+            .WithGroupId(message.OrderId)        // sets ServiceBusMessage.SessionId
+            .WithPartitionKey(message.OrderId);  // must equal SessionId for session messages
+
+        await context.AzureServiceBus()
+                     .Send(new ProcessOrder { OrderId = message.OrderId }, "orders-session-queue", options);
+    }
+}
+```
+
+`WithGroupId` and `WithPartitionKey` are both on the core `SendOptions` type; `WithPartitionKey` writes to `ASBMessageContext.PartitionKey`, which `OutboundBrokeredMessageExtensions` maps to `ServiceBusMessage.PartitionKey` when the message is sent.
+
+### Durable per-session state
+
+During handler execution a handler can read, write, and clear durable session state stored on the Azure Service Bus entity for the currently held session:
+
+```csharp
+using Chatter.CQRS.Context;
+
+public class ProcessOrderHandler : IMessageHandler<ProcessOrder>
+{
+    public async Task Handle(ProcessOrder message, IMessageHandlerContext context)
+    {
+        // read existing state (null when no state has been set)
+        var stateBytes = await context.GetSessionStateAsync();
+
+        // compute and persist new state
+        var newState = BinaryData.FromString($"last-processed:{message.OrderId}");
+        await context.SetSessionStateAsync(newState);
+
+        // clear state when the session is complete
+        // await context.ClearSessionStateAsync();
+    }
+}
+```
+
+`GetSessionStateAsync`, `SetSessionStateAsync`, and `ClearSessionStateAsync` are extension methods on `IMessageHandlerContext` provided by this package. Invoking them while handling a message that was not received through a session-enabled receiver throws `InvalidOperationException`.
+
+### Tuning session behavior
+
+Two `ServiceBusOptions` knobs control how long a session is held. Both support fluent-or-config, with the fluent call winning in either direction:
+
+| Knob | Fluent method | Config property | Default | Description |
+| --- | --- | --- | --- | --- |
+| Session idle timeout | `WithSessionIdleTimeout(TimeSpan)` | `SessionIdleTimeout` | 60 s | How long a held session may yield no message before it is released and the receiver rolls to the next session. |
+| Max session lock renewal duration | `WithMaxSessionLockRenewalDuration(TimeSpan)` | `MaxSessionLockRenewalDuration` | 5 min | Ceiling on how long a held session's lock is renewed for long-running processing. Once reached, renewal stops and the session is allowed to expire or roll naturally. |
+
+```csharp
+asb.AddSessionQueueReceiver<ProcessOrder>("orders-session-queue");
+asb.WithSessionIdleTimeout(TimeSpan.FromSeconds(30));
+asb.WithMaxSessionLockRenewalDuration(TimeSpan.FromMinutes(10));
+```
+
+Or via configuration:
+
+```json
+{
+  "Chatter": {
+    "Infrastructure": {
+      "AzureServiceBus": {
+        "SessionIdleTimeout": "00:00:30",
+        "MaxSessionLockRenewalDuration": "00:10:00"
+      }
+    }
+  }
+}
+```
+
+These knobs apply only to session-enabled receivers. Non-session receivers are unaffected.
+
 ## Domain Language
 
-See the [domain glossary](../CONTEXT.md) for definitions of Service Bus Receiver, Service Bus Sender, Service Bus Options, Service Bus Retry, and Service Bus Circuit Breaker.
+See the [domain glossary](../CONTEXT.md) for definitions of Service Bus Receiver, Session Queue Receiver, Session Topic Subscription, Service Bus Sender, Service Bus Options, Service Bus Retry, Service Bus Circuit Breaker, Session, Session State, and Group Id ↔ SessionId realization.
 
 [← All Chatter modules](../../../README.md)
