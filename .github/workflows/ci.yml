@@ -97,8 +97,9 @@ jobs:
             artifacts/coverage/*.cobertura.*.xml
 
   integration:
-    name: integration (azureservicebus emulator)
+    name: integration (docker)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - name: Setup .NET
@@ -110,15 +111,14 @@ jobs:
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
+      # Docker is available on GitHub-hosted ubuntu runners; each Testcontainers fixture
+      # self-provisions its own container (ASB emulator + MSSQL sidecar, SQL Server, RabbitMQ).
       - name: Restore
-        run: dotnet restore 'src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj' --locked-mode
+        run: dotnet restore Chatter.sln --locked-mode
       - name: Build
-        run: dotnet build 'src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj' -c Release --no-restore
-      # Docker is available on GitHub-hosted ubuntu runners, so the emulator starts and the
-      # Category=Integration tests run. The fixture provisions queues from Config.json and brings up the
-      # MSSQL sidecar via the Testcontainers ServiceBus module.
-      - name: Integration test (Service Bus emulator)
-        run: dotnet test 'src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj' -c Release --no-build --filter 'Category=Integration'
+        run: dotnet build Chatter.sln -c Release --no-restore
+      - name: Integration test (all adapters)
+        run: dotnet test Chatter.sln -c Release --no-build --filter 'Category=Integration'
 
   real-namespace-integration:
     name: integration (azureservicebus real namespace)
