@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <PackageId>Chatter.MessageBrokers.Reliability.Cosmos</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Brennan Pike</Authors>
+    <Owners>Brennan Pike</Owners>
+    <Description>An implementation of the Chatter.MessageBrokers.Reliability adapter library which leverages Azure Cosmos DB for document-tier atomic writes (TransactionalBatch), inbox, outbox, and change-feed relay</Description>
+    <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>Messaging,Message Broker,.NET Core, Cosmos DB</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <IsPackable>true</IsPackable>
+    <!-- The Cosmos SDK v3 build check demands an explicit Newtonsoft.Json reference; the SDK bundles and uses
+         Newtonsoft internally, so this only disables the build-time check. Chatter deliberately carries no direct
+         Newtonsoft dependency (the relational provider migrated off it), so we bypass the check rather than re-add it. -->
+    <AzureCosmosDisableNewtonsoftJsonCheck>true</AzureCosmosDisableNewtonsoftJsonCheck>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.61.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Chatter.MessageBrokers\src\Chatter.MessageBrokers\Chatter.MessageBrokers.csproj" />
+  </ItemGroup>
+
+</Project>

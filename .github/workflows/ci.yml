@@ -47,6 +47,7 @@ jobs:
             'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' \
             'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' \
             'src/Chatter.MessageBrokers.RabbitMQ/tests/Chatter.MessageBrokers.RabbitMQ.Tests.csproj' \
+            'src/Chatter.MessageBrokers.Reliability.Cosmos/tests/Chatter.MessageBrokers.Reliability.Cosmos.Tests.csproj' \
             'src/Chatter.SqlChangeFeed/tests/Chatter.SqlChangeFeed.Tests.csproj'; do
             dotnet restore "$p" --locked-mode
           done
@@ -60,6 +61,7 @@ jobs:
             'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' \
             'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' \
             'src/Chatter.MessageBrokers.RabbitMQ/tests/Chatter.MessageBrokers.RabbitMQ.Tests.csproj' \
+            'src/Chatter.MessageBrokers.Reliability.Cosmos/tests/Chatter.MessageBrokers.Reliability.Cosmos.Tests.csproj' \
             'src/Chatter.SqlChangeFeed/tests/Chatter.SqlChangeFeed.Tests.csproj'; do
             dotnet build "$p" -c Release --no-restore
           done
@@ -73,6 +75,7 @@ jobs:
             'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' \
             'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' \
             'src/Chatter.MessageBrokers.RabbitMQ/tests/Chatter.MessageBrokers.RabbitMQ.Tests.csproj' \
+            'src/Chatter.MessageBrokers.Reliability.Cosmos/tests/Chatter.MessageBrokers.Reliability.Cosmos.Tests.csproj' \
             'src/Chatter.SqlChangeFeed/tests/Chatter.SqlChangeFeed.Tests.csproj'; do
             dotnet test "$p" -c Release --no-build --filter 'Category!=Integration' /p:CollectCoverage=true
           done
