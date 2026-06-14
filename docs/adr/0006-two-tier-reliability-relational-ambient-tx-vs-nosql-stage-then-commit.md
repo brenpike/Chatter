@@ -71,3 +71,39 @@ Option 1 (framework-owns-batch-lifecycle) keeps the shared seams (`SendToOutbox`
 - The only cross-tier code change is the interface split and the EF provider implementing `IPollableOutboxStore`.
 - NoSQL handler-authoring genuinely differs from EF handler-authoring — this is an intrinsic, documented cost of two-tier, not a defect.
 - **Versioning**: breaking change to the `Chatter.MessageBrokers` core port; bump 0.13.2 → 0.14.0. Pre-1.0 SemVer uses the minor as the breaking lever. Effective blast radius is low: only code that **implements** the reliability port or constructs `OutboundBrokeredMessage` directly is broken (≈ the EF provider and the author); ordinary consumers that use a broker adapter together with a reliability package never bind `IUnitOfWork` or `OutboxMessage` and are unaffected. 0.x explicitly disclaims stability.
+
+---
+
+### Superseded-in-part sub-decision — "TransactionContext.Container unifies both tiers" thesis (surface-ownership boundary)
+
+**Context — grounded facts.** `TransactionContext` carries exactly three things: `TransactionReceiver` (string), `TransactionMode` (enum), and `ContextContainer` — an untyped `Dictionary<string,object>` keyed by type name. The statement "the container unifies both tiers" is true only in the trivial sense that an untyped dictionary can hold any object; it unifies **storage**, not **semantics**. A grep of the core for "partition" returns zero hits: there is no core concept that maps to a Cosmos partition key. `GroupId` / AMQP session is the nearest neighbor in the message model and must not be implied as derivable from it. `ReceiveViaInbox` / `InboxBehavior` — the `ReceiveViaInbox(() => next())` wrap seam — is already off the document-tier path: the Document-Tier Batch-Lifecycle Behavior stamps the inbox marker into the framework-owned batch before `next()`, not through `ReceiveViaInbox`. `ReceiveViaInbox` / `InboxBehavior` are therefore relational-only mechanics, even though the inbox contract and intent remain shared across tiers.
+
+**The approach decision — surface-ownership boundary.** The original thesis that the document tier should slot its primitives into the shared `TransactionContext.Container` is **narrowed** by the surface-ownership boundary principle:
+
+> The document tier owns its **own provider-shaped reliability surface** that carries the document-store primitives: resolved partition key, bound container, the `TransactionalBatch` handle, batch lifecycle, inbox-marker enlistment, and ETag concurrency token. It shares with the relational tier **only** the abstract message / enqueue / inbox **contracts** — not the EF-shaped `TransactionContext` / `InboxBehavior` mechanics.
+
+Because the document-store primitives now live on a surface designed to hold them, the class of finding "the EF-shaped seam carries no primitive X" is no longer representable — primitive X has a home by construction. This is the **eliminated class** (resolving root-cluster r3409943227 by construction, approach-level recurrence across r3409870435 / r3409914969 / r3409943227): the finding required the doc tier to reach into the relational-shaped `TransactionContext`; the surface-ownership boundary removes that reach.
+
+**What stays shared.** The abstract message / enqueue / inbox contracts are shared:
+
+- `SendToOutbox` is the **shared enqueue contract**, abstracted over an **Atomic-Write Handle** (the relational `IPersistanceTransaction` OR the document-tier handle both satisfy it) — not over the concrete `TransactionContext`. Exact C# shape / type name for this abstraction is deferred to implementation children.
+- The **inbox contract and intent** (once-only dedup, idempotency) are shared; the mechanics that implement it fork per tier (see below).
+
+**What forks onto the document-tier reliability surface.** The document tier owns a provider-shaped surface distinct from the relational tier. That surface carries:
+
+- The **doc-tier atomic-write handle / context** — carries the resolved partition key, bound container, and the `TransactionalBatch`; this is the doc-tier sibling of `IPersistanceTransaction`, NOT a value stuffed into `TransactionContext.Container`.
+- The **Document-Tier Batch-Lifecycle Behavior** — opens the batch, stamps the inbox-marker create-op, calls `next()`, and executes the batch once.
+- **Inbox-marker enlistment** — contributed by the Document-Tier Batch-Lifecycle Behavior to the framework-owned batch before `next()`.
+- **Partition resolution** — see Partition-Key Source below.
+- **Container binding** — the application injects the container; the framework binds it at batch open.
+- **ETag concurrency token** — document-tier aggregate-upsert optimistic concurrency; no equivalent on `TransactionContext`.
+
+**ReceiveViaInbox / InboxBehavior — relational-only mechanics.** `ReceiveViaInbox` and `InboxBehavior` are relational-only mechanics. The inbox-marker enlistment on the document tier happens via the document-tier surface (Document-Tier Batch-Lifecycle Behavior contributes the marker to the framework-owned batch), not through the `ReceiveViaInbox(() => next())` wrap seam. The inbox **contract** (once-only dedup intent) is shared; the **seam that implements it** forks.
+
+**Pollable Outbox Store — relational-only mechanics.** The polling-dispatch methods (`GetUnprocessedMessagesFromOutbox`, `GetUnprocessedBatch`, `UpdateProcessedDate`) live on the relational-only `IPollableOutboxStore`. The document tier does not implement this interface; it dispatches through the change-feed Outbox Relay.
+
+**Partition-Key Source.** There is no core primitive carrying the partition key (grep-proven: zero hits for "partition" in core). The partition is the aggregate's partition, which only the application knows (the same application that already owns aggregate serialization). The partition key is therefore sourced via an **app-registered partition-key resolver** — an application-supplied delegate `(InboundBrokeredMessage) -> partition-key` — invoked by the Document-Tier Batch-Lifecycle Behavior to open the batch on the correct partition. This is handler-context-derived via an app resolver, not core-derived (impossible) and not handler-imperative (iter2 handler-owns-batch was rejected). It is consistent with the existing Out-of-Scope "no new strongly-typed core partition-key property": the key lives on the document-tier surface via the resolver, never as a core property.
+
+**Desirable simplification — #216 blast radius narrows.** The surface-ownership boundary shrinks the core breaking change. The document tier no longer needs `TransactionContext` to carry a partition key, does not need `InboxBehavior` generalized to cover Cosmos, and does not need `ContextContainer` to become a typed multi-tier handle. The only genuinely shared core mutation is abstracting `SendToOutbox` over the Atomic-Write Handle. The breaking surface for epic #216 therefore narrows to: the outbox-interface split (`IPollableOutboxStore` peel) plus the Atomic-Write Handle abstraction on the enqueue contract. The document-tier reliability surface lives entirely in the new Cosmos module.
+
+**Prior narrative preserved.** The original Decision prose ("the unifying seam already exists: `TransactionContext.Container`…"), the C2 → framework-owns-batch-lifecycle amendment, and the Three-axes table above are preserved as an audit trail. The "shared seam" claim is narrowed — not removed — by this sub-decision: `SendToOutbox` remains the shared enqueue contract; what is superseded is the claim that `TransactionContext.Container` is the semantic unifier for both tiers' full primitive set.
