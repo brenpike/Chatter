@@ -157,23 +157,30 @@ namespace Microsoft.Extensions.DependencyInjection
             return builder;
         }
 
-        // Registers a reliability pair (primary + secondary facet) backed by the same scoped concrete,
+        // Registers a reliability pair (primary + secondary facet) backed by the same concrete,
         // gated on whether the primary facet is already registered.  This makes a split-store outcome
-        // unrepresentable: both facets always resolve to the same instance within a scope.
+        // unrepresentable: both facets always resolve to the same instance within a scope or singleton.
         //
         // Rules:
-        //   1. Primary absent  → register TInMemory once; forward BOTH to sp.GetRequiredService<TInMemory>().
+        //   1. Primary absent  → register TInMemory once (Scoped); forward BOTH to sp.GetRequiredService<TInMemory>().
         //      A lone custom secondary is overridden (misconfiguration; overriding to in-memory is loud-correct).
-        //   2. Primary present → forward secondary to (TSecondary)sp.GetRequiredService<TPrimary>() via cast.
+        //   2. Primary present, secondary absent → read the primary descriptor's lifetime and apply
+        //      lifetime-matched-or-fail-fast:
+        //        Scoped or Singleton → register the secondary forward at THAT SAME lifetime so both facets
+        //          always resolve to the same instance within their shared scope/singleton.
+        //        Transient → throw ReliabilityStoreLifetimeException at registration time (fail-fast):
+        //          DI has no primitive to make two Transient resolutions return the same object, so
+        //          forwarding a transient secondary would silently split the store.
         //      A TPrimary that does not implement TSecondary throws InvalidCastException at first resolution.
-        //      If the secondary is also already registered, leave the consumer's registration intact.
+        //   3. Primary present, secondary already registered → leave both consumer registrations intact
+        //      (both-custom-independent: consumer owns ensuring the two facets agree).
         private static void AddReliabilityPair<TPrimary, TSecondary, TInMemory>(IServiceCollection services)
             where TPrimary : class
             where TSecondary : class
             where TInMemory : class, TPrimary, TSecondary
         {
-            bool primaryRegistered = services.Any(d => d.ServiceType == typeof(TPrimary));
-            if (!primaryRegistered)
+            var primaryDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(TPrimary));
+            if (primaryDescriptor == null)
             {
                 // Default path: register in-memory concrete once; both facets forward to same instance.
                 // Override any lone custom secondary so the pair cannot split.
@@ -188,7 +195,23 @@ namespace Microsoft.Extensions.DependencyInjection
             bool secondaryRegistered = services.Any(d => d.ServiceType == typeof(TSecondary));
             if (!secondaryRegistered)
             {
-                services.AddScoped<TSecondary>(sp => (TSecondary)(object)sp.GetRequiredService<TPrimary>());
+                var primaryLifetime = primaryDescriptor.Lifetime;
+                if (primaryLifetime == ServiceLifetime.Transient)
+                {
+                    // INVARIANT: Transient lifetime cannot guarantee same-instance resolution across two
+                    // DI resolutions within a scope; forwarding would silently split the store.
+                    throw new ReliabilityStoreLifetimeException(typeof(TPrimary), primaryLifetime);
+                }
+
+                if (primaryLifetime == ServiceLifetime.Singleton)
+                {
+                    services.AddSingleton<TSecondary>(sp => (TSecondary)(object)sp.GetRequiredService<TPrimary>());
+                }
+                else
+                {
+                    // ServiceLifetime.Scoped
+                    services.AddScoped<TSecondary>(sp => (TSecondary)(object)sp.GetRequiredService<TPrimary>());
+                }
             }
         }
 

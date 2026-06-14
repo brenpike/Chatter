@@ -2,6 +2,7 @@
 
 using Chatter.CQRS;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Inbox;
@@ -58,6 +59,22 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                 => Task.CompletedTask;
         }
 
+        // A second distinct outbox concrete used for the both-custom-independent case.
+        private sealed class CustomOutboxSecondaryOnly : IPollableOutboxStore
+        {
+            public Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default)
+                => Task.FromResult<IEnumerable<OutboxMessage>>(Array.Empty<OutboxMessage>());
+
+            public Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages, CancellationToken cancellationToken = default)
+                => Task.CompletedTask;
+
+            public Task UpdateProcessedDate(OutboxMessage outboxMessage, CancellationToken cancellationToken = default)
+                => Task.CompletedTask;
+
+            public Task<IEnumerable<OutboxMessage>> GetUnprocessedBatch(Guid batchId, CancellationToken cancellationToken = default)
+                => Task.FromResult<IEnumerable<OutboxMessage>>(Array.Empty<OutboxMessage>());
+        }
+
         private sealed class CustomInboxBoth : IBrokeredMessageInbox, IInboxDeduplicator
         {
             public Task ReceiveViaInbox<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> messageReceiver)
@@ -72,6 +89,13 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
         {
             public Task ReceiveViaInbox<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> messageReceiver)
                 => messageReceiver();
+        }
+
+        // A second distinct inbox concrete used for the both-custom-independent case.
+        private sealed class CustomInboxSecondaryOnly : IInboxDeduplicator
+        {
+            public Task<bool> HasBeenReceived(string messageId, CancellationToken cancellationToken = default)
+                => Task.FromResult(false);
         }
 
         // ------------------------------------------------------------------ infrastructure
@@ -97,6 +121,28 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                     receiverHandlerSourceBuilder: b => b.WithExplicitAssemblies(NoBrokeredMessageAssembly));
 
             return services.BuildServiceProvider().CreateScope();
+        }
+
+        // Returns an Action that, when invoked, builds the Chatter DI graph up through AddMessageBrokers.
+        // Used by transient-lifetime tests where the exception is thrown during registration, not resolution.
+        private static Action BuildRegistration(Action<IServiceCollection> preRegister)
+        {
+            return () =>
+            {
+                var configuration = new ConfigurationBuilder().Build();
+                var services = new ServiceCollection();
+
+                services.AddLogging();
+                services.AddSingleton<IMessagingInfrastructure>(BuildInMemoryInfrastructure());
+
+                preRegister?.Invoke(services);
+
+                services
+                    .AddChatterCqrs(configuration, NoBrokeredMessageAssembly)
+                    .AddMessageBrokers(
+                        optionsBuilder: null,
+                        receiverHandlerSourceBuilder: b => b.WithExplicitAssemblies(NoBrokeredMessageAssembly));
+            };
         }
 
         private static IMessagingInfrastructure BuildInMemoryInfrastructure()
@@ -263,6 +309,102 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
 
             inbox.Should().BeOfType<CustomInboxBoth>();
             ReferenceEquals(inbox, dedup).Should().BeTrue("consumer-registered pair must remain intact");
+        }
+
+        // ------------------------------------------------------------------ lifetime-matched-or-fail-fast: outbox pair
+
+        [Fact]
+        public void OutboxTransientCustomPrimary_RegistrationThrowsReliabilityStoreLifetimeException()
+        {
+            // Transient custom primary: the framework cannot guarantee same-instance secondary forwarding.
+            // AddMessageBrokers must throw at registration time, not at resolution time.
+            Action buildRegistration = BuildRegistration(services =>
+                services.AddTransient<IBrokeredMessageOutbox, CustomOutboxBoth>());
+
+            buildRegistration.Should().Throw<ReliabilityStoreLifetimeException>(
+                "a transient custom primary must be rejected at registration time to prevent a silent split store");
+        }
+
+        [Fact]
+        public void OutboxSingletonCustomPrimary_BothFacetsResolveToSameInstance()
+        {
+            using var scope = BuildScope(services =>
+                services.AddSingleton<IBrokeredMessageOutbox, CustomOutboxBoth>());
+            var sp = scope.ServiceProvider;
+
+            var outbox = sp.GetRequiredService<IBrokeredMessageOutbox>();
+            var pollable = sp.GetRequiredService<IPollableOutboxStore>();
+
+            outbox.Should().BeOfType<CustomOutboxBoth>();
+            ReferenceEquals(outbox, pollable).Should().BeTrue("singleton primary must resolve both facets to the same instance");
+        }
+
+        [Fact]
+        public void OutboxBothCustomIndependent_EachFacetResolvesToItsOwnConsumerRegistration()
+        {
+            // Consumer registers the two facets as separate descriptors to different concretes.
+            // The framework must no-op: each facet resolves to the consumer's own registration.
+            using var scope = BuildScope(services =>
+            {
+                services.AddScoped<IBrokeredMessageOutbox, CustomOutboxBoth>();
+                services.AddScoped<IPollableOutboxStore, CustomOutboxSecondaryOnly>();
+            });
+            var sp = scope.ServiceProvider;
+
+            var outbox = sp.GetRequiredService<IBrokeredMessageOutbox>();
+            var pollable = sp.GetRequiredService<IPollableOutboxStore>();
+
+            outbox.Should().BeOfType<CustomOutboxBoth>("primary facet must resolve to consumer's primary registration");
+            pollable.Should().BeOfType<CustomOutboxSecondaryOnly>("secondary facet must resolve to consumer's secondary registration");
+            ReferenceEquals(outbox, pollable).Should().BeFalse("two distinct consumer registrations must not be merged by the framework");
+        }
+
+        // ------------------------------------------------------------------ lifetime-matched-or-fail-fast: inbox pair
+
+        [Fact]
+        public void InboxTransientCustomPrimary_RegistrationThrowsReliabilityStoreLifetimeException()
+        {
+            // Transient custom primary: the framework cannot guarantee same-instance secondary forwarding.
+            // AddMessageBrokers must throw at registration time, not at resolution time.
+            Action buildRegistration = BuildRegistration(services =>
+                services.AddTransient<IBrokeredMessageInbox, CustomInboxBoth>());
+
+            buildRegistration.Should().Throw<ReliabilityStoreLifetimeException>(
+                "a transient custom primary must be rejected at registration time to prevent a silent split store");
+        }
+
+        [Fact]
+        public void InboxSingletonCustomPrimary_BothFacetsResolveToSameInstance()
+        {
+            using var scope = BuildScope(services =>
+                services.AddSingleton<IBrokeredMessageInbox, CustomInboxBoth>());
+            var sp = scope.ServiceProvider;
+
+            var inbox = sp.GetRequiredService<IBrokeredMessageInbox>();
+            var dedup = sp.GetRequiredService<IInboxDeduplicator>();
+
+            inbox.Should().BeOfType<CustomInboxBoth>();
+            ReferenceEquals(inbox, dedup).Should().BeTrue("singleton primary must resolve both facets to the same instance");
+        }
+
+        [Fact]
+        public void InboxBothCustomIndependent_EachFacetResolvesToItsOwnConsumerRegistration()
+        {
+            // Consumer registers the two facets as separate descriptors to different concretes.
+            // The framework must no-op: each facet resolves to the consumer's own registration.
+            using var scope = BuildScope(services =>
+            {
+                services.AddScoped<IBrokeredMessageInbox, CustomInboxBoth>();
+                services.AddScoped<IInboxDeduplicator, CustomInboxSecondaryOnly>();
+            });
+            var sp = scope.ServiceProvider;
+
+            var inbox = sp.GetRequiredService<IBrokeredMessageInbox>();
+            var dedup = sp.GetRequiredService<IInboxDeduplicator>();
+
+            inbox.Should().BeOfType<CustomInboxBoth>("primary facet must resolve to consumer's primary registration");
+            dedup.Should().BeOfType<CustomInboxSecondaryOnly>("secondary facet must resolve to consumer's secondary registration");
+            ReferenceEquals(inbox, dedup).Should().BeFalse("two distinct consumer registrations must not be merged by the framework");
         }
     }
 }

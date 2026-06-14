@@ -17,6 +17,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+- `AddReliabilityPair` now applies lifetime-matched-or-fail-fast when a custom primary facet is already registered and the secondary is not: the secondary forwarder is registered at the same lifetime (Scoped or Singleton) as the primary so both facets always resolve to the same instance; a Transient custom primary throws `ReliabilityStoreLifetimeException` at registration time because DI has no primitive to guarantee same-instance resolution across two Transient resolutions. A consumer that registers both facets independently as separate descriptors is treated as deliberate consumer intent and is not merged by the framework (#216).
 - Per-send `SendOptions`/`PublishOptions` no longer leak into the inbound handler message context: `SendOptions.Create`/`PublishOptions.Create` now copy the inbound context so a routed/configured send does not persist its options (exchange/routing key, subject, TTL, correlation-id, etc.) into subsequent sends on the same handler context (#201).
 
 ## [0.13.1] - 2026-06-09
