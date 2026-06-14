@@ -99,7 +99,10 @@ jobs:
   integration:
     name: integration (docker)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Consolidated lane runs ASB emulator + MSSQL sidecar, SQL Server, and RabbitMQ container
+    # stacks across net8.0+net10.0 plus solution restore/build; budgeted above the old per-adapter
+    # 30-min nightly jobs to absorb cold image pulls without timeout-only PR failures.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Setup .NET
