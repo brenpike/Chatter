@@ -3,12 +3,12 @@ using Chatter.MessageBrokers.Receiving;
 namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
 {
     /// <summary>
-    /// Where the <see cref="SqlServiceBrokerSender"/> obtains the <see cref="System.Data.SqlClient.SqlConnection"/>
+    /// Where the <see cref="SqlServiceBrokerSender"/> obtains the <see cref="Microsoft.Data.SqlClient.SqlConnection"/>
     /// it dispatches on.
     /// </summary>
     internal enum OutboundConnectionOrigin
     {
-        /// <summary>Reuse the connection owned by the caller's context <see cref="System.Data.SqlClient.SqlTransaction"/>.</summary>
+        /// <summary>Reuse the connection owned by the caller's context <see cref="Microsoft.Data.SqlClient.SqlTransaction"/>.</summary>
         ReuseContext,
 
         /// <summary>Open a fresh connection from the configured connection string.</summary>
@@ -40,7 +40,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
     /// Pure policy that decides how the <see cref="SqlServiceBrokerSender"/> enlists in (or owns) a transaction for a
     /// dispatch. Extracted VERBATIM from the sender's inline decision: enlist in the caller's transaction only when the
     /// context transaction mode is <see cref="TransactionMode.FullAtomicityViaInfrastructure"/> AND a context
-    /// <see cref="System.Data.SqlClient.SqlTransaction"/> is present; otherwise open a new connection and own the
+    /// <see cref="Microsoft.Data.SqlClient.SqlTransaction"/> is present; otherwise open a new connection and own the
     /// transaction.
     /// </summary>
     /// <remarks>No SQL, no connection, no I/O, no ambient/static state — inputs in, decision out.</remarks>
