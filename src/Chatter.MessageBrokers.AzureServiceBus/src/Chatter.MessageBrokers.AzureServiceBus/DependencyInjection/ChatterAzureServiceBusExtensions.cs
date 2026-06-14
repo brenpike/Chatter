@@ -192,6 +192,42 @@ namespace Microsoft.Extensions.DependencyInjection
             return builder;
         }
 
+        // Session-mode sibling of AddTopicSubscription: registers a session-enabled topic subscription. Mirrors
+        // AddTopicSubscription exactly, marking the receiver session-mode in the registry (RequiresSession=true)
+        // so ServiceBusReceiver.CreateProductionReceiver selects the session adapter for the topic.
+        public static ServiceBusOptionsBuilder AddSessionTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                                     string topicName,
+                                                                                     string subscriptionName,
+                                                                                     string errorQueuePath = null,
+                                                                                     string description = null,
+                                                                                     TransactionMode? transactionMode = null,
+                                                                                     int maxReceiveAttempts = 10)
+            where TMessage : class, IEvent
+        {
+            // The TOPIC is the top-level entity Azure Service Bus pins a cross-entity transaction to; two
+            // subscriptions on the same topic share one top-level entity.
+            GetOrAddReceiverRegistry(builder.Services).Register(topicName, transactionMode, requiresSession: true);
+            builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
+            return builder;
+        }
+
+        // Session-mode sibling of AddQueueReceiver: registers a session-enabled queue receiver. Mirrors
+        // AddQueueReceiver exactly, marking the receiver session-mode in the registry (RequiresSession=true) so
+        // ServiceBusReceiver.CreateProductionReceiver selects the session adapter for the queue.
+        public static ServiceBusOptionsBuilder AddSessionQueueReceiver<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                                 string queueName,
+                                                                                 string errorQueuePath = null,
+                                                                                 string description = null,
+                                                                                 TransactionMode? transactionMode = null,
+                                                                                 int maxReceiveAttempts = 10)
+            where TMessage : class, ICommand
+        {
+            // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to.
+            GetOrAddReceiverRegistry(builder.Services).Register(queueName, transactionMode, requiresSession: true);
+            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
+            return builder;
+        }
+
         // Resolves the single ServiceBusReceiverRegistry instance shared across all AddQueueReceiver/
         // AddTopicSubscription calls and the shared-client factory, registering it on first use. The instance
         // is captured directly into the singleton descriptor so the same object is both written here (at
