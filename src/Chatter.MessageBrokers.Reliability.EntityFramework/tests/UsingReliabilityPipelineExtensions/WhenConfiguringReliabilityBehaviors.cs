@@ -39,6 +39,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             => builder.Services.LastOrDefault(descriptor =>
                 descriptor.ServiceType == serviceType && descriptor.ImplementationType == implementationType);
 
+        // The split interfaces are forwarded to the shared concrete store/inbox via a factory, so the descriptor
+        // carries an ImplementationFactory rather than an ImplementationType. Match on ServiceType alone for those.
+        private static ServiceDescriptor FindForwardedDescriptor(CommandPipelineBuilder builder, Type serviceType)
+            => builder.Services.LastOrDefault(descriptor =>
+                descriptor.ServiceType == serviceType && descriptor.ImplementationFactory != null);
+
         // UnitOfWork<TContext> is internal to the EF module and cannot be referenced by type symbol from the
         // test assembly. Match its closed-generic ImplementationType by name plus the supplied context arg.
         private static ServiceDescriptor FindUnitOfWorkDescriptor(CommandPipelineBuilder builder, Type contextType)
@@ -80,10 +86,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
         {
             var builder = CaptureBuilder(b => b.WithInboxBehavior<TestDbContext>());
 
-            var descriptor = FindDescriptor(builder, typeof(IBrokeredMessageInbox), typeof(BrokeredMessageInbox<TestDbContext>));
+            var concrete = FindDescriptor(builder, typeof(BrokeredMessageInbox<TestDbContext>), typeof(BrokeredMessageInbox<TestDbContext>));
+            var forwarded = FindForwardedDescriptor(builder, typeof(IBrokeredMessageInbox));
 
-            descriptor.Should().NotBeNull();
-            descriptor.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            concrete.Should().NotBeNull();
+            concrete.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            forwarded.Should().NotBeNull();
+            forwarded.Lifetime.Should().Be(ServiceLifetime.Scoped);
         }
 
         [Fact]
@@ -117,10 +126,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
         {
             var builder = CaptureBuilder(b => b.WithOutboxProcessingBehavior<TestDbContext>());
 
-            var descriptor = FindDescriptor(builder, typeof(IBrokeredMessageOutbox), typeof(BrokeredMessageOutbox<TestDbContext>));
+            var concrete = FindDescriptor(builder, typeof(BrokeredMessageOutbox<TestDbContext>), typeof(BrokeredMessageOutbox<TestDbContext>));
+            var forwarded = FindForwardedDescriptor(builder, typeof(IBrokeredMessageOutbox));
 
-            descriptor.Should().NotBeNull();
-            descriptor.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            concrete.Should().NotBeNull();
+            concrete.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            forwarded.Should().NotBeNull();
+            forwarded.Lifetime.Should().Be(ServiceLifetime.Scoped);
         }
 
         [Fact]

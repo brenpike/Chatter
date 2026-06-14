@@ -48,7 +48,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             try
             {
                 using var scope = _serviceScopeFactory.CreateScope();
-                var outbox = scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
+                var outbox = (IPollableOutboxStore)scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
                 var processor = scope.ServiceProvider.GetRequiredService<IOutboxProcessor>();
                 var messages = await outbox.GetUnprocessedMessagesFromOutbox(cancellationToken);
 

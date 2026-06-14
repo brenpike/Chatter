@@ -8,7 +8,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Added
 
+- `IAtomicWriteHandle` — a tier-neutral marker abstraction the `SendToOutbox` enqueue contract is abstracted over; satisfied by the relational `IPersistanceTransaction` and the future document-tier atomic-write handle (#216).
+- `IInboxDeduplicator` — a tier-neutral inbox dedup contract (`HasBeenReceived`) expressing once-only-handling intent, implemented by both reliability tiers, distinct from the relational-only `IBrokeredMessageInbox.ReceiveViaInbox` wrap seam (#216).
+
 ### Changed
+
+- **BREAKING:** `IBrokeredMessageOutbox` is split into `IBrokeredMessageOutbox` (retaining only the two `SendToOutbox` overloads, with the single-message overload remaining a default-interface-method) and a new relational-only `IPollableOutboxStore` carrying the polling-dispatch trio (`GetUnprocessedMessagesFromOutbox`, `GetUnprocessedBatch`, `UpdateProcessedDate`). `IPersistanceTransaction` now derives from `IAtomicWriteHandle`, and `IUnitOfWork` is documented as relational-only (ambient-transaction tier; the document tier never implements it). Breaking for code that implements the reliability port; ordinary adapter consumers are unaffected (#216).
+- Secondary reliability facets (`IPollableOutboxStore`, `IInboxDeduplicator`) are no longer independently registered or resolved as DI services. Poll consumers obtain each secondary facet by casting the single resolved primary (`IBrokeredMessageOutbox` / `IBrokeredMessageInbox`) at the consumption site — the same pattern `OutboxProcessor` uses to obtain `IUnitOfWork`. A custom store must implement both facets on one concrete or the cast throws `InvalidCastException` at the poll site. Split-store is impossible by construction: there is exactly one resolved reliability-store instance per pair; no descriptor inspection, lifetime reconciliation, or fail-fast registration. `AddReliabilityPair` and `ReliabilityStoreLifetimeException` are deleted (#216).
 
 ### Fixed
 

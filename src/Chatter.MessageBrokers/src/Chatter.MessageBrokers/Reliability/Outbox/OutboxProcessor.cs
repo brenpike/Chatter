@@ -60,9 +60,10 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 var outbound = new OutboundBrokeredMessage(message.MessageId, converter.GetBytes(message.MessageBody), messageContext, message.Destination, converter);
                 _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 
+                var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
                 await ((IUnitOfWork)_brokeredMessageOutbox).ExecuteAsync(async ct =>
                 {
-                    await _brokeredMessageOutbox.UpdateProcessedDate(message, ct);
+                    await pollable.UpdateProcessedDate(message, ct);
 
                     await dispatcherInfrastructure.Dispatch(outbound, null);
                     _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
@@ -77,7 +78,8 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
         public async Task ProcessBatch(Guid batchId, CancellationToken cancellationToken = default)
         {
-            var messages = await _brokeredMessageOutbox.GetUnprocessedBatch(batchId, cancellationToken).ConfigureAwait(false);
+            var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
+            var messages = await pollable.GetUnprocessedBatch(batchId, cancellationToken).ConfigureAwait(false);
             _logger.LogTrace($"Processing '{messages.Count()}' messages for batch '{batchId}'.");
 
             foreach (var message in messages)

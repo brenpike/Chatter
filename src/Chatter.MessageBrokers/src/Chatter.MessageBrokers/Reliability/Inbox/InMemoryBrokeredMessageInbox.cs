@@ -2,11 +2,12 @@
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.Inbox
 {
-    public class InMemoryBrokeredMessageInbox : IBrokeredMessageInbox
+    public class InMemoryBrokeredMessageInbox : IBrokeredMessageInbox, IInboxDeduplicator
     {
         private readonly ConcurrentDictionary<string, bool> _inbox;
         private readonly ILogger<InMemoryBrokeredMessageInbox> _logger;
@@ -43,5 +44,8 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
 
             _logger.LogTrace($"Brokered message of type '{typeof(TMessage).Name}' with id: '{id}' was successfully received and added to inbox.");
         }
+
+        public Task<bool> HasBeenReceived(string messageId, CancellationToken cancellationToken = default)
+            => Task.FromResult(_inbox.ContainsKey(messageId));
     }
 }

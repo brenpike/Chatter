@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Reliability.Inbox;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework
@@ -12,7 +13,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
     /// An inbox which keeps track of brokered messages which have been processed.
     /// </summary>
     /// <typeparam name="TContext">The DbContext where the inbox presides</typeparam>
-    public class BrokeredMessageInbox<TContext> : IBrokeredMessageInbox where TContext : DbContext
+    public class BrokeredMessageInbox<TContext> : IBrokeredMessageInbox, IInboxDeduplicator where TContext : DbContext
     {
         private readonly TContext _context;
         private readonly ILogger<BrokeredMessageInbox<TContext>> _logger;
@@ -74,5 +75,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 throw;
             }
         }
+
+        public Task<bool> HasBeenReceived(string messageId, CancellationToken cancellationToken = default)
+            => _context.Set<InboxMessage>().AnyAsync(m => m.MessageId == messageId, cancellationToken);
     }
 }

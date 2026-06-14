@@ -4,7 +4,7 @@
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <PackageId>Chatter.MessageBrokers.Reliability.EntityFramework</PackageId>
-    <Version>0.4.1</Version>
+    <Version>0.4.2</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>An implementation of the Chatter.MessageBrokers.Reliability adapter library which leverages EF Core for transactions, units of work, inbox and outbox</Description>

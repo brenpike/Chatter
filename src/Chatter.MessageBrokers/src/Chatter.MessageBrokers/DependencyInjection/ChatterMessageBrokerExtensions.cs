@@ -113,6 +113,11 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IReplyRouter, ReplyRouter>();
 
             builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
+            // Cast-at-consumption: IPollableOutboxStore and IInboxDeduplicator are NOT registered as
+            // independent DI services. Poll consumers obtain the pollable/dedup facet by casting the single
+            // resolved IBrokeredMessageOutbox / IBrokeredMessageInbox at the consumption site (precedent:
+            // OutboxProcessor's IUnitOfWork cast). A custom store lacking the required facet throws
+            // InvalidCastException loudly at the poll site. Split-store is impossible by construction.
             builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
             builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();

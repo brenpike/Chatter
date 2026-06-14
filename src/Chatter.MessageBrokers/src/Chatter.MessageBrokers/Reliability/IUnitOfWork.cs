@@ -5,6 +5,11 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
 {
+    /// <summary>
+    /// Relational-only: the ambient-transaction tier's unit-of-work. The document tier never implements this
+    /// interface; its atomic-write initiation is the document-tier batch-lifecycle behavior (a sibling), not a
+    /// faked <see cref="ExecuteAsync"/>.
+    /// </summary>
     public interface IUnitOfWork
     {
         IPersistanceTransaction CurrentTransaction { get; }
