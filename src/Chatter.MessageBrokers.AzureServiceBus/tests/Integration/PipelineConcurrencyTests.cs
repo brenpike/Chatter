@@ -8,6 +8,7 @@ using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Chatter.Testing.Core.Integration;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration

@@ -5,6 +5,7 @@ using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using FluentAssertions;
+using Chatter.Testing.Core.Integration;
 using Xunit;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration

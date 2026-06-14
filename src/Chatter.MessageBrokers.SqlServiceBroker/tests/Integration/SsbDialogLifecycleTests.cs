@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using Chatter.CQRS.Commands;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Chatter.Testing.Core.Integration;
 using Xunit;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration

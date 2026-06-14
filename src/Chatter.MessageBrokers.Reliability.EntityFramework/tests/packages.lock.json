@@ -625,7 +625,8 @@
           "Chatter.MessageBrokers.Reliability.EntityFramework": "[0.4.1, )",
           "Microsoft.EntityFrameworkCore": "[10.0.8, )",
           "Microsoft.EntityFrameworkCore.InMemory": "[10.0.8, )",
-          "Moq": "[4.20.72, )"
+          "Moq": "[4.20.72, )",
+          "xunit": "[2.9.3, )"
         }
       }
     },
@@ -1239,7 +1240,8 @@
           "Chatter.MessageBrokers.Reliability.EntityFramework": "[0.4.1, )",
           "Microsoft.EntityFrameworkCore": "[8.0.27, )",
           "Microsoft.EntityFrameworkCore.InMemory": "[8.0.27, )",
-          "Moq": "[4.20.72, )"
+          "Moq": "[4.20.72, )",
+          "xunit": "[2.9.3, )"
         }
       }
     }
