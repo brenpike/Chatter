@@ -12,6 +12,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.4.0] - 2026-06-14
+
+### Added
+
+- Single-session-at-a-time receiver support via `AddSessionQueueReceiver` and `AddSessionTopicSubscription` — dispatches one Azure Service Bus session receiver per accepted session, guaranteeing FIFO ordering within a `SessionId`.
+- Inbound `SessionId` is surfaced on `MessageContext.GroupId` so handlers can read the session affinity without touching SDK types.
+- Durable per-session state via `GetSessionStateAsync`, `SetSessionStateAsync`, and `ClearSessionStateAsync` on the session context — backed by the Azure Service Bus session-state store.
+- `SessionIdleTimeout` and `MaxSessionLockRenewalDuration` knobs on the session receiver options to control how long an idle session is held open and how aggressively the session lock is renewed.
+
+### Fixed
+
 - (F6) A parked Azure Service Bus receive is now unblocked on teardown — the receive-loop `CancellationToken` is threaded through the internal receive port into the SDK `ReceiveMessageAsync(maxWaitTime, cancellationToken)` overload, and a shutdown-cancelled receive is swallowed quietly (returns `null`, no error log, no settle). Prevents teardown hangs when the broker or network is stalled.
 
 ## [1.3.0] - 2026-06-09
