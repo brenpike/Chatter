@@ -172,8 +172,10 @@ namespace Microsoft.Extensions.DependencyInjection
             where TMessage : class, IEvent
         {
             // The TOPIC is the top-level entity Azure Service Bus pins a cross-entity transaction to; two
-            // subscriptions on the same topic share one top-level entity.
-            GetOrAddReceiverRegistry(builder.Services).Register(topicName, transactionMode);
+            // subscriptions on the same topic share one top-level entity. The SUBSCRIPTION name is the
+            // receiver path that distinguishes this receiver from another subscription on the same topic for
+            // the per-receiver session lookup.
+            GetOrAddReceiverRegistry(builder.Services).Register(topicName, subscriptionName, transactionMode);
             builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -186,8 +188,48 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                           int maxReceiveAttempts = 10)
             where TMessage : class, ICommand
         {
-            // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to.
-            GetOrAddReceiverRegistry(builder.Services).Register(queueName, transactionMode);
+            // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to,
+            // and is its own receiver path for the per-receiver session lookup.
+            GetOrAddReceiverRegistry(builder.Services).Register(queueName, queueName, transactionMode);
+            builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
+            return builder;
+        }
+
+        // Session-mode sibling of AddTopicSubscription: registers a session-enabled topic subscription. Mirrors
+        // AddTopicSubscription exactly, marking the receiver session-mode in the registry (RequiresSession=true)
+        // so ServiceBusReceiver.CreateProductionReceiver selects the session adapter for the topic.
+        public static ServiceBusOptionsBuilder AddSessionTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                                     string topicName,
+                                                                                     string subscriptionName,
+                                                                                     string errorQueuePath = null,
+                                                                                     string description = null,
+                                                                                     TransactionMode? transactionMode = null,
+                                                                                     int maxReceiveAttempts = 10)
+            where TMessage : class, IEvent
+        {
+            // The TOPIC is the top-level entity Azure Service Bus pins a cross-entity transaction to; two
+            // subscriptions on the same topic share one top-level entity. The SUBSCRIPTION name is the
+            // receiver path that marks THIS subscription session-mode without affecting a sibling normal
+            // subscription on the same topic.
+            GetOrAddReceiverRegistry(builder.Services).Register(topicName, subscriptionName, transactionMode, requiresSession: true);
+            builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
+            return builder;
+        }
+
+        // Session-mode sibling of AddQueueReceiver: registers a session-enabled queue receiver. Mirrors
+        // AddQueueReceiver exactly, marking the receiver session-mode in the registry (RequiresSession=true) so
+        // ServiceBusReceiver.CreateProductionReceiver selects the session adapter for the queue.
+        public static ServiceBusOptionsBuilder AddSessionQueueReceiver<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                                 string queueName,
+                                                                                 string errorQueuePath = null,
+                                                                                 string description = null,
+                                                                                 TransactionMode? transactionMode = null,
+                                                                                 int maxReceiveAttempts = 10)
+            where TMessage : class, ICommand
+        {
+            // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to,
+            // and is its own receiver path for the per-receiver session lookup.
+            GetOrAddReceiverRegistry(builder.Services).Register(queueName, queueName, transactionMode, requiresSession: true);
             builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -252,7 +294,24 @@ namespace Microsoft.Extensions.DependencyInjection
 
                 // (MaxConcurrentCalls) Stamp the finalized global value onto the retained live instance, before
                 // any hosted-service pumps. Visible at receiver init via ReceiverOptions.MaxConcurrentCalls.
-                receiverOptions.MaxConcurrentCalls = options.MaxConcurrentCalls;
+                //
+                // (P1 session-concurrency clamp) A session-mode receiver holds a SINGLE ServiceBusSessionReceiver
+                // and must serve at most ONE in-flight message at a time: the core BrokeredMessageReceiver spawns
+                // MaxConcurrentCalls workers that all call ReceiveAsync on that one held session receiver, so >1
+                // would pull from the single session concurrently and break FIFO-per-session ordering and
+                // session-state consistency. Clamp this receiver's live MaxConcurrentCalls to 1 (overriding the
+                // global value) so one worker maps to one in-flight message. Non-session receivers keep the global
+                // value. The clamp is a no-op when the global value is already 1. The session flag was recorded on
+                // receiverRegistry by AddSessionQueueReceiver/AddSessionTopicSubscription during the options
+                // delegate, which runs BEFORE this method, so the per-receiver lookup is populated here.
+                if (receiverRegistry.RequiresSession(receiverOptions.MessageReceiverPath, receiverOptions.SendingPath))
+                {
+                    receiverOptions.MaxConcurrentCalls = 1;
+                }
+                else
+                {
+                    receiverOptions.MaxConcurrentCalls = options.MaxConcurrentCalls;
+                }
 
                 // (F3) Infer the ASB top-level entity (queue vs topic) using the same SendingPath/ReceiverPath
                 // convention as AzureServiceBusEntityPathBuilder: a queue receiver has SendingPath empty or equal
@@ -264,7 +323,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 // registered BOTH via attribute and explicit AddQueueReceiver/AddTopicSubscription is not
                 // double-counted as a distinct top-level entity.
                 var topLevelEntity = InferTopLevelEntity(receiverOptions.SendingPath, receiverOptions.MessageReceiverPath);
-                receiverRegistry.Register(topLevelEntity, receiverOptions.TransactionMode);
+                receiverRegistry.Register(topLevelEntity, receiverOptions.MessageReceiverPath, receiverOptions.TransactionMode);
             }
         }
 

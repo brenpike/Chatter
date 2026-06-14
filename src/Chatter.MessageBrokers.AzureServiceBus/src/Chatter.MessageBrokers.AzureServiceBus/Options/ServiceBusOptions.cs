@@ -1,5 +1,6 @@
 using Azure.Core;
 using Azure.Messaging.ServiceBus;
+using System;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
@@ -20,6 +21,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // auto-enabled when a FullAtomicityViaInfrastructure receiver is registered; opt in explicitly here
         // only when a single-entity host needs cross-entity send+settle atomicity.
         public bool EnableCrossEntityTransactions { get; set; }
+        /// <summary>
+        /// How long a held session may yield no message before it is released and the receiver rolls
+        /// to the next session. Applies only to session-enabled receivers.
+        /// </summary>
+        public TimeSpan SessionIdleTimeout { get; set; } = TimeSpan.FromSeconds(60);
+        /// <summary>
+        /// The ceiling on how long a held session's lock is renewed for long-running processing.
+        /// Once reached, renewal stops and the session is allowed to expire or roll naturally.
+        /// Applies only to session-enabled receivers.
+        /// </summary>
+        public TimeSpan MaxSessionLockRenewalDuration { get; set; } = TimeSpan.FromMinutes(5);
         internal RetryPolicyConfiguation RetryPolicy { get; set; }
         [JsonIgnore]
         public ServiceBusRetryOptions RetryOptions { get; internal set; }

@@ -508,6 +508,121 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             asbReceiver.MaxConcurrentCalls.Should().Be(1);
         }
 
+        // ----------------------------------------------------------------- (P1) session-mode concurrency clamp
+
+        [Fact]
+        public async Task MustClampSessionReceiverMaxConcurrentCallsToOneWhileNonSessionKeepsGlobal()
+        {
+            // (P1) A session-mode receiver holds a SINGLE ServiceBusSessionReceiver and must serve at most ONE
+            // in-flight message at a time, so PopulateFromDiscoveredReceivers clamps its live ReceiverOptions
+            // .MaxConcurrentCalls to 1 — overriding the global value (set fluently to 7) — while a NON-session
+            // receiver in the same host keeps the global 7. Asserted on the live ReceiverOptions held in
+            // IDiscoveredReceiverRegistry, the same instance BrokeredMessageReceiver reads at init: one worker ->
+            // one in-flight message from the single held session receiver, FIFO-per-session preserved.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+                sb.AddSessionQueueReceiver<FirstCommand>("session-queue");
+                sb.AddQueueReceiver<SecondCommand>("normal-queue");
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            var sessionReceiver = discoveredRegistry.DiscoveredReceivers
+                .Single(r => r.MessageReceiverPath == "session-queue");
+            var normalReceiver = discoveredRegistry.DiscoveredReceivers
+                .Single(r => r.MessageReceiverPath == "normal-queue");
+
+            sessionReceiver.MaxConcurrentCalls.Should().Be(1);
+            normalReceiver.MaxConcurrentCalls.Should().Be(7);
+        }
+
+        [Fact]
+        public async Task MustClampSessionTopicSubscriptionWhileSiblingSubscriptionOnSameTopicKeepsGlobal()
+        {
+            // (P1) The clamp is PER-RECEIVER, not per-top-level-entity: a session-enabled subscription and a
+            // normal subscription on the SAME topic are distinct receivers, so only the session one is clamped to
+            // 1 while the sibling normal subscription keeps the global 7. Proves the clamp branches on the
+            // per-receiver session flag via RequiresSession(receiverPath, sendingPath), matching the registry's
+            // per-receiver session attribution.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+                sb.AddSessionTopicSubscription<FirstEvent>("shared-topic", "session-sub");
+                sb.AddTopicSubscription<SecondEvent>("shared-topic", "normal-sub");
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            var sessionSubscription = discoveredRegistry.DiscoveredReceivers
+                .Single(r => r.MessageReceiverPath == "session-sub");
+            var normalSubscription = discoveredRegistry.DiscoveredReceivers
+                .Single(r => r.MessageReceiverPath == "normal-sub");
+
+            sessionSubscription.MaxConcurrentCalls.Should().Be(1);
+            normalSubscription.MaxConcurrentCalls.Should().Be(7);
+        }
+
+        [Fact]
+        public async Task MustClampSessionTopicSubscriptionStandaloneToOneWithGlobalAboveOne()
+        {
+            // (P1-topic) Regression for the raw-path-to-canonical-key path: a session topic subscription has
+            // MessageReceiverPath = raw subscription name at discovery time (before the core runtime rewrite to
+            // "<topic>/Subscriptions/<sub>"). RequiresSession must still resolve the session flag via the
+            // canonical key so the clamp fires correctly. This is the standalone case — no sibling subscription
+            // — proving the clamp is not accidentally gated on a sibling being present.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+                sb.AddSessionTopicSubscription<FirstEvent>("session-topic", "session-sub");
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            var sessionSubscription = discoveredRegistry.DiscoveredReceivers
+                .Single(r => r.MessageReceiverPath == "session-sub");
+
+            sessionSubscription.MaxConcurrentCalls.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task MustClampSessionTopicSubscriptionAndLeaveNormalSubscriptionOnDifferentTopicAtGlobal()
+        {
+            // (P1-topic) The clamp is PER-RECEIVER and does not spill across topics: a session subscription on
+            // one topic is clamped to 1 while a normal subscription on a DISTINCT topic keeps the global 7.
+            // This complements MustClampSessionTopicSubscriptionWhileSiblingSubscriptionOnSameTopicKeepsGlobal
+            // (same-topic siblings) and confirms the per-receiver session flag is isolated by canonical key,
+            // not by topic membership.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+                sb.AddSessionTopicSubscription<FirstEvent>("session-topic", "session-sub");
+                sb.AddTopicSubscription<SecondEvent>("normal-topic", "normal-sub");
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            var sessionSubscription = discoveredRegistry.DiscoveredReceivers
+                .Single(r => r.MessageReceiverPath == "session-sub");
+            var normalSubscription = discoveredRegistry.DiscoveredReceivers
+                .Single(r => r.MessageReceiverPath == "normal-sub");
+
+            sessionSubscription.MaxConcurrentCalls.Should().Be(1);
+            normalSubscription.MaxConcurrentCalls.Should().Be(7);
+        }
+
+        [Fact]
+        public async Task MustLeaveSessionReceiverAtOneWhenGlobalMaxConcurrentCallsAlreadyOne()
+        {
+            // (P1) The clamp is a no-op when the global MaxConcurrentCalls is already 1 (the default): a session
+            // receiver stays at 1, identical to its non-clamped state — the override neither raises nor changes a
+            // host that never configured concurrency.
+            await using var provider = BuildServices(sb =>
+                sb.AddSessionQueueReceiver<FirstCommand>("session-queue")).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            var sessionReceiver = discoveredRegistry.DiscoveredReceivers
+                .Single(r => r.MessageReceiverPath == "session-queue");
+
+            sessionReceiver.MaxConcurrentCalls.Should().Be(1);
+        }
+
         // ----------------------------------------------------------------- default-infrastructure resolution (multi-broker)
 
         // A non-ASB IMessagingInfrastructure whose Type is a distinct key. Registering this BEFORE AddAzureServiceBus

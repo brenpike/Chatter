@@ -1,3 +1,4 @@
+using Chatter.MessageBrokers.AzureServiceBus.DependencyInjection;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
@@ -31,6 +32,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly InboundBrokeredMessageFactory _inboundFactory;
         private readonly Func<ReceiverOptions, ServiceBusReceiveMode, IServiceBusMessageReceiver> _receiverFactory;
         private readonly ServiceBusOptions _serviceBusOptions;
+        private readonly ServiceBusReceiverRegistry _receiverRegistry;
         private ServiceBusReceiveMode _receiveMode;
         // INVARIANT: the receiver and sender MUST share ONE ServiceBusClient per namespace so the send and
         // the receiver's settle enlist in one cross-entity transaction (EnableCrossEntityTransactions). The
@@ -40,11 +42,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private bool _disposedValue;
         private ReceiverOptions _options;
 
+        // receiverRegistry is optional so existing callers/tests that construct via the five-argument shape
+        // keep compiling; DI always supplies the registered singleton on the production path, and the
+        // production session-vs-non-session branch null-guards it. When null, only the non-session adapter
+        // is ever selected (the prior behavior).
         public ServiceBusReceiver(ServiceBusClient client,
                                   ServiceBusOptions serviceBusOptions,
                                   MessageBrokerOptions messageBrokerOptions,
                                   ILogger<ServiceBusReceiver> logger,
-                                  IBodyConverterFactory bodyConverterFactory)
+                                  IBodyConverterFactory bodyConverterFactory,
+                                  ServiceBusReceiverRegistry receiverRegistry = null)
             : this(client,
                    serviceBusOptions,
                    messageBrokerOptions,
@@ -52,18 +59,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                    new InboundBrokeredMessageFactory(
                        bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory)),
                        logger ?? throw new ArgumentNullException(nameof(logger))),
-                   receiverFactory: null)
+                   receiverFactory: null,
+                   receiverRegistry: receiverRegistry)
         { }
 
         // Internal seam ctor: an IServiceBusMessageReceiver factory (path + receive-mode -> port) can be
         // injected to drive receive/ack behavior with an in-memory double in tests. When null, the
-        // production AzureSdkMessageReceiverAdapter source (off the shared client) is used.
+        // production CreateProductionReceiver source (off the shared client) is used; that production path
+        // is the only caller that reads receiverRegistry, so a test supplying its own receiverFactory may
+        // leave receiverRegistry null.
         internal ServiceBusReceiver(ServiceBusClient client,
                                     ServiceBusOptions serviceBusOptions,
                                     MessageBrokerOptions messageBrokerOptions,
                                     ILogger<ServiceBusReceiver> logger,
                                     InboundBrokeredMessageFactory inboundFactory,
-                                    Func<ReceiverOptions, ServiceBusReceiveMode, IServiceBusMessageReceiver> receiverFactory)
+                                    Func<ReceiverOptions, ServiceBusReceiveMode, IServiceBusMessageReceiver> receiverFactory,
+                                    ServiceBusReceiverRegistry receiverRegistry = null)
         {
             if (serviceBusOptions is null)
             {
@@ -76,15 +87,35 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _inboundFactory = inboundFactory ?? throw new ArgumentNullException(nameof(inboundFactory));
             _receiveMode = messageBrokerOptions?.TransactionMode == TransactionMode.None ? ServiceBusReceiveMode.ReceiveAndDelete : ServiceBusReceiveMode.PeekLock;
+            _receiverRegistry = receiverRegistry;
             _receiverFactory = receiverFactory ?? CreateProductionReceiver;
         }
 
+        // Selects the production IServiceBusMessageReceiver for THIS receiver: the session adapter when the
+        // registry marks this specific receiver session-mode, otherwise the existing non-session adapter. The
+        // session lookup is PER-RECEIVER, keyed on this receiver's own (MessageReceiverPath, SendingPath) pair
+        // — the SAME pair it was registered under — so a session subscription and a normal subscription on the
+        // same topic resolve to different adapters instead of colliding on the shared top-level entity.
         private IServiceBusMessageReceiver CreateProductionReceiver(ReceiverOptions options, ServiceBusReceiveMode receiveMode)
-            => new AzureSdkMessageReceiverAdapter(_client,
-                                                  options.MessageReceiverPath,
-                                                  receiveMode,
-                                                  _serviceBusOptions.PrefetchCount,
-                                                  _logger);
+        {
+            if (_receiverRegistry != null && _receiverRegistry.RequiresSession(options.MessageReceiverPath, options.SendingPath))
+            {
+                var sessionEntityPath = ServiceBusSessionEntityPath.Create(options.SendingPath, options.MessageReceiverPath);
+                return new AzureSdkSessionMessageReceiverAdapter(_client,
+                                                                 sessionEntityPath,
+                                                                 receiveMode,
+                                                                 _serviceBusOptions.PrefetchCount,
+                                                                 _serviceBusOptions.SessionIdleTimeout,
+                                                                 _serviceBusOptions.MaxSessionLockRenewalDuration,
+                                                                 _logger);
+            }
+
+            return new AzureSdkMessageReceiverAdapter(_client,
+                                                      options.MessageReceiverPath,
+                                                      receiveMode,
+                                                      _serviceBusOptions.PrefetchCount,
+                                                      _logger);
+        }
 
         internal IServiceBusMessageReceiver InnerReceiver
         {
@@ -180,6 +211,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             var messageContext = _inboundFactory.CreateContext(message, _options.MessageReceiverPath, cancellationToken);
 
             transactionContext.Container.Include(this.InnerReceiver);
+
+            // Session path only: include the held SDK session receiver so the session-state extension and
+            // session settlement can resolve it during handling. Non-session receivers leave the container
+            // unchanged (the held receiver is null when no session adapter is in use).
+            if (this.InnerReceiver is AzureSdkSessionMessageReceiverAdapter sessionAdapter
+                && sessionAdapter.HeldSessionReceiver != null)
+            {
+                transactionContext.Container.Include(sessionAdapter.HeldSessionReceiver);
+            }
 
             if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
             {

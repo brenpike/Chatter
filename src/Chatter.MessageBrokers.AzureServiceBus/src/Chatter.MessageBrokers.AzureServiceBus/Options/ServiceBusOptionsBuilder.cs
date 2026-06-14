@@ -34,9 +34,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // default value" — a plain bool defaulting to false could not tell those apart, which silently
         // dropped an explicit WithCrossEntityTransactions(false) when config bound true.
         private bool? _enableCrossEntityTransactions = null;
+        // INVARIANT: null means WithSessionIdleTimeout was never called, so the config-bound value is
+        // left untouched. A non-null value means the fluent method was called and its value overrides
+        // any config-bound value in EITHER direction (explicit 30 s overrides config 120 s).
+        private TimeSpan? _sessionIdleTimeout = null;
+        // INVARIANT: null means WithMaxSessionLockRenewalDuration was never called, so the config-bound
+        // value is left untouched. A non-null value means the fluent method was called and its value
+        // overrides any config-bound value in EITHER direction (explicit 2 min overrides config 10 min).
+        private TimeSpan? _maxSessionLockRenewalDuration = null;
 
         private const int _defaultMaxConcurrentCalls = 1;
         private const int _defaultPrefetchCount = 0;
+        private static readonly TimeSpan _defaultSessionIdleTimeout = TimeSpan.FromSeconds(60);
+        private static readonly TimeSpan _defaultMaxSessionLockRenewalDuration = TimeSpan.FromMinutes(5);
 
         public static ServiceBusOptionsBuilder Create(IServiceCollection services, IConfiguration configuration)
             => new ServiceBusOptionsBuilder(services, configuration);
@@ -93,6 +103,28 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public ServiceBusOptionsBuilder WithCrossEntityTransactions(bool enabled = true)
         {
             _enableCrossEntityTransactions = enabled;
+            return this;
+        }
+
+        /// <summary>
+        /// Overrides how long a held session may yield no message before it is released and the
+        /// receiver rolls to the next session. Applies only to session-enabled receivers.
+        /// Default: 60 seconds.
+        /// </summary>
+        public ServiceBusOptionsBuilder WithSessionIdleTimeout(TimeSpan timeout)
+        {
+            _sessionIdleTimeout = timeout;
+            return this;
+        }
+
+        /// <summary>
+        /// Overrides the ceiling on how long a held session's lock is renewed for long-running
+        /// processing. Once reached, renewal stops and the session is allowed to expire or roll
+        /// naturally. Applies only to session-enabled receivers. Default: 5 minutes.
+        /// </summary>
+        public ServiceBusOptionsBuilder WithMaxSessionLockRenewalDuration(TimeSpan duration)
+        {
+            _maxSessionLockRenewalDuration = duration;
             return this;
         }
 
@@ -232,6 +264,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             if (_enableCrossEntityTransactions.HasValue)
             {
                 options.EnableCrossEntityTransactions = _enableCrossEntityTransactions.Value;
+            }
+
+            // Explicit fluent call wins over configuration: apply the fluent value only when
+            // WithSessionIdleTimeout was actually called, leaving the config-bound value untouched
+            // otherwise.
+            if (_sessionIdleTimeout.HasValue)
+            {
+                options.SessionIdleTimeout = _sessionIdleTimeout.Value;
+            }
+
+            // Explicit fluent call wins over configuration: apply the fluent value only when
+            // WithMaxSessionLockRenewalDuration was actually called, leaving the config-bound value
+            // untouched otherwise.
+            if (_maxSessionLockRenewalDuration.HasValue)
+            {
+                options.MaxSessionLockRenewalDuration = _maxSessionLockRenewalDuration.Value;
             }
 
             Services.AddSingleton(options);

@@ -69,6 +69,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 headers[MessageContext.InfrastructureType] = ASBMessageContext.InfrastructureType;
                 headers[MessageContext.ReceiveAttempts] = message.DeliveryCount;
 
+                // SessionId is the Azure Service Bus realization of the core Group Id term, so a session
+                // message's SessionId is surfaced under the existing GroupId header — no ASB-specific alias.
+                // Only stamped when present (session messages); non-session messages are unchanged.
+                if (!string.IsNullOrEmpty(message.SessionId))
+                {
+                    headers[MessageContext.GroupId] = message.SessionId;
+                }
+
                 messageContext = new MessageBrokerContext(message.MessageId, message.Body.ToArray(), headers, messageReceiverPath, cancellationToken, bodyConverter);
 
                 messageContext.Container.Include(message);
