@@ -116,7 +116,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                 // Force automatic recovery: drop the broker connection out-of-band. The source's
                 // RecoverySucceededAsync handler recreates the receive channel, bumps the epoch, and re-registers
                 // the consumer under the gate.
-                var killed = await RabbitMqConnectionKiller.KillAllConnectionsAsync(amqpUri, CancellationToken.None);
+                var killed = await RabbitMqConnectionKiller.KillAllConnectionsAsync(
+                    amqpUri, _fixture.GetManagementBaseUri(), CancellationToken.None);
                 killed.Should().BeGreaterThan(0,
                     "at least the receiver's broker connection must be dropped to trigger automatic recovery");
 

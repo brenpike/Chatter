@@ -337,3 +337,11 @@ Publish/
 
 # Claude Code personal overrides
 CLAUDE.local.md
+
+.claude/settings.local.json
+
+.claude/agent-memory/*
+.claude/agent-memory/
+
+# Claude Code worktree sessions
+.claude/worktrees/
