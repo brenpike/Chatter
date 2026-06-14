@@ -5,6 +5,8 @@ using System.Threading.Tasks;
 using Chatter.CQRS;
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.Events;
+using Chatter.MessageBrokers.Configuration;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
@@ -77,10 +79,30 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         // RecordingMessageHandler<TMessage> should be wired into Chatter's handler resolution; a closed
         // IMessageHandler<TMessage> is registered for each so Chatter's dispatcher resolves and invokes it on
         // the real receive path.
+        //
+        // This original overload (no global transaction mode) is preserved byte-for-byte so every existing SSB
+        // test resolves to it unchanged: it forwards to the mode-aware overload below with globalTransactionMode
+        // = null, which passes NO options delegate to AddMessageBrokers (the receiver falls back to its
+        // TransactionMode.ReceiveOnly default exactly as before).
         public static ChatterSsbPipelineHarness Build(
             string connectionString,
             ServiceBrokerProvisioning.ObjectSet objectSet,
             Action<SqlServiceBrokerOptionsBuilder> configureReceivers,
+            params Type[] messageTypes)
+            => Build(connectionString, objectSet, configureReceivers, globalTransactionMode: null, messageTypes);
+
+        // Mode-aware overload: globalTransactionMode sets the GLOBAL MessageBrokerOptions.TransactionMode for this
+        // harness instance. The SSB receive-side transaction mode is GLOBAL-per-container — SqlServiceBrokerReceiver
+        // captures it in its ctor from MessageBrokerOptions.TransactionMode (NOT per-receiver), so the only lever
+        // that reaches the receive-side RECEIVE transaction is AddMessageBrokers' options delegate via
+        // WithTransactionMode. When supplied, it is wired as opts => opts.WithTransactionMode(value) on the
+        // existing AddMessageBrokers call; when null, no options delegate is passed and behavior is byte-identical
+        // to the original overload above (the receiver falls back to its TransactionMode.ReceiveOnly default).
+        public static ChatterSsbPipelineHarness Build(
+            string connectionString,
+            ServiceBrokerProvisioning.ObjectSet objectSet,
+            Action<SqlServiceBrokerOptionsBuilder> configureReceivers,
+            TransactionMode? globalTransactionMode,
             params Type[] messageTypes)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
@@ -108,9 +130,15 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             // IsValidMessageHandler scan filter, so it is registered explicitly below.
             var testAssembly = typeof(ChatterSsbPipelineHarness).Assembly;
 
+            // Only pass an options delegate when a global transaction mode is requested; otherwise leave it null
+            // so the AddMessageBrokers call is byte-identical to the no-options form existing tests rely on.
+            Action<MessageBrokerOptionsBuilder> configureMessageBrokerOptions = globalTransactionMode is null
+                ? null
+                : opts => opts.WithTransactionMode(globalTransactionMode.Value);
+
             services
                 .AddChatterCqrs(configuration, testAssembly)
-                .AddMessageBrokers(receiverAssemblies: testAssembly)
+                .AddMessageBrokers(configureMessageBrokerOptions, receiverAssemblies: testAssembly)
                 .AddSqlServiceBroker(ssb =>
                 {
                     // Seed the options with the fixture's app connection string and a FINITE receiver timeout
