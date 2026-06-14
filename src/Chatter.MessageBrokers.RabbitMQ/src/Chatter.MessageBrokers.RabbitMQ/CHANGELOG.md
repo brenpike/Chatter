@@ -6,11 +6,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-13
+
 ### Added
 
-### Changed
-
-### Fixed
+- `SendOptions.WithRabbitMqRouting(exchange, routingKey)` / `PublishOptions.WithRabbitMqRouting(exchange, routingKey)` — expose the non-default exchange / routing-key override on the documented `context.RabbitMq().Send/Publish(...)` handler path (previously reachable only via manual header stamping or the explicit-outbound `OutboundBrokeredMessage` overload). (#200)
 
 ## [0.1.2] - 2026-06-13
 
