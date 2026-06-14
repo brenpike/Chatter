@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.12.0] - 2026-06-14
+
+### Changed
+
+- **BREAKING:** Migrated from the deprecated `System.Data.SqlClient` to `Microsoft.Data.SqlClient` (7.0.1). The public API now exposes `Microsoft.Data.SqlClient` types — the `Scripts` command types (e.g. `BeginDialogConversationCommand`) and any `SqlConnection`/`SqlTransaction` passed via the message `TransactionContext`. Consumers compiled against `System.Data.SqlClient` that construct these types or stow a `System.Data.SqlClient.SqlTransaction` in the transaction context must migrate to `Microsoft.Data.SqlClient`. Microsoft.Data.SqlClient defaults `Encrypt=true` with server-certificate validation (the legacy provider did not). Connection strings targeting a self-signed/untrusted-certificate server must now set `Encrypt=False` or `TrustServerCertificate=True` explicitly, or `Open`/`OpenAsync` will fail. Fixes the nightly SSB integration `ReflectionTypeLoadException` (SqlGuidCaster) on net8/net10. (#204)
+
 ## [0.11.1] - 2026-06-12
 
 ### Fixed

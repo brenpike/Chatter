@@ -1,7 +1,7 @@
 ﻿using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using System;
 using System.Collections.Generic;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving.CircuitBreaker
 {

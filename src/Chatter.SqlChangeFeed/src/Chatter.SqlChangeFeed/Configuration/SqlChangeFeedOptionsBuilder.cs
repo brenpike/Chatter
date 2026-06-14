@@ -2,7 +2,7 @@
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 
 namespace Chatter.SqlChangeFeed.Configuration
 {

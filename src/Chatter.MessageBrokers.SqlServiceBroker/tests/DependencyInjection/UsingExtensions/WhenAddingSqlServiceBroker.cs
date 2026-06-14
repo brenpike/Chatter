@@ -19,16 +19,21 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
     // infrastructure factory type. They therefore survive the STEP-006 rewire from the per-broker
     // SqlServiceBrokerInfrastructureFactory to the shared core factory unchanged.
     //
-    // FALLBACK APPROACH (descriptor-shape, not full resolution): the ASB twin resolves IMessagingInfrastructure
-    // fully because nothing in the ASB bootstrap scans the AppDomain. The SSB bootstrap cannot: both
-    // AddChatterCqrs and AddMessageBrokers call AssemblySourceFilter.Apply(), which enumerates
-    // AppDomain.CurrentDomain.GetAssemblies() and calls GetTypes() on every loaded assembly. In the SSB test
-    // AppDomain, System.Data.SqlClient (4.6.x, transitively referenced by this module) is loaded and its
-    // GetTypes() throws ReflectionTypeLoadException ("Could not load type 'SqlGuidCaster' ... incorrectly
-    // aligned or overlapped"). That throw is inside product CQRS scanning code and cannot be suppressed from
-    // the test without editing product code. So full Chatter bootstrapping is not reachable here, and the
-    // wiring is pinned at the IServiceCollection descriptor level instead — against the real, unmodified
-    // AddSqlServiceBroker output, which performs no AppDomain scan on its own.
+    // SCOPE (descriptor-shape, not full resolution): these tests deliberately pin the wiring at the
+    // IServiceCollection descriptor level — against the real, unmodified AddSqlServiceBroker output, which
+    // performs no AppDomain scan on its own — rather than resolving IMessagingInfrastructure end-to-end
+    // through AddChatterCqrs / AddMessageBrokers.
+    //
+    // HISTORICAL NOTE: this descriptor-shape approach originally existed because full bootstrapping was not
+    // reachable in the SSB test AppDomain. Both AddChatterCqrs and AddMessageBrokers call
+    // AssemblySourceFilter.Apply(), which enumerates AppDomain.CurrentDomain.GetAssemblies() and calls
+    // GetTypes() on every loaded assembly; the legacy System.Data.SqlClient 4.6.x assembly (transitively
+    // referenced by this module at the time) threw ReflectionTypeLoadException ("Could not load type
+    // 'SqlGuidCaster' ... incorrectly aligned or overlapped") on that scan. The migration to
+    // Microsoft.Data.SqlClient (#204) removed System.Data.SqlClient from this module's dependency graph, so
+    // that specific crash no longer blocks the scan. A full-resolution DI test that exercises the real
+    // Chatter bootstrap path is now worth adding (tracked separately); these descriptor-shape characterization
+    // tests are retained as the always-available wiring-contract pin regardless of AppDomain scan behavior.
     public class WhenAddingSqlServiceBroker : Testing.Core.Context
     {
         private const string _connectionString =

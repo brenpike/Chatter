@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Collections.Generic;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -21,7 +21,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Sending.UsingSqlServiceB
     // Characterization tests pinning SqlServiceBrokerSender.Dispatch's NEW-connection branch through the
     // real OutboundTransactionPolicy + InMemorySqlConnectionSource, WITHOUT a live Service Broker.
     //
-    // REALISM CONSTRAINT (from the deepening plan, verified empirically against System.Data.SqlClient):
+    // REALISM CONSTRAINT (from the deepening plan, verified empirically against Microsoft.Data.SqlClient):
     //   - CreateCommand() works on an unopened SqlConnection, so the Scripts command builders' Create()
     //     surface is pinned at the Scripts level (UsingBeginDialogConversationCommand, etc.).
     //   - BeginTransactionAsync() THROWS InvalidOperationException ("the connection is closed") on an
