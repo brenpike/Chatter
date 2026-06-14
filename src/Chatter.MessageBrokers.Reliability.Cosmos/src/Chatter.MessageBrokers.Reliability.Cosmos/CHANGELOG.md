@@ -8,6 +8,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Added
 
+- Document-tier outbox enqueue (#219): `CosmosBrokeredMessageOutbox` realizes `IBrokeredMessageOutbox.SendToOutbox` by resolving the active doc-tier atomic-write handle from the reliability surface and contributing the Chatter-owned outbox document's `CreateItemStream` op to the framework-owned `TransactionalBatch` (it never executes the batch — the Document-Tier Batch-Lifecycle Behavior owns the single commit point). The outbox document (`CosmosOutboxDocument`) carries the `_chatterType="outbox"` discriminator, an `outbox:{encoded(MessageId)}` id via the shared Cosmos-id-safe encoder (`CosmosItemId`, reused by #220 for inbox markers), the raw `MessageId` verbatim, the `MessageContext` serialized with `ChatterJson.Options` (EF parity), the message body/destination/content-type, and `status="pending"`; the resolved partition-key value is stamped at the container's actual partition-key path (supporting a hierarchical path), not a fixed field. Registered as `IBrokeredMessageOutbox` with the outbox router in DI.
+- Public op-staging contribution path on `ICosmosAtomicWriteHandle` (`MarkOperationStaged()` / `StagedOperationCount`) so the outbox/inbox can contribute ops to the framework-owned batch through the public interface. Closes the first of the two deferred P1 skeleton findings.
+- Batch-response inspection in the Document-Tier Batch-Lifecycle Behavior: after the single `ExecuteAsync`, a non-success `TransactionalBatchResponse` throws `CosmosBatchExecutionException` so the message is not acked when the writes did not commit (a forced aggregate ETag/412 surfaces here). The inspection is structured as a clean seam so #220 can later distinguish a confirmed-duplicate inbox-marker 409. The empty-batch guard (skip `ExecuteAsync` when no op was staged) is preserved. Closes the second deferred P1 skeleton finding.
+
 ### Changed
 
 ### Fixed

@@ -1,6 +1,8 @@
 using Chatter.CQRS.DependencyInjection;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Reliability.Cosmos;
+using Chatter.MessageBrokers.Reliability.Outbox;
+using Chatter.MessageBrokers.Routing;
 using Microsoft.Azure.Cosmos;
 using System;
 
@@ -72,6 +74,14 @@ namespace Microsoft.Extensions.DependencyInjection
             pipelineBuilder.Services.Replace<PartitionKeyResolver>(ServiceLifetime.Singleton, _ => partitionKeyResolver);
             pipelineBuilder.Services.Replace<DocumentTierReliabilitySurface, DocumentTierReliabilitySurface>(ServiceLifetime.Scoped);
             pipelineBuilder.Services.Replace<IDocumentTierReliabilitySurface>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<DocumentTierReliabilitySurface>());
+
+            // The Cosmos outbox contributes the outbox-doc create-op to the framework-owned batch via the surface
+            // handle. It is resolved per the cast-at-consumption model used in core; routing outbound messages through
+            // the outbox replaces the default router (precedent: the EF provider's WithOutboxProcessingBehavior). The
+            // Cosmos provider deliberately does NOT implement IPollableOutboxStore — dispatch is the #222 change-feed
+            // relay, not a polling query (ADR-0007).
+            pipelineBuilder.Services.Replace<IBrokeredMessageOutbox, CosmosBrokeredMessageOutbox>(ServiceLifetime.Scoped);
+            pipelineBuilder.Services.Replace<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
 
             // OUTERMOST: register first so the CommandBehaviorPipeline reverse places it outermost.
             pipelineBuilder.WithBehavior(typeof(DocumentTierBatchLifecycleBehavior<>));

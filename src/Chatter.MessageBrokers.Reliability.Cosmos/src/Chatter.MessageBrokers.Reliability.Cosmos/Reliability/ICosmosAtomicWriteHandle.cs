@@ -52,5 +52,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// document writers in #219/#220 apply it as <c>IfMatchEtag</c>.
         /// </summary>
         string ETag { get; }
+
+        /// <summary>
+        /// Count of ops staged into <see cref="Batch"/> by handler aggregate writes, the outbox (#219), and the
+        /// inbox marker (#220). The Document-Tier Batch-Lifecycle Behavior reads this after <c>next()</c> and skips
+        /// the single batch-execute when it is zero, so an empty batch never calls the Cosmos transport.
+        /// </summary>
+        int StagedOperationCount { get; }
+
+        /// <summary>
+        /// Records that an op-contributor staged an operation into <see cref="Batch"/>. Op contributors (the outbox in
+        /// #219, the inbox marker in #220) call a <see cref="TransactionalBatch"/> op method on <see cref="Batch"/> and
+        /// then invoke this so the behavior's empty-batch guard reflects the staged op.
+        /// </summary>
+        void MarkOperationStaged();
     }
 }

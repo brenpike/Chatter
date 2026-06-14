@@ -7,7 +7,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <summary>
     /// The concrete document-tier atomic-write handle. Constructed by the Document-Tier Batch-Lifecycle Behavior after
     /// it resolves the partition key and opens the <see cref="TransactionalBatch"/>; exposed on the document-tier
-    /// surface for the duration of <c>next()</c>. Carries no op-staging behavior in #218.
+    /// surface for the duration of <c>next()</c>. Op contributors (the outbox in #219, the inbox marker in #220)
+    /// stage ops into <see cref="Batch"/> and call <see cref="MarkOperationStaged"/> via the public interface.
     /// </summary>
     internal sealed class CosmosAtomicWriteHandle : ICosmosAtomicWriteHandle
     {
