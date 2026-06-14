@@ -119,6 +119,45 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             provider.GetRequiredService<LeaseContainer>().Container.Should().BeSameAs(lease);
         }
 
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        [InlineData(null)]
+        public void MustRejectInvalidPartitionKeyPathSegment(string invalidSegment)
+        {
+            var (document, lease) = MockContainers();
+
+            Action configure = () => CaptureBuilder(b => b.WithCosmosDocumentReliability(
+                document,
+                lease,
+                _ => new PartitionKey("pk"),
+                "/tenantId",
+                invalidSegment));
+
+            configure.Should().Throw<ArgumentException>();
+        }
+
+        [Fact]
+        public void MustNotBeAffectedByPostRegistrationMutationOfPartitionKeyPath()
+        {
+            var (document, lease) = MockContainers();
+            var path = new[] { "/tenantId" };
+
+            var builder = CaptureBuilder(b => b.WithCosmosDocumentReliability(
+                document,
+                lease,
+                _ => new PartitionKey("pk"),
+                path));
+
+            // Mutating the caller-owned array after registration must not corrupt the registered path.
+            path[0] = "/corrupted";
+
+            using var provider = builder.Services.BuildServiceProvider();
+            var resolver = provider.GetRequiredService<PartitionKeyResolver>();
+
+            resolver.PartitionKeyPath.Should().ContainSingle().Which.Should().Be("/tenantId");
+        }
+
         [Fact]
         public void MustResolveContainersViaFactoryOverload()
         {

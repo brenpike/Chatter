@@ -52,7 +52,19 @@ namespace Microsoft.Extensions.DependencyInjection
                 throw new ArgumentException("A container partition-key path is required.", nameof(containerPartitionKeyPath));
             }
 
-            var partitionKeyPath = Array.AsReadOnly(containerPartitionKeyPath);
+            // Clone before wrapping so post-registration mutation of the caller-owned array cannot corrupt the
+            // registered path, and validate every segment: deferred (#219/#220) document writers stamp the resolved
+            // partition-key value at this declared path, so an empty/whitespace segment would break the carriage contract.
+            var partitionKeyPathSegments = (string[])containerPartitionKeyPath.Clone();
+            for (var i = 0; i < partitionKeyPathSegments.Length; i++)
+            {
+                if (string.IsNullOrWhiteSpace(partitionKeyPathSegments[i]))
+                {
+                    throw new ArgumentException("Every container partition-key path segment must be non-null and non-whitespace.", nameof(containerPartitionKeyPath));
+                }
+            }
+
+            var partitionKeyPath = Array.AsReadOnly(partitionKeyPathSegments);
             var partitionKeyResolver = new PartitionKeyResolver(resolvePartitionKey, partitionKeyPath);
 
             pipelineBuilder.Services.Replace(ServiceLifetime.Singleton, sp => new DocumentContainer(documentContainerFactory(sp)));
