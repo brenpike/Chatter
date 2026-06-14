@@ -12,6 +12,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+- Per-send `SendOptions`/`PublishOptions` no longer leak into the inbound handler message context: `SendOptions.Create`/`PublishOptions.Create` now copy the inbound context so a routed/configured send does not persist its options (exchange/routing key, subject, TTL, correlation-id, etc.) into subsequent sends on the same handler context (#201).
+
 ## [0.13.1] - 2026-06-09
 
 ### Fixed
