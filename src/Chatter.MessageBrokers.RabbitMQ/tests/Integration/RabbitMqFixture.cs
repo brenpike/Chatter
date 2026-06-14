@@ -22,6 +22,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         // which the deadletter scenario proves on both per ADR-0001.
         private const string RabbitMqImage = "rabbitmq:3.13-management";
 
+        // The container-internal management API port. Testcontainers maps this to a RANDOM host port (NOT 15672),
+        // so the management base URI must be built from GetMappedPublicPort(15672) rather than a hardcoded port.
+        private const int ManagementContainerPort = 15672;
+
         // Bounds container start so a wedged Docker pull/start fails fast instead of hanging the test collection.
         // Generous because a cold image pull is slow; still finite.
         private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(5);
@@ -42,6 +46,22 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
             return _container.GetConnectionString();
         }
 
+        // The management HTTP API base URI (http://host:mappedManagementPort) for the running container. The
+        // management port 15672 is mapped by Testcontainers to a RANDOM host port, so this resolves the mapped
+        // port at call time rather than assuming the default. Throws if the container was not started (Docker
+        // unavailable), mirroring GetAmqpConnectionString.
+        public Uri GetManagementBaseUri()
+        {
+            if (_container is null)
+            {
+                throw new InvalidOperationException(
+                    "The RabbitMQ container was not started (Docker unavailable). " +
+                    "Integration tests must be guarded with [RequiresDockerFact].");
+            }
+
+            return new UriBuilder("http", _container.Hostname, _container.GetMappedPublicPort(ManagementContainerPort)).Uri;
+        }
+
         public async Task InitializeAsync()
         {
             if (!DockerEnvironment.IsAvailable)
@@ -51,7 +71,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
 
             using var startupCts = new CancellationTokenSource(StartupTimeout);
 
-            _container = new RabbitMqBuilder(RabbitMqImage).Build();
+            // RabbitMqBuilder publishes only the AMQP port (5672) by default. The recovery-epoch test drops broker
+            // connections via the management HTTP API, so the management port (15672) must also be published to a
+            // random host port; GetManagementBaseUri resolves that mapped port at call time.
+            _container = new RabbitMqBuilder(RabbitMqImage)
+                .WithPortBinding(ManagementContainerPort, assignRandomHostPort: true)
+                .Build();
             await _container.StartAsync(startupCts.Token).ConfigureAwait(false);
         }
 
