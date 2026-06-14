@@ -340,11 +340,6 @@
         "resolved": "10.0.0",
         "contentHash": "inRnbpCS0nwO/RuoZIAqxQUuyjaknOOnCEZB55KSMMjRhl0RQDttSmLSGsUJN3RQ3ocf5NDLFd2mOQViHqMK5w=="
       },
-      "Newtonsoft.Json": {
-        "type": "Transitive",
-        "resolved": "13.0.3",
-        "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
-      },
       "Scrutor": {
         "type": "Transitive",
         "resolved": "3.3.0",
@@ -371,10 +366,9 @@
       "chatter.messagebrokers": {
         "type": "Project",
         "dependencies": {
-          "Chatter.CQRS": "[0.8.0, )",
+          "Chatter.CQRS": "[0.8.1, )",
           "Microsoft.Extensions.Configuration.Abstractions": "[10.0.0, )",
           "Microsoft.Extensions.Hosting": "[10.0.0, )",
-          "Newtonsoft.Json": "[13.0.3, )",
           "Scrutor": "[3.3.0, )"
         }
       }
@@ -715,11 +709,6 @@
         "resolved": "8.0.0",
         "contentHash": "bXJEZrW9ny8vjMF1JV253WeLhpEVzFo1lyaZu1vQ4ZxWUlVvknZ/+ftFgVheLubb4eZPSwwxBeqS1JkCOjxd8g=="
       },
-      "Newtonsoft.Json": {
-        "type": "Transitive",
-        "resolved": "13.0.3",
-        "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
-      },
       "Scrutor": {
         "type": "Transitive",
         "resolved": "3.3.0",
@@ -746,10 +735,9 @@
       "chatter.messagebrokers": {
         "type": "Project",
         "dependencies": {
-          "Chatter.CQRS": "[0.8.0, )",
+          "Chatter.CQRS": "[0.8.1, )",
           "Microsoft.Extensions.Configuration.Abstractions": "[8.0.0, )",
           "Microsoft.Extensions.Hosting": "[8.0.0, )",
-          "Newtonsoft.Json": "[13.0.3, )",
           "Scrutor": "[3.3.0, )"
         }
       }

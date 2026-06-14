@@ -664,14 +664,14 @@
       "chatter.messagebrokers.rabbitmq": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.13.1, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "RabbitMQ.Client": "[7.2.1, )"
         }
       },
       "chatter.messagebrokers.reliability.entityframework": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.13.1, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "Microsoft.EntityFrameworkCore": "[10.0.0, )",
           "Microsoft.EntityFrameworkCore.Relational": "[10.0.0, )"
         }
@@ -1351,14 +1351,14 @@
       "chatter.messagebrokers.rabbitmq": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.13.1, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "RabbitMQ.Client": "[7.2.1, )"
         }
       },
       "chatter.messagebrokers.reliability.entityframework": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.13.1, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "Microsoft.EntityFrameworkCore": "[8.0.27, )",
           "Microsoft.EntityFrameworkCore.Relational": "[8.0.27, )"
         }

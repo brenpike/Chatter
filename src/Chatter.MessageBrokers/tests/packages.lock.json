@@ -541,17 +541,16 @@
       "chatter.messagebrokers": {
         "type": "Project",
         "dependencies": {
-          "Chatter.CQRS": "[0.8.0, )",
+          "Chatter.CQRS": "[0.8.1, )",
           "Microsoft.Extensions.Configuration.Abstractions": "[10.0.0, )",
           "Microsoft.Extensions.Hosting": "[10.0.0, )",
-          "Newtonsoft.Json": "[13.0.3, )",
           "Scrutor": "[3.3.0, )"
         }
       },
       "chatter.messagebrokers.reliability.entityframework": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.9.0, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "Microsoft.EntityFrameworkCore": "[10.0.0, )",
           "Microsoft.EntityFrameworkCore.Relational": "[10.0.0, )"
         }
@@ -559,7 +558,7 @@
       "chatter.testing.core": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers.Reliability.EntityFramework": "[0.4.0, )",
+          "Chatter.MessageBrokers.Reliability.EntityFramework": "[0.4.1, )",
           "Microsoft.EntityFrameworkCore": "[10.0.8, )",
           "Microsoft.EntityFrameworkCore.InMemory": "[10.0.8, )",
           "Moq": "[4.20.72, )"
@@ -1101,17 +1100,16 @@
       "chatter.messagebrokers": {
         "type": "Project",
         "dependencies": {
-          "Chatter.CQRS": "[0.8.0, )",
+          "Chatter.CQRS": "[0.8.1, )",
           "Microsoft.Extensions.Configuration.Abstractions": "[8.0.0, )",
           "Microsoft.Extensions.Hosting": "[8.0.0, )",
-          "Newtonsoft.Json": "[13.0.3, )",
           "Scrutor": "[3.3.0, )"
         }
       },
       "chatter.messagebrokers.reliability.entityframework": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.9.0, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "Microsoft.EntityFrameworkCore": "[8.0.27, )",
           "Microsoft.EntityFrameworkCore.Relational": "[8.0.27, )"
         }
@@ -1119,7 +1117,7 @@
       "chatter.testing.core": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers.Reliability.EntityFramework": "[0.4.0, )",
+          "Chatter.MessageBrokers.Reliability.EntityFramework": "[0.4.1, )",
           "Microsoft.EntityFrameworkCore": "[8.0.27, )",
           "Microsoft.EntityFrameworkCore.InMemory": "[8.0.27, )",
           "Moq": "[4.20.72, )"

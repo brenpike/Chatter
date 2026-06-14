@@ -705,7 +705,7 @@
       "chatter.messagebrokers": {
         "type": "Project",
         "dependencies": {
-          "Chatter.CQRS": "[0.8.0, )",
+          "Chatter.CQRS": "[0.8.1, )",
           "Microsoft.Extensions.Configuration.Abstractions": "[10.0.0, )",
           "Microsoft.Extensions.Hosting": "[10.0.0, )",
           "Scrutor": "[3.3.0, )"
@@ -715,14 +715,14 @@
         "type": "Project",
         "dependencies": {
           "Azure.Messaging.ServiceBus": "[7.20.1, )",
-          "Chatter.MessageBrokers": "[0.11.0, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "Scrutor": "[3.3.0, )"
         }
       },
       "chatter.messagebrokers.reliability.entityframework": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.11.0, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "Microsoft.EntityFrameworkCore": "[10.0.0, )",
           "Microsoft.EntityFrameworkCore.Relational": "[10.0.0, )"
         }
@@ -1442,7 +1442,7 @@
       "chatter.messagebrokers": {
         "type": "Project",
         "dependencies": {
-          "Chatter.CQRS": "[0.8.0, )",
+          "Chatter.CQRS": "[0.8.1, )",
           "Microsoft.Extensions.Configuration.Abstractions": "[8.0.0, )",
           "Microsoft.Extensions.Hosting": "[8.0.0, )",
           "Scrutor": "[3.3.0, )"
@@ -1452,14 +1452,14 @@
         "type": "Project",
         "dependencies": {
           "Azure.Messaging.ServiceBus": "[7.20.1, )",
-          "Chatter.MessageBrokers": "[0.11.0, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "Scrutor": "[3.3.0, )"
         }
       },
       "chatter.messagebrokers.reliability.entityframework": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.11.0, )",
+          "Chatter.MessageBrokers": "[0.13.2, )",
           "Microsoft.EntityFrameworkCore": "[8.0.27, )",
           "Microsoft.EntityFrameworkCore.Relational": "[8.0.27, )"
         }

@@ -16,7 +16,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
-- **BREAKING:** Migrated from the deprecated `System.Data.SqlClient` to `Microsoft.Data.SqlClient` (7.0.1). The public API now exposes `Microsoft.Data.SqlClient` types via `SqlConnection`, `SqlConnectionStringBuilder`, and `SqlCommand` usage, and via the transitive dependency on the migrated `Chatter.MessageBrokers.SqlServiceBroker`. Consumers compiled against `System.Data.SqlClient` that provide a `System.Data.SqlClient.SqlConnection` or related types must migrate to `Microsoft.Data.SqlClient`. Behavior is otherwise unchanged. (#204)
+- **BREAKING:** Migrated from the deprecated `System.Data.SqlClient` to `Microsoft.Data.SqlClient` (7.0.1). The public API now exposes `Microsoft.Data.SqlClient` types via `SqlConnection`, `SqlConnectionStringBuilder`, and `SqlCommand` usage, and via the transitive dependency on the migrated `Chatter.MessageBrokers.SqlServiceBroker`. Consumers compiled against `System.Data.SqlClient` that provide a `System.Data.SqlClient.SqlConnection` or related types must migrate to `Microsoft.Data.SqlClient`. Microsoft.Data.SqlClient defaults `Encrypt=true` with server-certificate validation (the legacy provider did not). Connection strings targeting a self-signed/untrusted-certificate server must now set `Encrypt=False` or `TrustServerCertificate=True` explicitly, or `Open`/`OpenAsync` will fail. (#204)
 
 ## [0.9.1] - 2026-06-06
 
