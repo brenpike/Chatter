@@ -34,12 +34,30 @@ _Avoid_: forwarder (a Router specialization).
 
 **Body Converter**: Serializes/deserializes a brokered message body to/from a domain message type.
 
+**Two-Tier Reliability**: the reliability port supports two coexisting persistence models — a relational ambient-transaction tier and a NoSQL/document stage-then-commit tier — sharing the enqueue, inbox, and transaction-context seam.
+
+**Relational Tier**: the ambient-transaction reliability model (Unit of Work wraps the whole handler in an open transaction; polling outbox dispatch).
+_Avoid_: treating it as the only reliability model.
+
+**Document Tier** (NoSQL): the stage-then-commit reliability model where the handler owns an atomic batch on one logical partition and the framework contributes the outbox record; dispatched by a change-feed relay.
+
+**Atomic-Write Handle**: the active transaction or batch carried on the Transaction Context container; the seam both reliability tiers share (a relational transaction or a document-store batch).
+
+**Stage-then-Commit**: an atomic-write model where writes are accumulated then committed once (document tier), as opposed to running handler code inside an ambient transaction.
+
+**Pollable Outbox Store**: the relational-only outbox capability for polling-based dispatch (query unprocessed records, mark processed); not implemented by document-store providers.
+
+**Outbox Relay**: a change-feed-driven drain that publishes persisted outbox records to the broker (document tier), filtered to outbox records only — never deriving events from domain-document changes.
+
+**Co-Resident Outbox**: a document-tier outbox record stored in the same container and logical partition as the aggregate it accompanies, so both are written in one atomic batch.
+
 ## Relationships
 
 - A Brokered Message Receiver consumes infrastructure messages and hands them to the Brokered Message Dispatcher.
 - The Dispatcher relays to a Command or Event handler (Chatter.CQRS) by message type.
 - Recovery (Retry, Circuit Breaker) wraps receiving; exhausting it yields a Critical Failure routed to the Error Queue.
 - Inbox and Outbox use in-memory implementations by default; durable storage is supplied by the Reliability.EntityFramework context.
+- Reliability is two-tier: a relational (ambient-transaction) tier and a NoSQL/document (stage-then-commit) tier share the enqueue (SendToOutbox), inbox, and Transaction Context seam; durable storage is supplied by provider packages (EntityFramework for relational; Cosmos for document).
 - A Routing Slip drives a Router across a sequence of destinations.
 - Concrete brokers (Azure Service Bus, SQL Service Broker) implement the receiver/sender/path interfaces defined here.
 

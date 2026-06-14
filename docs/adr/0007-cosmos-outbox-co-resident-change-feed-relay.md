@@ -1,0 +1,47 @@
+---
+status: accepted
+date: 2026-06-14
+---
+
+# Cosmos outbox co-resident in the aggregate container, drained by a discriminator-filtered change-feed relay
+
+The NoSQL reliability tier (ADR 0006) must realize the transactional-outbox / atomic-writes pattern on Cosmos DB. Cosmos `TransactionalBatch` imposes hard physical constraints: all items in a batch must share one partition-key value; a batch is bounded at 100 operations, 2 MB, and 5 seconds. Cross-partition and cross-container batches are physically impossible.
+
+## Considered Options
+
+- **Outbox in its own container/table** — mirrors the EF provider's own `DbSet`. Rejected: a cross-container batch is impossible, so the aggregate write and the outbox write cannot be atomic.
+- **(C1) Framework-owns-batch** — the handler hands domain objects and a partition key to Chatter; Chatter serializes them, builds the batch, and executes it. Rejected: forces Chatter — a messaging library — to know how to serialize the application's domain aggregates and own the container. Wrong layer.
+- **(C2) Handler-owns-batch, framework-contributes-outbox + co-resident outbox + change-feed relay (ACCEPTED).**
+
+## Decision
+
+**Co-residency.** The Cosmos outbox document lives **inside** the application's aggregate container, in the **same logical partition** as the aggregate it accompanies. Chatter's Cosmos provider does not own a container; the application injects the container (and the change-feed lease container). Co-location of aggregate and outbox in one partition is structurally enforced because the outbox document is added to the application's own partition-scoped batch.
+
+**Hard constraint.** Every atomic write in scope is single-aggregate / single-partition. A workflow needing to atomically mutate two aggregates in different partitions AND emit an event is physically impossible on Cosmos and is **out of scope** — that is a saga / process-manager concern (multiple single-partition steps), not the outbox.
+
+**Outbox-doc shape.** Chatter owns this — it is the library value-add over hand-writing `.CreateItem(outboxMessage)`:
+
+- `type = "outbox"` discriminator.
+- Document id `outbox:{MessageId}`, using `OutboundBrokeredMessage.MessageId` as the event id.
+- Carries the serialized `MessageContext`, message body, `Destination`, and content-type.
+- A positive `ttl` is stamped after the relay delivers, so delivered documents self-expire (container `defaultTtl = -1`).
+
+**Concurrency and idempotency.**
+
+- Aggregate upsert carries `IfMatchEtag`; a 412 on conflict is an application-level retry signal.
+- The outbox `CreateItem` is a fresh document with no ETag.
+- Inbox deduplication is 409-on-create of a unique inbox document id — strictly better than EF's read-then-add TOCTOU race.
+- No datetime concurrency token (relational-only).
+
+**Dispatch via change-feed relay.** A change-feed processor attached to the application's container drains outbox documents **filtered by the `type="outbox"` discriminator** and publishes them through the broker. The relay **must not** derive integration events from domain-document changes — only explicitly authored outbox documents are published. The relay (not a polling query) is the Cosmos dispatch mechanism; the Cosmos provider does **not** implement `IPollableOutboxStore`.
+
+**Platform.** New module `Chatter.MessageBrokers.Reliability.Cosmos`, targeting `net8.0;net10.0`, depending on the Microsoft.Azure.Cosmos SDK v3 (`TransactionalBatch` + change-feed-processor API). Initial version `0.1.0`.
+
+## Consequences
+
+- Atomic aggregate-plus-event write is achieved with a single `TransactionalBatch`.
+- Chatter remains ignorant of application domain types and container ownership.
+- Co-location of aggregate and outbox in one partition is enforced by construction, not by convention.
+- The relay's discriminator filter encodes the "never derive events from the domain change feed" rule inside Chatter — it cannot be accidentally bypassed by a caller.
+- Cross-partition atomic writes are an explicit non-goal (saga territory).
+- The Cosmos Linux emulator is heavy and flaky in CI; this is a known integration-test risk, mitigated by the lighter vnext-preview emulator and docker-gating.
