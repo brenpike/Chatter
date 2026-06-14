@@ -113,8 +113,16 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IReplyRouter, ReplyRouter>();
 
             builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
-            builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
-            builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
+            // Register the concrete in-memory outbox once scoped and forward both the enqueue contract and the
+            // pollable store to the SAME instance, so SendToOutbox and polling share one ConcurrentDictionary.
+            builder.Services.AddScoped<InMemoryBrokeredMessageOutbox>();
+            builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<InMemoryBrokeredMessageOutbox>());
+            builder.Services.AddIfNotRegistered<IPollableOutboxStore>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<InMemoryBrokeredMessageOutbox>());
+            // Register the concrete in-memory inbox once scoped and forward both the wrap seam and the dedup
+            // contract to the SAME instance.
+            builder.Services.AddScoped<InMemoryBrokeredMessageInbox>();
+            builder.Services.AddIfNotRegistered<IBrokeredMessageInbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<InMemoryBrokeredMessageInbox>());
+            builder.Services.AddIfNotRegistered<IInboxDeduplicator>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<InMemoryBrokeredMessageInbox>());
             builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();
             builder.Services.AddSingleton<IRetryExceptionEvaluator, RetryExceptionEvaluator>();
             builder.Services.AddSingleton<ICircuitBreakerExceptionEvaluator, CircuitBreakerExceptionEvaluator>();

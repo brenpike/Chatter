@@ -12,11 +12,5 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         Task SendToOutbox(OutboundBrokeredMessage outboundBrokeredMessage, TransactionContext transactionContext, CancellationToken cancellationToken = default)
              => SendToOutbox(new[] { outboundBrokeredMessage }, transactionContext, cancellationToken);
         Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext, CancellationToken cancellationToken = default);
-
-        Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default);
-        Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages, CancellationToken cancellationToken = default);
-        Task UpdateProcessedDate(OutboxMessage outboxMessage, CancellationToken cancellationToken = default);
-
-        Task<IEnumerable<OutboxMessage>> GetUnprocessedBatch(Guid batchId, CancellationToken cancellationToken = default);
     }
 }

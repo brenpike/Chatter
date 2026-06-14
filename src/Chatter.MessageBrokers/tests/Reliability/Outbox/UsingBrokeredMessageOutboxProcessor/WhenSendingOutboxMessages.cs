@@ -39,7 +39,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         private readonly Mock<IServiceScopeFactory> _serviceScopeFactory = new Mock<IServiceScopeFactory>();
         private readonly Mock<IServiceScope> _serviceScope = new Mock<IServiceScope>();
         private readonly Mock<IServiceProvider> _serviceProvider = new Mock<IServiceProvider>();
-        private readonly Mock<IBrokeredMessageOutbox> _outbox = new Mock<IBrokeredMessageOutbox>();
+        private readonly Mock<IPollableOutboxStore> _outbox = new Mock<IPollableOutboxStore>();
         private readonly Mock<IOutboxProcessor> _processor = new Mock<IOutboxProcessor>();
         private readonly BrokeredMessageOutboxProcessor _sut;
 
@@ -52,7 +52,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
             _serviceScopeFactory.Setup(f => f.CreateScope()).Returns(_serviceScope.Object);
             _serviceScope.SetupGet(s => s.ServiceProvider).Returns(_serviceProvider.Object);
             // GetRequiredService<T>() resolves through GetService(Type); both must be set or it throws.
-            _serviceProvider.Setup(p => p.GetService(typeof(IBrokeredMessageOutbox))).Returns(_outbox.Object);
+            _serviceProvider.Setup(p => p.GetService(typeof(IPollableOutboxStore))).Returns(_outbox.Object);
             _serviceProvider.Setup(p => p.GetService(typeof(IOutboxProcessor))).Returns(_processor.Object);
 
             _sut = new BrokeredMessageOutboxProcessor(_logger, _reliabilityOptions, _serviceScopeFactory.Object);

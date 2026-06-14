@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
 {
-    class InMemoryBrokeredMessageOutbox : IBrokeredMessageOutbox
+    class InMemoryBrokeredMessageOutbox : IBrokeredMessageOutbox, IPollableOutboxStore
     {
         private readonly ConcurrentDictionary<string, OutboxMessage> _outbox;
         private readonly ILogger<InMemoryBrokeredMessageOutbox> _logger;

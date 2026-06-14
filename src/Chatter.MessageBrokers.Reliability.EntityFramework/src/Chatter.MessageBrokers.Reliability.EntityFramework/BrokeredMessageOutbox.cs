@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework
 {
-    public class BrokeredMessageOutbox<TContext> : IBrokeredMessageOutbox, IUnitOfWork where TContext : DbContext
+    public class BrokeredMessageOutbox<TContext> : IBrokeredMessageOutbox, IPollableOutboxStore, IUnitOfWork where TContext : DbContext
     {
         private readonly TContext _context;
         private readonly ILogger<BrokeredMessageOutbox<TContext>> _logger;

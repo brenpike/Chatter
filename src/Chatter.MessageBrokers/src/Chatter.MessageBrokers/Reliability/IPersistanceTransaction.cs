@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
 {
-    public interface IPersistanceTransaction : IDisposable, IAsyncDisposable
+    public interface IPersistanceTransaction : IAtomicWriteHandle, IDisposable, IAsyncDisposable
     {
         public Guid TransactionId { get; }
         Task CommitAsync(CancellationToken cancellationToken = default);

@@ -10,6 +10,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
+- Conforms to the split core reliability port: `BrokeredMessageOutbox<TContext>` now implements `IPollableOutboxStore` and `BrokeredMessageInbox<TContext>` now implements `IInboxDeduplicator`. Behavior-preserving — the polling and dedup bodies are unchanged; the reliability DI registrations forward the split interfaces to the same scoped store/inbox instance. Requires Chatter.MessageBrokers 0.14.0 (#216).
+
 ### Fixed
 
 ## [0.4.1] - 2026-06-07
