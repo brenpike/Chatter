@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Chatter.CQRS;
 using Chatter.CQRS.Commands;
+using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.SqlServiceBroker.Configuration;
@@ -176,31 +177,100 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         // class sends to its own service so a stale message can never bleed into another class's queue. The
         // initiator stamp + contract + message type stay shared (the send side is common across all classes).
         // Opens and disposes its own scope around the send.
-        public async Task SendAsync<TMessage>(TMessage message) where TMessage : ICommand
+        public Task SendAsync<TMessage>(TMessage message) where TMessage : ICommand
+            => SendAsync(message, _objectSet.TargetServiceName);
+
+        // Destination-override Send: routes the command to destinationServiceName instead of the owning object
+        // set's default TargetServiceName, so a forward/dest scenario (C10) can deliver to a service OTHER than
+        // the one the harness receives on (e.g. ServiceBrokerProvisioning.ForwardDestinationServiceName).
+        // destinationServiceName is the BARE target service name (no brackets): BeginDialogConversationCommand
+        // strips brackets and uses it as "TO SERVICE", so it must name the target SERVICE, not the queue. The
+        // SSB initiator stamp + contract + message type stay shared (the send side is common across all classes).
+        public async Task SendAsync<TMessage>(TMessage message, string destinationServiceName) where TMessage : ICommand
+        {
+            if (string.IsNullOrWhiteSpace(destinationServiceName))
+            {
+                throw new ArgumentException("A destination service name is required.", nameof(destinationServiceName));
+            }
+
+            var options = CreateSsbSendOptions();
+
+            var dispatcher = CreateDispatcher(out var scope);
+            using (scope)
+            {
+                // Bound the dispatcher send so a wedged BEGIN DIALOG / SEND fails fast. The dispatcher Send
+                // overload takes no token, so race it against a finite delay rather than passing CancellationToken
+                // .None to an unbounded await.
+                await AwaitBoundedAsync(
+                    dispatcher.Send(message, destinationServiceName, options: options),
+                    $"sending a '{typeof(TMessage).Name}' through the dispatcher").ConfigureAwait(false);
+            }
+        }
+
+        // The IEvent analogue of SendAsync: publishes an event through Chatter's dispatcher
+        // (IBrokeredMessageDispatcher.Publish) to the owning object set's target service, stamping the same SSB
+        // initiator/contract/message-type headers SendAsync stamps so the publish routes through Chatter's SSB
+        // BEGIN DIALOG / SEND path. Like SendAsync, destinationPath is the BARE target service name (brackets are
+        // stripped by BeginDialogConversationCommand). Opens and disposes its own scope around the publish.
+        public Task PublishAsync<TEvent>(TEvent message) where TEvent : class, IEvent
+            => PublishAsync(message, _objectSet.TargetServiceName);
+
+        // Destination-override Publish: routes the event to destinationServiceName instead of the owning object
+        // set's default TargetServiceName, mirroring the SendAsync override for the C10 forward/dest scenario.
+        public async Task PublishAsync<TEvent>(TEvent message, string destinationServiceName) where TEvent : class, IEvent
+        {
+            if (string.IsNullOrWhiteSpace(destinationServiceName))
+            {
+                throw new ArgumentException("A destination service name is required.", nameof(destinationServiceName));
+            }
+
+            var options = CreateSsbPublishOptions();
+
+            var dispatcher = CreateDispatcher(out var scope);
+            using (scope)
+            {
+                await AwaitBoundedAsync(
+                    dispatcher.Publish(message, destinationServiceName, options: options),
+                    $"publishing a '{typeof(TEvent).Name}' through the dispatcher").ConfigureAwait(false);
+            }
+        }
+
+        // Stamps the SSB headers the SqlServiceBrokerSender reads to BEGIN DIALOG / SEND on the SHARED initiator
+        // service + //Chatter contract + //Chatter/BrokeredMessage message type. Shared by both Send overloads.
+        private static SendOptions CreateSsbSendOptions()
         {
             var options = new SendOptions();
             options.WithMessageContext(SSBMessageContext.ServiceName, ServiceBrokerProvisioning.InitiatorServiceName);
             options.WithMessageContext(SSBMessageContext.ServiceContractName, ServiceBrokerProvisioning.ContractName);
             options.WithMessageContext(SSBMessageContext.MessageTypeName, ServiceBrokerProvisioning.MessageTypeName);
+            return options;
+        }
 
-            var dispatcher = CreateDispatcher(out var scope);
-            using (scope)
-            using (var sendCts = new CancellationTokenSource(TeardownTimeout))
+        // The PublishOptions analogue of CreateSsbSendOptions: identical SSB header stamps on the publish path so
+        // an IEvent routes through Chatter's SSB sender exactly as a command does.
+        private static PublishOptions CreateSsbPublishOptions()
+        {
+            var options = new PublishOptions();
+            options.WithMessageContext(SSBMessageContext.ServiceName, ServiceBrokerProvisioning.InitiatorServiceName);
+            options.WithMessageContext(SSBMessageContext.ServiceContractName, ServiceBrokerProvisioning.ContractName);
+            options.WithMessageContext(SSBMessageContext.MessageTypeName, ServiceBrokerProvisioning.MessageTypeName);
+            return options;
+        }
+
+        // Races a tokenless dispatcher dispatch against a finite TeardownTimeout delay so a wedged BEGIN DIALOG /
+        // SEND fails fast instead of awaiting on CancellationToken.None forever. operationDescription names the
+        // operation for the TimeoutException message.
+        private static async Task AwaitBoundedAsync(Task dispatch, string operationDescription)
+        {
+            using var sendCts = new CancellationTokenSource(TeardownTimeout);
+            var completed = await Task.WhenAny(dispatch, Task.Delay(Timeout.Infinite, sendCts.Token))
+                .ConfigureAwait(false);
+            if (completed != dispatch)
             {
-                // Bound the dispatcher send so a wedged BEGIN DIALOG / SEND fails fast. The dispatcher Send
-                // overload takes no token, so race it against a finite delay rather than passing CancellationToken
-                // .None to an unbounded await.
-                var send = dispatcher.Send(message, _objectSet.TargetServiceName, options: options);
-                var completed = await Task.WhenAny(send, Task.Delay(Timeout.Infinite, sendCts.Token))
-                    .ConfigureAwait(false);
-                if (completed != send)
-                {
-                    throw new TimeoutException(
-                        $"Timed out after {TeardownTimeout} sending a '{typeof(TMessage).Name}' through the dispatcher.");
-                }
-
-                await send.ConfigureAwait(false);
+                throw new TimeoutException($"Timed out after {TeardownTimeout} {operationDescription}.");
             }
+
+            await dispatch.ConfigureAwait(false);
         }
 
         // The shared signal for TMessage. Configure ThrowOnHandle BEFORE the message is received to exercise
