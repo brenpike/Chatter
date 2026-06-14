@@ -95,5 +95,49 @@ namespace Chatter.MessageBrokers.Tests.Routing.Options.UsingSendOptions
             options.Should().BeOfType<SendOptions>();
             options.MessageContext[MessageContext.Subject].Should().Be("supplied");
         }
+
+        [Fact]
+        public void MustNotMutateSuppliedInboundContextWhenMergeAppliesOverride()
+        {
+            var inbound = new Dictionary<string, object>
+            {
+                [MessageContext.CorrelationId] = "corr-inbound"
+            };
+            var perSendOverride = new SendOptions().WithSubject("per-send-subject");
+
+            SendOptions.Create(inbound).Merge(perSendOverride);
+
+            inbound.Should().NotContainKey(MessageContext.Subject);
+            inbound[MessageContext.CorrelationId].Should().Be("corr-inbound");
+        }
+
+        [Fact]
+        public void MustApplyOverrideToReturnedOptionsWhenMergeAppliesOverride()
+        {
+            var inbound = new Dictionary<string, object>
+            {
+                [MessageContext.CorrelationId] = "corr-inbound"
+            };
+            var perSendOverride = new SendOptions().WithSubject("per-send-subject");
+
+            var merged = SendOptions.Create(inbound).Merge(perSendOverride);
+
+            merged.MessageContext[MessageContext.Subject].Should().Be("per-send-subject");
+            merged.MessageContext[MessageContext.CorrelationId].Should().Be("corr-inbound");
+        }
+
+        [Fact]
+        public void MustNotLeakPriorOverrideIntoLaterCreateOnSameInboundContext()
+        {
+            var inbound = new Dictionary<string, object>
+            {
+                [MessageContext.CorrelationId] = "corr-inbound"
+            };
+
+            SendOptions.Create(inbound).Merge(new SendOptions().WithSubject("first-send-subject"));
+            var secondMerged = SendOptions.Create(inbound).Merge(new SendOptions());
+
+            secondMerged.MessageContext.Should().NotContainKey(MessageContext.Subject);
+        }
     }
 }
