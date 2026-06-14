@@ -172,8 +172,10 @@ namespace Microsoft.Extensions.DependencyInjection
             where TMessage : class, IEvent
         {
             // The TOPIC is the top-level entity Azure Service Bus pins a cross-entity transaction to; two
-            // subscriptions on the same topic share one top-level entity.
-            GetOrAddReceiverRegistry(builder.Services).Register(topicName, transactionMode);
+            // subscriptions on the same topic share one top-level entity. The SUBSCRIPTION name is the
+            // receiver path that distinguishes this receiver from another subscription on the same topic for
+            // the per-receiver session lookup.
+            GetOrAddReceiverRegistry(builder.Services).Register(topicName, subscriptionName, transactionMode);
             builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -186,8 +188,9 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                           int maxReceiveAttempts = 10)
             where TMessage : class, ICommand
         {
-            // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to.
-            GetOrAddReceiverRegistry(builder.Services).Register(queueName, transactionMode);
+            // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to,
+            // and is its own receiver path for the per-receiver session lookup.
+            GetOrAddReceiverRegistry(builder.Services).Register(queueName, queueName, transactionMode);
             builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -205,8 +208,10 @@ namespace Microsoft.Extensions.DependencyInjection
             where TMessage : class, IEvent
         {
             // The TOPIC is the top-level entity Azure Service Bus pins a cross-entity transaction to; two
-            // subscriptions on the same topic share one top-level entity.
-            GetOrAddReceiverRegistry(builder.Services).Register(topicName, transactionMode, requiresSession: true);
+            // subscriptions on the same topic share one top-level entity. The SUBSCRIPTION name is the
+            // receiver path that marks THIS subscription session-mode without affecting a sibling normal
+            // subscription on the same topic.
+            GetOrAddReceiverRegistry(builder.Services).Register(topicName, subscriptionName, transactionMode, requiresSession: true);
             builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -222,8 +227,9 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                  int maxReceiveAttempts = 10)
             where TMessage : class, ICommand
         {
-            // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to.
-            GetOrAddReceiverRegistry(builder.Services).Register(queueName, transactionMode, requiresSession: true);
+            // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to,
+            // and is its own receiver path for the per-receiver session lookup.
+            GetOrAddReceiverRegistry(builder.Services).Register(queueName, queueName, transactionMode, requiresSession: true);
             builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -300,7 +306,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 // registered BOTH via attribute and explicit AddQueueReceiver/AddTopicSubscription is not
                 // double-counted as a distinct top-level entity.
                 var topLevelEntity = InferTopLevelEntity(receiverOptions.SendingPath, receiverOptions.MessageReceiverPath);
-                receiverRegistry.Register(topLevelEntity, receiverOptions.TransactionMode);
+                receiverRegistry.Register(topLevelEntity, receiverOptions.MessageReceiverPath, receiverOptions.TransactionMode);
             }
         }
 

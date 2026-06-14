@@ -91,16 +91,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             _receiverFactory = receiverFactory ?? CreateProductionReceiver;
         }
 
-        // Selects the production IServiceBusMessageReceiver for the receiver's entity: the session adapter
-        // when the registry marks the entity session-mode, otherwise the existing non-session adapter. The
-        // top-level entity is inferred from SendingPath/MessageReceiverPath exactly as registration does
-        // (queue receiver -> receiver path; topic subscription -> sending path), so the case-insensitive
-        // registry lookup keys on the same value the receiver was registered under.
+        // Selects the production IServiceBusMessageReceiver for THIS receiver: the session adapter when the
+        // registry marks this specific receiver session-mode, otherwise the existing non-session adapter. The
+        // session lookup is PER-RECEIVER, keyed on this receiver's own (MessageReceiverPath, SendingPath) pair
+        // — the SAME pair it was registered under — so a session subscription and a normal subscription on the
+        // same topic resolve to different adapters instead of colliding on the shared top-level entity.
         private IServiceBusMessageReceiver CreateProductionReceiver(ReceiverOptions options, ServiceBusReceiveMode receiveMode)
         {
-            var topLevelEntity = InferTopLevelEntity(options.SendingPath, options.MessageReceiverPath);
-
-            if (_receiverRegistry != null && _receiverRegistry.RequiresSession(topLevelEntity))
+            if (_receiverRegistry != null && _receiverRegistry.RequiresSession(options.MessageReceiverPath, options.SendingPath))
             {
                 return new AzureSdkSessionMessageReceiverAdapter(_client,
                                                                  options.MessageReceiverPath,
@@ -116,19 +114,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                       receiveMode,
                                                       _serviceBusOptions.PrefetchCount,
                                                       _logger);
-        }
-
-        // Mirrors the registration-time top-level-entity inference: a queue receiver's sending path is empty
-        // or equals its receiver path (the queue IS the top-level entity); a topic subscription's sending
-        // path is the distinct topic (the TOPIC is the top-level entity).
-        private static string InferTopLevelEntity(string sendingPath, string messageReceiverPath)
-        {
-            if (string.IsNullOrWhiteSpace(sendingPath) || string.Equals(sendingPath, messageReceiverPath, StringComparison.Ordinal))
-            {
-                return messageReceiverPath;
-            }
-
-            return sendingPath;
         }
 
         internal IServiceBusMessageReceiver InnerReceiver

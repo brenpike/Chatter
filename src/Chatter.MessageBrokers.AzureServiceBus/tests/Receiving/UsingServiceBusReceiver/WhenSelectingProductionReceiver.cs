@@ -40,13 +40,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         }
 
         // Constructs the SUT on the PRODUCTION receiver factory (the five-argument ctor leaves
-        // receiverFactory null, so CreateProductionReceiver is used) with the supplied registry.
-        private static async Task<ServiceBusReceiver> InitializedSutAsync(ServiceBusReceiverRegistry registry, string receiverPath)
+        // receiverFactory null, so CreateProductionReceiver is used) with the supplied registry. sendingPath
+        // defaults to receiverPath (the queue-receiver shape); a subscription supplies its topic explicitly so
+        // the per-receiver session key carries (subscription, topic).
+        private static async Task<ServiceBusReceiver> InitializedSutAsync(ServiceBusReceiverRegistry registry, string receiverPath, string sendingPath = null)
         {
             var serviceBusOptions = new ServiceBusOptions { ConnectionString = _connectionString };
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             var sut = new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, JsonFactory(), registry);
-            await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = receiverPath, SendingPath = receiverPath }, CancellationToken.None);
+            await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = receiverPath, SendingPath = sendingPath ?? receiverPath }, CancellationToken.None);
             return sut;
         }
 
@@ -54,7 +56,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         public async Task MustSelectSessionAdapterWhenRegistryMarksEntitySessionMode()
         {
             var registry = new ServiceBusReceiverRegistry();
-            registry.Register("session-queue", transactionMode: null, requiresSession: true);
+            registry.Register("session-queue", "session-queue", transactionMode: null, requiresSession: true);
             var sut = await InitializedSutAsync(registry, "session-queue");
 
             sut.InnerReceiver.Should().BeOfType<AzureSdkSessionMessageReceiverAdapter>();
@@ -64,7 +66,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         public async Task MustSelectNonSessionAdapterWhenRegistryEntryIsNotSessionMode()
         {
             var registry = new ServiceBusReceiverRegistry();
-            registry.Register("plain-queue", transactionMode: null, requiresSession: false);
+            registry.Register("plain-queue", "plain-queue", transactionMode: null, requiresSession: false);
             var sut = await InitializedSutAsync(registry, "plain-queue");
 
             sut.InnerReceiver.Should().BeOfType<AzureSdkMessageReceiverAdapter>();
@@ -74,7 +76,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         public async Task MustSelectNonSessionAdapterWhenRegistryHasNoMatchingEntity()
         {
             var registry = new ServiceBusReceiverRegistry();
-            registry.Register("some-other-queue", transactionMode: null, requiresSession: true);
+            registry.Register("some-other-queue", "some-other-queue", transactionMode: null, requiresSession: true);
             var sut = await InitializedSutAsync(registry, "plain-queue");
 
             sut.InnerReceiver.Should().BeOfType<AzureSdkMessageReceiverAdapter>();
@@ -88,6 +90,25 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var sut = await InitializedSutAsync(registry: null, receiverPath: "plain-queue");
 
             sut.InnerReceiver.Should().BeOfType<AzureSdkMessageReceiverAdapter>();
+        }
+
+        [Fact]
+        public async Task MustRouteEachSubscriptionOnSharedTopicToItsOwnAdapter()
+        {
+            // The exact P2 collision case: a session subscription and a normal subscription on the SAME topic.
+            // The session flag is keyed PER-RECEIVER (subscription + topic), so the session subscription routes
+            // to the session adapter while the normal subscription on the same topic routes to the non-session
+            // adapter — they no longer collide on the shared top-level entity (the topic).
+            const string sharedTopic = "shared-topic";
+            var registry = new ServiceBusReceiverRegistry();
+            registry.Register(sharedTopic, "session-subscription", transactionMode: null, requiresSession: true);
+            registry.Register(sharedTopic, "normal-subscription", transactionMode: null, requiresSession: false);
+
+            var sessionSut = await InitializedSutAsync(registry, receiverPath: "session-subscription", sendingPath: sharedTopic);
+            var normalSut = await InitializedSutAsync(registry, receiverPath: "normal-subscription", sendingPath: sharedTopic);
+
+            sessionSut.InnerReceiver.Should().BeOfType<AzureSdkSessionMessageReceiverAdapter>();
+            normalSut.InnerReceiver.Should().BeOfType<AzureSdkMessageReceiverAdapter>();
         }
     }
 }
