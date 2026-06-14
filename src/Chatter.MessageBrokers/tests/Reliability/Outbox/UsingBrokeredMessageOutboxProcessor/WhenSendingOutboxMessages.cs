@@ -39,7 +39,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         private readonly Mock<IServiceScopeFactory> _serviceScopeFactory = new Mock<IServiceScopeFactory>();
         private readonly Mock<IServiceScope> _serviceScope = new Mock<IServiceScope>();
         private readonly Mock<IServiceProvider> _serviceProvider = new Mock<IServiceProvider>();
-        private readonly Mock<IPollableOutboxStore> _outbox = new Mock<IPollableOutboxStore>();
+        private readonly Mock<IBrokeredMessageOutbox> _outbox = new Mock<IBrokeredMessageOutbox>();
         private readonly Mock<IOutboxProcessor> _processor = new Mock<IOutboxProcessor>();
         private readonly BrokeredMessageOutboxProcessor _sut;
 
@@ -49,10 +49,16 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
             // pass is observable and deterministic; the test signals completion off a TCS, never sleeps.
             _reliabilityOptions.OutboxProcessingIntervalInMilliseconds = 60000;
 
+            // BrokeredMessageOutboxProcessor resolves IBrokeredMessageOutbox and casts to IPollableOutboxStore
+            // at the consumption site. .As<IPollableOutboxStore>() must be called before .Object is accessed
+            // (i.e. before any Setup that passes _outbox.Object to another mock) so Moq can build the
+            // multi-interface proxy correctly.
+            _outbox.As<IPollableOutboxStore>();
+
             _serviceScopeFactory.Setup(f => f.CreateScope()).Returns(_serviceScope.Object);
             _serviceScope.SetupGet(s => s.ServiceProvider).Returns(_serviceProvider.Object);
             // GetRequiredService<T>() resolves through GetService(Type); both must be set or it throws.
-            _serviceProvider.Setup(p => p.GetService(typeof(IPollableOutboxStore))).Returns(_outbox.Object);
+            _serviceProvider.Setup(p => p.GetService(typeof(IBrokeredMessageOutbox))).Returns(_outbox.Object);
             _serviceProvider.Setup(p => p.GetService(typeof(IOutboxProcessor))).Returns(_processor.Object);
 
             _sut = new BrokeredMessageOutboxProcessor(_logger, _reliabilityOptions, _serviceScopeFactory.Object);
@@ -68,7 +74,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
             };
 
         private void SetupOutboxReturns(IEnumerable<OutboxMessage> messages)
-            => _outbox.Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
                       .ReturnsAsync(messages);
 
         // Drives a single drain pass to completion: starts the hosted service, waits for the
@@ -99,20 +106,22 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         public async Task MustDrainUnprocessedMessagesFromOutbox()
         {
             var drained = new TaskCompletionSource();
-            _outbox.Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
                    .ReturnsAsync(Enumerable.Empty<OutboxMessage>())
                    .Callback(() => drained.TrySetResult());
 
             await RunSingleDrainAsync(drained.Task);
 
-            _outbox.Verify(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+            _outbox.As<IPollableOutboxStore>().Verify(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()), Times.AtLeastOnce);
         }
 
         [Fact]
         public async Task MustCreateScopePerDrainPass()
         {
             var drained = new TaskCompletionSource();
-            _outbox.Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
                    .ReturnsAsync(Enumerable.Empty<OutboxMessage>())
                    .Callback(() => drained.TrySetResult());
 
@@ -176,7 +185,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         public async Task MustNotProcessAnyMessageWhenOutboxIsEmpty()
         {
             var drained = new TaskCompletionSource();
-            _outbox.Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
                    .ReturnsAsync(Enumerable.Empty<OutboxMessage>())
                    .Callback(() => drained.TrySetResult());
 
@@ -191,7 +201,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
             var attempted = new TaskCompletionSource();
             // The drain failure leaves messages pending; the loop's catch swallows it so the
             // poller survives and retries on the next interval rather than crashing.
-            _outbox.Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
                    .Callback(() => attempted.TrySetResult())
                    .ThrowsAsync(new InvalidOperationException("boom"));
 

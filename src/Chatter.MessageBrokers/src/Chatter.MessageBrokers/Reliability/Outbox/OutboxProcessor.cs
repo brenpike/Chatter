@@ -13,17 +13,17 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         private readonly IMessagingInfrastructureProvider _infrastructureProvider;
         private readonly ILogger<OutboxProcessor> _logger;
         private readonly IBodyConverterFactory _bodyConverterFactory;
-        private readonly IPollableOutboxStore _pollableOutboxStore;
+        private readonly IBrokeredMessageOutbox _brokeredMessageOutbox;
 
         public OutboxProcessor(IMessagingInfrastructureProvider infrastructureProvider,
                                ILogger<OutboxProcessor> logger,
                                IBodyConverterFactory bodyConverterFactory,
-                               IPollableOutboxStore pollableOutboxStore)
+                               IBrokeredMessageOutbox brokeredMessageOutbox)
         {
             _infrastructureProvider = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
-            _pollableOutboxStore = pollableOutboxStore ?? throw new ArgumentNullException(nameof(pollableOutboxStore));
+            _brokeredMessageOutbox = brokeredMessageOutbox ?? throw new ArgumentNullException(nameof(brokeredMessageOutbox));
         }
 
         public async Task Process(OutboxMessage message, CancellationToken cancellationToken = default)
@@ -60,9 +60,10 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 var outbound = new OutboundBrokeredMessage(message.MessageId, converter.GetBytes(message.MessageBody), messageContext, message.Destination, converter);
                 _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 
-                await ((IUnitOfWork)_pollableOutboxStore).ExecuteAsync(async ct =>
+                var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
+                await ((IUnitOfWork)_brokeredMessageOutbox).ExecuteAsync(async ct =>
                 {
-                    await _pollableOutboxStore.UpdateProcessedDate(message, ct);
+                    await pollable.UpdateProcessedDate(message, ct);
 
                     await dispatcherInfrastructure.Dispatch(outbound, null);
                     _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
@@ -77,7 +78,8 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
         public async Task ProcessBatch(Guid batchId, CancellationToken cancellationToken = default)
         {
-            var messages = await _pollableOutboxStore.GetUnprocessedBatch(batchId, cancellationToken).ConfigureAwait(false);
+            var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
+            var messages = await pollable.GetUnprocessedBatch(batchId, cancellationToken).ConfigureAwait(false);
             _logger.LogTrace($"Processing '{messages.Count()}' messages for batch '{batchId}'.");
 
             foreach (var message in messages)

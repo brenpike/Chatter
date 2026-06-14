@@ -10,7 +10,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
-- Conforms to the split core reliability port: `BrokeredMessageOutbox<TContext>` now implements `IPollableOutboxStore` and `BrokeredMessageInbox<TContext>` now implements `IInboxDeduplicator`. Behavior-preserving — the polling and dedup bodies are unchanged; the reliability DI registrations forward the split interfaces to the same scoped store/inbox instance. Requires Chatter.MessageBrokers 0.14.0 (#216).
+- Conforms to the split core reliability port: `BrokeredMessageOutbox<TContext>` now implements `IPollableOutboxStore` and `BrokeredMessageInbox<TContext>` now implements `IInboxDeduplicator`. Behavior-preserving — the polling and dedup bodies are unchanged; the secondary reliability facets (`IPollableOutboxStore`, `IInboxDeduplicator`) are no longer independent DI registrations; poll consumers obtain them by casting the single resolved primary (`IBrokeredMessageOutbox` / `IBrokeredMessageInbox`) at the consumption site. A custom store must implement both facets on one concrete or the cast throws `InvalidCastException` at the poll site. Split-store is impossible by construction: there is exactly one resolved reliability-store instance per pair; no descriptor inspection, lifetime reconciliation, or fail-fast registration. Requires Chatter.MessageBrokers 0.14.0 (#216).
 
 ### Fixed
 

@@ -9,14 +9,11 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
     /// seam; this contract carries only the shared once-only intent.
     /// </summary>
     /// <remarks>
-    /// A custom reliability store that satisfies both <see cref="IBrokeredMessageInbox"/> and
-    /// <see cref="IInboxDeduplicator"/> must be registered under <see cref="IBrokeredMessageInbox"/> as a
-    /// single concrete at <c>Scoped</c> or <c>Singleton</c> lifetime. The framework forwards
-    /// <see cref="IInboxDeduplicator"/> to the same registration at the primary's lifetime so both facets
-    /// always resolve to the same instance. A <c>Transient</c> custom primary is rejected at registration time
-    /// because DI has no primitive to guarantee same-instance resolution across two Transient resolutions.
-    /// A consumer that registers both facets independently as separate descriptors owns ensuring the two
-    /// registrations agree; the framework does not merge them.
+    /// This is a secondary facet obtained by casting the single resolved <see cref="IBrokeredMessageInbox"/>
+    /// at the consumption site — not an independent DI service. A custom reliability store must implement both
+    /// <see cref="IBrokeredMessageInbox"/> and <see cref="IInboxDeduplicator"/> on one concrete registered
+    /// under <see cref="IBrokeredMessageInbox"/>; a custom primary that does not implement this interface
+    /// throws <see cref="System.InvalidCastException"/> at the poll site.
     /// </remarks>
     public interface IInboxDeduplicator
     {

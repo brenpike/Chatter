@@ -22,7 +22,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
         private readonly Mock<ILogger<OutboxProcessor>> _logger = new Mock<ILogger<OutboxProcessor>>();
         private readonly Mock<IBodyConverterFactory> _bodyConverterFactory = new Mock<IBodyConverterFactory>();
         private readonly Mock<IBrokeredMessageBodyConverter> _bodyConverter = new Mock<IBrokeredMessageBodyConverter>();
-        private readonly Mock<IPollableOutboxStore> _outbox = new Mock<IPollableOutboxStore>();
+        private readonly Mock<IBrokeredMessageOutbox> _outbox = new Mock<IBrokeredMessageOutbox>();
         private readonly OutboxProcessor _sut;
 
         public WhenProcessingOutboxMessage()
@@ -32,8 +32,11 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             _bodyConverter.Setup(c => c.GetBytes(It.IsAny<string>())).Returns(new byte[] { 1, 2, 3 });
             _bodyConverterFactory.Setup(f => f.CreateBodyConverter(It.IsAny<string>())).Returns(_bodyConverter.Object);
 
-            // INVARIANT: OutboxProcessor.Process casts the outbox to IUnitOfWork and dispatches
-            // inside ExecuteAsync's callback; the mock MUST invoke that callback or dispatch never fires.
+            // INVARIANT: OutboxProcessor.Process casts the outbox to IUnitOfWork and IPollableOutboxStore
+            // at the consumption site; the mock must implement both via .As<T>() so the casts succeed and
+            // the IUnitOfWork.ExecuteAsync callback is invoked (or dispatch never fires).
+            // .As<T>() is called on both before Setup so Moq registers the multi-interface proxy once.
+            _outbox.As<IPollableOutboxStore>();
             _outbox.As<IUnitOfWork>()
                    .Setup(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()))
                    .Returns<Func<CancellationToken, Task>, TransactionContext, CancellationToken>((operation, _, ct) => operation(ct));
@@ -96,7 +99,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
 
             await _sut.Process(message);
 
-            _outbox.Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
+            _outbox.As<IPollableOutboxStore>().Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
         }
 
         // REGRESSION ORACLE: production writers (InMemory/EF SendToOutbox) serialize the entire
@@ -145,7 +148,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
 
             await _sut.Process(message);
 
-            _outbox.Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
+            _outbox.As<IPollableOutboxStore>().Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
         }
 
         // STRUCTURED-VALUE REPLAY FIDELITY (the "all areas" mandate for the outbox seam): a MessageContext

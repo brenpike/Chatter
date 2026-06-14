@@ -113,19 +113,13 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IReplyRouter, ReplyRouter>();
 
             builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
-            // Outbox pair: IBrokeredMessageOutbox (primary) + IPollableOutboxStore (secondary).
-            // The entire pair is gated on the primary to make a split-store outcome unrepresentable:
-            //   - Default path (no custom primary): register the in-memory concrete once and forward BOTH
-            //     facets to the SAME instance.  A lone custom secondary with no custom primary is a
-            //     misconfiguration; overriding it to in-memory here is the loud-correct outcome.
-            //   - Custom primary registered: forward the secondary to the primary via cast so the pair
-            //     tracks the same custom instance.  A custom primary that does not implement
-            //     IPollableOutboxStore throws InvalidCastException at first resolution (loud, not silent).
-            //     When the consumer already registered both facets themselves, leave theirs intact.
-            AddReliabilityPair<IBrokeredMessageOutbox, IPollableOutboxStore, InMemoryBrokeredMessageOutbox>(builder.Services);
-            // Inbox pair: IBrokeredMessageInbox (primary) + IInboxDeduplicator (secondary).
-            // Same closed-by-construction gate as the outbox pair above.
-            AddReliabilityPair<IBrokeredMessageInbox, IInboxDeduplicator, InMemoryBrokeredMessageInbox>(builder.Services);
+            // Cast-at-consumption: IPollableOutboxStore and IInboxDeduplicator are NOT registered as
+            // independent DI services. Poll consumers obtain the pollable/dedup facet by casting the single
+            // resolved IBrokeredMessageOutbox / IBrokeredMessageInbox at the consumption site (precedent:
+            // OutboxProcessor's IUnitOfWork cast). A custom store lacking the required facet throws
+            // InvalidCastException loudly at the poll site. Split-store is impossible by construction.
+            builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
+            builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
             builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();
             builder.Services.AddSingleton<IRetryExceptionEvaluator, RetryExceptionEvaluator>();
             builder.Services.AddSingleton<ICircuitBreakerExceptionEvaluator, CircuitBreakerExceptionEvaluator>();
@@ -155,64 +149,6 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonBodyConverter>();
 
             return builder;
-        }
-
-        // Registers a reliability pair (primary + secondary facet) backed by the same concrete,
-        // gated on whether the primary facet is already registered.  This makes a split-store outcome
-        // unrepresentable: both facets always resolve to the same instance within a scope or singleton.
-        //
-        // Rules:
-        //   1. Primary absent  → register TInMemory once (Scoped); forward BOTH to sp.GetRequiredService<TInMemory>().
-        //      A lone custom secondary is overridden (misconfiguration; overriding to in-memory is loud-correct).
-        //   2. Primary present, secondary absent → read the primary descriptor's lifetime and apply
-        //      lifetime-matched-or-fail-fast:
-        //        Scoped or Singleton → register the secondary forward at THAT SAME lifetime so both facets
-        //          always resolve to the same instance within their shared scope/singleton.
-        //        Transient → throw ReliabilityStoreLifetimeException at registration time (fail-fast):
-        //          DI has no primitive to make two Transient resolutions return the same object, so
-        //          forwarding a transient secondary would silently split the store.
-        //      A TPrimary that does not implement TSecondary throws InvalidCastException at first resolution.
-        //   3. Primary present, secondary already registered → leave both consumer registrations intact
-        //      (both-custom-independent: consumer owns ensuring the two facets agree).
-        private static void AddReliabilityPair<TPrimary, TSecondary, TInMemory>(IServiceCollection services)
-            where TPrimary : class
-            where TSecondary : class
-            where TInMemory : class, TPrimary, TSecondary
-        {
-            var primaryDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(TPrimary));
-            if (primaryDescriptor == null)
-            {
-                // Default path: register in-memory concrete once; both facets forward to same instance.
-                // Override any lone custom secondary so the pair cannot split.
-                services.AddScoped<TInMemory>();
-                services.AddScoped<TPrimary>(sp => sp.GetRequiredService<TInMemory>());
-                services.AddScoped<TSecondary>(sp => sp.GetRequiredService<TInMemory>());
-                return;
-            }
-
-            // Custom primary path: forward secondary to the primary via cast only if the consumer has
-            // not already registered the secondary themselves.
-            bool secondaryRegistered = services.Any(d => d.ServiceType == typeof(TSecondary));
-            if (!secondaryRegistered)
-            {
-                var primaryLifetime = primaryDescriptor.Lifetime;
-                if (primaryLifetime == ServiceLifetime.Transient)
-                {
-                    // INVARIANT: Transient lifetime cannot guarantee same-instance resolution across two
-                    // DI resolutions within a scope; forwarding would silently split the store.
-                    throw new ReliabilityStoreLifetimeException(typeof(TPrimary), primaryLifetime);
-                }
-
-                if (primaryLifetime == ServiceLifetime.Singleton)
-                {
-                    services.AddSingleton<TSecondary>(sp => (TSecondary)(object)sp.GetRequiredService<TPrimary>());
-                }
-                else
-                {
-                    // ServiceLifetime.Scoped
-                    services.AddScoped<TSecondary>(sp => (TSecondary)(object)sp.GetRequiredService<TPrimary>());
-                }
-            }
         }
 
         /// <summary>

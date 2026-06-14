@@ -96,17 +96,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
         }
 
         [Fact]
-        public void MustRegisterScopedInboxDeduplicatorForInboxBehavior()
-        {
-            var builder = CaptureBuilder(b => b.WithInboxBehavior<TestDbContext>());
-
-            var descriptor = FindForwardedDescriptor(builder, typeof(IInboxDeduplicator));
-
-            descriptor.Should().NotBeNull();
-            descriptor.Lifetime.Should().Be(ServiceLifetime.Scoped);
-        }
-
-        [Fact]
         public void MustRegisterScopedUnitOfWorkViaInboxBehaviorDelegation()
         {
             var builder = CaptureBuilder(b => b.WithInboxBehavior<TestDbContext>());
@@ -144,17 +133,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             concrete.Lifetime.Should().Be(ServiceLifetime.Scoped);
             forwarded.Should().NotBeNull();
             forwarded.Lifetime.Should().Be(ServiceLifetime.Scoped);
-        }
-
-        [Fact]
-        public void MustRegisterScopedPollableOutboxStoreForOutboxProcessingBehavior()
-        {
-            var builder = CaptureBuilder(b => b.WithOutboxProcessingBehavior<TestDbContext>());
-
-            var descriptor = FindForwardedDescriptor(builder, typeof(IPollableOutboxStore));
-
-            descriptor.Should().NotBeNull();
-            descriptor.Lifetime.Should().Be(ServiceLifetime.Scoped);
         }
 
         [Fact]
