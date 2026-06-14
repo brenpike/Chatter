@@ -31,10 +31,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
             _transaction = transaction;
         }
 
-        public Task ExecuteAsync(CancellationToken cancellationToken = default)
+        public async Task ExecuteAsync(CancellationToken cancellationToken = default)
         {
             using var endConvoCommand = Create();
-            return endConvoCommand.ExecuteNonQueryAsync(cancellationToken);
+            await endConvoCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         public SqlCommand Create()
