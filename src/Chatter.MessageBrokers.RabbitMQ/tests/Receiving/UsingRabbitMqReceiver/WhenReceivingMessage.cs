@@ -591,5 +591,88 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(int.MaxValue);
         }
+
+        // --- ReadHeaderAsLong numeric-type arms (the broker/client may surface the native delivery-count header as
+        // any of several CLR numeric types; ReadHeaderAsLong reads each tolerantly). long/int/byte[] are already
+        // covered above; these cover short/byte/uint/ushort, a non-byte[] string, and the unparseable default arm.
+        // All pushed VERBATIM (coerceStringHeadersToBytes:false) so the CLR type survives to the receiver rather
+        // than being longstr-coerced to a byte[]. ReceiveAttempts == priorDeliveries + 1, floored to 1.
+
+        [Fact]
+        public async Task MustReadQuorumNativeCountWhenShortTyped()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object> { [ReceiverHarness.NativeDeliveryCountHeader] = (short)3 };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(4);
+        }
+
+        [Fact]
+        public async Task MustReadQuorumNativeCountWhenByteTyped()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object> { [ReceiverHarness.NativeDeliveryCountHeader] = (byte)2 };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(3);
+        }
+
+        [Fact]
+        public async Task MustReadQuorumNativeCountWhenUIntTyped()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object> { [ReceiverHarness.NativeDeliveryCountHeader] = (uint)4 };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(5);
+        }
+
+        [Fact]
+        public async Task MustReadQuorumNativeCountWhenUShortTyped()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object> { [ReceiverHarness.NativeDeliveryCountHeader] = (ushort)6 };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(7);
+        }
+
+        // A non-byte[] string native count is parsed via the string arm (the byte[] longstr arm is bypassed because
+        // the value is pushed verbatim as a CLR string).
+        [Fact]
+        public async Task MustReadQuorumNativeCountWhenNonByteArrayStringTyped()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object> { [ReceiverHarness.NativeDeliveryCountHeader] = "8" };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(9);
+        }
+
+        // An unparseable native count hits the default arm (returns the default 0 prior deliveries), so attempts
+        // floor to 1 — the value never stamps a bogus or negative attempt count.
+        [Fact]
+        public async Task MustFloorQuorumAttemptsToOneWhenNativeCountUnparseable()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var headers = new Dictionary<string, object> { [ReceiverHarness.NativeDeliveryCountHeader] = true };
+            await harness.PushVerbatimAsync(deliveryTag: 1, headers: headers);
+
+            var context = await harness.ReceiveAsync();
+
+            context.BrokeredMessage.MessageContext[MessageContext.ReceiveAttempts].Should().Be(1,
+                "a bool native count is unparseable, so ReadHeaderAsLong returns the default and attempts floor to 1");
+        }
     }
 }

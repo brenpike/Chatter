@@ -65,6 +65,39 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
         }
 
+        // A bare context carrying no ReceivedMessage (no Container.Include) has nothing to settle: nack must return
+        // false and perform no nack/republish — mirroring the ack false arm above.
+        [Fact]
+        public async Task MustReturnFalseOnNackWhenContextCarriesNoReceivedMessage()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var bareContext = new Chatter.MessageBrokers.Context.MessageBrokerContext(
+                "id", new byte[] { 1 }, new Dictionary<string, object>(), ReceiverHarness.ReceiverPath, CancellationToken.None, new RabbitMqBodyConverter());
+
+            var nacked = await harness.Receiver.NackMessageAsync(bareContext, transactionContext: null, CancellationToken.None);
+
+            nacked.Should().BeFalse();
+            harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("no carried delivery means nothing to nack");
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty("no carried delivery means nothing to republish");
+        }
+
+        // A bare context carrying no ReceivedMessage has nothing to deadletter: deadletter must return false and
+        // perform no publish/ack.
+        [Fact]
+        public async Task MustReturnFalseOnDeadletterWhenContextCarriesNoReceivedMessage()
+        {
+            var harness = ReceiverHarness.Create(deadLetterQueuePath: ReceiverHarness.DeadLetterPath);
+            var bareContext = new Chatter.MessageBrokers.Context.MessageBrokerContext(
+                "id", new byte[] { 1 }, new Dictionary<string, object>(), ReceiverHarness.ReceiverPath, CancellationToken.None, new RabbitMqBodyConverter());
+
+            var deadlettered = await harness.Receiver.DeadletterMessageAsync(
+                bareContext, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+
+            deadlettered.Should().BeFalse();
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty("no carried delivery means nothing to republish");
+            harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("no carried delivery means nothing to ack");
+        }
+
         // --- nack: Quorum requeues natively ---
 
         [Fact]
