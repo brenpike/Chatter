@@ -34,9 +34,9 @@ namespace Chatter.SqlChangeFeed.Scripts
             using SqlConnection conn = new SqlConnection(_connectionString);
             using (SqlCommand command = new SqlCommand(ToString(), conn))
             {
-                await conn.OpenAsync(token);
+                await conn.OpenAsync(token).ConfigureAwait(false);
                 command.CommandType = CommandType.Text;
-                await command.ExecuteNonQueryAsync(token);
+                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
             }
         }
     }

@@ -48,9 +48,9 @@ namespace Chatter.SqlChangeFeed
                                                    deadLetterQueueName,
                                                    deadLetterServiceName);
 
-            await installChangeFeedScript.ExecuteAsync(token);
-            await uninstallChangeFeedScript.ExecuteAsync(token);
-            await execInstallationProcedureScript.ExecuteAsync(token);
+            await installChangeFeedScript.ExecuteAsync(token).ConfigureAwait(false);
+            await uninstallChangeFeedScript.ExecuteAsync(token).ConfigureAwait(false);
+            await execInstallationProcedureScript.ExecuteAsync(token).ConfigureAwait(false);
         }
 
         public async Task UninstallSqlDependencies(string uninstallationProcedureName = "", CancellationToken token = default)
@@ -62,7 +62,7 @@ namespace Chatter.SqlChangeFeed
                 uninstallationProcedureName,
                 Options.SchemaName);
 
-            await execUninstallationProcedureScript.ExecuteAsync(token);
+            await execUninstallationProcedureScript.ExecuteAsync(token).ConfigureAwait(false);
         }
     }
 }
