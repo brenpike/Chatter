@@ -28,14 +28,30 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// </summary>
         public static string ForInbox(string messageId) => Build(InboxKind, messageId);
 
+        /// <summary>The Cosmos-forbidden item-id characters (<c>/</c>, <c>\</c>, <c>?</c>, <c>#</c>).</summary>
+        private static readonly char[] _forbiddenIdChars = { '/', '\\', '?', '#' };
+
         /// <summary>
         /// Composes <c>{kind}:{encoded(messageId)}</c>. <paramref name="kind"/> is a Chatter-reserved, id-safe literal.
         /// </summary>
+        /// <remarks>
+        /// INVARIANT: every public path through <see cref="Build"/> produces only Cosmos-safe ids. The
+        /// <paramref name="messageId"/> segment is made id-safe by <see cref="Encode"/>; <paramref name="kind"/> is
+        /// emitted verbatim as the id prefix, so it is validated here against the same Cosmos-forbidden character set —
+        /// a caller-supplied kind carrying <c>/</c>, <c>\</c>, <c>?</c>, or <c>#</c> would otherwise yield an invalid
+        /// item id. This closes the unsafe-kind class for the public surface, not just the reserved constants.
+        /// </remarks>
         public static string Build(string kind, string messageId)
         {
             if (string.IsNullOrWhiteSpace(kind))
             {
                 throw new ArgumentException("A document-id kind is required.", nameof(kind));
+            }
+
+            if (kind.IndexOfAny(_forbiddenIdChars) >= 0)
+            {
+                throw new ArgumentException(
+                    "A document-id kind must not contain the Cosmos-forbidden id characters '/', '\\\\', '?', or '#'.", nameof(kind));
             }
 
             if (messageId is null)
