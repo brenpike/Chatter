@@ -1,0 +1,34 @@
+name: integration (weekly)
+
+# Weekly drift insurance: catches base-image / runner / dependency rot during quiet periods.
+# PRs are the primary integration gate; this schedule is the safety net, not the main signal.
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays 06:00 UTC — weekly drift insurance
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: integration (docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+      - name: Restore
+        run: dotnet restore Chatter.sln --locked-mode
+      - name: Build
+        run: dotnet build Chatter.sln -c Release --no-restore
+      - name: Integration test (all adapters)
+        run: dotnet test Chatter.sln -c Release --no-build --filter 'Category=Integration'
