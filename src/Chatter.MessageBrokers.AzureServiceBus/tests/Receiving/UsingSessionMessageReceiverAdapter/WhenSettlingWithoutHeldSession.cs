@@ -29,7 +29,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionMes
 
         private static AzureSdkSessionMessageReceiverAdapter CreateSut(ServiceBusReceiveMode receiveMode = ServiceBusReceiveMode.PeekLock)
             => new AzureSdkSessionMessageReceiverAdapter(CreateClient(),
-                                                         _receiverPath,
+                                                         ServiceBusSessionEntityPath.Create(string.Empty, _receiverPath),
                                                          receiveMode,
                                                          prefetchCount: 0,
                                                          sessionIdleTimeout: TimeSpan.FromSeconds(1),
