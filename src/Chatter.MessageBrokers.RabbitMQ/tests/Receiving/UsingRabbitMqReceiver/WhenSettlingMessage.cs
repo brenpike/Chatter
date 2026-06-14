@@ -65,6 +65,39 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty();
         }
 
+        // A bare context carrying no ReceivedMessage (no Container.Include) has nothing to settle: nack must return
+        // false and perform no nack/republish — mirroring the ack false arm above.
+        [Fact]
+        public async Task MustReturnFalseOnNackWhenContextCarriesNoReceivedMessage()
+        {
+            var harness = ReceiverHarness.Create(QueueType.Quorum);
+            var bareContext = new Chatter.MessageBrokers.Context.MessageBrokerContext(
+                "id", new byte[] { 1 }, new Dictionary<string, object>(), ReceiverHarness.ReceiverPath, CancellationToken.None, new RabbitMqBodyConverter());
+
+            var nacked = await harness.Receiver.NackMessageAsync(bareContext, transactionContext: null, CancellationToken.None);
+
+            nacked.Should().BeFalse();
+            harness.ConnectionSource.ReceiveChannel.Nacks.Should().BeEmpty("no carried delivery means nothing to nack");
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty("no carried delivery means nothing to republish");
+        }
+
+        // A bare context carrying no ReceivedMessage has nothing to deadletter: deadletter must return false and
+        // perform no publish/ack.
+        [Fact]
+        public async Task MustReturnFalseOnDeadletterWhenContextCarriesNoReceivedMessage()
+        {
+            var harness = ReceiverHarness.Create(deadLetterQueuePath: ReceiverHarness.DeadLetterPath);
+            var bareContext = new Chatter.MessageBrokers.Context.MessageBrokerContext(
+                "id", new byte[] { 1 }, new Dictionary<string, object>(), ReceiverHarness.ReceiverPath, CancellationToken.None, new RabbitMqBodyConverter());
+
+            var deadlettered = await harness.Receiver.DeadletterMessageAsync(
+                bareContext, transactionContext: null, "poisoned", "bad", CancellationToken.None);
+
+            deadlettered.Should().BeFalse();
+            harness.ConnectionSource.PublishChannels.Should().BeEmpty("no carried delivery means nothing to republish");
+            harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("no carried delivery means nothing to ack");
+        }
+
         // --- nack: Quorum requeues natively ---
 
         [Fact]
@@ -130,6 +163,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             // INVARIANT under test is that the (confirmed) republish happened and THEN the original was acked.
             harness.ConnectionSource.PublishChannels.Single().Publishes.Should().ContainSingle();
             harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(9UL);
+            harness.ConnectionSource.PublishChannels.Single().Publishes.Single().Seq
+                .Should().BeLessThan(harness.ConnectionSource.ReceiveChannel.Acks.Single().Seq,
+                    "the confirmed republish must be recorded before the original ack (ADR-0001 confirm-before-ack)");
         }
 
         [Fact]
@@ -168,6 +204,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             republish.Headers[MessageContext.FailureDetails].Should().Be("poisoned");
             republish.Headers[MessageContext.FailureDescription].Should().Be("could not be handled");
             harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(11UL);
+            harness.ConnectionSource.PublishChannels.Single().Publishes.Single().Seq
+                .Should().BeLessThan(harness.ConnectionSource.ReceiveChannel.Acks.Single().Seq,
+                    "the confirmed deadletter republish must be recorded before the original ack (ADR-0001 confirm-before-ack)");
         }
 
         // OWNERSHIP (r3408649034): the dead-letter queue is the ADAPTER's responsibility; the ERROR queue is the
@@ -200,6 +239,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             // single copy; letting the core forward again would be the duplicate.
             deadlettered.Should().BeFalse(
                 "the method must return false so the core's error-recovery action is suppressed and the adapter's single error-queue copy is not duplicated");
+            // (d) The confirmed error-path republish is recorded BEFORE the original ack.
+            harness.ConnectionSource.PublishChannels.Single().Publishes.Single().Seq
+                .Should().BeLessThan(harness.ConnectionSource.ReceiveChannel.Acks.Single().Seq,
+                    "the confirmed error-path republish must be recorded before the original ack (ADR-0001 confirm-before-ack)");
         }
 
         // No message loss in the error-only path under a stale epoch: the republish is publisher-confirmed REGARDLESS

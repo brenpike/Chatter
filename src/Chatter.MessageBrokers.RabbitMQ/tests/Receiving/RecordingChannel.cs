@@ -13,8 +13,32 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
     // member throws NotImplementedException: reaching one is a signal the production code took an untested
     // path, which a test should surface rather than silently accept. Reports IsOpen == false so a rental's
     // ReturnPublishChannel disposes (not re-pools) it, leaving its recordings intact for assertions.
+    // A shared monotonic clock across every RecordingChannel a single connection-source hands out. Publishes land
+    // on a pooled publish channel and acks/nacks on the receive channel, so a per-channel list cannot witness their
+    // RELATIVE order. INVARIANT: confirm-before-ack (ADR-0001) — the confirmed republish must be recorded BEFORE the
+    // original ack; tests assert republish.Seq < ack.Seq off this single source of truth.
+    internal sealed class OperationSequencer
+    {
+        private long _last;
+
+        public long Next() => Interlocked.Increment(ref _last);
+    }
+
     internal sealed class RecordingChannel : IChannel
     {
+        private readonly OperationSequencer _sequencer;
+
+        // Self-seeding overload for the sibling connection-source tests (WhenReplacingStaleConnection,
+        // WhenDisposing) that assert no cross-channel ordering: each gets its own fresh sequencer. The
+        // settlement tests instead go through InMemoryRabbitMqConnectionSource, which passes its one shared
+        // sequencer into every RecordingChannel so receive + publish channels share a single clock.
+        public RecordingChannel() : this(new OperationSequencer()) { }
+
+        public RecordingChannel(OperationSequencer sequencer)
+        {
+            _sequencer = sequencer ?? throw new ArgumentNullException(nameof(sequencer));
+        }
+
         public List<AckRecord> Acks { get; } = new List<AckRecord>();
         public List<NackRecord> Nacks { get; } = new List<NackRecord>();
         public List<PublishRecord> Publishes { get; } = new List<PublishRecord>();
@@ -31,13 +55,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
         public ValueTask BasicAckAsync(ulong deliveryTag, bool multiple, CancellationToken cancellationToken = default)
         {
-            Acks.Add(new AckRecord(deliveryTag, multiple));
+            Acks.Add(new AckRecord(deliveryTag, multiple, _sequencer.Next()));
             return default;
         }
 
         public ValueTask BasicNackAsync(ulong deliveryTag, bool multiple, bool requeue, CancellationToken cancellationToken = default)
         {
-            Nacks.Add(new NackRecord(deliveryTag, multiple, requeue));
+            Nacks.Add(new NackRecord(deliveryTag, multiple, requeue, _sequencer.Next()));
             return default;
         }
 
@@ -63,7 +87,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                 basicProperties.IsContentEncodingPresent() ? basicProperties.ContentEncoding : null,
                 basicProperties.IsCorrelationIdPresent() ? basicProperties.CorrelationId : null,
                 basicProperties.Headers is null ? null : new Dictionary<string, object>(basicProperties.Headers),
-                body.ToArray()));
+                body.ToArray(),
+                _sequencer.Next()));
 
             if (PublishFault is not null)
             {
@@ -148,28 +173,34 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
     internal readonly struct AckRecord
     {
-        public AckRecord(ulong deliveryTag, bool multiple)
+        public AckRecord(ulong deliveryTag, bool multiple, long seq)
         {
             DeliveryTag = deliveryTag;
             Multiple = multiple;
+            Seq = seq;
         }
 
         public ulong DeliveryTag { get; }
         public bool Multiple { get; }
+        // The shared-sequencer tick at which this ack was recorded, so a test can assert republish.Seq < ack.Seq.
+        public long Seq { get; }
     }
 
     internal readonly struct NackRecord
     {
-        public NackRecord(ulong deliveryTag, bool multiple, bool requeue)
+        public NackRecord(ulong deliveryTag, bool multiple, bool requeue, long seq)
         {
             DeliveryTag = deliveryTag;
             Multiple = multiple;
             Requeue = requeue;
+            Seq = seq;
         }
 
         public ulong DeliveryTag { get; }
         public bool Multiple { get; }
         public bool Requeue { get; }
+        // The shared-sequencer tick at which this nack was recorded, so a test can assert settlement ordering.
+        public long Seq { get; }
     }
 
     internal sealed class PublishRecord
@@ -187,7 +218,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                              string contentEncoding,
                              string correlationId,
                              IDictionary<string, object> headers,
-                             byte[] body)
+                             byte[] body,
+                             long seq)
         {
             Exchange = exchange;
             RoutingKey = routingKey;
@@ -203,6 +235,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             CorrelationId = correlationId;
             Headers = headers;
             Body = body;
+            Seq = seq;
         }
 
         public string Exchange { get; }
@@ -224,5 +257,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public string CorrelationId { get; }
         public IDictionary<string, object> Headers { get; }
         public byte[] Body { get; }
+        // The shared-sequencer tick at which this publish was recorded, so a test can assert republish.Seq < ack.Seq.
+        public long Seq { get; }
     }
 }

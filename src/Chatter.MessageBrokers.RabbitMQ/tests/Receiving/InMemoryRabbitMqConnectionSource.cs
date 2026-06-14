@@ -27,6 +27,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         private long _currentReceiveChannelEpoch;
         private readonly RabbitMqPublishChannelRentalFactory _rentalFactory = new RabbitMqPublishChannelRentalFactory();
 
+        // One shared monotonic clock for every recording channel this source hands out (receive + publish), so a
+        // test can witness the RELATIVE order of a publish-channel republish and a receive-channel ack across the
+        // two separate channels — the confirm-before-ack ordering (ADR-0001) is otherwise unobservable per-channel.
+        private readonly OperationSequencer _sequencer = new();
+
         // The stored consume-registration delegate, mirroring the production source. Re-run on every receive
         // channel (re)creation with the freshly-bumped epoch; returns the broker-assigned consumer tag the source
         // stores so it owns cancellation. CLEARED by StopReceivingAsync (terminal stop) so a late recovery
@@ -39,7 +44,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
 
         public InMemoryRabbitMqConnectionSource()
         {
-            ReceiveChannel = new RecordingChannel();
+            ReceiveChannel = new RecordingChannel(_sequencer);
         }
 
         // The CURRENT serialized receive channel handed to RunOnReceiveChannelAsync. Records ack/nack and
@@ -94,7 +99,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
                 return;
             }
 
-            ReceiveChannel = new RecordingChannel();
+            ReceiveChannel = new RecordingChannel(_sequencer);
             ReceiveChannels.Add(ReceiveChannel);
             Interlocked.Increment(ref _currentReceiveChannelEpoch);
 
@@ -120,7 +125,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             // exactly as a real recreate would. When the cold channel already exists (epoch 0) it is reused in place.
             if (ReceiveChannel is null)
             {
-                ReceiveChannel = new RecordingChannel();
+                ReceiveChannel = new RecordingChannel(_sequencer);
                 Interlocked.Increment(ref _currentReceiveChannelEpoch);
             }
 
@@ -174,7 +179,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public Task<RabbitMqPublishChannelRental> AcquirePublishChannelAsync(CancellationToken cancellationToken)
         {
             AcquirePublishChannelCount++;
-            var channel = new RecordingChannel();
+            var channel = new RecordingChannel(_sequencer);
             PublishChannels.Add(channel);
             OnPublishChannelCreated?.Invoke(channel);
             return Task.FromResult(_rentalFactory.Create(channel));
