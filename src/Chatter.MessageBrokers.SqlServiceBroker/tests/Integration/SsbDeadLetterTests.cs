@@ -7,6 +7,7 @@ using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Chatter.Testing.Core.Integration;
 using Xunit;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration

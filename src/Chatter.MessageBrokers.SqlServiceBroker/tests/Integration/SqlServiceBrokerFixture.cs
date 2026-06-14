@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using System.Threading;
 using System.Threading.Tasks;
 using Testcontainers.MsSql;
+using Chatter.Testing.Core.Integration;
 using Xunit;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration

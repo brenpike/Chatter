@@ -7,6 +7,7 @@ using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Chatter.Testing.Core.Integration;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration

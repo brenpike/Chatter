@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using Testcontainers.ServiceBus;
+using Chatter.Testing.Core.Integration;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration

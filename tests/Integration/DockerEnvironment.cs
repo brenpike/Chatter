@@ -5,15 +5,15 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
+namespace Chatter.Testing.Core.Integration
 {
-    // Discovery-time Docker reachability probe. The integration fixture needs Docker to start the Azure
-    // Service Bus emulator container; when Docker is absent OR the daemon is not actually responding, the
-    // integration facts are SKIPPED (never failed) so a plain `dotnet test` on a Docker-free machine stays
-    // green. The probe issues a real Docker `/_ping` over the resolved endpoint — a connectable socket file
-    // is NOT sufficient (e.g. a WSL /var/run/docker.sock accepts connections even when no daemon serves it),
-    // so only a successful daemon ping reports available. The result is cached for the test assembly.
-    internal static class DockerEnvironment
+    // Discovery-time Docker reachability probe shared by every module's integration tests. The integration
+    // fixtures need Docker to start their container; when Docker is absent OR the daemon is not actually
+    // responding, the integration facts are SKIPPED (never failed) so a plain `dotnet test` on a Docker-free
+    // machine stays green. The probe issues a real Docker `/_ping` over the resolved endpoint — a connectable
+    // socket file is NOT sufficient (e.g. a WSL /var/run/docker.sock accepts connections even when no daemon
+    // serves it), so only a successful daemon ping reports available. The result is cached for the test assembly.
+    public static class DockerEnvironment
     {
         private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(3);
 
@@ -22,8 +22,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         public static bool IsAvailable => _isAvailable.Value;
 
         public const string SkipReason =
-            "Docker is not available (daemon not reachable); the Azure Service Bus emulator cannot be " +
-            "started. Run with a working Docker daemon to execute the Category=Integration tests.";
+            "Docker is not available (daemon not reachable); the integration container cannot be started. " +
+            "Run with a working Docker daemon to execute the Category=Integration tests.";
 
         // Resolves the Docker endpoint (DOCKER_HOST wins; otherwise the default unix socket) and pings the
         // daemon. Any failure — missing socket, refused connection, non-success status, timeout — reports

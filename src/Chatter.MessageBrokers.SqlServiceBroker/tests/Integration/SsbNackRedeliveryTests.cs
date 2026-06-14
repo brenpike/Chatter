@@ -5,6 +5,7 @@ using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Chatter.Testing.Core.Integration;
 using Xunit;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
