@@ -81,6 +81,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             MessageBrokerContext messageContext = null;
             SqlConnection connection = null;
             SqlTransaction transaction = null;
+            ReceiveSession session;
 
             try
             {
@@ -94,6 +95,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 throw new CriticalReceiverException("Error connecting to sql", ex);
             }
 
+            session = new ReceiveSession(connection, transaction);
+
             try
             {
                 message = await ReceiveAsync(connection, transaction, cancellationToken);
@@ -101,26 +104,21 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 #if NET5_0_OR_GREATER
             catch (SqlException e) when (e.IsTransient)
             {
+                await session.DisposeAsync();
                 _logger.LogWarning(e, "Failure to receive message from Sql Service Broker due to transient error");
                 throw;
             }
 #endif
             catch (SqlException e) when (e.Number == 102)
             {
+                await session.DisposeAsync();
                 throw new CriticalReceiverException($"Unable to receive message from configured queue '{_options.MessageReceiverPath}'", e);
             }
             catch (Exception e)
             {
+                await session.DisposeAsync();
                 _logger.LogError(e, $"Error receiving sql service broker message from queue '{_options.MessageReceiverPath}'");
                 throw;
-            }
-            finally
-            {
-                if (message == null)
-                {
-                    transaction?.Dispose();
-                    connection?.Dispose();
-                }
             }
 
             var outcome = _classifier.Classify(message);
@@ -128,18 +126,19 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             switch (outcome)
             {
                 case ClassificationOutcome.DiscardNull:
-                    await DiscardMessageAsync(connection, transaction, "Discarding null message", cancellationToken);
+                    // Empty RECEIVE (null message from an idle WAITFOR timeout): settle once and continue the loop.
+                    await DiscardMessageAsync(session, "Discarding null message", cancellationToken);
                     return null;
                 case ClassificationOutcome.EndDialog:
-                    await AckEndDialogAsync(connection, transaction, message.ConvHandle, cancellationToken);
+                    await AckEndDialogAsync(session, message.ConvHandle, cancellationToken);
                     return null;
                 case ClassificationOutcome.DiscardWrongType:
-                    await DiscardMessageAsync(connection, transaction
+                    await DiscardMessageAsync(session
                         , $"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received."
                         , cancellationToken);
                     return null;
                 case ClassificationOutcome.DiscardNullBody:
-                    await DiscardMessageAsync(connection, transaction
+                    await DiscardMessageAsync(session
                         , $"Discarding message of type '{message.MessageTypeName}' with null message body"
                         , cancellationToken);
                     return null;
@@ -153,17 +152,27 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             _localReceiverDeliveryAttempts.AddOrUpdate(message.ConvHandle, 1, (ch, deliveryAttempts) => deliveryAttempts + 1);
 
-            IBrokeredMessageBodyConverter bodyConverter = new JsonUnicodeBodyConverter();
+            // The envelope is serialized on the wire using the SSB-configured MessageBodyType (UTF-16 by
+            // default via JsonUnicodeBodyConverter), so the envelope must be decoded with that converter.
+            IBrokeredMessageBodyConverter envelopeConverter = new JsonUnicodeBodyConverter();
+            // The INNER DTO body is encoded by the core dispatcher using the routing ContentType
+            // (RoutingOptions.DefaultContentType = "application/json", UTF-8) — independent of the SSB
+            // envelope's wire encoding. It must therefore be decoded with the converter for the inner body's
+            // own content type (carried in the envelope's ContentType header), NOT the UTF-16 envelope
+            // converter. Reusing the envelope converter here mis-decodes UTF-8 inner bytes as UTF-16 and
+            // surfaces a PoisonedMessageException (e.g. "'0xE2' is an invalid start of a value").
+            IBrokeredMessageBodyConverter bodyConverter = envelopeConverter;
             byte[] messagePayload = message.Body;
             string messageId = message.ConvHandle.ToString();
             IDictionary<string, object> headers = new Dictionary<string, object>();
 
             try
             {
-                bodyConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+                envelopeConverter = _bodyConverterFactory.CreateBodyConverter(_ssbOptions.MessageBodyType);
+                bodyConverter = envelopeConverter;
                 if (message.MessageTypeName == ServicesMessageTypes.ChatterBrokeredMessageType)
                 {
-                    var brokeredMessage = bodyConverter.Convert<OutboundBrokeredMessage>(message.Body);
+                    var brokeredMessage = envelopeConverter.Convert<OutboundBrokeredMessage>(message.Body);
 
                     if (brokeredMessage == null)
                     {
@@ -179,6 +188,17 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                     // does not throw InvalidCastException on the downstream GetMessageContextByKey<T> casts —
                     // no per-seam materialization needed, only the null-guard.
                     headers = brokeredMessage.MessageContext ?? new Dictionary<string, object>();
+
+                    // Resolve the inner-body converter from the envelope's own ContentType header so the
+                    // typed payload is decoded with the encoding it was actually sent in (UTF-8 by default),
+                    // keeping the UTF-16 envelope wire format intact. Falls back to the envelope converter
+                    // when no usable content-type header is present.
+                    if (headers.TryGetValue(MessageContext.ContentType, out var innerContentType)
+                        && innerContentType is string innerContentTypeValue
+                        && !string.IsNullOrWhiteSpace(innerContentTypeValue))
+                    {
+                        bodyConverter = _bodyConverterFactory.CreateBodyConverter(innerContentTypeValue);
+                    }
                 }
             }
             catch (Exception e)
@@ -205,30 +225,34 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             return messageContext;
         }
 
-        private async Task AckEndDialogAsync(SqlConnection connection, SqlTransaction transaction, Guid convHandle, CancellationToken cancellationToken)
+        private async Task AckEndDialogAsync(ReceiveSession session, Guid convHandle, CancellationToken cancellationToken)
         {
             try
             {
-                var edc = new EndDialogConversationCommand(connection,
+                var edc = new EndDialogConversationCommand(session.Connection,
                                   convHandle,
                                   enableCleanup: _ssbOptions.CleanupOnEndConversation,
-                                  transaction: transaction);
+                                  transaction: session.Transaction);
                 await edc.ExecuteAsync(cancellationToken);
-                await transaction?.CommitAsync(cancellationToken);
+                await session.CommitAsync(cancellationToken);
             }
             finally
             {
-                transaction?.Dispose();
-                connection?.Dispose();
+                await session.DisposeAsync();
             }
         }
 
-        private async Task DiscardMessageAsync(SqlConnection connection, SqlTransaction transaction, string discardMessage, CancellationToken cancellationToken)
+        private async Task DiscardMessageAsync(ReceiveSession session, string discardMessage, CancellationToken cancellationToken)
         {
-            await transaction?.CommitAsync(cancellationToken);
-            transaction?.Dispose();
-            connection?.Dispose();
-            _logger.LogTrace(discardMessage);
+            try
+            {
+                await session.CommitAsync(cancellationToken);
+                _logger.LogTrace(discardMessage);
+            }
+            finally
+            {
+                await session.DisposeAsync();
+            }
         }
 
         private async Task<SqlTransaction> CreateTransaction(SqlConnection connection, CancellationToken cancellationToken)
@@ -244,6 +268,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             transactionContext.Container.TryGet<SqlConnection>(out var connection);
             transactionContext.Container.TryGet<SqlTransaction>(out var transaction);
+            var session = new ReceiveSession(connection, transaction);
 
             try
             {
@@ -260,14 +285,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 {
                     _logger.LogTrace($"Unable end dialog conversation during message acknowledgment. {nameof(msg)} is null.");
                 }
-                await transaction?.CommitAsync(cancellationToken);
+                await session.CommitAsync(cancellationToken);
                 _logger.LogTrace("Message acknowledgment complete");
                 return true;
             }
             finally
             {
-                transaction?.Dispose();
-                connection?.Dispose();
+                await session.DisposeAsync();
             }
         }
 
@@ -275,17 +299,17 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         {
             transactionContext.Container.TryGet<SqlConnection>(out var connection);
             transactionContext.Container.TryGet<SqlTransaction>(out var transaction);
+            var session = new ReceiveSession(connection, transaction);
 
             try
             {
-                await transaction?.RollbackAsync(cancellationToken);
+                await session.RollbackAsync(cancellationToken);
                 _logger.LogTrace("Message negative acknowledgment complete");
                 return true;
             }
             finally
             {
-                transaction?.Dispose();
-                connection?.Dispose();
+                await session.DisposeAsync();
             }
         }
 
@@ -299,6 +323,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
             transactionContext.Container.TryGet<SqlConnection>(out var connection);
             transactionContext.Container.TryGet<SqlTransaction>(out var transaction);
+            var session = new ReceiveSession(connection, transaction);
 
             try
             {
@@ -326,15 +351,88 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                     [MessageContext.ReceiveAttempts] = deliveryAttempts
                 };
                 await ssbSender.Dispatch(new OutboundBrokeredMessage(context.BrokeredMessage.MessageId, msg.Body, headers, _options.DeadLetterQueuePath, bodyConverter), transactionContext);
-                await transaction?.CommitAsync(cancellationToken);
+                await session.CommitAsync(cancellationToken);
                 _localReceiverDeliveryAttempts.TryRemove(msg.ConvHandle, out var _);
                 _logger.LogTrace($"Message deadlettered.");
                 return true;
             }
             finally
             {
-                transaction?.Dispose();
-                connection?.Dispose();
+                await session.DisposeAsync();
+            }
+        }
+
+        /// <summary>
+        /// Owns the lifecycle of a single RECEIVE's connection and (optional) transaction. Every receive
+        /// outcome routes its terminal SQL through exactly one of <see cref="CommitAsync"/> /
+        /// <see cref="RollbackAsync"/>, then disposes via <see cref="DisposeAsync"/>.
+        /// INVARIANT: terminal settle (commit or rollback) runs at most once — the <c>_settled</c> guard
+        /// makes a second settle a no-op, so a connection/transaction is committed-or-rolled-back exactly
+        /// once and disposed exactly once. All terminal ops are null-transaction-safe (TransactionMode.None
+        /// leaves <see cref="Transaction"/> null), so they never <c>await</c> a null Task.
+        /// </summary>
+        private sealed class ReceiveSession : IAsyncDisposable, IDisposable
+        {
+            public SqlConnection Connection { get; }
+            public SqlTransaction Transaction { get; private set; }
+            private bool _settled;
+            private bool _disposed;
+
+            public ReceiveSession(SqlConnection connection, SqlTransaction transaction)
+            {
+                Connection = connection;
+                Transaction = transaction;
+            }
+
+            public async Task CommitAsync(CancellationToken cancellationToken)
+            {
+                if (_settled)
+                {
+                    return;
+                }
+                _settled = true;
+                if (Transaction != null)
+                {
+                    await Transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                DisposeTransaction();
+            }
+
+            public async Task RollbackAsync(CancellationToken cancellationToken)
+            {
+                if (_settled)
+                {
+                    return;
+                }
+                _settled = true;
+                if (Transaction != null)
+                {
+                    await Transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                }
+                DisposeTransaction();
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return default;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+                _disposed = true;
+                DisposeTransaction();
+                Connection?.Dispose();
+            }
+
+            private void DisposeTransaction()
+            {
+                Transaction?.Dispose();
+                Transaction = null;
             }
         }
 

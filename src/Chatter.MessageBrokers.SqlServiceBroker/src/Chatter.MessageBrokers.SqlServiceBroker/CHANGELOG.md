@@ -12,6 +12,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.12.1] - 2026-06-14
+
+### Fixed
+
+- Enable `MultipleActiveResultSets` on the Service Broker connection — `Microsoft.Data.SqlClient` enforces MARS, which the `RECEIVE`-then-settle dialog pattern requires (the receiver otherwise threw `InvalidOperationException: The connection does not support MultipleActiveResultSets`).
+- Fix `EndDialogConversationCommand` to await its command execution — it previously returned an un-awaited Task while disposing the `SqlCommand`, which `Microsoft.Data.SqlClient` rejects with `EndExecuteNonQuery cannot be called more than once`.
+- Receive-path transaction lifecycle: route every receive outcome (empty-RECEIVE discard, end-dialog, ack, nack, deadletter) through a single guarded settle so each connection/transaction is committed-or-rolled-back-or-disposed exactly once — fixes `InvalidOperationException: This SqlTransaction has completed; it is no longer usable` (and an `await null` NRE under TransactionMode.None) surfaced by the Microsoft.Data.SqlClient migration.
+- Decode the inbound typed payload with the converter for the inner body's own content type (carried in the envelope's `ContentType` header, `application/json`/UTF-8 by default) instead of reusing the UTF-16 envelope converter — the inner DTO is encoded UTF-8 by the core dispatcher, so reusing the UTF-16 `JsonUnicodeBodyConverter` mis-decoded it and threw `PoisonedMessageException` (`'0xE2' is an invalid start of a value`) on every round-trip. The UTF-16 envelope wire format is unchanged (non-breaking).
+
 ## [0.12.0] - 2026-06-14
 
 ### Changed

@@ -22,7 +22,15 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
         public async Task<SqlConnection> OpenAsync(CancellationToken cancellationToken)
         {
-            var connection = new SqlConnection(_ssbOptions.ConnectionString);
+            // INVARIANT: SSB's RECEIVE-then-settle dialog holds a WAITFOR (RECEIVE ...) reader open on the
+            // connection while issuing settle/deadletter/forward commands on the SAME connection, which requires
+            // MARS. Microsoft.Data.SqlClient enforces this (System.Data.SqlClient tolerated it), so force MARS on
+            // by construction regardless of the consumer-supplied connection string — SSB cannot function without it.
+            var builder = new SqlConnectionStringBuilder(_ssbOptions.ConnectionString)
+            {
+                MultipleActiveResultSets = true,
+            };
+            var connection = new SqlConnection(builder.ConnectionString);
             await connection.OpenAsync(cancellationToken);
             return connection;
         }
