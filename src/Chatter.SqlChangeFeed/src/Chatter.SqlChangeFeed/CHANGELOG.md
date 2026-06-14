@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.10.0] - 2026-06-14
+
+### Changed
+
+- Migrated from the deprecated `System.Data.SqlClient` to `Microsoft.Data.SqlClient` (7.0.1) — API-compatible namespace swap, no public API change; fixes the nightly SSB integration `ReflectionTypeLoadException` (SqlGuidCaster) on net8/net10. (#204)
+
 ## [0.9.1] - 2026-06-06
 
 ### Fixed
