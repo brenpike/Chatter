@@ -42,8 +42,8 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
         private static readonly TimeSpan TeardownTimeout = TimeSpan.FromSeconds(30);
 
         // Bounds the production migration install so a wedged DDL (e.g. a non-rollback ENABLE_BROKER blocked
-        // behind another session) fails fast rather than hanging the test. The install runs synchronously on a
-        // worker thread; the await races it against this finite delay.
+        // behind another session) fails fast rather than hanging the test. The install is genuinely async and
+        // cancellable; a bounded linked token cancels the await when this ceiling is exceeded.
         private static readonly TimeSpan MigrationTimeout = TimeSpan.FromSeconds(60);
 
         private readonly ServiceProvider _provider;
@@ -133,22 +133,22 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
             => services.AddTransient<IMessageHandler<TEvent>, RecordingChangeFeedHandler<TEvent>>();
 
         // Runs the PRODUCTION change-feed migration over the configured row type: resolves ISqlDependencyManager
-        // <TRow> via UseChangeFeedSqlMigrations<TRow> and installs the trigger + Service Broker objects + install/
-        // uninstall stored procs. Bounded so a wedged install DDL fails fast. The install executes synchronous
-        // ADO.NET internally, so it runs on a pool thread and is raced against MigrationTimeout.
+        // <TRow> via UseChangeFeedSqlMigrationsAsync<TRow> and installs the trigger + Service Broker objects +
+        // install/uninstall stored procs. Bounded so a wedged install DDL fails fast: the install is genuinely
+        // async and cancellable, so a bounded token cancels the await and the OperationCanceledException is
+        // surfaced as TimeoutException to preserve the timeout contract.
         public async Task RunMigrationsAsync()
         {
             using var migrationCts = new CancellationTokenSource(MigrationTimeout);
-            var install = Task.Run(() => _provider.UseChangeFeedSqlMigrations<TRow>());
-            var completed = await Task.WhenAny(install, Task.Delay(Timeout.Infinite, migrationCts.Token))
-                .ConfigureAwait(false);
-            if (completed != install)
+            try
+            {
+                await _provider.UseChangeFeedSqlMigrationsAsync<TRow>(migrationCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (migrationCts.IsCancellationRequested)
             {
                 throw new TimeoutException(
                     $"Timed out after {MigrationTimeout} running the change-feed migration for '{typeof(TRow).Name}'.");
             }
-
-            await install.ConfigureAwait(false);
         }
 
         // Runs the PRODUCTION change-feed uninstall: resolves ISqlDependencyManager<TRow> and executes the
@@ -162,16 +162,15 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
             using var scope = _provider.CreateScope();
             var sdm = scope.ServiceProvider.GetRequiredService<ISqlDependencyManager<TRow>>();
 
-            var uninstall = Task.Run(() => sdm.UninstallSqlDependencies(uninstallProcName));
-            var completed = await Task.WhenAny(uninstall, Task.Delay(Timeout.Infinite, uninstallCts.Token))
-                .ConfigureAwait(false);
-            if (completed != uninstall)
+            try
+            {
+                await sdm.UninstallSqlDependencies(uninstallProcName, uninstallCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (uninstallCts.IsCancellationRequested)
             {
                 throw new TimeoutException(
                     $"Timed out after {MigrationTimeout} running the change-feed uninstall for '{typeof(TRow).Name}'.");
             }
-
-            await uninstall.ConfigureAwait(false);
         }
 
         // Starts the receiver pump in-process on the pump token. The production BackgroundService.StartAsync gates

@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Chatter.SqlChangeFeed.DependencyInjection
 {
@@ -90,18 +92,20 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
         /// </summary>
         /// <typeparam name="TRowChangedData">The row type to use Sql migrations for</typeparam>
         /// <param name="applicationBuilder">The application builder</param>
+        /// <param name="token">A token to observe while waiting for the migration to complete</param>
         /// <returns></returns>
-        public static IApplicationBuilder UseChangeFeedSqlMigrations<TRowChangedData>(this IApplicationBuilder applicationBuilder)
-            => applicationBuilder.UseChangeFeedSqlMigrations(typeof(TRowChangedData));
+        public static IApplicationBuilder UseChangeFeedSqlMigrations<TRowChangedData>(this IApplicationBuilder applicationBuilder, CancellationToken token = default)
+            => applicationBuilder.UseChangeFeedSqlMigrations(typeof(TRowChangedData), token);
 
         /// <summary>
         /// Deploys the SQL and SQL Service Broker dependencies required for the sql change feed
         /// </summary>
         /// <param name="applicationBuilder">The application builder</param>
         /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
-        public static IApplicationBuilder UseChangeFeedSqlMigrations(this IApplicationBuilder applicationBuilder, Type rowChangedDataType)
+        /// <param name="token">A token to observe while waiting for the migration to complete</param>
+        public static IApplicationBuilder UseChangeFeedSqlMigrations(this IApplicationBuilder applicationBuilder, Type rowChangedDataType, CancellationToken token = default)
         {
-            applicationBuilder.ApplicationServices.UseChangeFeedSqlMigrations(rowChangedDataType);
+            applicationBuilder.ApplicationServices.UseChangeFeedSqlMigrations(rowChangedDataType, token);
             return applicationBuilder;
         }
 
@@ -110,16 +114,18 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
         /// </summary>
         /// <typeparam name="TRowChangedData">The row type to use Sql migrations for</typeparam>
         /// <param name="provider">The service provider</param>
+        /// <param name="token">A token to observe while waiting for the migration to complete</param>
         /// <returns></returns>
-        public static IServiceProvider UseChangeFeedSqlMigrations<TRowChangedData>(this IServiceProvider provider)
-            => provider.UseChangeFeedSqlMigrations(typeof(TRowChangedData));
+        public static IServiceProvider UseChangeFeedSqlMigrations<TRowChangedData>(this IServiceProvider provider, CancellationToken token = default)
+            => provider.UseChangeFeedSqlMigrations(typeof(TRowChangedData), token);
 
         /// <summary>
         /// Deploys the SQL and SQL Service Broker dependencies required for table changes to be emitted
         /// </summary>
         /// <param name="provider">The service provider</param>
         /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
-        public static IServiceProvider UseChangeFeedSqlMigrations(this IServiceProvider provider, Type rowChangedDataType)
+        /// <param name="token">A token to observe while waiting for the migration to complete</param>
+        public static IServiceProvider UseChangeFeedSqlMigrations(this IServiceProvider provider, Type rowChangedDataType, CancellationToken token = default)
         {
             using var scope = provider.CreateScope();
             var sdm = (ISqlDependencyManager)scope.ServiceProvider.GetRequiredService(typeof(ISqlDependencyManager<>).MakeGenericType(rowChangedDataType));
@@ -134,9 +140,63 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
             var installChangeFeedStoredProcName = $"{ChatterServiceBrokerConstants.ChatterInstallChangeFeedPrefix}{receiverName}";
             var uninstallChangeFeedStoredProcName = $"{ChatterServiceBrokerConstants.ChatterUninstallChangeFeedPrefix}{receiverName}";
 
-            sdm.InstallSqlDependencies(installChangeFeedStoredProcName, uninstallChangeFeedStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName, conversationDeadLetterQueueName, conversationDeadLetterServiceName);
+            sdm.InstallSqlDependencies(installChangeFeedStoredProcName, uninstallChangeFeedStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName, conversationDeadLetterQueueName, conversationDeadLetterServiceName, token).GetAwaiter().GetResult();
 
             return provider;
+        }
+
+        /// <summary>
+        /// Asynchronously deploys the SQL and SQL Service Broker dependencies required for the sql change feed
+        /// </summary>
+        /// <typeparam name="TRowChangedData">The row type to use Sql migrations for</typeparam>
+        /// <param name="applicationBuilder">The application builder</param>
+        /// <param name="token">A token to observe while waiting for the migration to complete</param>
+        /// <returns>A task that completes when the migration has finished</returns>
+        public static Task UseChangeFeedSqlMigrationsAsync<TRowChangedData>(this IApplicationBuilder applicationBuilder, CancellationToken token = default)
+            => applicationBuilder.UseChangeFeedSqlMigrationsAsync(typeof(TRowChangedData), token);
+
+        /// <summary>
+        /// Asynchronously deploys the SQL and SQL Service Broker dependencies required for the sql change feed
+        /// </summary>
+        /// <param name="applicationBuilder">The application builder</param>
+        /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
+        /// <param name="token">A token to observe while waiting for the migration to complete</param>
+        /// <returns>A task that completes when the migration has finished</returns>
+        public static Task UseChangeFeedSqlMigrationsAsync(this IApplicationBuilder applicationBuilder, Type rowChangedDataType, CancellationToken token = default)
+            => applicationBuilder.ApplicationServices.UseChangeFeedSqlMigrationsAsync(rowChangedDataType, token);
+
+        /// <summary>
+        /// Asynchronously deploys the SQL and SQL Service Broker dependencies required for table changes to be emitted
+        /// </summary>
+        /// <typeparam name="TRowChangedData">The row type to use Sql migrations for</typeparam>
+        /// <param name="provider">The service provider</param>
+        /// <param name="token">A token to observe while waiting for the migration to complete</param>
+        /// <returns>A task that completes when the migration has finished</returns>
+        public static Task UseChangeFeedSqlMigrationsAsync<TRowChangedData>(this IServiceProvider provider, CancellationToken token = default)
+            => provider.UseChangeFeedSqlMigrationsAsync(typeof(TRowChangedData), token);
+
+        /// <summary>
+        /// Asynchronously deploys the SQL and SQL Service Broker dependencies required for table changes to be emitted
+        /// </summary>
+        /// <param name="provider">The service provider</param>
+        /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
+        /// <param name="token">A token to observe while waiting for the migration to complete</param>
+        /// <returns>A task that completes when the migration has finished</returns>
+        public static async Task UseChangeFeedSqlMigrationsAsync(this IServiceProvider provider, Type rowChangedDataType, CancellationToken token = default)
+        {
+            using var scope = provider.CreateScope();
+            var sdm = (ISqlDependencyManager)scope.ServiceProvider.GetRequiredService(typeof(ISqlDependencyManager<>).MakeGenericType(rowChangedDataType));
+
+            var receiverName = rowChangedDataType.Name;
+            var conversationQueueName = $"{ChatterServiceBrokerConstants.ChatterQueuePrefix}{receiverName}";
+            var conversationServiceName = $"{ChatterServiceBrokerConstants.ChatterServicePrefix}{receiverName}";
+            var conversationDeadLetterQueueName = $"{ChatterServiceBrokerConstants.ChatterDeadLetterQueuePrefix}{receiverName}";
+            var conversationDeadLetterServiceName = $"{ChatterServiceBrokerConstants.ChatterDeadLetterServicePrefix}{receiverName}";
+            var conversationTriggerName = $"{ChatterServiceBrokerConstants.ChatterTriggerPrefix}{receiverName}";
+            var installChangeFeedStoredProcName = $"{ChatterServiceBrokerConstants.ChatterInstallChangeFeedPrefix}{receiverName}";
+            var uninstallChangeFeedStoredProcName = $"{ChatterServiceBrokerConstants.ChatterUninstallChangeFeedPrefix}{receiverName}";
+
+            await sdm.InstallSqlDependencies(installChangeFeedStoredProcName, uninstallChangeFeedStoredProcName, conversationQueueName, conversationServiceName, conversationTriggerName, conversationDeadLetterQueueName, conversationDeadLetterServiceName, token);
         }
     }
 }

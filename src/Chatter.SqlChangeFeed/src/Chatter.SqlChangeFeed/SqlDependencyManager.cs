@@ -2,6 +2,7 @@
 using Chatter.SqlChangeFeed.Configuration;
 using Chatter.SqlChangeFeed.Scripts;
 using Chatter.SqlChangeFeed.Scripts.StoredProcedures;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.SqlChangeFeed
@@ -13,13 +14,14 @@ namespace Chatter.SqlChangeFeed
         public SqlDependencyManager(SqlChangeFeedOptions options)
             => Options = options;
 
-        public Task InstallSqlDependencies(string installationProcedureName = "",
-                                           string uninstallationProcedureName = "",
-                                           string conversationQueueName = "",
-                                           string conversationServiceName = "",
-                                           string conversationTriggerName = "",
-                                           string deadLetterQueueName = "",
-                                           string deadLetterServiceName = "")
+        public async Task InstallSqlDependencies(string installationProcedureName = "",
+                                                 string uninstallationProcedureName = "",
+                                                 string conversationQueueName = "",
+                                                 string conversationServiceName = "",
+                                                 string conversationTriggerName = "",
+                                                 string deadLetterQueueName = "",
+                                                 string deadLetterServiceName = "",
+                                                 CancellationToken token = default)
         {
             var execInstallationProcedureScript
                 = new SafeExecuteStoredProcedure(Options.ConnectionString,
@@ -46,14 +48,12 @@ namespace Chatter.SqlChangeFeed
                                                    deadLetterQueueName,
                                                    deadLetterServiceName);
 
-            installChangeFeedScript.Execute();
-            uninstallChangeFeedScript.Execute();
-            execInstallationProcedureScript.Execute();
-
-            return Task.CompletedTask;
+            await installChangeFeedScript.ExecuteAsync(token);
+            await uninstallChangeFeedScript.ExecuteAsync(token);
+            await execInstallationProcedureScript.ExecuteAsync(token);
         }
 
-        public Task UninstallSqlDependencies(string uninstallationProcedureName = "")
+        public async Task UninstallSqlDependencies(string uninstallationProcedureName = "", CancellationToken token = default)
         {
             var execUninstallationProcedureScript =
                 new SafeExecuteStoredProcedure(
@@ -62,9 +62,7 @@ namespace Chatter.SqlChangeFeed
                 uninstallationProcedureName,
                 Options.SchemaName);
 
-            execUninstallationProcedureScript.Execute();
-
-            return Task.CompletedTask;
+            await execUninstallationProcedureScript.ExecuteAsync(token);
         }
     }
 }
