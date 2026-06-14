@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Data;
 using Microsoft.Data.SqlClient;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.SqlChangeFeed.Scripts
@@ -28,14 +29,14 @@ namespace Chatter.SqlChangeFeed.Scripts
             command.ExecuteNonQuery();
         }
 
-        public virtual async Task ExecuteAsync()
+        public virtual async Task ExecuteAsync(CancellationToken token = default)
         {
             using SqlConnection conn = new SqlConnection(_connectionString);
             using (SqlCommand command = new SqlCommand(ToString(), conn))
             {
-                conn.Open();
+                await conn.OpenAsync(token).ConfigureAwait(false);
                 command.CommandType = CommandType.Text;
-                await command.ExecuteNonQueryAsync();
+                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
             }
         }
     }

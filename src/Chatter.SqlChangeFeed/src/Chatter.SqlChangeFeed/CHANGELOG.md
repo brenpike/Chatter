@@ -12,6 +12,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.11.0] - 2026-06-14
+
+### Added
+
+- `UseChangeFeedSqlMigrationsAsync` async/cancellable migration entry points (on `IApplicationBuilder` and `IServiceProvider`, generic and `Type` overloads) that genuinely `await` the install and observe a `CancellationToken`. (#212)
+- `CancellationToken` parameters on `ISqlDependencyManager.InstallSqlDependencies` / `UninstallSqlDependencies` and on `ExecutableSqlScript.ExecuteAsync`. All are defaulted (`= default`), so existing callers compile unchanged. (#212)
+
+### Changed
+
+- Migration install and uninstall are now genuinely asynchronous and cancellable: `ExecutableSqlScript.ExecuteAsync` awaits `OpenAsync`/`ExecuteNonQueryAsync` with the supplied token, and `SqlDependencyManager` awaits each script instead of running it synchronously. (#212)
+- The synchronous `UseChangeFeedSqlMigrations` boundary now awaits the install internally (`GetAwaiter().GetResult()`), closing a latent fire-and-forget that previously worked only because the install ran synchronously. (#212)
+
 ## [0.10.0] - 2026-06-14
 
 ### Changed
