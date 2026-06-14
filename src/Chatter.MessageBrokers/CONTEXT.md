@@ -51,7 +51,7 @@ _Avoid_: treating it as the only reliability model.
 
 **Co-Resident Outbox**: a document-tier outbox record stored in the same container and logical partition as the aggregate it accompanies, so both are written in one atomic batch.
 
-**Co-Resident Inbox Marker**: a document-tier inbox dedup marker stored in the aggregate's logical partition, contributed to the same handler-owned atomic batch as the aggregate write and the Co-Resident Outbox doc. Its id is derived from the message identity using the same Cosmos-id-safe encoding as the outbox id; it carries an `inbox` discriminator so the Outbox Relay's `type="outbox"` predicate ignores it by construction. A create-conflict on the marker fails the whole batch atomically, making once-only dedup atomic with the aggregate write rather than a sequential guard. Applicable only when the incoming message deterministically maps to a single aggregate partition.
+**Co-Resident Inbox Marker**: a document-tier inbox dedup marker stored in the aggregate's logical partition, contributed to the same handler-owned atomic batch as the aggregate write and the Co-Resident Outbox doc. Its id is derived from the message identity using the same Cosmos-id-safe encoding as the outbox id; it carries the Chatter-reserved `_chatterType="inbox"` discriminator so the Outbox Relay's `_chatterType="outbox"` predicate ignores it by construction. A create-conflict on the marker fails the whole batch atomically, making once-only dedup atomic with the aggregate write rather than a sequential guard. Applicable only when the incoming message deterministically maps to a single aggregate partition.
 
 ## Relationships
 
