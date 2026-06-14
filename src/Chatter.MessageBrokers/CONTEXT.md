@@ -34,12 +34,43 @@ _Avoid_: forwarder (a Router specialization).
 
 **Body Converter**: Serializes/deserializes a brokered message body to/from a domain message type.
 
+**Two-Tier Reliability**: the reliability port supports two coexisting persistence models — a relational ambient-transaction tier and a NoSQL/document stage-then-commit tier — sharing the enqueue, inbox, and transaction-context seam.
+
+**Relational Tier**: the ambient-transaction reliability model (Unit of Work wraps the whole handler in an open transaction; polling outbox dispatch).
+_Avoid_: treating it as the only reliability model.
+
+**Document Tier** (NoSQL): the stage-then-commit reliability model where the framework (outermost document-tier batch-lifecycle behavior) owns the atomic batch lifecycle (open + execute) and contributes the inbox marker and outbox record to the batch; the handler contributes its own aggregate ops to the framework-owned batch and owns aggregate serialization and partition selection; dispatched by a change-feed relay that is at-least-once (downstream consumers must deduplicate via the inbox marker).
+_Avoid_: "the handler owns the batch" (batch-lifecycle ownership belongs to the framework, not the handler).
+
+**Document-Tier Batch-Lifecycle Behavior**: the outermost document-tier pipeline behavior — the document-tier sibling of `UnitOfWorkBehavior` — that owns batch open, inbox-marker stamping, and batch-execute for the document tier. It opens the `TransactionalBatch`, stamps the inbox-marker create-op, calls `next()` (during which the handler and `SendToOutbox` contribute their ops to the batch via the document-tier atomic-write handle — the doc-tier sibling of `IPersistanceTransaction` on the document-tier reliability surface, NOT `TransactionContext.Container`), then executes the batch once and inspects the per-op response for conflict. A 409 on the marker op is a confirmed duplicate; the all-or-nothing batch execution ensures no aggregate or outbox write commits on conflict.
+_Avoid_: consumer, listener, middleware (honor existing `_Avoid_` aliases).
+
+**Atomic-Write Handle**: the abstract contract the enqueue contract (`SendToOutbox`) is abstracted over — satisfied by the relational `IPersistanceTransaction` on the relational tier OR the document-tier atomic-write handle on the document tier. It is NOT "a value on the context container bag": the two tiers satisfy the same abstract contract with provider-shaped handles, and the exact C# shape / type name is deferred to implementation. On the document tier, the Document-Tier Batch-Lifecycle Behavior opens the batch and places the doc-tier handle before `next()`; the Co-Resident Outbox doc and the Co-Resident Inbox Marker both ride this handle — contributed to the same framework-owned batch as the aggregate write — and commit atomically at the single framework-owned batch-execute.
+
+**Stage-then-Commit**: an atomic-write model where writes are accumulated then committed once (document tier), as opposed to running handler code inside an ambient transaction.
+
+**Pollable Outbox Store**: the relational-only outbox capability for polling-based dispatch (query unprocessed records, mark processed); not implemented by document-store providers. This is relational-only mechanics: the document tier dispatches via the change-feed Outbox Relay and never implements this interface.
+
+**ReceiveViaInbox / InboxBehavior**: the `ReceiveViaInbox(() => next())` wrap seam is relational-only mechanics. The inbox **contract** and intent (once-only dedup, idempotency) are shared across tiers; the seam that implements them is provider-specific. The document tier enlists the inbox marker via the Document-Tier Batch-Lifecycle Behavior and the document-tier reliability surface — not through `ReceiveViaInbox`.
+
+**Document-Tier Reliability Surface**: the provider-shaped reliability surface the document (NoSQL) tier owns. It carries the document-store primitives the relational-shaped `TransactionContext` does not and cannot carry: the resolved partition key, bound container, `TransactionalBatch` handle and batch lifecycle, inbox-marker enlistment, and ETag concurrency token. The document tier is the doc-tier sibling of `IPersistanceTransaction` for the atomic-write handle; the ETag concurrency token lives here, not on `TransactionContext`. The surface lives entirely in the Cosmos provider module — not in core.
+_Avoid_: treating `TransactionContext.Container` as the semantic home of document-tier primitives (it is an untyped dict that unifies storage, not semantics; no partition concept exists in core).
+
+**Partition-Key Resolver**: an application-registered delegate with signature `(InboundBrokeredMessage) -> partition-key` invoked by the Document-Tier Batch-Lifecycle Behavior to open the `TransactionalBatch` on the correct aggregate partition. There is no core primitive carrying a partition key (zero partition references in core); the partition is the aggregate's partition, which only the application knows (the same application that owns aggregate serialization). The resolver lives on the document-tier reliability surface and the Cosmos provider's DI registration — never as a core property.
+
+**Outbox Relay**: a change-feed-driven drain that publishes persisted outbox records to the broker (document tier), filtered to outbox records only — never deriving events from domain-document changes.
+
+**Co-Resident Outbox**: a document-tier outbox record stored in the same container and logical partition as the aggregate it accompanies, so both are written in one atomic batch.
+
+**Co-Resident Inbox Marker**: a document-tier inbox dedup marker stored in the aggregate's logical partition, contributed by the framework (Document-Tier Batch-Lifecycle Behavior) to the framework-owned batch before `next()` is called. Its id is derived from the message identity using the same Cosmos-id-safe encoding as the outbox id; it carries the Chatter-reserved `_chatterType="inbox"` discriminator so the Outbox Relay's `_chatterType="outbox"` predicate ignores it by construction. A 409 create-conflict on the marker is detected at the single framework-owned batch-execute (after `next()` returns); the all-or-nothing batch execution makes once-only dedup atomic with the aggregate write rather than a sequential guard. Applicable only when the incoming message deterministically maps to a single aggregate partition.
+
 ## Relationships
 
 - A Brokered Message Receiver consumes infrastructure messages and hands them to the Brokered Message Dispatcher.
 - The Dispatcher relays to a Command or Event handler (Chatter.CQRS) by message type.
 - Recovery (Retry, Circuit Breaker) wraps receiving; exhausting it yields a Critical Failure routed to the Error Queue.
 - Inbox and Outbox use in-memory implementations by default; durable storage is supplied by the Reliability.EntityFramework context.
+- Reliability is two-tier: a relational (ambient-transaction) tier and a NoSQL/document (stage-then-commit) tier share **only** the abstract enqueue (SendToOutbox, abstracted over an Atomic-Write Handle), inbox, and message contracts — NOT the EF-shaped `TransactionContext`/`InboxBehavior` mechanics; the document tier carries its document-store primitives on its own provider-shaped document-tier reliability surface (partition key, bound container, batch handle/lifecycle, inbox-marker enlistment, ETag). Durable storage is supplied by provider packages (EntityFramework for relational; Cosmos for document).
 - A Routing Slip drives a Router across a sequence of destinations.
 - Concrete brokers (Azure Service Bus, SQL Service Broker) implement the receiver/sender/path interfaces defined here.
 
