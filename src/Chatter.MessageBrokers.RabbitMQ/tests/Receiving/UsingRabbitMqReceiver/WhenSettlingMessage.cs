@@ -163,6 +163,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             // INVARIANT under test is that the (confirmed) republish happened and THEN the original was acked.
             harness.ConnectionSource.PublishChannels.Single().Publishes.Should().ContainSingle();
             harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(9UL);
+            harness.ConnectionSource.PublishChannels.Single().Publishes.Single().Seq
+                .Should().BeLessThan(harness.ConnectionSource.ReceiveChannel.Acks.Single().Seq,
+                    "the confirmed republish must be recorded before the original ack (ADR-0001 confirm-before-ack)");
         }
 
         [Fact]
@@ -201,6 +204,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             republish.Headers[MessageContext.FailureDetails].Should().Be("poisoned");
             republish.Headers[MessageContext.FailureDescription].Should().Be("could not be handled");
             harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(11UL);
+            harness.ConnectionSource.PublishChannels.Single().Publishes.Single().Seq
+                .Should().BeLessThan(harness.ConnectionSource.ReceiveChannel.Acks.Single().Seq,
+                    "the confirmed deadletter republish must be recorded before the original ack (ADR-0001 confirm-before-ack)");
         }
 
         // OWNERSHIP (r3408649034): the dead-letter queue is the ADAPTER's responsibility; the ERROR queue is the
@@ -233,6 +239,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             // single copy; letting the core forward again would be the duplicate.
             deadlettered.Should().BeFalse(
                 "the method must return false so the core's error-recovery action is suppressed and the adapter's single error-queue copy is not duplicated");
+            // (d) The confirmed error-path republish is recorded BEFORE the original ack.
+            harness.ConnectionSource.PublishChannels.Single().Publishes.Single().Seq
+                .Should().BeLessThan(harness.ConnectionSource.ReceiveChannel.Acks.Single().Seq,
+                    "the confirmed error-path republish must be recorded before the original ack (ADR-0001 confirm-before-ack)");
         }
 
         // No message loss in the error-only path under a stale epoch: the republish is publisher-confirmed REGARDLESS
