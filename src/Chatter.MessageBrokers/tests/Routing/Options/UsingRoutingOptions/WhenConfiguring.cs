@@ -73,5 +73,51 @@ namespace Chatter.MessageBrokers.Tests.Routing.Options.UsingRoutingOptions
             options.MessageContext[MessageContext.CorrelationId].Should().Be("overwritten");
             options.MessageContext[MessageContext.Subject].Should().Be("added");
         }
+
+        [Fact]
+        public void MustNotMutateSuppliedInboundContextWhenPublishOptionsMergeAppliesOverride()
+        {
+            var inbound = new Dictionary<string, object>
+            {
+                [MessageContext.CorrelationId] = "corr-inbound"
+            };
+            var perPublishOverride = new PublishOptions();
+            perPublishOverride.SetCorrelationId("corr-override");
+
+            PublishOptions.Create(inbound).Merge(perPublishOverride);
+
+            inbound[MessageContext.CorrelationId].Should().Be("corr-inbound");
+        }
+
+        [Fact]
+        public void MustApplyOverrideToReturnedPublishOptionsWhenMergeAppliesOverride()
+        {
+            var inbound = new Dictionary<string, object>
+            {
+                [MessageContext.CorrelationId] = "corr-inbound"
+            };
+            var perPublishOverride = new PublishOptions();
+            perPublishOverride.SetCorrelationId("corr-override");
+
+            var merged = PublishOptions.Create(inbound).Merge(perPublishOverride);
+
+            merged.MessageContext[MessageContext.CorrelationId].Should().Be("corr-override");
+        }
+
+        [Fact]
+        public void MustNotLeakPriorOverrideIntoLaterPublishOptionsCreateOnSameInboundContext()
+        {
+            var inbound = new Dictionary<string, object>
+            {
+                [MessageContext.CorrelationId] = "corr-inbound"
+            };
+            var firstOverride = new PublishOptions();
+            firstOverride.SetCorrelationId("first-publish-corr");
+
+            PublishOptions.Create(inbound).Merge(firstOverride);
+            var secondMerged = PublishOptions.Create(inbound).Merge(new PublishOptions());
+
+            secondMerged.MessageContext[MessageContext.CorrelationId].Should().Be("corr-inbound");
+        }
     }
 }
