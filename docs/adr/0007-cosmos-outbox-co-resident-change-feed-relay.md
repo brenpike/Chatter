@@ -31,8 +31,12 @@ The NoSQL reliability tier (ADR 0006) must realize the transactional-outbox / at
 
 - Aggregate upsert carries `IfMatchEtag`; a 412 on conflict is an application-level retry signal.
 - The outbox `CreateItem` is a fresh document with no ETag.
-- Inbox deduplication is 409-on-create of a unique inbox document id — strictly better than EF's read-then-add TOCTOU race.
+- Inbox deduplication uses a **co-resident inbox marker** contributed to the same handler-owned `TransactionalBatch` as the aggregate write and the outbox doc. The marker is co-resident: `partitionKey` equals the aggregate's partition value; `id` is `inbox:{encoded(MessageId)}` using the same Cosmos-id-safe encoding as the outbox id; the raw `MessageId` is stored verbatim in a separate field. A 409 create-conflict on the marker fails the entire batch atomically — no aggregate write occurs, no outbox doc is written, and the message is acked as a confirmed duplicate. This is truly atomic once-only dedup, not a sequential marker-then-write guard. Dedup is closed-by-construction: because the batch is the commit point and the marker is a member of that batch, there is no window between marker persistence and aggregate/outbox persistence in which a redelivery could escape.
+- The inbox marker carries a `type = "inbox"` discriminator. The change-feed relay's `type = "outbox"` filter predicate excludes inbox markers by construction — no relay-side inbox suppression logic is required.
+- Inbox markers are not given a post-delivery TTL. They persist for the dedup window. An app-configurable dedup-window TTL is a deferred design point.
 - No datetime concurrency token (relational-only).
+
+**Single-partition constraint for inbox dedup.** Atomic document-tier inbox dedup requires the incoming message to deterministically map to the single aggregate partition the handler writes — the same single-partition scope this ADR already accepts for aggregate-plus-outbox atomicity. Handlers whose message does not map to exactly one aggregate partition, or that write no aggregate, are outside the scope of document-tier once-only inbox dedup.
 
 **Dispatch via change-feed relay.** A change-feed processor attached to the application's container drains outbox documents **filtered by the `type="outbox"` discriminator** and publishes them through the broker. The relay **must not** derive integration events from domain-document changes — only explicitly authored outbox documents are published. The relay (not a polling query) is the Cosmos dispatch mechanism; the Cosmos provider does **not** implement `IPollableOutboxStore`.
 

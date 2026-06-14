@@ -41,7 +41,7 @@ _Avoid_: treating it as the only reliability model.
 
 **Document Tier** (NoSQL): the stage-then-commit reliability model where the handler owns an atomic batch on one logical partition and the framework contributes the outbox record; dispatched by a change-feed relay.
 
-**Atomic-Write Handle**: the active transaction or batch carried on the Transaction Context container; the seam both reliability tiers share (a relational transaction or a document-store batch).
+**Atomic-Write Handle**: the active transaction or batch carried on the Transaction Context container; the seam both reliability tiers share (a relational transaction or a document-store batch). On the document tier, the Co-Resident Outbox doc and the Co-Resident Inbox Marker both ride this handle — they are contributed to the same batch as the aggregate write and commit with it atomically.
 
 **Stage-then-Commit**: an atomic-write model where writes are accumulated then committed once (document tier), as opposed to running handler code inside an ambient transaction.
 
@@ -50,6 +50,8 @@ _Avoid_: treating it as the only reliability model.
 **Outbox Relay**: a change-feed-driven drain that publishes persisted outbox records to the broker (document tier), filtered to outbox records only — never deriving events from domain-document changes.
 
 **Co-Resident Outbox**: a document-tier outbox record stored in the same container and logical partition as the aggregate it accompanies, so both are written in one atomic batch.
+
+**Co-Resident Inbox Marker**: a document-tier inbox dedup marker stored in the aggregate's logical partition, contributed to the same handler-owned atomic batch as the aggregate write and the Co-Resident Outbox doc. Its id is derived from the message identity using the same Cosmos-id-safe encoding as the outbox id; it carries an `inbox` discriminator so the Outbox Relay's `type="outbox"` predicate ignores it by construction. A create-conflict on the marker fails the whole batch atomically, making once-only dedup atomic with the aggregate write rather than a sequential guard. Applicable only when the incoming message deterministically maps to a single aggregate partition.
 
 ## Relationships
 

@@ -23,14 +23,19 @@ Adopt option (C). The unifying seam **already exists**: `TransactionContext.Cont
 
 The NoSQL tier uses **model C2: handler-owns-batch, framework-contributes-outbox**. The handler opens its own `TransactionalBatch` on its aggregate's partition, registers it in `TransactionContext.Container`, performs its own aggregate writes, calls `SendToOutbox` (which adds the outbox-doc operation to that batch), then executes the batch. This mirrors EF exactly — the handler does its own `DbContext` aggregate writes and the outbox adds rows to the same context/transaction.
 
-**Three axes — one unified, two forked:**
+**Three axes — one unified, three forked:**
 
 - **Enqueue** (`SendToOutbox`): shared.
-- **Inbox** (`ReceiveViaInbox`): shared.
+- **Inbox contract / seam** (`ReceiveViaInbox`): shared — the inbox interface and the once-only dedup contract are common across tiers.
 - **Transaction Context container seam**: shared.
 - **Atomic-write initiation**: forked — relational ambient `ExecuteAsync` vs Cosmos handler-owned batch.
+- **Inbox-marker commit point**: forked — relational inbox marker is `AddAsync`'d into the EF context and never self-committed (committed once by `UnitOfWorkBehavior`'s single `SaveChanges`); document-tier inbox marker is contributed to the handler-owned `TransactionalBatch` alongside the aggregate and outbox doc (the batch execution IS the commit).
 - **Dispatch**: forked — relational polling `OutboxProcessor` vs Cosmos change-feed relay.
 - **Outbox-doc shape**: forked — relational `int Id` + datetime concurrency token vs Cosmos string id + ETag.
+
+**Inbox atomicity and the commit-point fork.** The EF tier achieves inbox-plus-handler atomicity because `UnitOfWorkBehavior` is the outermost pipeline behavior: the inbox `AddAsync` joins the ambient EF context and is committed in the single `SaveChanges` that closes the unit of work. The inbox implementation never self-commits. The document tier has no external commit boundary: the handler-owned `TransactionalBatch` is the commit point, built inside the handler and executed once. Contributing the inbox marker as a separate, independently committed write would open a window between marker persistence and aggregate/outbox persistence — any redelivery in that window would escape dedup or lose the handler's write. A separately-committed document-tier inbox marker is therefore explicitly rejected. The marker must ride the same batch as the aggregate and the outbox doc.
+
+**Qualifying constraint.** Atomic document-tier inbox dedup requires the incoming message to deterministically map to the single aggregate partition the handler writes. The inbox marker is co-resident: its partition key equals the aggregate's partition value. Handlers whose message does not map to exactly one aggregate partition, or that write no aggregate, are outside the scope of document-tier once-only dedup.
 
 ## Consequences
 

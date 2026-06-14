@@ -6,7 +6,7 @@ Chatter.MessageBrokers' reliability port (outbox/inbox/unit-of-work) is shaped e
 
 ## Solution
 
-Evolve the reliability port to Two-Tier Reliability: a Relational Tier (the existing ambient-transaction, polling-dispatch model, behavior-unchanged) and a new Document Tier (NoSQL stage-then-commit). Both tiers share one seam — the enqueue contract, the inbox contract, and the transaction-context Atomic-Write Handle. A new Cosmos reliability provider lets an application atomically persist its aggregate and its outbound messages in a single partition-scoped batch the application owns, while the provider contributes the Chatter-owned outbox record to that batch (handler-owns-batch, framework-contributes-outbox). A change-feed Outbox Relay drains persisted outbox records — identified by an outbox discriminator — and publishes them through the broker, never deriving events from domain-document changes. Inbox idempotency uses conflict-on-create dedup. The existing EntityFramework users are unaffected at runtime.
+Evolve the reliability port to Two-Tier Reliability: a Relational Tier (the existing ambient-transaction, polling-dispatch model, behavior-unchanged) and a new Document Tier (NoSQL stage-then-commit). Both tiers share one seam — the enqueue contract, the inbox contract, and the transaction-context Atomic-Write Handle. A new Cosmos reliability provider lets an application atomically persist its aggregate and its outbound messages in a single partition-scoped batch the application owns, while the provider contributes the Chatter-owned outbox record to that batch (handler-owns-batch, framework-contributes-outbox). A change-feed Outbox Relay drains persisted outbox records — identified by an outbox discriminator — and publishes them through the broker, never deriving events from domain-document changes. Inbox idempotency uses a co-resident inbox marker contributed to the same handler-owned batch as the aggregate and outbox doc; a create-conflict on the marker fails the whole batch atomically, making dedup atomic with the aggregate write. The existing EntityFramework users are unaffected at runtime.
 
 ## User Stories
 
@@ -25,7 +25,7 @@ Evolve the reliability port to Two-Tier Reliability: a Relational Tier (the exis
 - A Document-Tier outbound message persisted via the enqueue contract becomes a Chatter-owned outbox record Co-Resident with the aggregate (same container, same logical partition), carrying the agreed identity and discriminator, with an expiry applied after delivery.
 - The Outbox Relay publishes only outbox records (selected by discriminator) and never publishes from domain-document changes.
 - Each outbox record is published through the broker exactly once under normal operation.
-- A redelivered message with the same identity is handled once (conflict-on-create dedup).
+- A redelivered message with the same identity is handled once: inbox dedup is atomic with the aggregate and outbox write via a co-resident inbox marker on the single-partition batch; a create-conflict on the marker fails the whole batch (no aggregate write, no outbox record). This constraint applies when the message deterministically maps to a single aggregate partition; handlers outside that scope are not covered by document-tier inbox dedup.
 - Aggregate concurrency conflicts surface as an optimistic-concurrency failure the application can retry; inbox/outbox identity collisions surface as create-conflicts.
 - The Cosmos provider package targets net8.0 and net10.0 and depends on the Cosmos SDK major line that provides the batch and change-feed-processor capabilities.
 - Versioning: the core MessageBrokers package takes a breaking-change version step; the EntityFramework provider takes a corresponding version step; the new Cosmos provider ships at its initial version. CHANGELOG entries exist for all three, including a breaking-change note on the core.
@@ -37,13 +37,13 @@ Evolve the reliability port to Two-Tier Reliability: a Relational Tier (the exis
 - The Document Tier uses handler-owns-batch, framework-contributes-outbox: the application owns the batch, the partition, and aggregate serialization; the provider owns the outbox-record shape and the relay. This keeps the messaging library ignorant of application domain types and container ownership, and makes aggregate-plus-outbox co-location structurally enforced.
 - The outbox record is Co-Resident with its aggregate in one logical partition (cross-partition and cross-container atomic writes are physically impossible on the platform and are a non-goal).
 - Dispatch on the Document Tier is a change-feed Outbox Relay filtered by an outbox discriminator — not a polling query — and is forbidden from deriving integration events from domain-document changes.
-- Idempotency and concurrency model on the Document Tier: optimistic concurrency for aggregate writes; conflict-on-create dedup for inbox and outbox identity.
+- Idempotency and concurrency model on the Document Tier: optimistic concurrency for aggregate writes; conflict-on-create dedup for outbox identity; inbox dedup via a co-resident inbox marker contributed to the handler-owned batch alongside the aggregate and outbox doc — a create-conflict on the marker fails the whole batch atomically (no aggregate write, no outbox record), making dedup atomic with the handler's write rather than a sequential guard. Applicable only when the message deterministically maps to one aggregate partition.
 - This is a breaking change to the core reliability port; the breaking surface is confined to code that implements the port or constructs outbox records directly, not to ordinary consumers of broker adapters.
 
 ## Testing Decisions
 
 - An emulator-backed integration suite verifies Chatter's contracts, not the database SDK. Asserting a hand-built batch merely exists is banned as the system-under-test; every test drives Chatter's public contracts and observes results through them.
-- Required contract coverage (intent, not test code): the enqueue contract produces the correct Co-Resident outbox record on the application's batch; atomicity (a forced aggregate concurrency failure leaves no outbox record; success yields both aggregate and outbox record); inbox idempotency (a duplicate identity is handled once); Outbox Relay discriminator filtering (a domain-document change is not published, an outbox record is published); relay publish-once plus post-delivery expiry; and an end-to-end path from handler through relay to a broker sink exercised through Chatter's public API.
+- Required contract coverage (intent, not test code): the enqueue contract produces the correct Co-Resident outbox record on the application's batch; atomicity (a forced aggregate concurrency failure leaves no outbox record; success yields both aggregate and outbox record); inbox idempotency atomicity (a forced inbox-marker conflict leaves no aggregate write and no outbox record, and the handler is not re-run); Outbox Relay discriminator filtering (a domain-document change is not published, an outbox record is published); relay publish-once plus post-delivery expiry; and an end-to-end path from handler through relay to a broker sink exercised through Chatter's public API.
 - The suite is docker-gated and runs in the existing CI integration lane alongside the other adapters' integration suites; it auto-skips when the container runtime is unavailable.
 - The Relational Tier retains its existing unit-test coverage, extended to prove the interface split is behavior-preserving.
 
@@ -57,6 +57,7 @@ Evolve the reliability port to Two-Tier Reliability: a Relational Tier (the exis
 ## Out of Scope
 
 - Cross-partition and multi-aggregate atomic writes (saga and process-manager territory).
+- Document-tier inbox once-only dedup for handlers whose incoming message does not deterministically map to a single aggregate partition.
 - Deriving integration events by tailing the domain change feed.
 - The older Cosmos SDK major line and the separate non-SDK client packages.
 - Migrating existing EntityFramework consumers off the Relational Tier (it remains, unchanged).
