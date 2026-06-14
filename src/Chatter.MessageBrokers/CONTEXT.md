@@ -39,9 +39,13 @@ _Avoid_: forwarder (a Router specialization).
 **Relational Tier**: the ambient-transaction reliability model (Unit of Work wraps the whole handler in an open transaction; polling outbox dispatch).
 _Avoid_: treating it as the only reliability model.
 
-**Document Tier** (NoSQL): the stage-then-commit reliability model where the handler owns an atomic batch on one logical partition and the framework contributes the outbox record; dispatched by a change-feed relay.
+**Document Tier** (NoSQL): the stage-then-commit reliability model where the framework (outermost document-tier batch-lifecycle behavior) owns the atomic batch lifecycle (open + execute) and contributes the inbox marker and outbox record to the batch; the handler contributes its own aggregate ops to the framework-owned batch and owns aggregate serialization and partition selection; dispatched by a change-feed relay that is at-least-once (downstream consumers must deduplicate via the inbox marker).
+_Avoid_: "the handler owns the batch" (batch-lifecycle ownership belongs to the framework, not the handler).
 
-**Atomic-Write Handle**: the active transaction or batch carried on the Transaction Context container; the seam both reliability tiers share (a relational transaction or a document-store batch). On the document tier, the Co-Resident Outbox doc and the Co-Resident Inbox Marker both ride this handle — they are contributed to the same batch as the aggregate write and commit with it atomically.
+**Document-Tier Batch-Lifecycle Behavior**: the outermost document-tier pipeline behavior — the document-tier sibling of `UnitOfWorkBehavior` — that owns batch open, inbox-marker stamping, and batch-execute for the document tier. It opens the `TransactionalBatch`, stamps the inbox-marker create-op, calls `next()` (during which the handler and `SendToOutbox` contribute their ops to the batch via the container seam), then executes the batch once and inspects the per-op response for conflict. A 409 on the marker op is a confirmed duplicate; the all-or-nothing batch execution ensures no aggregate or outbox write commits on conflict.
+_Avoid_: consumer, listener, middleware (honor existing `_Avoid_` aliases).
+
+**Atomic-Write Handle**: the active transaction or batch carried on the Transaction Context container; the seam both reliability tiers share (a relational transaction or a document-store batch). On the document tier, the framework opens the batch and places it on this handle before `next()`; the Co-Resident Outbox doc and the Co-Resident Inbox Marker both ride this handle — contributed to the same framework-owned batch as the aggregate write — and commit atomically at the single framework-owned batch-execute.
 
 **Stage-then-Commit**: an atomic-write model where writes are accumulated then committed once (document tier), as opposed to running handler code inside an ambient transaction.
 
@@ -51,7 +55,7 @@ _Avoid_: treating it as the only reliability model.
 
 **Co-Resident Outbox**: a document-tier outbox record stored in the same container and logical partition as the aggregate it accompanies, so both are written in one atomic batch.
 
-**Co-Resident Inbox Marker**: a document-tier inbox dedup marker stored in the aggregate's logical partition, contributed to the same handler-owned atomic batch as the aggregate write and the Co-Resident Outbox doc. Its id is derived from the message identity using the same Cosmos-id-safe encoding as the outbox id; it carries the Chatter-reserved `_chatterType="inbox"` discriminator so the Outbox Relay's `_chatterType="outbox"` predicate ignores it by construction. A create-conflict on the marker fails the whole batch atomically, making once-only dedup atomic with the aggregate write rather than a sequential guard. Applicable only when the incoming message deterministically maps to a single aggregate partition.
+**Co-Resident Inbox Marker**: a document-tier inbox dedup marker stored in the aggregate's logical partition, contributed by the framework (Document-Tier Batch-Lifecycle Behavior) to the framework-owned batch before `next()` is called. Its id is derived from the message identity using the same Cosmos-id-safe encoding as the outbox id; it carries the Chatter-reserved `_chatterType="inbox"` discriminator so the Outbox Relay's `_chatterType="outbox"` predicate ignores it by construction. A 409 create-conflict on the marker is detected at the single framework-owned batch-execute (after `next()` returns); the all-or-nothing batch execution makes once-only dedup atomic with the aggregate write rather than a sequential guard. Applicable only when the incoming message deterministically maps to a single aggregate partition.
 
 ## Relationships
 
