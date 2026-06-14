@@ -24,6 +24,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Fixed
 
 - (F6) A parked Azure Service Bus receive is now unblocked on teardown — the receive-loop `CancellationToken` is threaded through the internal receive port into the SDK `ReceiveMessageAsync(maxWaitTime, cancellationToken)` overload, and a shutdown-cancelled receive is swallowed quietly (returns `null`, no error log, no settle). Prevents teardown hangs when the broker or network is stalled.
+- (F7) Session-enabled topic subscriptions now accept sessions via the correct `AcceptNextSessionAsync(topicName, subscriptionName)` overload. The session entity is carried as a structured `(topic, subscription)` identity through the session path so a topic-subscription receiver is never mis-addressed as a flat queue name.
 
 ## [1.3.0] - 2026-06-09
 
