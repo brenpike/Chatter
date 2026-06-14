@@ -7,6 +7,7 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -101,10 +102,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
             // the post-stop acquire (proving the publish path is exercised, not the already-disposed receive channel).
             var publishChannel = new OpenStopPublishChannel();
             var served = new Queue<IChannel>(new IChannel[] { receiveChannel, publishChannel });
+            // Capture the CreateChannelOptions per creation so the post-stop publish channel can be asserted to carry
+            // the confirm-before-ack safety flags (not just to exist).
+            var capturedOptions = new List<CreateChannelOptions>();
             var connectionMock = new Mock<IConnection>();
             connectionMock.SetupGet(c => c.IsOpen).Returns(true);
             connectionMock.Setup(c => c.CreateChannelAsync(It.IsAny<CreateChannelOptions>(), It.IsAny<CancellationToken>()))
-                .Returns<CreateChannelOptions, CancellationToken>((_, _) => Task.FromResult(served.Dequeue()));
+                .Returns<CreateChannelOptions, CancellationToken>((options, _) =>
+                {
+                    capturedOptions.Add(options);
+                    return Task.FromResult(served.Dequeue());
+                });
             var source = await NewReceivingSourceAsync(receiveChannel, connectionMock.Object);
 
             await source.StopReceivingAsync(CancellationToken.None);
@@ -119,6 +127,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
                 rental.Channel.Should().BeSameAs(publishChannel,
                     "a post-stop acquire hands back a live rental carrying the freshly-created publish channel");
             }
+
+            // The post-stop publish channel is still created in confirm mode: the receive cold-start created the
+            // receive channel (options null), and the post-stop acquire created the publish channel with confirms.
+            var publishOptions = capturedOptions.Should().HaveCount(2,
+                "one create for the receive channel cold-start, one for the post-stop publish acquire").And.Subject.Last();
+            publishOptions.Should().NotBeNull("the post-stop publish channel must carry explicit confirm options");
+            publishOptions.PublisherConfirmationsEnabled.Should().BeTrue("a post-stop publish channel must still enable publisher confirmations");
+            publishOptions.PublisherConfirmationTrackingEnabled.Should().BeTrue("a post-stop publish channel must still enable confirmation tracking");
 
             await source.DisposeAsync();
         }

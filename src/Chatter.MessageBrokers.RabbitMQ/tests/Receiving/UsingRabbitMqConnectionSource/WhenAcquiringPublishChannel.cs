@@ -29,19 +29,29 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
 
         // Builds a fake open connection that hands back a fresh open publish channel from a supplied queue per
         // CreateChannelAsync call, counting the creations so the reuse branch (no new create on the second acquire)
-        // is assertable.
+        // is assertable, and CAPTURING the CreateChannelOptions each publish-channel creation passed so a test can
+        // assert publisher confirmations + confirmation tracking were enabled (the confirm-before-ack safety
+        // invariant — a regression dropping them must FAIL the suite, not pass it).
         private static RabbitMqConnectionSource NewSourceServingPublishChannels(Queue<OpenPublishChannel> channelsToServe, out int[] createCount)
+            => NewSourceServingPublishChannels(channelsToServe, out createCount, out _);
+
+        private static RabbitMqConnectionSource NewSourceServingPublishChannels(Queue<OpenPublishChannel> channelsToServe,
+                                                                                out int[] createCount,
+                                                                                out List<CreateChannelOptions> capturedOptions)
         {
             var creations = new int[1];
             createCount = creations;
+            var captured = new List<CreateChannelOptions>();
+            capturedOptions = captured;
             var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
             var connectionMock = new Mock<IConnection>();
             connectionMock.SetupGet(c => c.IsOpen).Returns(true);
             connectionMock
                 .Setup(c => c.CreateChannelAsync(It.IsAny<CreateChannelOptions>(), It.IsAny<CancellationToken>()))
-                .Returns<CreateChannelOptions, CancellationToken>((_, _) =>
+                .Returns<CreateChannelOptions, CancellationToken>((options, _) =>
                 {
                     creations[0]++;
+                    captured.Add(options);
                     return Task.FromResult<IChannel>(channelsToServe.Dequeue());
                 });
             SetCreateConnectionHook(source, _ => Task.FromResult(connectionMock.Object));
@@ -93,6 +103,27 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
 
             createCount[0].Should().Be(1, "the second acquire must TryTake the re-pooled channel, not create a fresh one");
             secondRental.Channel.Should().BeSameAs(first, "the second acquire reuses the same re-pooled channel");
+
+            await source.DisposeAsync();
+        }
+
+        // The publish channel MUST be created with publisher confirmations AND confirmation tracking enabled: this
+        // is the adapter's confirm-before-ack/publish safety invariant (RabbitMQ.Client 7.2.1 faults an unroutable
+        // mandatory publish via confirm-tracking, so an unroutable publish surfaces as a Dispatch failure rather
+        // than silent loss). Asserting the captured CreateChannelOptions makes a regression in
+        // CreatePublishChannelAsync that dropped either flag FAIL this suite instead of passing it.
+        [Fact]
+        public async Task MustCreatePublishChannelWithPublisherConfirmationsEnabled()
+        {
+            var channels = new Queue<OpenPublishChannel>(new[] { new OpenPublishChannel() });
+            var source = NewSourceServingPublishChannels(channels, out _, out var capturedOptions);
+
+            await using var rental = await source.AcquirePublishChannelAsync(CancellationToken.None);
+
+            var options = capturedOptions.Should().ContainSingle("the acquire creates exactly one publish channel").Subject;
+            options.Should().NotBeNull("the publish channel must be created with explicit confirm options, not the default null");
+            options.PublisherConfirmationsEnabled.Should().BeTrue("publisher confirmations must be enabled (confirm-before-ack safety)");
+            options.PublisherConfirmationTrackingEnabled.Should().BeTrue("publisher confirmation tracking must be enabled so an unroutable mandatory publish faults rather than silently dropping");
 
             await source.DisposeAsync();
         }
