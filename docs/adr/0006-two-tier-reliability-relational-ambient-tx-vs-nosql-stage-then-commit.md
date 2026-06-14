@@ -52,7 +52,7 @@ Option 1 (framework-owns-batch-lifecycle) keeps the shared seams (`SendToOutbox`
 **Three axes — one unified, four forked:**
 
 - **Enqueue** (`SendToOutbox`): shared.
-- **Inbox contract / seam** (`ReceiveViaInbox`): shared — the inbox interface and the once-only dedup contract are common across tiers.
+- **Inbox dedup contract** (tier-neutral once-only-handling abstraction): shared — but this is the abstract contract, NOT the relational-shaped `ReceiveViaInbox(..., Func<Task>)` wrap seam. The relational tier realizes the contract via `ReceiveViaInbox` / `InboxBehavior` (relational-only mechanics); the document tier realizes it via inbox-marker enlistment on the document-tier surface (see "ReceiveViaInbox / InboxBehavior — relational-only mechanics" below). The contract and once-only intent are common across tiers; the seam that implements it forks.
 - **Transaction Context container seam**: shared.
 - **Atomic-write initiation**: forked — relational ambient `ExecuteAsync` vs document-tier outermost behavior opening the batch.
 - **Inbox-marker commit point**: forked — relational inbox marker is `AddAsync`'d into the EF context and never self-committed (committed once by `UnitOfWorkBehavior`'s single `SaveChanges`); document-tier inbox marker is stamped into the framework-owned `TransactionalBatch` by the outermost behavior before `next()`, and the single batch-execute after `next()` returns is the commit point.
