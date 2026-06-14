@@ -52,6 +52,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             return sut;
         }
 
+        // The formatted subscription path core BrokeredMessageReceiver.StartReceiver rewrites
+        // options.MessageReceiverPath into (line 261:
+        // PathBuilder.GetMessageReceivingPath(SendingPath, MessageReceiverPath)) BEFORE the ASB receiver factory
+        // runs its RequiresSession lookup. Reproducing that rewrite here is what makes these tests exercise the
+        // runtime lookup path: the registry is registered with the RAW subscription name, but the production
+        // factory is handed this FORMATTED path as MessageReceiverPath — the exact raw-vs-formatted mismatch the
+        // canonical key closes.
+        private const string SubscriptionsSegment = "Subscriptions";
+        private static string FormattedSubscriptionPath(string topic, string subscription)
+            => $"{topic}/{SubscriptionsSegment}/{subscription}";
+
         [Fact]
         public async Task MustSelectSessionAdapterWhenRegistryMarksEntitySessionMode()
         {
@@ -93,22 +104,77 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         }
 
         [Fact]
-        public async Task MustRouteEachSubscriptionOnSharedTopicToItsOwnAdapter()
+        public async Task MustResolveSessionAdapterForTopicSubscriptionRegisteredRawAfterRuntimeFormattedRewrite()
         {
-            // The exact P2 collision case: a session subscription and a normal subscription on the SAME topic.
-            // The session flag is keyed PER-RECEIVER (subscription + topic), so the session subscription routes
-            // to the session adapter while the normal subscription on the same topic routes to the non-session
-            // adapter — they no longer collide on the shared top-level entity (the topic).
+            // The exact iter-2 P1 failing case. A topic session subscription is REGISTERED with the raw
+            // subscription name (as AddSessionTopicSubscription does: Register(topic, sub, ...)), but at runtime
+            // core StartReceiver rewrites MessageReceiverPath to the FORMATTED "<topic>/Subscriptions/<sub>"
+            // BEFORE CreateProductionReceiver's RequiresSession lookup. The canonical-key derivation must map the
+            // formatted lookup back to the raw registration so the session adapter is selected. Before STEP-001
+            // the formatted path failed the lookup and fell through to the non-session adapter, so this test
+            // would have FAILED.
+            const string topic = "orders-topic";
+            const string subscription = "orders-session-sub";
+            var registry = new ServiceBusReceiverRegistry();
+            registry.Register(topic, subscription, transactionMode: null, requiresSession: true);
+
+            var sut = await InitializedSutAsync(registry, receiverPath: FormattedSubscriptionPath(topic, subscription), sendingPath: topic);
+
+            sut.InnerReceiver.Should().BeOfType<AzureSdkSessionMessageReceiverAdapter>();
+        }
+
+        [Fact]
+        public async Task MustRouteEachSubscriptionOnSharedTopicToItsOwnAdapterAtRuntimeFormattedPaths()
+        {
+            // The exact P2 collision case, exercised through the RUNTIME formatted path. A session subscription
+            // and a normal subscription on the SAME topic are registered with their raw subscription names, but
+            // each arrives at the lookup with its formatted "<topic>/Subscriptions/<sub>" path (StartReceiver's
+            // rewrite). The session flag is keyed PER-RECEIVER (subscription + topic), so the session
+            // subscription routes to the session adapter while the normal subscription on the same topic routes
+            // to the non-session adapter — they no longer collide on the shared top-level entity (the topic).
             const string sharedTopic = "shared-topic";
             var registry = new ServiceBusReceiverRegistry();
             registry.Register(sharedTopic, "session-subscription", transactionMode: null, requiresSession: true);
             registry.Register(sharedTopic, "normal-subscription", transactionMode: null, requiresSession: false);
 
-            var sessionSut = await InitializedSutAsync(registry, receiverPath: "session-subscription", sendingPath: sharedTopic);
-            var normalSut = await InitializedSutAsync(registry, receiverPath: "normal-subscription", sendingPath: sharedTopic);
+            var sessionSut = await InitializedSutAsync(registry, receiverPath: FormattedSubscriptionPath(sharedTopic, "session-subscription"), sendingPath: sharedTopic);
+            var normalSut = await InitializedSutAsync(registry, receiverPath: FormattedSubscriptionPath(sharedTopic, "normal-subscription"), sendingPath: sharedTopic);
 
             sessionSut.InnerReceiver.Should().BeOfType<AzureSdkSessionMessageReceiverAdapter>();
             normalSut.InnerReceiver.Should().BeOfType<AzureSdkMessageReceiverAdapter>();
+        }
+
+        [Fact]
+        public async Task MustSelectSessionAdapterForQueueReceiverWithNoRuntimeRewrite()
+        {
+            // Queue session receivers have no formatted rewrite: SendingPath == MessageReceiverPath, so
+            // StartReceiver's GetMessageReceivingPath returns the raw queue name unchanged. The raw registration
+            // and the (unchanged) runtime path must still resolve to the session adapter.
+            const string sessionQueue = "session-queue";
+            var registry = new ServiceBusReceiverRegistry();
+            registry.Register(sessionQueue, sessionQueue, transactionMode: null, requiresSession: true);
+
+            var sut = await InitializedSutAsync(registry, receiverPath: sessionQueue);
+
+            sut.InnerReceiver.Should().BeOfType<AzureSdkSessionMessageReceiverAdapter>();
+        }
+
+        [Fact]
+        public async Task MustResolveSessionAdapterWithoutDoubleFormattingWhenLookupPathAlreadyFormatted()
+        {
+            // Idempotency guard. The canonical-key derivation must NOT re-format an already-formatted
+            // subscription path into "<topic>/Subscriptions/<topic>/Subscriptions/<sub>". Feeding the
+            // already-formatted runtime path must collapse to the SAME canonical key the raw registration
+            // produced, so the session adapter is still selected. A double-format would miss the registration and
+            // fall through to the non-session adapter.
+            const string topic = "events-topic";
+            const string subscription = "events-session-sub";
+            var registry = new ServiceBusReceiverRegistry();
+            registry.Register(topic, subscription, transactionMode: null, requiresSession: true);
+
+            var sut = await InitializedSutAsync(registry, receiverPath: FormattedSubscriptionPath(topic, subscription), sendingPath: topic);
+
+            sut.InnerReceiver.Should().BeOfType<AzureSdkSessionMessageReceiverAdapter>();
         }
     }
 }
