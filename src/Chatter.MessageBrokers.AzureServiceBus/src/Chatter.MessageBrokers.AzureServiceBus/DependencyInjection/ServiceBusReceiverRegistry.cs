@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.Receiving;
 using System;
+using Chatter.MessageBrokers;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -13,6 +14,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
     // never re-enters DI to inspect receivers.
     internal sealed class ServiceBusReceiverRegistry
     {
+        // INVARIANT: the per-receiver session key is the CANONICAL receiving path produced by
+        // AzureServiceBusEntityPathBuilder.GetMessageReceivingPath — the SAME shape core
+        // BrokeredMessageReceiver.StartReceiver rewrites options.MessageReceiverPath into before the ASB
+        // receiver factory runs. Storing and looking up under this single derived key closes the
+        // raw-(at-registration)-vs-formatted-(at-runtime) mismatch class by construction: a topic
+        // subscription's key is "<topic>/Subscriptions/<sub>" regardless of whether the receiver path
+        // arrived raw (registration / discovery clamp) or already formatted (runtime CreateProductionReceiver).
+        private static readonly IBrokeredMessagePathBuilder _pathBuilder = new AzureServiceBusEntityPathBuilder();
+        private const string SubscriptionsSegment = "Subscriptions";
+
         private readonly List<RegisteredReceiver> _receivers = new List<RegisteredReceiver>();
 
         // Records a configured receiver. topLevelEntity is the queue name for a queue receiver or the TOPIC
@@ -26,7 +37,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
         // THIS receiver (not every receiver sharing the top-level entity).
         public void Register(string topLevelEntity, string receiverPath, TransactionMode? transactionMode, bool requiresSession = false)
         {
-            _receivers.Add(new RegisteredReceiver(topLevelEntity, receiverPath, transactionMode, requiresSession));
+            var canonicalReceivingPath = CanonicalReceivingPath(topLevelEntity, receiverPath);
+            _receivers.Add(new RegisteredReceiver(topLevelEntity, canonicalReceivingPath, transactionMode, requiresSession));
         }
 
         // True when any configured receiver's EFFECTIVE transaction mode is FullAtomicityViaInfrastructure,
@@ -59,8 +71,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
         public bool RequiresSession(string receiverPath, string sendingPath)
         {
             var topLevelEntity = InferTopLevelEntity(sendingPath, receiverPath);
+            var canonicalReceivingPath = CanonicalReceivingPath(topLevelEntity, receiverPath);
             return _receivers.Any(r => r.RequiresSession
-                && string.Equals(r.MessageReceiverPath, receiverPath, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(r.MessageReceiverPath, canonicalReceivingPath, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(r.TopLevelEntity, topLevelEntity, StringComparison.OrdinalIgnoreCase));
         }
 
@@ -69,6 +82,30 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
         // entity); a topic subscription's sending path is the distinct topic (the TOPIC is the top-level
         // entity). Used to derive the top-level component of the per-receiver session key from the receiver's
         // sending/receiver paths at lookup time.
+        // The single source of the per-receiver session key shape. Produces the CANONICAL receiving path for a
+        // receiver from its top-level entity (topic for a subscription; queue for a queue receiver) and its own
+        // receiver path, delegating to AzureServiceBusEntityPathBuilder.GetMessageReceivingPath so storage and
+        // lookup keys share ONE definition with the path core BrokeredMessageReceiver.StartReceiver rewrites
+        // MessageReceiverPath into at runtime. Queue / equal / blank top-level -> raw receiver name; topic
+        // subscription -> "<topic>/Subscriptions/<sub>".
+        //
+        // IDEMPOTENCY: GetMessageReceivingPath is NOT self-idempotent — re-formatting an already-formatted
+        // subscription path would yield "<topic>/Subscriptions/<topic>/Subscriptions/<sub>". The runtime
+        // CreateProductionReceiver lookup passes an ALREADY-FORMATTED receiver path (StartReceiver rewrote it),
+        // while registration / the discovery clamp pass a RAW subscription name. This guard short-circuits the
+        // already-formatted case so both inputs collapse to the same canonical key.
+        private static string CanonicalReceivingPath(string topLevelEntity, string receiverPath)
+        {
+            if (!string.IsNullOrWhiteSpace(topLevelEntity)
+                && receiverPath != null
+                && receiverPath.StartsWith($"{topLevelEntity}/{SubscriptionsSegment}/", StringComparison.OrdinalIgnoreCase))
+            {
+                return receiverPath;
+            }
+
+            return _pathBuilder.GetMessageReceivingPath(topLevelEntity, receiverPath);
+        }
+
         private static string InferTopLevelEntity(string sendingPath, string messageReceiverPath)
         {
             if (string.IsNullOrWhiteSpace(sendingPath) || string.Equals(sendingPath, messageReceiverPath, StringComparison.Ordinal))
