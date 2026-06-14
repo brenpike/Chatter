@@ -113,16 +113,19 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IReplyRouter, ReplyRouter>();
 
             builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
-            // Register the concrete in-memory outbox once scoped and forward both the enqueue contract and the
-            // pollable store to the SAME instance, so SendToOutbox and polling share one ConcurrentDictionary.
-            builder.Services.AddScoped<InMemoryBrokeredMessageOutbox>();
-            builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<InMemoryBrokeredMessageOutbox>());
-            builder.Services.AddIfNotRegistered<IPollableOutboxStore>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<InMemoryBrokeredMessageOutbox>());
-            // Register the concrete in-memory inbox once scoped and forward both the wrap seam and the dedup
-            // contract to the SAME instance.
-            builder.Services.AddScoped<InMemoryBrokeredMessageInbox>();
-            builder.Services.AddIfNotRegistered<IBrokeredMessageInbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<InMemoryBrokeredMessageInbox>());
-            builder.Services.AddIfNotRegistered<IInboxDeduplicator>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<InMemoryBrokeredMessageInbox>());
+            // Outbox pair: IBrokeredMessageOutbox (primary) + IPollableOutboxStore (secondary).
+            // The entire pair is gated on the primary to make a split-store outcome unrepresentable:
+            //   - Default path (no custom primary): register the in-memory concrete once and forward BOTH
+            //     facets to the SAME instance.  A lone custom secondary with no custom primary is a
+            //     misconfiguration; overriding it to in-memory here is the loud-correct outcome.
+            //   - Custom primary registered: forward the secondary to the primary via cast so the pair
+            //     tracks the same custom instance.  A custom primary that does not implement
+            //     IPollableOutboxStore throws InvalidCastException at first resolution (loud, not silent).
+            //     When the consumer already registered both facets themselves, leave theirs intact.
+            AddReliabilityPair<IBrokeredMessageOutbox, IPollableOutboxStore, InMemoryBrokeredMessageOutbox>(builder.Services);
+            // Inbox pair: IBrokeredMessageInbox (primary) + IInboxDeduplicator (secondary).
+            // Same closed-by-construction gate as the outbox pair above.
+            AddReliabilityPair<IBrokeredMessageInbox, IInboxDeduplicator, InMemoryBrokeredMessageInbox>(builder.Services);
             builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();
             builder.Services.AddSingleton<IRetryExceptionEvaluator, RetryExceptionEvaluator>();
             builder.Services.AddSingleton<ICircuitBreakerExceptionEvaluator, CircuitBreakerExceptionEvaluator>();
@@ -152,6 +155,41 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonBodyConverter>();
 
             return builder;
+        }
+
+        // Registers a reliability pair (primary + secondary facet) backed by the same scoped concrete,
+        // gated on whether the primary facet is already registered.  This makes a split-store outcome
+        // unrepresentable: both facets always resolve to the same instance within a scope.
+        //
+        // Rules:
+        //   1. Primary absent  → register TInMemory once; forward BOTH to sp.GetRequiredService<TInMemory>().
+        //      A lone custom secondary is overridden (misconfiguration; overriding to in-memory is loud-correct).
+        //   2. Primary present → forward secondary to (TSecondary)sp.GetRequiredService<TPrimary>() via cast.
+        //      A TPrimary that does not implement TSecondary throws InvalidCastException at first resolution.
+        //      If the secondary is also already registered, leave the consumer's registration intact.
+        private static void AddReliabilityPair<TPrimary, TSecondary, TInMemory>(IServiceCollection services)
+            where TPrimary : class
+            where TSecondary : class
+            where TInMemory : class, TPrimary, TSecondary
+        {
+            bool primaryRegistered = services.Any(d => d.ServiceType == typeof(TPrimary));
+            if (!primaryRegistered)
+            {
+                // Default path: register in-memory concrete once; both facets forward to same instance.
+                // Override any lone custom secondary so the pair cannot split.
+                services.AddScoped<TInMemory>();
+                services.AddScoped<TPrimary>(sp => sp.GetRequiredService<TInMemory>());
+                services.AddScoped<TSecondary>(sp => sp.GetRequiredService<TInMemory>());
+                return;
+            }
+
+            // Custom primary path: forward secondary to the primary via cast only if the consumer has
+            // not already registered the secondary themselves.
+            bool secondaryRegistered = services.Any(d => d.ServiceType == typeof(TSecondary));
+            if (!secondaryRegistered)
+            {
+                services.AddScoped<TSecondary>(sp => (TSecondary)(object)sp.GetRequiredService<TPrimary>());
+            }
         }
 
         /// <summary>
