@@ -294,7 +294,24 @@ namespace Microsoft.Extensions.DependencyInjection
 
                 // (MaxConcurrentCalls) Stamp the finalized global value onto the retained live instance, before
                 // any hosted-service pumps. Visible at receiver init via ReceiverOptions.MaxConcurrentCalls.
-                receiverOptions.MaxConcurrentCalls = options.MaxConcurrentCalls;
+                //
+                // (P1 session-concurrency clamp) A session-mode receiver holds a SINGLE ServiceBusSessionReceiver
+                // and must serve at most ONE in-flight message at a time: the core BrokeredMessageReceiver spawns
+                // MaxConcurrentCalls workers that all call ReceiveAsync on that one held session receiver, so >1
+                // would pull from the single session concurrently and break FIFO-per-session ordering and
+                // session-state consistency. Clamp this receiver's live MaxConcurrentCalls to 1 (overriding the
+                // global value) so one worker maps to one in-flight message. Non-session receivers keep the global
+                // value. The clamp is a no-op when the global value is already 1. The session flag was recorded on
+                // receiverRegistry by AddSessionQueueReceiver/AddSessionTopicSubscription during the options
+                // delegate, which runs BEFORE this method, so the per-receiver lookup is populated here.
+                if (receiverRegistry.RequiresSession(receiverOptions.MessageReceiverPath, receiverOptions.SendingPath))
+                {
+                    receiverOptions.MaxConcurrentCalls = 1;
+                }
+                else
+                {
+                    receiverOptions.MaxConcurrentCalls = options.MaxConcurrentCalls;
+                }
 
                 // (F3) Infer the ASB top-level entity (queue vs topic) using the same SendingPath/ReceiverPath
                 // convention as AzureServiceBusEntityPathBuilder: a queue receiver has SendingPath empty or equal
