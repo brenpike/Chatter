@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Chatter.CQRS;
 using Chatter.CQRS.Commands;
+using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
@@ -216,6 +217,39 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
             options.WithMessageContext(MessageContext.InfrastructureType, RabbitMqMessageContext.InfrastructureType);
             options.WithMessageContext(MessageContext.ContentType, contentType);
             return SendAsync(message, workQueueName, options);
+        }
+
+        // Publishes an event through Chatter's dispatcher under the default-exchange convention: destinationPath is
+        // the work-queue name and the publisher publishes to exchange "" with routing key = the queue name. Mirrors
+        // SendToQueueAsync but takes the IBrokeredMessageDispatcher.Publish (IEvent) path instead of Send (ICommand),
+        // stamping the SAME RabbitMQ InfrastructureType so the dispatcher routes to the RabbitMQ sender. Opens and
+        // disposes its own scope.
+        public Task PublishToQueueAsync<TEvent>(TEvent message, string workQueueName) where TEvent : class, IEvent
+        {
+            var options = new PublishOptions();
+            options.WithMessageContext(MessageContext.InfrastructureType, RabbitMqMessageContext.InfrastructureType);
+            return PublishAsync(message, workQueueName, options);
+        }
+
+        private async Task PublishAsync<TEvent>(TEvent message, string destinationPath, PublishOptions options)
+            where TEvent : class, IEvent
+        {
+            var dispatcher = CreateDispatcher(out var scope);
+            using (scope)
+            using (var publishCts = new CancellationTokenSource(TeardownTimeout))
+            {
+                // Bound the dispatcher publish so a wedged publish fails fast. The Publish overload takes no token,
+                // so race it against a finite delay rather than passing CancellationToken.None to an unbounded await.
+                var publish = dispatcher.Publish(message, destinationPath, options: options);
+                var completed = await Task.WhenAny(publish, Task.Delay(Timeout.Infinite, publishCts.Token)).ConfigureAwait(false);
+                if (completed != publish)
+                {
+                    throw new TimeoutException(
+                        $"Timed out after {TeardownTimeout} publishing a '{typeof(TEvent).Name}' through the dispatcher.");
+                }
+
+                await publish.ConfigureAwait(false);
+            }
         }
 
         private async Task SendAsync<TMessage>(TMessage message, string destinationPath, SendOptions options)
