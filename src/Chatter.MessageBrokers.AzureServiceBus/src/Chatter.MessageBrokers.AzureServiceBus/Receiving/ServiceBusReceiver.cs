@@ -100,8 +100,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         {
             if (_receiverRegistry != null && _receiverRegistry.RequiresSession(options.MessageReceiverPath, options.SendingPath))
             {
+                var sessionEntityPath = ServiceBusSessionEntityPath.Create(options.SendingPath, options.MessageReceiverPath);
                 return new AzureSdkSessionMessageReceiverAdapter(_client,
-                                                                 options.MessageReceiverPath,
+                                                                 sessionEntityPath,
                                                                  receiveMode,
                                                                  _serviceBusOptions.PrefetchCount,
                                                                  _serviceBusOptions.SessionIdleTimeout,

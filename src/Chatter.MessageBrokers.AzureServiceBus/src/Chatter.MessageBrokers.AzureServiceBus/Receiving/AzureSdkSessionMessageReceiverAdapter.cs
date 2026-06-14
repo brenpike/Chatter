@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
     {
         readonly object _syncLock = new object();
         private readonly ServiceBusClient _client;
-        private readonly string _messageReceiverPath;
+        private readonly ServiceBusSessionEntityPath _entityPath;
         private readonly ServiceBusReceiveMode _receiveMode;
         private readonly int _prefetchCount;
         private readonly TimeSpan _sessionIdleTimeout;
@@ -39,7 +39,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private bool _closed;
 
         public AzureSdkSessionMessageReceiverAdapter(ServiceBusClient client,
-                                                     string messageReceiverPath,
+                                                     ServiceBusSessionEntityPath entityPath,
                                                      ServiceBusReceiveMode receiveMode,
                                                      int prefetchCount,
                                                      TimeSpan sessionIdleTimeout,
@@ -47,7 +47,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                      ILogger logger)
         {
             _client = client ?? throw new ArgumentNullException(nameof(client));
-            _messageReceiverPath = messageReceiverPath;
+            _entityPath = entityPath;
             _receiveMode = receiveMode;
             _prefetchCount = prefetchCount;
             _sessionIdleTimeout = sessionIdleTimeout;
@@ -93,7 +93,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 // No session available right now. Non-fatal: return null so the pump re-polls and the
                 // adapter attempts to accept the next session on the following turn.
-                _logger.LogTrace($"No Azure Service Bus session available for '{_messageReceiverPath}'; re-polling");
+                _logger.LogTrace($"No Azure Service Bus session available for '{_entityPath}'; re-polling");
                 return null;
             }
 
@@ -122,7 +122,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 // Losing a session lock is an expected operational event, NOT a receiver-stopping fault.
                 // Release the session and return null so the pump re-polls — deliberately NOT raised as
                 // CriticalReceiverException (unlike the cross-entity-transaction rejection).
-                _logger.LogWarning(sbe, $"Azure Service Bus session lock lost for '{_messageReceiverPath}'; releasing session and re-polling");
+                _logger.LogWarning(sbe, $"Azure Service Bus session lock lost for '{_entityPath}'; releasing session and re-polling");
                 await ReleaseSessionAsync().ConfigureAwait(false);
                 return null;
             }
@@ -197,11 +197,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return existing;
             }
 
-            var accepted = await _client.AcceptNextSessionAsync(_messageReceiverPath, new ServiceBusSessionReceiverOptions
+            var sessionOptions = new ServiceBusSessionReceiverOptions
             {
                 ReceiveMode = _receiveMode,
                 PrefetchCount = _prefetchCount,
-            }, cancellationToken).ConfigureAwait(false);
+            };
+
+            // INVARIANT: address the entity through the structured identity so the correct AcceptNextSessionAsync
+            // overload is chosen — the (topic, subscription) overload for a subscription, the (queue) overload for a
+            // queue — rather than feeding a composite "<topic>/Subscriptions/<sub>" string to the queue-only overload.
+            var accepted = _entityPath.IsSubscription
+                ? await _client.AcceptNextSessionAsync(_entityPath.TopicName, _entityPath.SubscriptionName, sessionOptions, cancellationToken).ConfigureAwait(false)
+                : await _client.AcceptNextSessionAsync(_entityPath.QueueName, sessionOptions, cancellationToken).ConfigureAwait(false);
 
             CancellationTokenSource renewalCts;
             lock (_syncLock)
@@ -250,7 +257,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                     }
 
                     await session.RenewSessionLockAsync(renewalToken).ConfigureAwait(false);
-                    _logger.LogTrace($"Renewed Azure Service Bus session lock for session '{session.SessionId}' on '{_messageReceiverPath}'");
+                    _logger.LogTrace($"Renewed Azure Service Bus session lock for session '{session.SessionId}' on '{_entityPath}'");
                 }
             }
             catch (OperationCanceledException) when (renewalToken.IsCancellationRequested)
@@ -262,7 +269,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 // The lock was lost out from under the renewal loop. ReceiveAsync observes the same loss on
                 // its next receive and releases the session there; the loop simply stops renewing.
-                _logger.LogTrace(sbe, $"Azure Service Bus session lock lost during renewal for '{_messageReceiverPath}'; stopping renewal");
+                _logger.LogTrace(sbe, $"Azure Service Bus session lock lost during renewal for '{_entityPath}'; stopping renewal");
             }
             catch (ObjectDisposedException)
             {
