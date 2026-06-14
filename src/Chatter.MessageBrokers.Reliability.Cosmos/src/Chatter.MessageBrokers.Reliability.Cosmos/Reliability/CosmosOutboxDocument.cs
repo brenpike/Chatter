@@ -29,6 +29,46 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// <summary>Initial delivery state; the relay advances it to delivered after publish.</summary>
         public const string StatusPending = "pending";
 
+        /// <summary>The document-id field name (Cosmos requires the item id under the reserved <c>id</c> property).</summary>
+        public const string IdField = "id";
+
+        /// <summary>The verbatim message-id field name.</summary>
+        public const string MessageIdField = nameof(MessageId);
+
+        /// <summary>The destination field name.</summary>
+        public const string DestinationField = nameof(Destination);
+
+        /// <summary>The serialized-body field name.</summary>
+        public const string MessageBodyField = nameof(MessageBody);
+
+        /// <summary>The content-type field name.</summary>
+        public const string MessageContentTypeField = nameof(MessageContentType);
+
+        /// <summary>The serialized message-context field name.</summary>
+        public const string MessageContextField = "MessageContext";
+
+        /// <summary>
+        /// The Chatter-reserved root field names. A container partition-key path whose ROOT segment matches any of these
+        /// would overwrite a required Chatter field (most damaging: <c>/id</c> would replace the deterministic
+        /// <c>outbox:{encoded(MessageId)}</c> item id with the partition value, colliding every outbox doc in the
+        /// partition). Stamping validates the root segment against this set and fails loudly rather than silently
+        /// corrupting the document — the collision class is eliminated by construction, not enumerated.
+        /// </summary>
+        private static readonly HashSet<string> _reservedRootFields = new HashSet<string>(StringComparer.Ordinal)
+        {
+            IdField,
+            DiscriminatorField,
+            StatusField,
+            MessageIdField,
+            DestinationField,
+            MessageBodyField,
+            MessageContentTypeField,
+            MessageContextField,
+        };
+
+        /// <summary>The Chatter-reserved root field names (read-only view of the collision-guard set).</summary>
+        public static IReadOnlyCollection<string> ReservedRootFields => _reservedRootFields;
+
         public CosmosOutboxDocument(string id, string messageId, string destination, string messageBody, string messageContentType, string serializedMessageContext)
         {
             Id = id ?? throw new ArgumentNullException(nameof(id));
@@ -79,8 +119,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// objects so each value lands at its real container path rather than a flattened fixed field.
         /// </summary>
         // INVARIANT: the partition-key value is placed at the container's REAL declared path, never at a fixed field
-        // named "partitionKey"; a hierarchical container stamps one leaf per path segment.
-        public JsonObject ToJsonObject(IReadOnlyList<string> partitionKeyPath, IReadOnlyList<string> partitionKeyValues)
+        // named "partitionKey"; a hierarchical container stamps one leaf per path segment. The stamped value preserves
+        // its JSON value kind (string/number/bool/null) so the document lands in the SAME logical partition the batch
+        // was opened on — a non-string partition value must NOT be coerced to a JSON string.
+        public JsonObject ToJsonObject(IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonNode> partitionKeyValues)
         {
             if (partitionKeyPath is null || partitionKeyPath.Count == 0)
             {
@@ -97,14 +139,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             var document = new JsonObject
             {
-                ["id"] = Id,
+                [IdField] = Id,
                 [DiscriminatorField] = CosmosItemId.OutboxKind,
                 [StatusField] = StatusPending,
-                [nameof(MessageId)] = MessageId,
-                [nameof(Destination)] = Destination,
-                [nameof(MessageBody)] = MessageBody,
-                [nameof(MessageContentType)] = MessageContentType,
-                ["MessageContext"] = SerializedMessageContext,
+                [MessageIdField] = MessageId,
+                [DestinationField] = Destination,
+                [MessageBodyField] = MessageBody,
+                [MessageContentTypeField] = MessageContentType,
+                [MessageContextField] = SerializedMessageContext,
             };
 
             for (var i = 0; i < partitionKeyPath.Count; i++)
@@ -116,13 +158,26 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         }
 
         // Stamps a single partition-key path (e.g. "/tenant/id") into the document, creating intermediate objects for
-        // each non-leaf segment so the value lands at the real container path rather than a flattened fixed field.
-        private static void StampPartitionKeySegment(JsonObject root, string partitionKeyPath, string partitionKeyValue)
+        // each non-leaf segment so the value lands at the real container path rather than a flattened fixed field. The
+        // value is a JsonNode whose value kind (string/number/bool/null) is preserved verbatim.
+        private static void StampPartitionKeySegment(JsonObject root, string partitionKeyPath, JsonNode partitionKeyValue)
         {
             var segments = partitionKeyPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (segments.Length == 0)
             {
                 throw new ArgumentException("A partition-key path segment must contain at least one property name.", nameof(partitionKeyPath));
+            }
+
+            // COLLISION GUARD: a partition-key path whose ROOT segment is a Chatter-reserved field would overwrite a
+            // required Chatter value (e.g. /id replaces the deterministic outbox id, colliding every doc in the
+            // partition; /MessageContext/x replaces the serialized context string with an object). Fail loudly rather
+            // than silently corrupt the document. This eliminates the reserved-field-overwrite class by construction.
+            if (_reservedRootFields.Contains(segments[0]))
+            {
+                throw new InvalidOperationException(
+                    $"The container partition-key path '{partitionKeyPath}' targets the Chatter-reserved outbox field '{segments[0]}'. " +
+                    "Co-resident outbox documents cannot be stamped on a partition-key path whose root segment is one of " +
+                    $"[{string.Join(", ", _reservedRootFields)}] without overwriting a required field. Use a non-reserved partition-key path for the container.");
             }
 
             JsonObject current = root;

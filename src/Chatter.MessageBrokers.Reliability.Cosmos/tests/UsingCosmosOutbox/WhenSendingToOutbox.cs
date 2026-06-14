@@ -138,5 +138,87 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutbox
 
             await act.Should().ThrowAsync<InvalidOperationException>();
         }
+
+        [Fact]
+        public async Task MustPreserveNumericPartitionKeyValueKind()
+        {
+            // A numeric partition key opened on PartitionKey(42d) must be stamped as a JSON number, not the string "42",
+            // so the document lands in the SAME logical partition the framework-owned batch was scoped to.
+            var (outbox, _, staged, _) = Harness(new PartitionKey(42d), Array.AsReadOnly(new[] { "/tenantId" }));
+
+            await outbox.SendToOutbox(Message(), transactionContext: null);
+
+            var document = ReadStagedDocument(staged[0]);
+            document.GetProperty("tenantId").ValueKind.Should().Be(JsonValueKind.Number);
+            document.GetProperty("tenantId").GetDouble().Should().Be(42d);
+        }
+
+        [Fact]
+        public async Task MustPreserveBooleanPartitionKeyValueKind()
+        {
+            var (outbox, _, staged, _) = Harness(new PartitionKey(true), Array.AsReadOnly(new[] { "/isActive" }));
+
+            await outbox.SendToOutbox(Message(), transactionContext: null);
+
+            var document = ReadStagedDocument(staged[0]);
+            document.GetProperty("isActive").ValueKind.Should().Be(JsonValueKind.True);
+            document.GetProperty("isActive").GetBoolean().Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task MustPreserveNullPartitionKeyValueKind()
+        {
+            var (outbox, _, staged, _) = Harness(PartitionKey.Null, Array.AsReadOnly(new[] { "/tenantId" }));
+
+            await outbox.SendToOutbox(Message(), transactionContext: null);
+
+            var document = ReadStagedDocument(staged[0]);
+            document.GetProperty("tenantId").ValueKind.Should().Be(JsonValueKind.Null);
+        }
+
+        [Fact]
+        public async Task MustPreserveMixedHierarchicalPartitionKeyValueKinds()
+        {
+            var partitionKey = new PartitionKeyBuilder().Add("acme").Add(7d).Build();
+            var (outbox, _, staged, _) = Harness(partitionKey, Array.AsReadOnly(new[] { "/tenant/id", "/shard" }));
+
+            await outbox.SendToOutbox(Message(), transactionContext: null);
+
+            var document = ReadStagedDocument(staged[0]);
+            document.GetProperty("tenant").GetProperty("id").GetString().Should().Be("acme");
+            document.GetProperty("shard").ValueKind.Should().Be(JsonValueKind.Number);
+            document.GetProperty("shard").GetDouble().Should().Be(7d);
+        }
+
+        [Theory]
+        [InlineData("/id")]
+        [InlineData("/_chatterType")]
+        [InlineData("/status")]
+        [InlineData("/MessageId")]
+        [InlineData("/Destination")]
+        [InlineData("/MessageBody")]
+        [InlineData("/MessageContentType")]
+        [InlineData("/MessageContext")]
+        public async Task MustFailLoudlyWhenPartitionKeyPathCollidesWithReservedRootField(string reservedPath)
+        {
+            var (outbox, _, _, _) = Harness(new PartitionKey("tenant-1"), Array.AsReadOnly(new[] { reservedPath }));
+
+            Func<Task> act = () => outbox.SendToOutbox(Message(), transactionContext: null);
+
+            // A reserved-root collision must throw rather than silently overwrite a required Chatter field
+            // (e.g. /id would replace the deterministic outbox id, colliding every doc in the partition).
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        [Fact]
+        public async Task MustFailLoudlyWhenNestedPartitionKeyPathRootCollidesWithReservedField()
+        {
+            // A nested path under a reserved root (e.g. /MessageContext/tenant) also overwrites a reserved scalar.
+            var (outbox, _, _, _) = Harness(new PartitionKey("tenant-1"), Array.AsReadOnly(new[] { "/MessageContext/tenant" }));
+
+            Func<Task> act = () => outbox.SendToOutbox(Message(), transactionContext: null);
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        }
     }
 }
