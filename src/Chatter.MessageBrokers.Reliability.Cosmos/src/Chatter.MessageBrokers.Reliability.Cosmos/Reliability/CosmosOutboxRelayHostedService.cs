@@ -10,8 +10,8 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.Reliability.Cosmos
 {
     /// <summary>
-    /// Hosts the #222 document-tier change-feed outbox relay: one Cosmos <see cref="ChangeFeedProcessor"/> per DISTINCT
-    /// <c>(Database, ContainerName, LeaseName)</c> triple from the <see cref="DocumentReliabilityRegistry"/> — NOT one
+    /// Hosts the #222 document-tier change-feed outbox relay: one Cosmos <see cref="ChangeFeedProcessor"/> per distinct
+    /// PHYSICAL (monitored, lease) container pair RESOLVED from the <see cref="DocumentReliabilityRegistry"/> — NOT one
     /// per command type (many command types may share one container, ADR-0008). Each processor monitors its container's
     /// change feed and feeds every change through the testable <see cref="CosmosOutboxRelay"/> core, which filters to
     /// outbox+pending documents, publishes them, and stamps delivered+TTL.
@@ -24,15 +24,25 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// by the relay propagates out of the handler so the SDK does NOT checkpoint the batch — the unpublished document
     /// re-surfaces on the next pass (at-least-once) rather than the lease advancing past it.
     /// <para>
-    /// <c>processorName</c> is STABLE per triple (a constant prefix + the triple) so every application instance sharing a
-    /// lease cooperates on the same logical processor; <c>instanceName</c> is UNIQUE per host (machine + a GUID) so
-    /// co-located instances do not collide on a lease.
+    /// INVARIANT: the fan-out dedupes on the RESOLVED physical container identity
+    /// (<c>monitored.Database.Id</c>/<c>monitored.Id</c>/<c>lease.Database.Id</c>/<c>lease.Id</c>), NOT on the
+    /// registration's <c>(Database, ContainerName, LeaseName)</c> triple. The advanced <c>WithCosmosDocumentReliability</c>
+    /// overload SYNTHESIZES that triple from the command type while resolving the REAL containers via app-supplied
+    /// factories, so two command types whose factories resolve the SAME physical document+lease containers carry DISTINCT
+    /// synthetic triples; deduping on the triple would split one physical lease into two processors and double-publish
+    /// every pending outbox doc (ADR-0008: one processor per physical container). Keying on the resolved identity cannot
+    /// diverge from the thing it dedupes.
+    /// </para>
+    /// <para>
+    /// <c>processorName</c> is STABLE per physical key (a constant prefix + the physical key) so every application instance
+    /// sharing a lease cooperates on the same logical processor; <c>instanceName</c> is UNIQUE per host (machine + a GUID)
+    /// so co-located instances do not collide on a lease.
     /// </para>
     /// </remarks>
     internal sealed class CosmosOutboxRelayHostedService : IHostedService
     {
-        // Stable processorName prefix; combined with the (Database, ContainerName, LeaseName) triple it yields a
-        // deterministic processor identity shared across all app instances draining the same lease.
+        // Stable processorName prefix; combined with the RESOLVED physical-container key it yields a deterministic
+        // processor identity shared across all app instances draining the same lease.
         private const string ProcessorNamePrefix = "chatter-cosmos-outbox-relay";
 
         private readonly DocumentReliabilityRegistry _registry;
@@ -56,11 +66,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         {
             string instanceName = $"{ProcessorNamePrefix}:{Environment.MachineName}:{Guid.NewGuid()}";
 
-            foreach (RelayProcessorDescriptor descriptor in DistinctProcessorDescriptors())
+            foreach (RelayProcessorDescriptor descriptor in DistinctResolvedProcessorDescriptors())
             {
-                Container monitoredContainer = _containerFactory.GetDocumentContainer(descriptor.Registration);
-                Container leaseContainer = _containerFactory.GetLeaseContainer(descriptor.Registration);
-                IReadOnlyList<string> partitionKeyPath = descriptor.Registration.PartitionKeyPath;
+                Container monitoredContainer = descriptor.MonitoredContainer;
+                Container leaseContainer = descriptor.LeaseContainer;
+                IReadOnlyList<string> partitionKeyPath = descriptor.PartitionKeyPath;
 
                 ChangeFeedProcessor processor = monitoredContainer
                     .GetChangeFeedProcessorBuilder(descriptor.ProcessorName, (ChangeFeedProcessorContext context, Stream changes, CancellationToken changeCancellationToken)
@@ -110,35 +120,61 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
         }
 
-        // One descriptor per DISTINCT (Database, ContainerName, LeaseName) triple. Many command types may share one
-        // container, so the host dedupes the triple here — the first registration seen for a triple supplies the
-        // container handles and the (container-shared) partition-key path; subsequent registrations for the same triple
-        // are skipped (no duplicate processor on the same lease).
-        private IEnumerable<RelayProcessorDescriptor> DistinctProcessorDescriptors()
+        // One descriptor per distinct PHYSICAL (monitored, lease) container pair (ADR-0008). Each registration is RESOLVED
+        // FIRST — the monitored and lease container handles are derived via the factory — and deduped on the resolved
+        // physical identity (monitored.Database.Id / monitored.Id / lease.Database.Id / lease.Id), NOT on the
+        // registration's (Database, ContainerName, LeaseName) triple. The advanced overload synthesizes that triple from
+        // the command type while resolving the same physical containers, so deduping on the triple would split one
+        // physical lease into two processors and double-publish every pending outbox doc. The first registration seen for
+        // a physical key wins and supplies the resolved handles + partition-key path; subsequent registrations resolving
+        // to the same physical key are skipped (no duplicate processor on the same lease). processorName is derived from
+        // the SAME physical key so all app instances sharing a physical lease cooperate on one logical processor.
+        // internal (not private) so the resolve-then-dedup is unit-testable without the live SDK change-feed plumbing; the
+        // assembly exposes internals to the test project.
+        internal IReadOnlyList<RelayProcessorDescriptor> DistinctResolvedProcessorDescriptors()
         {
+            var descriptors = new List<RelayProcessorDescriptor>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
+
             foreach (DocumentReliabilityRegistration registration in _registry.Registrations)
             {
-                string triple = registration.Database + "\0" + registration.ContainerName + "\0" + registration.LeaseName;
-                if (!seen.Add(triple))
+                Container monitoredContainer = _containerFactory.GetDocumentContainer(registration);
+                Container leaseContainer = _containerFactory.GetLeaseContainer(registration);
+
+                string physicalKey = monitoredContainer.Database.Id + "\0" + monitoredContainer.Id + "\0"
+                    + leaseContainer.Database.Id + "\0" + leaseContainer.Id;
+                if (!seen.Add(physicalKey))
                 {
                     continue;
                 }
 
-                yield return new RelayProcessorDescriptor($"{ProcessorNamePrefix}:{triple}", registration);
+                descriptors.Add(new RelayProcessorDescriptor(
+                    $"{ProcessorNamePrefix}:{physicalKey}",
+                    monitoredContainer,
+                    leaseContainer,
+                    registration.PartitionKeyPath));
             }
+
+            return descriptors;
         }
 
-        private readonly struct RelayProcessorDescriptor
+        internal readonly struct RelayProcessorDescriptor
         {
-            public RelayProcessorDescriptor(string processorName, DocumentReliabilityRegistration registration)
+            public RelayProcessorDescriptor(string processorName,
+                                            Container monitoredContainer,
+                                            Container leaseContainer,
+                                            IReadOnlyList<string> partitionKeyPath)
             {
                 ProcessorName = processorName;
-                Registration = registration;
+                MonitoredContainer = monitoredContainer;
+                LeaseContainer = leaseContainer;
+                PartitionKeyPath = partitionKeyPath;
             }
 
             public string ProcessorName { get; }
-            public DocumentReliabilityRegistration Registration { get; }
+            public Container MonitoredContainer { get; }
+            public Container LeaseContainer { get; }
+            public IReadOnlyList<string> PartitionKeyPath { get; }
         }
     }
 }
