@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers.Reliability;
 using Microsoft.Azure.Cosmos;
 using System.Collections.Generic;
+using System.IO;
 
 namespace Chatter.MessageBrokers.Reliability.Cosmos
 {
@@ -9,14 +10,29 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// document-tier reliability surface. Satisfies the tier-neutral <see cref="IAtomicWriteHandle"/> marker so the
     /// shared enqueue contract (<c>SendToOutbox</c>) is abstracted over it. It carries the document-store primitives the
     /// relational-shaped <see cref="MessageBrokers.Context.TransactionContext"/> does not and cannot carry: the bound
-    /// Cosmos <see cref="Container"/>, the open <see cref="TransactionalBatch"/>, the resolved partition-key value, and
-    /// the container's partition-key path.
+    /// Cosmos <see cref="Container"/>, the resolved partition-key value, and the container's partition-key path.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The handle is exposed via the document-tier surface / DI scope by the Document-Tier Batch-Lifecycle Behavior
     /// before <c>next()</c> — it is NOT stuffed into <see cref="MessageBrokers.Context.TransactionContext.Container"/>
-    /// (ADR-0006 surface-ownership amendment). No op-staging members are declared in #218: #219 (outbox) and #220
-    /// (inbox) contribute ops to <see cref="Batch"/>; the relay (#222) consumes the lease container registered in DI.
+    /// (ADR-0006 surface-ownership amendment).
+    /// </para>
+    /// <para>
+    /// <strong>Closed-by-construction staging contract.</strong> The framework-owned <see cref="Microsoft.Azure.Cosmos.TransactionalBatch"/>
+    /// is NOT publicly reachable for op-adds. All staging goes through the intent-revealing methods on this interface
+    /// (<see cref="StageCreateItemStream"/>, <see cref="StageCreateItem{T}"/>, <see cref="StageUpsertItem{T}"/>,
+    /// <see cref="StageReplaceItem{T}"/>, <see cref="StagePatchItem"/>), each of which calls the corresponding batch
+    /// op AND increments <see cref="StagedOperationCount"/> in one indivisible action. It is therefore impossible to
+    /// stage an op without it being counted — the ack-on-uncommitted class (stage-without-mark → empty-batch guard
+    /// reads 0 → skips <c>ExecuteAsync</c> → acks with nothing committed) is closed by construction.
+    /// </para>
+    /// <para>
+    /// #219 (outbox) uses <see cref="StageCreateItemStream"/> for the Chatter-owned wire shape.
+    /// #220 (inbox marker) uses <see cref="StageCreateItemStream"/> or <see cref="StageCreateItem{T}"/>;
+    /// a 409 confirmed-duplicate still surfaces via <see cref="CosmosBatchExecutionException.StatusCode"/> (unchanged).
+    /// #222 (relay) consumes the lease container registered in DI.
+    /// </para>
     /// </remarks>
     public interface ICosmosAtomicWriteHandle : IAtomicWriteHandle
     {
@@ -24,13 +40,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// The application-injected Cosmos container the aggregate, outbox doc, and inbox marker are co-resident in.
         /// </summary>
         Container Container { get; }
-
-        /// <summary>
-        /// The open, framework-owned <see cref="TransactionalBatch"/> scoped to <see cref="PartitionKey"/>. Handler
-        /// aggregate ops and the shared enqueue contract contribute ops to this batch; the Document-Tier
-        /// Batch-Lifecycle Behavior executes it once after <c>next()</c> returns (the single commit point).
-        /// </summary>
-        TransactionalBatch Batch { get; }
 
         /// <summary>
         /// The resolved partition-key value for the in-flight message's aggregate partition, produced by the
@@ -48,23 +57,51 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         IReadOnlyList<string> PartitionKeyPath { get; }
 
         /// <summary>
-        /// Optional ETag concurrency token for the document-tier aggregate upsert. No behavior in #218; the
-        /// document writers in #219/#220 apply it as <c>IfMatchEtag</c>.
+        /// Optional ETag concurrency token for the document-tier aggregate upsert. No behavior in #218/#219; the
+        /// document writers in #220 apply it as <c>IfMatchEtag</c>.
         /// </summary>
         string ETag { get; }
 
         /// <summary>
-        /// Count of ops staged into <see cref="Batch"/> by handler aggregate writes, the outbox (#219), and the
-        /// inbox marker (#220). The Document-Tier Batch-Lifecycle Behavior reads this after <c>next()</c> and skips
-        /// the single batch-execute when it is zero, so an empty batch never calls the Cosmos transport.
+        /// Count of ops staged through this handle. The Document-Tier Batch-Lifecycle Behavior reads this after
+        /// <c>next()</c> and skips the single batch-execute when it is zero, so an empty batch never calls the
+        /// Cosmos transport. Every staging method increments this count atomically with the batch op-add — it is
+        /// the behavior's empty-batch guard's single source of truth.
         /// </summary>
         int StagedOperationCount { get; }
 
         /// <summary>
-        /// Records that an op-contributor staged an operation into <see cref="Batch"/>. Op contributors (the outbox in
-        /// #219, the inbox marker in #220) call a <see cref="TransactionalBatch"/> op method on <see cref="Batch"/> and
-        /// then invoke this so the behavior's empty-batch guard reflects the staged op.
+        /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.CreateItemStream"/> op for a Chatter-owned
+        /// wire-format document (<paramref name="payload"/>) and increments <see cref="StagedOperationCount"/>. Used by
+        /// the outbox (#219) and inbox marker (#220) for Chatter-controlled stream shapes.
         /// </summary>
-        void MarkOperationStaged();
+        void StageCreateItemStream(Stream payload, TransactionalBatchItemRequestOptions requestOptions = null);
+
+        /// <summary>
+        /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.CreateItem{T}"/> op for a typed
+        /// <paramref name="item"/> (SDK-serialized) and increments <see cref="StagedOperationCount"/>. Used by the
+        /// inbox marker (#220) when a typed marker document is preferred.
+        /// </summary>
+        void StageCreateItem<T>(T item, TransactionalBatchItemRequestOptions requestOptions = null);
+
+        /// <summary>
+        /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.UpsertItem{T}"/> op for a typed
+        /// <paramref name="item"/> (SDK-serialized) and increments <see cref="StagedOperationCount"/>. Used by
+        /// app aggregate writers; pass <c>IfMatchEtag</c> in <paramref name="requestOptions"/> for optimistic
+        /// concurrency (412 surfaces via <see cref="CosmosBatchExecutionException.StatusCode"/>).
+        /// </summary>
+        void StageUpsertItem<T>(T item, TransactionalBatchItemRequestOptions requestOptions = null);
+
+        /// <summary>
+        /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.ReplaceItem{T}"/> op for a typed
+        /// <paramref name="item"/> (SDK-serialized) and increments <see cref="StagedOperationCount"/>.
+        /// </summary>
+        void StageReplaceItem<T>(string id, T item, TransactionalBatchItemRequestOptions requestOptions = null);
+
+        /// <summary>
+        /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.PatchItem"/> op for the document identified
+        /// by <paramref name="id"/> and increments <see cref="StagedOperationCount"/>.
+        /// </summary>
+        void StagePatchItem(string id, IReadOnlyList<PatchOperation> patchOperations, TransactionalBatchPatchItemRequestOptions requestOptions = null);
     }
 }

@@ -48,8 +48,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return Task.CompletedTask;
         }
 
-        // Builds the outbox document and stages its CreateItemStream op onto the framework-owned batch, then records the
-        // staged op so the behavior's empty-batch guard executes the batch.
+        // Builds the outbox document and stages its CreateItemStream op through the handle (stage-and-count is one
+        // indivisible action — the handle's closed-by-construction contract guarantees the op is counted).
         private static void StageOutboxOp(ICosmosAtomicWriteHandle handle, OutboundBrokeredMessage outboundBrokeredMessage, IReadOnlyList<JsonNode> partitionKeyValues)
         {
             CosmosOutboxDocument document = CosmosOutboxDocument.From(outboundBrokeredMessage);
@@ -57,8 +57,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             // INVARIANT: the outbox create rides the SAME framework-owned batch as the aggregate upsert (atomicity);
             // the outbox doc is a fresh document with no ETag (the aggregate carries IfMatchEtag, the app's concern).
-            handle.Batch.CreateItemStream(payload);
-            handle.MarkOperationStaged();
+            handle.StageCreateItemStream(payload);
         }
 
         // Renders the document body with the resolved partition-key value stamped at each container PK path segment.

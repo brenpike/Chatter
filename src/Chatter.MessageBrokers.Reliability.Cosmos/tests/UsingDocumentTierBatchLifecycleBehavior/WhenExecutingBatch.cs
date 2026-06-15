@@ -7,6 +7,7 @@ using Microsoft.Azure.Cosmos;
 using Moq;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,6 +37,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             {
                 batch.Setup(b => b.ExecuteAsync(It.IsAny<CancellationToken>())).ReturnsAsync(executeResponse);
             }
+
+            // The staging methods delegate to the private batch; set up CreateItemStream so the handle's
+            // StageCreateItemStream call completes without null-ref on the mock's fluent returns chain.
+            batch.Setup(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
+                 .Returns(batch.Object);
 
             var container = new Mock<Container>();
             container.Setup(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>())).Returns(batch.Object);
@@ -72,7 +78,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
 
             await behavior.Handle(new FakeCommand(), MockContext(), () =>
             {
-                surface.CurrentHandle.MarkOperationStaged();
+                surface.CurrentHandle.StageCreateItemStream(Stream.Null);
                 return Task.CompletedTask;
             });
 
@@ -89,7 +95,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             // is NOT acked when the writes did not commit.
             Func<Task> act = () => behavior.Handle(new FakeCommand(), MockContext(), () =>
             {
-                surface.CurrentHandle.MarkOperationStaged();
+                surface.CurrentHandle.StageCreateItemStream(Stream.Null);
                 return Task.CompletedTask;
             });
 
@@ -107,13 +113,37 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             await behavior.Handle(new FakeCommand(), MockContext(), () =>
             {
                 handleDuringNext = surface.CurrentHandle;
-                handleDuringNext.MarkOperationStaged();
+                handleDuringNext.StageCreateItemStream(Stream.Null);
                 return Task.CompletedTask;
             });
 
             handleDuringNext.Should().NotBeNull();
             handleDuringNext.PartitionKeyPath.Should().ContainSingle().Which.Should().Be("/tenantId");
             surface.CurrentHandle.Should().BeNull();
+        }
+
+        [Fact]
+        public async Task MustCountOpAndNotExposeRawBatch()
+        {
+            // Regression: StageCreateItemStream must increment StagedOperationCount (staging and counting are
+            // inseparable by construction — no public Batch getter or MarkOperationStaged exists on the interface).
+            var (documentContainer, _, surface, resolver) = Harness(MockResponse(HttpStatusCode.OK, isSuccess: true));
+            var behavior = new DocumentTierBatchLifecycleBehavior<FakeCommand>(documentContainer, resolver, surface);
+
+            ICosmosAtomicWriteHandle capturedHandle = null;
+            await behavior.Handle(new FakeCommand(), MockContext(), () =>
+            {
+                capturedHandle = surface.CurrentHandle;
+                capturedHandle.StageCreateItemStream(Stream.Null);
+                return Task.CompletedTask;
+            });
+
+            capturedHandle.StagedOperationCount.Should().Be(1);
+
+            // The closed-by-construction contract: no public Batch getter or MarkOperationStaged member exists.
+            var handleType = typeof(ICosmosAtomicWriteHandle);
+            handleType.GetProperty("Batch").Should().BeNull("the raw batch must not be publicly reachable for op-adds");
+            handleType.GetMethod("MarkOperationStaged").Should().BeNull("staging and counting must be one indivisible action via the Stage* methods");
         }
     }
 }
