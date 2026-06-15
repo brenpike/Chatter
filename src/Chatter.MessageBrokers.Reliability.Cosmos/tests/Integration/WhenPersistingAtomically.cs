@@ -105,8 +105,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                 ReceiverPath,
                 PartitionProperty(partition));
 
-            await deliver.Should().ThrowAsync<CosmosBatchExecutionException>(
-                "a stale IfMatchEtag replace forces the framework batch-execute to fail the precondition (412)");
+            CosmosBatchExecutionException batchFailure = (await deliver.Should().ThrowAsync<CosmosBatchExecutionException>(
+                "a stale IfMatchEtag replace forces the framework batch-execute to fail the precondition (412)")).Which;
+
+            // Pin the failure to 412 (PreconditionFailed): this both refutes PR #246 discussion_r3417190348 (the
+            // "vnext-preview emulator ignores IfMatchEtag inside a TransactionalBatch" concern) BY CONSTRUCTION and
+            // hardens the atomicity proof — if the emulator ignored the batch ETag there would be no 412, so this
+            // assertion would fail rather than passing for some unrelated batch failure.
+            batchFailure.StatusCode.Should().Be(System.Net.HttpStatusCode.PreconditionFailed,
+                "the forced stale-IfMatchEtag replace must fail the batch precondition specifically (412), proving the emulator honors batch ETags — not some other batch failure");
 
             // The aggregate is unchanged (still the seeded payload) and NO outbox doc committed (all-or-nothing).
             (await ReadAggregatePayloadAsync(container, aggregateId, partition))
