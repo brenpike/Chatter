@@ -36,26 +36,36 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 ?? throw new InvalidOperationException(
                     "No active document-tier atomic-write handle. The Cosmos outbox can only enqueue inside the Document-Tier Batch-Lifecycle Behavior's batch scope.");
 
+            // INVARIANT: the outbox authors a reserved outbox:-prefixed id, so it must stage through the internal
+            // reserved-write facet that BYPASSES the public reserved-namespace guard (the public StageCreateItemStream
+            // would reject its own outbox: id). The active handle is always the framework's CosmosAtomicWriteHandle,
+            // which implements this facet; a handle that does not is a wiring error and must fail loudly.
+            ICosmosReservedWriteHandle reservedHandle = handle as ICosmosReservedWriteHandle
+                ?? throw new InvalidOperationException(
+                    "The active document-tier atomic-write handle does not support reserved-id staging. The Cosmos outbox " +
+                    "requires the framework handle that implements ICosmosReservedWriteHandle to author its reserved outbox: id.");
+
             IReadOnlyList<JsonElement> partitionKeyValues = CosmosPartitionKeyStamping.RecoverPartitionKeyValues(handle.PartitionKey, handle.PartitionKeyPath);
 
             foreach (OutboundBrokeredMessage outboundBrokeredMessage in outboundBrokeredMessages)
             {
-                StageOutboxOp(handle, outboundBrokeredMessage, partitionKeyValues);
+                StageOutboxOp(handle, reservedHandle, outboundBrokeredMessage, partitionKeyValues);
             }
 
             return Task.CompletedTask;
         }
 
-        // Builds the outbox document and stages its CreateItemStream op through the handle (stage-and-count is one
-        // indivisible action — the handle's closed-by-construction contract guarantees the op is counted).
-        private static void StageOutboxOp(ICosmosAtomicWriteHandle handle, OutboundBrokeredMessage outboundBrokeredMessage, IReadOnlyList<JsonElement> partitionKeyValues)
+        // Builds the outbox document and stages its reserved CreateItemStream op through the reserved-write facet
+        // (stage-and-count is one indivisible action — the handle's closed-by-construction contract guarantees the op is
+        // counted). The reserved facet bypasses the public reserved-namespace guard so the outbox: id is accepted.
+        private static void StageOutboxOp(ICosmosAtomicWriteHandle handle, ICosmosReservedWriteHandle reservedHandle, OutboundBrokeredMessage outboundBrokeredMessage, IReadOnlyList<JsonElement> partitionKeyValues)
         {
             CosmosOutboxDocument document = CosmosOutboxDocument.From(outboundBrokeredMessage);
             Stream payload = BuildItemStream(document, handle.PartitionKeyPath, partitionKeyValues);
 
             // INVARIANT: the outbox create rides the SAME framework-owned batch as the aggregate upsert (atomicity);
             // the outbox doc is a fresh document with no ETag (the aggregate carries IfMatchEtag, the app's concern).
-            handle.StageCreateItemStream(payload);
+            reservedHandle.StageReservedCreateItemStream(payload);
         }
 
         // Renders the document body with the resolved partition-key value stamped at each container PK path segment.

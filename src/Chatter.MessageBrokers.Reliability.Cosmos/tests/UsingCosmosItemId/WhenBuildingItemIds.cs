@@ -82,5 +82,85 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosItemId
 
             id.Length.Should().BeLessThanOrEqualTo(CosmosItemId.MaxItemIdLength);
         }
+
+        [Theory]
+        [InlineData("inbox:abc")]
+        [InlineData("outbox:abc")]
+        public void MustFlagReservedPrefixIds(string reservedId)
+        {
+            // A reserved inbox:/outbox: prefix is the enforced Chatter id-namespace; IsReserved must flag it so the
+            // public atomic-write surface can reject it (the marker-409 duplicate inference depends on this exclusivity).
+            CosmosItemId.IsReserved(reservedId).Should().BeTrue();
+        }
+
+        [Theory]
+        [InlineData("order:abc")]
+        [InlineData("app-id")]
+        [InlineData("")]
+        [InlineData(null)]
+        public void MustNotFlagNonReservedAppId(string appId)
+        {
+            CosmosItemId.IsReserved(appId).Should().BeFalse();
+        }
+
+        [Theory]
+        [InlineData("Inbox:abc")]
+        [InlineData("OUTBOX:abc")]
+        public void MustMatchReservedPrefixOrdinallyWithNoCaseNormalization(string differentCaseId)
+        {
+            // The reserved kinds are exact lowercase constants; the match is ordinal with no case folding, so a
+            // different-case prefix is NOT reserved.
+            CosmosItemId.IsReserved(differentCaseId).Should().BeFalse();
+        }
+
+        [Theory]
+        [InlineData("xinbox:abc")]
+        [InlineData("my-outbox:abc")]
+        [InlineData("data-inbox:value")]
+        public void MustMatchReservedPrefixNotSubstring(string substringId)
+        {
+            // Reserved is a PREFIX test on "{kind}:", not a substring search: an id that merely CONTAINS inbox:/outbox:
+            // later in the string is not reserved.
+            CosmosItemId.IsReserved(substringId).Should().BeFalse();
+        }
+
+        [Fact]
+        public void MustDeriveReservedPrefixesFromKindConstants()
+        {
+            // The reserved-prefix set is derived from the kind constants (single ground truth), so a composed "{kind}:"
+            // for each kind is flagged — there is no parallel literal list to drift.
+            CosmosItemId.IsReserved(CosmosItemId.InboxKind + ":anything").Should().BeTrue();
+            CosmosItemId.IsReserved(CosmosItemId.OutboxKind + ":anything").Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustHaveReservedForInboxAndForOutboxOutputs()
+        {
+            CosmosItemId.IsReserved(CosmosItemId.ForInbox("msg-1")).Should().BeTrue();
+            CosmosItemId.IsReserved(CosmosItemId.ForOutbox("msg-1")).Should().BeTrue();
+        }
+
+        [Theory]
+        [InlineData("inbox:abc")]
+        [InlineData("outbox:abc")]
+        public void MustThrowFromGuardNotReservedForReservedId(string reservedId)
+        {
+            Action act = () => CosmosItemId.GuardNotReserved(reservedId, "id");
+
+            // The exception names the reserved namespace and the offending id.
+            act.Should().Throw<ArgumentException>()
+                .Which.Message.Should().Contain(reservedId);
+        }
+
+        [Theory]
+        [InlineData("order:abc")]
+        [InlineData("app-id")]
+        [InlineData(null)]
+        public void MustNotThrowFromGuardNotReservedForNonReservedId(string appId)
+        {
+            Action act = () => CosmosItemId.GuardNotReserved(appId, "id");
+
+            act.Should().NotThrow();
+        }
     }
 }

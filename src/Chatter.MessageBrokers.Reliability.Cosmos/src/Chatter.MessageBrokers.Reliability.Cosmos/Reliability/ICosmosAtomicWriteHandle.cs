@@ -28,6 +28,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// reads 0 → skips <c>ExecuteAsync</c> → acks with nothing committed) is closed by construction.
     /// </para>
     /// <para>
+    /// <strong>Reserved-namespace guard (part of the contract).</strong> Every public staging method that carries an id
+    /// rejects an id in the Chatter-reserved <c>inbox:</c>/<c>outbox:</c> namespace via
+    /// <see cref="CosmosItemId.GuardNotReserved"/> BEFORE the op is staged (parity with the trusted <c>_chatterType</c>
+    /// reserved field). The guard is what makes the inbox marker-409 → confirmed-duplicate inference collision-proof: an
+    /// app doc could otherwise author a reserved-prefix id, 409 the framework's marker create, and be silently swallowed
+    /// as a duplicate. <see cref="StageCreateItemStream"/> peeks the id from its JSON payload to apply the same guard.
+    /// The framework's OWN reserved-id writes flow through the internal <see cref="ICosmosReservedWriteHandle"/>, which
+    /// BYPASSES the guard — it is the sole sanctioned reserved-id writer.
+    /// </para>
+    /// <para>
     /// #219 (outbox) uses <see cref="StageCreateItemStream"/> for the Chatter-owned wire shape.
     /// #220 (inbox marker) uses <see cref="StageCreateItemStream"/> or <see cref="StageCreateItem{T}"/>;
     /// a 409 confirmed-duplicate still surfaces via <see cref="CosmosBatchExecutionException.StatusCode"/> (unchanged).
@@ -71,37 +81,69 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         int StagedOperationCount { get; }
 
         /// <summary>
-        /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.CreateItemStream"/> op for a Chatter-owned
-        /// wire-format document (<paramref name="payload"/>) and increments <see cref="StagedOperationCount"/>. Used by
-        /// the outbox (#219) and inbox marker (#220) for Chatter-controlled stream shapes.
+        /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.CreateItemStream"/> op for an app-owned
+        /// wire-format document (<paramref name="payload"/>) and increments <see cref="StagedOperationCount"/>. The id is
+        /// PEEKED from the JSON payload and rejected via <see cref="CosmosItemId.GuardNotReserved"/> if it is in the
+        /// reserved <c>inbox:</c>/<c>outbox:</c> namespace; a payload with no/unparseable/non-object id is treated as
+        /// idless (non-reserved) and passes. The framework's own reserved-id stream writes use
+        /// <see cref="ICosmosReservedWriteHandle.StageReservedCreateItemStream"/> (guard-bypassing) instead.
         /// </summary>
         void StageCreateItemStream(Stream payload, TransactionalBatchItemRequestOptions requestOptions = null);
 
         /// <summary>
         /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.CreateItem{T}"/> op for a typed
-        /// <paramref name="item"/> (SDK-serialized) and increments <see cref="StagedOperationCount"/>. Used by the
-        /// inbox marker (#220) when a typed marker document is preferred.
+        /// <paramref name="item"/> under the explicit <paramref name="id"/> (SDK-serialized) and increments
+        /// <see cref="StagedOperationCount"/>. <paramref name="id"/> is rejected via
+        /// <see cref="CosmosItemId.GuardNotReserved"/> when it is in the reserved <c>inbox:</c>/<c>outbox:</c> namespace.
         /// </summary>
-        void StageCreateItem<T>(T item, TransactionalBatchItemRequestOptions requestOptions = null);
+        void StageCreateItem<T>(string id, T item, TransactionalBatchItemRequestOptions requestOptions = null);
 
         /// <summary>
         /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.UpsertItem{T}"/> op for a typed
-        /// <paramref name="item"/> (SDK-serialized) and increments <see cref="StagedOperationCount"/>. Used by
-        /// app aggregate writers; pass <c>IfMatchEtag</c> in <paramref name="requestOptions"/> for optimistic
-        /// concurrency (412 surfaces via <see cref="CosmosBatchExecutionException.StatusCode"/>).
+        /// <paramref name="item"/> under the explicit <paramref name="id"/> (SDK-serialized) and increments
+        /// <see cref="StagedOperationCount"/>. <paramref name="id"/> is rejected via
+        /// <see cref="CosmosItemId.GuardNotReserved"/> when it is reserved. Used by app aggregate writers; pass
+        /// <c>IfMatchEtag</c> in <paramref name="requestOptions"/> for optimistic concurrency (412 surfaces via
+        /// <see cref="CosmosBatchExecutionException.StatusCode"/>).
         /// </summary>
-        void StageUpsertItem<T>(T item, TransactionalBatchItemRequestOptions requestOptions = null);
+        void StageUpsertItem<T>(string id, T item, TransactionalBatchItemRequestOptions requestOptions = null);
 
         /// <summary>
         /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.ReplaceItem{T}"/> op for a typed
-        /// <paramref name="item"/> (SDK-serialized) and increments <see cref="StagedOperationCount"/>.
+        /// <paramref name="item"/> and increments <see cref="StagedOperationCount"/>. <paramref name="id"/> is rejected
+        /// via <see cref="CosmosItemId.GuardNotReserved"/> when it is reserved.
         /// </summary>
         void StageReplaceItem<T>(string id, T item, TransactionalBatchItemRequestOptions requestOptions = null);
 
         /// <summary>
         /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.PatchItem"/> op for the document identified
-        /// by <paramref name="id"/> and increments <see cref="StagedOperationCount"/>.
+        /// by <paramref name="id"/> and increments <see cref="StagedOperationCount"/>. <paramref name="id"/> is rejected
+        /// via <see cref="CosmosItemId.GuardNotReserved"/> when it is reserved.
         /// </summary>
         void StagePatchItem(string id, IReadOnlyList<PatchOperation> patchOperations, TransactionalBatchPatchItemRequestOptions requestOptions = null);
+    }
+
+    /// <summary>
+    /// The framework-only reserved-id staging facet of the document-tier atomic-write handle. The reserved-namespace
+    /// guard on <see cref="ICosmosAtomicWriteHandle"/>'s public staging methods rejects <c>inbox:</c>/<c>outbox:</c>
+    /// ids; the framework's OWN reserved-id writes (the outbox doc #219, the inbox marker #220) must therefore stage
+    /// through this internal facet, which BYPASSES the guard. It is the framework's sole sanctioned reserved-id writer.
+    /// </summary>
+    /// <remarks>
+    /// INVARIANT: only Chatter-internal code (the outbox / inbox-marker staging paths) may resolve and use this facet,
+    /// so the public surface cannot be used to author a reserved-prefix id while the framework still can. The concrete
+    /// <see cref="CosmosAtomicWriteHandle"/> implements both this interface and <see cref="ICosmosAtomicWriteHandle"/>;
+    /// reserved staging still increments <see cref="ICosmosAtomicWriteHandle.StagedOperationCount"/> so the empty-batch
+    /// guard's single-source-of-truth invariant is preserved.
+    /// </remarks>
+    internal interface ICosmosReservedWriteHandle
+    {
+        /// <summary>
+        /// Stages a <see cref="Microsoft.Azure.Cosmos.TransactionalBatch.CreateItemStream"/> op for a Chatter-owned
+        /// reserved-id wire-format document (<paramref name="payload"/>) WITHOUT applying the reserved-namespace guard,
+        /// and increments <see cref="ICosmosAtomicWriteHandle.StagedOperationCount"/>. Used by the outbox (#219) and the
+        /// inbox marker (#220) to author their reserved <c>outbox:</c>/<c>inbox:</c>-prefixed ids.
+        /// </summary>
+        void StageReservedCreateItemStream(Stream payload, TransactionalBatchItemRequestOptions requestOptions = null);
     }
 }

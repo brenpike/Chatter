@@ -347,5 +347,132 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             handleType.GetProperty("Batch").Should().BeNull("the raw batch must not be publicly reachable for op-adds");
             handleType.GetMethod("MarkOperationStaged").Should().BeNull("staging and counting must be one indivisible action via the Stage* methods");
         }
+
+        // A direct handle over a batch mock that records each CreateItemStream op, for the reserved-namespace guard tests
+        // (no behavior/pipeline needed — the guard lives on the handle's public staging methods).
+        private static (CosmosAtomicWriteHandle handle, Mock<TransactionalBatch> batch) DirectHandle()
+        {
+            var batch = new Mock<TransactionalBatch>();
+            batch.Setup(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
+                 .Returns(batch.Object);
+            batch.Setup(b => b.CreateItem(It.IsAny<object>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
+                 .Returns(batch.Object);
+            batch.Setup(b => b.UpsertItem(It.IsAny<object>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
+                 .Returns(batch.Object);
+            var handle = new CosmosAtomicWriteHandle(
+                Mock.Of<Container>(), batch.Object, new PartitionKey("pk"), Array.AsReadOnly(new[] { "/tenantId" }));
+            return (handle, batch);
+        }
+
+        private static MemoryStream JsonPayload(string json)
+            => new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json), writable: false);
+
+        [Fact]
+        public void MustRejectPublicTypedCreateWithReservedIdLeavingBatchAndCountUnperturbed()
+        {
+            var (handle, batch) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+
+            Action act = () => publicHandle.StageCreateItem(CosmosItemId.ForInbox("msg-1"), new { });
+
+            act.Should().Throw<ArgumentException>("an app caller may not author a reserved inbox: id via the public surface");
+            handle.StagedOperationCount.Should().Be(0, "a rejected stage must not increment the count");
+            batch.Verify(b => b.CreateItem(It.IsAny<object>(), It.IsAny<TransactionalBatchItemRequestOptions>()), Times.Never,
+                "the guard fires before the op is added so the batch is unperturbed");
+        }
+
+        [Fact]
+        public void MustRejectPublicTypedUpsertWithReservedIdLeavingBatchAndCountUnperturbed()
+        {
+            var (handle, batch) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+
+            Action act = () => publicHandle.StageUpsertItem(CosmosItemId.ForOutbox("msg-1"), new { });
+
+            act.Should().Throw<ArgumentException>();
+            handle.StagedOperationCount.Should().Be(0);
+            batch.Verify(b => b.UpsertItem(It.IsAny<object>(), It.IsAny<TransactionalBatchItemRequestOptions>()), Times.Never);
+        }
+
+        [Fact]
+        public void MustRejectPublicCreateItemStreamWhenPayloadIdIsReserved()
+        {
+            var (handle, batch) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = JsonPayload($"{{\"id\":\"{CosmosItemId.ForInbox("msg-1")}\"}}");
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().Throw<ArgumentException>("the peek-guard rejects a reserved-prefix payload id");
+            handle.StagedOperationCount.Should().Be(0);
+            batch.Verify(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()), Times.Never);
+        }
+
+        [Fact]
+        public void MustAllowPublicCreateItemStreamWhenPayloadIdIsNonReserved()
+        {
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = JsonPayload("{\"id\":\"order:abc\",\"value\":1}");
+
+            publicHandle.StageCreateItemStream(payload);
+
+            handle.StagedOperationCount.Should().Be(1, "a non-reserved app id passes the peek-guard and stages");
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("{}")]
+        [InlineData("[1,2,3]")]
+        [InlineData("\"just-a-string\"")]
+        [InlineData("not-json-at-all")]
+        public void MustAllowPublicCreateItemStreamForIdlessOrUnparseablePayload(string payloadText)
+        {
+            // An empty, non-object, or unparseable payload is idless (non-reserved) and must pass — the peek must not
+            // throw on these shapes.
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = JsonPayload(payloadText);
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().NotThrow();
+            handle.StagedOperationCount.Should().Be(1);
+        }
+
+        [Fact]
+        public void MustAllowPublicCreateItemStreamForStreamNull()
+        {
+            // Stream.Null is empty -> idless -> non-reserved -> passes (the existing batch-mechanics tests rely on this).
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+
+            Action act = () => publicHandle.StageCreateItemStream(Stream.Null);
+
+            act.Should().NotThrow();
+            handle.StagedOperationCount.Should().Be(1);
+        }
+
+        [Fact]
+        public void MustReadSamePayloadBytesAfterPeekRestoringStreamPosition()
+        {
+            // The peek must not corrupt the stream the SDK later reads: capture the staged stream and confirm it still
+            // yields the full original payload from position 0.
+            var (handle, batch) = DirectHandle();
+            Stream captured = null;
+            batch.Setup(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
+                 .Callback<Stream, TransactionalBatchItemRequestOptions>((s, _) => captured = s)
+                 .Returns(batch.Object);
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            var json = "{\"id\":\"order:abc\",\"value\":1}";
+            using var payload = JsonPayload(json);
+
+            publicHandle.StageCreateItemStream(payload);
+
+            captured.Should().NotBeNull();
+            captured.Position = 0;
+            using var reader = new StreamReader(captured);
+            reader.ReadToEnd().Should().Be(json, "the SDK must read the same bytes the peek inspected");
+        }
     }
 }

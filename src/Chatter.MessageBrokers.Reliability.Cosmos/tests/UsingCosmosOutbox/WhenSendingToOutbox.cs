@@ -148,6 +148,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutbox
         }
 
         [Fact]
+        public async Task MustFailWhenActiveHandleDoesNotSupportReservedStaging()
+        {
+            // Wiring-error guard: the outbox authors a reserved outbox: id, so it needs the framework handle that
+            // implements ICosmosReservedWriteHandle. A handle that satisfies ICosmosAtomicWriteHandle but NOT the
+            // reserved facet is a wiring error and must fail loudly.
+            var nonReservedHandle = new Mock<ICosmosAtomicWriteHandle>();
+            nonReservedHandle.SetupGet(h => h.PartitionKey).Returns(new PartitionKey("tenant-1"));
+            nonReservedHandle.SetupGet(h => h.PartitionKeyPath).Returns(Array.AsReadOnly(new[] { "/tenantId" }));
+            var surface = new DocumentTierReliabilitySurface { CurrentHandle = nonReservedHandle.Object };
+            IBrokeredMessageOutbox outbox = new CosmosBrokeredMessageOutbox(surface);
+
+            Func<Task> act = () => outbox.SendToOutbox(Message(), transactionContext: null);
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        [Fact]
         public async Task MustPreserveNumericPartitionKeyValueKind()
         {
             // A numeric partition key opened on PartitionKey(42d) must be stamped as a JSON number, not the string "42",

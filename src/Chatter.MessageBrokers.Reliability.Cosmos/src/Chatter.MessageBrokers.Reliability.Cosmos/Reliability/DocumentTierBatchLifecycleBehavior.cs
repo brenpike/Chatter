@@ -129,7 +129,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             IReadOnlyList<JsonElement> partitionKeyValues = CosmosPartitionKeyStamping.RecoverPartitionKeyValues(handle.PartitionKey, partitionKeyPath);
             var rendered = marker.ToJsonObject(partitionKeyPath, partitionKeyValues);
             var bytes = JsonSerializer.SerializeToUtf8Bytes(rendered, ChatterJson.Options);
-            handle.StageCreateItemStream(new MemoryStream(bytes, writable: false));
+
+            // INVARIANT: the marker authors a reserved inbox:-prefixed id, so it stages through the internal
+            // reserved-write facet that BYPASSES the public reserved-namespace guard (the public StageCreateItemStream
+            // would reject its own inbox: id). The behavior holds the concrete CosmosAtomicWriteHandle, which implements
+            // the facet directly.
+            ICosmosReservedWriteHandle reservedHandle = handle;
+            reservedHandle.StageReservedCreateItemStream(new MemoryStream(bytes, writable: false));
             return true;
         }
 
@@ -169,7 +175,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             // Confirmed duplicate ONLY when we stamped a marker this invocation AND the marker op (index 0) itself is a
             // 409 Conflict. Any other non-success — including a 409 on a non-marker op or a marker 424 while another op
-            // failed — falls through to the throw below (redeliver/retry).
+            // failed — falls through to the throw below (redeliver/retry). This swallow is SOUND because the inbox:
+            // id prefix is an ENFORCED Chatter-reserved id namespace (CosmosItemId.GuardNotReserved rejects reserved-
+            // prefix ids on the public atomic-write surface, parity with the trusted _chatterType reserved field) — NOT
+            // a naming convention — so a 409 on the framework's marker create can ONLY mean a prior Chatter marker, never
+            // a colliding app document authored with an inbox: id (which can no longer be staged).
             TransactionalBatchOperationResult markerResult = response[MarkerOperationIndex];
             if (markerStamped && markerResult is not null && markerResult.StatusCode == HttpStatusCode.Conflict)
             {

@@ -19,6 +19,69 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public const string InboxKind = "inbox";
 
         /// <summary>
+        /// The Chatter-reserved item-id prefixes (<c>"{kind}:"</c>), derived from the kind constants so there is a single
+        /// ground truth — adding a kind constant extends this set, never a parallel literal list. An app document whose
+        /// item id starts with one of these prefixes is forbidden on the public atomic-write surface (see
+        /// <see cref="GuardNotReserved"/>).
+        /// </summary>
+        private static readonly string[] _reservedIdPrefixes = { OutboxKind + ":", InboxKind + ":" };
+
+        /// <summary>
+        /// True when <paramref name="id"/> begins with any Chatter-reserved id prefix (<c>"outbox:"</c> /
+        /// <c>"inbox:"</c>). The match is an ordinal PREFIX test (not a substring search): only an id that actually leads
+        /// with a reserved <c>"{kind}:"</c> is reserved.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: this predicate is the enforcement that makes the inbox marker-409 → confirmed-duplicate inference
+        /// SOUND. The dedup path infers "a 409 on the marker create means a prior Chatter marker already exists." That
+        /// inference is only collision-proof if Chatter EXCLUSIVELY owns the <c>inbox:</c>/<c>outbox:</c> id namespace —
+        /// otherwise an app aggregate doc authored with a reserved-prefix id would 409 the marker create and be swallowed
+        /// as a duplicate, silently losing the first delivery. By rejecting reserved-prefix ids at staging time on the
+        /// public surface (parity with the already-trusted <c>_chatterType</c> reserved field), the prefix becomes an
+        /// ENFORCED reserved namespace rather than a naming convention, so a marker 409 can ONLY mean a prior marker.
+        /// </remarks>
+        public static bool IsReserved(string id)
+        {
+            if (id is null)
+            {
+                return false;
+            }
+
+            foreach (string reservedPrefix in _reservedIdPrefixes)
+            {
+                if (id.StartsWith(reservedPrefix, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Throws <see cref="ArgumentException"/> when <paramref name="id"/> is in the Chatter-reserved id namespace
+        /// (<see cref="IsReserved"/>), naming the reserved namespace and the offending id. This is the staging-time guard
+        /// the public atomic-write surface applies so an app caller cannot author a doc carrying a reserved
+        /// <c>inbox:</c>/<c>outbox:</c> id; framework reserved-id construction flows through <see cref="Build"/> and the
+        /// internal reserved-write path, which are NOT subject to this guard.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: this guard is the enforcement that makes the inbox marker-409 → confirmed-duplicate inference sound
+        /// (see <see cref="IsReserved"/>). It rejects at staging time, consistent with the existing length and
+        /// forbidden-character guards on <see cref="Build"/>.
+        /// </remarks>
+        public static void GuardNotReserved(string id, string paramName)
+        {
+            if (IsReserved(id))
+            {
+                throw new ArgumentException(
+                    $"The item id '{id}' is in the Chatter-reserved id namespace ('{OutboxKind}:'/'{InboxKind}:'). " +
+                    "Application documents must not author reserved-prefix ids; the framework owns this namespace so the " +
+                    "inbox marker-409 confirmed-duplicate inference stays collision-proof.", paramName);
+            }
+        }
+
+        /// <summary>
         /// Builds the outbox document id <c>outbox:{encoded(messageId)}</c>.
         /// </summary>
         public static string ForOutbox(string messageId) => Build(OutboxKind, messageId);
