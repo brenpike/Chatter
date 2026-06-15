@@ -79,17 +79,20 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                 globalTransactionMode: TransactionMode.ReceiveOnly,
                 typeof(ReceiveOnlyTransactionCommand));
 
-        // None harness: built on a SEPARATE object set (DeadLetterSet) with the GLOBAL transaction mode set to
+        // None harness: built on its OWN dedicated object set (NoneSet) with the GLOBAL transaction mode set to
         // None so the receiver BEGINs NO transaction around the RECEIVE — a throwing handler cannot redeliver
-        // because there is no receive transaction to roll back. Uses DeadLetterSet's target queue so it never
-        // shares a queue with the ReceiveOnly case above.
+        // because there is no receive transaction to roll back. A dedicated set (not the shared DeadLetterSet)
+        // is required: the collection fixture provisions once and never clears queues between test classes, so
+        // reusing DeadLetterSet's target/deadletter queues would let leftover state or class-order interaction
+        // from SsbDeadLetterTests bleed into this receiver and make the exactly-once None assertion
+        // order-dependent. Its own set keeps C9-None isolated, exactly as Publish/Poison/Transaction/Forwarding.
         private ChatterSsbPipelineHarness BuildNoneHarness()
             => ChatterSsbPipelineHarness.Build(
                 _fixture.GetAppConnectionString(),
-                ServiceBrokerProvisioning.DeadLetterSet,
+                ServiceBrokerProvisioning.NoneSet,
                 ssb => ssb.AddQueueReceiver<NoneTransactionCommand>(
-                    ServiceBrokerProvisioning.DeadLetterSet.TargetQueuePathBracketed,
-                    deadLetterServicePath: ServiceBrokerProvisioning.DeadLetterSet.DeadLetterServiceName),
+                    ServiceBrokerProvisioning.NoneSet.TargetQueuePathBracketed,
+                    deadLetterServicePath: ServiceBrokerProvisioning.NoneSet.DeadLetterServiceName),
                 globalTransactionMode: TransactionMode.None,
                 typeof(NoneTransactionCommand));
 

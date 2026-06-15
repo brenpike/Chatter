@@ -71,10 +71,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         // provisioning/teardown loops treat them uniformly.
         //   PublishSet       — C2: IEvent publish (PublishAsync) routes to its own target service.
         //   PoisonSet        — C8: poison/deadletter scenario with its own isolated queues.
-        //   TransactionSet   — C9: transaction-mode receiver scenario with its own isolated queues.
+        //   TransactionSet   — C9 ReceiveOnly: transaction-mode receiver scenario with its own isolated queues.
+        //   NoneSet          — C9 None: transaction-mode None case gets its OWN isolated queues so it never
+        //                      shares the deadletter set's target/deadletter queues (cross-test poisoning would
+        //                      otherwise make the order-independent None assertion order-DEPENDENT).
         public static readonly ObjectSet PublishSet = CreateSet("publish");
         public static readonly ObjectSet PoisonSet = CreateSet("poison");
         public static readonly ObjectSet TransactionSet = CreateSet("transaction");
+        public static readonly ObjectSet NoneSet = CreateSet("none");
 
         // C10 forwarding set. Beyond the standard target+deadletter set, forwarding requires a SECOND, DISTINCT
         // destination service+queue so a handler on the primary target can Forward/Send to a service OTHER than the
@@ -95,6 +99,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             PublishSet,
             PoisonSet,
             TransactionSet,
+            NoneSet,
             ForwardingSet,
         };
 
