@@ -64,6 +64,26 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             return Parse(node.ToJsonString());
         }
 
+        // A document that carries the outbox discriminator + pending status but whose physical id is NOT the deterministic
+        // outbox id Chatter mints for its MessageId — i.e. an app/domain document forged through a raw Cosmos write that no
+        // staging guard closes. The relay must NOT publish or patch it (id-consistency is the publish-side close).
+        private static JsonElement OutboxShapedDocumentWithForeignId(string id, string messageId, string tenantId)
+        {
+            var node = new JsonObject
+            {
+                [CosmosOutboxDocument.IdField] = id,
+                [CosmosOutboxDocument.DiscriminatorField] = CosmosItemId.OutboxKind,
+                [CosmosOutboxDocument.StatusField] = CosmosOutboxDocument.StatusPending,
+                [CosmosOutboxDocument.MessageIdField] = messageId,
+                [CosmosOutboxDocument.DestinationField] = "dest",
+                [CosmosOutboxDocument.MessageBodyField] = "{}",
+                [CosmosOutboxDocument.MessageContentTypeField] = "application/json",
+                [CosmosOutboxDocument.MessageContextField] = "{}",
+                ["tenantId"] = tenantId,
+            };
+            return Parse(node.ToJsonString());
+        }
+
         private static JsonElement JsonValue(string raw) => Parse(JsonSerializer.Serialize(raw));
 
         private static JsonElement Parse(string json)
@@ -151,6 +171,41 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
 
             published.Should().BeEmpty("only a pending outbox document is published");
             patches.Should().BeEmpty("a skipped document is never patched delivered");
+        }
+
+        [Fact]
+        public async Task MustNotPublishOutboxShapedDocumentWhoseIdIsNotChatterMinted()
+        {
+            // The app owns the container and can author a document carrying _chatterType="outbox" + status="pending"
+            // through a raw Cosmos write. Such a domain/app document is NOT one Chatter minted: its id is not
+            // CosmosItemId.ForOutbox(MessageId). The relay must skip it — publishing it would be a forbidden domain-doc
+            // leak, and patching it status=delivered+ttl would mutate app data.
+            var (provider, published) = RecordingProvider();
+            var (container, patches) = RecordingContainer();
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
+
+            JsonElement forged = OutboxShapedDocumentWithForeignId("app-authored-id", "msg-1", "tenant-1");
+            await relay.ProcessChangeAsync(forged, container.Object, PartitionKeyPath);
+
+            published.Should().BeEmpty("an outbox-discriminated, pending document whose id is not ForOutbox(MessageId) is not Chatter-minted and must not be published");
+            patches.Should().BeEmpty("a skipped document is never patched delivered — its app data is not mutated");
+        }
+
+        [Fact]
+        public async Task MustNotPublishOutboxShapedDocumentWhoseIdMatchesADifferentMessageId()
+        {
+            // Even a reserved-namespace outbox: id is rejected when it is ForOutbox of a DIFFERENT message id than the
+            // document's own MessageId — the id must be the deterministic outbox id of THIS document's MessageId.
+            var (provider, published) = RecordingProvider();
+            var (container, patches) = RecordingContainer();
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
+
+            string foreignButReservedId = CosmosItemId.ForOutbox("some-other-message");
+            JsonElement forged = OutboxShapedDocumentWithForeignId(foreignButReservedId, "msg-1", "tenant-1");
+            await relay.ProcessChangeAsync(forged, container.Object, PartitionKeyPath);
+
+            published.Should().BeEmpty("the id must be ForOutbox of THIS document's MessageId, not of a different message id");
+            patches.Should().BeEmpty();
         }
 
         [Fact]

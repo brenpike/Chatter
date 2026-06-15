@@ -87,12 +87,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // Parses the change-feed stream payload ({ "Documents": [ ... ] }) with System.Text.Json so Chatter owns the read
         // wire shape, and feeds each document through the relay core. An exception from the relay (a publish failure)
         // propagates out of this handler so the SDK does NOT checkpoint the batch and the document re-surfaces next pass.
-        private async Task HandleChangesAsync(Stream changes, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
+        // internal (not private) so the fail-closed malformed-payload behavior is unit-testable without the live SDK
+        // change-feed plumbing; the assembly exposes internals to the test project.
+        internal async Task HandleChangesAsync(Stream changes, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
             using JsonDocument payload = await JsonDocument.ParseAsync(changes, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            // FAIL CLOSED on an unexpected batch shape. Normal handler completion is the SDK's checkpoint signal, so a
+            // silent return on a missing/non-array "Documents" property would advance the lease PAST every change in the
+            // batch — losing any pending outbox doc inside a payload whose shape the relay could not parse (SDK version
+            // skew, a wire-contract change, or a corrupt batch). For an at-least-once relay the correct bias is to throw
+            // so the batch is NOT checkpointed and re-surfaces next pass, exactly as a publish failure does.
             if (!payload.RootElement.TryGetProperty("Documents", out JsonElement documents) || documents.ValueKind != JsonValueKind.Array)
             {
-                return;
+                throw new InvalidOperationException(
+                    "The Cosmos change-feed batch payload did not contain a 'Documents' array. The relay cannot determine which documents to drain from this batch, so it fails closed (the batch is not checkpointed and re-surfaces) rather than silently advancing the lease past potentially-unpublished outbox documents.");
             }
 
             foreach (JsonElement document in documents.EnumerateArray())
