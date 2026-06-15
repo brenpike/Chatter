@@ -32,6 +32,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private static readonly char[] _forbiddenIdChars = { '/', '\\', '?', '#' };
 
         /// <summary>
+        /// Cosmos DB's maximum item-id length, in characters. An id over this limit is rejected by the service when the
+        /// batch op executes, so it is rejected here at staging time instead.
+        /// </summary>
+        public const int MaxItemIdLength = 1023;
+
+        /// <summary>
         /// Composes <c>{kind}:{encoded(messageId)}</c>. <paramref name="kind"/> is a Chatter-reserved, id-safe literal.
         /// </summary>
         /// <remarks>
@@ -40,6 +46,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// emitted verbatim as the id prefix, so it is validated here against the same Cosmos-forbidden character set —
         /// a caller-supplied kind carrying <c>/</c>, <c>\</c>, <c>?</c>, or <c>#</c> would otherwise yield an invalid
         /// item id. This closes the unsafe-kind class for the public surface, not just the reserved constants.
+        ///
+        /// The composed id is also bounded to <see cref="MaxItemIdLength"/>: a caller-supplied message id long enough to
+        /// push the encoded id over Cosmos DB's id-length limit would otherwise fail at batch-execution time and trigger
+        /// inbound-message redelivery without committing the batch, so it is rejected here at staging time instead. The
+        /// raw message id is stored verbatim in a separate document field, so the physical item id is safe to bound.
         /// </remarks>
         public static string Build(string kind, string messageId)
         {
@@ -59,7 +70,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 throw new ArgumentNullException(nameof(messageId));
             }
 
-            return $"{kind}:{Encode(messageId)}";
+            var id = $"{kind}:{Encode(messageId)}";
+
+            if (id.Length > MaxItemIdLength)
+            {
+                throw new ArgumentException(
+                    $"The composed Cosmos item id is {id.Length} characters, which exceeds Cosmos DB's {MaxItemIdLength}-character id limit. " +
+                    "Supply a shorter message id.", nameof(messageId));
+            }
+
+            return id;
         }
 
         /// <summary>

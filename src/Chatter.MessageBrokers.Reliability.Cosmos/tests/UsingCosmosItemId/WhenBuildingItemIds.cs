@@ -55,5 +55,32 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosItemId
             CosmosItemId.ForOutbox("same-id").Should().Be(CosmosItemId.ForOutbox("same-id"));
             CosmosItemId.ForOutbox("a").Should().NotBe(CosmosItemId.ForOutbox("b"));
         }
+
+        [Fact]
+        public void MustRejectMessageIdThatExceedsCosmosIdLengthLimit()
+        {
+            // A message id long enough to push the encoded id over Cosmos's id-length limit would fail at batch-execution
+            // time and trigger redelivery without committing, so Build must reject it at staging time instead.
+            var overLimitMessageId = new string('a', CosmosItemId.MaxItemIdLength);
+
+            Action act = () => CosmosItemId.ForOutbox(overLimitMessageId);
+
+            act.Should().Throw<ArgumentException>();
+        }
+
+        [Fact]
+        public void MustAcceptMessageIdAtCosmosIdLengthLimit()
+        {
+            // base64 of N bytes is 4*ceil(N/3) chars (minus stripped padding); choose a raw length whose composed id
+            // ("outbox:" + encoded) lands at or under the limit to prove the boundary is inclusive, not off-by-one.
+            var prefixLength = CosmosItemId.OutboxKind.Length + 1;
+            var encodedBudget = CosmosItemId.MaxItemIdLength - prefixLength;
+            var rawBytes = (encodedBudget / 4) * 3;
+            var atLimitMessageId = new string('a', rawBytes);
+
+            var id = CosmosItemId.ForOutbox(atLimitMessageId);
+
+            id.Length.Should().BeLessThanOrEqualTo(CosmosItemId.MaxItemIdLength);
+        }
     }
 }
