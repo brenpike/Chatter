@@ -22,6 +22,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// core's resolves-to-null cast-at-consumption invariant by introducing a second, independent
     /// <see cref="IInboxDeduplicator"/> service. It exists solely so the contract is realized as a type on the Cosmos
     /// tier for parity; invoking <see cref="HasBeenReceived"/> is a programming error and throws.
+    /// <para>
+    /// SIDE-EFFECT TIMING / handler-idempotency contract. Because the marker is stamped and then <c>next()</c> runs
+    /// BEFORE the single batch-execute, the confirmed-duplicate marker-409 surfaces only AFTER the handler has run.
+    /// Consequence on a redelivered duplicate: writes staged ON the framework-owned batch (the aggregate write and the
+    /// co-resident outbox doc) roll back atomically and never re-commit (EXACTLY-ONCE), but any handler side effect
+    /// performed OUTSIDE the batch (external HTTP, a non-Cosmos write) has already executed and re-executes on every
+    /// redelivery (AT-LEAST-ONCE) — so handlers with non-batched side effects MUST be idempotent. This is the
+    /// deliberate cost of the no-pre-read design and the one place the tiers' contracts differ: the relational tier
+    /// (<c>BrokeredMessageInbox.ReceiveViaInbox</c>) reads <see cref="HasBeenReceived"/> first and SKIPS the handler
+    /// entirely on a known duplicate, so its non-batched side effects do not re-run; the document tier intentionally
+    /// has no such pre-read (it would be the TOCTOU read this design eliminates) and so cannot offer that skip.
+    /// </para>
     /// </remarks>
     public sealed class CosmosInboxDeduplicator : IInboxDeduplicator
     {

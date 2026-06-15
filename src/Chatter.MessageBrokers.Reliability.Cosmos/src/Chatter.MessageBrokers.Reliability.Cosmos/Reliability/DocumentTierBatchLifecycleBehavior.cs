@@ -29,6 +29,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// framework-owned lifecycle. The single batch-execute is GUARDED: an empty batch (zero staged ops) does NOT call
     /// the Cosmos transport, so unit tests need no live Cosmos. Must register OUTERMOST (first WithBehavior
     /// registration; the pipeline reverses behaviors so the first-registered is the outermost).
+    /// <para>
+    /// SIDE-EFFECT TIMING / handler-idempotency contract. The ordering is marker-stamp → <c>next()</c> → single
+    /// batch-execute: <c>next()</c> ALWAYS runs before the batch is executed, so a confirmed-duplicate marker-409
+    /// (surfaced only at execute time) CANNOT pre-empt the handler. On a redelivered duplicate the batched writes (the
+    /// aggregate write and the co-resident outbox doc) roll back atomically and never re-commit (EXACTLY-ONCE), but any
+    /// handler side effect performed OUTSIDE this batch (external HTTP, a non-Cosmos write) has already run and
+    /// re-executes on every redelivery (AT-LEAST-ONCE) — so handlers with non-batched side effects MUST be idempotent.
+    /// This is the deliberate cost of the no-pre-read / TOCTOU-free design and contrasts with the relational tier
+    /// (<c>BrokeredMessageInbox.ReceiveViaInbox</c>), which reads <c>HasBeenReceived</c> first and SKIPS the handler
+    /// entirely on a known duplicate, so its non-batched side effects do not re-run.
+    /// </para>
     /// </remarks>
     public sealed class DocumentTierBatchLifecycleBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
     {
@@ -95,6 +106,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // has no identity (null/whitespace MessageId) no marker is stamped — we cannot dedup by identity — but
                 // the batch is still opened and next() still runs so the aggregate/outbox path is unaffected (parity
                 // with the relational ReceiveViaInbox null-id behavior + #238 null-safety).
+                //
+                // SIDE-EFFECT TIMING: the marker-409 is only seen at batch-execute, which runs AFTER next() below, so
+                // the duplicate signal CANNOT pre-empt the handler. On a confirmed duplicate the batched writes
+                // (aggregate + co-resident outbox) roll back atomically and never re-commit (EXACTLY-ONCE), but handler
+                // side effects performed OUTSIDE this batch (external HTTP, non-Cosmos writes) have already run and
+                // re-execute on every redelivery (AT-LEAST-ONCE) — handlers with non-batched side effects MUST be
+                // idempotent. This is the deliberate no-pre-read cost; the relational ReceiveViaInbox instead reads
+                // HasBeenReceived first and SKIPS the handler on a known duplicate, so its non-batched effects do not
+                // re-run. We do NOT add such a pre-read here — it would reintroduce the eliminated TOCTOU.
                 var markerStamped = TryStampInboxMarker(handle, inboundBrokeredMessage, registration.PartitionKeyPath);
 
                 await next();
