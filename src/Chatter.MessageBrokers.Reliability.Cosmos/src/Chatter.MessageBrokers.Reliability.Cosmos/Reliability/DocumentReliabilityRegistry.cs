@@ -23,6 +23,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             => _registrations.TryGetValue(commandType ?? throw new ArgumentNullException(nameof(commandType)), out registration);
 
         /// <summary>
+        /// All current registrations, for the #222 relay's per-(Database, ContainerName, LeaseName) change-feed fan-out
+        /// (the host dedupes the triple itself — many command types may share one container, so this is NOT one entry per
+        /// distinct triple). Internal: only the relay hosted service enumerates registrations; the public surface stays
+        /// <see cref="TryGet"/>/<c>Add</c>.
+        /// </summary>
+        internal IReadOnlyCollection<DocumentReliabilityRegistration> Registrations => _registrations.Values;
+
+        /// <summary>
         /// Adds a registration. Additive across N calls, but rejects a DUPLICATE registration for the same command type
         /// — a clear configuration error (two conflicting container/resolver bindings for one command). Internal: only
         /// the provider's <c>WithCosmosDocumentReliability&lt;TCommand&gt;</c> entry point adds registrations.

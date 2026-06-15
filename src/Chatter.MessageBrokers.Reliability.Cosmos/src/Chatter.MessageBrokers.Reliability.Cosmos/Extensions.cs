@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Reliability.Cosmos;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Microsoft.Azure.Cosmos;
+using Microsoft.Extensions.Hosting;
 using System;
 using System.Linq;
 
@@ -194,6 +195,23 @@ namespace Microsoft.Extensions.DependencyInjection
                     && descriptor.ImplementationType == typeof(DocumentTierBatchLifecycleBehavior<>)))
             {
                 pipelineBuilder.WithBehavior(typeof(DocumentTierBatchLifecycleBehavior<>));
+            }
+
+            // The #222 change-feed outbox relay host runs ONCE per app: it enumerates the registry to the distinct
+            // (Database, ContainerName, LeaseName) set and runs one ChangeFeedProcessor per triple, so registering it per
+            // WithCosmosDocumentReliability<T> call would spawn duplicate relay hosts on the same leases. Register it
+            // EXACTLY ONCE, guarded on the same Any(...) once pattern as the outermost behavior above. The host resolves
+            // the registry, container factory, IMessagingInfrastructureProvider, and IBodyConverterFactory from DI; the
+            // app owns the CosmosClient (the provider registers none) and the Cosmos provider does NOT implement
+            // IPollableOutboxStore — dispatch is this change-feed relay, not a polling query (ADR-0007).
+            if (!pipelineBuilder.Services.Any(descriptor =>
+                    descriptor.ServiceType == typeof(IHostedService)
+                    && descriptor.ImplementationType == typeof(CosmosOutboxRelayHostedService)))
+            {
+                // Register the concrete type (not a factory) so the descriptor's ImplementationType is set and the
+                // once-guard above matches across N WithCosmosDocumentReliability<T> calls. All four ctor dependencies
+                // are DI-resolvable, so the container constructs the host.
+                pipelineBuilder.Services.AddSingleton<IHostedService, CosmosOutboxRelayHostedService>();
             }
 
             return pipelineBuilder;
