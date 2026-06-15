@@ -1,4 +1,5 @@
 using Chatter.CQRS.Commands;
+using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Reliability.Cosmos;
 using FluentAssertions;
@@ -21,15 +22,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         private sealed class CommandA : ICommand { }
         private sealed class CommandB : ICommand { }
 
-        // The behavior only passes the inbound message to the resolver, which here ignores it; a mocked broker context
-        // returning a null BrokeredMessage and a default CancellationToken is sufficient to drive Handle.
-        private static IMessageBrokerContext MockContext()
+        // A broker context whose inbound message is NULL — the in-process (non-broker-receive) case. Used to drive the
+        // null-inbound bare-pass-through path: a participant command with no inbound message must bypass the resolver
+        // and open no batch.
+        private static IMessageBrokerContext MockContextWithNullInboundMessage()
         {
             var context = new Mock<IMessageBrokerContext>();
             context.SetupGet(c => c.BrokeredMessage).Returns((Receiving.InboundBrokeredMessage)null);
             context.SetupGet(c => c.CancellationToken).Returns(CancellationToken.None);
             return context.Object;
         }
+
+        // A broker context carrying a NON-null inbound brokered message — the broker-receive case. A real
+        // MessageBrokerContext (public ctor) builds a non-null BrokeredMessage internally, so the behavior's
+        // null-inbound bare-pass-through guard is NOT triggered and a registered command proceeds to the resolver and
+        // batch. The resolvers in these tests ignore the inbound message; the non-null value only satisfies the guard.
+        private static IMessageBrokerContext MockContext()
+            => new MessageBrokerContext("msg-1", Array.Empty<byte>(), null, "receiver", CancellationToken.None, new JsonBodyConverter());
 
         // Add is internal; visible to the test assembly via InternalsVisibleTo.
         private static void Register(DocumentReliabilityRegistry registry, DocumentReliabilityRegistration registration)
@@ -152,6 +161,37 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
                 return Task.CompletedTask;
             });
 
+            nextRan.Should().BeTrue();
+            container.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Never);
+            batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Never);
+            surface.CurrentHandle.Should().BeNull();
+        }
+
+        [Fact]
+        public async Task MustBarePassThroughForRegisteredCommandWhenInboundMessageIsNull()
+        {
+            // Regression: a REGISTERED (participant) command handled OUTSIDE a broker-receive context has a null inbound
+            // message (GetInboundBrokeredMessage returns null for in-process commands). The behavior must bare-pass-through
+            // BEFORE invoking the resolver — a resolver that dereferences the inbound message must NEVER be reached, so the
+            // null-inbound NRE class is unrepresentable regardless of resolver implementation.
+            var (container, batch) = MockContainer(MockResponse(HttpStatusCode.OK, isSuccess: true));
+            var registry = new DocumentReliabilityRegistry();
+            // A resolver that dereferences the inbound message: it would throw NullReferenceException if ever called with
+            // a null inbound message. The guard must prevent the call entirely.
+            Register(registry, Registration<RegisteredCommand>("shop", "orders",
+                resolver: inbound => new PartitionKey(inbound.MessageId)));
+            var factory = FactoryFor("shop", "orders", container.Object);
+            var surface = new DocumentTierReliabilitySurface();
+            var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
+
+            var nextRan = false;
+            Func<Task> act = () => behavior.Handle(new RegisteredCommand(), MockContextWithNullInboundMessage(), () =>
+            {
+                nextRan = true;
+                return Task.CompletedTask;
+            });
+
+            await act.Should().NotThrowAsync("the null-inbound guard bare-passes-through before the dereferencing resolver runs");
             nextRan.Should().BeTrue();
             container.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Never);
             batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Never);

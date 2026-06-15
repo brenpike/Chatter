@@ -49,9 +49,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 return;
             }
 
-            // The resolver is only ever invoked for participants. It is Try/nullable: a null partition key means "no
-            // resolvable partition for this message" — a legitimate no-op for a participant, so no batch is opened.
+            // A null inbound brokered message means this participant command is being handled OUTSIDE a broker-receive
+            // context (GetInboundBrokeredMessage returns null for in-process commands). With no inbound message there
+            // is no resolvable aggregate partition, so bare-pass-through BEFORE invoking the resolver. This makes the
+            // null-inbound NRE class unrepresentable regardless of resolver implementation: although ResolvePartitionKey
+            // is documented to tolerate a null inbound message, the framework no longer depends on every app resolver
+            // honoring that contract — it is the same "no resolvable partition -> bare next()" semantics as the null-pk
+            // path below, applied one step earlier.
             InboundBrokeredMessage inboundBrokeredMessage = messageHandlerContext.GetInboundBrokeredMessage();
+            if (inboundBrokeredMessage is null)
+            {
+                await next();
+                return;
+            }
+
+            // The resolver is only ever invoked for participants WITH an inbound message. It is Try/nullable: a null
+            // partition key means "no resolvable partition for this message" — a legitimate no-op for a participant, so
+            // no batch is opened.
             PartitionKey? partitionKey = registration.Resolver(inboundBrokeredMessage);
             if (partitionKey is null)
             {
