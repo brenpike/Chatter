@@ -2,6 +2,7 @@ using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
 
 namespace Chatter.MessageBrokers.Reliability.Cosmos
 {
@@ -18,8 +19,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         // INVARIANT: cache keyed by (database, containerName). Many command types may map to one container, and distinct
         // in-flight command types resolve their containers concurrently on the pipeline, so the cache must be
-        // thread-safe — a ConcurrentDictionary guards against duplicate concurrent derivation and torn reads.
-        private readonly ConcurrentDictionary<string, Container> _cache = new ConcurrentDictionary<string, Container>(StringComparer.Ordinal);
+        // thread-safe. The value is a Lazy<Container> with ExecutionAndPublication: ConcurrentDictionary.GetOrAdd does
+        // NOT guarantee its value factory runs only once under a concurrent miss for the same key, so caching the
+        // Container directly could invoke Derive (and an app-supplied explicit factory) more than once. Wrapping in a
+        // single-execution Lazy guarantees Derive runs EXACTLY once per cache key even when several threads race the
+        // same miss — only one redundant Lazy wrapper is discarded by the dictionary, never a second Derive.
+        private readonly ConcurrentDictionary<string, Lazy<Container>> _cache = new ConcurrentDictionary<string, Lazy<Container>>(StringComparer.Ordinal);
 
         public CosmosContainerFactory(IServiceProvider serviceProvider)
             => _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
@@ -48,7 +53,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private Container GetOrAdd(string database, string containerName, Func<IServiceProvider, Container> explicitFactory)
         {
             var key = database + "\0" + containerName;
-            return _cache.GetOrAdd(key, _ => Derive(database, containerName, explicitFactory));
+            return _cache.GetOrAdd(
+                key,
+                _ => new Lazy<Container>(() => Derive(database, containerName, explicitFactory), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
         }
 
         private Container Derive(string database, string containerName, Func<IServiceProvider, Container> explicitFactory)

@@ -136,18 +136,27 @@ namespace Microsoft.Extensions.DependencyInjection
             pipelineBuilder.Services.AddIfNotRegistered<CosmosContainerFactory>(
                 ServiceLifetime.Singleton, sp => new CosmosContainerFactory(sp));
 
-            // The scoped document-tier reliability surface holds the per-message handle (one message -> one registration,
-            // so no conflict). Idempotent across calls.
-            pipelineBuilder.Services.AddIfNotRegistered<DocumentTierReliabilitySurface, DocumentTierReliabilitySurface>(ServiceLifetime.Scoped);
-            pipelineBuilder.Services.AddIfNotRegistered<IDocumentTierReliabilitySurface>(
+            // The scoped document-tier reliability surface holds the per-message handle (one message -> one
+            // registration, so no conflict). REPLACE (not AddIfNotRegistered) so the IDocumentTierReliabilitySurface
+            // alias deterministically resolves to the SAME concrete DocumentTierReliabilitySurface the batch-lifecycle
+            // behavior writes the handle onto — a pre-existing alias to a different instance would otherwise leave
+            // CosmosBrokeredMessageOutbox resolving a surface the behavior never populates. Replace re-binds the
+            // identical pair on every call, so it stays idempotent-in-effect across N registrations.
+            pipelineBuilder.Services.Replace<DocumentTierReliabilitySurface, DocumentTierReliabilitySurface>(ServiceLifetime.Scoped);
+            pipelineBuilder.Services.Replace<IDocumentTierReliabilitySurface>(
                 ServiceLifetime.Scoped, sp => sp.GetRequiredService<DocumentTierReliabilitySurface>());
 
             // The Cosmos outbox contributes the outbox-doc create-op to the framework-owned batch via the surface
-            // handle; routing outbound messages through the outbox replaces the default router (precedent: the EF
-            // provider's WithOutboxProcessingBehavior). The Cosmos provider deliberately does NOT implement
-            // IPollableOutboxStore — dispatch is the #222 change-feed relay, not a polling query (ADR-0007).
-            pipelineBuilder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, CosmosBrokeredMessageOutbox>(ServiceLifetime.Scoped);
-            pipelineBuilder.Services.AddIfNotRegistered<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
+            // handle; routing outbound messages through the outbox replaces the default router. REPLACE (not
+            // AddIfNotRegistered) is REQUIRED: AddMessageBrokers ALWAYS pre-registers a default IBrokeredMessageOutbox
+            // (InMemoryBrokeredMessageOutbox) and a default IRouteBrokeredMessages, so AddIfNotRegistered would be a
+            // silent no-op and SendToOutbox would bind the wrong (non-Cosmos) outbox/router — breaking the
+            // framework-owned-batch contract. This mirrors the EF provider's WithOutboxProcessingBehavior, which
+            // Replaces both for the same reason. The Cosmos provider deliberately does NOT implement
+            // IPollableOutboxStore — dispatch is the #222 change-feed relay, not a polling query (ADR-0007). Replace
+            // stays idempotent-in-effect across N calls.
+            pipelineBuilder.Services.Replace<IBrokeredMessageOutbox, CosmosBrokeredMessageOutbox>(ServiceLifetime.Scoped);
+            pipelineBuilder.Services.Replace<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
 
             // OUTERMOST: register the open-generic behavior EXACTLY ONCE (first WithBehavior = outermost via the
             // CommandBehaviorPipeline reverse). Only the per-type registration above is additive.
