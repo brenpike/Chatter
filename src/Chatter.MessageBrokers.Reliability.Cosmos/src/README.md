@@ -2,7 +2,7 @@
 
 Document-tier (NoSQL) reliability for [Chatter.MessageBrokers](#chatter-messagebrokers), backed by Azure Cosmos DB.
 
-> **Status — #218 skeleton.** This release ships the provider **skeleton** only: the package, DI surface, document-tier reliability surface (atomic-write handle), partition-key resolver, and the Document-Tier Batch-Lifecycle Behavior **shell**. The outbox enqueue behavior, inbox dedup marker, and the change-feed relay are **not yet implemented** — they arrive in #219 (outbox), #220 (inbox), and #222 (relay). The behavior shell opens and (when ops are staged) executes a `TransactionalBatch`, but contributes no outbox or inbox ops of its own yet.
+> **Status — 0.2.0 (unreleased).** Outbox enqueue (#219) is implemented: the provider stages the co-resident outbox document onto the framework-owned `TransactionalBatch` atomically with the handler's own aggregate write. Inbox dedup (#220) and the change-feed relay (#222) are **not yet implemented**.
 
 ## Overview
 
@@ -10,7 +10,7 @@ Document-tier (NoSQL) reliability for [Chatter.MessageBrokers](#chatter-messageb
 
 The two tiers share **only** the abstract enqueue / inbox / message contracts — not the EF-shaped `TransactionContext` / `InboxBehavior` mechanics. The document tier carries its document-store primitives (resolved partition key, bound container, batch handle, ETag) on its own provider-shaped **document-tier reliability surface**.
 
-See [ADR-0006](../../docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md) and [ADR-0007](../../docs/adr/0007-cosmos-outbox-co-resident-change-feed-relay.md) for the design.
+See [ADR-0006](../../docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md), [ADR-0007](../../docs/adr/0007-cosmos-outbox-co-resident-change-feed-relay.md), and [ADR-0008](../../docs/adr/0008-document-tier-participation-model-and-multi-container-via-per-command-container-registry.md) for the design.
 
 ## Installation
 
@@ -22,42 +22,69 @@ The package targets `net8.0` and `net10.0` and pulls in `Microsoft.Azure.Cosmos`
 
 ## Getting Started
 
-Registration happens against the **command pipeline builder**, which Chatter exposes through the `pipeline` action on `AddChatterCqrs(...)`. The provider **creates no container** — your application injects its document (aggregate) container and the change-feed lease container, plus a partition-key resolver and the container's partition-key path.
+Registration happens against the **command pipeline builder**, which Chatter exposes through the `pipeline` action on `AddChatterCqrs(...)`. Call `WithCosmosDocumentReliability<TCommand>(...)` once per participating command type — each call adds one entry to the singleton `DocumentReliabilityRegistry`.
+
+**Participation = having a registration.** The registry is a positive allowlist: a command type with a registration engages the document-tier behavior (partition-key resolution, batch open, outbox enqueue). A command type **without** a registration bypasses the document tier entirely — no resolver is called, no batch is opened, and the handler passes through untouched. This answers "does it run for every handler?" — **no**, only for commands you explicitly register.
+
+**The app owns the `CosmosClient`.** Register a `CosmosClient` singleton in your DI container before calling `AddChatterCqrs`. The provider resolves it from DI and derives `Container` handles via `client.GetContainer(database, container)` — it never creates or provisions containers.
 
 ```csharp
 public void ConfigureServices(IServiceCollection services)
 {
-    // Your application owns the CosmosClient and the containers.
-    var cosmosClient = new CosmosClient(Configuration.GetConnectionString("Cosmos"));
-    Container documentContainer = cosmosClient.GetContainer("app-db", "aggregates");
-    Container leaseContainer = cosmosClient.GetContainer("app-db", "leases");
+    // App owns the CosmosClient — expensive, thread-safe, one per app.
+    services.AddSingleton(new CosmosClient(Configuration.GetConnectionString("Cosmos")));
 
     services.AddChatterCqrs(Configuration, pipeline =>
             {
-                pipeline.WithCosmosDocumentReliability(
-                    documentContainer,
-                    leaseContainer,
-                    // Map the inbound message to its aggregate partition key.
-                    inbound => new PartitionKey(inbound.CorrelationId),
-                    // The container's partition-key path.
-                    "/tenantId");
+                // Register each participating command type with its own database/container/lease.
+                pipeline
+                    .WithCosmosDocumentReliability<CreateOrder>(
+                        database: "shop",
+                        container: "orders",
+                        lease: "orders-leases",
+                        resolver: cmd => new PartitionKey(cmd.OrderId),
+                        "/orderId")
+                    .WithCosmosDocumentReliability<PostLedgerEntry>(
+                        database: "fin",
+                        container: "ledger",
+                        lease: "ledger-leases",
+                        resolver: cmd => new PartitionKey(cmd.AccountId),
+                        "/accountId");
             })
             .AddMessageBrokers(/* message broker options */);
 }
 ```
 
-A factory overload accepts `Func<IServiceProvider, Container>` for both containers when they are resolved from the service provider.
-
-The Document-Tier Batch-Lifecycle Behavior is registered as the **outermost** pipeline behavior. It resolves the partition key, opens the `TransactionalBatch`, exposes the atomic-write handle on the document-tier reliability surface for the duration of the handler, and then executes the batch once — **only if** an op was staged (an empty batch never calls the Cosmos transport).
+The Document-Tier Batch-Lifecycle Behavior is registered as the **outermost** pipeline behavior. For each registered command it resolves the partition key, opens the `TransactionalBatch` on the registration's container, exposes the atomic-write handle on the document-tier reliability surface for the duration of the handler, and then executes the batch once — **only if** an op was staged (an empty batch never calls the Cosmos transport).
 
 ### Prerequisites
 
-- **Container injection.** The application owns and supplies both containers; the provider never creates one.
-- **Partition-key resolver.** The resolver is application-supplied — only the application knows how a message maps to its aggregate partition. The single-partition constraint applies: a message must map to exactly one aggregate partition.
-- **Container TTL enabled (for delivered-doc purge).** Post-delivery TTL purge of outbox documents (coming in #222) requires the application's container to have TTL enabled (`defaultTtl` set, e.g. `-1`). This is a documented application prerequisite, not automatic.
+- **App-registered `CosmosClient`.** The application registers a `CosmosClient` singleton in DI; the provider derives container handles from it and owns no client. A missing `CosmosClient` throws at resolution time.
+- **Partition-key resolver.** The resolver is application-supplied — only the application knows how a message maps to its aggregate partition. Each registration carries its own resolver; it is only invoked for that command type. A `null` return means "no resolvable partition for this message" — the behavior opens no batch and passes through to `next()`.
+- **Container TTL enabled (for outbox-doc purge).** Post-delivery TTL purge of outbox documents (arriving with the #222 relay) requires the application's container to have TTL enabled (`defaultTtl` set, e.g. `-1`). This is a documented application prerequisite, not automatic.
+
+## Multi-Container Support
+
+Each `WithCosmosDocumentReliability<TCommand>` registration is independent: different command types can map to different Cosmos databases and containers. Many command types may map to the same container, but exactly **one** registration exists per command type — a duplicate registration for the same type throws with a clear message naming the type.
+
+Container handles are derived and cached by the singleton `CosmosContainerFactory` (keyed by `(database, container)`) so concurrent in-flight command types resolve their containers without duplicate derivation.
+
+## Advanced: Per-Registration Container Factories
+
+For applications that resolve or construct containers from the service provider themselves, an overload accepts `Func<IServiceProvider, Container>` for both the document and lease containers:
+
+```csharp
+pipeline.WithCosmosDocumentReliability<CreateOrder>(
+    documentContainerFactory: sp => sp.GetRequiredService<MyContainerProvider>().GetOrdersContainer(),
+    leaseContainerFactory:    sp => sp.GetRequiredService<MyContainerProvider>().GetOrdersLeaseContainer(),
+    resolver: cmd => new PartitionKey(cmd.OrderId),
+    "/orderId");
+```
+
+These factories bypass `client.GetContainer` derivation. Use this when the `Container` handle is already managed elsewhere in your DI graph.
 
 ## Domain Language
 
-See [CONTEXT.md](../../Chatter.MessageBrokers/CONTEXT.md) for the domain glossary (Document Tier, Document-Tier Batch-Lifecycle Behavior, Atomic-Write Handle, Partition-Key Resolver, Co-Resident Outbox / Inbox Marker, Outbox Relay).
+See [CONTEXT.md](../../Chatter.MessageBrokers/CONTEXT.md) for the domain glossary (Document Tier, Document-Tier Batch-Lifecycle Behavior, Atomic-Write Handle, Partition-Key Resolver, Co-Resident Outbox / Inbox Marker, Outbox Relay, Participation).
 
 [← All Chatter modules](../../../README.md)
