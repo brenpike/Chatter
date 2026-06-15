@@ -255,6 +255,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
 
             (await act.Should().ThrowAsync<CosmosBatchExecutionException>())
                 .Which.StatusCode.Should().Be(HttpStatusCode.PreconditionFailed);
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Never, "a non-success batch with no marker-409 never triggers the confirmation read (cold-path-only)");
         }
 
         [Fact]

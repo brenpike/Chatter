@@ -55,8 +55,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         }
 
         // Builds a container whose CreateTransactionalBatch returns a batch that captures each staged CreateItemStream
-        // payload (so the marker can be asserted at op index 0) and returns the configured execute response.
-        private static (Mock<Container> container, Mock<TransactionalBatch> batch, List<Stream> staged) MockContainer(TransactionalBatchResponse executeResponse)
+        // payload (so the marker can be asserted at op index 0) and returns the configured execute response. When
+        // confirmationRead is supplied it stubs Container.ReadItemStreamAsync (the cold-path duplicate-confirmation
+        // point-read on the marker-409 branch) to return it; otherwise the read is left unstubbed so any test that does
+        // NOT expect a confirmation read fails loudly if the behavior reads.
+        private static (Mock<Container> container, Mock<TransactionalBatch> batch, List<Stream> staged) MockContainer(
+            TransactionalBatchResponse executeResponse, ResponseMessage confirmationRead = null)
         {
             var staged = new List<Stream>();
             var batch = new Mock<TransactionalBatch>();
@@ -70,7 +74,45 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
 
             var container = new Mock<Container>();
             container.Setup(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>())).Returns(batch.Object);
+            if (confirmationRead is not null)
+            {
+                container.Setup(c => c.ReadItemStreamAsync(
+                        It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(confirmationRead);
+            }
             return (container, batch, staged);
+        }
+
+        // A successful point-read whose body is a genuine Chatter inbox marker for messageId (matches the real
+        // serialized field names: "_chatterType":"inbox","MessageId":...). Confirms the duplicate -> swallow.
+        private static ResponseMessage ConfirmedMarkerRead(string messageId)
+            => ReadResponse(HttpStatusCode.OK, $"{{\"_chatterType\":\"inbox\",\"MessageId\":\"{messageId}\",\"ReceivedAtUtc\":\"2026-06-15T00:00:00Z\"}}");
+
+        // A successful point-read whose body is an app document, NOT a Chatter inbox marker -> not confirmed -> redeliver.
+        private static ResponseMessage NonMarkerAppDocRead()
+            => ReadResponse(HttpStatusCode.OK, "{\"_chatterType\":\"order\",\"id\":\"inbox:forged\",\"value\":1}");
+
+        // A successful point-read with the inbox discriminator forged but a DIFFERENT MessageId -> not confirmed for this
+        // identity -> redeliver.
+        private static ResponseMessage ForgedDiscriminatorMismatchedMessageIdRead(string expectedMessageId)
+            => ReadResponse(HttpStatusCode.OK, $"{{\"_chatterType\":\"inbox\",\"MessageId\":\"{expectedMessageId}-other\"}}");
+
+        // A NOT-FOUND point-read (TTL/delete race removed the conflicting doc) -> non-confirmable -> redeliver.
+        private static ResponseMessage NotFoundRead()
+            => ReadResponse(HttpStatusCode.NotFound, string.Empty);
+
+        // A non-success point-read (e.g. transient 503) -> cannot confirm -> redeliver.
+        private static ResponseMessage NonSuccessRead()
+            => ReadResponse(HttpStatusCode.ServiceUnavailable, string.Empty);
+
+        private static ResponseMessage ReadResponse(HttpStatusCode statusCode, string json)
+        {
+            var response = new ResponseMessage(statusCode);
+            if (!string.IsNullOrEmpty(json))
+            {
+                response.Content = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json), writable: false);
+            }
+            return response;
         }
 
         private static CosmosContainerFactory FactoryFor(string database, string container, Container resolved)
@@ -132,9 +174,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         [Fact]
         public async Task MustSwallowMarkerOpConflictAsConfirmedDuplicateWithoutThrowing()
         {
-            // Marker op (index 0) is a 409 Conflict: the marker already exists in this partition -> confirmed duplicate.
-            // The all-or-nothing batch failed (nothing committed) and the message is acked: no throw, no redeliver.
-            var (container, batch, _) = MockContainer(FailureResponse(HttpStatusCode.Conflict, HttpStatusCode.Conflict));
+            // Marker op (index 0) is a 409 Conflict: a candidate duplicate. The behavior CONFIRMS it by point-reading
+            // the conflicting doc, which is a genuine Chatter inbox marker for msg-1 -> confirmed duplicate. The
+            // all-or-nothing batch failed (nothing committed) and the message is acked: no throw, no redeliver.
+            var (container, batch, _) = MockContainer(
+                FailureResponse(HttpStatusCode.Conflict, HttpStatusCode.Conflict), ConfirmedMarkerRead("msg-1"));
             var registry = new DocumentReliabilityRegistry();
             registry.Add(Registration<RegisteredCommand>("shop", "orders", _ => new PartitionKey("tenant-1"), "/tenantId"));
             var factory = FactoryFor("shop", "orders", container.Object);
@@ -143,8 +187,99 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
 
             Func<Task> act = () => behavior.Handle(new RegisteredCommand(), ContextWithMessageId("msg-1"), () => Task.CompletedTask);
 
-            await act.Should().NotThrowAsync("a 409 on the marker op is a confirmed duplicate -> ack, do not redeliver");
+            await act.Should().NotThrowAsync("a marker-409 confirmed against the conflicting doc is a duplicate -> ack, do not redeliver");
             batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Once, "the marker-only batch must execute to surface the 409");
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once, "the marker-409 is confirmed by point-reading the conflicting doc");
+        }
+
+        [Fact]
+        public async Task MustThrowWhenMarkerConflictConfirmationReadsNonMarkerAppDoc()
+        {
+            // Marker op 409, but the conflicting doc is an app document — NOT a Chatter inbox marker (the app owns the
+            // container and can author a reserved-prefix id through a non-staging path). The 409 is NOT confirmed as a
+            // duplicate -> throw so the colliding message's first delivery is redelivered, never silently lost.
+            var (container, _, _) = MockContainer(
+                FailureResponse(HttpStatusCode.Conflict, HttpStatusCode.Conflict), NonMarkerAppDocRead());
+            var registry = new DocumentReliabilityRegistry();
+            registry.Add(Registration<RegisteredCommand>("shop", "orders", _ => new PartitionKey("tenant-1"), "/tenantId"));
+            var factory = FactoryFor("shop", "orders", container.Object);
+            var surface = new DocumentTierReliabilitySurface();
+            var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
+
+            Func<Task> act = () => behavior.Handle(new RegisteredCommand(), ContextWithMessageId("msg-1"), () => Task.CompletedTask);
+
+            await act.Should().ThrowAsync<CosmosBatchExecutionException>(
+                "an app-authored reserved-prefix collision is not a confirmed marker and must redeliver");
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once, "the marker-409 triggers a confirmation point-read");
+        }
+
+        [Fact]
+        public async Task MustThrowWhenMarkerConflictConfirmationReadsForgedDiscriminatorButMismatchedMessageId()
+        {
+            // Marker op 409, conflicting doc forges _chatterType="inbox" but carries a DIFFERENT MessageId. Confirming
+            // the discriminator alone is insufficient — the MessageId must also match the inbound identity, else it is
+            // not this message's marker -> throw (redeliver).
+            var (container, _, _) = MockContainer(
+                FailureResponse(HttpStatusCode.Conflict, HttpStatusCode.Conflict), ForgedDiscriminatorMismatchedMessageIdRead("msg-1"));
+            var registry = new DocumentReliabilityRegistry();
+            registry.Add(Registration<RegisteredCommand>("shop", "orders", _ => new PartitionKey("tenant-1"), "/tenantId"));
+            var factory = FactoryFor("shop", "orders", container.Object);
+            var surface = new DocumentTierReliabilitySurface();
+            var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
+
+            Func<Task> act = () => behavior.Handle(new RegisteredCommand(), ContextWithMessageId("msg-1"), () => Task.CompletedTask);
+
+            await act.Should().ThrowAsync<CosmosBatchExecutionException>(
+                "a forged inbox discriminator with a mismatched MessageId is not a confirmed marker for this identity");
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task MustThrowWhenMarkerConflictConfirmationReadIsNotFound()
+        {
+            // Marker op 409, but the confirmation point-read is NOT-FOUND — a TTL/delete race removed the conflicting
+            // doc between the failed create and the read. The duplicate is non-confirmable -> throw (redeliver).
+            var (container, _, _) = MockContainer(
+                FailureResponse(HttpStatusCode.Conflict, HttpStatusCode.Conflict), NotFoundRead());
+            var registry = new DocumentReliabilityRegistry();
+            registry.Add(Registration<RegisteredCommand>("shop", "orders", _ => new PartitionKey("tenant-1"), "/tenantId"));
+            var factory = FactoryFor("shop", "orders", container.Object);
+            var surface = new DocumentTierReliabilitySurface();
+            var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
+
+            Func<Task> act = () => behavior.Handle(new RegisteredCommand(), ContextWithMessageId("msg-1"), () => Task.CompletedTask);
+
+            await act.Should().ThrowAsync<CosmosBatchExecutionException>("a NOT-FOUND confirmation read cannot confirm a duplicate -> redeliver");
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task MustThrowWhenMarkerConflictConfirmationReadIsNonSuccess()
+        {
+            // Marker op 409, but the confirmation point-read is a non-success (e.g. transient 503). The duplicate cannot
+            // be confirmed -> throw (redeliver).
+            var (container, _, _) = MockContainer(
+                FailureResponse(HttpStatusCode.Conflict, HttpStatusCode.Conflict), NonSuccessRead());
+            var registry = new DocumentReliabilityRegistry();
+            registry.Add(Registration<RegisteredCommand>("shop", "orders", _ => new PartitionKey("tenant-1"), "/tenantId"));
+            var factory = FactoryFor("shop", "orders", container.Object);
+            var surface = new DocumentTierReliabilitySurface();
+            var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
+
+            Func<Task> act = () => behavior.Handle(new RegisteredCommand(), ContextWithMessageId("msg-1"), () => Task.CompletedTask);
+
+            await act.Should().ThrowAsync<CosmosBatchExecutionException>("a non-success confirmation read cannot confirm a duplicate -> redeliver");
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once);
         }
 
         [Fact]
@@ -171,6 +306,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
 
             (await act.Should().ThrowAsync<CosmosBatchExecutionException>())
                 .Which.StatusCode.Should().Be(HttpStatusCode.PreconditionFailed);
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Never, "the marker op is 424 not 409, so the confirmation read never runs (cold-path-only)");
         }
 
         [Fact]
@@ -195,6 +333,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             });
 
             await act.Should().ThrowAsync<CosmosBatchExecutionException>("an aggregate-op 409 is not the marker-op 409 and must redeliver");
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Never, "the marker op is 424 not 409, so the confirmation read never runs (cold-path-only)");
         }
 
         [Fact]
@@ -275,8 +416,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         public async Task MustSwallowMarkerOnlyBatchDuplicateWhenNoHandlerOpStaged()
         {
             // A marker-only batch (handler stages nothing) still has StagedOperationCount > 0, so it executes; a marker
-            // 409 is a confirmed duplicate and is swallowed.
-            var (container, batch, staged) = MockContainer(FailureResponse(HttpStatusCode.Conflict, HttpStatusCode.Conflict));
+            // 409 confirmed against the conflicting doc is a duplicate and is swallowed.
+            var (container, batch, staged) = MockContainer(
+                FailureResponse(HttpStatusCode.Conflict, HttpStatusCode.Conflict), ConfirmedMarkerRead("msg-1"));
             var registry = new DocumentReliabilityRegistry();
             registry.Add(Registration<RegisteredCommand>("shop", "orders", _ => new PartitionKey("tenant-1"), "/tenantId"));
             var factory = FactoryFor("shop", "orders", container.Object);
@@ -288,6 +430,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             await act.Should().NotThrowAsync();
             staged.Should().ContainSingle("the marker is the only staged op");
             batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Once);
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once, "the marker-409 is confirmed by point-reading the conflicting doc");
         }
 
         [Fact]

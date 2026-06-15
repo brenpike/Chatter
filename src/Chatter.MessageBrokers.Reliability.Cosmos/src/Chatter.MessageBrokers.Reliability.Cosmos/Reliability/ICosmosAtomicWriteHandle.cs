@@ -34,9 +34,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <c>inbox:</c>/<c>outbox:</c> prefix — the guard validates the value Cosmos actually persists, not a parameter that
     /// could diverge from it. <see cref="StageReplaceItem{T}"/>/<see cref="StagePatchItem"/> guard their explicit op-key
     /// <c>id</c> (which IS the persisted key) via <see cref="CosmosItemId.GuardNotReserved"/> BEFORE the op is staged
-    /// (parity with the trusted <c>_chatterType</c> reserved field). The guard is what makes the inbox marker-409 →
-    /// confirmed-duplicate inference collision-proof: an app doc could otherwise author a reserved-prefix id, 409 the
-    /// framework's marker create, and be silently swallowed as a duplicate. The framework's OWN reserved-id writes flow
+    /// (parity with the trusted <c>_chatterType</c> reserved field). This guard is DEFENSE-IN-DEPTH on the public
+    /// staging surface; it is NOT the soundness basis for the inbox marker-409 confirmed-duplicate decision. Because the
+    /// app owns the container (it registers the <c>CosmosClient</c> the container is derived from, and
+    /// <see cref="Container"/> exposes the raw container), an app can author a reserved-prefix id through a non-staging
+    /// path this guard cannot close. Soundness instead comes from CONFIRMING the conflicting doc at execute time —
+    /// <c>DocumentTierBatchLifecycleBehavior.InspectBatchResponseAsync</c> point-reads the conflicting marker and treats
+    /// a marker-409 as a duplicate only when the doc is a genuine Chatter inbox marker for that message id; an
+    /// app-authored reserved-prefix collision is detected and redelivered, never swallowed. The framework's OWN
+    /// reserved-id writes flow
     /// through the internal <see cref="ICosmosReservedWriteHandle"/>, which BYPASSES the guard — it is the sole
     /// sanctioned reserved-id writer.
     /// </para>
@@ -52,6 +58,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// <summary>
         /// The application-injected Cosmos container the aggregate, outbox doc, and inbox marker are co-resident in.
         /// </summary>
+        /// <remarks>
+        /// This raw-container exposure is intentionally RETAINED and is NOT a soundness hole. Because the framework now
+        /// CONFIRMS the conflicting doc rather than trusting the reserved namespace, an app that authors a reserved-prefix
+        /// (<c>inbox:</c>/<c>outbox:</c>) doc through this container — or through its own client over the same container —
+        /// is detected and redelivered, never silently swallowed as a duplicate. The behavior also NEEDS this container to
+        /// perform the cold-path confirmation point-read on the marker-409 branch.
+        /// </remarks>
         Container Container { get; }
 
         /// <summary>

@@ -32,13 +32,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// with a reserved <c>"{kind}:"</c> is reserved.
         /// </summary>
         /// <remarks>
-        /// INVARIANT: this predicate is the enforcement that makes the inbox marker-409 → confirmed-duplicate inference
-        /// SOUND. The dedup path infers "a 409 on the marker create means a prior Chatter marker already exists." That
-        /// inference is only collision-proof if Chatter EXCLUSIVELY owns the <c>inbox:</c>/<c>outbox:</c> id namespace —
-        /// otherwise an app aggregate doc authored with a reserved-prefix id would 409 the marker create and be swallowed
-        /// as a duplicate, silently losing the first delivery. By rejecting reserved-prefix ids at staging time on the
-        /// public surface (parity with the already-trusted <c>_chatterType</c> reserved field), the prefix becomes an
-        /// ENFORCED reserved namespace rather than a naming convention, so a marker 409 can ONLY mean a prior marker.
+        /// This predicate backs the reserved-namespace guard on the public staging surface, which is useful
+        /// DEFENSE-IN-DEPTH against an app accidentally authoring a reserved-prefix id through a staging method. It is NO
+        /// LONGER the soundness basis for the inbox marker-409 → confirmed-duplicate decision: the application OWNS the
+        /// container (it registers the <c>CosmosClient</c> the container is derived from, and the atomic-write handle
+        /// exposes the raw container), so an app can author a reserved-prefix id through a non-staging path no staging
+        /// guard can close. Soundness now comes from CONFIRMING the conflicting doc at execute time
+        /// (<c>DocumentTierBatchLifecycleBehavior.InspectBatchResponseAsync</c> point-reads the conflicting marker and
+        /// treats a 409 as a duplicate only when the doc is a genuine Chatter inbox marker for that message id),
+        /// NOT from inferring duplicate from a bare marker-409.
         /// </remarks>
         public static bool IsReserved(string id)
         {
@@ -66,9 +68,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// internal reserved-write path, which are NOT subject to this guard.
         /// </summary>
         /// <remarks>
-        /// INVARIANT: this guard is the enforcement that makes the inbox marker-409 → confirmed-duplicate inference sound
-        /// (see <see cref="IsReserved"/>). It rejects at staging time, consistent with the existing length and
-        /// forbidden-character guards on <see cref="Build"/>.
+        /// This guard is DEFENSE-IN-DEPTH on the public staging surface (see <see cref="IsReserved"/>) — it rejects at
+        /// staging time, consistent with the existing length and forbidden-character guards on <see cref="Build"/>. It
+        /// is NO LONGER the soundness basis for the inbox marker-409 → confirmed-duplicate decision: that soundness now
+        /// comes from CONFIRMING the conflicting doc at execute time, because the app owns the container and can author
+        /// a reserved-prefix id through a non-staging path this guard cannot close.
         /// </remarks>
         public static void GuardNotReserved(string id, string paramName)
         {
@@ -76,8 +80,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             {
                 throw new ArgumentException(
                     $"The item id '{id}' is in the Chatter-reserved id namespace ('{OutboxKind}:'/'{InboxKind}:'). " +
-                    "Application documents must not author reserved-prefix ids; the framework owns this namespace so the " +
-                    "inbox marker-409 confirmed-duplicate inference stays collision-proof.", paramName);
+                    "Application documents must not author reserved-prefix ids through the public staging surface; the " +
+                    "framework owns this namespace (defense-in-depth — the marker-409 duplicate decision is confirmed " +
+                    "against the conflicting doc, not inferred from the reserved namespace).", paramName);
             }
         }
 
