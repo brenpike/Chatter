@@ -258,5 +258,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             plainHost2.DistinctResolvedProcessorDescriptors().Single().ProcessorName
                 .Should().Be(plainProcessorName, "the same ground-truth source identity must yield the identical processor name across hosts");
         }
+
+        // (e) INJECTIVITY REGRESSION (#222, 3rd iteration): two ADVANCED registrations whose declared (monitored, lease)
+        // component pairs are DISTINCT but flatten to the SAME flat \0-joined string — (monitored="a\0b", lease="c") and
+        // (monitored="a", lease="b\0c") both flattened to "declared\0a\0b\0c" under the OLD key — must now yield TWO
+        // descriptors with TWO DISTINCT processor names. The typed component-wise key compares Monitored and Lease
+        // separately, so a delimiter byte inside one component cannot bleed across the component boundary and collapse the
+        // second source (silent non-publish). This is the closed-by-construction structural fix: no representable byte in a
+        // component can spoof a boundary because no boundary byte exists in the equality decision.
+        [Fact]
+        public void MustNotCollapseDeclaredIdentitiesThatFlattenToTheSameDelimiterJoinedString()
+        {
+            Container document = PhysicalContainer("shop", "orders");
+            Container lease = PhysicalContainer("shop", "orders-leases");
+
+            var factory = FactoryWithClient(new Mock<CosmosClient>(MockBehavior.Strict).Object);
+            CosmosOutboxRelayHostedService host = Host(
+                factory,
+                AdvancedRegistration<CreateOrder>("a\0b", "c", document, lease),
+                AdvancedRegistration<ShipOrder>("a", "b\0c", document, lease));
+
+            IReadOnlyList<CosmosOutboxRelayHostedService.RelayProcessorDescriptor> descriptors = host.DistinctResolvedProcessorDescriptors();
+
+            descriptors.Should().HaveCount(2, "distinct declared component pairs that only collide when flattened to a delimiter-joined string must stay distinct under the typed component-wise key");
+            descriptors.Select(descriptor => descriptor.ProcessorName).Distinct().Should().HaveCount(2,
+                "distinct source identities must derive distinct processor names from the injective length-prefixed encoding");
+        }
     }
 }

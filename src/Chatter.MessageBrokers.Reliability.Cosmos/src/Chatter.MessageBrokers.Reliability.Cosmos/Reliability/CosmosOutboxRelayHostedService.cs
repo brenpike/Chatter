@@ -1,8 +1,11 @@
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Hosting;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,40 +27,52 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// by the relay propagates out of the handler so the SDK does NOT checkpoint the batch — the unpublished document
     /// re-surfaces on the next pass (at-least-once) rather than the lease advancing past it.
     /// <para>
-    /// INVARIANT: the fan-out dedup key is DECLARED-OR-GROUND-TRUTH, never INFERRED from an untrusted handle (#222). The
-    /// eliminated class is the inferred-key split/collapse: prior keys read SOME-BUT-NOT-ALL identity dimensions off the
-    /// resolved handle, so a missing dimension could SPLIT one logical source into two processors (double-publish) or two
-    /// distinct sources could COLLAPSE into one (silent non-publish of the skipped source). The key is now sourced two
-    /// ways, each cannot diverge from the thing it dedupes:
+    /// INVARIANT: the fan-out dedup key is DECLARED-OR-GROUND-TRUTH, never INFERRED from an untrusted handle (#222), AND it
+    /// is a TYPED, COMPONENT-WISE-EQUALITY key (<see cref="RelaySourceIdentityKey"/>) — never a flattened string. The
+    /// eliminated class is twofold: (1) the inferred-key split/collapse (prior keys read SOME-BUT-NOT-ALL identity
+    /// dimensions off the resolved handle, so a missing dimension could SPLIT one logical source into two processors or
+    /// COLLAPSE two distinct sources into one); and (2) the SERIALIZATION-collision collapse — a flat delimiter-joined
+    /// string let a delimiter byte INSIDE one component bleed across a component boundary, so distinct component tuples
+    /// (e.g. monitored="a\0b",lease="c" vs monitored="a",lease="b\0c") flattened to the same string and silently collapsed.
+    /// The key now compares each component SEPARATELY (ordinal); there is no boundary byte to abuse because no boundary
+    /// exists. The key is sourced two ways, each cannot diverge from the thing it dedupes:
     /// <list type="bullet">
     /// <item>
     /// ADVANCED PATH (registration carries a <see cref="DocumentReliabilityRegistration.DeclaredSourceIdentity"/>): the
     /// caller controls the resolved handle, so the relay does NOT read the handle's account endpoint or names — it keys on
-    /// the caller-DECLARED <c>(monitored, lease)</c> identity. Same declared identity ⇒ one processor; distinct declared
-    /// identities ⇒ distinct processors, even when the resolved handles look identical.
+    /// the caller-DECLARED <c>(monitored, lease)</c> identity (<see cref="RelaySourceKind.Declared"/>). Same declared
+    /// identity ⇒ one processor; distinct declared identities ⇒ distinct processors, even when the resolved handles look
+    /// identical.
     /// </item>
     /// <item>
     /// PLAIN PATH (declared identity is <c>null</c>): the handle is provider-derived from the app-registered
-    /// <see cref="CosmosClient"/>, so it is GROUND TRUTH. The key is the COMPLETE resolved identity — account ENDPOINT
-    /// plus database id plus container id, for BOTH monitored and lease. Adding the account endpoint to the former
-    /// four-tuple closes the cross-account collapse: identically-named containers in DIFFERENT accounts no longer share a
-    /// key.
+    /// <see cref="CosmosClient"/>, so it is GROUND TRUTH (<see cref="RelaySourceKind.GroundTruth"/>). The key is the
+    /// COMPLETE resolved identity — account ENDPOINT plus database id plus container id, for BOTH monitored and lease.
+    /// Adding the account endpoint to the former four-tuple closes the cross-account collapse: identically-named containers
+    /// in DIFFERENT accounts no longer share a key.
     /// </item>
     /// </list>
-    /// Because the key is declared-or-ground-truth, no missing or misreported dimension can split or collapse it.
+    /// Because the key is declared-or-ground-truth AND component-wise-typed, no missing/misreported dimension and no
+    /// representable byte inside any single component can split or collapse it.
     /// </para>
     /// <para>
-    /// <c>processorName</c> is STABLE per source-identity key (a constant prefix + the complete key) so every application
-    /// instance sharing a source cooperates on the same logical processor and two distinct sources never share a
-    /// <c>processorName</c>; <c>instanceName</c> is UNIQUE per host (machine + a GUID) so co-located instances do not
+    /// <c>processorName</c> is STABLE per source-identity key so every application instance sharing a source cooperates on
+    /// the same logical processor and two distinct sources never share a <c>processorName</c>. It is derived INJECTIVELY
+    /// from the typed key: a canonical LENGTH-PREFIXED encoding (a discriminator tag, then each component IN FIXED ORDER as
+    /// its UTF-8 byte length followed by the UTF-8 bytes — length-prefixing is injective, so distinct component tuples
+    /// produce distinct byte streams with no in-band delimiter to spoof) is SHA-256 hashed and base64url-encoded, prefixed
+    /// with a constant. The hash is over the DETERMINISTIC canonical bytes (not per-process-randomized GetHashCode), so the
+    /// name is stable across runs/instances. The dedup HashSet keys on the TYPED key directly (not the digest), so even a
+    /// hypothetical SHA-256 collision could only make two processorNames coincide (a low-stakes cooperation hint), never
+    /// cause a dedup collapse. <c>instanceName</c> is UNIQUE per host (machine + a GUID) so co-located instances do not
     /// collide on a lease.
     /// </para>
     /// </remarks>
     internal sealed class CosmosOutboxRelayHostedService : IHostedService
     {
-        // Stable processorName prefix; combined with the COMPLETE source-identity key (declared on the advanced path,
-        // ground-truth-derived on the plain path) it yields a deterministic processor identity shared across all app
-        // instances draining the same source.
+        // Stable processorName prefix; combined with an injective SHA-256/base64url digest of the typed source-identity
+        // key's canonical length-prefixed encoding (declared on the advanced path, ground-truth-derived on the plain path)
+        // it yields a deterministic processor identity shared across all app instances draining the same source.
         private const string ProcessorNamePrefix = "chatter-cosmos-outbox-relay";
 
         private readonly DocumentReliabilityRegistry _registry;
@@ -135,38 +150,41 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
         }
 
-        // One descriptor per distinct change-feed SOURCE-IDENTITY key (ADR-0008). The key is DECLARED-OR-GROUND-TRUTH,
-        // never INFERRED from an untrusted handle (#222):
+        // One descriptor per distinct change-feed SOURCE-IDENTITY key (ADR-0008). The key is a TYPED, COMPONENT-WISE
+        // RelaySourceIdentityKey that is DECLARED-OR-GROUND-TRUTH, never INFERRED from an untrusted handle (#222), and
+        // never flattened to a delimiter-joined string:
         //   - ADVANCED PATH (registration carries a DeclaredSourceIdentity): the caller controls the resolved handle, so
         //     the relay does NOT read .Endpoint / ids off it — it keys on the caller-declared (monitored, lease) identity.
         //   - PLAIN PATH (declared identity null): the handle is provider-derived from the app CosmosClient (ground
-        //     truth), so the key is the COMPLETE resolved identity: account endpoint + database id + container id, for
+        //     truth), so the key carries the COMPLETE resolved identity: account endpoint + database id + container id, for
         //     BOTH monitored and lease. The account endpoint is added to the former four-tuple so identically-named
         //     containers in DIFFERENT accounts no longer collapse.
-        // Each registration is resolved first (monitored + lease handles via the factory), then deduped on its key. The
-        // first registration seen for a key wins and supplies the resolved handles + partition-key path; subsequent
-        // registrations resolving to the same key are skipped (no duplicate processor on the same source). processorName
-        // is derived from the SAME complete key so all app instances sharing a source cooperate on one logical processor
-        // and two distinct sources never share a processorName. internal (not private) so the resolve-then-dedup is
-        // unit-testable without the live SDK change-feed plumbing; the assembly exposes internals to the test project.
+        // Each registration is resolved first (monitored + lease handles via the factory), then deduped on its TYPED key
+        // (component-wise value equality, ordinal strings — a delimiter byte inside one component cannot bleed across a
+        // component boundary because no boundary byte exists). The first registration seen for a key wins and supplies the
+        // resolved handles + partition-key path; subsequent registrations resolving to the same key are skipped (no
+        // duplicate processor on the same source). processorName is derived INJECTIVELY from the SAME typed key so all app
+        // instances sharing a source cooperate on one logical processor and two distinct sources never share a
+        // processorName. internal (not private) so the resolve-then-dedup is unit-testable without the live SDK change-feed
+        // plumbing; the assembly exposes internals to the test project.
         internal IReadOnlyList<RelayProcessorDescriptor> DistinctResolvedProcessorDescriptors()
         {
             var descriptors = new List<RelayProcessorDescriptor>();
-            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var seen = new HashSet<RelaySourceIdentityKey>();
 
             foreach (DocumentReliabilityRegistration registration in _registry.Registrations)
             {
                 Container monitoredContainer = _containerFactory.GetDocumentContainer(registration);
                 Container leaseContainer = _containerFactory.GetLeaseContainer(registration);
 
-                string sourceIdentityKey = BuildSourceIdentityKey(registration, monitoredContainer, leaseContainer);
+                RelaySourceIdentityKey sourceIdentityKey = BuildSourceIdentityKey(registration, monitoredContainer, leaseContainer);
                 if (!seen.Add(sourceIdentityKey))
                 {
                     continue;
                 }
 
                 descriptors.Add(new RelayProcessorDescriptor(
-                    $"{ProcessorNamePrefix}:{sourceIdentityKey}",
+                    BuildProcessorName(sourceIdentityKey),
                     monitoredContainer,
                     leaseContainer,
                     registration.PartitionKeyPath));
@@ -175,28 +193,151 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return descriptors;
         }
 
-        // Builds the COMPLETE source-identity dedup key. On the advanced path the relay MUST NOT read .Endpoint or ids off
-        // the (untrusted, caller-controlled) handle — it uses the caller-declared identity. On the plain path the handle is
-        // provider-derived ground truth, so the key is account endpoint + database id + container id for both monitored and
-        // lease. The endpoint Uri is normalized to AbsoluteUri (ordinal) so a trailing-slash or host-case difference does
-        // not spuriously split one account into two keys. Joined with "\0" and compared under StringComparer.Ordinal.
-        private static string BuildSourceIdentityKey(DocumentReliabilityRegistration registration,
-                                                     Container monitoredContainer,
-                                                     Container leaseContainer)
+        // Builds the COMPLETE, TYPED source-identity dedup key. On the advanced path the relay MUST NOT read .Endpoint or
+        // ids off the (untrusted, caller-controlled) handle — it uses the caller-declared identity. On the plain path the
+        // handle is provider-derived ground truth, so the key carries account endpoint + database id + container id for both
+        // monitored and lease. The endpoint Uri is normalized to AbsoluteUri (ordinal) so a trailing-slash or host-case
+        // difference does not spuriously split one account into two keys. The key's equality is component-wise (ordinal);
+        // components are NEVER concatenated for the equality decision.
+        private static RelaySourceIdentityKey BuildSourceIdentityKey(DocumentReliabilityRegistration registration,
+                                                                     Container monitoredContainer,
+                                                                     Container leaseContainer)
         {
             if (registration.DeclaredSourceIdentity is CosmosSourceIdentity declared)
             {
-                return "declared\0" + declared.Monitored + "\0" + declared.Lease;
+                return RelaySourceIdentityKey.ForDeclared(declared.Monitored, declared.Lease);
             }
 
-            return "ground-truth\0"
-                + NormalizeEndpoint(monitoredContainer.Database.Client.Endpoint) + "\0"
-                + monitoredContainer.Database.Id + "\0" + monitoredContainer.Id + "\0"
-                + NormalizeEndpoint(leaseContainer.Database.Client.Endpoint) + "\0"
-                + leaseContainer.Database.Id + "\0" + leaseContainer.Id;
+            return RelaySourceIdentityKey.ForGroundTruth(
+                NormalizeEndpoint(monitoredContainer.Database.Client.Endpoint),
+                monitoredContainer.Database.Id,
+                monitoredContainer.Id,
+                NormalizeEndpoint(leaseContainer.Database.Client.Endpoint),
+                leaseContainer.Database.Id,
+                leaseContainer.Id);
+        }
+
+        // Derives a STABLE, injective processorName string from the typed key. The key's components are emitted in FIXED
+        // order as a length-prefixed UTF-8 byte stream (discriminator tag, then per component: Int32 byte length + UTF-8
+        // bytes). Length-prefixing is injective — distinct component tuples produce distinct byte streams, with no in-band
+        // delimiter a component value could spoof. The canonical bytes are SHA-256 hashed and base64url-encoded (URL- and
+        // identifier-safe), so the name is deterministic across runs/instances (unlike per-process-randomized GetHashCode).
+        private static string BuildProcessorName(RelaySourceIdentityKey key)
+        {
+            byte[] canonical = key.ToCanonicalBytes();
+            byte[] digest = SHA256.HashData(canonical);
+            string base64url = Convert.ToBase64String(digest)
+                .Replace('+', '-')
+                .Replace('/', '_')
+                .TrimEnd('=');
+            return $"{ProcessorNamePrefix}:{base64url}";
         }
 
         private static string NormalizeEndpoint(Uri endpoint) => endpoint?.AbsoluteUri ?? string.Empty;
+
+        // Path discriminator for the typed source-identity key. Replaces the former "declared" / "ground-truth" string
+        // prefix that was concatenated into the flat key.
+        internal enum RelaySourceKind
+        {
+            Declared,
+            GroundTruth
+        }
+
+        // The TYPED, COMPONENT-WISE source-identity dedup key (#222). Equality is value-based and per-component (ordinal
+        // for every string via the readonly record struct's compiler-generated equality) — components are NEVER flattened
+        // into one delimiter-joined string for the equality decision, so a delimiter (or any) byte inside one component
+        // cannot bleed across a component boundary and collapse two distinct sources. Unused components for the active path
+        // are empty string. ToCanonicalBytes() produces the deterministic length-prefixed encoding used to derive a stable,
+        // injective processorName (the dedup HashSet itself keys on this typed value, never on the digest).
+        internal readonly record struct RelaySourceIdentityKey
+        {
+            private RelaySourceIdentityKey(RelaySourceKind kind,
+                                           string monitored,
+                                           string lease,
+                                           string monitoredEndpoint,
+                                           string monitoredDb,
+                                           string monitoredContainer,
+                                           string leaseEndpoint,
+                                           string leaseDb,
+                                           string leaseContainer)
+            {
+                Kind = kind;
+                Monitored = monitored;
+                Lease = lease;
+                MonitoredEndpoint = monitoredEndpoint;
+                MonitoredDb = monitoredDb;
+                MonitoredContainer = monitoredContainer;
+                LeaseEndpoint = leaseEndpoint;
+                LeaseDb = leaseDb;
+                LeaseContainer = leaseContainer;
+            }
+
+            public RelaySourceKind Kind { get; }
+
+            // Declared-path components (opaque caller-declared tokens); empty on the ground-truth path.
+            public string Monitored { get; }
+            public string Lease { get; }
+
+            // Ground-truth-path components (resolved account endpoint + database id + container id, monitored and lease);
+            // empty on the declared path.
+            public string MonitoredEndpoint { get; }
+            public string MonitoredDb { get; }
+            public string MonitoredContainer { get; }
+            public string LeaseEndpoint { get; }
+            public string LeaseDb { get; }
+            public string LeaseContainer { get; }
+
+            public static RelaySourceIdentityKey ForDeclared(string monitored, string lease)
+                => new RelaySourceIdentityKey(
+                    RelaySourceKind.Declared,
+                    monitored ?? string.Empty,
+                    lease ?? string.Empty,
+                    string.Empty, string.Empty, string.Empty,
+                    string.Empty, string.Empty, string.Empty);
+
+            public static RelaySourceIdentityKey ForGroundTruth(string monitoredEndpoint,
+                                                                string monitoredDb,
+                                                                string monitoredContainer,
+                                                                string leaseEndpoint,
+                                                                string leaseDb,
+                                                                string leaseContainer)
+                => new RelaySourceIdentityKey(
+                    RelaySourceKind.GroundTruth,
+                    string.Empty, string.Empty,
+                    monitoredEndpoint ?? string.Empty,
+                    monitoredDb ?? string.Empty,
+                    monitoredContainer ?? string.Empty,
+                    leaseEndpoint ?? string.Empty,
+                    leaseDb ?? string.Empty,
+                    leaseContainer ?? string.Empty);
+
+            // Deterministic, INJECTIVE canonical encoding: a discriminator tag byte, then every component IN FIXED ORDER as
+            // its UTF-8 byte length (Int32) followed by the UTF-8 bytes. Length-prefixing is injective, so distinct
+            // component tuples produce distinct byte streams and there is no in-band delimiter a component value could spoof.
+            public byte[] ToCanonicalBytes()
+            {
+                using var buffer = new MemoryStream();
+                buffer.WriteByte((byte)Kind);
+                WriteComponent(buffer, Monitored);
+                WriteComponent(buffer, Lease);
+                WriteComponent(buffer, MonitoredEndpoint);
+                WriteComponent(buffer, MonitoredDb);
+                WriteComponent(buffer, MonitoredContainer);
+                WriteComponent(buffer, LeaseEndpoint);
+                WriteComponent(buffer, LeaseDb);
+                WriteComponent(buffer, LeaseContainer);
+                return buffer.ToArray();
+            }
+
+            private static void WriteComponent(Stream destination, string component)
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(component ?? string.Empty);
+                Span<byte> length = stackalloc byte[sizeof(int)];
+                BinaryPrimitives.WriteInt32LittleEndian(length, bytes.Length);
+                destination.Write(length);
+                destination.Write(bytes, 0, bytes.Length);
+            }
+        }
 
         internal readonly struct RelayProcessorDescriptor
         {
