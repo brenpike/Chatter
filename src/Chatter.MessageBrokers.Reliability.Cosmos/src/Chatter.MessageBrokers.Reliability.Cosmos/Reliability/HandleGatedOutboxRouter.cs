@@ -19,11 +19,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// Closed-by-construction: the gate key is the surface's active atomic-write handle, which is set ONLY inside a
     /// participant's open batch scope (and cleared in the behavior's <c>finally</c>). When the handle is null — every
     /// non-participant dispatch, and every dispatch after a participant's batch scope closes — routing delegates to the
-    /// core-registered default router, exactly as if Cosmos were not installed. So a non-participant dispatch can never
-    /// reach the Cosmos outbox's null-handle requirement: the malformed "non-participant routes to the Cosmos outbox"
-    /// class is unrepresentable, not merely unobserved (#238, ADR-0008). The <see cref="CosmosBrokeredMessageOutbox"/>
-    /// null-handle throw is left intact as a hard wiring-error guard; this decorator ensures non-participants never reach
-    /// it.
+    /// inner default arm, which the Cosmos DI registration constructs DIRECTLY over the always-registered
+    /// <c>IMessagingInfrastructureProvider</c> (a plain broker router), exactly as if Cosmos were not installed. Because
+    /// the inner default never depends on the Cosmos outbox, a non-participant dispatch can never reach the Cosmos
+    /// outbox's null-handle requirement regardless of registration order: the malformed "non-participant routes to the
+    /// Cosmos outbox" class is unrepresentable, not merely unobserved (#238, ADR-0008). The
+    /// <see cref="CosmosBrokeredMessageOutbox"/> null-handle throw is left intact as a hard wiring-error guard; this
+    /// decorator ensures non-participants never reach it.
     /// </remarks>
     internal sealed class HandleGatedOutboxRouter : IRouteBrokeredMessages
     {
@@ -51,16 +53,5 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // (or a dispatch after the batch scope closed) — route through the core default, never the Cosmos outbox.
         private IRouteBrokeredMessages SelectRouter()
             => _surface.CurrentHandle is null ? _innerDefaultRouter : _cosmosOutboxRouter;
-    }
-
-    /// <summary>
-    /// Idempotency sentinel for the <see cref="HandleGatedOutboxRouter"/> wiring. The decorator is registered through the
-    /// factory <c>Replace</c> overload, so its descriptor's <c>ImplementationType</c> is null and cannot be matched
-    /// directly; this marker is registered exactly once on the first wrap so a second
-    /// <c>WithCosmosDocumentReliability&lt;T&gt;</c> call recognizes the decorator is already in place and never
-    /// double-wraps it. This mirrors the once-only batch-lifecycle behavior guard, which keys on descriptor presence.
-    /// </summary>
-    internal sealed class HandleGatedRouterMarker
-    {
     }
 }

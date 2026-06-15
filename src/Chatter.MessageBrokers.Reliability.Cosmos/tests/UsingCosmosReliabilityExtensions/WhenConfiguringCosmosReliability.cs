@@ -1,5 +1,8 @@
 using Chatter.CQRS.Commands;
+using Chatter.CQRS.DependencyInjection;
 using Chatter.CQRS.Pipeline;
+using Chatter.MessageBrokers.Configuration;
+using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Reliability.Cosmos;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
@@ -43,17 +46,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
                 lease: "orders-leases",
                 resolver: _ => new PartitionKey("pk"),
                 "/tenantId"));
-
-        // The CaptureBuilder seam runs AddChatterCqrs only — it does NOT run AddMessageBrokers, which is what registers
-        // the core default IRouteBrokeredMessages. The Cosmos extension DECORATES that core default, so tests that
-        // exercise the capture/decorate path seed a stand-in core default router first, exactly as AddMessageBrokers
-        // would have. The stand-in is a Moq instance so the inner-default identity is assertable.
-        private static IRouteBrokeredMessages SeedCoreDefaultRouter(CommandPipelineBuilder builder)
-        {
-            var coreDefault = Mock.Of<IRouteBrokeredMessages>();
-            builder.Services.AddScoped(_ => coreDefault);
-            return coreDefault;
-        }
 
         [Fact]
         public void MustRegisterCommandIntoRegistryViaGenericApi()
@@ -104,84 +96,144 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>().Should().BeOfType<CosmosBrokeredMessageOutbox>();
         }
 
-        [Fact]
-        public void MustDecorateCoreRouterWithHandleGatedOutboxRouter()
-        {
-            var builder = CaptureBuilder(b =>
-            {
-                SeedCoreDefaultRouter(b);
-                b.WithCosmosDocumentReliability<CreateOrder>("shop", "orders", "orders-leases", _ => new PartitionKey("pk"), "/tenantId");
-            });
+        // --- Registration-order independence (#239) -------------------------------------------------------------------
+        //
+        // The router wiring constructs the inner-default arm DIRECTLY as
+        // new BrokeredMessageRouter(IMessagingInfrastructureProvider) — never captures the core default descriptor — so
+        // the decorator resolves and a non-participant dispatch routes to the broker regardless of whether
+        // AddChatterCqrs (which runs the Cosmos pipeline callback) or AddMessageBrokers runs first, and regardless of
+        // RouteMessagesToOutbox. These tests exercise BOTH orders x BOTH RouteMessagesToOutbox states over a shared
+        // service collection, replacing the always-registered IMessagingInfrastructureProvider with a mock so the broker
+        // dispatch is assertable, and replacing IBrokeredMessageOutbox with a spy so the inner-default arm can be proven
+        // never to reach the outbox. No live CosmosClient is required.
 
-            using var provider = builder.Services.BuildServiceProvider();
+        private static OutboundBrokeredMessage NonParticipantMessage()
+            => new OutboundBrokeredMessage(
+                "msg-1",
+                new byte[] { 1 },
+                new System.Collections.Generic.Dictionary<string, object>(),
+                "destination",
+                new JsonBodyConverter());
+
+        // Wires AddChatterCqrs (which runs the Cosmos pipeline callback) and AddMessageBrokers in the requested order on
+        // ONE shared service collection, then replaces the broker provider with a mock dispatcher and the outbox with a
+        // spy so the routing assertions can run without any live Cosmos/transport infrastructure.
+        private static (IServiceCollection services, Mock<IMessagingInfrastructureDispatcher> dispatcher, Mock<IBrokeredMessageOutbox> outbox)
+            WireBothModules(bool cqrsFirst, bool routeMessagesToOutbox)
+        {
+            var services = new ServiceCollection();
+
+            Action<CommandPipelineBuilder> cosmosCallback = pipeline => pipeline.WithCosmosDocumentReliability<CreateOrder>(
+                database: "shop",
+                container: "orders",
+                lease: "orders-leases",
+                resolver: _ => new PartitionKey("pk"),
+                "/tenantId");
+
+            Action<MessageBrokerOptionsBuilder> brokerOptions = routeMessagesToOutbox
+                ? options => options.AddReliabilityOptions(r => r.WithOutboxRouting())
+                : (Action<MessageBrokerOptionsBuilder>)null;
+
+            if (cqrsFirst)
+            {
+                // AddChatterCqrs runs the Cosmos Replace<IRouteBrokeredMessages> synchronously in its pipeline callback,
+                // BEFORE AddMessageBrokers registers the core default router. The buggy capture-the-descriptor approach
+                // observed a null descriptor here and threw; the direct-construction approach does not.
+                IChatterBuilder chatter = services.AddChatterCqrs(Mock.Of<IConfiguration>(), cosmosCallback);
+                chatter.AddMessageBrokers(brokerOptions);
+            }
+            else
+            {
+                // AddMessageBrokers registers the core default router FIRST; the Cosmos pipeline callback then Replaces it
+                // with the handle-gated decorator over the directly-constructed broker arm.
+                IChatterBuilder chatter = services.AddChatterCqrs(Mock.Of<IConfiguration>());
+                chatter.AddMessageBrokers(brokerOptions);
+                // AddCommandPipeline is the public IChatterBuilder seam for adding a pipeline AFTER the broker module has
+                // registered its default router — exactly the reverse-order case this test exercises. The obsolete
+                // warning is suppressed locally; there is no non-obsolete overload that runs a pipeline callback against
+                // an already-constructed IChatterBuilder.
+#pragma warning disable CS0618
+                chatter.AddCommandPipeline(cosmosCallback);
+#pragma warning restore CS0618
+            }
+
+            // The decorator factory eagerly resolves IBrokeredMessageOutbox (to build the cosmos arm) and resolves
+            // IMessagingInfrastructureProvider lazily inside the inner-default arm at dispatch time. Replace both with
+            // test doubles so the router resolves and dispatches without a live CosmosClient or transport. Replace is
+            // order-agnostic (RemoveAll + Add), so it overrides whatever each module registered.
+            var dispatcher = new Mock<IMessagingInfrastructureDispatcher>();
+            var provider = new Mock<IMessagingInfrastructureProvider>();
+            provider.Setup(p => p.GetDispatcher(It.IsAny<string>())).Returns(dispatcher.Object);
+            services.Replace<IMessagingInfrastructureProvider>(ServiceLifetime.Singleton, _ => provider.Object);
+
+            var outbox = new Mock<IBrokeredMessageOutbox>();
+            services.Replace<IBrokeredMessageOutbox>(ServiceLifetime.Scoped, _ => outbox.Object);
+
+            return (services, dispatcher, outbox);
+        }
+
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        [InlineData(false, false)]
+        [InlineData(false, true)]
+        public void MustResolveHandleGatedRouterRegardlessOfRegistrationOrderOrOutboxRouting(bool cqrsFirst, bool routeMessagesToOutbox)
+        {
+            var (services, _, _) = WireBothModules(cqrsFirst, routeMessagesToOutbox);
+
+            using var provider = services.BuildServiceProvider();
             using var scope = provider.CreateScope();
 
             scope.ServiceProvider.GetRequiredService<IRouteBrokeredMessages>().Should().BeOfType<HandleGatedOutboxRouter>();
         }
 
-        [Fact]
-        public async Task MustRouteNonParticipantDispatchThroughInnerDefaultRouterWithoutReachingCosmosOutbox()
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        [InlineData(false, false)]
+        [InlineData(false, true)]
+        public async Task MustRouteNonParticipantDispatchToBrokerWithoutReachingOutboxRegardlessOfOrderOrOutboxRouting(bool cqrsFirst, bool routeMessagesToOutbox)
         {
-            // The core default is seeded BEFORE the Cosmos extension runs (as AddMessageBrokers would), so the extension's
-            // capture-before-Replace picks it up as the inner default. The decorator must route to this inner default —
-            // never the Cosmos outbox — because no document-tier batch is open (the surface handle is null for this
-            // non-participant dispatch).
-            IRouteBrokeredMessages coreDefault = null;
-            var builder = CaptureBuilder(b =>
-            {
-                coreDefault = SeedCoreDefaultRouter(b);
-                b.WithCosmosDocumentReliability<CreateOrder>("shop", "orders", "orders-leases", _ => new PartitionKey("pk"), "/tenantId");
-            });
+            var (services, dispatcher, outbox) = WireBothModules(cqrsFirst, routeMessagesToOutbox);
 
-            using var provider = builder.Services.BuildServiceProvider();
+            using var provider = services.BuildServiceProvider();
             using var scope = provider.CreateScope();
 
             var router = scope.ServiceProvider.GetRequiredService<IRouteBrokeredMessages>();
             router.Should().BeOfType<HandleGatedOutboxRouter>();
 
-            var message = new OutboundBrokeredMessage("msg-1", new byte[] { 1 }, new System.Collections.Generic.Dictionary<string, object>(), "destination", new JsonBodyConverter());
+            var message = NonParticipantMessage();
 
-            // No active handle -> must NOT throw (the bug: it threw from CosmosBrokeredMessageOutbox on a null handle).
+            // No participant batch is open (the surface handle is null), so the non-participant dispatch must NOT throw
+            // (the bug: it threw — either on a null captured descriptor, or, under RouteMessagesToOutbox, from the Cosmos
+            // outbox on a null handle).
             Func<Task> act = () => router.Route(message, transactionContext: null);
             await act.Should().NotThrowAsync();
 
-            // The dispatch reached the seeded core default, not the Cosmos outbox.
-            Mock.Get(coreDefault).Verify(r => r.Route(message, null), Times.Once);
+            // The dispatch reached the broker via the always-registered infrastructure provider — never the outbox.
+            // (The single-message SendToOutbox is a default interface method that delegates to the batch overload, so the
+            // batch-overload assertion covers both entry points.)
+            dispatcher.Verify(d => d.Dispatch(message, null), Times.Once);
+            outbox.Verify(
+                o => o.SendToOutbox(
+                    It.IsAny<System.Collections.Generic.IEnumerable<OutboundBrokeredMessage>>(),
+                    It.IsAny<TransactionContext>(),
+                    It.IsAny<System.Threading.CancellationToken>()),
+                Times.Never);
         }
 
         [Fact]
-        public void MustWrapTheCoreRouterExactlyOnceAcrossMultipleParticipationCalls()
+        public void MustRegisterExactlyOneRouterDescriptorAcrossMultipleParticipationCalls()
         {
             var builder = CaptureBuilder(b =>
             {
-                SeedCoreDefaultRouter(b);
                 b.WithCosmosDocumentReliability<CreateOrder>("shop", "orders", "orders-leases", _ => new PartitionKey("pk"), "/tenantId");
                 b.WithCosmosDocumentReliability<PostLedgerEntry>("fin", "ledger", "ledger-leases", _ => new PartitionKey("pk"), "/accountId");
             });
 
-            // Exactly one IRouteBrokeredMessages descriptor remains (no double-wrap), and exactly one idempotency marker.
+            // Each call Replaces IRouteBrokeredMessages with the same factory shape (RemoveAll + Add), so exactly one
+            // descriptor — the decorator — remains, never double-wrapped.
             builder.Services.Count(d => d.ServiceType == typeof(IRouteBrokeredMessages)).Should().Be(1);
-            builder.Services.Count(d => d.ServiceType == typeof(HandleGatedRouterMarker)).Should().Be(1);
-
-            // The wrap is the decorator over the core default; resolving the decorator must succeed (the inner default is
-            // the seeded core router, materialized from the captured descriptor — not a second decorator).
-            using var provider = builder.Services.BuildServiceProvider();
-            using var scope = provider.CreateScope();
-            scope.ServiceProvider.GetRequiredService<IRouteBrokeredMessages>().Should().BeOfType<HandleGatedOutboxRouter>();
-        }
-
-        [Fact]
-        public void MustFailLoudlyWhenNoCoreDefaultRouterWasRegisteredBeforeDecorating()
-        {
-            // No core default IRouteBrokeredMessages is seeded (AddMessageBrokers was never called). The decorator factory
-            // must throw a clear named error rather than silently routing non-participants into the Cosmos outbox.
-            var builder = ConfigureOne();
-
-            using var provider = builder.Services.BuildServiceProvider();
-            using var scope = provider.CreateScope();
-
-            Action act = () => scope.ServiceProvider.GetRequiredService<IRouteBrokeredMessages>();
-            act.Should().Throw<InvalidOperationException>().WithMessage("*AddMessageBrokers*");
         }
 
         [Fact]

@@ -1,6 +1,7 @@
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.CQRS.Pipeline;
+using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Reliability.Cosmos;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
@@ -161,32 +162,30 @@ namespace Microsoft.Extensions.DependencyInjection
             // NON-participant command whose handler Send/Publishes would hit CosmosBrokeredMessageOutbox's null-handle
             // throw, contradicting "a command type without a registration bypasses the document tier entirely". The
             // decorator gates on the surface handle: participant (handle set, mid-batch) -> Cosmos outbox router;
-            // non-participant / no open batch (handle null) -> the core-registered DEFAULT router, exactly as if Cosmos
-            // were not installed. Because Replace RemoveAll's first, the captured default descriptor MUST be read BEFORE
-            // the Replace; the decorator factory materializes the inner default from it (honoring its lifetime and all
-            // three descriptor shapes). Idempotent across N calls: a second call sees HandleGatedOutboxRouter already in
-            // place and skips re-wrapping, never double-wrapping (which would re-route participant dispatch through an
-            // extra decorator and break the "inner is the core default" contract). The decorator is registered via the
-            // factory Replace overload, so its descriptor's ImplementationType is null; idempotency is therefore tracked
-            // by a dedicated marker type (HandleGatedRouterMarker) registered once on first wrap — mirroring the
-            // once-only behavior guard below, which uses descriptor presence rather than the router's own shape.
-            bool decoratorAlreadyWired = pipelineBuilder.Services
-                .Any(descriptor => descriptor.ServiceType == typeof(HandleGatedRouterMarker));
-
-            if (!decoratorAlreadyWired)
-            {
-                ServiceDescriptor capturedDefaultRouter = pipelineBuilder.Services
-                    .FirstOrDefault(descriptor => descriptor.ServiceType == typeof(IRouteBrokeredMessages));
-
-                pipelineBuilder.Services.Replace<IRouteBrokeredMessages>(
-                    ServiceLifetime.Scoped,
-                    sp => new HandleGatedOutboxRouter(
-                        new OutboxBrokeredMessageRouter(sp.GetRequiredService<IBrokeredMessageOutbox>()),
-                        MaterializeDefaultRouter(sp, capturedDefaultRouter),
-                        sp.GetRequiredService<IDocumentTierReliabilitySurface>()));
-
-                pipelineBuilder.Services.AddSingleton(new HandleGatedRouterMarker());
-            }
+            // non-participant / no open batch (handle null) -> a directly-constructed default broker router, exactly as
+            // if Cosmos were not installed.
+            //
+            // Registration-order-independent and closed-by-construction: the inner-default arm is constructed DIRECTLY as
+            // new BrokeredMessageRouter(IMessagingInfrastructureProvider) — resolved LAZILY inside the factory at dispatch
+            // time from the never-replaced, always-AddMessageBrokers-registered IMessagingInfrastructureProvider. The
+            // inner default therefore NEVER depends on IBrokeredMessageOutbox, so a non-participant dispatch can never
+            // reach the Cosmos outbox regardless of AddChatterCqrs/AddMessageBrokers ordering or whether
+            // RouteMessagesToOutbox is on. (The prior capture-the-core-default-descriptor approach was broken on both
+            // ends: the pipeline callback runs synchronously BEFORE AddMessageBrokers registers the default router — so
+            // the captured descriptor was null and threw — and, under RouteMessagesToOutbox, the rebuilt inner resolved
+            // the already-Replaced Cosmos outbox and threw on the null handle.) DECISION: a non-participant command
+            // dispatches straight to the broker via this BrokeredMessageRouter arm; the mixed config
+            // "RouteMessagesToOutbox=true + Cosmos provider + a separate non-Cosmos outbox" is UNSUPPORTED.
+            //
+            // The factory Replace is idempotent-in-effect across N WithCosmosDocumentReliability<T> calls: each call
+            // Replaces with the same factory shape (Replace RemoveAll's first), so exactly one IRouteBrokeredMessages
+            // descriptor — the decorator — remains, never double-wrapped.
+            pipelineBuilder.Services.Replace<IRouteBrokeredMessages>(
+                ServiceLifetime.Scoped,
+                sp => new HandleGatedOutboxRouter(
+                    new OutboxBrokeredMessageRouter(sp.GetRequiredService<IBrokeredMessageOutbox>()),
+                    new BrokeredMessageRouter(sp.GetRequiredService<IMessagingInfrastructureProvider>()),
+                    sp.GetRequiredService<IDocumentTierReliabilitySurface>()));
 
             // OUTERMOST: register the open-generic behavior EXACTLY ONCE (first WithBehavior = outermost via the
             // CommandBehaviorPipeline reverse). Only the per-type registration above is additive.
@@ -198,39 +197,6 @@ namespace Microsoft.Extensions.DependencyInjection
             }
 
             return pipelineBuilder;
-        }
-
-        // Materializes the core-registered default IRouteBrokeredMessages from the descriptor captured BEFORE the Replace
-        // RemoveAll'd it, honoring all three descriptor shapes (ImplementationType / ImplementationFactory /
-        // ImplementationInstance). The capture happens at registration time but a missing descriptor only surfaces here,
-        // inside the factory, so a clear named error fires instead of silently routing non-participants to the Cosmos
-        // outbox (core ALWAYS registers a default IRouteBrokeredMessages, so this should be unreachable).
-        private static IRouteBrokeredMessages MaterializeDefaultRouter(IServiceProvider serviceProvider, ServiceDescriptor capturedDefaultRouter)
-        {
-            if (capturedDefaultRouter is null)
-            {
-                throw new InvalidOperationException(
-                    "No default IRouteBrokeredMessages was registered before WithCosmosDocumentReliability ran. The Cosmos "
-                    + "document tier decorates the core router; call AddMessageBrokers (which registers the default router) first.");
-            }
-
-            if (capturedDefaultRouter.ImplementationInstance is IRouteBrokeredMessages instance)
-            {
-                return instance;
-            }
-
-            if (capturedDefaultRouter.ImplementationFactory is Func<IServiceProvider, object> factory)
-            {
-                return (IRouteBrokeredMessages)factory(serviceProvider);
-            }
-
-            if (capturedDefaultRouter.ImplementationType is Type implementationType)
-            {
-                return (IRouteBrokeredMessages)ActivatorUtilities.CreateInstance(serviceProvider, implementationType);
-            }
-
-            throw new InvalidOperationException(
-                "The captured default IRouteBrokeredMessages descriptor carries no implementation type, factory, or instance.");
         }
 
         // Resolves the single shared registry singleton instance (so additive registrations accumulate in ONE registry),

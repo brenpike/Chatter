@@ -77,6 +77,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingHandleGatedOutbox
         }
 
         [Fact]
+        public async Task MustNotReEnterCosmosArmWhenHandleIsNull()
+        {
+            // No-re-entrancy guarantee: a null-handle (non-participant) dispatch routes to the inner-default broker arm
+            // EXACTLY once and never re-enters the Cosmos outbox arm. This is the closed-by-construction property that
+            // makes the inner-default arm's directly-constructed broker router safe — it can never loop back through the
+            // Cosmos outbox regardless of registration order.
+            var (router, cosmos, inner) = Harness(currentHandle: null);
+            var message = Message();
+
+            await router.Route(message, transactionContext: null);
+
+            inner.Verify(r => r.Route(message, null), Times.Once);
+            inner.VerifyNoOtherCalls();
+            cosmos.VerifyNoOtherCalls();
+        }
+
+        [Fact]
         public async Task MustRouteSingleMessageToCosmosWhenHandleIsActive()
         {
             var (router, cosmos, inner) = Harness(ActiveHandle());
