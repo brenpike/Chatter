@@ -14,16 +14,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <remarks>
     /// <strong>Closed-by-construction staging contract.</strong> The <see cref="TransactionalBatch"/> is held as a
     /// private field and is not publicly reachable for op-adds. All op-adds are funneled through the staging methods
-    /// (<see cref="StageCreateItemStream"/>, <see cref="StageCreateItem{T}"/>, <see cref="StageUpsertItem{T}"/>,
-    /// <see cref="StageReplaceItem{T}"/>, <see cref="StagePatchItem"/>), each of which delegates to the corresponding
-    /// SDK op method on the private batch AND increments <see cref="StagedOperationCount"/> in one method body. No
-    /// caller can stage an op without it being counted.
+    /// (<see cref="StageCreateItemStream"/>, <see cref="StageReplaceItem{T}"/>, <see cref="StagePatchItem"/>), each of
+    /// which delegates to the corresponding SDK op method on the private batch AND increments
+    /// <see cref="StagedOperationCount"/> in one method body. No caller can stage an op without it being counted.
     /// <para>
-    /// <strong>Reserved-namespace guard.</strong> Each public staging method that carries an id calls
-    /// <see cref="CosmosItemId.GuardNotReserved"/> BEFORE staging, so a rejected stage leaves the batch and
-    /// <see cref="StagedOperationCount"/> unperturbed (the guard fires before the op is added). The framework's own
-    /// reserved-id writes go through the internal <see cref="ICosmosReservedWriteHandle"/> facet this type also
-    /// implements, which stages WITHOUT the guard.
+    /// <strong>Reserved-namespace guard.</strong> The only public create/upsert path is
+    /// <see cref="StageCreateItemStream"/>, whose guard keys on the persisted item.id peeked from the payload bytes the
+    /// SDK reads, so no public create/upsert can stage a document whose persisted physical id carries a reserved
+    /// prefix. <see cref="StageReplaceItem{T}"/>/<see cref="StagePatchItem"/> call
+    /// <see cref="CosmosItemId.GuardNotReserved"/> on their explicit op-key <c>id</c> (which IS the persisted key)
+    /// BEFORE staging, so a rejected stage leaves the batch and <see cref="StagedOperationCount"/> unperturbed (the
+    /// guard fires before the op is added). The framework's own reserved-id writes go through the internal
+    /// <see cref="ICosmosReservedWriteHandle"/> facet this type also implements, which stages WITHOUT the guard.
     /// </para>
     /// </remarks>
     internal sealed class CosmosAtomicWriteHandle : ICosmosAtomicWriteHandle, ICosmosReservedWriteHandle
@@ -61,22 +63,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // SDK later reads (an idless/unparseable/non-object/empty payload is treated as non-reserved and passes).
             Stream guardedPayload = GuardStreamPayloadNotReserved(payload);
             _batch.CreateItemStream(guardedPayload, requestOptions);
-            StagedOperationCount++;
-        }
-
-        /// <inheritdoc/>
-        public void StageCreateItem<T>(string id, T item, TransactionalBatchItemRequestOptions requestOptions = null)
-        {
-            CosmosItemId.GuardNotReserved(id, nameof(id));
-            _batch.CreateItem(item, requestOptions);
-            StagedOperationCount++;
-        }
-
-        /// <inheritdoc/>
-        public void StageUpsertItem<T>(string id, T item, TransactionalBatchItemRequestOptions requestOptions = null)
-        {
-            CosmosItemId.GuardNotReserved(id, nameof(id));
-            _batch.UpsertItem(item, requestOptions);
             StagedOperationCount++;
         }
 

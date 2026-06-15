@@ -355,10 +355,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var batch = new Mock<TransactionalBatch>();
             batch.Setup(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
                  .Returns(batch.Object);
-            batch.Setup(b => b.CreateItem(It.IsAny<object>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
-                 .Returns(batch.Object);
-            batch.Setup(b => b.UpsertItem(It.IsAny<object>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
-                 .Returns(batch.Object);
             var handle = new CosmosAtomicWriteHandle(
                 Mock.Of<Container>(), batch.Object, new PartitionKey("pk"), Array.AsReadOnly(new[] { "/tenantId" }));
             return (handle, batch);
@@ -367,35 +363,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         private static MemoryStream JsonPayload(string json)
             => new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json), writable: false);
 
+        // Iter-2 closure: an app create whose ITEM serializes to a reserved-prefix id must be rejected on the sole
+        // surviving public create/upsert path (StageCreateItemStream), whose guard keys on the PERSISTED item.id peeked
+        // from the payload bytes the SDK reads — not on a separate parameter that could diverge from what Cosmos
+        // persists. The removed typed StageCreateItem<T>/StageUpsertItem<T> guarded an explicit `id` PARAMETER that the
+        // SDK ignored (it derives the persisted id from item.id), so a caller could pass id:"safe" while the item
+        // serialized to {"id":"inbox:..."} and stage a reserved-prefix doc unguarded — silent first-delivery-loss.
         [Fact]
-        public void MustRejectPublicTypedCreateWithReservedIdLeavingBatchAndCountUnperturbed()
-        {
-            var (handle, batch) = DirectHandle();
-            ICosmosAtomicWriteHandle publicHandle = handle;
-
-            Action act = () => publicHandle.StageCreateItem(CosmosItemId.ForInbox("msg-1"), new { });
-
-            act.Should().Throw<ArgumentException>("an app caller may not author a reserved inbox: id via the public surface");
-            handle.StagedOperationCount.Should().Be(0, "a rejected stage must not increment the count");
-            batch.Verify(b => b.CreateItem(It.IsAny<object>(), It.IsAny<TransactionalBatchItemRequestOptions>()), Times.Never,
-                "the guard fires before the op is added so the batch is unperturbed");
-        }
-
-        [Fact]
-        public void MustRejectPublicTypedUpsertWithReservedIdLeavingBatchAndCountUnperturbed()
-        {
-            var (handle, batch) = DirectHandle();
-            ICosmosAtomicWriteHandle publicHandle = handle;
-
-            Action act = () => publicHandle.StageUpsertItem(CosmosItemId.ForOutbox("msg-1"), new { });
-
-            act.Should().Throw<ArgumentException>();
-            handle.StagedOperationCount.Should().Be(0);
-            batch.Verify(b => b.UpsertItem(It.IsAny<object>(), It.IsAny<TransactionalBatchItemRequestOptions>()), Times.Never);
-        }
-
-        [Fact]
-        public void MustRejectPublicCreateItemStreamWhenPayloadIdIsReserved()
+        public void MustRejectPublicCreateWhenItemSerializesToReservedId()
         {
             var (handle, batch) = DirectHandle();
             ICosmosAtomicWriteHandle publicHandle = handle;
@@ -403,7 +378,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
 
             Action act = () => publicHandle.StageCreateItemStream(payload);
 
-            act.Should().Throw<ArgumentException>("the peek-guard rejects a reserved-prefix payload id");
+            act.Should().Throw<ArgumentException>("the peek-guard rejects a payload whose persisted item.id is reserved-prefix");
             handle.StagedOperationCount.Should().Be(0);
             batch.Verify(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()), Times.Never);
         }
