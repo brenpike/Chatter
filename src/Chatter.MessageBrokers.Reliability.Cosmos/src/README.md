@@ -21,6 +21,8 @@ The document-tier inbox is deliberately **no-pre-read / TOCTOU-free**: rather th
 
 This is the price of the TOCTOU-free design, and it is the one place the two tiers' contracts differ. The relational tier (`BrokeredMessageInbox.ReceiveViaInbox`) reads `HasBeenReceived` first and **skips the handler entirely** on a known duplicate, so its non-batched side effects do not re-run. The document tier intentionally has no such pre-read, so it cannot offer the same skip — it trades the relational tier's pre-read (and the TOCTOU window that comes with it) for closed-by-construction batched-write dedup, at the cost of pushing non-batched-side-effect idempotency onto the handler.
 
+A participant command MUST carry a non-empty `MessageId`. The `inbox:` marker is keyed on the message identity, so a participant that resolves a partition but arrives with a null/whitespace `MessageId` cannot be deduped — the once-only guarantee cannot be honored. Rather than silently proceed (which would leave a redelivery of the same identity-less message undetectable), the Document-Tier Batch-Lifecycle Behavior **fails loud**: it throws `InvalidOperationException` before opening the batch, so nothing is staged, your handler never runs, and the message is not acked. A participant without a `MessageId` is a protocol/config error, not a runtime condition to tolerate.
+
 ## Installation
 
 ```sh

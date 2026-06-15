@@ -40,13 +40,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         private static IMessageBrokerContext MockContext()
             => new MessageBrokerContext("msg-1", Array.Empty<byte>(), null, "receiver", CancellationToken.None, new JsonBodyConverter());
 
-        // A broker context whose inbound message has a WHITESPACE MessageId — a participant that cannot be deduped by
-        // identity, so the behavior stamps NO inbox marker (#220). Tests that assert pure batch mechanics (op count,
-        // empty-batch guard, container selection) use this so the marker op does not perturb their staged-op
-        // expectations; inbox-marker stamping is covered exhaustively in WhenStampingInboxMarker.
-        private static IMessageBrokerContext MockContextWithoutMessageId()
-            => new MessageBrokerContext("   ", Array.Empty<byte>(), null, "receiver", CancellationToken.None, new JsonBodyConverter());
-
         // Add is internal; visible to the test assembly via InternalsVisibleTo.
         private static void Register(DocumentReliabilityRegistry registry, DocumentReliabilityRegistration registration)
             => registry.Add(registration);
@@ -210,13 +203,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         {
             var (container, batch) = MockContainer(executeResponse: null);
             var registry = new DocumentReliabilityRegistry();
-            Register(registry, Registration<RegisteredCommand>("shop", "orders"));
+            // A participant whose resolver returns a null partition key opens NO batch, so there is no op to commit and
+            // ExecuteAsync must never run (no live Cosmos). A participant with a resolved partition now always stamps a
+            // marker as op 0, so the batch is never empty on that path — the no-op-to-commit case is the null-partition
+            // bare-pass-through.
+            Register(registry, Registration<RegisteredCommand>("shop", "orders", resolver: _ => null));
             var factory = FactoryFor("shop", "orders", container.Object);
             var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, new DocumentTierReliabilitySurface());
 
-            // next() stages nothing AND no inbox marker is stamped (whitespace MessageId), so the empty-batch guard
-            // must skip ExecuteAsync entirely (no live Cosmos).
-            await behavior.Handle(new RegisteredCommand(), MockContextWithoutMessageId(), () => Task.CompletedTask);
+            await behavior.Handle(new RegisteredCommand(), MockContext(), () => Task.CompletedTask);
 
             batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Never);
         }
@@ -288,10 +283,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         [Fact]
         public async Task MustSelectPerCommandContainerWithNoCrossWiring()
         {
-            var containerA = Mock.Of<Container>(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()) == Mock.Of<TransactionalBatch>());
-            var containerB = Mock.Of<Container>(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()) == Mock.Of<TransactionalBatch>());
-            var mockA = Mock.Get(containerA);
-            var mockB = Mock.Get(containerB);
+            var (containerMockA, _) = MockContainer(MockResponse(HttpStatusCode.OK, isSuccess: true));
+            var (containerMockB, _) = MockContainer(MockResponse(HttpStatusCode.OK, isSuccess: true));
+            var containerA = containerMockA.Object;
+            var containerB = containerMockB.Object;
 
             var client = new Mock<CosmosClient>();
             client.Setup(c => c.GetContainer("dbA", "containerA")).Returns(containerA);
@@ -308,14 +303,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var behaviorA = new DocumentTierBatchLifecycleBehavior<CommandA>(registry, factory, surface);
             var behaviorB = new DocumentTierBatchLifecycleBehavior<CommandB>(registry, factory, surface);
 
-            // No inbox marker is stamped (whitespace MessageId), so each batch stays empty and ExecuteAsync is skipped —
-            // this test asserts container selection only, not execution.
-            await behaviorA.Handle(new CommandA(), MockContextWithoutMessageId(), () => Task.CompletedTask);
-            await behaviorB.Handle(new CommandB(), MockContextWithoutMessageId(), () => Task.CompletedTask);
+            // A valid MessageId stamps the inbox marker as op 0 on each batch; this test asserts container selection
+            // only — each command opens its batch on ITS OWN registration's container, no cross-wiring.
+            await behaviorA.Handle(new CommandA(), MockContext(), () => Task.CompletedTask);
+            await behaviorB.Handle(new CommandB(), MockContext(), () => Task.CompletedTask);
 
-            // Each command opens a batch on ITS OWN registration's container — no cross-wiring.
-            mockA.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
-            mockB.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
+            containerMockA.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
+            containerMockB.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
         }
 
         [Fact]
@@ -330,17 +324,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var surface = new DocumentTierReliabilitySurface();
             var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
 
-            // No inbox marker is stamped (whitespace MessageId), so the only staged op is the handler's — the count
-            // reflects exactly the closed-by-construction Stage* increment under test.
+            // A valid MessageId stamps the inbox marker as op 0, then the handler stages one op — so the count reflects
+            // both: the marker plus the handler's closed-by-construction Stage* increment under test.
             ICosmosAtomicWriteHandle capturedHandle = null;
-            await behavior.Handle(new RegisteredCommand(), MockContextWithoutMessageId(), () =>
+            await behavior.Handle(new RegisteredCommand(), MockContext(), () =>
             {
                 capturedHandle = surface.CurrentHandle;
                 capturedHandle.StageCreateItemStream(Stream.Null);
                 return Task.CompletedTask;
             });
 
-            capturedHandle.StagedOperationCount.Should().Be(1);
+            capturedHandle.StagedOperationCount.Should().Be(2, "the inbox marker (op 0) plus the handler's staged op");
 
             // The closed-by-construction contract: no public Batch getter or MarkOperationStaged member exists.
             var handleType = typeof(ICosmosAtomicWriteHandle);

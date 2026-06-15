@@ -238,12 +238,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             staged.Should().BeEmpty("a non-participant stamps no marker");
         }
 
-        [Fact]
-        public async Task MustNotStampMarkerButStillRunBatchAndNextForParticipantWithWhitespaceMessageId()
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task MustFailLoudForParticipantWithMissingMessageIdAndStageNothing(string messageId)
         {
-            // A participant whose inbound message has a whitespace MessageId cannot be deduped by identity, so NO marker
-            // is stamped — but the batch is still opened and next() still runs so the aggregate/outbox path is
-            // unaffected (parity with relational ReceiveViaInbox null-id behavior + #238 null-safety).
+            // A participant that resolves a partition is on the once-only path and MUST carry an identity to dedup by. A
+            // null/whitespace MessageId is a protocol/config error: the once-only guarantee cannot be honored, so the
+            // behavior FAILS LOUD with InvalidOperationException BEFORE the batch is opened — nothing is staged,
+            // next() never runs, nothing is acked. This matches the in-memory tier, which throws.
             var (container, batch, staged) = MockContainer(SuccessResponse());
             var registry = new DocumentReliabilityRegistry();
             registry.Add(Registration<RegisteredCommand>("shop", "orders", _ => new PartitionKey("tenant-1"), "/tenantId"));
@@ -252,19 +256,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
 
             var nextRan = false;
-            await behavior.Handle(new RegisteredCommand(), ContextWithMessageId("   "), () =>
+            Func<Task> act = () => behavior.Handle(new RegisteredCommand(), ContextWithMessageId(messageId), () =>
             {
                 nextRan = true;
                 surface.CurrentHandle.StageCreateItemStream(Stream.Null);
                 return Task.CompletedTask;
             });
 
-            nextRan.Should().BeTrue();
-            // The batch was opened (handler op present) and executed, but only the handler op was staged — no inbox
-            // marker for a whitespace MessageId. The handler staged Stream.Null, so exactly one op is present.
-            container.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
-            batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Once);
-            staged.Should().ContainSingle("only the handler op was staged; no inbox marker for a whitespace MessageId");
+            await act.Should().ThrowAsync<InvalidOperationException>(
+                "a participant without a MessageId cannot be deduped, so the once-only guarantee fails loud before any commit");
+            nextRan.Should().BeFalse("the throw precedes next()");
+            container.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Never, "nothing is staged when the participant lacks a MessageId");
+            batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Never, "nothing is acked when the participant lacks a MessageId");
+            staged.Should().BeEmpty("no batch is opened, so no op is staged");
         }
 
         [Fact]

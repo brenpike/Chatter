@@ -26,7 +26,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <remarks>
     /// Three control paths: (1) non-participant — bare <c>next()</c>; (2) participant whose resolver returns a null
     /// partition key — bare <c>next()</c>, no batch opened; (3) participant with a partition — open batch, run the
-    /// framework-owned lifecycle. The single batch-execute is GUARDED: an empty batch (zero staged ops) does NOT call
+    /// framework-owned lifecycle. A participant on path (3) MUST carry a non-empty <c>MessageId</c>: a participant that
+    /// resolves a partition but has a null/whitespace <c>MessageId</c> cannot be deduped by identity, so the
+    /// once-only guarantee cannot be honored — the behavior FAILS LOUD with <see cref="InvalidOperationException"/>
+    /// BEFORE the batch is opened (nothing is staged, <c>next()</c> never runs, nothing is acked), matching the
+    /// in-memory tier which throws. The single batch-execute is GUARDED: an empty batch (zero staged ops) does NOT call
     /// the Cosmos transport, so unit tests need no live Cosmos. Must register OUTERMOST (first WithBehavior
     /// registration; the pipeline reverses behaviors so the first-registered is the outermost).
     /// <para>
@@ -93,6 +97,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 return;
             }
 
+            // A participant that resolves a partition is on the once-only path, so it MUST carry an identity to dedup
+            // by. A null/whitespace MessageId here is a protocol/config error — without it the once-only guarantee
+            // cannot be honored — so FAIL LOUD before the batch is opened: nothing is staged, next() never runs, and
+            // nothing is acked, so a redelivery of the same identity-less message cannot be silently lost. This matches
+            // the in-memory tier, which throws. InvalidOperationException (not ArgumentException): the MessageId is not
+            // a Handle argument; it is a protocol/config violation surfaced from the inbound message.
+            if (string.IsNullOrWhiteSpace(inboundBrokeredMessage.MessageId))
+            {
+                throw new InvalidOperationException(
+                    $"Document-tier reliability participant '{typeof(TMessage)}' requires a non-empty MessageId: " +
+                    "the once-only guarantee cannot be honored without a message identity to dedup by.");
+            }
+
             Container container = _containerFactory.GetDocumentContainer(registration);
             TransactionalBatch batch = container.CreateTransactionalBatch(partitionKey.Value);
 
@@ -102,10 +119,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             {
                 // Stamp the co-resident inbox dedup marker FIRST (before next() and before any outbox/aggregate op), so
                 // it is deterministically batch op index 0. A 409-on-create of this marker at execute is the
-                // confirmed-duplicate signal (closed-by-construction; no read-then-add, so no TOCTOU). When the message
-                // has no identity (null/whitespace MessageId) no marker is stamped — we cannot dedup by identity — but
-                // the batch is still opened and next() still runs so the aggregate/outbox path is unaffected (parity
-                // with the relational ReceiveViaInbox null-id behavior + #238 null-safety).
+                // confirmed-duplicate signal (closed-by-construction; no read-then-add, so no TOCTOU). The upstream
+                // guard has already rejected a null/whitespace MessageId, so a participant that reaches here always has
+                // a usable identity and a marker is always stamped.
                 //
                 // SIDE-EFFECT TIMING: the marker-409 is only seen at batch-execute, which runs AFTER next() below, so
                 // the duplicate signal CANNOT pre-empt the handler. On a confirmed duplicate the batched writes
@@ -134,17 +150,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
         }
 
-        // Stamps the co-resident inbox dedup marker as the first op on the framework-owned batch when the inbound
-        // message carries a usable identity. Returns true when a marker was staged (so InspectBatchResponse may
-        // interpret a marker-op 409 as a confirmed duplicate), false when the message had no identity to dedup by.
+        // Stamps the co-resident inbox dedup marker as the first op on the framework-owned batch. The upstream guard in
+        // Handle has already rejected a null/whitespace MessageId, so the inbound message is guaranteed to carry a
+        // usable identity here. Returns true when a marker was staged (so InspectBatchResponse may interpret a
+        // marker-op 409 as a confirmed duplicate).
         private static bool TryStampInboxMarker(CosmosAtomicWriteHandle handle, InboundBrokeredMessage inboundBrokeredMessage, IReadOnlyList<string> partitionKeyPath)
         {
             string messageId = inboundBrokeredMessage.MessageId;
-            if (string.IsNullOrWhiteSpace(messageId))
-            {
-                return false;
-            }
-
             CosmosInboxMarker marker = CosmosInboxMarker.From(messageId);
             IReadOnlyList<JsonElement> partitionKeyValues = CosmosPartitionKeyStamping.RecoverPartitionKeyValues(handle.PartitionKey, partitionKeyPath);
             var rendered = marker.ToJsonObject(partitionKeyPath, partitionKeyValues);
