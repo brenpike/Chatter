@@ -60,11 +60,34 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                 DeadLetterQueueName: $"chatter_ssb_it_deadletter_queue_{suffix}",
                 DeadLetterServiceName: $"chatter_ssb_it_deadletter_service_{suffix}");
 
-        // The four well-known per-test-class object sets, one per integration test class.
+        // The four original per-test-class object sets, one per integration test class.
         public static readonly ObjectSet RoundTripSet = CreateSet("roundtrip");
         public static readonly ObjectSet NackSet = CreateSet("nack");
         public static readonly ObjectSet DeadLetterSet = CreateSet("deadletter");
         public static readonly ObjectSet DialogSet = CreateSet("dialog");
+
+        // Additional per-test-class object sets for the SSB core-behavior scenarios (STEP-006/007/008). Each is a
+        // full target+deadletter set on the shared contract, identical in shape to the four above, so the
+        // provisioning/teardown loops treat them uniformly.
+        //   PublishSet       — C2: IEvent publish (PublishAsync) routes to its own target service.
+        //   PoisonSet        — C8: poison/deadletter scenario with its own isolated queues.
+        //   TransactionSet   — C9 ReceiveOnly: transaction-mode receiver scenario with its own isolated queues.
+        //   NoneSet          — C9 None: transaction-mode None case gets its OWN isolated queues so it never
+        //                      shares the deadletter set's target/deadletter queues (cross-test poisoning would
+        //                      otherwise make the order-independent None assertion order-DEPENDENT).
+        public static readonly ObjectSet PublishSet = CreateSet("publish");
+        public static readonly ObjectSet PoisonSet = CreateSet("poison");
+        public static readonly ObjectSet TransactionSet = CreateSet("transaction");
+        public static readonly ObjectSet NoneSet = CreateSet("none");
+
+        // C10 forwarding set. Beyond the standard target+deadletter set, forwarding requires a SECOND, DISTINCT
+        // destination service+queue so a handler on the primary target can Forward/Send to a service OTHER than the
+        // one it received on. Modeled as a primary ObjectSet plus a dedicated forward-destination service+queue;
+        // the harness destination override routes the forward to ForwardDestinationServiceName, and a test reads
+        // ForwardDestinationQueueName at the edge to prove the message arrived on the distinct destination.
+        public static readonly ObjectSet ForwardingSet = CreateSet("forwarding");
+        public const string ForwardDestinationQueueName = "chatter_ssb_it_forward_dest_queue";
+        public const string ForwardDestinationServiceName = "chatter_ssb_it_forward_dest_service";
 
         // Every object set, driving BOTH provisioning and teardown so the two loops can never diverge and leak.
         public static readonly IReadOnlyList<ObjectSet> AllSets = new[]
@@ -73,6 +96,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             NackSet,
             DeadLetterSet,
             DialogSet,
+            PublishSet,
+            PoisonSet,
+            TransactionSet,
+            NoneSet,
+            ForwardingSet,
         };
 
         // Bounded readiness retry. A freshly started SQL Server container can refuse connections or report the
@@ -113,6 +141,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                 await ProvisionServiceAsync(connection, set.TargetServiceName, set.TargetQueueName, cancellationToken).ConfigureAwait(false);
                 await ProvisionServiceAsync(connection, set.DeadLetterServiceName, set.DeadLetterQueueName, cancellationToken).ConfigureAwait(false);
             }
+
+            // C10 forward destination: a SECOND, DISTINCT target service+queue (on the shared contract) so a
+            // forwarding test can route to a service other than ForwardingSet.TargetServiceName.
+            await ProvisionQueueAsync(connection, ForwardDestinationQueueName, cancellationToken).ConfigureAwait(false);
+            await ProvisionServiceAsync(connection, ForwardDestinationServiceName, ForwardDestinationQueueName, cancellationToken).ConfigureAwait(false);
         }
 
         // Drops every provisioned Service Broker object (services, queues, contract, message type) and the
@@ -147,6 +180,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                     await DropQueueAsync(connection, set.TargetQueueName, cancellationToken).ConfigureAwait(false);
                     await DropQueueAsync(connection, set.DeadLetterQueueName, cancellationToken).ConfigureAwait(false);
                 }
+
+                // C10 forward destination, in reverse dependency order (service references queue).
+                await DropServiceAsync(connection, ForwardDestinationServiceName, cancellationToken).ConfigureAwait(false);
+                await DropQueueAsync(connection, ForwardDestinationQueueName, cancellationToken).ConfigureAwait(false);
 
                 // Shared objects last, in reverse dependency order: initiator service+queue, then contract+type.
                 await DropServiceAsync(connection, InitiatorServiceName, cancellationToken).ConfigureAwait(false);
