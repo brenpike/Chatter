@@ -1,5 +1,8 @@
+using Chatter.CQRS.Commands;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Reliability.Cosmos;
+using Chatter.MessageBrokers.Reliability.Outbox;
+using Chatter.MessageBrokers.Routing;
 using FluentAssertions;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Configuration;
@@ -13,6 +16,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
 {
     public class WhenConfiguringCosmosReliability : Testing.Core.Context
     {
+        private sealed class CreateOrder : ICommand { }
+        private sealed class PostLedgerEntry : ICommand { }
+
         // CommandPipelineBuilder's constructor is internal, so a real builder is captured through the public
         // AddChatterCqrs seam — same precedent as the EF reliability extension tests.
         private static CommandPipelineBuilder CaptureBuilder(Action<CommandPipelineBuilder> configure)
@@ -28,60 +34,43 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             return captured;
         }
 
-        // Container is an abstract SDK class; Moq mocks it to satisfy injection without a live endpoint.
-        private static (Container document, Container lease) MockContainers()
-            => (Mock.Of<Container>(), Mock.Of<Container>());
-
-        private static CommandPipelineBuilder ConfigureWith(Container document, Container lease)
-            => CaptureBuilder(b => b.WithCosmosDocumentReliability(
-                document,
-                lease,
-                _ => new PartitionKey("pk"),
+        private static CommandPipelineBuilder ConfigureOne()
+            => CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
+                database: "shop",
+                container: "orders",
+                lease: "orders-leases",
+                resolver: _ => new PartitionKey("pk"),
                 "/tenantId"));
 
         [Fact]
-        public void MustResolveInjectedDocumentContainer()
+        public void MustRegisterCommandIntoRegistryViaGenericApi()
         {
-            var (document, lease) = MockContainers();
-            var builder = ConfigureWith(document, lease);
+            var builder = ConfigureOne();
 
             using var provider = builder.Services.BuildServiceProvider();
-            var resolved = provider.GetRequiredService<DocumentContainer>();
+            var registry = provider.GetRequiredService<DocumentReliabilityRegistry>();
 
-            resolved.Container.Should().BeSameAs(document);
+            registry.TryGet(typeof(CreateOrder), out var registration).Should().BeTrue();
+            registration.Database.Should().Be("shop");
+            registration.ContainerName.Should().Be("orders");
+            registration.LeaseName.Should().Be("orders-leases");
+            registration.PartitionKeyPath.Should().ContainSingle().Which.Should().Be("/tenantId");
+            registration.Resolver.Should().NotBeNull();
         }
 
         [Fact]
-        public void MustResolveInjectedLeaseContainer()
+        public void MustRegisterContainerFactorySingleton()
         {
-            var (document, lease) = MockContainers();
-            var builder = ConfigureWith(document, lease);
+            var builder = ConfigureOne();
 
             using var provider = builder.Services.BuildServiceProvider();
-            var resolved = provider.GetRequiredService<LeaseContainer>();
-
-            resolved.Container.Should().BeSameAs(lease);
+            provider.GetRequiredService<CosmosContainerFactory>().Should().NotBeNull();
         }
 
         [Fact]
-        public void MustResolvePartitionKeyResolver()
+        public void MustRegisterDocumentTierReliabilitySurface()
         {
-            var (document, lease) = MockContainers();
-            var builder = ConfigureWith(document, lease);
-
-            using var provider = builder.Services.BuildServiceProvider();
-            var resolver = provider.GetRequiredService<PartitionKeyResolver>();
-
-            resolver.Should().NotBeNull();
-            resolver.PartitionKeyPath.Should().ContainSingle().Which.Should().Be("/tenantId");
-            resolver.Resolve.Should().NotBeNull();
-        }
-
-        [Fact]
-        public void MustResolveDocumentTierReliabilitySurface()
-        {
-            var (document, lease) = MockContainers();
-            var builder = ConfigureWith(document, lease);
+            var builder = ConfigureOne();
 
             using var provider = builder.Services.BuildServiceProvider();
             using var scope = provider.CreateScope();
@@ -92,10 +81,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         }
 
         [Fact]
+        public void MustRegisterOutboxAndRouter()
+        {
+            var builder = ConfigureOne();
+
+            using var provider = builder.Services.BuildServiceProvider();
+            using var scope = provider.CreateScope();
+
+            scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>().Should().BeOfType<CosmosBrokeredMessageOutbox>();
+            scope.ServiceProvider.GetRequiredService<IRouteBrokeredMessages>().Should().BeOfType<OutboxBrokeredMessageRouter>();
+        }
+
+        [Fact]
         public void MustRegisterBatchLifecycleBehaviorAsOutermostBehavior()
         {
-            var (document, lease) = MockContainers();
-            var builder = ConfigureWith(document, lease);
+            var builder = ConfigureOne();
 
             // Behaviors are registered as open-generic ICommandBehavior<> descriptors; the CommandBehaviorPipeline
             // reverses the resolved sequence, so the FIRST-registered ICommandBehavior descriptor is the outermost.
@@ -105,34 +105,30 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             firstBehavior.ImplementationType.Should().Be(typeof(DocumentTierBatchLifecycleBehavior<>));
         }
 
-        [Fact]
-        public void MustNotCreateAnyContainerOfItsOwn()
-        {
-            var (document, lease) = MockContainers();
-            var builder = ConfigureWith(document, lease);
-
-            using var provider = builder.Services.BuildServiceProvider();
-
-            // The provider binds only the two injected instances; it resolves no bare Container of its own.
-            provider.GetService<Container>().Should().BeNull();
-            provider.GetRequiredService<DocumentContainer>().Container.Should().BeSameAs(document);
-            provider.GetRequiredService<LeaseContainer>().Container.Should().BeSameAs(lease);
-        }
-
         [Theory]
         [InlineData("")]
         [InlineData("   ")]
         [InlineData(null)]
         public void MustRejectInvalidPartitionKeyPathSegment(string invalidSegment)
         {
-            var (document, lease) = MockContainers();
-
-            Action configure = () => CaptureBuilder(b => b.WithCosmosDocumentReliability(
-                document,
-                lease,
+            Action configure = () => CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
+                "shop", "orders", "orders-leases",
                 _ => new PartitionKey("pk"),
-                "/tenantId",
-                invalidSegment));
+                "/tenantId", invalidSegment));
+
+            configure.Should().Throw<ArgumentException>();
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        [InlineData(null)]
+        public void MustRejectInvalidDatabase(string invalidDatabase)
+        {
+            Action configure = () => CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
+                invalidDatabase, "orders", "orders-leases",
+                _ => new PartitionKey("pk"),
+                "/tenantId"));
 
             configure.Should().Throw<ArgumentException>();
         }
@@ -140,12 +136,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         [Fact]
         public void MustNotBeAffectedByPostRegistrationMutationOfPartitionKeyPath()
         {
-            var (document, lease) = MockContainers();
             var path = new[] { "/tenantId" };
 
-            var builder = CaptureBuilder(b => b.WithCosmosDocumentReliability(
-                document,
-                lease,
+            var builder = CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
+                "shop", "orders", "orders-leases",
                 _ => new PartitionKey("pk"),
                 path));
 
@@ -153,25 +147,68 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             path[0] = "/corrupted";
 
             using var provider = builder.Services.BuildServiceProvider();
-            var resolver = provider.GetRequiredService<PartitionKeyResolver>();
-
-            resolver.PartitionKeyPath.Should().ContainSingle().Which.Should().Be("/tenantId");
+            var registry = provider.GetRequiredService<DocumentReliabilityRegistry>();
+            registry.TryGet(typeof(CreateOrder), out var registration).Should().BeTrue();
+            registration.PartitionKeyPath.Should().ContainSingle().Which.Should().Be("/tenantId");
         }
 
         [Fact]
-        public void MustResolveContainersViaFactoryOverload()
+        public void MustRegisterInfrastructureIdempotentlyAcrossMultipleCalls()
         {
-            var (document, lease) = MockContainers();
-            var builder = CaptureBuilder(b => b.WithCosmosDocumentReliability(
+            var builder = CaptureBuilder(b =>
+            {
+                b.WithCosmosDocumentReliability<CreateOrder>("shop", "orders", "orders-leases", _ => new PartitionKey("pk"), "/tenantId");
+                b.WithCosmosDocumentReliability<PostLedgerEntry>("fin", "ledger", "ledger-leases", _ => new PartitionKey("pk"), "/accountId");
+            });
+
+            // Both commands are additive in the single shared registry.
+            using var provider = builder.Services.BuildServiceProvider();
+            var registry = provider.GetRequiredService<DocumentReliabilityRegistry>();
+            registry.TryGet(typeof(CreateOrder), out _).Should().BeTrue();
+            registry.TryGet(typeof(PostLedgerEntry), out _).Should().BeTrue();
+
+            // The registry is a single shared singleton instance, not one per call.
+            builder.Services.Count(d => d.ServiceType == typeof(DocumentReliabilityRegistry)).Should().Be(1);
+            // The container factory is registered once.
+            builder.Services.Count(d => d.ServiceType == typeof(CosmosContainerFactory)).Should().Be(1);
+            // The outermost behavior is registered exactly once even across two participation calls.
+            builder.Services.Count(d =>
+                d.ServiceType == typeof(ICommandBehavior<>)
+                && d.ImplementationType == typeof(DocumentTierBatchLifecycleBehavior<>)).Should().Be(1);
+        }
+
+        [Fact]
+        public void MustResolveContainersViaAdvancedFactoryOverload()
+        {
+            var document = Mock.Of<Container>();
+            var lease = Mock.Of<Container>();
+            var builder = CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
                 _ => document,
                 _ => lease,
                 _ => new PartitionKey("pk"),
                 "/tenantId"));
 
             using var provider = builder.Services.BuildServiceProvider();
+            var registry = provider.GetRequiredService<DocumentReliabilityRegistry>();
+            registry.TryGet(typeof(CreateOrder), out var registration).Should().BeTrue();
+            registration.DocumentContainerFactory.Should().NotBeNull();
+            registration.LeaseContainerFactory.Should().NotBeNull();
 
-            provider.GetRequiredService<DocumentContainer>().Container.Should().BeSameAs(document);
-            provider.GetRequiredService<LeaseContainer>().Container.Should().BeSameAs(lease);
+            var factory = provider.GetRequiredService<CosmosContainerFactory>();
+            factory.GetDocumentContainer(registration).Should().BeSameAs(document);
+            factory.GetLeaseContainer(registration).Should().BeSameAs(lease);
+        }
+
+        [Fact]
+        public void MustThrowOnDuplicateCommandTypeRegistration()
+        {
+            Action configure = () => CaptureBuilder(b =>
+            {
+                b.WithCosmosDocumentReliability<CreateOrder>("shop", "orders", "orders-leases", _ => new PartitionKey("pk"), "/tenantId");
+                b.WithCosmosDocumentReliability<CreateOrder>("shop", "orders-v2", "orders-v2-leases", _ => new PartitionKey("pk"), "/tenantId");
+            });
+
+            configure.Should().Throw<InvalidOperationException>().WithMessage("*CreateOrder*");
         }
     }
 }

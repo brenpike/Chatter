@@ -1,3 +1,4 @@
+using Chatter.CQRS.Commands;
 using Chatter.CQRS.DependencyInjection;
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Reliability.Cosmos;
@@ -5,88 +6,174 @@ using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using Microsoft.Azure.Cosmos;
 using System;
+using System.Linq;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
     public static class Extensions
     {
         /// <summary>
-        /// Registers the Cosmos document-tier reliability surface and the outermost Document-Tier Batch-Lifecycle
-        /// Behavior on the command pipeline. The application injects its document (aggregate) container and change-feed
-        /// lease container as instances; the provider creates NO container (binding only).
+        /// Registers a per-command document-tier reliability participation for <typeparamref name="TCommand"/>. The
+        /// command's aggregate, co-resident outbox doc, and inbox marker live in the container identified by
+        /// <paramref name="database"/> + <paramref name="container"/>, derived (never provisioned) from the
+        /// app-registered <see cref="CosmosClient"/> singleton. Participation IS having a registration (ADR-0008): a
+        /// command type without a registration bypasses the document tier entirely. Callable multiple times — each call
+        /// adds one registration; the singleton infrastructure (registry, container factory, surface, outbox, and the
+        /// outermost batch-lifecycle behavior) is registered once and idempotently.
         /// </summary>
-        /// <param name="documentContainer">The container the aggregate, outbox doc, and inbox marker are co-resident in.</param>
-        /// <param name="leaseContainer">The change-feed lease container — registered now, consumed by the #222 relay.</param>
-        /// <param name="resolvePartitionKey">App-supplied delegate mapping the inbound message to its aggregate partition key.</param>
-        /// <param name="containerPartitionKeyPath">The container's partition-key path (e.g. <c>"/tenantId"</c>; hierarchical containers carry multiple segments).</param>
-        public static CommandPipelineBuilder WithCosmosDocumentReliability(this CommandPipelineBuilder pipelineBuilder,
-                                                                           Container documentContainer,
-                                                                           Container leaseContainer,
-                                                                           ResolvePartitionKey resolvePartitionKey,
-                                                                           params string[] containerPartitionKeyPath)
+        /// <remarks>
+        /// PREREQUISITE: the application MUST register a <see cref="CosmosClient"/> singleton in the service provider —
+        /// the provider derives container handles from it and owns NO client. A duplicate registration for the same
+        /// <typeparamref name="TCommand"/> throws.
+        /// </remarks>
+        /// <param name="database">The Cosmos database the document container lives in.</param>
+        /// <param name="container">The document (aggregate) container the aggregate, outbox doc, and inbox marker are co-resident in.</param>
+        /// <param name="lease">The change-feed lease container — consumed by the #222 relay's per-registration fan-out.</param>
+        /// <param name="resolver">App-supplied Try/nullable delegate mapping the inbound message to its aggregate partition key.</param>
+        /// <param name="partitionKeyPath">The container's partition-key path (e.g. <c>"/tenantId"</c>; hierarchical containers carry multiple segments).</param>
+        public static CommandPipelineBuilder WithCosmosDocumentReliability<TCommand>(this CommandPipelineBuilder pipelineBuilder,
+                                                                                     string database,
+                                                                                     string container,
+                                                                                     string lease,
+                                                                                     ResolvePartitionKey resolver,
+                                                                                     params string[] partitionKeyPath)
+            where TCommand : ICommand
         {
-            _ = documentContainer ?? throw new ArgumentNullException(nameof(documentContainer));
-            _ = leaseContainer ?? throw new ArgumentNullException(nameof(leaseContainer));
+            _ = pipelineBuilder ?? throw new ArgumentNullException(nameof(pipelineBuilder));
+            if (string.IsNullOrWhiteSpace(database))
+            {
+                throw new ArgumentException("A non-null, non-whitespace database is required.", nameof(database));
+            }
+            if (string.IsNullOrWhiteSpace(container))
+            {
+                throw new ArgumentException("A non-null, non-whitespace container is required.", nameof(container));
+            }
+            if (string.IsNullOrWhiteSpace(lease))
+            {
+                throw new ArgumentException("A non-null, non-whitespace lease is required.", nameof(lease));
+            }
 
-            return pipelineBuilder.WithCosmosDocumentReliability(
-                _ => documentContainer,
-                _ => leaseContainer,
-                resolvePartitionKey,
-                containerPartitionKeyPath);
+            var registration = new DocumentReliabilityRegistration(
+                typeof(TCommand),
+                database,
+                container,
+                lease,
+                ValidateResolver(resolver),
+                ValidatePartitionKeyPath(partitionKeyPath));
+
+            return pipelineBuilder.AddRegistration(registration);
         }
 
         /// <summary>
-        /// Factory overload of <see cref="WithCosmosDocumentReliability(CommandPipelineBuilder, Container, Container, ResolvePartitionKey, string[])"/>
-        /// for applications that resolve their containers from the service provider.
+        /// Advanced overload: the application supplies explicit per-registration container factories rather than naming
+        /// a database/container/lease. The <see cref="CosmosContainerFactory"/> invokes these factories instead of
+        /// deriving handles via <c>client.GetContainer</c>; use this when the application resolves its containers from
+        /// the service provider itself.
         /// </summary>
-        public static CommandPipelineBuilder WithCosmosDocumentReliability(this CommandPipelineBuilder pipelineBuilder,
-                                                                           Func<IServiceProvider, Container> documentContainerFactory,
-                                                                           Func<IServiceProvider, Container> leaseContainerFactory,
-                                                                           ResolvePartitionKey resolvePartitionKey,
-                                                                           params string[] containerPartitionKeyPath)
+        public static CommandPipelineBuilder WithCosmosDocumentReliability<TCommand>(this CommandPipelineBuilder pipelineBuilder,
+                                                                                     Func<IServiceProvider, Container> documentContainerFactory,
+                                                                                     Func<IServiceProvider, Container> leaseContainerFactory,
+                                                                                     ResolvePartitionKey resolver,
+                                                                                     params string[] partitionKeyPath)
+            where TCommand : ICommand
         {
             _ = pipelineBuilder ?? throw new ArgumentNullException(nameof(pipelineBuilder));
             _ = documentContainerFactory ?? throw new ArgumentNullException(nameof(documentContainerFactory));
             _ = leaseContainerFactory ?? throw new ArgumentNullException(nameof(leaseContainerFactory));
-            _ = resolvePartitionKey ?? throw new ArgumentNullException(nameof(resolvePartitionKey));
-            if (containerPartitionKeyPath is null || containerPartitionKeyPath.Length == 0)
+
+            // The explicit factories bypass GetContainer derivation, so no real database/container/lease names exist.
+            // The command type's full name is used as the synthetic cache identity — one registration per command type
+            // keeps the (database, containerName) cache key distinct per participant.
+            var syntheticIdentity = typeof(TCommand).FullName;
+            var registration = new DocumentReliabilityRegistration(
+                typeof(TCommand),
+                syntheticIdentity,
+                syntheticIdentity + ":document",
+                syntheticIdentity + ":lease",
+                ValidateResolver(resolver),
+                ValidatePartitionKeyPath(partitionKeyPath),
+                documentContainerFactory,
+                leaseContainerFactory);
+
+            return pipelineBuilder.AddRegistration(registration);
+        }
+
+        private static ResolvePartitionKey ValidateResolver(ResolvePartitionKey resolver)
+            => resolver ?? throw new ArgumentNullException(nameof(resolver));
+
+        private static System.Collections.ObjectModel.ReadOnlyCollection<string> ValidatePartitionKeyPath(string[] partitionKeyPath)
+        {
+            if (partitionKeyPath is null || partitionKeyPath.Length == 0)
             {
-                throw new ArgumentException("A container partition-key path is required.", nameof(containerPartitionKeyPath));
+                throw new ArgumentException("A container partition-key path is required.", nameof(partitionKeyPath));
             }
 
-            // Clone before wrapping so post-registration mutation of the caller-owned array cannot corrupt the
-            // registered path, and validate every segment: deferred (#219/#220) document writers stamp the resolved
-            // partition-key value at this declared path, so an empty/whitespace segment would break the carriage contract.
-            var partitionKeyPathSegments = (string[])containerPartitionKeyPath.Clone();
+            // Clone before storing so post-registration mutation of the caller-owned array cannot corrupt the registered
+            // path, and validate every segment: document writers stamp the resolved partition-key value at this declared
+            // path, so an empty/whitespace segment would break the carriage contract.
+            var partitionKeyPathSegments = (string[])partitionKeyPath.Clone();
             for (var i = 0; i < partitionKeyPathSegments.Length; i++)
             {
                 if (string.IsNullOrWhiteSpace(partitionKeyPathSegments[i]))
                 {
-                    throw new ArgumentException("Every container partition-key path segment must be non-null and non-whitespace.", nameof(containerPartitionKeyPath));
+                    throw new ArgumentException("Every container partition-key path segment must be non-null and non-whitespace.", nameof(partitionKeyPath));
                 }
             }
 
-            var partitionKeyPath = Array.AsReadOnly(partitionKeyPathSegments);
-            var partitionKeyResolver = new PartitionKeyResolver(resolvePartitionKey, partitionKeyPath);
+            return Array.AsReadOnly(partitionKeyPathSegments);
+        }
 
-            pipelineBuilder.Services.Replace(ServiceLifetime.Singleton, sp => new DocumentContainer(documentContainerFactory(sp)));
-            pipelineBuilder.Services.Replace(ServiceLifetime.Singleton, sp => new LeaseContainer(leaseContainerFactory(sp)));
-            pipelineBuilder.Services.Replace<PartitionKeyResolver>(ServiceLifetime.Singleton, _ => partitionKeyResolver);
-            pipelineBuilder.Services.Replace<DocumentTierReliabilitySurface, DocumentTierReliabilitySurface>(ServiceLifetime.Scoped);
-            pipelineBuilder.Services.Replace<IDocumentTierReliabilitySurface>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<DocumentTierReliabilitySurface>());
+        // Adds the per-type registration to the shared singleton registry (additive; duplicate command type throws) and
+        // registers the singleton infrastructure ONCE and idempotently across N WithCosmosDocumentReliability<T> calls.
+        private static CommandPipelineBuilder AddRegistration(this CommandPipelineBuilder pipelineBuilder, DocumentReliabilityRegistration registration)
+        {
+            DocumentReliabilityRegistry registry = GetOrCreateRegistry(pipelineBuilder.Services);
+
+            // Additive; throws (clear message) on a duplicate command-type registration.
+            registry.Add(registration);
+
+            // The Cosmos container factory derives+caches Container handles from the app-registered CosmosClient.
+            pipelineBuilder.Services.AddIfNotRegistered<CosmosContainerFactory>(
+                ServiceLifetime.Singleton, sp => new CosmosContainerFactory(sp));
+
+            // The scoped document-tier reliability surface holds the per-message handle (one message -> one registration,
+            // so no conflict). Idempotent across calls.
+            pipelineBuilder.Services.AddIfNotRegistered<DocumentTierReliabilitySurface, DocumentTierReliabilitySurface>(ServiceLifetime.Scoped);
+            pipelineBuilder.Services.AddIfNotRegistered<IDocumentTierReliabilitySurface>(
+                ServiceLifetime.Scoped, sp => sp.GetRequiredService<DocumentTierReliabilitySurface>());
 
             // The Cosmos outbox contributes the outbox-doc create-op to the framework-owned batch via the surface
-            // handle. It is resolved per the cast-at-consumption model used in core; routing outbound messages through
-            // the outbox replaces the default router (precedent: the EF provider's WithOutboxProcessingBehavior). The
-            // Cosmos provider deliberately does NOT implement IPollableOutboxStore — dispatch is the #222 change-feed
-            // relay, not a polling query (ADR-0007).
-            pipelineBuilder.Services.Replace<IBrokeredMessageOutbox, CosmosBrokeredMessageOutbox>(ServiceLifetime.Scoped);
-            pipelineBuilder.Services.Replace<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
+            // handle; routing outbound messages through the outbox replaces the default router (precedent: the EF
+            // provider's WithOutboxProcessingBehavior). The Cosmos provider deliberately does NOT implement
+            // IPollableOutboxStore — dispatch is the #222 change-feed relay, not a polling query (ADR-0007).
+            pipelineBuilder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, CosmosBrokeredMessageOutbox>(ServiceLifetime.Scoped);
+            pipelineBuilder.Services.AddIfNotRegistered<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
 
-            // OUTERMOST: register first so the CommandBehaviorPipeline reverse places it outermost.
-            pipelineBuilder.WithBehavior(typeof(DocumentTierBatchLifecycleBehavior<>));
+            // OUTERMOST: register the open-generic behavior EXACTLY ONCE (first WithBehavior = outermost via the
+            // CommandBehaviorPipeline reverse). Only the per-type registration above is additive.
+            if (!pipelineBuilder.Services.Any(descriptor =>
+                    descriptor.ServiceType == typeof(ICommandBehavior<>)
+                    && descriptor.ImplementationType == typeof(DocumentTierBatchLifecycleBehavior<>)))
+            {
+                pipelineBuilder.WithBehavior(typeof(DocumentTierBatchLifecycleBehavior<>));
+            }
 
             return pipelineBuilder;
+        }
+
+        // Resolves the single shared registry singleton instance (so additive registrations accumulate in ONE registry),
+        // creating and registering it on first call.
+        private static DocumentReliabilityRegistry GetOrCreateRegistry(IServiceCollection services)
+        {
+            ServiceDescriptor existing = services.FirstOrDefault(descriptor => descriptor.ServiceType == typeof(DocumentReliabilityRegistry));
+            if (existing?.ImplementationInstance is DocumentReliabilityRegistry registry)
+            {
+                return registry;
+            }
+
+            registry = new DocumentReliabilityRegistry();
+            services.AddSingleton(registry);
+            return registry;
         }
     }
 }
