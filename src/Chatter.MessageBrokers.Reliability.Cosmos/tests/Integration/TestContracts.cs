@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using Chatter.CQRS;
 using Chatter.CQRS.Commands;
@@ -92,6 +93,26 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             }
 
             return null;
+        }
+    }
+
+    // A spy resolver that records every invocation. Used by the non-participant-bypass test to PROVE the document tier
+    // never consults the registered participant's resolver when an UNREGISTERED command is delivered: a registry miss is
+    // a bare pass-through, so the resolver count must stay at zero for the non-participant delivery. Without this spy the
+    // bypass is only asserted by counting docs in an unattached partition, which a tier that wrongly ran (resolved null,
+    // wrote nothing there, fell back to broker-direct) would still pass — the spy pins the assertion to the actual
+    // no-resolver-call contract.
+    public sealed class SpyPartitionResolver
+    {
+        private int _calls;
+
+        // The number of times the resolver delegate was invoked across all deliveries since construction.
+        public int CallCount => Volatile.Read(ref _calls);
+
+        public PartitionKey? Resolve(InboundBrokeredMessage inboundBrokeredMessage)
+        {
+            Interlocked.Increment(ref _calls);
+            return TestResolvers.ResolvePartition(inboundBrokeredMessage);
         }
     }
 

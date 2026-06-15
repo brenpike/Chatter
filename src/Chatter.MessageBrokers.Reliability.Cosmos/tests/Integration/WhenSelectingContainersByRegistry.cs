@@ -144,15 +144,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             string partition = UniquePartition();
             string messageId = "msg-" + Guid.NewGuid().ToString("N");
 
-            // The pipeline registers a participant (so the document tier IS installed) but NOT the NonParticipantCommand,
-            // proving a registry MISS bypasses the document tier rather than the tier simply being absent.
+            // The participant is registered with a SPY resolver so the bypass is asserted against the actual contract: a
+            // registry MISS must never consult the resolver. The pipeline registers a participant (so the document tier
+            // IS installed) but NOT the NonParticipantCommand, proving a registry MISS bypasses the document tier rather
+            // than the tier simply being absent.
+            var spyResolver = new SpyPartitionResolver();
             await using CosmosReliabilityHarness harness = CosmosReliabilityHarness.Build(
                 testClient.Client,
                 pipeline => pipeline.WithCosmosDocumentReliability<PrimaryParticipantCommand>(
                     CosmosTestClient.DatabaseName,
                     CosmosTestClient.DocumentContainerName,
                     CosmosTestClient.LeaseContainerName,
-                    TestResolvers.ResolvePartition,
+                    spyResolver.Resolve,
                     CosmosTestClient.PartitionKeyPath),
                 services =>
                 {
@@ -160,17 +163,26 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                     services.AddTransient<IMessageHandler<NonParticipantCommand>, NonParticipantHandler>();
                 });
 
+            // Deliver the non-participant WITH the partition property attached to the message. Attaching it ties the
+            // absence checks below to a partition the delivered message actually carries (not an unrelated freshly
+            // generated one): a tier that wrongly ran for the non-participant would resolve THIS partition and stamp its
+            // inbox/outbox docs HERE, so a leak is now observable at the asserted partition.
             await harness.DeliverAsync(
                 messageId,
                 new NonParticipantCommand { Payload = "bypass", OutboundDestination = NonParticipantDestination, OutboundMessageId = NewOutboundId() },
-                NonParticipantReceiverPath);
+                NonParticipantReceiverPath,
+                PartitionProperty(partition));
 
             // The non-participant's Send routed broker-direct to the capturing sink (no relay involved).
             IReadOnlyList<OutboundBrokeredMessage> published = await harness.Capture.WaitForPublishedAsync(1, PublishTimeout);
             published.Where(m => m.Destination == NonParticipantDestination)
                 .Should().ContainSingle("the non-participant dispatches broker-direct");
 
-            // No document-tier batch was opened: no inbox marker and no outbox doc in the partition.
+            // The bypass is closed-by-construction: a registry miss is a bare pass-through, so the resolver is NEVER
+            // consulted for the non-participant delivery.
+            spyResolver.CallCount.Should().Be(0, "an unregistered command bypasses the document tier and never reaches a resolver");
+
+            // No document-tier batch was opened: no inbox marker and no outbox doc in the partition the message carries.
             (await CosmosEdge.CountByChatterTypeAsync(container, CosmosItemId.InboxKind, partition))
                 .Should().Be(0, "a non-participant opens no batch — no inbox marker");
             (await CosmosEdge.CountByChatterTypeAsync(container, CosmosItemId.OutboxKind, partition))
