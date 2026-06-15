@@ -6,7 +6,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -38,7 +37,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 ?? throw new InvalidOperationException(
                     "No active document-tier atomic-write handle. The Cosmos outbox can only enqueue inside the Document-Tier Batch-Lifecycle Behavior's batch scope.");
 
-            IReadOnlyList<JsonNode> partitionKeyValues = ResolvePartitionKeyValues(handle.PartitionKey, handle.PartitionKeyPath);
+            IReadOnlyList<JsonElement> partitionKeyValues = ResolvePartitionKeyValues(handle.PartitionKey, handle.PartitionKeyPath);
 
             foreach (OutboundBrokeredMessage outboundBrokeredMessage in outboundBrokeredMessages)
             {
@@ -50,7 +49,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         // Builds the outbox document and stages its CreateItemStream op through the handle (stage-and-count is one
         // indivisible action — the handle's closed-by-construction contract guarantees the op is counted).
-        private static void StageOutboxOp(ICosmosAtomicWriteHandle handle, OutboundBrokeredMessage outboundBrokeredMessage, IReadOnlyList<JsonNode> partitionKeyValues)
+        private static void StageOutboxOp(ICosmosAtomicWriteHandle handle, OutboundBrokeredMessage outboundBrokeredMessage, IReadOnlyList<JsonElement> partitionKeyValues)
         {
             CosmosOutboxDocument document = CosmosOutboxDocument.From(outboundBrokeredMessage);
             Stream payload = BuildItemStream(document, handle.PartitionKeyPath, partitionKeyValues);
@@ -61,7 +60,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         }
 
         // Renders the document body with the resolved partition-key value stamped at each container PK path segment.
-        private static Stream BuildItemStream(CosmosOutboxDocument document, IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonNode> partitionKeyValues)
+        private static Stream BuildItemStream(CosmosOutboxDocument document, IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonElement> partitionKeyValues)
         {
             var rendered = document.ToJsonObject(partitionKeyPath, partitionKeyValues);
             var bytes = JsonSerializer.SerializeToUtf8Bytes(rendered, ChatterJson.Options);
@@ -70,30 +69,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         // Recovers the scalar partition-key value(s) from the resolved PartitionKey via its public JSON-array form
         // (e.g. ["tenant-1"] for a single string PK, [42] for a numeric PK, ["a","b"] for a hierarchical PK), mapped
-        // positionally onto the path. Each value is returned as a JsonNode preserving its JSON value kind
-        // (string/number/bool/null) so the stamped document lands in the SAME logical partition the framework-owned
-        // batch was opened on — a non-string partition value is NOT coerced to a JSON string.
-        private static IReadOnlyList<JsonNode> ResolvePartitionKeyValues(PartitionKey partitionKey, IReadOnlyList<string> partitionKeyPath)
+        // positionally onto the path. Each value is returned as a cloned JsonElement — a self-contained value type
+        // detached from its backing JsonDocument — preserving its JSON value kind (string/number/bool/null) so the
+        // stamped document lands in the SAME logical partition the framework-owned batch was opened on. Callers may
+        // pass the same list to ToJsonObject for multiple documents; each call mints a fresh JsonNode from the element.
+        private static IReadOnlyList<JsonElement> ResolvePartitionKeyValues(PartitionKey partitionKey, IReadOnlyList<string> partitionKeyPath)
         {
-            JsonNode parsed = JsonNode.Parse(partitionKey.ToString());
-            if (parsed is not JsonArray array)
+            using var doc = JsonDocument.Parse(partitionKey.ToString());
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Array)
             {
                 throw new InvalidOperationException($"Unexpected partition-key serialization '{partitionKey}'; expected a JSON array.");
             }
 
-            if (array.Count != partitionKeyPath.Count)
+            if (root.GetArrayLength() != partitionKeyPath.Count)
             {
                 throw new InvalidOperationException(
-                    $"The resolved partition key has '{array.Count}' value(s) but the container partition-key path declares '{partitionKeyPath.Count}' segment(s).");
+                    $"The resolved partition key has '{root.GetArrayLength()}' value(s) but the container partition-key path declares '{partitionKeyPath.Count}' segment(s).");
             }
 
-            var values = new List<JsonNode>(array.Count);
-            for (var i = 0; i < array.Count; i++)
+            var values = new List<JsonElement>(partitionKeyPath.Count);
+            foreach (JsonElement element in root.EnumerateArray())
             {
-                // Detach each element from its parent array so it can be re-parented onto the outbox document; a null
-                // partition-key component is preserved as a JSON null leaf.
-                JsonNode element = array[i];
-                values.Add(element?.DeepClone());
+                // Clone detaches the element from the backing JsonDocument so the value remains valid after the
+                // using-scoped doc is disposed and can be reused across multiple ToJsonObject calls.
+                values.Add(element.Clone());
             }
 
             return values;

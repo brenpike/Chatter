@@ -16,6 +16,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+- Multi-message outbox drain (#219): each outbox document in a `SendToOutbox` call with two or more messages now stamps its own freshly-derived partition-key node (minted per document from a detached `JsonElement`). Previously, shared `JsonNode` instances resolved once in `SendToOutbox` were re-stamped across documents; on the second message the already-parented node threw, the batch never executed, and the message redelivered forever. Cross-document node re-parenting is now structurally impossible — the `JsonElement` value type carries no parent reference, and each `ToJsonObject` call mints a fresh `JsonNode` at stamp time.
+
 ## [0.1.0] - 2026-06-14
 
 ### Added

@@ -22,6 +22,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutbox
             return new OutboundBrokeredMessage(messageId, new byte[] { 1, 2, 3 }, context, "destination-queue", new JsonBodyConverter());
         }
 
+        private static IEnumerable<OutboundBrokeredMessage> Messages(int count)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                yield return Message($"msg-{i}");
+            }
+        }
+
         // Builds the real internal handle over a batch mock that captures each staged CreateItemStream payload, then
         // exposes the handle on the surface so the outbox contributes to the same framework-owned batch.
         private static (IBrokeredMessageOutbox outbox, DocumentTierReliabilitySurface surface, List<Stream> staged, Mock<TransactionalBatch> batch)
@@ -219,6 +227,84 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutbox
             Func<Task> act = () => outbox.SendToOutbox(Message(), transactionContext: null);
 
             await act.Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        [Fact]
+        public async Task MustStageAllDocumentsWithoutReparentThrowForTwoMessagesAndSinglePath()
+        {
+            // Regression: shared JsonNode instances from the first doc were re-stamped into the second doc,
+            // causing an already-parented-node exception. Each doc must receive its own fresh JsonNode.
+            var (outbox, surface, staged, batch) = Harness(new PartitionKey("tenant-1"), Array.AsReadOnly(new[] { "/tenantId" }));
+
+            await outbox.SendToOutbox(Messages(2), transactionContext: null);
+
+            surface.CurrentHandle.StagedOperationCount.Should().Be(2);
+            staged.Should().HaveCount(2);
+            batch.Verify(b => b.ExecuteAsync(It.IsAny<System.Threading.CancellationToken>()), Times.Never);
+
+            var doc0 = ReadStagedDocument(staged[0]);
+            var doc1 = ReadStagedDocument(staged[1]);
+            doc0.GetProperty("tenantId").GetString().Should().Be("tenant-1");
+            doc1.GetProperty("tenantId").GetString().Should().Be("tenant-1");
+            doc0.GetProperty("MessageId").GetString().Should().Be("msg-0");
+            doc1.GetProperty("MessageId").GetString().Should().Be("msg-1");
+        }
+
+        [Fact]
+        public async Task MustStageAllDocumentsWithFreshNodesForTwoMessagesAndHierarchicalPath()
+        {
+            // Regression: hierarchical paths stamp multiple segments; shared nodes across docs throw on reparent.
+            var partitionKey = new PartitionKeyBuilder().Add("acme").Add("us-east").Build();
+            var (outbox, surface, staged, batch) = Harness(partitionKey, Array.AsReadOnly(new[] { "/tenant/id", "/region" }));
+
+            await outbox.SendToOutbox(Messages(2), transactionContext: null);
+
+            surface.CurrentHandle.StagedOperationCount.Should().Be(2);
+            staged.Should().HaveCount(2);
+            batch.Verify(b => b.ExecuteAsync(It.IsAny<System.Threading.CancellationToken>()), Times.Never);
+
+            foreach (var stream in staged)
+            {
+                var doc = ReadStagedDocument(stream);
+                doc.GetProperty("tenant").GetProperty("id").GetString().Should().Be("acme");
+                doc.GetProperty("region").GetString().Should().Be("us-east");
+            }
+        }
+
+        [Fact]
+        public async Task MustPreserveNumericPartitionKeyKindOnEveryDocumentInMultiMessageDrain()
+        {
+            // Regression lock: value-kind must survive on doc #2 and beyond, not only on doc #1.
+            var (outbox, _, staged, _) = Harness(new PartitionKey(42d), Array.AsReadOnly(new[] { "/tenantId" }));
+
+            await outbox.SendToOutbox(Messages(2), transactionContext: null);
+
+            staged.Should().HaveCount(2);
+            foreach (var stream in staged)
+            {
+                var doc = ReadStagedDocument(stream);
+                doc.GetProperty("tenantId").ValueKind.Should().Be(JsonValueKind.Number);
+                doc.GetProperty("tenantId").GetDouble().Should().Be(42d);
+            }
+        }
+
+        [Fact]
+        public async Task MustPreserveMixedKindPartitionKeyOnEveryDocumentInMultiMessageDrain()
+        {
+            // Regression lock: mixed string+number hierarchical PK must survive on every doc, not only doc #1.
+            var partitionKey = new PartitionKeyBuilder().Add("acme").Add(7d).Build();
+            var (outbox, _, staged, _) = Harness(partitionKey, Array.AsReadOnly(new[] { "/tenant/id", "/shard" }));
+
+            await outbox.SendToOutbox(Messages(3), transactionContext: null);
+
+            staged.Should().HaveCount(3);
+            foreach (var stream in staged)
+            {
+                var doc = ReadStagedDocument(stream);
+                doc.GetProperty("tenant").GetProperty("id").GetString().Should().Be("acme");
+                doc.GetProperty("shard").ValueKind.Should().Be(JsonValueKind.Number);
+                doc.GetProperty("shard").GetDouble().Should().Be(7d);
+            }
         }
     }
 }

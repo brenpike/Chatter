@@ -116,13 +116,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// Composes the document body, stamping each resolved partition-key value at its declared container path
         /// segment. <paramref name="partitionKeyPath"/> and <paramref name="partitionKeyValues"/> map positionally: a
         /// hierarchical path (e.g. <c>["/tenant/id", "/region"]</c>) stamps one value per path, nesting intermediate
-        /// objects so each value lands at its real container path rather than a flattened fixed field.
+        /// objects so each value lands at its real container path rather than a flattened fixed field. Each call mints
+        /// a fresh <see cref="JsonNode"/> from the caller-supplied <see cref="JsonElement"/> values so multiple
+        /// documents may be built from the same value set without cross-document node re-parenting.
         /// </summary>
         // INVARIANT: the partition-key value is placed at the container's REAL declared path, never at a fixed field
         // named "partitionKey"; a hierarchical container stamps one leaf per path segment. The stamped value preserves
         // its JSON value kind (string/number/bool/null) so the document lands in the SAME logical partition the batch
         // was opened on — a non-string partition value must NOT be coerced to a JSON string.
-        public JsonObject ToJsonObject(IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonNode> partitionKeyValues)
+        public JsonObject ToJsonObject(IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonElement> partitionKeyValues)
         {
             if (partitionKeyPath is null || partitionKeyPath.Count == 0)
             {
@@ -158,9 +160,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         }
 
         // Stamps a single partition-key path (e.g. "/tenant/id") into the document, creating intermediate objects for
-        // each non-leaf segment so the value lands at the real container path rather than a flattened fixed field. The
-        // value is a JsonNode whose value kind (string/number/bool/null) is preserved verbatim.
-        private static void StampPartitionKeySegment(JsonObject root, string partitionKeyPath, JsonNode partitionKeyValue)
+        // each non-leaf segment so the value lands at the real container path rather than a flattened fixed field. A
+        // fresh JsonNode is minted from the JsonElement on every call so this document never receives a node that is
+        // already parented to another document — cross-document reparenting is structurally impossible.
+        private static void StampPartitionKeySegment(JsonObject root, string partitionKeyPath, JsonElement partitionKeyValue)
         {
             var segments = partitionKeyPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (segments.Length == 0)
@@ -196,7 +199,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 }
             }
 
-            current[segments[^1]] = partitionKeyValue;
+            // Mint a fresh JsonNode from the detached JsonElement so this leaf has no prior parent and each document
+            // gets its own independent node. JsonNode.Parse returns null for a JSON null literal, which is the correct
+            // JSON-null leaf for a null partition-key component.
+            current[segments[^1]] = JsonNode.Parse(partitionKeyValue.GetRawText());
         }
     }
 }
