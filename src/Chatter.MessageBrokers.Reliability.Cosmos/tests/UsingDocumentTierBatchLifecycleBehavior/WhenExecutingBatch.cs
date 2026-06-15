@@ -40,6 +40,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         private static IMessageBrokerContext MockContext()
             => new MessageBrokerContext("msg-1", Array.Empty<byte>(), null, "receiver", CancellationToken.None, new JsonBodyConverter());
 
+        // A broker context whose inbound message has a WHITESPACE MessageId — a participant that cannot be deduped by
+        // identity, so the behavior stamps NO inbox marker (#220). Tests that assert pure batch mechanics (op count,
+        // empty-batch guard, container selection) use this so the marker op does not perturb their staged-op
+        // expectations; inbox-marker stamping is covered exhaustively in WhenStampingInboxMarker.
+        private static IMessageBrokerContext MockContextWithoutMessageId()
+            => new MessageBrokerContext("   ", Array.Empty<byte>(), null, "receiver", CancellationToken.None, new JsonBodyConverter());
+
         // Add is internal; visible to the test assembly via InternalsVisibleTo.
         private static void Register(DocumentReliabilityRegistry registry, DocumentReliabilityRegistration registration)
             => registry.Add(registration);
@@ -207,8 +214,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var factory = FactoryFor("shop", "orders", container.Object);
             var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, new DocumentTierReliabilitySurface());
 
-            // next() stages nothing, so the empty-batch guard must skip ExecuteAsync entirely (no live Cosmos).
-            await behavior.Handle(new RegisteredCommand(), MockContext(), () => Task.CompletedTask);
+            // next() stages nothing AND no inbox marker is stamped (whitespace MessageId), so the empty-batch guard
+            // must skip ExecuteAsync entirely (no live Cosmos).
+            await behavior.Handle(new RegisteredCommand(), MockContextWithoutMessageId(), () => Task.CompletedTask);
 
             batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Never);
         }
@@ -300,8 +308,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var behaviorA = new DocumentTierBatchLifecycleBehavior<CommandA>(registry, factory, surface);
             var behaviorB = new DocumentTierBatchLifecycleBehavior<CommandB>(registry, factory, surface);
 
-            await behaviorA.Handle(new CommandA(), MockContext(), () => Task.CompletedTask);
-            await behaviorB.Handle(new CommandB(), MockContext(), () => Task.CompletedTask);
+            // No inbox marker is stamped (whitespace MessageId), so each batch stays empty and ExecuteAsync is skipped —
+            // this test asserts container selection only, not execution.
+            await behaviorA.Handle(new CommandA(), MockContextWithoutMessageId(), () => Task.CompletedTask);
+            await behaviorB.Handle(new CommandB(), MockContextWithoutMessageId(), () => Task.CompletedTask);
 
             // Each command opens a batch on ITS OWN registration's container — no cross-wiring.
             mockA.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
@@ -320,8 +330,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var surface = new DocumentTierReliabilitySurface();
             var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
 
+            // No inbox marker is stamped (whitespace MessageId), so the only staged op is the handler's — the count
+            // reflects exactly the closed-by-construction Stage* increment under test.
             ICosmosAtomicWriteHandle capturedHandle = null;
-            await behavior.Handle(new RegisteredCommand(), MockContext(), () =>
+            await behavior.Handle(new RegisteredCommand(), MockContextWithoutMessageId(), () =>
             {
                 capturedHandle = surface.CurrentHandle;
                 capturedHandle.StageCreateItemStream(Stream.Null);
