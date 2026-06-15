@@ -52,12 +52,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // empty batch never calls the Cosmos transport (#218 stages nothing; #219/#220 stage ops).
                 if (handle.StagedOperationCount > 0)
                 {
-                    await batch.ExecuteAsync(messageHandlerContext?.CancellationToken ?? default);
+                    TransactionalBatchResponse response = await batch.ExecuteAsync(messageHandlerContext?.CancellationToken ?? default);
+                    InspectBatchResponse(response);
                 }
             }
             finally
             {
                 _surface.CurrentHandle = null;
+            }
+        }
+
+        /// <summary>
+        /// Inspects the <see cref="TransactionalBatchResponse"/> from the single batch-execute. Because the batch is
+        /// all-or-nothing, a non-success batch means no aggregate, outbox, or marker write committed; the message must
+        /// NOT be acked, so this throws so the transport redelivers. This is the framework-owned response-inspection
+        /// seam: #220 layers confirmed-duplicate handling here (a 409 on the inbox-marker op is a swallow-no-throw), so
+        /// the per-op detail of <paramref name="response"/> is examined inside this single method rather than at the
+        /// call site — #220 can distinguish the marker 409 without rewriting the execute path.
+        /// </summary>
+        private static void InspectBatchResponse(TransactionalBatchResponse response)
+        {
+            // INVARIANT: a forced aggregate ETag/412 (or any non-success op) surfaces as IsSuccessStatusCode == false on
+            // the batch; throwing here is what prevents an ack when the writes did not commit.
+            if (response is null || !response.IsSuccessStatusCode)
+            {
+                throw new CosmosBatchExecutionException(response);
             }
         }
     }

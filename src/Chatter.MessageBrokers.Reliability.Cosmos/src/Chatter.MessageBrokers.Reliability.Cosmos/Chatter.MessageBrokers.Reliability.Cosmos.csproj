@@ -4,7 +4,7 @@
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <PackageId>Chatter.MessageBrokers.Reliability.Cosmos</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>Document-tier (Azure Cosmos DB) reliability provider skeleton for Chatter.MessageBrokers: the DI surface, document-tier reliability surface (atomic-write handle over TransactionalBatch), partition-key resolver, and the outermost batch-lifecycle behavior shell. Outbox enqueue, inbox dedup, and the change-feed relay are not yet implemented.</Description>
