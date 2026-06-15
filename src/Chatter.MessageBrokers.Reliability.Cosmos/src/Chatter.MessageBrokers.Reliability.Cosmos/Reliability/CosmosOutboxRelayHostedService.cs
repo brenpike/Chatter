@@ -107,6 +107,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                         => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, changeCancellationToken))
                     .WithInstanceName(instanceName)
                     .WithLeaseContainer(leaseContainer)
+                    // Start from the BEGINNING of the change feed, not the SDK default (current time). On a
+                    // first start or recreated/empty lease container the default start point is "now", so any
+                    // `pending` outbox documents already written before the hosted service initializes its leases
+                    // would be skipped forever — no later change is guaranteed to re-touch them — silently losing
+                    // those messages. DateTime.MinValue (UTC) anchors the feed at the start so the relay drains the
+                    // existing outbox backlog on first start. Already-delivered docs are stamped delivered+TTL and
+                    // re-published-then-deduped downstream (#220 inbox marker), so replaying from the start is safe
+                    // for this at-least-once relay.
+                    .WithStartTime(DateTime.MinValue.ToUniversalTime())
                     .Build();
 
                 await processor.StartAsync().ConfigureAwait(false);
