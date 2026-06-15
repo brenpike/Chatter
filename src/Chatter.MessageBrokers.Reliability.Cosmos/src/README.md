@@ -42,13 +42,15 @@ public void ConfigureServices(IServiceCollection services)
                         database: "shop",
                         container: "orders",
                         lease: "orders-leases",
-                        resolver: cmd => new PartitionKey(cmd.OrderId),
+                        // The resolver receives the in-flight InboundBrokeredMessage (NOT the typed command),
+                        // and may be null for in-process commands — return null then ("no resolvable partition").
+                        resolver: msg => msg is null ? null : new PartitionKey(msg.GetMessageFromBody<CreateOrder>().OrderId),
                         "/orderId")
                     .WithCosmosDocumentReliability<PostLedgerEntry>(
                         database: "fin",
                         container: "ledger",
                         lease: "ledger-leases",
-                        resolver: cmd => new PartitionKey(cmd.AccountId),
+                        resolver: msg => msg is null ? null : new PartitionKey(msg.GetMessageFromBody<PostLedgerEntry>().AccountId),
                         "/accountId");
             })
             .AddMessageBrokers(/* message broker options */);
@@ -77,7 +79,7 @@ For applications that resolve or construct containers from the service provider 
 pipeline.WithCosmosDocumentReliability<CreateOrder>(
     documentContainerFactory: sp => sp.GetRequiredService<MyContainerProvider>().GetOrdersContainer(),
     leaseContainerFactory:    sp => sp.GetRequiredService<MyContainerProvider>().GetOrdersLeaseContainer(),
-    resolver: cmd => new PartitionKey(cmd.OrderId),
+    resolver: msg => msg is null ? null : new PartitionKey(msg.GetMessageFromBody<CreateOrder>().OrderId),
     "/orderId");
 ```
 
