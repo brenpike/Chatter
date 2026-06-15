@@ -1,7 +1,6 @@
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Sending;
-using Microsoft.Azure.Cosmos;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -37,26 +36,36 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 ?? throw new InvalidOperationException(
                     "No active document-tier atomic-write handle. The Cosmos outbox can only enqueue inside the Document-Tier Batch-Lifecycle Behavior's batch scope.");
 
-            IReadOnlyList<JsonElement> partitionKeyValues = ResolvePartitionKeyValues(handle.PartitionKey, handle.PartitionKeyPath);
+            // INVARIANT: the outbox authors a reserved outbox:-prefixed id, so it must stage through the internal
+            // reserved-write facet that BYPASSES the public reserved-namespace guard (the public StageCreateItemStream
+            // would reject its own outbox: id). The active handle is always the framework's CosmosAtomicWriteHandle,
+            // which implements this facet; a handle that does not is a wiring error and must fail loudly.
+            ICosmosReservedWriteHandle reservedHandle = handle as ICosmosReservedWriteHandle
+                ?? throw new InvalidOperationException(
+                    "The active document-tier atomic-write handle does not support reserved-id staging. The Cosmos outbox " +
+                    "requires the framework handle that implements ICosmosReservedWriteHandle to author its reserved outbox: id.");
+
+            IReadOnlyList<JsonElement> partitionKeyValues = CosmosPartitionKeyStamping.RecoverPartitionKeyValues(handle.PartitionKey, handle.PartitionKeyPath);
 
             foreach (OutboundBrokeredMessage outboundBrokeredMessage in outboundBrokeredMessages)
             {
-                StageOutboxOp(handle, outboundBrokeredMessage, partitionKeyValues);
+                StageOutboxOp(handle, reservedHandle, outboundBrokeredMessage, partitionKeyValues);
             }
 
             return Task.CompletedTask;
         }
 
-        // Builds the outbox document and stages its CreateItemStream op through the handle (stage-and-count is one
-        // indivisible action — the handle's closed-by-construction contract guarantees the op is counted).
-        private static void StageOutboxOp(ICosmosAtomicWriteHandle handle, OutboundBrokeredMessage outboundBrokeredMessage, IReadOnlyList<JsonElement> partitionKeyValues)
+        // Builds the outbox document and stages its reserved CreateItemStream op through the reserved-write facet
+        // (stage-and-count is one indivisible action — the handle's closed-by-construction contract guarantees the op is
+        // counted). The reserved facet bypasses the public reserved-namespace guard so the outbox: id is accepted.
+        private static void StageOutboxOp(ICosmosAtomicWriteHandle handle, ICosmosReservedWriteHandle reservedHandle, OutboundBrokeredMessage outboundBrokeredMessage, IReadOnlyList<JsonElement> partitionKeyValues)
         {
             CosmosOutboxDocument document = CosmosOutboxDocument.From(outboundBrokeredMessage);
             Stream payload = BuildItemStream(document, handle.PartitionKeyPath, partitionKeyValues);
 
             // INVARIANT: the outbox create rides the SAME framework-owned batch as the aggregate upsert (atomicity);
             // the outbox doc is a fresh document with no ETag (the aggregate carries IfMatchEtag, the app's concern).
-            handle.StageCreateItemStream(payload);
+            reservedHandle.StageReservedCreateItemStream(payload);
         }
 
         // Renders the document body with the resolved partition-key value stamped at each container PK path segment.
@@ -65,38 +74,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             var rendered = document.ToJsonObject(partitionKeyPath, partitionKeyValues);
             var bytes = JsonSerializer.SerializeToUtf8Bytes(rendered, ChatterJson.Options);
             return new MemoryStream(bytes, writable: false);
-        }
-
-        // Recovers the scalar partition-key value(s) from the resolved PartitionKey via its public JSON-array form
-        // (e.g. ["tenant-1"] for a single string PK, [42] for a numeric PK, ["a","b"] for a hierarchical PK), mapped
-        // positionally onto the path. Each value is returned as a cloned JsonElement — a self-contained value type
-        // detached from its backing JsonDocument — preserving its JSON value kind (string/number/bool/null) so the
-        // stamped document lands in the SAME logical partition the framework-owned batch was opened on. Callers may
-        // pass the same list to ToJsonObject for multiple documents; each call mints a fresh JsonNode from the element.
-        private static IReadOnlyList<JsonElement> ResolvePartitionKeyValues(PartitionKey partitionKey, IReadOnlyList<string> partitionKeyPath)
-        {
-            using var doc = JsonDocument.Parse(partitionKey.ToString());
-            JsonElement root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Array)
-            {
-                throw new InvalidOperationException($"Unexpected partition-key serialization '{partitionKey}'; expected a JSON array.");
-            }
-
-            if (root.GetArrayLength() != partitionKeyPath.Count)
-            {
-                throw new InvalidOperationException(
-                    $"The resolved partition key has '{root.GetArrayLength()}' value(s) but the container partition-key path declares '{partitionKeyPath.Count}' segment(s).");
-            }
-
-            var values = new List<JsonElement>(partitionKeyPath.Count);
-            foreach (JsonElement element in root.EnumerateArray())
-            {
-                // Clone detaches the element from the backing JsonDocument so the value remains valid after the
-                // using-scoped doc is disposed and can be reused across multiple ToJsonObject calls.
-                values.Add(element.Clone());
-            }
-
-            return values;
         }
     }
 }

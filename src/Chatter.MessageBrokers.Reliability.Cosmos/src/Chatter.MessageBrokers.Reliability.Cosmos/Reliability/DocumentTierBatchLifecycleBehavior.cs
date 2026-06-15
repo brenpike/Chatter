@@ -5,6 +5,10 @@ using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using Microsoft.Azure.Cosmos;
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.Cosmos
@@ -22,12 +26,32 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <remarks>
     /// Three control paths: (1) non-participant — bare <c>next()</c>; (2) participant whose resolver returns a null
     /// partition key — bare <c>next()</c>, no batch opened; (3) participant with a partition — open batch, run the
-    /// framework-owned lifecycle. The single batch-execute is GUARDED: an empty batch (zero staged ops) does NOT call
+    /// framework-owned lifecycle. A participant on path (3) MUST carry a non-empty <c>MessageId</c>: a participant that
+    /// resolves a partition but has a null/whitespace <c>MessageId</c> cannot be deduped by identity, so the
+    /// once-only guarantee cannot be honored — the behavior FAILS LOUD with <see cref="InvalidOperationException"/>
+    /// BEFORE the batch is opened (nothing is staged, <c>next()</c> never runs, nothing is acked), matching the
+    /// in-memory tier which throws. The single batch-execute is GUARDED: an empty batch (zero staged ops) does NOT call
     /// the Cosmos transport, so unit tests need no live Cosmos. Must register OUTERMOST (first WithBehavior
     /// registration; the pipeline reverses behaviors so the first-registered is the outermost).
+    /// <para>
+    /// SIDE-EFFECT TIMING / handler-idempotency contract. The ordering is marker-stamp → <c>next()</c> → single
+    /// batch-execute: <c>next()</c> ALWAYS runs before the batch is executed, so a confirmed-duplicate marker-409
+    /// (surfaced only at execute time) CANNOT pre-empt the handler. On a redelivered duplicate the batched writes (the
+    /// aggregate write and the co-resident outbox doc) roll back atomically and never re-commit (EXACTLY-ONCE), but any
+    /// handler side effect performed OUTSIDE this batch (external HTTP, a non-Cosmos write) has already run and
+    /// re-executes on every redelivery (AT-LEAST-ONCE) — so handlers with non-batched side effects MUST be idempotent.
+    /// This is the deliberate cost of the no-pre-read / TOCTOU-free design and contrasts with the relational tier
+    /// (<c>BrokeredMessageInbox.ReceiveViaInbox</c>), which reads <c>HasBeenReceived</c> first and SKIPS the handler
+    /// entirely on a known duplicate, so its non-batched side effects do not re-run.
+    /// </para>
     /// </remarks>
     public sealed class DocumentTierBatchLifecycleBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
     {
+        // INVARIANT: the inbox marker is staged FIRST (before next() and before any outbox/aggregate op), so it is
+        // always batch op index 0. InspectBatchResponse reads the per-op result at this index to distinguish a
+        // confirmed-duplicate marker 409 from any other failure.
+        private const int MarkerOperationIndex = 0;
+
         private readonly DocumentReliabilityRegistry _registry;
         private readonly CosmosContainerFactory _containerFactory;
         private readonly DocumentTierReliabilitySurface _surface;
@@ -73,6 +97,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 return;
             }
 
+            // A participant that resolves a partition is on the once-only path, so it MUST carry an identity to dedup
+            // by. A null/whitespace MessageId here is a protocol/config error — without it the once-only guarantee
+            // cannot be honored — so FAIL LOUD before the batch is opened: nothing is staged, next() never runs, and
+            // nothing is acked, so a redelivery of the same identity-less message cannot be silently lost. This matches
+            // the in-memory tier, which throws. InvalidOperationException (not ArgumentException): the MessageId is not
+            // a Handle argument; it is a protocol/config violation surfaced from the inbound message.
+            if (string.IsNullOrWhiteSpace(inboundBrokeredMessage.MessageId))
+            {
+                throw new InvalidOperationException(
+                    $"Document-tier reliability participant '{typeof(TMessage)}' requires a non-empty MessageId: " +
+                    "the once-only guarantee cannot be honored without a message identity to dedup by.");
+            }
+
             Container container = _containerFactory.GetDocumentContainer(registration);
             TransactionalBatch batch = container.CreateTransactionalBatch(partitionKey.Value);
 
@@ -80,14 +117,34 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _surface.CurrentHandle = handle;
             try
             {
+                // Stamp the co-resident inbox dedup marker FIRST (before next() and before any outbox/aggregate op), so
+                // it is deterministically batch op index 0. A 409-on-create of this marker at execute is the
+                // CANDIDATE-duplicate signal (no read-then-add before the create, so no TOCTOU); InspectBatchResponseAsync
+                // then CONFIRMS it by point-reading the conflicting doc rather than inferring duplicate from the bare
+                // 409. The upstream guard has already rejected a null/whitespace MessageId, so a participant that reaches
+                // here always has a usable identity and a marker is always stamped.
+                //
+                // SIDE-EFFECT TIMING: the marker-409 is only seen at batch-execute, which runs AFTER next() below, so
+                // the duplicate signal CANNOT pre-empt the handler. On a confirmed duplicate the batched writes
+                // (aggregate + co-resident outbox) roll back atomically and never re-commit (EXACTLY-ONCE), but handler
+                // side effects performed OUTSIDE this batch (external HTTP, non-Cosmos writes) have already run and
+                // re-execute on every redelivery (AT-LEAST-ONCE) — handlers with non-batched side effects MUST be
+                // idempotent. This is the deliberate no-pre-read cost; the relational ReceiveViaInbox instead reads
+                // HasBeenReceived first and SKIPS the handler on a known duplicate, so its non-batched effects do not
+                // re-run. We do NOT add such a pre-read here — it would reintroduce the eliminated TOCTOU.
+                var markerStamped = TryStampInboxMarker(handle, inboundBrokeredMessage, registration.PartitionKeyPath);
+
                 await next();
 
                 // INVARIANT: the single batch-execute is the only commit point. Skip it when no op was staged so an
-                // empty batch never calls the Cosmos transport.
+                // empty batch never calls the Cosmos transport. A marker-only batch has StagedOperationCount > 0, so it
+                // executes — the marker MUST hit Cosmos to surface the 409 that confirms a duplicate.
                 if (handle.StagedOperationCount > 0)
                 {
-                    TransactionalBatchResponse response = await batch.ExecuteAsync(messageHandlerContext?.CancellationToken ?? default);
-                    InspectBatchResponse(response);
+                    System.Threading.CancellationToken cancellationToken = messageHandlerContext?.CancellationToken ?? default;
+                    TransactionalBatchResponse response = await batch.ExecuteAsync(cancellationToken);
+                    string markerId = CosmosItemId.ForInbox(inboundBrokeredMessage.MessageId);
+                    await InspectBatchResponseAsync(response, markerStamped, handle.Container, markerId, partitionKey.Value, inboundBrokeredMessage.MessageId, cancellationToken);
                 }
             }
             finally
@@ -96,21 +153,161 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
         }
 
+        // Stamps the co-resident inbox dedup marker as the first op on the framework-owned batch. The upstream guard in
+        // Handle has already rejected a null/whitespace MessageId, so the inbound message is guaranteed to carry a
+        // usable identity here. Returns true when a marker was staged (so InspectBatchResponse may interpret a
+        // marker-op 409 as a confirmed duplicate).
+        private static bool TryStampInboxMarker(CosmosAtomicWriteHandle handle, InboundBrokeredMessage inboundBrokeredMessage, IReadOnlyList<string> partitionKeyPath)
+        {
+            string messageId = inboundBrokeredMessage.MessageId;
+            CosmosInboxMarker marker = CosmosInboxMarker.From(messageId);
+            IReadOnlyList<JsonElement> partitionKeyValues = CosmosPartitionKeyStamping.RecoverPartitionKeyValues(handle.PartitionKey, partitionKeyPath);
+            var rendered = marker.ToJsonObject(partitionKeyPath, partitionKeyValues);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(rendered, ChatterJson.Options);
+
+            // INVARIANT: the marker authors a reserved inbox:-prefixed id, so it stages through the internal
+            // reserved-write facet that BYPASSES the public reserved-namespace guard (the public StageCreateItemStream
+            // would reject its own inbox: id). The behavior holds the concrete CosmosAtomicWriteHandle, which implements
+            // the facet directly.
+            ICosmosReservedWriteHandle reservedHandle = handle;
+            reservedHandle.StageReservedCreateItemStream(new MemoryStream(bytes, writable: false));
+            return true;
+        }
+
         /// <summary>
-        /// Inspects the <see cref="TransactionalBatchResponse"/> from the single batch-execute. Because the batch is
-        /// all-or-nothing, a non-success batch means no aggregate, outbox, or marker write committed; the message must
-        /// NOT be acked, so this throws so the transport redelivers. This is the framework-owned response-inspection
-        /// seam: #220 layers confirmed-duplicate handling here (a 409 on the inbox-marker op is a swallow-no-throw), so
-        /// the per-op detail of <paramref name="response"/> is examined inside this single method rather than at the
-        /// call site — #220 can distinguish the marker 409 without rewriting the execute path.
+        /// Inspects the <see cref="TransactionalBatchResponse"/> from the single batch-execute. The batch is
+        /// all-or-nothing, so on success every write committed and the message is acked. On non-success NOTHING
+        /// committed, and the branch decides ack-vs-redeliver:
+        /// <list type="bullet">
+        /// <item>A marker was stamped this invocation AND the per-op result at <see cref="MarkerOperationIndex"/> is a
+        /// 409 Conflict: a candidate duplicate. The framework then CONFIRMS the duplicate by point-reading the
+        /// conflicting marker document and verifying it is a genuine Chatter inbox marker for THIS message id; only then
+        /// is the message acked — return normally, NO throw, NO redeliver. If the conflicting doc is not a confirmed
+        /// Chatter inbox marker for this identity (or cannot be read), the batch redelivers instead of being silently
+        /// swallowed.</item>
+        /// <item>Any other non-success (aggregate ETag/412, a 409 on a NON-marker op, a marker showing 424
+        /// failed-dependency because another op failed, or no per-op results at all): throw
+        /// <see cref="CosmosBatchExecutionException"/> so the transport redelivers/retries.</item>
+        /// </list>
+        /// Only the MARKER op's 409 — once CONFIRMED — is swallowed; a batch-level 409 alone, or an aggregate-op 409,
+        /// must throw, so a genuine concurrency/conflict failure is never mistaken for a duplicate (conflating the two =
+        /// silent message loss).
+        /// <para>
+        /// CONFIRM, do NOT INFER. A bare marker-op 409 is no longer treated as a duplicate by inference. The reserved
+        /// <c>inbox:</c>/<c>outbox:</c> namespace guard on the public staging surface remains useful DEFENSE-IN-DEPTH,
+        /// but it is NOT the soundness basis: the application OWNS the container (it registers the
+        /// <c>CosmosClient</c> the <see cref="CosmosContainerFactory"/> derives the container from, and
+        /// <see cref="ICosmosAtomicWriteHandle.Container"/> exposes the raw container), so an app can author a doc with
+        /// an <c>inbox:{encoded(MessageId)}</c> id through a non-staging path no staging guard can close. Such a doc
+        /// would 409 the marker create; inferring "duplicate" from the bare 409 would silently lose that message's first
+        /// delivery. Instead this method point-reads the conflicting marker and treats the 409 as a duplicate ONLY when
+        /// the conflicting doc is a genuine Chatter inbox marker (its <c>_chatterType</c> discriminator equals
+        /// <see cref="CosmosItemId.InboxKind"/> AND its <c>MessageId</c> equals the inbound message id); an app-authored
+        /// reserved-prefix collision is detected and redelivered, never swallowed.
+        /// </para>
+        /// <para>
+        /// COLD-PATH ONLY, NOT a TOCTOU. The point-read runs solely on the marker-409 branch — never on the hot
+        /// (success) path. It is not a TOCTOU: the atomic marker create already FAILED with a conflict, and the read
+        /// only disambiguates WHY (a real prior marker vs. an app-authored colliding doc); it gates no subsequent write.
+        /// A NOT-FOUND read (a TTL/delete race made the conflicting doc disappear between the failed create and the
+        /// confirmation read) is non-confirmable, so the message redelivers; any other non-success read (incl. transient
+        /// 429/503) likewise cannot confirm, so it redelivers.
+        /// </para>
         /// </summary>
-        private static void InspectBatchResponse(TransactionalBatchResponse response)
+        private static async Task InspectBatchResponseAsync(
+            TransactionalBatchResponse response,
+            bool markerStamped,
+            Container container,
+            string markerId,
+            PartitionKey partitionKey,
+            string messageId,
+            System.Threading.CancellationToken cancellationToken)
         {
             // INVARIANT: a forced aggregate ETag/412 (or any non-success op) surfaces as IsSuccessStatusCode == false on
             // the batch; throwing here is what prevents an ack when the writes did not commit.
-            if (response is null || !response.IsSuccessStatusCode)
+            if (response is not null && response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            // No response, or a non-success response with no per-op results to inspect: never swallow — throw so the
+            // message redelivers. The duplicate decision REQUIRES the marker op's own 409; a batch-level status alone
+            // is not sufficient.
+            if (response is null || response.Count <= MarkerOperationIndex)
             {
                 throw new CosmosBatchExecutionException(response);
+            }
+
+            // A marker-op 409 is a CANDIDATE duplicate, not a confirmed one. Any other non-success — including a 409 on
+            // a non-marker op or a marker 424 while another op failed — falls through to the throw below
+            // (redeliver/retry).
+            TransactionalBatchOperationResult markerResult = response[MarkerOperationIndex];
+            if (markerStamped && markerResult is not null && markerResult.StatusCode == HttpStatusCode.Conflict)
+            {
+                // CONFIRM the duplicate by point-reading the conflicting doc; the atomic create already failed, so this
+                // read only disambiguates WHY (cold-path-only, gates no write — NOT a TOCTOU). The bare 409 is NOT
+                // trusted: the app owns the container and can author a reserved-prefix id through a non-staging path the
+                // staging guard cannot close, so a 409 alone could be an app-authored collision whose first delivery
+                // would be silently lost if inferred as a duplicate.
+                using ResponseMessage read = await container.ReadItemStreamAsync(markerId, partitionKey, cancellationToken: cancellationToken);
+
+                // NOT-FOUND: a TTL/delete race removed the conflicting doc between the failed create and this read, so
+                // the duplicate is non-confirmable -> redeliver. Any other non-success read (incl. transient 429/503)
+                // likewise cannot confirm -> redeliver.
+                if (read.StatusCode == HttpStatusCode.NotFound || !read.IsSuccessStatusCode)
+                {
+                    throw new CosmosBatchExecutionException(response);
+                }
+
+                // Swallow (ack, no redeliver) ONLY when the conflicting doc is a genuine Chatter inbox marker for THIS
+                // message id; otherwise an app-authored reserved-prefix collision is detected and redelivered.
+                if (IsConfirmedInboxMarker(read.Content, messageId))
+                {
+                    return;
+                }
+            }
+
+            throw new CosmosBatchExecutionException(response);
+        }
+
+        // Confirms the conflicting document is a genuine Chatter inbox marker for the expected message id: the JSON root
+        // must be an object whose discriminator field (CosmosOutboxDocument.DiscriminatorField, "_chatterType") equals
+        // the inbox kind (CosmosItemId.InboxKind, "inbox", ordinal) AND whose MessageId field
+        // (CosmosInboxMarker.MessageIdField) equals expectedMessageId (ordinal). An empty, unparseable, non-object, or
+        // field-missing payload is NOT confirmed (returns false) so the caller redelivers rather than swallowing.
+        private static bool IsConfirmedInboxMarker(Stream content, string expectedMessageId)
+        {
+            if (content is null)
+            {
+                return false;
+            }
+
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(content);
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    return false;
+                }
+
+                if (!document.RootElement.TryGetProperty(CosmosOutboxDocument.DiscriminatorField, out JsonElement discriminator)
+                    || discriminator.ValueKind != JsonValueKind.String
+                    || !string.Equals(discriminator.GetString(), CosmosItemId.InboxKind, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                if (!document.RootElement.TryGetProperty(CosmosInboxMarker.MessageIdField, out JsonElement markerMessageId)
+                    || markerMessageId.ValueKind != JsonValueKind.String)
+                {
+                    return false;
+                }
+
+                return string.Equals(markerMessageId.GetString(), expectedMessageId, StringComparison.Ordinal);
+            }
+            catch (JsonException)
+            {
+                return false;
             }
         }
     }

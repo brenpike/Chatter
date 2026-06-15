@@ -126,19 +126,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // was opened on — a non-string partition value must NOT be coerced to a JSON string.
         public JsonObject ToJsonObject(IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonElement> partitionKeyValues)
         {
-            if (partitionKeyPath is null || partitionKeyPath.Count == 0)
-            {
-                throw new ArgumentException("A container partition-key path is required to stamp the outbox document.", nameof(partitionKeyPath));
-            }
-
-            _ = partitionKeyValues ?? throw new ArgumentNullException(nameof(partitionKeyValues));
-            if (partitionKeyValues.Count != partitionKeyPath.Count)
-            {
-                throw new ArgumentException(
-                    $"Expected '{partitionKeyPath.Count}' partition-key value(s) to match the path segment count but got '{partitionKeyValues.Count}'.",
-                    nameof(partitionKeyValues));
-            }
-
             var document = new JsonObject
             {
                 [IdField] = Id,
@@ -151,58 +138,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 [MessageContextField] = SerializedMessageContext,
             };
 
-            for (var i = 0; i < partitionKeyPath.Count; i++)
-            {
-                StampPartitionKeySegment(document, partitionKeyPath[i], partitionKeyValues[i]);
-            }
+            // Delegates to the shared stamping primitive, passing the outbox document's OWN reserved-root-field set so
+            // a partition-key path that would overwrite a required outbox field fails loudly. Wire shape and stamping
+            // behavior are unchanged from the prior private implementation.
+            CosmosPartitionKeyStamping.Stamp(document, partitionKeyPath, partitionKeyValues, _reservedRootFields);
 
             return document;
-        }
-
-        // Stamps a single partition-key path (e.g. "/tenant/id") into the document, creating intermediate objects for
-        // each non-leaf segment so the value lands at the real container path rather than a flattened fixed field. A
-        // fresh JsonNode is minted from the JsonElement on every call so this document never receives a node that is
-        // already parented to another document — cross-document reparenting is structurally impossible.
-        private static void StampPartitionKeySegment(JsonObject root, string partitionKeyPath, JsonElement partitionKeyValue)
-        {
-            var segments = partitionKeyPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (segments.Length == 0)
-            {
-                throw new ArgumentException("A partition-key path segment must contain at least one property name.", nameof(partitionKeyPath));
-            }
-
-            // COLLISION GUARD: a partition-key path whose ROOT segment is a Chatter-reserved field would overwrite a
-            // required Chatter value (e.g. /id replaces the deterministic outbox id, colliding every doc in the
-            // partition; /MessageContext/x replaces the serialized context string with an object). Fail loudly rather
-            // than silently corrupt the document. This eliminates the reserved-field-overwrite class by construction.
-            if (_reservedRootFields.Contains(segments[0]))
-            {
-                throw new InvalidOperationException(
-                    $"The container partition-key path '{partitionKeyPath}' targets the Chatter-reserved outbox field '{segments[0]}'. " +
-                    "Co-resident outbox documents cannot be stamped on a partition-key path whose root segment is one of " +
-                    $"[{string.Join(", ", _reservedRootFields)}] without overwriting a required field. Use a non-reserved partition-key path for the container.");
-            }
-
-            JsonObject current = root;
-            for (var i = 0; i < segments.Length - 1; i++)
-            {
-                var segment = segments[i];
-                if (current[segment] is JsonObject existing)
-                {
-                    current = existing;
-                }
-                else
-                {
-                    var nested = new JsonObject();
-                    current[segment] = nested;
-                    current = nested;
-                }
-            }
-
-            // Mint a fresh JsonNode from the detached JsonElement so this leaf has no prior parent and each document
-            // gets its own independent node. JsonNode.Parse returns null for a JSON null literal, which is the correct
-            // JSON-null leaf for a null partition-key component.
-            current[segments[^1]] = JsonNode.Parse(partitionKeyValue.GetRawText());
         }
     }
 }

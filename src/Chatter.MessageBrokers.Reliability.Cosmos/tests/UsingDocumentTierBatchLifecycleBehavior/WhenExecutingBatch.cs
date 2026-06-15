@@ -203,11 +203,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         {
             var (container, batch) = MockContainer(executeResponse: null);
             var registry = new DocumentReliabilityRegistry();
-            Register(registry, Registration<RegisteredCommand>("shop", "orders"));
+            // A participant whose resolver returns a null partition key opens NO batch, so there is no op to commit and
+            // ExecuteAsync must never run (no live Cosmos). A participant with a resolved partition now always stamps a
+            // marker as op 0, so the batch is never empty on that path — the no-op-to-commit case is the null-partition
+            // bare-pass-through.
+            Register(registry, Registration<RegisteredCommand>("shop", "orders", resolver: _ => null));
             var factory = FactoryFor("shop", "orders", container.Object);
             var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, new DocumentTierReliabilitySurface());
 
-            // next() stages nothing, so the empty-batch guard must skip ExecuteAsync entirely (no live Cosmos).
             await behavior.Handle(new RegisteredCommand(), MockContext(), () => Task.CompletedTask);
 
             batch.Verify(b => b.ExecuteAsync(It.IsAny<CancellationToken>()), Times.Never);
@@ -252,6 +255,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
 
             (await act.Should().ThrowAsync<CosmosBatchExecutionException>())
                 .Which.StatusCode.Should().Be(HttpStatusCode.PreconditionFailed);
+            container.Verify(c => c.ReadItemStreamAsync(
+                It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Never, "a non-success batch with no marker-409 never triggers the confirmation read (cold-path-only)");
         }
 
         [Fact]
@@ -280,10 +286,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         [Fact]
         public async Task MustSelectPerCommandContainerWithNoCrossWiring()
         {
-            var containerA = Mock.Of<Container>(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()) == Mock.Of<TransactionalBatch>());
-            var containerB = Mock.Of<Container>(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()) == Mock.Of<TransactionalBatch>());
-            var mockA = Mock.Get(containerA);
-            var mockB = Mock.Get(containerB);
+            var (containerMockA, _) = MockContainer(MockResponse(HttpStatusCode.OK, isSuccess: true));
+            var (containerMockB, _) = MockContainer(MockResponse(HttpStatusCode.OK, isSuccess: true));
+            var containerA = containerMockA.Object;
+            var containerB = containerMockB.Object;
 
             var client = new Mock<CosmosClient>();
             client.Setup(c => c.GetContainer("dbA", "containerA")).Returns(containerA);
@@ -300,12 +306,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var behaviorA = new DocumentTierBatchLifecycleBehavior<CommandA>(registry, factory, surface);
             var behaviorB = new DocumentTierBatchLifecycleBehavior<CommandB>(registry, factory, surface);
 
+            // A valid MessageId stamps the inbox marker as op 0 on each batch; this test asserts container selection
+            // only — each command opens its batch on ITS OWN registration's container, no cross-wiring.
             await behaviorA.Handle(new CommandA(), MockContext(), () => Task.CompletedTask);
             await behaviorB.Handle(new CommandB(), MockContext(), () => Task.CompletedTask);
 
-            // Each command opens a batch on ITS OWN registration's container — no cross-wiring.
-            mockA.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
-            mockB.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
+            containerMockA.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
+            containerMockB.Verify(c => c.CreateTransactionalBatch(It.IsAny<PartitionKey>()), Times.Once);
         }
 
         [Fact]
@@ -320,6 +327,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             var surface = new DocumentTierReliabilitySurface();
             var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
 
+            // A valid MessageId stamps the inbox marker as op 0, then the handler stages one op — so the count reflects
+            // both: the marker plus the handler's closed-by-construction Stage* increment under test.
             ICosmosAtomicWriteHandle capturedHandle = null;
             await behavior.Handle(new RegisteredCommand(), MockContext(), () =>
             {
@@ -328,12 +337,114 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
                 return Task.CompletedTask;
             });
 
-            capturedHandle.StagedOperationCount.Should().Be(1);
+            capturedHandle.StagedOperationCount.Should().Be(2, "the inbox marker (op 0) plus the handler's staged op");
 
             // The closed-by-construction contract: no public Batch getter or MarkOperationStaged member exists.
             var handleType = typeof(ICosmosAtomicWriteHandle);
             handleType.GetProperty("Batch").Should().BeNull("the raw batch must not be publicly reachable for op-adds");
             handleType.GetMethod("MarkOperationStaged").Should().BeNull("staging and counting must be one indivisible action via the Stage* methods");
+        }
+
+        // A direct handle over a batch mock that records each CreateItemStream op, for the reserved-namespace guard tests
+        // (no behavior/pipeline needed — the guard lives on the handle's public staging methods).
+        private static (CosmosAtomicWriteHandle handle, Mock<TransactionalBatch> batch) DirectHandle()
+        {
+            var batch = new Mock<TransactionalBatch>();
+            batch.Setup(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
+                 .Returns(batch.Object);
+            var handle = new CosmosAtomicWriteHandle(
+                Mock.Of<Container>(), batch.Object, new PartitionKey("pk"), Array.AsReadOnly(new[] { "/tenantId" }));
+            return (handle, batch);
+        }
+
+        private static MemoryStream JsonPayload(string json)
+            => new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json), writable: false);
+
+        // Iter-2 closure: an app create whose ITEM serializes to a reserved-prefix id must be rejected on the sole
+        // surviving public create/upsert path (StageCreateItemStream), whose guard keys on the PERSISTED item.id peeked
+        // from the payload bytes the SDK reads — not on a separate parameter that could diverge from what Cosmos
+        // persists. The removed typed StageCreateItem<T>/StageUpsertItem<T> guarded an explicit `id` PARAMETER that the
+        // SDK ignored (it derives the persisted id from item.id), so a caller could pass id:"safe" while the item
+        // serialized to {"id":"inbox:..."} and stage a reserved-prefix doc unguarded — silent first-delivery-loss.
+        [Fact]
+        public void MustRejectPublicCreateWhenItemSerializesToReservedId()
+        {
+            var (handle, batch) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = JsonPayload($"{{\"id\":\"{CosmosItemId.ForInbox("msg-1")}\"}}");
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().Throw<ArgumentException>("the peek-guard rejects a payload whose persisted item.id is reserved-prefix");
+            handle.StagedOperationCount.Should().Be(0);
+            batch.Verify(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()), Times.Never);
+        }
+
+        [Fact]
+        public void MustAllowPublicCreateItemStreamWhenPayloadIdIsNonReserved()
+        {
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = JsonPayload("{\"id\":\"order:abc\",\"value\":1}");
+
+            publicHandle.StageCreateItemStream(payload);
+
+            handle.StagedOperationCount.Should().Be(1, "a non-reserved app id passes the peek-guard and stages");
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("{}")]
+        [InlineData("[1,2,3]")]
+        [InlineData("\"just-a-string\"")]
+        [InlineData("not-json-at-all")]
+        public void MustAllowPublicCreateItemStreamForIdlessOrUnparseablePayload(string payloadText)
+        {
+            // An empty, non-object, or unparseable payload is idless (non-reserved) and must pass — the peek must not
+            // throw on these shapes.
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = JsonPayload(payloadText);
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().NotThrow();
+            handle.StagedOperationCount.Should().Be(1);
+        }
+
+        [Fact]
+        public void MustAllowPublicCreateItemStreamForStreamNull()
+        {
+            // Stream.Null is empty -> idless -> non-reserved -> passes (the existing batch-mechanics tests rely on this).
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+
+            Action act = () => publicHandle.StageCreateItemStream(Stream.Null);
+
+            act.Should().NotThrow();
+            handle.StagedOperationCount.Should().Be(1);
+        }
+
+        [Fact]
+        public void MustReadSamePayloadBytesAfterPeekRestoringStreamPosition()
+        {
+            // The peek must not corrupt the stream the SDK later reads: capture the staged stream and confirm it still
+            // yields the full original payload from position 0.
+            var (handle, batch) = DirectHandle();
+            Stream captured = null;
+            batch.Setup(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
+                 .Callback<Stream, TransactionalBatchItemRequestOptions>((s, _) => captured = s)
+                 .Returns(batch.Object);
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            var json = "{\"id\":\"order:abc\",\"value\":1}";
+            using var payload = JsonPayload(json);
+
+            publicHandle.StageCreateItemStream(payload);
+
+            captured.Should().NotBeNull();
+            captured.Position = 0;
+            using var reader = new StreamReader(captured);
+            reader.ReadToEnd().Should().Be(json, "the SDK must read the same bytes the peek inspected");
         }
     }
 }

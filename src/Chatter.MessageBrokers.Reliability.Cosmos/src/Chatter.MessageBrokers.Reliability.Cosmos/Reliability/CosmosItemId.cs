@@ -19,6 +19,74 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public const string InboxKind = "inbox";
 
         /// <summary>
+        /// The Chatter-reserved item-id prefixes (<c>"{kind}:"</c>), derived from the kind constants so there is a single
+        /// ground truth — adding a kind constant extends this set, never a parallel literal list. An app document whose
+        /// item id starts with one of these prefixes is forbidden on the public atomic-write surface (see
+        /// <see cref="GuardNotReserved"/>).
+        /// </summary>
+        private static readonly string[] _reservedIdPrefixes = { OutboxKind + ":", InboxKind + ":" };
+
+        /// <summary>
+        /// True when <paramref name="id"/> begins with any Chatter-reserved id prefix (<c>"outbox:"</c> /
+        /// <c>"inbox:"</c>). The match is an ordinal PREFIX test (not a substring search): only an id that actually leads
+        /// with a reserved <c>"{kind}:"</c> is reserved.
+        /// </summary>
+        /// <remarks>
+        /// This predicate backs the reserved-namespace guard on the public staging surface, which is useful
+        /// DEFENSE-IN-DEPTH against an app accidentally authoring a reserved-prefix id through a staging method. It is NO
+        /// LONGER the soundness basis for the inbox marker-409 → confirmed-duplicate decision: the application OWNS the
+        /// container (it registers the <c>CosmosClient</c> the container is derived from, and the atomic-write handle
+        /// exposes the raw container), so an app can author a reserved-prefix id through a non-staging path no staging
+        /// guard can close. Soundness now comes from CONFIRMING the conflicting doc at execute time
+        /// (<c>DocumentTierBatchLifecycleBehavior.InspectBatchResponseAsync</c> point-reads the conflicting marker and
+        /// treats a 409 as a duplicate only when the doc is a genuine Chatter inbox marker for that message id),
+        /// NOT from inferring duplicate from a bare marker-409.
+        /// </remarks>
+        public static bool IsReserved(string id)
+        {
+            if (id is null)
+            {
+                return false;
+            }
+
+            foreach (string reservedPrefix in _reservedIdPrefixes)
+            {
+                if (id.StartsWith(reservedPrefix, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Throws <see cref="ArgumentException"/> when <paramref name="id"/> is in the Chatter-reserved id namespace
+        /// (<see cref="IsReserved"/>), naming the reserved namespace and the offending id. This is the staging-time guard
+        /// the public atomic-write surface applies so an app caller cannot author a doc carrying a reserved
+        /// <c>inbox:</c>/<c>outbox:</c> id; framework reserved-id construction flows through <see cref="Build"/> and the
+        /// internal reserved-write path, which are NOT subject to this guard.
+        /// </summary>
+        /// <remarks>
+        /// This guard is DEFENSE-IN-DEPTH on the public staging surface (see <see cref="IsReserved"/>) — it rejects at
+        /// staging time, consistent with the existing length and forbidden-character guards on <see cref="Build"/>. It
+        /// is NO LONGER the soundness basis for the inbox marker-409 → confirmed-duplicate decision: that soundness now
+        /// comes from CONFIRMING the conflicting doc at execute time, because the app owns the container and can author
+        /// a reserved-prefix id through a non-staging path this guard cannot close.
+        /// </remarks>
+        public static void GuardNotReserved(string id, string paramName)
+        {
+            if (IsReserved(id))
+            {
+                throw new ArgumentException(
+                    $"The item id '{id}' is in the Chatter-reserved id namespace ('{OutboxKind}:'/'{InboxKind}:'). " +
+                    "Application documents must not author reserved-prefix ids through the public staging surface; the " +
+                    "framework owns this namespace (defense-in-depth — the marker-409 duplicate decision is confirmed " +
+                    "against the conflicting doc, not inferred from the reserved namespace).", paramName);
+            }
+        }
+
+        /// <summary>
         /// Builds the outbox document id <c>outbox:{encoded(messageId)}</c>.
         /// </summary>
         public static string ForOutbox(string messageId) => Build(OutboxKind, messageId);

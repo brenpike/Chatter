@@ -2,7 +2,7 @@
 
 Document-tier (NoSQL) reliability for [Chatter.MessageBrokers](#chatter-messagebrokers), backed by Azure Cosmos DB.
 
-> **Status — 0.2.0 (unreleased).** Outbox enqueue (#219) is implemented: the provider stages the co-resident outbox document onto the framework-owned `TransactionalBatch` atomically with the handler's own aggregate write. Inbox dedup (#220) and the change-feed relay (#222) are **not yet implemented**.
+> **Status — 0.2.0 (unreleased).** Outbox enqueue (#219) is implemented: the provider stages the co-resident outbox document onto the framework-owned `TransactionalBatch` atomically with the handler's own aggregate write. Inbox dedup (#220) is implemented: the Document-Tier Batch-Lifecycle Behavior stamps a co-resident `inbox:` marker into the framework-owned batch before `next()`; a 409 create-conflict on the marker (detected post-execute) is a *candidate* duplicate that is **confirmed by point-reading the conflicting document** before the message is acked — it is treated as a duplicate only when that doc is a genuine Chatter inbox marker (its `_chatterType` equals `inbox` AND its `MessageId` equals the inbound message id), and otherwise the message is redelivered. This closes the silent-message-loss class by construction: because the app owns the container, an app-authored `inbox:`-prefixed collision is detected and redelivered rather than silently swallowed. The public atomic-write surface still rejects reserved-prefix ids as **defense-in-depth**, but soundness comes from confirming the conflicting doc, not from the reserved namespace. The change-feed relay (#222) is **not yet implemented**.
 
 ## Overview
 
@@ -11,6 +11,17 @@ Document-tier (NoSQL) reliability for [Chatter.MessageBrokers](#chatter-messageb
 The two tiers share **only** the abstract enqueue / inbox / message contracts — not the EF-shaped `TransactionContext` / `InboxBehavior` mechanics. The document tier carries its document-store primitives (resolved partition key, bound container, batch handle, ETag) on its own provider-shaped **document-tier reliability surface**.
 
 See [ADR-0006](../../docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md), [ADR-0007](../../docs/adr/0007-cosmos-outbox-co-resident-change-feed-relay.md), and [ADR-0008](../../docs/adr/0008-document-tier-participation-model-and-multi-container-via-per-command-container-registry.md) for the design.
+
+### Handler idempotency contract
+
+The document-tier inbox is deliberately **no-pre-read / TOCTOU-free**: rather than checking "have I seen this message?" before running the handler, the Document-Tier Batch-Lifecycle Behavior stamps the `inbox:` marker as batch op 0, calls `next()` (your handler runs), and only then executes the single `TransactionalBatch`. The confirmed-duplicate signal is a 409 create-conflict on the marker op, surfaced **after** the handler has already run. This eliminates the read-then-add race a pre-read would reintroduce, but it splits the once-only guarantee in two — and handlers must be written to that split:
+
+- **Batched writes are EXACTLY-ONCE.** Anything staged onto the framework-owned batch — the aggregate write and the co-resident outbox document — rides the same all-or-nothing `TransactionalBatch`. On a confirmed-duplicate marker-409 the entire batch fails atomically, so on a redelivered duplicate **nothing batched commits a second time**.
+- **Handler side effects performed OUTSIDE the batch are AT-LEAST-ONCE.** Because the handler runs *before* batch-execute, the marker-409 cannot pre-empt it. Any effect the handler performs outside the Cosmos batch — an external HTTP call, a non-Cosmos write, a message sent through a non-batched path — has **already happened** by the time the duplicate is detected, and will happen again on every redelivery. **Handlers with non-batched side effects MUST therefore be idempotent.**
+
+This is the price of the TOCTOU-free design, and it is the one place the two tiers' contracts differ. The relational tier (`BrokeredMessageInbox.ReceiveViaInbox`) reads `HasBeenReceived` first and **skips the handler entirely** on a known duplicate, so its non-batched side effects do not re-run. The document tier intentionally has no such pre-read, so it cannot offer the same skip — it trades the relational tier's pre-read (and the TOCTOU window that comes with it) for closed-by-construction batched-write dedup, at the cost of pushing non-batched-side-effect idempotency onto the handler.
+
+A participant command MUST carry a non-empty `MessageId`. The `inbox:` marker is keyed on the message identity, so a participant that resolves a partition but arrives with a null/whitespace `MessageId` cannot be deduped — the once-only guarantee cannot be honored. Rather than silently proceed (which would leave a redelivery of the same identity-less message undetectable), the Document-Tier Batch-Lifecycle Behavior **fails loud**: it throws `InvalidOperationException` before opening the batch, so nothing is staged, your handler never runs, and the message is not acked. A participant without a `MessageId` is a protocol/config error, not a runtime condition to tolerate.
 
 ## Installation
 
