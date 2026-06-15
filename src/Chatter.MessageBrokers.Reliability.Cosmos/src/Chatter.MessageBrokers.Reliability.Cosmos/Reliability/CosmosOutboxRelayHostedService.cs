@@ -11,10 +11,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 {
     /// <summary>
     /// Hosts the #222 document-tier change-feed outbox relay: one Cosmos <see cref="ChangeFeedProcessor"/> per distinct
-    /// PHYSICAL (monitored, lease) container pair RESOLVED from the <see cref="DocumentReliabilityRegistry"/> — NOT one
-    /// per command type (many command types may share one container, ADR-0008). Each processor monitors its container's
-    /// change feed and feeds every change through the testable <see cref="CosmosOutboxRelay"/> core, which filters to
-    /// outbox+pending documents, publishes them, and stamps delivered+TTL.
+    /// change-feed SOURCE IDENTITY drawn from the <see cref="DocumentReliabilityRegistry"/> — NOT one per command type
+    /// (many command types may share one source, ADR-0008). Each processor monitors its container's change feed and feeds
+    /// every change through the testable <see cref="CosmosOutboxRelay"/> core, which filters to outbox+pending documents,
+    /// publishes them, and stamps delivered+TTL.
     /// </summary>
     /// <remarks>
     /// The SDK plumbing is kept deliberately thin (coverage targets <see cref="CosmosOutboxRelay"/>): this host derives
@@ -24,25 +24,40 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// by the relay propagates out of the handler so the SDK does NOT checkpoint the batch — the unpublished document
     /// re-surfaces on the next pass (at-least-once) rather than the lease advancing past it.
     /// <para>
-    /// INVARIANT: the fan-out dedupes on the RESOLVED physical container identity
-    /// (<c>monitored.Database.Id</c>/<c>monitored.Id</c>/<c>lease.Database.Id</c>/<c>lease.Id</c>), NOT on the
-    /// registration's <c>(Database, ContainerName, LeaseName)</c> triple. The advanced <c>WithCosmosDocumentReliability</c>
-    /// overload SYNTHESIZES that triple from the command type while resolving the REAL containers via app-supplied
-    /// factories, so two command types whose factories resolve the SAME physical document+lease containers carry DISTINCT
-    /// synthetic triples; deduping on the triple would split one physical lease into two processors and double-publish
-    /// every pending outbox doc (ADR-0008: one processor per physical container). Keying on the resolved identity cannot
-    /// diverge from the thing it dedupes.
+    /// INVARIANT: the fan-out dedup key is DECLARED-OR-GROUND-TRUTH, never INFERRED from an untrusted handle (#222). The
+    /// eliminated class is the inferred-key split/collapse: prior keys read SOME-BUT-NOT-ALL identity dimensions off the
+    /// resolved handle, so a missing dimension could SPLIT one logical source into two processors (double-publish) or two
+    /// distinct sources could COLLAPSE into one (silent non-publish of the skipped source). The key is now sourced two
+    /// ways, each cannot diverge from the thing it dedupes:
+    /// <list type="bullet">
+    /// <item>
+    /// ADVANCED PATH (registration carries a <see cref="DocumentReliabilityRegistration.DeclaredSourceIdentity"/>): the
+    /// caller controls the resolved handle, so the relay does NOT read the handle's account endpoint or names — it keys on
+    /// the caller-DECLARED <c>(monitored, lease)</c> identity. Same declared identity ⇒ one processor; distinct declared
+    /// identities ⇒ distinct processors, even when the resolved handles look identical.
+    /// </item>
+    /// <item>
+    /// PLAIN PATH (declared identity is <c>null</c>): the handle is provider-derived from the app-registered
+    /// <see cref="CosmosClient"/>, so it is GROUND TRUTH. The key is the COMPLETE resolved identity — account ENDPOINT
+    /// plus database id plus container id, for BOTH monitored and lease. Adding the account endpoint to the former
+    /// four-tuple closes the cross-account collapse: identically-named containers in DIFFERENT accounts no longer share a
+    /// key.
+    /// </item>
+    /// </list>
+    /// Because the key is declared-or-ground-truth, no missing or misreported dimension can split or collapse it.
     /// </para>
     /// <para>
-    /// <c>processorName</c> is STABLE per physical key (a constant prefix + the physical key) so every application instance
-    /// sharing a lease cooperates on the same logical processor; <c>instanceName</c> is UNIQUE per host (machine + a GUID)
-    /// so co-located instances do not collide on a lease.
+    /// <c>processorName</c> is STABLE per source-identity key (a constant prefix + the complete key) so every application
+    /// instance sharing a source cooperates on the same logical processor and two distinct sources never share a
+    /// <c>processorName</c>; <c>instanceName</c> is UNIQUE per host (machine + a GUID) so co-located instances do not
+    /// collide on a lease.
     /// </para>
     /// </remarks>
     internal sealed class CosmosOutboxRelayHostedService : IHostedService
     {
-        // Stable processorName prefix; combined with the RESOLVED physical-container key it yields a deterministic
-        // processor identity shared across all app instances draining the same lease.
+        // Stable processorName prefix; combined with the COMPLETE source-identity key (declared on the advanced path,
+        // ground-truth-derived on the plain path) it yields a deterministic processor identity shared across all app
+        // instances draining the same source.
         private const string ProcessorNamePrefix = "chatter-cosmos-outbox-relay";
 
         private readonly DocumentReliabilityRegistry _registry;
@@ -120,17 +135,20 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
         }
 
-        // One descriptor per distinct PHYSICAL (monitored, lease) container pair (ADR-0008). Each registration is RESOLVED
-        // FIRST — the monitored and lease container handles are derived via the factory — and deduped on the resolved
-        // physical identity (monitored.Database.Id / monitored.Id / lease.Database.Id / lease.Id), NOT on the
-        // registration's (Database, ContainerName, LeaseName) triple. The advanced overload synthesizes that triple from
-        // the command type while resolving the same physical containers, so deduping on the triple would split one
-        // physical lease into two processors and double-publish every pending outbox doc. The first registration seen for
-        // a physical key wins and supplies the resolved handles + partition-key path; subsequent registrations resolving
-        // to the same physical key are skipped (no duplicate processor on the same lease). processorName is derived from
-        // the SAME physical key so all app instances sharing a physical lease cooperate on one logical processor.
-        // internal (not private) so the resolve-then-dedup is unit-testable without the live SDK change-feed plumbing; the
-        // assembly exposes internals to the test project.
+        // One descriptor per distinct change-feed SOURCE-IDENTITY key (ADR-0008). The key is DECLARED-OR-GROUND-TRUTH,
+        // never INFERRED from an untrusted handle (#222):
+        //   - ADVANCED PATH (registration carries a DeclaredSourceIdentity): the caller controls the resolved handle, so
+        //     the relay does NOT read .Endpoint / ids off it — it keys on the caller-declared (monitored, lease) identity.
+        //   - PLAIN PATH (declared identity null): the handle is provider-derived from the app CosmosClient (ground
+        //     truth), so the key is the COMPLETE resolved identity: account endpoint + database id + container id, for
+        //     BOTH monitored and lease. The account endpoint is added to the former four-tuple so identically-named
+        //     containers in DIFFERENT accounts no longer collapse.
+        // Each registration is resolved first (monitored + lease handles via the factory), then deduped on its key. The
+        // first registration seen for a key wins and supplies the resolved handles + partition-key path; subsequent
+        // registrations resolving to the same key are skipped (no duplicate processor on the same source). processorName
+        // is derived from the SAME complete key so all app instances sharing a source cooperate on one logical processor
+        // and two distinct sources never share a processorName. internal (not private) so the resolve-then-dedup is
+        // unit-testable without the live SDK change-feed plumbing; the assembly exposes internals to the test project.
         internal IReadOnlyList<RelayProcessorDescriptor> DistinctResolvedProcessorDescriptors()
         {
             var descriptors = new List<RelayProcessorDescriptor>();
@@ -141,15 +159,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 Container monitoredContainer = _containerFactory.GetDocumentContainer(registration);
                 Container leaseContainer = _containerFactory.GetLeaseContainer(registration);
 
-                string physicalKey = monitoredContainer.Database.Id + "\0" + monitoredContainer.Id + "\0"
-                    + leaseContainer.Database.Id + "\0" + leaseContainer.Id;
-                if (!seen.Add(physicalKey))
+                string sourceIdentityKey = BuildSourceIdentityKey(registration, monitoredContainer, leaseContainer);
+                if (!seen.Add(sourceIdentityKey))
                 {
                     continue;
                 }
 
                 descriptors.Add(new RelayProcessorDescriptor(
-                    $"{ProcessorNamePrefix}:{physicalKey}",
+                    $"{ProcessorNamePrefix}:{sourceIdentityKey}",
                     monitoredContainer,
                     leaseContainer,
                     registration.PartitionKeyPath));
@@ -157,6 +174,29 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             return descriptors;
         }
+
+        // Builds the COMPLETE source-identity dedup key. On the advanced path the relay MUST NOT read .Endpoint or ids off
+        // the (untrusted, caller-controlled) handle — it uses the caller-declared identity. On the plain path the handle is
+        // provider-derived ground truth, so the key is account endpoint + database id + container id for both monitored and
+        // lease. The endpoint Uri is normalized to AbsoluteUri (ordinal) so a trailing-slash or host-case difference does
+        // not spuriously split one account into two keys. Joined with "\0" and compared under StringComparer.Ordinal.
+        private static string BuildSourceIdentityKey(DocumentReliabilityRegistration registration,
+                                                     Container monitoredContainer,
+                                                     Container leaseContainer)
+        {
+            if (registration.DeclaredSourceIdentity is CosmosSourceIdentity declared)
+            {
+                return "declared\0" + declared.Monitored + "\0" + declared.Lease;
+            }
+
+            return "ground-truth\0"
+                + NormalizeEndpoint(monitoredContainer.Database.Client.Endpoint) + "\0"
+                + monitoredContainer.Database.Id + "\0" + monitoredContainer.Id + "\0"
+                + NormalizeEndpoint(leaseContainer.Database.Client.Endpoint) + "\0"
+                + leaseContainer.Database.Id + "\0" + leaseContainer.Id;
+        }
+
+        private static string NormalizeEndpoint(Uri endpoint) => endpoint?.AbsoluteUri ?? string.Empty;
 
         internal readonly struct RelayProcessorDescriptor
         {

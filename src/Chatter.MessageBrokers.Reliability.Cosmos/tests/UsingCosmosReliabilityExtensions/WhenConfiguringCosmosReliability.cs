@@ -329,6 +329,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             var builder = CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
                 _ => document,
                 _ => lease,
+                monitoredSourceIdentity: "orders-source",
+                leaseSourceIdentity: "orders-lease-source",
                 _ => new PartitionKey("pk"),
                 "/tenantId"));
 
@@ -337,10 +339,47 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             registry.TryGet(typeof(CreateOrder), out var registration).Should().BeTrue();
             registration.DocumentContainerFactory.Should().NotBeNull();
             registration.LeaseContainerFactory.Should().NotBeNull();
+            registration.DeclaredSourceIdentity.Should().NotBeNull();
+            registration.DeclaredSourceIdentity.Value.Monitored.Should().Be("orders-source");
+            registration.DeclaredSourceIdentity.Value.Lease.Should().Be("orders-lease-source");
 
             var factory = provider.GetRequiredService<CosmosContainerFactory>();
             factory.GetDocumentContainer(registration).Should().BeSameAs(document);
             factory.GetLeaseContainer(registration).Should().BeSameAs(lease);
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        [InlineData(null)]
+        public void MustRejectInvalidMonitoredSourceIdentityOnAdvancedOverload(string invalidIdentity)
+        {
+            Action configure = () => CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
+                _ => Mock.Of<Container>(),
+                _ => Mock.Of<Container>(),
+                monitoredSourceIdentity: invalidIdentity,
+                leaseSourceIdentity: "orders-lease-source",
+                _ => new PartitionKey("pk"),
+                "/tenantId"));
+
+            configure.Should().Throw<ArgumentException>();
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        [InlineData(null)]
+        public void MustRejectInvalidLeaseSourceIdentityOnAdvancedOverload(string invalidIdentity)
+        {
+            Action configure = () => CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
+                _ => Mock.Of<Container>(),
+                _ => Mock.Of<Container>(),
+                monitoredSourceIdentity: "orders-source",
+                leaseSourceIdentity: invalidIdentity,
+                _ => new PartitionKey("pk"),
+                "/tenantId"));
+
+            configure.Should().Throw<ArgumentException>();
         }
 
         [Fact]

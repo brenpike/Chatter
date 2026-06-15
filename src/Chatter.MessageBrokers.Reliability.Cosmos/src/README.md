@@ -2,7 +2,7 @@
 
 Document-tier (NoSQL) reliability for [Chatter.MessageBrokers](#chatter-messagebrokers), backed by Azure Cosmos DB.
 
-> **Status — 0.2.0 (unreleased).** Outbox enqueue (#219) is implemented: the provider stages the co-resident outbox document onto the framework-owned `TransactionalBatch` atomically with the handler's own aggregate write. Inbox dedup (#220) is implemented: the Document-Tier Batch-Lifecycle Behavior stamps a co-resident `inbox:` marker into the framework-owned batch before `next()`; a 409 create-conflict on the marker (detected post-execute) is a *candidate* duplicate that is **confirmed by point-reading the conflicting document** before the message is acked — it is treated as a duplicate only when that doc is a genuine Chatter inbox marker (its `_chatterType` equals `inbox` AND its `MessageId` equals the inbound message id), and otherwise the message is redelivered. This closes the silent-message-loss class by construction: because the app owns the container, an app-authored `inbox:`-prefixed collision is detected and redelivered rather than silently swallowed. The public atomic-write surface still rejects reserved-prefix ids as **defense-in-depth**, but soundness comes from confirming the conflicting doc, not from the reserved namespace. The change-feed relay (#222) is **implemented**: a hosted `ChangeFeedProcessor` (one per distinct `(database, container, lease)` triple) drains the co-resident `_chatterType="outbox"`/`status="pending"` documents, publishes each through the broker, then marks it `delivered` and stamps a TTL so delivered documents self-purge. The relay is **at-least-once** (downstream consumers dedup via the `inbox:` marker) and requires the container to have TTL enabled (`defaultTtl` set) for the post-delivery purge — see [Change-Feed Relay](#change-feed-relay) below.
+> **Status — 0.2.0 (unreleased).** Outbox enqueue (#219) is implemented: the provider stages the co-resident outbox document onto the framework-owned `TransactionalBatch` atomically with the handler's own aggregate write. Inbox dedup (#220) is implemented: the Document-Tier Batch-Lifecycle Behavior stamps a co-resident `inbox:` marker into the framework-owned batch before `next()`; a 409 create-conflict on the marker (detected post-execute) is a *candidate* duplicate that is **confirmed by point-reading the conflicting document** before the message is acked — it is treated as a duplicate only when that doc is a genuine Chatter inbox marker (its `_chatterType` equals `inbox` AND its `MessageId` equals the inbound message id), and otherwise the message is redelivered. This closes the silent-message-loss class by construction: because the app owns the container, an app-authored `inbox:`-prefixed collision is detected and redelivered rather than silently swallowed. The public atomic-write surface still rejects reserved-prefix ids as **defense-in-depth**, but soundness comes from confirming the conflicting doc, not from the reserved namespace. The change-feed relay (#222) is **implemented**: a hosted `ChangeFeedProcessor` (one per distinct change-feed **source identity** — caller-declared on the advanced overload, ground-truth-derived incl. the account endpoint on the plain overload) drains the co-resident `_chatterType="outbox"`/`status="pending"` documents, publishes each through the broker, then marks it `delivered` and stamps a TTL so delivered documents self-purge. The relay is **at-least-once** (downstream consumers dedup via the `inbox:` marker) and requires the container to have TTL enabled (`defaultTtl` set) for the post-delivery purge — see [Change-Feed Relay](#change-feed-relay) below.
 
 ## Overview
 
@@ -84,7 +84,7 @@ Container handles are derived and cached by the singleton `CosmosContainerFactor
 
 ## Change-Feed Relay
 
-Dispatch on the document tier is a **change-feed relay**, not a polling query. When you register at least one participating command type, the provider registers a hosted `IHostedService` that runs one Cosmos `ChangeFeedProcessor` per distinct `(database, container, lease)` triple drawn from the registry — many command types may share one container, so registrations are deduped on the triple (one processor per lease, not one per command type). The host resolves the registry, the container factory, the broker `IMessagingInfrastructureProvider`, and the `IBodyConverterFactory` from DI; it owns no `CosmosClient` (the app does).
+Dispatch on the document tier is a **change-feed relay**, not a polling query. When you register at least one participating command type, the provider registers a hosted `IHostedService` that runs one Cosmos `ChangeFeedProcessor` per distinct change-feed **source identity** drawn from the registry — many command types may share one source, so registrations are deduped on the source identity (one processor per source, not one per command type). The dedup key is **declared-or-ground-truth, never inferred from a caller-controlled handle**: on the plain overload it is the complete resolved identity (account **endpoint** + database id + container id, for both the monitored and lease containers); on the advanced overload the application **declares** the identity (see [Advanced](#advanced-per-registration-container-factories)) because it controls the resolved handle and the relay cannot trust it as a key. Adding the account endpoint to the plain-path key means identically-named containers in **different accounts** stay distinct rather than collapsing into one (and silently dropping the skipped source). The host resolves the registry, the container factory, the broker `IMessagingInfrastructureProvider`, and the `IBodyConverterFactory` from DI; it owns no `CosmosClient` (the app does).
 
 Each processor monitors its container's change feed. Cosmos change feed v3 delivers **all** container changes — domain documents, `inbox:` markers, outbox documents, and the relay's own delivery-stamp updates — so the relay filters **in code** to exactly the co-resident outbox documents it must publish: `_chatterType="outbox"` **and** `status="pending"`. Everything else is skipped, including already-`delivered` outbox documents — which is what makes the relay's own delivery update a non-republish (**publish-once by construction**).
 
@@ -92,21 +92,26 @@ For each selected document the relay reconstructs the original `OutboundBrokered
 
 **The relay is at-least-once.** Publish and the delivered/TTL stamp are two separate writes: if publish succeeds but the stamp fails, the document stays `pending` and is re-published on the next change-feed pass. **Downstream consumers must deduplicate** — the document-tier `inbox:` marker is the in-framework mechanism. A publish failure issues no stamp and lets the document re-surface next pass rather than advancing the lease past an unpublished document.
 
-`processorName` is stable per triple so every application instance sharing a lease cooperates on one logical processor; `instanceName` is unique per host so co-located instances do not collide on the lease.
+`processorName` is stable per **source identity** so every application instance sharing a source cooperates on one logical processor — and two distinct sources never share a `processorName`; `instanceName` is unique per host so co-located instances do not collide on the lease.
 
 ## Advanced: Per-Registration Container Factories
 
-For applications that resolve or construct containers from the service provider themselves, an overload accepts `Func<IServiceProvider, Container>` for both the document and lease containers:
+For applications that resolve or construct containers from the service provider themselves, an overload accepts `Func<IServiceProvider, Container>` for both the document and lease containers. Because **you** control the resolved handle on this path, the relay cannot trust it to identify the change-feed source for dedup — so this overload **requires you to declare a stable source identity** (`monitoredSourceIdentity` / `leaseSourceIdentity`) that becomes the relay's dedup/processor key:
 
 ```csharp
 pipeline.WithCosmosDocumentReliability<CreateOrder>(
     documentContainerFactory: sp => sp.GetRequiredService<MyContainerProvider>().GetOrdersContainer(),
     leaseContainerFactory:    sp => sp.GetRequiredService<MyContainerProvider>().GetOrdersLeaseContainer(),
+    // Declared change-feed source identity — the relay dedup/processor key on this path.
+    // Two registrations resolving the SAME physical source MUST declare the SAME pair (they then
+    // collapse to one processor); two DISTINCT sources MUST declare DISTINCT pairs.
+    monitoredSourceIdentity: "shop/orders",
+    leaseSourceIdentity:     "shop/orders-leases",
     resolver: msg => msg is null ? null : new PartitionKey(msg.GetMessageFromBody<CreateOrder>().OrderId),
     "/orderId");
 ```
 
-These factories bypass `client.GetContainer` derivation. Use this when the `Container` handle is already managed elsewhere in your DI graph.
+These factories bypass `client.GetContainer` derivation. Use this when the `Container` handle is already managed elsewhere in your DI graph. The declared identity is opaque to the relay — any stable token that uniquely names the source works; the relay only compares the declared pairs for equality. (On the plain overload no identity is declared: the handle is derived from the app `CosmosClient`, so the relay keys on the ground-truth resolved identity instead.)
 
 ## Domain Language
 

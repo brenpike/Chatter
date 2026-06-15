@@ -30,7 +30,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                                                ResolvePartitionKey resolver,
                                                IReadOnlyList<string> partitionKeyPath,
                                                Func<IServiceProvider, Container> documentContainerFactory = null,
-                                               Func<IServiceProvider, Container> leaseContainerFactory = null)
+                                               Func<IServiceProvider, Container> leaseContainerFactory = null,
+                                               CosmosSourceIdentity? declaredSourceIdentity = null)
         {
             CommandType = commandType ?? throw new ArgumentNullException(nameof(commandType));
             Database = database ?? throw new ArgumentNullException(nameof(database));
@@ -40,6 +41,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             PartitionKeyPath = partitionKeyPath ?? throw new ArgumentNullException(nameof(partitionKeyPath));
             DocumentContainerFactory = documentContainerFactory;
             LeaseContainerFactory = leaseContainerFactory;
+            DeclaredSourceIdentity = declaredSourceIdentity;
         }
 
         /// <summary>The command type this registration participates for (the registry key).</summary>
@@ -71,5 +73,57 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// instead of deriving the handle via <c>client.GetContainer(Database, LeaseName)</c>.
         /// </summary>
         public Func<IServiceProvider, Container> LeaseContainerFactory { get; }
+
+        /// <summary>
+        /// Optional caller-DECLARED change-feed source identity for the monitored + lease containers. It is the relay's
+        /// dedup/processor key, declared-or-derived (#222 root remediation):
+        /// <list type="bullet">
+        /// <item>
+        /// FACTORY PATH (<c>non-null</c>): when the advanced overload supplies <see cref="DocumentContainerFactory"/> /
+        /// <see cref="LeaseContainerFactory"/>, the caller fully controls the resolved <see cref="Container"/> handles, so
+        /// the relay CANNOT trust those handles to identify the physical change-feed source. The caller therefore DECLARES
+        /// the identity here, and THIS declared identity IS the relay dedup key — the relay never inspects the untrusted
+        /// handle's account endpoint or names to key on the factory path.
+        /// </item>
+        /// <item>
+        /// PLAIN PATH (<c>null</c>): the handle is derived by the provider from the app-registered
+        /// <see cref="CosmosClient"/>, so it is ground truth. The relay derives the dedup key from the resolved handle
+        /// (account endpoint + database id + container id, for both monitored and lease) rather than from any declared
+        /// value.
+        /// </item>
+        /// </list>
+        /// INVARIANT: the relay dedup key is NEVER inferred from an untrusted handle — it is the DECLARED identity on the
+        /// factory path and GROUND-TRUTH-derived on the plain path. This dissolves the split/collapse class the prior
+        /// inferred-from-handle keys admitted (#222).
+        /// </summary>
+        public CosmosSourceIdentity? DeclaredSourceIdentity { get; }
+    }
+
+    /// <summary>
+    /// A caller-declared, opaque-but-stable change-feed source identity for the advanced/factory registration path. It
+    /// carries one stable token per source container — <see cref="Monitored"/> for the monitored (document) container and
+    /// <see cref="Lease"/> for the lease container — so two registrations that resolve the SAME physical change-feed
+    /// source declare the SAME pair (and collapse to one relay processor) while two distinct sources declare distinct
+    /// pairs (and never share a processor). The tokens are opaque to the relay: it only compares them for equality under
+    /// ordinal string comparison; their meaning is the application's.
+    /// </summary>
+    /// <remarks>
+    /// This type exists ONLY for the factory path, where the resolved <see cref="Container"/> handle is caller-controlled
+    /// and therefore untrusted as a dedup key. On the plain path the key is ground-truth-derived from the resolved handle
+    /// and this declared identity is <c>null</c> (see <see cref="DocumentReliabilityRegistration.DeclaredSourceIdentity"/>).
+    /// </remarks>
+    public readonly struct CosmosSourceIdentity
+    {
+        public CosmosSourceIdentity(string monitored, string lease)
+        {
+            Monitored = monitored;
+            Lease = lease;
+        }
+
+        /// <summary>The stable token identifying the monitored (document) change-feed source container.</summary>
+        public string Monitored { get; }
+
+        /// <summary>The stable token identifying the lease container backing the change-feed processor.</summary>
+        public string Lease { get; }
     }
 }

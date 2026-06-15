@@ -72,9 +72,23 @@ namespace Microsoft.Extensions.DependencyInjection
         /// deriving handles via <c>client.GetContainer</c>; use this when the application resolves its containers from
         /// the service provider itself.
         /// </summary>
+        /// <remarks>
+        /// Because the application fully controls the resolved <see cref="Container"/> handles on this path, the relay
+        /// CANNOT trust those handles to identify the physical change-feed source. The caller therefore DECLARES the
+        /// source identity via <paramref name="monitoredSourceIdentity"/> / <paramref name="leaseSourceIdentity"/>, and
+        /// that declared identity IS the relay dedup/processor key (#222): two registrations that resolve the same
+        /// physical source MUST declare the same pair (collapse to one processor); two distinct sources MUST declare
+        /// distinct pairs. The synthetic per-command cache identity below is NO LONGER the relay dedup basis — it exists
+        /// solely to keep the <see cref="CosmosContainerFactory"/> per-(database, containerName) cache key distinct per
+        /// participant.
+        /// </remarks>
+        /// <param name="monitoredSourceIdentity">A stable, opaque token identifying the monitored (document) change-feed source — the relay dedup key for the monitored side on this path.</param>
+        /// <param name="leaseSourceIdentity">A stable, opaque token identifying the lease container backing the processor — the relay dedup key for the lease side on this path.</param>
         public static CommandPipelineBuilder WithCosmosDocumentReliability<TCommand>(this CommandPipelineBuilder pipelineBuilder,
                                                                                      Func<IServiceProvider, Container> documentContainerFactory,
                                                                                      Func<IServiceProvider, Container> leaseContainerFactory,
+                                                                                     string monitoredSourceIdentity,
+                                                                                     string leaseSourceIdentity,
                                                                                      ResolvePartitionKey resolver,
                                                                                      params string[] partitionKeyPath)
             where TCommand : ICommand
@@ -82,10 +96,20 @@ namespace Microsoft.Extensions.DependencyInjection
             _ = pipelineBuilder ?? throw new ArgumentNullException(nameof(pipelineBuilder));
             _ = documentContainerFactory ?? throw new ArgumentNullException(nameof(documentContainerFactory));
             _ = leaseContainerFactory ?? throw new ArgumentNullException(nameof(leaseContainerFactory));
+            if (string.IsNullOrWhiteSpace(monitoredSourceIdentity))
+            {
+                throw new ArgumentException("A non-null, non-whitespace monitored source identity is required.", nameof(monitoredSourceIdentity));
+            }
+            if (string.IsNullOrWhiteSpace(leaseSourceIdentity))
+            {
+                throw new ArgumentException("A non-null, non-whitespace lease source identity is required.", nameof(leaseSourceIdentity));
+            }
 
-            // The explicit factories bypass GetContainer derivation, so no real database/container/lease names exist.
-            // The command type's full name is used as the synthetic cache identity — one registration per command type
-            // keeps the (database, containerName) cache key distinct per participant.
+            // The explicit factories bypass GetContainer derivation, so no real database/container/lease names exist. The
+            // command type's full name is the synthetic CACHE identity ONLY — it keeps the CosmosContainerFactory's
+            // per-(database, containerName) cache key distinct per participant. It is NO LONGER the relay dedup basis: the
+            // relay keys on the caller-DECLARED source identity below (#222), so the synthetic triple's sole remaining
+            // purpose is the per-command cache key.
             var syntheticIdentity = typeof(TCommand).FullName;
             var registration = new DocumentReliabilityRegistration(
                 typeof(TCommand),
@@ -95,7 +119,8 @@ namespace Microsoft.Extensions.DependencyInjection
                 ValidateResolver(resolver),
                 ValidatePartitionKeyPath(partitionKeyPath),
                 documentContainerFactory,
-                leaseContainerFactory);
+                leaseContainerFactory,
+                new CosmosSourceIdentity(monitoredSourceIdentity, leaseSourceIdentity));
 
             return pipelineBuilder.AddRegistration(registration);
         }
@@ -197,10 +222,12 @@ namespace Microsoft.Extensions.DependencyInjection
                 pipelineBuilder.WithBehavior(typeof(DocumentTierBatchLifecycleBehavior<>));
             }
 
-            // The #222 change-feed outbox relay host runs ONCE per app: it enumerates the registry to the distinct
-            // (Database, ContainerName, LeaseName) set and runs one ChangeFeedProcessor per triple, so registering it per
-            // WithCosmosDocumentReliability<T> call would spawn duplicate relay hosts on the same leases. Register it
-            // EXACTLY ONCE, guarded on the same Any(...) once pattern as the outermost behavior above. The host resolves
+            // The #222 change-feed outbox relay host runs ONCE per app: it enumerates the registry and runs one
+            // ChangeFeedProcessor per distinct change-feed SOURCE IDENTITY — caller-declared on the advanced overload,
+            // ground-truth-derived (incl. the account endpoint) from the resolved handle on the plain overload — NOT per
+            // (Database, ContainerName, LeaseName) triple. Registering it per WithCosmosDocumentReliability<T> call would
+            // spawn duplicate relay hosts on the same sources. Register it EXACTLY ONCE, guarded on the same Any(...) once
+            // pattern as the outermost behavior above. The host resolves
             // the registry, container factory, IMessagingInfrastructureProvider, and IBodyConverterFactory from DI; the
             // app owns the CosmosClient (the provider registers none) and the Cosmos provider does NOT implement
             // IPollableOutboxStore — dispatch is this change-feed relay, not a polling query (ADR-0007).
