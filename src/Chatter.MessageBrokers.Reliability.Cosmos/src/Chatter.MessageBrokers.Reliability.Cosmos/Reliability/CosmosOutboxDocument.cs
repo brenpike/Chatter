@@ -29,6 +29,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// <summary>Initial delivery state; the relay advances it to delivered after publish.</summary>
         public const string StatusPending = "pending";
 
+        /// <summary>
+        /// Terminal delivery state the #222 relay advances a document to AFTER a successful publish (set together with a
+        /// positive per-document TTL in a single patch). A document at this status is no longer
+        /// <see cref="StatusPending"/>, so the relay's in-code change-feed filter skips it — this is what makes the
+        /// relay's OWN delivered/TTL update event a non-republish (publish-once by construction).
+        /// </summary>
+        public const string StatusDelivered = "delivered";
+
         /// <summary>The document-id field name (Cosmos requires the item id under the reserved <c>id</c> property).</summary>
         public const string IdField = "id";
 
