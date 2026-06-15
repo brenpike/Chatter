@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Azure.Cosmos;
 
@@ -112,6 +113,88 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
 
             return bodies;
         }
+
+        // The projected wire shape of a single Chatter outbox document, read at the test edge for shape assertions.
+        public readonly struct OutboxWireShape
+        {
+            public OutboxWireShape(string id, string chatterType, string status, string destination, string messageBody, string messageContentType, bool hasMessageContext)
+            {
+                Id = id;
+                ChatterType = chatterType;
+                Status = status;
+                Destination = destination;
+                MessageBody = messageBody;
+                MessageContentType = messageContentType;
+                HasMessageContext = hasMessageContext;
+            }
+
+            public string Id { get; }
+            public string ChatterType { get; }
+            public string Status { get; }
+            public string Destination { get; }
+            public string MessageBody { get; }
+            public string MessageContentType { get; }
+            public bool HasMessageContext { get; }
+        }
+
+        // Reads the single outbox doc (_chatterType == "outbox") in a partition and projects its wire shape (id,
+        // discriminator, status, destination, body, content type, and whether a non-empty MessageContext is present). The
+        // doc id is NOT predictable (SendOptions.MessageId does not survive the handler-context Send merge — see the type
+        // remarks above), so the doc is located by its _chatterType=outbox discriminator via a VALUE-string id projection
+        // (safe across the feed page lifetime, unlike a JsonElement projection), then point-read as a test-owned stream
+        // parsed with System.Text.Json — NOT GetItemQueryIterator<JsonElement>, whose elements are disposed with the feed
+        // page. Returns null when no outbox doc is present.
+        public static async Task<OutboxWireShape?> ReadOutboxWireShapeAsync(Container container, string partition)
+        {
+            var query = new QueryDefinition(
+                    $"SELECT VALUE c.{CosmosOutboxDocument.IdField} FROM c WHERE c[\"{CosmosOutboxDocument.DiscriminatorField}\"] = @type")
+                .WithParameter("@type", CosmosItemId.OutboxKind);
+
+            string outboxId = null;
+            using (FeedIterator<string> iterator = container.GetItemQueryIterator<string>(
+                query,
+                requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(partition) }))
+            {
+                while (iterator.HasMoreResults && outboxId is null)
+                {
+                    FeedResponse<string> page = await iterator.ReadNextAsync();
+                    foreach (string id in page)
+                    {
+                        outboxId = id;
+                        break;
+                    }
+                }
+            }
+
+            if (outboxId is null)
+            {
+                return null;
+            }
+
+            using ResponseMessage read = await container.ReadItemStreamAsync(outboxId, new PartitionKey(partition));
+            if (read.StatusCode != HttpStatusCode.OK)
+            {
+                return null;
+            }
+
+            using JsonDocument document = await JsonDocument.ParseAsync(read.Content);
+            JsonElement root = document.RootElement;
+            return new OutboxWireShape(
+                id: ReadString(root, CosmosOutboxDocument.IdField),
+                chatterType: ReadString(root, CosmosOutboxDocument.DiscriminatorField),
+                status: ReadString(root, CosmosOutboxDocument.StatusField),
+                destination: ReadString(root, CosmosOutboxDocument.DestinationField),
+                messageBody: ReadString(root, CosmosOutboxDocument.MessageBodyField),
+                messageContentType: ReadString(root, CosmosOutboxDocument.MessageContentTypeField),
+                hasMessageContext: root.TryGetProperty(CosmosOutboxDocument.MessageContextField, out JsonElement context)
+                    && context.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrEmpty(context.GetString()));
+        }
+
+        private static string ReadString(JsonElement root, string field)
+            => root.TryGetProperty(field, out JsonElement element) && element.ValueKind == JsonValueKind.String
+                ? element.GetString()
+                : null;
 
         // Bounded poll until the partition holds at least minCount Chatter docs of the given type, returning the last
         // observed count (which may be below minCount if the timeout elapses) so a never-reached threshold fails fast.

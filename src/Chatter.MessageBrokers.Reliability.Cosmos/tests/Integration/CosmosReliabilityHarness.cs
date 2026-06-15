@@ -126,13 +126,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             // Bound the start loop with a finite deadline linked to the caller's token: an unbounded start forwarded a
             // never-cancelled token, so a stalled hosted-service start would hang the test (and CI) forever. The linked
             // CTS cancels on EITHER the caller's cancellation OR the generous StartDeadline, then is disposed once the
-            // loop completes.
+            // loop completes. The token is forwarded so a token-honoring hosted service cancels its own start; .WaitAsync
+            // enforces the same bound REGARDLESS of whether the service honors it — the production
+            // CosmosOutboxRelayHostedService.StartAsync ignores its token (it awaits processor.StartAsync() uncancellably),
+            // so .WaitAsync(startCts.Token) is what actually fails fast on the StartDeadline/caller-cancel, throwing
+            // OperationCanceledException on the deadline. The deadline bound is encoded in startCts.
             using var startCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             startCts.CancelAfter(StartDeadline);
 
             foreach (IHostedService hostedService in _hostedServices)
             {
-                await hostedService.StartAsync(startCts.Token).ConfigureAwait(false);
+                await hostedService.StartAsync(startCts.Token).WaitAsync(startCts.Token).ConfigureAwait(false);
             }
 
             _started = true;

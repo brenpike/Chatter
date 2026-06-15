@@ -60,6 +60,24 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             // The co-resident outbox doc committed atomically (asserted by partition-scoped count).
             (await CosmosEdge.WaitForCountByChatterTypeAsync(container, CosmosItemId.OutboxKind, partition, minCount: 1, ReadTimeout))
                 .Should().Be(1, "exactly one co-resident outbox doc must commit atomically with the aggregate");
+
+            // The co-resident outbox doc carries the Chatter-owned WIRE SHAPE. The exact-id assertion
+            // (outbox:{encoded(the-supplied-MessageId)}) is BLOCKED by the product quirk that SendOptions.MessageId does
+            // not survive the handler-context Send merge in the core library (tracked as issue #245), so the id is asserted
+            // by its reserved outbox: prefix rather than the exact encoded MessageId; the prefix/shape assertion is the
+            // tightest available until #245 is resolved.
+            CosmosEdge.OutboxWireShape? shape = await CosmosEdge.ReadOutboxWireShapeAsync(container, partition);
+            shape.Should().NotBeNull("the co-resident outbox doc must be readable at the edge");
+            CosmosEdge.OutboxWireShape outbox = shape.Value;
+
+            CosmosItemId.IsReserved(outbox.Id).Should().BeTrue("the outbox doc id is in the Chatter-reserved id namespace");
+            outbox.Id.Should().StartWith(CosmosItemId.OutboxKind + ":", "the outbox doc id carries the reserved outbox: prefix");
+            outbox.ChatterType.Should().Be(CosmosItemId.OutboxKind, "the discriminator must mark the doc as an outbox doc");
+            outbox.Status.Should().Be(CosmosOutboxDocument.StatusPending, "the relay is not started, so the outbox doc stays pending");
+            outbox.Destination.Should().Be(OutboundDestination, "the outbox doc carries the handler's outbound destination");
+            outbox.MessageBody.Should().NotBeNullOrEmpty("the outbox doc carries the serialized follow-up body");
+            outbox.MessageContentType.Should().NotBeNullOrEmpty("the outbox doc carries a resolvable content type");
+            outbox.HasMessageContext.Should().BeTrue("the outbox doc carries the serialized message context");
         }
 
         [RequiresDockerFact]

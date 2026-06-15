@@ -82,6 +82,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             await SeedOutboxControlAsync(container, statusMessageId, partition, statusSentinel,
                 chatterType: CosmosItemId.OutboxKind, status: CosmosOutboxDocument.StatusDelivered);
 
+            // POSITIVE-CONFIRMATION DRAIN BARRIER. The non-publication assertions below sample the capture sink for the
+            // ABSENCE of a control publication; without a barrier they could be sampled BEFORE the relay's change-feed
+            // processor has even examined the control docs, so a LATE forbidden publish to a control sentinel would escape.
+            // To eliminate that class: seed a genuinely PUBLISHABLE outbox doc (_chatterType=outbox, status=pending — it
+            // passes all three relay gates so the relay WILL publish it) into the SAME /pk logical partition as the
+            // controls, committed STRICTLY AFTER both controls. Cosmos per-partition change-feed ordering is monotonic by
+            // item commit order within a single logical partition, so the relay cannot publish this barrier without having
+            // first examined-and-skipped both controls. Waiting (bounded) for the barrier's UNIQUE destination to appear at
+            // the capture sink is positive proof the relay has drained PAST both controls — the non-publication assertion
+            // can no longer be sampled before that drain.
+            string barrierMessageId = "msg-barrier-" + Guid.NewGuid().ToString("N");
+            string barrierDestination = "barrier-" + Guid.NewGuid().ToString("N");
+            await SeedOutboxControlAsync(container, barrierMessageId, partition, barrierDestination,
+                chatterType: CosmosItemId.OutboxKind, status: CosmosOutboxDocument.StatusPending);
+
             // Start the real relay; its change-feed processor drains the committed outbox backlog.
             await harness.StartAsync();
 
@@ -90,8 +105,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             harness.Capture.Published.Count(m => m.Destination == destination)
                 .Should().Be(1, "the committed outbox doc is published exactly once");
 
-            // The outbox doc is marked delivered + carries a positive ttl (deterministic stamp, not gated on purge).
-            await WaitForDeliveredWithTtlAsync(container, partition);
+            // The POSITIVE outbox doc is marked delivered + carries a positive ttl (deterministic stamp, not gated on
+            // purge). Scoped to the positive doc by its known Destination: the partition now holds THREE _chatterType=outbox
+            // docs (the positive, the status-negative control at status=delivered, and the publishable barrier), so an
+            // unscoped "first outbox doc in the partition" read could latch onto the wrong doc and pass spuriously (the
+            // pre-delivered control) or never converge. The read is pinned to the positive doc's Destination so the
+            // delivered+ttl proof stays attributable to the positive doc.
+            await WaitForDeliveredWithTtlAsync(container, partition, destination);
+
+            // positive-confirmation barrier — the non-publication assertion cannot be sampled before a doc ordered strictly
+            // after the controls in the same logical partition has published, so the relay has demonstrably drained past the
+            // controls. Bounded-wait for the barrier's destination to appear; once it has, per-partition change-feed
+            // ordering guarantees both controls were examined-and-skipped first.
+            await WaitForPublishedToDestinationAsync(harness.Capture, barrierDestination, PublishTimeout);
 
             // Neither single-variable control was published. Each control is byte-faithful to a publishable outbox doc
             // EXCEPT the one varied gate, so a publication to either sentinel Destination would mean the relay published a
@@ -166,16 +192,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                 .Should().Be(1, "the relay's own delivered/ttl update must not republish");
         }
 
-        // Bounded poll until the single outbox doc in the partition is status=delivered with a positive ttl (edge read,
+        // Bounded poll until the POSITIVE outbox doc in the partition is status=delivered with a positive ttl (edge read,
         // not a fixed sleep). The outbox doc id is the handler-generated one (not predictable), so the doc is located by
-        // its _chatterType=outbox discriminator within the partition.
-        private static async Task WaitForDeliveredWithTtlAsync(Container container, string partition)
+        // its _chatterType=outbox discriminator within the partition AND its known Destination — the partition co-hosts
+        // multiple _chatterType=outbox docs (the status-negative control and the publishable barrier), so the Destination
+        // filter pins the read to the positive doc deterministically rather than latching onto an arbitrary first match.
+        private static async Task WaitForDeliveredWithTtlAsync(Container container, string partition, string positiveDestination)
         {
             DateTime deadline = DateTime.UtcNow + DeliveredTimeout;
             string lastStatus = null;
             do
             {
-                (string status, bool positiveTtl) = await ReadOutboxStatusAsync(container, partition);
+                (string status, bool positiveTtl) = await ReadOutboxStatusAsync(container, partition, positiveDestination);
                 lastStatus = status;
                 if (string.Equals(status, CosmosOutboxDocument.StatusDelivered, StringComparison.Ordinal) && positiveTtl)
                 {
@@ -190,14 +218,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                 $"The outbox document was not stamped delivered with a positive ttl within {DeliveredTimeout} (last observed status '{lastStatus}').");
         }
 
-        // Reads the single outbox doc's status + whether it carries a positive ttl. The doc id is located by a
+        // Reads the POSITIVE outbox doc's status + whether it carries a positive ttl. The doc id is located by a
         // VALUE-string projection (safe across the feed page lifetime, unlike a JsonElement projection), then the doc is
         // point-read as a stream the test parses with System.Text.Json (the stream bytes are fully test-owned, avoiding
-        // the disposed-JsonElement hazard of GetItemQueryIterator<JsonElement>).
-        private static async Task<(string status, bool positiveTtl)> ReadOutboxStatusAsync(Container container, string partition)
+        // the disposed-JsonElement hazard of GetItemQueryIterator<JsonElement>). The query is scoped to the positive doc's
+        // known Destination so it cannot resolve the co-resident status-negative control or the publishable barrier (both
+        // _chatterType=outbox in the same partition) — the read is attributable to exactly the positive doc.
+        private static async Task<(string status, bool positiveTtl)> ReadOutboxStatusAsync(Container container, string partition, string positiveDestination)
         {
-            var query = new QueryDefinition($"SELECT VALUE c.{CosmosOutboxDocument.IdField} FROM c WHERE c[\"{CosmosOutboxDocument.DiscriminatorField}\"] = @type")
-                .WithParameter("@type", CosmosItemId.OutboxKind);
+            var query = new QueryDefinition(
+                    $"SELECT VALUE c.{CosmosOutboxDocument.IdField} FROM c WHERE c[\"{CosmosOutboxDocument.DiscriminatorField}\"] = @type AND c[\"{CosmosOutboxDocument.DestinationField}\"] = @destination")
+                .WithParameter("@type", CosmosItemId.OutboxKind)
+                .WithParameter("@destination", positiveDestination);
 
             string outboxId = null;
             using (FeedIterator<string> iterator = container.GetItemQueryIterator<string>(
