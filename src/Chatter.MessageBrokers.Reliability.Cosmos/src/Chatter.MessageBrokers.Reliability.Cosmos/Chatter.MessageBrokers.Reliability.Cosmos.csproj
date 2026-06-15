@@ -7,7 +7,7 @@
     <Version>0.2.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
-    <Description>Document-tier (Azure Cosmos DB) reliability provider skeleton for Chatter.MessageBrokers: the DI surface, document-tier reliability surface (atomic-write handle over TransactionalBatch), partition-key resolver, and the outermost batch-lifecycle behavior shell. Outbox enqueue, inbox dedup, and the change-feed relay are not yet implemented.</Description>
+    <Description>Document-tier (Azure Cosmos DB) reliability provider for Chatter.MessageBrokers: the DI surface, document-tier reliability surface (atomic-write handle over TransactionalBatch), partition-key resolver, and the outermost batch-lifecycle behavior. Outbox enqueue and inbox dedup (co-resident inbox-marker with marker-409 confirmed-duplicate handling) are implemented; Chatter exclusively owns the reserved inbox:/outbox: item-id namespace on the public staging surface. The change-feed relay is not yet implemented.</Description>
     <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>Messaging,Message Broker,.NET Core, Cosmos DB</PackageTags>

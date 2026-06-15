@@ -2,7 +2,7 @@
 
 Document-tier (NoSQL) reliability for [Chatter.MessageBrokers](#chatter-messagebrokers), backed by Azure Cosmos DB.
 
-> **Status — 0.2.0 (unreleased).** Outbox enqueue (#219) is implemented: the provider stages the co-resident outbox document onto the framework-owned `TransactionalBatch` atomically with the handler's own aggregate write. Inbox dedup (#220) and the change-feed relay (#222) are **not yet implemented**.
+> **Status — 0.2.0 (unreleased).** Outbox enqueue (#219) is implemented: the provider stages the co-resident outbox document onto the framework-owned `TransactionalBatch` atomically with the handler's own aggregate write. Inbox dedup (#220) is implemented: the Document-Tier Batch-Lifecycle Behavior stamps a co-resident `inbox:` marker into the framework-owned batch before `next()`; a 409 create-conflict on the marker (detected post-execute) is a confirmed duplicate and the message is acked with nothing committed. To keep that marker-409 → confirmed-duplicate inference collision-proof, Chatter **exclusively owns the `inbox:`/`outbox:` item-id namespace**: the public atomic-write surface rejects any staged document whose persisted item id carries a reserved `inbox:`/`outbox:` prefix. The change-feed relay (#222) is **not yet implemented**.
 
 ## Overview
 
