@@ -30,6 +30,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
     // the test) and any IAsyncDisposable services tear down cleanly.
     public sealed class CosmosReliabilityHarness : IAsyncDisposable
     {
+        // A finite, generous deadline bounding the hosted-service start loop so a stalled relay start cannot hang CI
+        // indefinitely. Two minutes is far longer than a healthy change-feed-processor start against the emulator yet
+        // still terminates a wedged start.
+        private static readonly TimeSpan StartDeadline = TimeSpan.FromMinutes(2);
+
         private readonly ServiceProvider _provider;
         private readonly IReadOnlyList<IHostedService> _hostedServices;
         private bool _started;
@@ -118,9 +123,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                 return;
             }
 
+            // Bound the start loop with a finite deadline linked to the caller's token: an unbounded start forwarded a
+            // never-cancelled token, so a stalled hosted-service start would hang the test (and CI) forever. The linked
+            // CTS cancels on EITHER the caller's cancellation OR the generous StartDeadline, then is disposed once the
+            // loop completes.
+            using var startCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            startCts.CancelAfter(StartDeadline);
+
             foreach (IHostedService hostedService in _hostedServices)
             {
-                await hostedService.StartAsync(cancellationToken).ConfigureAwait(false);
+                await hostedService.StartAsync(startCts.Token).ConfigureAwait(false);
             }
 
             _started = true;

@@ -63,6 +63,56 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             return total;
         }
 
+        // Reads the MessageBody value(s) of the outbox doc(s) (_chatterType == "outbox") in a partition. The outbox doc
+        // id is NOT predictable (SendOptions.MessageId does not survive the handler-context Send merge — see the type
+        // remarks above), so the MessageBody is the command-distinguishing reconstruction field the multi-container fact
+        // keys identity on: each command's follow-up Send serializes its DISTINCT sentinel Payload into this field. A
+        // VALUE-string projection (not a JsonElement) is read so the strings stay valid past the feed page lifetime.
+        public static async Task<IReadOnlyList<string>> ReadOutboxMessageBodiesAsync(Container container, string partition)
+        {
+            var query = new QueryDefinition(
+                    $"SELECT VALUE c.{CosmosOutboxDocument.MessageBodyField} FROM c WHERE c[\"{CosmosOutboxDocument.DiscriminatorField}\"] = @type")
+                .WithParameter("@type", CosmosItemId.OutboxKind);
+
+            var bodies = new List<string>();
+            using FeedIterator<string> iterator = container.GetItemQueryIterator<string>(
+                query,
+                requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(partition) });
+
+            while (iterator.HasMoreResults)
+            {
+                FeedResponse<string> page = await iterator.ReadNextAsync();
+                foreach (string body in page)
+                {
+                    bodies.Add(body);
+                }
+            }
+
+            return bodies;
+        }
+
+        // Bounded poll until the partition holds at least minCount outbox-doc MessageBody value(s), returning the last
+        // observed snapshot (which may hold fewer than minCount if the timeout elapses) so a never-reached threshold
+        // fails fast rather than hanging. Used to read per-container outbox identity by its command-distinguishing body.
+        public static async Task<IReadOnlyList<string>> WaitForOutboxMessageBodiesAsync(Container container, string partition, int minCount, TimeSpan timeout)
+        {
+            DateTime deadline = DateTime.UtcNow + timeout;
+            IReadOnlyList<string> bodies;
+            do
+            {
+                bodies = await ReadOutboxMessageBodiesAsync(container, partition);
+                if (bodies.Count >= minCount)
+                {
+                    return bodies;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(200));
+            }
+            while (DateTime.UtcNow < deadline);
+
+            return bodies;
+        }
+
         // Bounded poll until the partition holds at least minCount Chatter docs of the given type, returning the last
         // observed count (which may be below minCount if the timeout elapses) so a never-reached threshold fails fast.
         public static async Task<int> WaitForCountByChatterTypeAsync(Container container, string chatterType, string partition, int minCount, TimeSpan timeout)

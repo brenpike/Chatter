@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Chatter.CQRS;
 using Chatter.MessageBrokers.Reliability.Cosmos;
@@ -29,11 +28,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
     public class WhenRelayingOutbox
     {
         private const string ReceiverPath = "primary-participant";
-        // A destination NO legitimate outbox doc in this test uses. It is stamped onto the seeded NON-outbox documents so
-        // that IF a broken relay republished a non-outbox change-feed event it would surface verbatim at this sentinel —
-        // making the leak detectable by destination (the relay never maps a Cosmos doc id onto the reconstructed
-        // MessageId, so a MessageId-based negative check could not catch the leak).
-        private const string SentinelLeakDestination = "relay-leak-sentinel-must-never-publish";
+        // A non-outbox _chatterType for the discriminator-negative control (any value != CosmosItemId.OutboxKind that is
+        // not the inbox kind either — a plausible domain discriminator that fails the relay's gate-1 _chatterType check).
+        private const string NonOutboxDiscriminator = "domain-event";
         private static readonly TimeSpan PublishTimeout = TimeSpan.FromSeconds(120);
         private static readonly TimeSpan DeliveredTimeout = TimeSpan.FromSeconds(120);
         // The bounded window over which a republish (the relay's own delivered/ttl change-feed event) must NOT appear.
@@ -59,18 +56,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
 
             await using CosmosReliabilityHarness harness = BuildHarness(testClient.Client);
 
-            // Commit the outbox doc through Chatter (handler follow-up Send on the framework batch).
+            // Commit the POSITIVE doc through Chatter (handler follow-up Send on the framework batch). This is the only
+            // fully-publishable outbox doc — the contrast the negative controls are measured against. It IS published.
             await harness.DeliverAsync(messageId, Command(aggregateId, partition, destination), ReceiverPath, PartitionProperty(partition));
 
-            // Seed two NON-outbox documents in THIS test's partition the relay must never publish:
-            //   - a DOMAIN doc (no Chatter discriminator), and
-            //   - a hand-authored INBOX marker (_chatterType="inbox") carrying a sentinel destination.
-            // Both carry a sentinel Destination/payload that a broken relay republishing a non-outbox change-feed event
-            // would surface verbatim into the capture sink — so the negative check is tied to a value a leak WOULD
-            // produce, not to the Cosmos id (which the relay never maps onto the reconstructed MessageId).
-            string domainId = "domain-" + Guid.NewGuid().ToString("N");
-            await SeedDomainDocumentAsync(container, domainId, partition);
-            await SeedInboxMarkerAsync(container, partition, SentinelLeakDestination);
+            // Seed two SINGLE-VARIABLE negative controls in THIS test's partition. Each is byte-faithful to a real pending
+            // outbox — id == ForOutbox(MessageId), all reconstruction fields publishable, MessageContext carrying the
+            // capture infrastructure type + resolvable content type — so a doc that satisfied the relay's filter WOULD
+            // reconstruct and publish to its UNIQUE sentinel Destination. Each varies EXACTLY ONE relay gate off that
+            // publishable shape, so "the relay did not publish it" is attributable to precisely that gate (a relay that
+            // ignored the varied gate but still required outbox shape can no longer skip it for the WRONG reason — e.g. a
+            // missing reconstruction field — yielding a false green).
+            //
+            //   DISCRIMINATOR-negative: keeps id == ForOutbox(MessageId) (gate 3 passes) + status == pending (gate 2
+            //   passes); varies ONLY _chatterType to a non-outbox value (gate 1 fails). Isolates the discriminator gate.
+            string discriminatorMessageId = "msg-disc-" + Guid.NewGuid().ToString("N");
+            string discriminatorSentinel = "relay-disc-sentinel-" + Guid.NewGuid().ToString("N");
+            await SeedOutboxControlAsync(container, discriminatorMessageId, partition, discriminatorSentinel,
+                chatterType: NonOutboxDiscriminator, status: CosmosOutboxDocument.StatusPending);
+
+            //   STATUS-negative: keeps id == ForOutbox(MessageId) (gate 3 passes) + _chatterType == outbox (gate 1
+            //   passes); varies ONLY status to delivered (gate 2 fails). Isolates the status gate.
+            string statusMessageId = "msg-status-" + Guid.NewGuid().ToString("N");
+            string statusSentinel = "relay-status-sentinel-" + Guid.NewGuid().ToString("N");
+            await SeedOutboxControlAsync(container, statusMessageId, partition, statusSentinel,
+                chatterType: CosmosItemId.OutboxKind, status: CosmosOutboxDocument.StatusDelivered);
 
             // Start the real relay; its change-feed processor drains the committed outbox backlog.
             await harness.StartAsync();
@@ -83,15 +93,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             // The outbox doc is marked delivered + carries a positive ttl (deterministic stamp, not gated on purge).
             await WaitForDeliveredWithTtlAsync(container, partition);
 
-            // No domain doc and no inbox marker leaked into the publish ledger. A leaked NON-outbox publication cannot be
-            // caught by MessageId (the relay never maps a Cosmos doc id onto the reconstructed MessageId), so the
-            // discriminating checks are: (a) NOTHING was published to the sentinel destination the seeded inbox marker
-            // carries, and (b) EVERY captured publication in THIS test's partition is a well-formed outbox reconstruction
-            // (non-empty Destination) — a domain-doc leak reconstructs with a null/empty Destination and would fail this.
-            harness.Capture.Published.Should().NotContain(m => m.Destination == SentinelLeakDestination,
-                "a leaked inbox marker would republish its sentinel destination");
+            // Neither single-variable control was published. Each control is byte-faithful to a publishable outbox doc
+            // EXCEPT the one varied gate, so a publication to either sentinel Destination would mean the relay published a
+            // doc it must skip — and because every OTHER field is publishable, the skip is attributable to exactly the
+            // varied gate (discriminator or status), not to an incidental missing reconstruction field.
+            harness.Capture.Published.Should().NotContain(m => m.Destination == discriminatorSentinel,
+                "the discriminator-negative control varies ONLY _chatterType — the relay must skip it on gate 1 alone");
+            harness.Capture.Published.Should().NotContain(m => m.Destination == statusSentinel,
+                "the status-negative control varies ONLY status=delivered — the relay must skip it on gate 2 alone");
             harness.Capture.Published.Should().OnlyContain(m => !string.IsNullOrEmpty(m.Destination),
-                "a domain document reconstructs with no Destination — the relay must publish only well-formed outbox docs");
+                "the relay must publish only well-formed outbox reconstructions (non-empty Destination)");
 
             // Publish-once: the relay's own delivered/ttl update produces a change-feed event for a now-delivered doc; it
             // must NOT republish. Bounded poll: fail the moment a SECOND publication to our destination appears after the
@@ -118,34 +129,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             throw new Xunit.Sdk.XunitException($"No publication to destination '{destination}' was captured within {timeout}.");
         }
 
-        // Writes a domain (aggregate-shaped) document with NO Chatter discriminator through the edge client; the relay's
-        // discriminator/id filter must skip it.
-        private static async Task SeedDomainDocumentAsync(Container container, string id, string partition)
+        // Writes a SINGLE-VARIABLE negative-control outbox document at the test edge: byte-faithful to a real pending
+        // outbox (id == ForOutbox(MessageId), all reconstruction fields publishable, MessageContext carrying the capture
+        // infrastructure type + resolvable content type) EXCEPT the one varied field (chatterType or status). Because the
+        // doc is otherwise fully publishable, a relay that skipped it for any reason OTHER than the varied gate (e.g. a
+        // missing reconstruction field) could not produce a false green — the control isolates exactly the one gate.
+        private static async Task SeedOutboxControlAsync(Container container, string messageId, string partition, string sentinelDestination, string chatterType, string status)
         {
-            using Stream stream = AggregateDocument.ToStream(id, partition, "domain-data");
+            using Stream stream = OutboxControlDocument.ToStream(messageId, partition, sentinelDestination, chatterType, status);
             using ResponseMessage response = await container.CreateItemStreamAsync(stream, new PartitionKey(partition));
-            response.IsSuccessStatusCode.Should().BeTrue("the domain document must be created so the relay can be observed NOT publishing it");
-        }
-
-        // Writes an INBOX-marker-shaped document (_chatterType="inbox") that is otherwise indistinguishable from a
-        // publishable outbox doc — it carries status="pending" AND a Destination — so ONLY the discriminator filter
-        // (_chatterType must equal "outbox") excludes it. A relay that filtered on anything weaker would republish it to
-        // the sentinel destination, which the test asserts never happens. This drives the "never publish an inbox marker"
-        // exclusion the prior assertion left untested.
-        private static async Task SeedInboxMarkerAsync(Container container, string partition, string sentinelDestination)
-        {
-            var document = new JsonObject
-            {
-                [CosmosOutboxDocument.IdField] = CosmosItemId.ForInbox("leak-" + Guid.NewGuid().ToString("N")),
-                [CosmosOutboxDocument.DiscriminatorField] = CosmosItemId.InboxKind,
-                [AggregateDocument.PartitionField] = partition,
-                [CosmosOutboxDocument.StatusField] = CosmosOutboxDocument.StatusPending,
-                [CosmosOutboxDocument.DestinationField] = sentinelDestination,
-            };
-
-            using var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(document), writable: false);
-            using ResponseMessage response = await container.CreateItemStreamAsync(stream, new PartitionKey(partition));
-            response.IsSuccessStatusCode.Should().BeTrue("the inbox marker must be created so the relay can be observed NOT publishing it");
+            response.IsSuccessStatusCode.Should().BeTrue("the single-variable negative-control outbox doc must be created so the relay can be observed NOT publishing it");
         }
 
         // Bounded poll asserting NO republish: over the window, fail FAST the moment a SECOND publication to the

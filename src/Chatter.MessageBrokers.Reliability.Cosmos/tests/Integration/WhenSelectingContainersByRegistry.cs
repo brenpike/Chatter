@@ -82,6 +82,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             string secondaryAggregateId = "agg-s-" + Guid.NewGuid().ToString("N");
             string primaryMessageId = "msg-p-" + Guid.NewGuid().ToString("N");
             string secondaryMessageId = "msg-s-" + Guid.NewGuid().ToString("N");
+            // DISTINCT sentinel follow-up payloads. Each command's handler Sends OutboundFollowUp { Payload = payload },
+            // which serializes into the co-resident outbox doc's MessageBody. The outbox doc id is NOT predictable
+            // (SendOptions.MessageId does not survive the handler-context Send merge — see CosmosEdge remarks), so the
+            // MessageBody is the command-distinguishing identity the per-container swap detection keys on: the primary
+            // container's outbox must carry the primary sentinel (and NOT the secondary), proving each command's outbox
+            // landed in its OWN container rather than being swapped.
+            string primarySentinel = "primary-outbox-" + Guid.NewGuid().ToString("N");
+            string secondarySentinel = "secondary-outbox-" + Guid.NewGuid().ToString("N");
 
             await using CosmosReliabilityHarness harness = CosmosReliabilityHarness.Build(
                 testClient.Client,
@@ -108,13 +116,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
 
             await harness.DeliverAsync(
                 primaryMessageId,
-                new PrimaryParticipantCommand { AggregateId = primaryAggregateId, Partition = partition, Payload = "p", OutboundDestination = OutboundDestination, OutboundMessageId = NewOutboundId() },
+                new PrimaryParticipantCommand { AggregateId = primaryAggregateId, Partition = partition, Payload = primarySentinel, OutboundDestination = OutboundDestination, OutboundMessageId = NewOutboundId() },
                 PrimaryReceiverPath,
                 PartitionProperty(partition));
 
             await harness.DeliverAsync(
                 secondaryMessageId,
-                new SecondaryParticipantCommand { AggregateId = secondaryAggregateId, Partition = partition, Payload = "s", OutboundDestination = OutboundDestination, OutboundMessageId = NewOutboundId() },
+                new SecondaryParticipantCommand { AggregateId = secondaryAggregateId, Partition = partition, Payload = secondarySentinel, OutboundDestination = OutboundDestination, OutboundMessageId = NewOutboundId() },
                 SecondaryReceiverPath,
                 PartitionProperty(partition));
 
@@ -133,6 +141,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                 .Should().BeFalse("the primary aggregate is NOT written to the secondary container");
             (await CosmosEdge.WaitForPresenceAsync(primaryContainer, secondaryAggregateId, partition, expectPresent: false, ReadTimeout))
                 .Should().BeFalse("the secondary aggregate is NOT written to the primary container");
+
+            // Per-container OUTBOX IDENTITY: each container's outbox doc carries its OWN command's sentinel MessageBody.
+            // The aggregate-presence checks above prove an aggregate is in the right container; this proves the
+            // CO-RESIDENT OUTBOX doc is too — a swapped outbox placement (primary's outbox written to the secondary
+            // container) would surface the wrong sentinel here even though the aggregate assertions pass. Keyed on the
+            // command-distinguishing MessageBody because the outbox doc id is not predictable.
+            IReadOnlyList<string> primaryOutboxBodies = await CosmosEdge.WaitForOutboxMessageBodiesAsync(primaryContainer, partition, minCount: 1, ReadTimeout);
+            primaryOutboxBodies.Should().ContainSingle("the primary container holds exactly its own outbox doc")
+                .Which.Should().Contain(primarySentinel, "the primary container's outbox carries the primary command's sentinel");
+            primaryOutboxBodies.Should().NotContain(body => body.Contains(secondarySentinel),
+                "the secondary command's outbox must NOT land in the primary container");
+
+            IReadOnlyList<string> secondaryOutboxBodies = await CosmosEdge.WaitForOutboxMessageBodiesAsync(secondaryContainer, partition, minCount: 1, ReadTimeout);
+            secondaryOutboxBodies.Should().ContainSingle("the secondary container holds exactly its own outbox doc")
+                .Which.Should().Contain(secondarySentinel, "the secondary container's outbox carries the secondary command's sentinel");
+            secondaryOutboxBodies.Should().NotContain(body => body.Contains(primarySentinel),
+                "the primary command's outbox must NOT land in the secondary container");
         }
 
         [RequiresDockerFact]

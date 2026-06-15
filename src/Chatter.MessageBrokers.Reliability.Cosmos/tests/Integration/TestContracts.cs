@@ -39,6 +39,65 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
         }
     }
 
+    // A byte-faithful Chatter outbox-document seed for the relay's single-variable NEGATIVE controls. Every field a
+    // genuine pending outbox carries is present and PUBLISHABLE — id = CosmosItemId.ForOutbox(MessageId), a non-empty
+    // MessageBody, a content type the IBodyConverterFactory resolves (application/json), and a MessageContext serialized
+    // exactly as the real outbox path serializes it (ChatterJson.Options) carrying both the resolvable content type and
+    // the CapturingInfrastructure infrastructure type — so a doc built here, if it satisfied the relay's filter, WOULD
+    // reconstruct and publish to the capture sink. A control flips EXACTLY ONE of { _chatterType, status } relative to a
+    // real pending outbox; every other field stays publishable, isolating which relay gate causes the skip.
+    //
+    // INVARIANT: the reserved outbox: id (CosmosItemId.ForOutbox(MessageId)) is stamped deliberately — the relay's
+    // gate-3 requires id == ForOutbox(MessageId), so varying the id would change gate 3 too and break single-variable
+    // isolation. Only the one field named by the caller (_chatterType or status) is varied off the publishable shape.
+    public static class OutboxControlDocument
+    {
+        // The content type a genuine outbox doc carries and the relay's IBodyConverterFactory resolves. Matches the
+        // JsonBodyConverter the receive pipeline uses, so a flipped-back control reconstructs without a content-type
+        // fault.
+        public const string PublishableContentType = "application/json";
+
+        // Builds a publishable outbox-document body, varying ONLY the two caller-named fields off a real pending outbox:
+        //   - chatterType: the _chatterType discriminator value (CosmosItemId.OutboxKind for a real outbox; a non-outbox
+        //     value isolates the DISCRIMINATOR gate).
+        //   - status: the status value (CosmosOutboxDocument.StatusPending for a real pending outbox;
+        //     CosmosOutboxDocument.StatusDelivered isolates the STATUS gate).
+        // Every other field (id, MessageId, Destination, MessageBody, MessageContentType, MessageContext, partition
+        // value) stays publishable, so "the relay did not publish it" is attributable to exactly the varied field.
+        public static Stream ToStream(string messageId, string partition, string destination, string chatterType, string status)
+        {
+            string id = CosmosItemId.ForOutbox(messageId);
+
+            // The MessageContext the relay materializes through ChatterJson.Options; it MUST carry the infrastructure
+            // type so the relay's GetDispatcher resolves the capture sink, and the resolvable content type (parity with
+            // the real outbox serialization path).
+            var messageContext = new Dictionary<string, object>
+            {
+                [MessageContext.InfrastructureType] = CapturingInfrastructure.InfrastructureType,
+                [MessageContext.ContentType] = PublishableContentType,
+            };
+            string serializedMessageContext = JsonSerializer.Serialize(messageContext, ChatterJson.Options);
+
+            var document = new JsonObject
+            {
+                [CosmosOutboxDocument.IdField] = id,
+                [CosmosOutboxDocument.DiscriminatorField] = chatterType,
+                [CosmosOutboxDocument.StatusField] = status,
+                [CosmosOutboxDocument.MessageIdField] = messageId,
+                [CosmosOutboxDocument.DestinationField] = destination,
+                [CosmosOutboxDocument.MessageBodyField] = "{\"Payload\":\"control\"}",
+                [CosmosOutboxDocument.MessageContentTypeField] = PublishableContentType,
+                [CosmosOutboxDocument.MessageContextField] = serializedMessageContext,
+                // The partition value at the container's declared single-segment PK path, mirroring how
+                // AggregateDocument and the prior edge seeds stamp it (CosmosTestClient.PartitionKeyPath == "/pk").
+                [AggregateDocument.PartitionField] = partition,
+            };
+
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(document);
+            return new MemoryStream(bytes, writable: false);
+        }
+    }
+
     // The participant command bound to the primary document container. Carries the aggregate id, the partition value,
     // a payload (sent to the outbox as a follow-up), and the outbound destination.
     public sealed class PrimaryParticipantCommand : ICommand
