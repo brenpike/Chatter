@@ -1,4 +1,4 @@
-name: Chatter.CQRS CD
+name: Chatter.MessageBrokers.Reliability.Cosmos CD
 
 on:
   workflow_dispatch:
@@ -10,14 +10,14 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/Chatter.CQRS/src/**'
-      - '.github/workflows/cqrs-cicd.yml'
+      - 'src/Chatter.MessageBrokers.Reliability.Cosmos/src/**'
+      - '.github/workflows/cosmos-cicd.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-cqrs
+  group: release-cosmos
   cancel-in-progress: false
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     environment:
-      name: production-cqrs
+      name: production-cosmos
     env:
       NUGET_URL: ${{ vars.NUGET_URL }}
     permissions:
@@ -48,17 +48,17 @@ jobs:
       - name: Guard against duplicate release
         shell: bash
         run: |
-          VERSION=$(grep -m1 '<Version>' 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj' | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d ' \r')
-          TAG='cqrs/v'"${VERSION}"
+          VERSION=$(grep -m1 '<Version>' 'src/Chatter.MessageBrokers.Reliability.Cosmos/src/Chatter.MessageBrokers.Reliability.Cosmos/Chatter.MessageBrokers.Reliability.Cosmos.csproj' | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d ' \r')
+          TAG='cosmos/v'"${VERSION}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "ERROR: Tag $TAG already exists — version was not bumped. Refusing to deploy (would silently discard merged code)." >&2
             exit 1
           fi
           echo "Release guard passed: $TAG does not yet exist."
       - name: Restore
-        run: dotnet restore 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj' --locked-mode
+        run: dotnet restore 'src/Chatter.MessageBrokers.Reliability.Cosmos/src/Chatter.MessageBrokers.Reliability.Cosmos/Chatter.MessageBrokers.Reliability.Cosmos.csproj' --locked-mode
       - name: Pack
-        run: dotnet pack 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj' -c Release -o ./dist/nuget
+        run: dotnet pack 'src/Chatter.MessageBrokers.Reliability.Cosmos/src/Chatter.MessageBrokers.Reliability.Cosmos/Chatter.MessageBrokers.Reliability.Cosmos.csproj' -c Release -o ./dist/nuget
       - name: NuGet login (OIDC)
         id: login
         uses: NuGet/login@v1
@@ -80,6 +80,6 @@ jobs:
     permissions:
       contents: write
     with:
-      csproj-path: 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj'
-      tag-prefix: 'cqrs'
-      package-name: 'Chatter.CQRS'
+      csproj-path: 'src/Chatter.MessageBrokers.Reliability.Cosmos/src/Chatter.MessageBrokers.Reliability.Cosmos/Chatter.MessageBrokers.Reliability.Cosmos.csproj'
+      tag-prefix: 'cosmos'
+      package-name: 'Chatter.MessageBrokers.Reliability.Cosmos'

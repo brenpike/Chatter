@@ -28,10 +28,10 @@ jobs:
     environment:
       name: production-reliability-ef
     env:
-      NUGET_AUTH_TOKEN: ${{ secrets.NUGET_AUTH_TOKEN }}
       NUGET_URL: ${{ vars.NUGET_URL }}
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -59,11 +59,16 @@ jobs:
         run: dotnet restore 'src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/Chatter.MessageBrokers.Reliability.EntityFramework.csproj' --locked-mode
       - name: Pack
         run: dotnet pack 'src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/Chatter.MessageBrokers.Reliability.EntityFramework.csproj' -c Release -o ./dist/nuget
+      - name: NuGet login (OIDC)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
       - name: Push NuGet packages
         shell: bash
         run: |
           dotnet nuget push "./dist/nuget/*.nupkg" \
-            -k '${{ env.NUGET_AUTH_TOKEN }}' \
+            --api-key '${{ steps.login.outputs.NUGET_API_KEY }}' \
             -s '${{ env.NUGET_URL }}' \
             --skip-duplicate
 
