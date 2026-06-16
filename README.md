@@ -17,15 +17,17 @@ Chatter is a suite of modular .NET libraries for building domain-driven Web APIs
                         │  inbox/outbox · recovery     │
                         └──────┬───────────────┬───────┘
               implements       │               │      reliability port
-        ┌────────────────┬─────┘               └─────────────┐
-        ▼                ▼                                    ▼
- AzureServiceBus   SqlServiceBroker              Reliability.EntityFramework
-   (+ .Auth AAD)     (SQL Server)                 (durable EF inbox/outbox)
+        ┌────────────────┬─────┘               └──────────┬──────────┐
+        ▼                ▼                                 ▼          ▼
+ AzureServiceBus   SqlServiceBroker          Reliability.        Reliability.
+   (+ .Auth AAD)     (SQL Server)            EntityFramework      Cosmos
+                                            (durable EF          (Cosmos DB
+                                             inbox/outbox)        document tier)
 
  Chatter.SqlChangeFeed — emits SQL Server row-change notifications (Service Broker)
 ```
 
-Chatter.MessageBrokers defines the transport interfaces; you pick a concrete implementation (**Azure Service Bus** or **SQL Server Service Broker**) and, optionally, durable reliability storage (**Entity Framework**).
+Chatter.MessageBrokers defines the transport interfaces; you pick a concrete implementation (**Azure Service Bus** or **SQL Server Service Broker**) and, optionally, durable reliability storage (relational **Entity Framework** or document-tier **Cosmos DB**).
 
 ## Modules
 
@@ -93,6 +95,17 @@ EF Core implementation of the Chatter.MessageBrokers reliability ports — durab
 - Ships `IEntityTypeConfiguration` types applied in your `DbContext.OnModelCreating` — messaging tables live alongside domain tables.
 - Entry point: `CommandPipelineBuilder.WithInboxBehavior<TContext>()` / `WithOutboxProcessingBehavior<TContext>()` / `WithUnitOfWorkBehavior<TContext>()`.
 
+### [Chatter.MessageBrokers.Reliability.Cosmos](./src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md#chatter-reliability-cosmos)
+`dotnet add package Chatter.MessageBrokers.Reliability.Cosmos`
+
+Document-tier (NoSQL) implementation of the Chatter.MessageBrokers reliability ports, backed by Azure Cosmos DB — the stage-then-commit sibling of the relational Entity Framework tier.
+
+- Document-tier **stage-then-commit** reliability over a Cosmos `TransactionalBatch`: the framework opens the batch, the handler contributes its own aggregate writes, and the batch executes once as the single commit point.
+- Per-command **participation registry** (`WithCosmosDocumentReliability<TCommand>(...)`) with per-command database/container/lease, enabling multi-container support — unregistered commands bypass the document tier untouched.
+- Co-resident **outbox** staged atomically with the aggregate write, plus a co-resident **inbox** marker for TOCTOU-free idempotent dedup (confirmed-duplicate marker-409 fails the batch atomically).
+- **Change-feed outbox relay**: a hosted `ChangeFeedProcessor` drains co-resident pending outbox documents, publishes each through the broker at-least-once, then marks delivered with a TTL self-purge.
+- Entry point: `CommandPipelineBuilder.WithCosmosDocumentReliability<TCommand>(...)`.
+
 ### [Chatter.SqlChangeFeed](./src/Chatter.SqlChangeFeed/src/README.md#chatter-sqlchangefeed)
 `dotnet add package Chatter.SqlChangeFeed`
 
@@ -108,7 +121,7 @@ Emits strongly-typed notifications when rows in a watched SQL Server table are i
 
 1. Install **Chatter.CQRS** and register it: `services.AddChatterCqrs(...)`.
 2. To exchange messages across services, add **Chatter.MessageBrokers** plus a transport — **AzureServiceBus** or **SqlServiceBroker**.
-3. For durable reliability, add **Reliability.EntityFramework** and apply its entity configurations to your `DbContext`.
+3. For durable reliability, add **Reliability.EntityFramework** (relational — apply its entity configurations to your `DbContext`) or **Reliability.Cosmos** (document-tier — register a `CosmosClient` and a per-command participation entry).
 
 Each module's README (linked above) has installation, configuration, and worked examples.
 
