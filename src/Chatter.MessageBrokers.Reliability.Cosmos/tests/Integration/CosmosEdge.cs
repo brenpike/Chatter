@@ -19,25 +19,42 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
     internal static class CosmosEdge
     {
         // Point-read presence at a known id. Bounded retry tolerates the brief read-your-write window the emulator may
-        // exhibit immediately after a batch commit.
+        // exhibit immediately after a batch commit. ONLY a 200 (OK) proves presence and ONLY a 404 (NotFound) proves
+        // absence; any other status (e.g. a transient 429/500/503 emulator read failure) is inconclusive and must NOT be
+        // mistaken for a settled answer — otherwise a transient read error would falsely satisfy an absence assertion.
+        // Inconclusive statuses keep polling, and if the deadline elapses without a conclusive read the helper THROWS so
+        // the test fails loudly rather than returning a misleading present/absent boolean.
         public static async Task<bool> WaitForPresenceAsync(Container container, string id, string partition, bool expectPresent, TimeSpan timeout)
         {
             DateTime deadline = DateTime.UtcNow + timeout;
-            bool present;
+            HttpStatusCode lastStatus;
             do
             {
                 using ResponseMessage read = await container.ReadItemStreamAsync(id, new PartitionKey(partition));
-                present = read.StatusCode == HttpStatusCode.OK;
-                if (present == expectPresent)
+                lastStatus = read.StatusCode;
+                if (lastStatus == HttpStatusCode.OK)
                 {
-                    return present;
+                    if (expectPresent)
+                    {
+                        return true;
+                    }
                 }
+                else if (lastStatus == HttpStatusCode.NotFound)
+                {
+                    if (!expectPresent)
+                    {
+                        return false;
+                    }
+                }
+                // else: inconclusive (transient) status — neither present nor absent; keep polling.
 
                 await Task.Delay(TimeSpan.FromMilliseconds(200));
             }
             while (DateTime.UtcNow < deadline);
 
-            return present;
+            throw new TimeoutException(
+                $"Point-read of id '{id}' in partition '{partition}' did not reach the expected presence " +
+                $"(expectPresent={expectPresent}) within {timeout}; last observed status was {lastStatus}.");
         }
 
         // Counts the Chatter documents carrying the given _chatterType discriminator within a partition. Used to assert
