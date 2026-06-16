@@ -75,7 +75,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             await firstContext.SaveChangesAsync();
 
             Func<Task> secondSave = () => secondContext.SaveChangesAsync();
-            await secondSave.Should().ThrowAsync<DbUpdateException>();
+            var thrown = await secondSave.Should().ThrowAsync<DbUpdateException>();
+            thrown.WithInnerException<SqlException>()
+                .Which.Number.Should().Be(PrimaryKeyViolationNumber,
+                    "the losing receiver must lose specifically at the MessageId primary-key constraint (SQL Server error 2627)");
 
             using var verifyContext = harness.CreateContext();
             var rows = await verifyContext.Set<InboxMessage>().Where(m => m.MessageId == messageId).ToListAsync();
