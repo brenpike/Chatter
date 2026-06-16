@@ -56,3 +56,17 @@ jobs:
       src-path: 'src/Chatter.SqlChangeFeed/src/'
       csproj-path: 'src/Chatter.SqlChangeFeed/src/Chatter.SqlChangeFeed/Chatter.SqlChangeFeed.csproj'
       tag-prefix: 'sqlchangefeed'
+
+  rabbitmq:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.MessageBrokers.RabbitMQ/src/'
+      csproj-path: 'src/Chatter.MessageBrokers.RabbitMQ/src/Chatter.MessageBrokers.RabbitMQ/Chatter.MessageBrokers.RabbitMQ.csproj'
+      tag-prefix: 'rabbitmq'
+
+  cosmos:
+    uses: ./.github/workflows/version-check.yml
+    with:
+      src-path: 'src/Chatter.MessageBrokers.Reliability.Cosmos/src/'
+      csproj-path: 'src/Chatter.MessageBrokers.Reliability.Cosmos/src/Chatter.MessageBrokers.Reliability.Cosmos/Chatter.MessageBrokers.Reliability.Cosmos.csproj'
+      tag-prefix: 'cosmos'
