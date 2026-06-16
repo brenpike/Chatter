@@ -14,7 +14,8 @@ namespace Chatter.MessageBrokers.Routing.Options
             => MessageContext = context ?? new Dictionary<string, object>();
 
         public RoutingOptions(RoutingOptions optionsToMerge)
-            : this(optionsToMerge?.MessageContext) { }
+            : this(optionsToMerge?.MessageContext)
+            => MessageId = optionsToMerge?.MessageId;
 
         public string MessageId { get; set; }
         public string ContentType
