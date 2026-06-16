@@ -12,8 +12,8 @@ using Xunit;
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
 {
     // Transaction-mode integration proof (C9) for the SQL Service Broker integration harness. The SYSTEM UNDER
-    // TEST is how the GLOBAL MessageBrokerOptions.TransactionMode governs the SSB receive-side RECEIVE
-    // transaction, which is what makes nack→redelivery possible (or not):
+    // TEST is how the PER-RECEIVER transactionMode passed to AddQueueReceiver<T> governs the SSB receive-side
+    // RECEIVE transaction, which is what makes nack→redelivery possible (or not):
     //
     //   * ReceiveOnly — SqlServiceBrokerReceiver BEGINs a transaction around the RECEIVE, so when the handler
     //     throws, NackMessageAsync ROLLS BACK that transaction and the message returns to the queue and is
@@ -24,14 +24,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
     //     the handler throws — there is nothing to roll back, so the message is NOT returned to the queue and is
     //     NOT redelivered. The handler is invoked EXACTLY ONCE.
     //
-    // WHY TWO HARNESS INSTANCES: the SSB receive-side transaction mode is GLOBAL-PER-CONTAINER. SqlService
-    // BrokerReceiver captures it ONCE in its ctor from MessageBrokerOptions.TransactionMode
-    // (SqlServiceBrokerReceiver.cs: `_transactionMode = messageBrokerOptions?.TransactionMode ??
-    // TransactionMode.ReceiveOnly`), NOT per-receiver — the AddQueueReceiver(transactionMode:) param does not
-    // reach the SSB receive-side SQL transaction. So the only lever is the GLOBAL MessageBrokerOptions
-    // .TransactionMode set via AddMessageBrokers(opts => opts.WithTransactionMode(...)). Each mode therefore
-    // needs its OWN harness instance (its own DI graph / receiver) built with that global mode, and each runs on
-    // its OWN provisioned object set so their queue state can never bleed into one another.
+    // WHY TWO HARNESS INSTANCES: each mode must run on its OWN provisioned object set (TransactionSet vs
+    // NoneSet) so their queue state can never bleed into one another. The collection fixture provisions once and
+    // never clears queues between test classes, so reusing a shared set would make the exactly-once None
+    // assertion order-dependent on whatever left state in that set. The per-receiver transactionMode param on
+    // AddQueueReceiver<T> is the lever — no global MessageBrokerOptions.TransactionMode override is required.
     //
     // Both facts are gated by [RequiresDockerFact] and SKIPPED (never failed) when Docker is absent so a plain
     // `dotnet test` stays green. Mirrors SsbNackRedeliveryTests for harness setup and collection membership.
@@ -66,43 +63,44 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             public string Marker { get; set; }
         }
 
-        // ReceiveOnly harness: built on the dedicated TransactionSet with the GLOBAL transaction mode set to
-        // ReceiveOnly so the receiver BEGINs a transaction around the RECEIVE and a throwing handler's nack rolls
-        // it back to redeliver.
+        // ReceiveOnly harness: built on the dedicated TransactionSet with the PER-RECEIVER transaction mode set
+        // to ReceiveOnly so the receiver BEGINs a transaction around the RECEIVE and a throwing handler's nack
+        // rolls it back to redeliver.
         private ChatterSsbPipelineHarness BuildReceiveOnlyHarness()
             => ChatterSsbPipelineHarness.Build(
                 _fixture.GetAppConnectionString(),
                 ServiceBrokerProvisioning.TransactionSet,
                 ssb => ssb.AddQueueReceiver<ReceiveOnlyTransactionCommand>(
                     ServiceBrokerProvisioning.TransactionSet.TargetQueuePathBracketed,
+                    transactionMode: TransactionMode.ReceiveOnly,
                     deadLetterServicePath: ServiceBrokerProvisioning.TransactionSet.DeadLetterServiceName),
-                globalTransactionMode: TransactionMode.ReceiveOnly,
                 typeof(ReceiveOnlyTransactionCommand));
 
-        // None harness: built on its OWN dedicated object set (NoneSet) with the GLOBAL transaction mode set to
-        // None so the receiver BEGINs NO transaction around the RECEIVE — a throwing handler cannot redeliver
-        // because there is no receive transaction to roll back. A dedicated set (not the shared DeadLetterSet)
-        // is required: the collection fixture provisions once and never clears queues between test classes, so
-        // reusing DeadLetterSet's target/deadletter queues would let leftover state or class-order interaction
-        // from SsbDeadLetterTests bleed into this receiver and make the exactly-once None assertion
-        // order-dependent. Its own set keeps C9-None isolated, exactly as Publish/Poison/Transaction/Forwarding.
+        // None harness: built on its OWN dedicated object set (NoneSet) with the PER-RECEIVER transaction mode
+        // set to None so the receiver BEGINs NO transaction around the RECEIVE — a throwing handler cannot
+        // redeliver because there is no receive transaction to roll back. A dedicated set (not the shared
+        // DeadLetterSet) is required: the collection fixture provisions once and never clears queues between
+        // test classes, so reusing DeadLetterSet's target/deadletter queues would let leftover state or
+        // class-order interaction from SsbDeadLetterTests bleed into this receiver and make the exactly-once
+        // None assertion order-dependent. Its own set keeps C9-None isolated, exactly as
+        // Publish/Poison/Transaction/Forwarding.
         private ChatterSsbPipelineHarness BuildNoneHarness()
             => ChatterSsbPipelineHarness.Build(
                 _fixture.GetAppConnectionString(),
                 ServiceBrokerProvisioning.NoneSet,
                 ssb => ssb.AddQueueReceiver<NoneTransactionCommand>(
                     ServiceBrokerProvisioning.NoneSet.TargetQueuePathBracketed,
+                    transactionMode: TransactionMode.None,
                     deadLetterServicePath: ServiceBrokerProvisioning.NoneSet.DeadLetterServiceName),
-                globalTransactionMode: TransactionMode.None,
                 typeof(NoneTransactionCommand));
 
-        // Global ReceiveOnly + throwing handler → redelivery. The receiver wraps the RECEIVE in a transaction, so
-        // NackMessageAsync rolls it back and the message returns to the queue. Assert (a) the handler is invoked
-        // at least twice and (b) ReceiveAttempts climbs above 1 across deliveries. ANTI-INFINITE-LOOP: stop
-        // throwing once >= 2 invocations are observed so the message finally acks and the conversation closes
-        // before DisposeAsync drains the pump.
+        // Per-receiver ReceiveOnly + throwing handler → redelivery. The receiver wraps the RECEIVE in a
+        // transaction, so NackMessageAsync rolls it back and the message returns to the queue. Assert (a) the
+        // handler is invoked at least twice and (b) ReceiveAttempts climbs above 1 across deliveries.
+        // ANTI-INFINITE-LOOP: stop throwing once >= 2 invocations are observed so the message finally acks and
+        // the conversation closes before DisposeAsync drains the pump.
         [RequiresDockerFact]
-        public async Task GlobalReceiveOnlyModeRedeliversThrowingHandler()
+        public async Task PerReceiverReceiveOnlyModeRedeliversThrowingHandler()
         {
             var harness = BuildReceiveOnlyHarness();
             try
@@ -125,9 +123,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
                 harness.GetSignal<ReceiveOnlyTransactionCommand>().ThrowOnHandle = null;
 
                 observedCount.Should().BeGreaterThanOrEqualTo(2,
-                    "under global ReceiveOnly mode the receiver wraps the RECEIVE in a transaction, so a throwing " +
-                    "handler's nack rolls it back and the message is redelivered — the handler must be invoked at " +
-                    "least twice");
+                    "under per-receiver ReceiveOnly mode the receiver wraps the RECEIVE in a transaction, so a " +
+                    "throwing handler's nack rolls it back and the message is redelivered — the handler must be " +
+                    "invoked at least twice");
 
                 // ReceiveAttempts must climb: the receiver's in-memory attempt counter increments on each
                 // re-receive of the same conversation handle.
@@ -148,13 +146,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             }
         }
 
-        // Global None + throwing handler → exactly one invocation, NO redelivery. The receiver opens NO
+        // Per-receiver None + throwing handler → exactly one invocation, NO redelivery. The receiver opens NO
         // transaction around the RECEIVE, so the RECEIVE is already committed when the handler throws — there is
         // nothing to roll back and the message is not returned to the queue. First CONFIRM the single delivery
         // landed (non-vacuous: the handler really was invoked once), then assert it stays at exactly 1 across a
         // bounded settle so the no-redelivery negative is observed, not merely un-raced.
         [RequiresDockerFact]
-        public async Task GlobalNoneModeDoesNotRedeliverThrowingHandler()
+        public async Task PerReceiverNoneModeDoesNotRedeliverThrowingHandler()
         {
             var harness = BuildNoneHarness();
             try
@@ -183,7 +181,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
 
                 harness.GetSignal<NoneTransactionCommand>().InvocationCount
                     .Should().Be(1,
-                        "under global None mode the receiver opens no transaction around the RECEIVE, so a " +
+                        "under per-receiver None mode the receiver opens no transaction around the RECEIVE, so a " +
                         "throwing handler has nothing to roll back — the message is not redelivered and the " +
                         "handler is invoked exactly once even after a bounded settle window");
             }
