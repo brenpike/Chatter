@@ -12,6 +12,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+- Receive-side SQL transaction now honors the per-receiver `ReceiverOptions.TransactionMode` (set via `AddQueueReceiver<T>(transactionMode:)`) instead of always falling back to the global `MessageBrokerOptions.TransactionMode` — two receivers configured with different modes both previously used the global mode. (#235)
+
 ## [0.12.1] - 2026-06-14
 
 ### Fixed
