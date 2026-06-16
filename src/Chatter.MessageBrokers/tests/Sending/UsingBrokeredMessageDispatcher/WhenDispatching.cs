@@ -1,4 +1,5 @@
 using Chatter.CQRS.Commands;
+using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing;
@@ -48,6 +49,8 @@ namespace Chatter.MessageBrokers.Tests.Sending.UsingBrokeredMessageDispatcher
 
         private class FakeCommand : ICommand { }
 
+        private class FakeEvent : IEvent { }
+
         // A real MessageBrokerContext carries an inbound InboundBrokeredMessage whose internal MessageContextImpl
         // is what BrokeredMessageDispatcher merges per-send SendOptions over via SendOptions.Create(...).Merge(...).
         private static MessageBrokerContext HandlerContextWithInbound(Mock<IBrokeredMessageBodyConverter> bodyConverter)
@@ -79,6 +82,53 @@ namespace Chatter.MessageBrokers.Tests.Sending.UsingBrokeredMessageDispatcher
             await _sut.Send(new FakeCommand(), "destination", handlerContext, new SendOptions());
 
             _routedMessages.Single().GetMessageContextByKey<string>(MessageContext.Subject).Should().BeNull();
+        }
+
+        [Fact]
+        public async Task MustCarryHandlerSuppliedMessageIdOntoOutboundWhenSendingThroughHandlerContext()
+        {
+            var handlerContext = HandlerContextWithInbound(_bodyConverter);
+            var options = new SendOptions { MessageId = "explicit-id" };
+
+            await _sut.Send(new FakeCommand(), "destination", handlerContext, options);
+
+            _routedMessages.Single().MessageId.Should().Be("explicit-id");
+        }
+
+        [Fact]
+        public async Task MustCarryHandlerSuppliedMessageIdOntoOutboundWhenPublishingThroughHandlerContext()
+        {
+            var handlerContext = HandlerContextWithInbound(_bodyConverter);
+            var options = new PublishOptions { MessageId = "explicit-id" };
+
+            await _sut.Publish(new FakeEvent(), "destination", handlerContext, options);
+
+            _routedMessages.Single().MessageId.Should().Be("explicit-id");
+        }
+
+        [Fact]
+        public async Task MustFallBackToGeneratedMessageIdWhenNoMessageIdSuppliedThroughHandlerContext()
+        {
+            var generatedId = Guid.NewGuid();
+            _idGenerator.Setup(g => g.GenerateId(It.IsAny<byte[]>())).Returns(generatedId);
+            var handlerContext = HandlerContextWithInbound(_bodyConverter);
+
+            await _sut.Send(new FakeCommand(), "destination", handlerContext, new SendOptions());
+
+            _routedMessages.Single().MessageId.Should().Be(generatedId.ToString());
+            _routedMessages.Single().MessageId.Should().NotBe("explicit-id");
+        }
+
+        [Fact]
+        public async Task MustCarryBothHandlerSuppliedMessageIdAndDictionaryOverrideOntoOutbound()
+        {
+            var handlerContext = HandlerContextWithInbound(_bodyConverter);
+            var options = new SendOptions { MessageId = "explicit-id" }.WithSubject("explicit-subject");
+
+            await _sut.Send(new FakeCommand(), "destination", handlerContext, options);
+
+            _routedMessages.Single().MessageId.Should().Be("explicit-id");
+            _routedMessages.Single().GetMessageContextByKey<string>(MessageContext.Subject).Should().Be("explicit-subject");
         }
     }
 }
