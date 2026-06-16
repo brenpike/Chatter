@@ -50,6 +50,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         public Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
         {
             _options = options;
+            // options.TransactionMode is already core-normalized: BrokeredMessageReceiver.StartReceiverImpl
+            // does `options.TransactionMode ??= _messageBrokerOptions.TransactionMode` before calling
+            // InitializeAsync, so per-receiver wins; absent per-receiver inherits the ctor-captured global;
+            // absent both, the ctor default (ReceiveOnly) holds.
+            _transactionMode = options.TransactionMode ?? _transactionMode;
             return Task.CompletedTask;
         }
 
