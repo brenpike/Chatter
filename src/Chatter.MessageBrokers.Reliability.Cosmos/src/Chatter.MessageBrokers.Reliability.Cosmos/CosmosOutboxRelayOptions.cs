@@ -47,8 +47,10 @@ namespace Microsoft.Extensions.DependencyInjection
         public IReadOnlyList<string> PartitionKeyPath { get; set; }
 
         /// <summary>
-        /// Optional. When supplied, resolves an <see cref="IOutboxBodyResolver"/> from the root service provider once at
-        /// host start. A bound resolver owns the brokered message published for each admitted pending document instead of
+        /// Optional. When supplied, binds a factory the host invokes to obtain an <see cref="IOutboxBodyResolver"/>. The
+        /// host opens a fresh <see cref="IServiceScope"/> PER DRAINED DOCUMENT and resolves the resolver from that scope
+        /// (disposed after the document is processed), so a resolver MAY depend on / capture scoped services in its
+        /// constructor. A bound resolver owns the brokered message published for each admitted pending document instead of
         /// the relay's verbatim field reconstruction.
         /// </summary>
         public Func<IServiceProvider, IOutboxBodyResolver>? BodyResolverFactory { get; set; }
