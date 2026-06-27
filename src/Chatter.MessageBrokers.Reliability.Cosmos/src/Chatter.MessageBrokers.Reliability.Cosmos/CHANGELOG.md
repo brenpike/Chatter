@@ -6,6 +6,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-27
+
 ### Documentation
 
 - Documented the cross-tier inbox handler-side-effect contract (#220/#241, ADR-0007). Because the Document-Tier Batch-Lifecycle Behavior stamps the `inbox:` marker, runs `next()`, and only THEN executes the single `TransactionalBatch`, a confirmed-duplicate marker-409 surfaces AFTER the handler has run. Consequence on a redelivered duplicate: writes staged on the framework-owned batch (the aggregate write + co-resident outbox doc) roll back atomically and never re-commit (EXACTLY-ONCE), but handler side effects performed OUTSIDE the batch (external HTTP, non-Cosmos writes) have already executed and re-execute on every redelivery (AT-LEAST-ONCE) — so handlers with non-batched side effects MUST be idempotent. This contrasts with the relational tier (`BrokeredMessageInbox.ReceiveViaInbox`), which reads `HasBeenReceived` first and SKIPS the handler entirely on a known duplicate, so its non-batched side effects do not re-run. This is the deliberate cost of the no-pre-read / TOCTOU-free design (a pre-read would reintroduce the eliminated TOCTOU); it records existing intent and is a documentation-only clarification (README, XML-doc, ADR-0007) with NO behavior or wire-shape change.
