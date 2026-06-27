@@ -1,6 +1,8 @@
 using Chatter.CQRS.Commands;
 using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Reliability.Cosmos;
+using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,6 +12,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -27,6 +31,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
     public class WhenSelectingProcessors
     {
         private const string ProcessorNamePrefix = "chatter-cosmos-outbox-relay";
+        private const string InfrastructureType = "test-infra";
         private static readonly IReadOnlyList<string> PartitionKeyPath = Array.AsReadOnly(new[] { "/tenantId" });
 
         private sealed class CreateOrder : ICommand { }
@@ -41,6 +46,55 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         }
 
         private static Stream StreamOf(string json) => new MemoryStream(Encoding.UTF8.GetBytes(json));
+
+        private static JsonElement Parse(string json)
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+
+        private static JsonElement JsonValue(string raw) => Parse(JsonSerializer.Serialize(raw));
+
+        // Builds a genuinely-admitted pending outbox document wire-faithfully (id == CosmosItemId.ForOutbox(MessageId),
+        // status == pending, _chatterType == outbox), mirroring WhenResolvingOutboxBody's builder, so the relay's
+        // IsPendingOutbox id-guard admits it and it drives the full publish/stamp path.
+        private static JsonElement PendingOutboxDocument(string messageId, string destination, object body, string tenantId)
+        {
+            var converter = new JsonBodyConverter();
+            var messageContext = new Dictionary<string, object>
+            {
+                [MessageContext.InfrastructureType] = InfrastructureType,
+            };
+            var outbound = new OutboundBrokeredMessage(messageId, body, messageContext, destination, converter);
+            CosmosOutboxDocument document = CosmosOutboxDocument.From(outbound);
+
+            var partitionKeyValues = new List<JsonElement> { JsonValue(tenantId) };
+            JsonObject rendered = document.ToJsonObject(PartitionKeyPath, partitionKeyValues);
+            return Parse(rendered.ToJsonString());
+        }
+
+        // A monitored container that satisfies the relay's delivered/TTL PatchItemAsync<JsonElement> for an admitted
+        // document and returns a benign response, mirroring WhenResolvingOutboxBody's RecordingContainer.
+        private static Mock<Container> RecordingMonitoredContainer()
+        {
+            var container = new Mock<Container>();
+            container.Setup(c => c.PatchItemAsync<JsonElement>(
+                        It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
+                        It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()))
+                     .ReturnsAsync(Mock.Of<ItemResponse<JsonElement>>());
+            return container;
+        }
+
+        // A resolver whose ResolveAsync returns a completed null-result Task: the admitted document is stamped delivered
+        // and dispatches nothing, so the publish path's infrastructure dispatcher is never touched while the Mock infra
+        // stays usable (a bare Mock.Of resolver would return a null Task and fault the await).
+        private static IOutboxBodyResolver NullResolvingResolver()
+        {
+            var resolver = new Mock<IOutboxBodyResolver>();
+            resolver.Setup(r => r.ResolveAsync(It.IsAny<OutboxDrainContext>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync((OutboundBrokeredMessage)null);
+            return resolver.Object;
+        }
 
         // Mirrors the registry-host characterization test's mocked Container: resolved physical identity (.Id +
         // .Database.Id) and account endpoint (.Database.Client.Endpoint) are fixed so the ground-truth source-identity key
@@ -198,11 +252,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             distinctIdentity.Should().NotBe(firstName, "a distinct declared source identity derives a distinct processor name");
         }
 
-        // R-STEP-002: a configured body-resolver factory is consulted PER DRAINED DOCUMENT from a FRESH DI scope (not once
-        // at host construction, and not from the root provider), and that scope is disposed after the document — so a
-        // scoped resolver (and the scoped dependencies it resolves) never outlives the document it drained.
+        // R3-STEP-001: the host opens a DI scope + invokes the body-resolver factory ONLY for an ADMITTED (pending outbox)
+        // document — NOT per raw change-feed document. Over a mixed batch (one genuinely-admitted pending outbox doc plus
+        // two non-admitted docs that co-reside in the monitored container), the factory is consulted exactly once (the
+        // admitted doc), no scope is opened for the non-admitted docs, and the one admitted scope is disposed after its
+        // document. This is the liveness fix: the admission check precedes any scope/factory/user-DI work.
         [Fact]
-        public async Task MustOpenResolveAndDisposeAFreshScopePerDrainedDocument()
+        public async Task MustOpenResolveAndDisposeAScopeOnlyForTheAdmittedDocument()
         {
             var capturedProviders = new List<IServiceProvider>();
             var trackers = new List<ScopedTracker>();
@@ -211,14 +267,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             rootServices.AddScoped<ScopedTracker>();
             using ServiceProvider root = rootServices.BuildServiceProvider();
 
-            Container monitored = PhysicalContainer("shop", "orders");
+            Mock<Container> monitored = RecordingMonitoredContainer();
             Container lease = PhysicalContainer("shop", "orders-leases");
-            CosmosOutboxRelayOptions options = OptionsFor(monitored, lease);
+            CosmosOutboxRelayOptions options = OptionsFor(monitored.Object, lease);
             options.BodyResolverFactory = scopedProvider =>
             {
                 capturedProviders.Add(scopedProvider);
                 trackers.Add(scopedProvider.GetRequiredService<ScopedTracker>());
-                return Mock.Of<IOutboxBodyResolver>();
+                return NullResolvingResolver();
             };
 
             var host = new StandaloneCosmosOutboxRelayHostedService(
@@ -227,17 +283,98 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
                 Mock.Of<IBodyConverterFactory>(),
                 options);
 
-            // Two non-pending documents: each still drives the per-document scope-open + factory-resolve before the relay
-            // filters it out as non-admitted, so the scope lifecycle is exercised without needing the publish/stamp path.
-            using Stream batch = StreamOf("{\"Documents\":[{\"id\":\"a\"},{\"id\":\"b\"}]}");
-            await host.HandleChangesAsync(batch, monitored, PartitionKeyPath, CancellationToken.None);
+            // A mixed batch: ONE genuinely-admitted pending outbox doc PLUS two non-admitted co-resident docs (a bare item
+            // and an inbox/domain-shaped item). Only the admitted doc may open a scope + invoke the factory.
+            JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
+            string batchJson = $"{{\"Documents\":[{{\"id\":\"a\"}},{admitted.GetRawText()},{{\"id\":\"inbox:x\",\"_chatterType\":\"inbox\",\"MessageId\":\"m\"}}]}}";
+            using Stream batch = StreamOf(batchJson);
+            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
 
-            capturedProviders.Should().HaveCount(2, "the body-resolver factory is consulted exactly once per drained document");
-            capturedProviders[0].Should().NotBeSameAs(capturedProviders[1], "each document is drained under its OWN per-document DI scope");
+            capturedProviders.Should().ContainSingle("the body-resolver factory is consulted exactly once — only for the admitted pending outbox document, not per raw drained document");
             capturedProviders.Should().NotContain(root, "the resolver is resolved from a per-document scope, never the root provider");
-            trackers.Should().HaveCount(2);
-            trackers.Should().OnlyContain(tracker => tracker.Disposed,
-                "each per-document scope is disposed after its document, disposing the scoped dependencies the resolver factory resolved");
+            trackers.Should().ContainSingle();
+            trackers[0].Disposed.Should().BeTrue("the admitted document's scope is disposed after it is drained");
+            monitored.Verify(c => c.PatchItemAsync<JsonElement>(
+                    It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
+                    It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once,
+                "only the admitted document is stamped delivered+ttl; the non-admitted docs are skipped");
+        }
+
+        // R3-STEP-001 liveness A: a body-resolver factory that THROWS, over a batch of ONLY non-admitted docs (a domain
+        // write, an inbox marker, a malformed item), must NOT be invoked at all and HandleChangesAsync must complete
+        // WITHOUT throwing — a co-resident domain/inbox/malformed write can never run user DI nor wedge the change feed.
+        [Fact]
+        public async Task MustNotInvokeAThrowingFactoryNorWedgeTheFeedForNonAdmittedDocuments()
+        {
+            var factoryInvocations = 0;
+
+            using ServiceProvider root = new ServiceCollection().BuildServiceProvider();
+
+            Mock<Container> monitored = RecordingMonitoredContainer();
+            Container lease = PhysicalContainer("shop", "orders-leases");
+            CosmosOutboxRelayOptions options = OptionsFor(monitored.Object, lease);
+            options.BodyResolverFactory = _ =>
+            {
+                factoryInvocations++;
+                throw new InvalidOperationException("resolver factory must never run for a non-admitted document");
+            };
+
+            var host = new StandaloneCosmosOutboxRelayHostedService(
+                root,
+                Mock.Of<IMessagingInfrastructureProvider>(),
+                Mock.Of<IBodyConverterFactory>(),
+                options);
+
+            // Only non-admitted, co-resident shapes: a bare domain doc, an inbox marker, a malformed outbox-discriminated
+            // doc with no status. None is a pending outbox document, so none may open a scope or invoke the factory.
+            using Stream batch = StreamOf("{\"Documents\":[{\"id\":\"a\"},{\"id\":\"inbox:x\",\"_chatterType\":\"inbox\",\"MessageId\":\"m\"},{\"id\":\"outbox:y\",\"_chatterType\":\"outbox\"}]}");
+
+            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+
+            await act.Should().NotThrowAsync("a batch of only non-admitted documents must not run user DI nor wedge the change feed");
+            factoryInvocations.Should().Be(0, "the body-resolver factory is never invoked for a non-admitted document");
+        }
+
+        // R3-STEP-001 liveness B: for an ADMITTED document whose resolver throws, HandleChangesAsync PROPAGATES — the SDK
+        // does not checkpoint and the document re-surfaces (at-least-once), so a genuine resolver failure is NOT silently
+        // swallowed by the new admission pre-check.
+        [Fact]
+        public async Task MustPropagateWhenAnAdmittedDocumentsResolverThrows()
+        {
+            var resolveFailure = new InvalidOperationException("resolver unavailable");
+
+            using ServiceProvider root = new ServiceCollection().BuildServiceProvider();
+
+            Mock<Container> monitored = RecordingMonitoredContainer();
+            Container lease = PhysicalContainer("shop", "orders-leases");
+            CosmosOutboxRelayOptions options = OptionsFor(monitored.Object, lease);
+            options.BodyResolverFactory = _ =>
+            {
+                var resolver = new Mock<IOutboxBodyResolver>();
+                resolver.Setup(r => r.ResolveAsync(It.IsAny<OutboxDrainContext>(), It.IsAny<CancellationToken>()))
+                        .ThrowsAsync(resolveFailure);
+                return resolver.Object;
+            };
+
+            var host = new StandaloneCosmosOutboxRelayHostedService(
+                root,
+                Mock.Of<IMessagingInfrastructureProvider>(),
+                Mock.Of<IBodyConverterFactory>(),
+                options);
+
+            JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
+            using Stream batch = StreamOf($"{{\"Documents\":[{admitted.GetRawText()}]}}");
+
+            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+
+            (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(resolveFailure,
+                "an admitted document's resolver failure propagates so the SDK does not checkpoint and the document re-surfaces");
+            monitored.Verify(c => c.PatchItemAsync<JsonElement>(
+                    It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
+                    It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Never,
+                "a resolver failure leaves the document pending — no delivered/ttl stamp");
         }
     }
 }

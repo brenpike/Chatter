@@ -54,12 +54,15 @@ namespace Microsoft.Extensions.DependencyInjection
         /// document instead of the relay's verbatim field reconstruction.
         /// </summary>
         /// <remarks>
-        /// LIFETIME CONTRACT (per-document scope). The host opens a fresh <see cref="IServiceScope"/> PER DRAINED DOCUMENT
-        /// and invokes this factory with THAT scope's <see cref="IServiceProvider"/>, then disposes the scope after the
-        /// document is processed. The factory MUST resolve a FRESH resolver from the supplied provider on every call and MUST
-        /// NOT cache or capture the resolver (or its scoped dependencies) across documents — a captured resolver would
-        /// outlive the per-document scope it was bound to. Because resolution happens inside the per-document scope, a
-        /// resolver MAY depend on / capture scoped services in its constructor.
+        /// LIFETIME CONTRACT (per-admitted-document scope). The host opens a fresh <see cref="IServiceScope"/> and invokes
+        /// this factory with THAT scope's <see cref="IServiceProvider"/> ONLY for an ADMITTED pending outbox document — NOT
+        /// per raw drained document. The monitored container is co-resident (domain aggregates, inbox markers, and the
+        /// relay's own delivered-stamp event also surface on its change feed); a non-admitted document is skipped with NO
+        /// scope opened and this factory NOT invoked, so a non-outbox write never constructs a resolver. The scope is
+        /// disposed after the admitted document is processed. The factory MUST resolve a FRESH resolver from the supplied
+        /// provider on every call and MUST NOT cache or capture the resolver (or its scoped dependencies) across documents —
+        /// a captured resolver would outlive the per-document scope it was bound to. Because resolution happens inside the
+        /// per-document scope, a resolver MAY depend on / capture scoped services in its constructor.
         /// <para>
         /// SAFE-BY-DEFAULT PATH: prefer the typed
         /// <see cref="CosmosOutboxRelayServiceCollectionExtensions.AddCosmosOutboxRelay{TResolver}(IServiceCollection, System.Action{CosmosOutboxRelayOptions})"/>

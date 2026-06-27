@@ -80,6 +80,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken = default)
             => ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver: null, cancellationToken);
 
+        // Pure admission pre-check the host runs BEFORE opening a DI scope or invoking the body-resolver factory, so a
+        // non-admitted co-resident document (a domain write, an inbox marker, a malformed item, or the relay's OWN
+        // delivered-stamp event) is skipped with no scope, no factory call, and no user DI — a non-outbox write can never
+        // wedge the change feed via a throwing factory/resolver-ctor. Delegates to the SAME private settings predicate the
+        // internal ProcessChangeAsync self-guard uses, so the host pre-check and the relay self-guard cannot diverge. This
+        // is an ADDITIVE accessor: the self-guard inside ProcessChangeAsync is unchanged and remains authoritative.
+        internal bool IsAdmitted(JsonElement document) => _settings.IsAdmitted(document);
+
         /// <summary>
         /// Processes a single change-feed document, with an optional per-call <paramref name="resolver"/> owning the
         /// brokered message to publish for an admitted document. When <paramref name="resolver"/> is null the verbatim
