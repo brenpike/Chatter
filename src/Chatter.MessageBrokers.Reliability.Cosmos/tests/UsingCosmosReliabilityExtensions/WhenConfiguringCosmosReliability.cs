@@ -263,6 +263,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             configure.Should().Throw<ArgumentException>();
         }
 
+        [Fact]
+        public void MustRejectWhitespacePartitionKeySegmentOnBothRegistrationPaths()
+        {
+            // Both the command-pipeline registration and the standalone relay registration funnel the partition-key path
+            // through the SAME hardened validator, so the SAME bad input is rejected identically on both paths.
+            Action commandPipeline = () => CaptureBuilder(b => b.WithCosmosDocumentReliability<CreateOrder>(
+                "shop", "orders", "orders-leases",
+                _ => new PartitionKey("pk"),
+                "/tenantId", "   "));
+
+            Action standaloneRelay = () => new ServiceCollection().AddCosmosOutboxRelay(options =>
+            {
+                options.MonitoredContainerFactory = _ => Mock.Of<Container>();
+                options.LeaseContainerFactory = _ => Mock.Of<Container>();
+                options.PartitionKeyPath = new[] { "/tenantId", "   " };
+            });
+
+            commandPipeline.Should().Throw<ArgumentException>("the command-pipeline registration rejects a whitespace segment");
+            standaloneRelay.Should().Throw<ArgumentException>("the standalone relay registration rejects the same whitespace segment through the shared validator");
+        }
+
         [Theory]
         [InlineData("")]
         [InlineData("   ")]

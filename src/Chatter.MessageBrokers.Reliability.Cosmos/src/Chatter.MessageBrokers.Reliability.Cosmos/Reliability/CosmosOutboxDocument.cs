@@ -37,6 +37,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// </summary>
         public const string StatusDelivered = "delivered";
 
+        /// <summary>
+        /// The Cosmos system TTL field name. The #222 relay stamps a positive per-document TTL here on delivery so Cosmos
+        /// self-purges the delivered document — this is the ONLY field Cosmos honors for self-purge, so the delivered
+        /// stamp's ttl path is hard-wired here rather than configurable.
+        /// </summary>
+        public const string TtlField = "ttl";
+
         /// <summary>The document-id field name (Cosmos requires the item id under the reserved <c>id</c> property).</summary>
         public const string IdField = "id";
 
@@ -152,6 +159,86 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             CosmosPartitionKeyStamping.Stamp(document, partitionKeyPath, partitionKeyValues, _reservedRootFields);
 
             return document;
+        }
+
+        /// <summary>
+        /// The #222 change-feed filter: <paramref name="document"/> is a pending Chatter outbox document the relay must
+        /// publish exactly when its <c>_chatterType</c> discriminator equals <see cref="CosmosItemId.OutboxKind"/>, AND
+        /// its <c>status</c> equals <see cref="StatusPending"/>, AND its physical <c>id</c> is the deterministic outbox id
+        /// Chatter mints for its verbatim <c>MessageId</c> (<c>id == CosmosItemId.ForOutbox(MessageId)</c>). A domain
+        /// document, an inbox marker, an already-delivered outbox document (the relay's own delivered/TTL update event),
+        /// or a malformed outbox document with a missing/non-string/empty status is NOT pending.
+        /// </summary>
+        // The id-consistency check is the publish-side analogue of the inbox-side confirmation ADR-0007 already chose (the
+        // marker-409 branch confirms _chatterType=="inbox" AND MessageId match rather than inferring from the bare
+        // discriminator/namespace). The application OWNS the container and can author a document carrying
+        // _chatterType="outbox" + status="pending" through a raw Cosmos write that no staging guard closes; without this
+        // check the relay would publish that app/domain document as a broker message and then patch it status=delivered +
+        // ttl — a forbidden domain-document leak AND a mutation of app data. Requiring id == ForOutbox(MessageId) makes a
+        // document the relay drains provably one Chatter itself minted (the id is a deterministic function of the verbatim
+        // MessageId), closing that leak/mutation class by construction rather than enumerating doc shapes. A genuine
+        // Chatter outbox doc always satisfies this because CosmosOutboxDocument stamps id = ForOutbox(MessageId) and
+        // MessageId verbatim from the same message.
+        public static bool IsPendingOutbox(JsonElement document)
+        {
+            if (document.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (!TryGetString(document, DiscriminatorField, out string discriminator)
+                || !string.Equals(discriminator, CosmosItemId.OutboxKind, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!TryGetString(document, StatusField, out string status)
+                || string.IsNullOrWhiteSpace(status)
+                || !string.Equals(status, StatusPending, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!TryGetString(document, IdField, out string id)
+                || !TryGetString(document, MessageIdField, out string messageId)
+                || string.IsNullOrEmpty(messageId)
+                || !string.Equals(id, ExpectedOutboxId(messageId), StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        // The deterministic outbox id Chatter mints for a verbatim MessageId, recomputed from the persisted MessageId so
+        // the filter can prove a drained document is one Chatter itself authored. ForOutbox can throw (e.g. a MessageId
+        // that encodes past Cosmos's id-length limit) only for ids Chatter could never have written, so any throw here
+        // means "not a genuine Chatter outbox doc" -> treat as non-pending and skip rather than fault the whole batch.
+        private static string ExpectedOutboxId(string messageId)
+        {
+            try
+            {
+                return CosmosItemId.ForOutbox(messageId);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        // Reads a string-valued property off a change-feed document, returning false (with a null out value) when the
+        // property is absent or not a JSON string. Shared by the pending-outbox filter and the relay's field reads so the
+        // wire shape is interpreted one way.
+        internal static bool TryGetString(JsonElement document, string propertyName, out string value)
+        {
+            if (document.TryGetProperty(propertyName, out JsonElement element) && element.ValueKind == JsonValueKind.String)
+            {
+                value = element.GetString();
+                return true;
+            }
+
+            value = null;
+            return false;
         }
     }
 }

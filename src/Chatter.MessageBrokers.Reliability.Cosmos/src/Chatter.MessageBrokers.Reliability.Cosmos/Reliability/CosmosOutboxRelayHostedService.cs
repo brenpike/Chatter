@@ -231,7 +231,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // bytes). Length-prefixing is injective — distinct component tuples produce distinct byte streams, with no in-band
         // delimiter a component value could spoof. The canonical bytes are SHA-256 hashed and base64url-encoded (URL- and
         // identifier-safe), so the name is deterministic across runs/instances (unlike per-process-randomized GetHashCode).
-        private static string BuildProcessorName(RelaySourceIdentityKey key)
+        // internal (not private) so the standalone relay host (StandaloneCosmosOutboxRelayHostedService) reuses the SAME
+        // injective source-identity-to-name derivation rather than re-implementing the #222-sensitive name machinery; the
+        // assembly exposes internals to the standalone host (same assembly) and the test project. No behavior change.
+        internal static string BuildProcessorName(RelaySourceIdentityKey key)
         {
             byte[] canonical = key.ToCanonicalBytes();
             byte[] digest = SHA256.HashData(canonical);
@@ -242,7 +245,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return $"{ProcessorNamePrefix}:{base64url}";
         }
 
-        private static string NormalizeEndpoint(Uri endpoint) => endpoint?.AbsoluteUri ?? string.Empty;
+        // internal (not private) so the standalone relay host reuses the SAME endpoint normalization when building a
+        // ground-truth source-identity key. No behavior change.
+        internal static string NormalizeEndpoint(Uri endpoint) => endpoint?.AbsoluteUri ?? string.Empty;
 
         // Path discriminator for the typed source-identity key. Replaces the former "declared" / "ground-truth" string
         // prefix that was concatenated into the flat key.

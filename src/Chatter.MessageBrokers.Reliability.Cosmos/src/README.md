@@ -113,6 +113,106 @@ pipeline.WithCosmosDocumentReliability<CreateOrder>(
 
 These factories bypass `client.GetContainer` derivation. Use this when the `Container` handle is already managed elsewhere in your DI graph. The declared identity is opaque to the relay — any stable token that uniquely names the source works; the relay only compares the declared pairs for equality. (On the plain overload no identity is declared: the handle is derived from the app `CosmosClient`, so the relay keys on the ground-truth resolved identity instead.)
 
+## Standalone Outbox Relay (`AddCosmosOutboxRelay`)
+
+The [Change-Feed Relay](#change-feed-relay) above is wired implicitly by `WithCosmosDocumentReliability<TCommand>` and bound to the command-pipeline `DocumentReliabilityRegistry`. For applications that want a change-feed Outbox Relay **without** participating in the command pipeline — or that want to drain a container the pipeline never registered — `AddCosmosOutboxRelay` registers a **standalone** relay directly on the service collection:
+
+```csharp
+services.AddCosmosOutboxRelay(options =>
+{
+    options.MonitoredContainerFactory = sp => sp.GetRequiredService<CosmosClient>().GetContainer("shop", "orders");
+    options.LeaseContainerFactory     = sp => sp.GetRequiredService<CosmosClient>().GetContainer("shop", "orders-leases");
+    options.PartitionKeyPath          = "/orderId";
+
+    // Optional: resolve the brokered-message body from CURRENT store state at drain time.
+    // Omit to keep the verbatim Reconstruct default (see below).
+    options.BodyResolverFactory = sp => new OrderOutboxBodyResolver(sp.GetRequiredService<CosmosClient>());
+});
+```
+
+`AddCosmosOutboxRelay` lives in the `Microsoft.Extensions.DependencyInjection` namespace and registers **its own** `IHostedService`, **independent** of `AddChatterCqrs` / `WithCosmosDocumentReliability` and the `DocumentReliabilityRegistry`. It is **repeatable** — call it once per monitored container to run multiple standalone relays side by side. The standalone relay drains the same co-resident pending outbox documents (`_chatterType="outbox"` **and** `status="pending"`), publishes each through the broker, then stamps the document `delivered` and stamps a TTL so delivered documents self-purge — exactly as the pipeline-integrated relay does, and with the same **at-least-once** delivery and TTL-enabled-container prerequisite (see [Prerequisites](#prerequisites)).
+
+### Safe-by-default resolver registration (recommended)
+
+The raw `BodyResolverFactory` shown above is the **advanced escape hatch**: you own resolving the `IOutboxBodyResolver` and must honor its per-document-scope contract (see [Resolver DI lifetime](#the-ioutboxbodyresolver-seam) below). For the common case, prefer the generic **typed overload**, which registers your resolver `Scoped` and auto-wires the per-document factory for you — no knowledge of the raw factory required:
+
+```csharp
+services.AddCosmosOutboxRelay<OrderOutboxBodyResolver>(options =>
+{
+    options.MonitoredContainerFactory = sp => sp.GetRequiredService<CosmosClient>().GetContainer("shop", "orders");
+    options.LeaseContainerFactory     = sp => sp.GetRequiredService<CosmosClient>().GetContainer("shop", "orders-leases");
+    options.PartitionKeyPath          = "/orderId";
+    // Do NOT set options.BodyResolverFactory here — the typed overload owns that wiring (see below).
+});
+```
+
+`AddCosmosOutboxRelay<TResolver>(...)` registers `TResolver` as `Scoped` (via `TryAdd`, so an existing registration is preserved) and resolves it from the host-owned per-document scope — a fresh instance per **pending outbox document** — so your resolver may depend on / capture scoped services (e.g. a scoped `DbContext`) in its constructor. The host's pre-scope gate is the pure `IsPendingOutbox` identity guard, so a change-feed document that is not a pending outbox document never constructs your resolver.
+
+For applications running **multiple monitored containers**, each with its **own** resolver, use the **keyed overload** `AddCosmosOutboxRelay<TResolver>(serviceKey, configure)`: it registers `TResolver` as a keyed-scoped `IOutboxBodyResolver` under `serviceKey` and binds *this* relay to that keyed resolver, so relays with distinct keys never collide.
+
+```csharp
+services.AddCosmosOutboxRelay<OrderOutboxBodyResolver>("orders", options => { /* orders container + lease + pk path */ });
+services.AddCosmosOutboxRelay<LedgerOutboxBodyResolver>("ledger", options => { /* ledger container + lease + pk path */ });
+```
+
+Both typed and keyed overloads **own** the `BodyResolverFactory` wiring: if `configure` **also** sets `BodyResolverFactory`, the overload throws `ArgumentException` rather than silently overriding your delegate. Either let the typed/keyed overload wire the resolver, or use the raw `AddCosmosOutboxRelay(configure)` escape hatch and set `BodyResolverFactory` yourself — never both.
+
+### The `IOutboxBodyResolver` seam
+
+The pipeline-integrated relay always **reconstructs** the `OutboundBrokeredMessage` verbatim from the fields persisted on the outbox document. The standalone relay keeps that as its default but adds an optional **Body Resolver** seam so the message can instead be **resolved from current store state at drain time** — useful when the trigger document is a thin marker and the body should reflect the aggregate's latest state rather than its state at enqueue:
+
+```csharp
+public sealed class OrderOutboxBodyResolver : IOutboxBodyResolver
+{
+    private readonly CosmosClient _client;
+    public OrderOutboxBodyResolver(CosmosClient client) => _client = client;
+
+    public async Task<OutboundBrokeredMessage?> ResolveAsync(
+        OutboxDrainContext context, CancellationToken cancellationToken)
+    {
+        // context carries: MessageId, PartitionKey, PartitionKeyPath, Document (JsonElement).
+        // Re-read the CURRENT aggregate state and build the message to publish now,
+        // or return null to self-purge the trigger document without publishing anything.
+    }
+}
+```
+
+`OutboxDrainContext` is a readonly struct exposing the drained document's `MessageId`, its resolved `PartitionKey`, the container's `PartitionKeyPath` (`IReadOnlyList<string>`), and the raw `Document` as a `JsonElement`. For each pending document the relay invokes the bound resolver once and acts on its outcome:
+
+- **Returns a non-null `OutboundBrokeredMessage`** → the relay **publishes** it, then stamps the document `delivered`.
+- **Returns `null`** → **nothing is published**, but the document is **still stamped `delivered`** so it self-purges. A document that resolves to nothing is purged rather than left `pending` to re-trigger every change-feed pass and pin the lease.
+- **Throws** → the document is **NOT stamped** and the exception propagates out of the change-feed handler, so the SDK does not checkpoint and the document **re-surfaces** on the next pass (at-least-once).
+
+When **no** resolver is bound (`BodyResolverFactory` left null), the relay uses the unchanged **verbatim Reconstruct path** — identical to the pipeline-integrated relay. A **thin** trigger document that carries only the marker fields (no `MessageBody` / `MessageContentType` / `MessageContext`) therefore **requires** a resolver: the verbatim path throws `"no content type"` on it.
+
+> **Resolver DI lifetime.** The host's **pre-scope gate is the pure `IsPendingOutbox` identity guard only** (it runs no caller code and never throws); the optional `AdditionalPendingFilter` is composed at a **single admission site — evaluated exactly once inside the relay**, never re-evaluated by the host gate, so a non-idempotent or throwing caller filter cannot be double-evaluated and wedge the change feed. The host opens a fresh `IServiceScope` and resolves the resolver from that scope **for any document that passes `IsPendingOutbox`**, disposing the scope after the document is processed. A resolver **may** therefore depend on / capture scoped services (e.g. a scoped `DbContext`) in its constructor — each pending document gets its own scoped instance, so no manual per-document scope is required inside `ResolveAsync`. A change-feed document that is **not** a pending outbox document (a domain write, an `inbox:` marker, a malformed item, or the relay's own delivered/TTL event) is cheaply skipped with **no scope opened, no factory call, and no user DI touched**, so it cannot run user code or wedge the change feed. A document that passes `IsPendingOutbox` but is narrowed out by the `AdditionalPendingFilter` **opens a scope and invokes the factory before the relay rejects it on the filter** (one wasted scope; the resolver is never asked to resolve; nothing is published or stamped; the scope is disposed).
+>
+> The raw `BodyResolverFactory` is the **advanced escape hatch**: because resolution happens inside the per-document scope, the factory **must resolve a fresh resolver from the supplied provider on every call and must not cache or capture** the resolver (or its scoped dependencies) across documents — a captured resolver would outlive the per-document scope it was bound to. Most applications should instead use the safe-by-default typed `AddCosmosOutboxRelay<TResolver>(...)` (or keyed) overload above, which registers the resolver scoped and wires this factory correctly for you. The typed/keyed overloads own the `BodyResolverFactory` wiring and throw `ArgumentException` if `configure` also sets it.
+
+### Configurable knobs
+
+`CosmosOutboxRelayOptions` exposes the document selection, stamping paths, and TTL as options (defaults in parentheses):
+
+| Option | Purpose | Default |
+| --- | --- | --- |
+| `MonitoredContainerFactory` | `Func<IServiceProvider, Container>` for the container whose change feed is drained. | required |
+| `LeaseContainerFactory` | `Func<IServiceProvider, Container>` for the lease container. | required |
+| `PartitionKeyPath` | The monitored container's partition-key path, used to recover each document's partition key for the delivered/TTL patch. | required |
+| `BodyResolverFactory` | Optional `Func<IServiceProvider, IOutboxBodyResolver>`; when null the relay uses the verbatim Reconstruct path. | null |
+| `AdditionalPendingFilter` | Optional `Func<JsonElement, bool>` that can only further **narrow** admission. The relay **always** applies `CosmosOutboxDocument.IsPendingOutbox`; this predicate runs (logical `AND`) only on documents that already passed it, and is **evaluated exactly once, inside the relay** — the host's pre-scope gate uses `IsPendingOutbox` only. A pending document this filter narrows out opens a scope before the relay rejects it (one wasted scope; nothing published or stamped). | null |
+| `StatusPatchPath` | Patch path for the delivered-status stamp. Anchored to the gate's status field — must equal `"/"` + the `status` field the pending gate reads. | `"/status"` |
+| `DeliveredStatusValue` | Status value written on delivery. Must differ from `pending`. | `"delivered"` |
+| `DeliveredTtlSeconds` | Per-document retention stamped on delivery so Cosmos self-purges the document. The delivered stamp's TTL is **hard-wired** to the Cosmos reserved `/ttl` property (the only field Cosmos self-purges on); this knob is the configurable retention in seconds, and must be `> 0`. | `86400` (24h) |
+| `MonitoredSourceIdentity` / `LeaseSourceIdentity` | Optional declared change-feed source identities (the relay's processor dedup keys), as on the [advanced](#advanced-per-registration-container-factories) pipeline overload. Supply both as non-whitespace values or leave both null. | null |
+
+The relay **always** applies the built-in pending gate `CosmosOutboxDocument.IsPendingOutbox(JsonElement)` (the **public** predicate `_chatterType="outbox"` **and** `status="pending"`) first; `AdditionalPendingFilter` can only further narrow which of those documents are admitted — it **cannot replace or weaken** the #222 id-guard. Leave it null for the default behavior, or supply a predicate to admit a strict subset of pending documents.
+
+**The stamp knobs are validated at `AddCosmosOutboxRelay` registration** (a violation throws `ArgumentException` then, not at drain time): `DeliveredStatusValue` must differ from `pending`; `DeliveredTtlSeconds` must be `> 0` (`0`, `-1`, and negatives are rejected — a delivered document must be scheduled for self-purge); and `StatusPatchPath` must be anchored to the gate's status field (`"/"` + that field) so a delivered stamp always moves the document out of pending. The delivered stamp's TTL patch path is **not** a knob — it is hard-wired to the Cosmos reserved `/ttl` property, the only field Cosmos self-purges on, so a delivered stamp that does not schedule self-purge is unrepresentable.
+
+**Distinct standalone relays over the same containers must declare distinct source identities.** Two standalone relays over the *same* monitored + lease containers (the same change-feed source identity) that differ only in their `AdditionalPendingFilter` or `BodyResolverFactory` would derive the **same** processor name and lease — one Cosmos consumer group whose lease ranges the SDK load-balances across both relays, so a pending outbox document checkpointed by the relay whose filter/resolver *rejects* it is never drained by the relay that would admit it (the document wedges). Because a lease cannot be keyed on a delegate, the distinction must come from the source identity. A colliding second registration is therefore rejected **fail-fast**: declaring the same `MonitoredSourceIdentity`/`LeaseSourceIdentity` pair twice throws `InvalidOperationException` at **registration**, and two ground-truth-defaulted relays (both identities null) that resolve to the same monitored+lease endpoint/database/container throw `InvalidOperationException` at **host start**. Give each standalone relay over a shared container a distinct `MonitoredSourceIdentity`/`LeaseSourceIdentity` pair.
+
+The pipeline-integrated `WithCosmosDocumentReliability` path and its verbatim drain are **unchanged** and remain the default; `AddCosmosOutboxRelay` and the `IOutboxBodyResolver` seam are purely additive and backward-compatible.
+
 ## Domain Language
 
 See [CONTEXT.md](../../Chatter.MessageBrokers/CONTEXT.md) for the domain glossary (Document Tier, Document-Tier Batch-Lifecycle Behavior, Atomic-Write Handle, Partition-Key Resolver, Co-Resident Outbox / Inbox Marker, Outbox Relay, Participation).
