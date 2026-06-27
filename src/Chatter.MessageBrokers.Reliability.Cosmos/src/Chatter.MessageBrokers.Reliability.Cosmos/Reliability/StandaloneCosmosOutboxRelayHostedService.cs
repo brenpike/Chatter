@@ -162,7 +162,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
 
             using IServiceScope scope = _serviceProvider.CreateScope();
-            IOutboxBodyResolver resolver = _options.BodyResolverFactory(scope.ServiceProvider);
+            // A configured factory MUST resolve a non-null resolver. A null return (e.g. GetService against a missing
+            // registration) would otherwise be forwarded as the "no resolver" sentinel into ProcessChangeAsync, silently
+            // selecting verbatim reconstruction — republishing the persisted body instead of the intended drain-time body.
+            // Fail fast so the misconfiguration surfaces instead of being masked as the no-resolver path.
+            IOutboxBodyResolver resolver = _options.BodyResolverFactory(scope.ServiceProvider)
+                ?? throw new InvalidOperationException(
+                    "The configured CosmosOutboxRelayOptions.BodyResolverFactory returned null. A configured factory must resolve a non-null IOutboxBodyResolver — null would silently select the verbatim no-resolver reconstruction path. Resolve the resolver with GetRequiredService/GetRequiredKeyedService (which throw on a missing registration) rather than GetService.");
             await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver, cancellationToken).ConfigureAwait(false);
         }
 

@@ -170,6 +170,37 @@ namespace Microsoft.Extensions.DependencyInjection
                     nameof(options.PartitionKeyPath));
             }
 
+            // Validate every segment, mirroring the command-pipeline registration's per-segment check
+            // (Extensions.ValidatePartitionKeyPath): the relay recovers each drained document's partition key at these
+            // declared segments to target the delivered/TTL patch, so an empty/whitespace/null segment would make
+            // recovery read the whole document (or null) instead of the actual path — the delivered patch would then
+            // target the wrong logical partition and the document would stay pending/replay.
+            for (var i = 0; i < options.PartitionKeyPath.Count; i++)
+            {
+                if (string.IsNullOrWhiteSpace(options.PartitionKeyPath[i]))
+                {
+                    throw new ArgumentException(
+                        "Every partition-key path segment must be non-null and non-whitespace. Set CosmosOutboxRelayOptions.PartitionKeyPath to the monitored container's declared partition-key path.",
+                        nameof(options.PartitionKeyPath));
+                }
+            }
+
+            // Source identities must be declared as a PAIR or omitted as a pair. StandaloneCosmosOutboxRelayHostedService
+            // .BuildSourceIdentityKey routes to the DECLARED key when EITHER side is non-null, turning a missing/blank side
+            // into an empty string — so two relays over different monitored containers that declare only the SAME lease
+            // identity would derive the same processor name/lease identity and contend for the same lease documents. Require
+            // both non-whitespace (declared) or both null (ground-truth keying on the resolved containers' identity),
+            // mirroring the command-pipeline registration which requires both source identities.
+            if (options.MonitoredSourceIdentity is not null || options.LeaseSourceIdentity is not null)
+            {
+                if (string.IsNullOrWhiteSpace(options.MonitoredSourceIdentity) || string.IsNullOrWhiteSpace(options.LeaseSourceIdentity))
+                {
+                    throw new ArgumentException(
+                        "MonitoredSourceIdentity and LeaseSourceIdentity must be supplied together as non-whitespace values, or both left null to key on the resolved containers' ground-truth identity. Declaring or blanking only one side derives a processor/lease identity from an empty token, which can collide with another standalone relay's lease.",
+                        nameof(options.MonitoredSourceIdentity));
+                }
+            }
+
             // Eagerly map the options into the relay's delivery settings so the F2 construction invariants (delivered status
             // non-empty and != pending, delivered TTL > 0 including the -1 "retain indefinitely" rejection, status patch path
             // anchored to the status field, ttl patch path a valid JSON pointer) throw a clear ArgumentException AT
