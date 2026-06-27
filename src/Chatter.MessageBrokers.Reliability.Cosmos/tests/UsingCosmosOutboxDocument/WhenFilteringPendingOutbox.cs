@@ -103,7 +103,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxDocum
                 deliveredTtlSeconds: 86400,
                 statusPatchPath: "/" + CosmosOutboxDocument.StatusField,
                 deliveredStatusValue: CosmosOutboxDocument.StatusDelivered,
-                ttlPatchPath: "/ttl",
                 additionalPendingFilter: additionalPendingFilter);
 
         [Fact]

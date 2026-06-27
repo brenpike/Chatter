@@ -18,8 +18,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
     // Covers the #222 outbox body-resolver seam: a per-call IOutboxBodyResolver resolves the brokered message to publish
     // for each admitted document (instead of the verbatim reconstruction), the delivered/TTL stamp is driven by the
     // configurable OutboxDeliverySettings, and admission is the always-applied id-guard ANDed with an optional narrowing
-    // filter. The settings' constructor enforces the F2 invariants (delivered != pending, ttl > 0, status path anchored,
-    // ttl path a valid pointer) so an unsafe stamp configuration is unconstructable rather than merely unused.
+    // filter. The settings' constructor enforces the F2 invariants (delivered != pending, ttl > 0, status path anchored)
+    // so an unsafe stamp configuration is unconstructable rather than merely unused. The delivered TTL is always stamped
+    // at the Cosmos-reserved "/ttl" path — it is hard-wired, not a configurable knob, so a non-purging delivered stamp
+    // is unrepresentable.
     public class WhenResolvingOutboxBody : Testing.Core.Context
     {
         private const string InfrastructureType = "test-infra";
@@ -200,18 +202,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         [Fact]
-        public async Task MustStampConfiguredStatusValueAndTtlPathWhenSafeSettingsSupplied()
+        public async Task MustStampConfiguredStatusValueAndAlwaysTtlPathWhenSafeSettingsSupplied()
         {
             var (provider, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
-            // Non-default but SAFE configuration: the delivered status value and ttl seconds and the (freely-configurable)
-            // ttl patch path all diverge from the legacy defaults; the status patch path stays anchored to "/status" (the
-            // only value the F2 invariants admit). This proves non-default safe values flow through to the stamp.
+            // Non-default but SAFE configuration: the delivered status value and ttl seconds diverge from the legacy
+            // defaults; the status patch path stays anchored to "/status" (the only value the F2 invariants admit). The
+            // ttl patch path is NOT a knob — the delivered stamp always targets the Cosmos-reserved "/ttl". This proves
+            // the non-default safe status value and ttl seconds flow through while the ttl path stays hard-wired.
             var configured = new OutboxDeliverySettings(
                 deliveredTtlSeconds: 999,
                 statusPatchPath: "/status",
                 deliveredStatusValue: "done",
-                ttlPatchPath: "/expiry",
                 additionalPendingFilter: null);
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), configured);
 
@@ -222,7 +224,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             ops.Should().HaveCount(2);
             ops[0].OperationType.Should().Be(PatchOperationType.Set);
             ops[0].Path.Should().Be("/status", "the status patch targets the anchored status path");
-            ops[1].Path.Should().Be("/expiry", "the ttl patch targets the configured ttl path");
+            ops[0].As<PatchOperation<string>>().Value.Should().Be("done", "the configured delivered status value flows to the stamp");
+            ops[1].Path.Should().Be("/ttl", "the ttl patch always targets the Cosmos-reserved /ttl path; it is not configurable");
+            ops[1].As<PatchOperation<int>>().Value.Should().Be(999, "the configured ttl seconds flows to the stamp");
         }
 
         [Fact]
@@ -253,7 +257,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 deliveredTtlSeconds: 86400,
                 statusPatchPath: "/status",
                 deliveredStatusValue: "delivered",
-                ttlPatchPath: "/ttl",
                 additionalPendingFilter: _ => false);
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), narrowToNothing);
 
@@ -321,9 +324,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         // isolates exactly one rejected F2 invariant.
         private static Action ConstructSettings(int deliveredTtlSeconds = 86400,
                                                 string statusPatchPath = "/status",
-                                                string deliveredStatusValue = "delivered",
-                                                string ttlPatchPath = "/ttl")
-            => () => new OutboxDeliverySettings(deliveredTtlSeconds, statusPatchPath, deliveredStatusValue, ttlPatchPath, additionalPendingFilter: null);
+                                                string deliveredStatusValue = "delivered")
+            => () => new OutboxDeliverySettings(deliveredTtlSeconds, statusPatchPath, deliveredStatusValue, additionalPendingFilter: null);
 
         [Fact]
         public void MustRejectDeliveredStatusEqualToPending()
@@ -369,15 +371,5 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 "the status patch path must be a valid JSON pointer");
         }
 
-        [Theory]
-        [InlineData(null)]   // missing
-        [InlineData("")]     // empty
-        [InlineData("ttl")]  // no leading '/'
-        [InlineData("/")]    // no non-empty segment
-        public void MustRejectInvalidTtlPatchPath(string ttlPatchPath)
-        {
-            ConstructSettings(ttlPatchPath: ttlPatchPath).Should().Throw<ArgumentException>(
-                "the ttl patch path must be a valid JSON pointer (though it is freely configurable, not anchored)");
-        }
     }
 }

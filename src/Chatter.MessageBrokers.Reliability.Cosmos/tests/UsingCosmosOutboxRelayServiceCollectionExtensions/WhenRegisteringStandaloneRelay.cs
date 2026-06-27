@@ -225,18 +225,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 "a status patch path not anchored to the status field (or not a valid JSON pointer) is rejected at registration");
         }
 
-        [Theory]
-        [InlineData("")]     // empty
-        [InlineData("ttl")]  // no leading '/'
-        [InlineData("/")]    // no non-empty segment
-        public void MustThrowAtRegistrationWhenTtlPatchPathIsInvalid(string ttlPatchPath)
+        [Fact]
+        public void MustNotExposeAConfigurableTtlPatchPath()
         {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.TtlPatchPath = ttlPatchPath));
-
-            act.Should().Throw<ArgumentException>(
-                "a ttl patch path that is not a valid JSON pointer is rejected at registration");
+            // The delivered stamp always targets the Cosmos-reserved "/ttl" path — the only path Cosmos self-purges on —
+            // so a non-purging delivered stamp is unrepresentable. The ttl path is hard-wired, not a configurable knob.
+            typeof(CosmosOutboxRelayOptions).GetProperty("TtlPatchPath").Should().BeNull(
+                "the ttl patch path is not configurable; the delivered stamp is hard-wired to the reserved /ttl path");
         }
     }
 }

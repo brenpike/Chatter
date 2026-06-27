@@ -22,7 +22,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public OutboxDeliverySettings(int deliveredTtlSeconds,
                                       string statusPatchPath,
                                       string deliveredStatusValue,
-                                      string ttlPatchPath,
                                       Func<JsonElement, bool>? additionalPendingFilter = null)
         {
             // F2 (a): a delivered document MUST advance out of pending, so its status value cannot be empty nor equal the
@@ -69,19 +68,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     nameof(statusPatchPath));
             }
 
-            // F2 (d): the TTL patch path is kept FREELY configurable — it is NOT anchored to "/ttl" — but must still be a
-            // valid JSON pointer (start with '/', at least one non-empty segment).
-            if (!IsValidJsonPointer(ttlPatchPath))
-            {
-                throw new ArgumentException(
-                    $"The ttl patch path '{ttlPatchPath}' is not a valid JSON pointer; it must start with '/' and contain at least one non-empty segment.",
-                    nameof(ttlPatchPath));
-            }
-
+            // The delivered TTL is NOT configurable here: it is always stamped at the Cosmos-reserved "/ttl" path
+            // (CosmosOutboxDocument.TtlField) — the only field Cosmos honors for self-purge — so a non-purging delivered
+            // stamp is unrepresentable rather than merely validated.
             DeliveredTtlSeconds = deliveredTtlSeconds;
             StatusPatchPath = statusPatchPath;
             DeliveredStatusValue = deliveredStatusValue;
-            TtlPatchPath = ttlPatchPath;
             _additionalPendingFilter = additionalPendingFilter;
         }
 
@@ -93,9 +85,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>The status value a delivered document is advanced to.</summary>
         public string DeliveredStatusValue { get; }
-
-        /// <summary>The Cosmos document-patch path for the system TTL property.</summary>
-        public string TtlPatchPath { get; }
 
         /// <summary>
         /// Admits a change-feed document as a pending outbox document to drain. The built-in #222 id-guard
@@ -109,18 +98,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>
         /// The settings reproducing the relay's original hard-coded behavior: a one-day delivered TTL, the
-        /// <c>/status</c> -&gt; <c>delivered</c> stamp, the <c>/ttl</c> path, and no additional pending filter (the
-        /// always-applied <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard is the sole admission gate).
+        /// <c>/status</c> -&gt; <c>delivered</c> stamp (the delivered TTL is always stamped at the hard-wired
+        /// <c>/ttl</c> path), and no additional pending filter (the always-applied
+        /// <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard is the sole admission gate).
         /// </summary>
         public static OutboxDeliverySettings Legacy { get; } = new OutboxDeliverySettings(
             deliveredTtlSeconds: 86400,
             statusPatchPath: "/" + CosmosOutboxDocument.StatusField,
             deliveredStatusValue: CosmosOutboxDocument.StatusDelivered,
-            ttlPatchPath: "/ttl",
             additionalPendingFilter: null);
 
         /// <summary>
-        /// Maps a <see cref="CosmosOutboxRelayOptions"/>' four stamp knobs and its optional additional pending filter into
+        /// Maps a <see cref="CosmosOutboxRelayOptions"/>' three stamp knobs and its optional additional pending filter into
         /// the validating constructor. The single builder reused by the standalone host and registration-time validation,
         /// so every construction path goes through the same F2 invariant enforcement.
         /// </summary>
@@ -131,11 +120,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 options.DeliveredTtlSeconds,
                 options.StatusPatchPath,
                 options.DeliveredStatusValue,
-                options.TtlPatchPath,
                 options.AdditionalPendingFilter);
         }
 
-        // A valid JSON pointer for the relay's patch paths: starts with '/' and has at least one non-empty segment (so a
+        // A valid JSON pointer for the relay's status patch path: starts with '/' and has at least one non-empty segment (so a
         // null/empty path, a path without a leading '/', and the root pointer "/" are all rejected).
         private static bool IsValidJsonPointer(string pointer)
         {

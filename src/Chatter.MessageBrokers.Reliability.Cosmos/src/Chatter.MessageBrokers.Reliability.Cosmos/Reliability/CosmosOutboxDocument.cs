@@ -37,6 +37,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// </summary>
         public const string StatusDelivered = "delivered";
 
+        /// <summary>
+        /// The Cosmos system TTL field name. The #222 relay stamps a positive per-document TTL here on delivery so Cosmos
+        /// self-purges the delivered document — this is the ONLY field Cosmos honors for self-purge, so the delivered
+        /// stamp's ttl path is hard-wired here rather than configurable.
+        /// </summary>
+        public const string TtlField = "ttl";
+
         /// <summary>The document-id field name (Cosmos requires the item id under the reserved <c>id</c> property).</summary>
         public const string IdField = "id";
 

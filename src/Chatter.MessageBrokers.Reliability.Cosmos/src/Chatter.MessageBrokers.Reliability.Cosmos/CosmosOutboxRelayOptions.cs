@@ -17,12 +17,14 @@ namespace Microsoft.Extensions.DependencyInjection
     /// </summary>
     /// <remarks>
     /// The drain knobs default to the same behavior the registry-driven relay's legacy settings reproduce (a one-day
-    /// delivered TTL, <c>/status</c> -&gt; <c>delivered</c>, <c>/ttl</c>, and no additional pending filter — the relay
-    /// ALWAYS applies the <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard), so a relay configured with only the
-    /// required factories + partition-key path behaves identically to the command-pipeline relay over the same source.
-    /// The four stamp knobs are validated when the options are mapped into the relay's settings: the delivered status value
-    /// must differ from <c>pending</c>, the delivered TTL must be positive, the status patch path is anchored to the
-    /// <c>status</c> field, and the TTL patch path must be a valid JSON pointer.
+    /// delivered TTL stamped at the reserved <c>/ttl</c> path, <c>/status</c> -&gt; <c>delivered</c>, and no additional
+    /// pending filter — the relay ALWAYS applies the <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard), so a
+    /// relay configured with only the required factories + partition-key path behaves identically to the command-pipeline
+    /// relay over the same source. The three stamp knobs are validated when the options are mapped into the relay's
+    /// settings: the delivered status value must differ from <c>pending</c>, the delivered TTL must be positive, and the
+    /// status patch path is anchored to the <c>status</c> field. The delivered TTL's patch path is NOT a knob — it is
+    /// hard-wired to the Cosmos-reserved <c>/ttl</c> property (the only field Cosmos self-purges on), so a non-purging
+    /// delivered stamp is unrepresentable.
     /// </remarks>
     public sealed class CosmosOutboxRelayOptions
     {
@@ -73,12 +75,6 @@ namespace Microsoft.Extensions.DependencyInjection
         /// differ from <c>pending</c> (an equal-to-pending value is rejected at construction).
         /// </summary>
         public string DeliveredStatusValue { get; set; } = "delivered";
-
-        /// <summary>
-        /// The Cosmos document-patch path for the system TTL property. Defaults to <c>/ttl</c> and is FREELY configurable
-        /// (not anchored), but must be a valid JSON pointer (rejected at construction otherwise).
-        /// </summary>
-        public string TtlPatchPath { get; set; } = "/ttl";
 
         /// <summary>
         /// Optional. An ADDITIONAL predicate that can only further NARROW which documents the relay admits. The relay

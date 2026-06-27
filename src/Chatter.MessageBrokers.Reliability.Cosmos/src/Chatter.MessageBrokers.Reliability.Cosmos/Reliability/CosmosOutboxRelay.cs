@@ -174,12 +174,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return new OutboundBrokeredMessage(messageId, converter.GetBytes(messageBody), messageContext, destination, converter);
         }
 
-        // POST-PUBLISH: a SINGLE PatchItemAsync with two ops (set the status path to the delivered value, set the ttl
-        // path to a positive seconds value), keyed by the document id read off the change-feed item and the partition key
-        // recovered from the same item at the container's declared partition-key path. The status/ttl paths, the
-        // delivered value, and the ttl seconds come from the configured OutboxDeliverySettings (Legacy reproduces the
-        // original /status="delivered" + /ttl=86400 stamp byte-for-byte). PatchItem (not ReplaceItem) so only the two
-        // delivery fields are touched and the aggregate-shaped wire body is left untouched.
+        // POST-PUBLISH: a SINGLE PatchItemAsync with two ops (set the status path to the delivered value, set the
+        // Cosmos-reserved "/ttl" to a positive seconds value), keyed by the document id read off the change-feed item and
+        // the partition key recovered from the same item at the container's declared partition-key path. The status path,
+        // the delivered value, and the ttl seconds come from the configured OutboxDeliverySettings; the ttl PATH is
+        // hard-wired to "/" + CosmosOutboxDocument.TtlField (the only field Cosmos self-purges on), so a non-purging
+        // delivered stamp is unrepresentable. Legacy reproduces the original /status="delivered" + /ttl=86400 stamp
+        // byte-for-byte. PatchItem (not ReplaceItem) so only the two delivery fields are touched and the aggregate-shaped
+        // wire body is left untouched.
         private async Task StampDeliveredAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
             if (!CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string id) || string.IsNullOrEmpty(id))
@@ -192,7 +194,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             var patchOperations = new List<PatchOperation>
             {
                 PatchOperation.Set(_settings.StatusPatchPath, _settings.DeliveredStatusValue),
-                PatchOperation.Set(_settings.TtlPatchPath, _settings.DeliveredTtlSeconds),
+                PatchOperation.Set("/" + CosmosOutboxDocument.TtlField, _settings.DeliveredTtlSeconds),
             };
 
             await monitoredContainer.PatchItemAsync<JsonElement>(id, partitionKey, patchOperations, requestOptions: null, cancellationToken: cancellationToken);
