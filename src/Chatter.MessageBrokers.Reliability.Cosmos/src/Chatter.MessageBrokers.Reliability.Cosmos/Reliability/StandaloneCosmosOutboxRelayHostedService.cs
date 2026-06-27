@@ -34,17 +34,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly IServiceProvider _serviceProvider;
         private readonly CosmosOutboxRelayOptions _options;
         private readonly CosmosOutboxRelay _relay;
+        private readonly StandaloneRelayProcessorRegistry _processorRegistry;
         private ChangeFeedProcessor _processor;
 
+        // processorRegistry is OPTIONAL (defaults null) so every existing direct-construction call site (and the legacy
+        // 4-arg registration) keeps compiling: a null registry disables the start-time backstop (it becomes a no-op). The DI
+        // registration path (AddCosmosOutboxRelay) always passes the shared registry so the guard is active in production.
         internal StandaloneCosmosOutboxRelayHostedService(IServiceProvider serviceProvider,
                                                           IMessagingInfrastructureProvider infrastructureProvider,
                                                           IBodyConverterFactory bodyConverterFactory,
-                                                          CosmosOutboxRelayOptions options)
+                                                          CosmosOutboxRelayOptions options,
+                                                          StandaloneRelayProcessorRegistry processorRegistry = null)
         {
             _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
             _ = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _options = options ?? throw new ArgumentNullException(nameof(options));
+            _processorRegistry = processorRegistry;
 
             // Build the relay with the options' validated drain knobs (OutboxDeliverySettings.FromOptions enforces the F2
             // invariants), including the caller's optional AdditionalPendingFilter, which the relay's ProcessChangeAsync
@@ -64,6 +70,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             string instanceName = $"{ProcessorNamePrefix}:{Environment.MachineName}:{Guid.NewGuid()}";
 
             CosmosOutboxRelayHostedService.RelayProcessorDescriptor descriptor = ResolveProcessorDescriptor();
+
+            // Start-time backstop: fail fast if a ground-truth-defaulted sibling relay already resolved to this processor name
+            // (one consumer group => a filtered-out document wedges). Declared relays are guarded at registration and skipped.
+            RegisterStartTimeProcessorIdentity(descriptor);
+
             Container monitoredContainer = descriptor.MonitoredContainer;
             Container leaseContainer = descriptor.LeaseContainer;
             IReadOnlyList<string> partitionKeyPath = descriptor.PartitionKeyPath;
@@ -108,6 +119,30 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 monitoredContainer,
                 leaseContainer,
                 _options.PartitionKeyPath);
+        }
+
+        // Start-time backstop for the silent consumer-group collision class: registers this host's RESOLVED processor name in
+        // the shared registry so a second host that resolved to the SAME ground-truth source identity (resolved monitored+lease
+        // endpoint/db/container) fails fast at start rather than silently forming one consumer group that wedges a
+        // filtered-out document. Two construction-time conditions make it a no-op:
+        //   - no shared registry was injected (legacy direct construction / null registry) — the backstop is disabled;
+        //   - the options DECLARE a source identity (either side non-null) — declared relays are guarded at REGISTRATION, so
+        //     re-registering the same declared name here would self-collide; skip them.
+        // Only GROUND-TRUTH-defaulted hosts (both identities null), whose name is resolvable only after the containers are
+        // resolved, are registered here. internal so the backstop is unit-testable without a live StartAsync.
+        internal void RegisterStartTimeProcessorIdentity(CosmosOutboxRelayHostedService.RelayProcessorDescriptor descriptor)
+        {
+            if (_processorRegistry is null)
+            {
+                return;
+            }
+
+            if (_options.MonitoredSourceIdentity is not null || _options.LeaseSourceIdentity is not null)
+            {
+                return;
+            }
+
+            _processorRegistry.RegisterGroundTruthProcessorOrThrow(descriptor.ProcessorName);
         }
 
         // Parses the change-feed stream payload and feeds each document through the relay core, mirroring

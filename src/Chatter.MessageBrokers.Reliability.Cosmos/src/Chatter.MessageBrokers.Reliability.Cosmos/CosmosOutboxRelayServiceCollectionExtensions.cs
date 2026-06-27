@@ -2,6 +2,7 @@ using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Reliability.Cosmos;
 using Microsoft.Extensions.Hosting;
 using System;
+using System.Linq;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -35,6 +36,22 @@ namespace Microsoft.Extensions.DependencyInjection
             configure(options);
             ValidateOptions(options);
 
+            StandaloneRelayProcessorRegistry processorRegistry = GetOrAddProcessorRegistry(services);
+
+            // Registration-time fail-fast for DECLARED identities. ValidateOptions has already enforced that the two source
+            // identities are supplied as a non-whitespace PAIR or both null, so a non-null MonitoredSourceIdentity implies a
+            // non-null LeaseSourceIdentity here. A declared identity keys the processor name on the caller-declared tokens (not
+            // the resolved handles), so the name is derivable NOW — a duplicate declared pair is rejected synchronously rather
+            // than silently forming one consumer group that wedges a filtered-out document at runtime. Ground-truth-defaulted
+            // relays (both identities null) are NOT checked here — their name is resolvable only after the containers are
+            // resolved, so the StandaloneCosmosOutboxRelayHostedService start-time backstop guards them instead.
+            if (options.MonitoredSourceIdentity is not null && options.LeaseSourceIdentity is not null)
+            {
+                string declaredProcessorName = CosmosOutboxRelayHostedService.BuildProcessorName(
+                    CosmosOutboxRelayHostedService.RelaySourceIdentityKey.ForDeclared(options.MonitoredSourceIdentity, options.LeaseSourceIdentity));
+                processorRegistry.RegisterDeclaredProcessorOrThrow(declaredProcessorName, options.MonitoredSourceIdentity, options.LeaseSourceIdentity);
+            }
+
             // Register a distinct singleton IHostedService per call (factory-built, so the registration never dedupes): two
             // calls yield two relays. The host resolves IMessagingInfrastructureProvider + IBodyConverterFactory from DI and
             // captures the validated options.
@@ -42,7 +59,8 @@ namespace Microsoft.Extensions.DependencyInjection
                 serviceProvider,
                 serviceProvider.GetRequiredService<IMessagingInfrastructureProvider>(),
                 serviceProvider.GetRequiredService<IBodyConverterFactory>(),
-                options));
+                options,
+                processorRegistry));
 
             return services;
         }
@@ -145,6 +163,22 @@ namespace Microsoft.Extensions.DependencyInjection
                     "AddCosmosOutboxRelay<TResolver> owns the CosmosOutboxRelayOptions.BodyResolverFactory wiring (it binds the registered resolver). Do not also set BodyResolverFactory in configure — either use the typed/keyed overload and let it wire the resolver, or use the raw AddCosmosOutboxRelay(configure) escape hatch and set BodyResolverFactory yourself.",
                     "configure");
             }
+        }
+
+        // Resolves the single shared standalone-relay processor-name registry singleton instance (so every AddCosmosOutboxRelay
+        // call on this collection accumulates into ONE registry), creating and registering it on first call. Mirrors
+        // Extensions.GetOrCreateRegistry's marker-singleton (ImplementationInstance) pattern.
+        private static StandaloneRelayProcessorRegistry GetOrAddProcessorRegistry(IServiceCollection services)
+        {
+            ServiceDescriptor existing = services.FirstOrDefault(descriptor => descriptor.ServiceType == typeof(StandaloneRelayProcessorRegistry));
+            if (existing?.ImplementationInstance is StandaloneRelayProcessorRegistry registry)
+            {
+                return registry;
+            }
+
+            registry = new StandaloneRelayProcessorRegistry();
+            services.AddSingleton(registry);
+            return registry;
         }
 
         private static void ValidateOptions(CosmosOutboxRelayOptions options)

@@ -51,6 +51,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             };
         }
 
+        private static Action<CosmosOutboxRelayOptions> ValidConfigureWithDeclaredIdentity(string monitoredSourceIdentity,
+                                                                                          string leaseSourceIdentity,
+                                                                                          Action<CosmosOutboxRelayOptions> extra = null)
+            => ValidConfigure(options =>
+            {
+                options.MonitoredSourceIdentity = monitoredSourceIdentity;
+                options.LeaseSourceIdentity = leaseSourceIdentity;
+                extra?.Invoke(options);
+            });
+
         private static ServiceProvider BuildProviderWith(params Action<CosmosOutboxRelayOptions>[] registrations)
         {
             var services = new ServiceCollection();
@@ -139,6 +149,46 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             provider.GetServices<IHostedService>()
                 .OfType<StandaloneCosmosOutboxRelayHostedService>()
                 .Should().HaveCount(2, "two registrations resolve to two standalone relay hosts");
+        }
+
+        // PR2-STEP-001 declared-collision guard: two standalone relays declaring the SAME (MonitoredSourceIdentity,
+        // LeaseSourceIdentity) pair derive the same processor name + lease — one consumer group — so the second registration
+        // fails fast at AddCosmosOutboxRelay with InvalidOperationException rather than silently wedging at runtime.
+        [Fact]
+        public void MustThrowAtRegistrationWhenASecondRelayDeclaresTheSameSourceIdentity()
+        {
+            var services = new ServiceCollection();
+
+            services.AddCosmosOutboxRelay(ValidConfigureWithDeclaredIdentity("orders-source", "orders-lease-source"));
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigureWithDeclaredIdentity("orders-source", "orders-lease-source"));
+
+            act.Should().Throw<InvalidOperationException>(
+                "a second standalone relay declaring the same source identity derives the same processor name + lease — one consumer group that wedges a filtered-out document — so it is rejected at registration")
+                .WithMessage("*DISTINCT*", "the message instructs the caller to supply distinct source identities");
+        }
+
+        [Fact]
+        public void MustRegisterBothWhenTwoRelaysDeclareDistinctSourceIdentities()
+        {
+            var services = new ServiceCollection();
+
+            services.AddCosmosOutboxRelay(ValidConfigureWithDeclaredIdentity("orders-source", "orders-lease-source"));
+            services.AddCosmosOutboxRelay(ValidConfigureWithDeclaredIdentity("ledger-source", "ledger-lease-source"));
+
+            services.Count(d => d.ServiceType == typeof(IHostedService))
+                .Should().Be(2, "distinct declared source identities derive distinct processor names, so both relays register");
+        }
+
+        [Fact]
+        public void TypedOverloadMustThrowAtRegistrationWhenASecondRelayDeclaresTheSameSourceIdentity()
+        {
+            ServiceCollection services = ServicesWithBrokerDependencies();
+
+            services.AddCosmosOutboxRelay<StubBodyResolver>(ValidConfigureWithDeclaredIdentity("orders-source", "orders-lease-source"));
+            Action act = () => services.AddCosmosOutboxRelay<StubBodyResolver>(ValidConfigureWithDeclaredIdentity("orders-source", "orders-lease-source"));
+
+            act.Should().Throw<InvalidOperationException>(
+                "the declared-collision guard rides the base AddCosmosOutboxRelay overload the typed overload delegates to");
         }
 
         [Fact]

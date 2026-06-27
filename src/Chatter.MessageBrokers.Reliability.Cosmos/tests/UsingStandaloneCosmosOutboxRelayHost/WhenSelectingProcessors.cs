@@ -134,6 +134,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
                 Mock.Of<IBodyConverterFactory>(),
                 options);
 
+        private static StandaloneCosmosOutboxRelayHostedService StandaloneHost(CosmosOutboxRelayOptions options,
+                                                                              StandaloneRelayProcessorRegistry processorRegistry)
+            => new StandaloneCosmosOutboxRelayHostedService(
+                new ServiceCollection().BuildServiceProvider(),
+                Mock.Of<IMessagingInfrastructureProvider>(),
+                Mock.Of<IBodyConverterFactory>(),
+                options,
+                processorRegistry);
+
         // A registry-driven host over a single plain registration whose ground-truth resolves to the supplied handles, so a
         // test can compare its processor names against a standalone host's name.
         private static CosmosOutboxRelayHostedService RegistryHostOverPlainSource(string database,
@@ -250,6 +259,79 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             sameIdentityDifferentHandles.Should().Be(firstName,
                 "the declared identity is the key, so the same declared pair derives the identical processor name regardless of the resolved handles");
             distinctIdentity.Should().NotBe(firstName, "a distinct declared source identity derives a distinct processor name");
+        }
+
+        // PR2-STEP-001 start-time backstop: two GROUND-TRUTH-defaulted standalone hosts over the SAME physical identity
+        // (same monitored endpoint/db/container + same lease endpoint/db/container) resolve to the same ground-truth processor
+        // name. Sharing one registry, the first start-time registration succeeds and the second throws InvalidOperationException
+        // naming the colliding processor name — the consumer-group wedge is rejected at host start rather than silently formed.
+        [Fact]
+        public void MustThrowAtStartTimeWhenTwoGroundTruthDefaultedHostsResolveToTheSamePhysicalIdentity()
+        {
+            var registry = new StandaloneRelayProcessorRegistry();
+
+            StandaloneCosmosOutboxRelayHostedService first = StandaloneHost(
+                OptionsFor(PhysicalContainer("shop", "orders"), PhysicalContainer("shop", "orders-leases")), registry);
+            StandaloneCosmosOutboxRelayHostedService second = StandaloneHost(
+                OptionsFor(PhysicalContainer("shop", "orders"), PhysicalContainer("shop", "orders-leases")), registry);
+
+            first.RegisterStartTimeProcessorIdentity(first.ResolveProcessorDescriptor());
+
+            CosmosOutboxRelayHostedService.RelayProcessorDescriptor secondDescriptor = second.ResolveProcessorDescriptor();
+            Action act = () => second.RegisterStartTimeProcessorIdentity(secondDescriptor);
+
+            act.Should().Throw<InvalidOperationException>(
+                "two ground-truth-defaulted hosts over the same physical identity resolve to one processor name + lease — a consumer-group wedge rejected at host start")
+                .WithMessage("*" + secondDescriptor.ProcessorName + "*", "the ground-truth collision message names the colliding processor name");
+        }
+
+        [Fact]
+        public void MustRegisterBothWhenTwoGroundTruthDefaultedHostsResolveToDistinctPhysicalIdentities()
+        {
+            var registry = new StandaloneRelayProcessorRegistry();
+
+            StandaloneCosmosOutboxRelayHostedService first = StandaloneHost(
+                OptionsFor(PhysicalContainer("shop", "orders"), PhysicalContainer("shop", "orders-leases")), registry);
+            StandaloneCosmosOutboxRelayHostedService second = StandaloneHost(
+                OptionsFor(PhysicalContainer("events", "events"), PhysicalContainer("events", "events-leases")), registry);
+
+            first.RegisterStartTimeProcessorIdentity(first.ResolveProcessorDescriptor());
+            Action act = () => second.RegisterStartTimeProcessorIdentity(second.ResolveProcessorDescriptor());
+
+            act.Should().NotThrow("distinct physical identities resolve to distinct ground-truth processor names, so both register");
+        }
+
+        // A DECLARED host is guarded at REGISTRATION; the start-time backstop SKIPS it so it never self-collides on the name
+        // the registration guard already accumulated.
+        [Fact]
+        public void MustSkipStartTimeRegistrationForADeclaredHostAlreadyInTheRegistry()
+        {
+            var registry = new StandaloneRelayProcessorRegistry();
+
+            StandaloneCosmosOutboxRelayHostedService declaredHost = StandaloneHost(
+                OptionsFor(PhysicalContainer("shop", "orders"), PhysicalContainer("shop", "orders-leases"), "orders-source", "orders-lease-source"),
+                registry);
+            CosmosOutboxRelayHostedService.RelayProcessorDescriptor descriptor = declaredHost.ResolveProcessorDescriptor();
+
+            // Simulate the registration-time guard having already accumulated this declared host's processor name.
+            registry.RegisterDeclaredProcessorOrThrow(descriptor.ProcessorName, "orders-source", "orders-lease-source");
+
+            Action act = () => declaredHost.RegisterStartTimeProcessorIdentity(descriptor);
+
+            act.Should().NotThrow(
+                "a declared host is registration-guarded, so the start-time backstop skips it rather than self-colliding on its own already-registered name");
+        }
+
+        // A host built via the legacy 4-arg ctor (null registry) performs no start-time registration — the backstop is a no-op.
+        [Fact]
+        public void MustBeANoOpStartTimeWhenConstructedWithoutARegistry()
+        {
+            StandaloneCosmosOutboxRelayHostedService host = StandaloneHost(
+                OptionsFor(PhysicalContainer("shop", "orders"), PhysicalContainer("shop", "orders-leases")));
+
+            Action act = () => host.RegisterStartTimeProcessorIdentity(host.ResolveProcessorDescriptor());
+
+            act.Should().NotThrow("a host with no registry performs no start-time processor-identity registration");
         }
 
         // R3-STEP-001: the host opens a DI scope + invokes the body-resolver factory ONLY for an ADMITTED (pending outbox)
