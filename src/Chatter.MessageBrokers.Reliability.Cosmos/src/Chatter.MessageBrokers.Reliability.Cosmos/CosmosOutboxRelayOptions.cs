@@ -17,9 +17,12 @@ namespace Microsoft.Extensions.DependencyInjection
     /// </summary>
     /// <remarks>
     /// The drain knobs default to the same behavior the registry-driven relay's legacy settings reproduce (a one-day
-    /// delivered TTL, <c>/status</c> -&gt; <c>delivered</c>, <c>/ttl</c>, and the <see cref="CosmosOutboxDocument.IsPendingOutbox"/>
-    /// pending predicate), so a relay configured with only the required factories + partition-key path behaves identically
-    /// to the command-pipeline relay over the same source.
+    /// delivered TTL, <c>/status</c> -&gt; <c>delivered</c>, <c>/ttl</c>, and no additional pending filter — the relay
+    /// ALWAYS applies the <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard), so a relay configured with only the
+    /// required factories + partition-key path behaves identically to the command-pipeline relay over the same source.
+    /// The four stamp knobs are validated when the options are mapped into the relay's settings: the delivered status value
+    /// must differ from <c>pending</c>, the delivered TTL must be positive, the status patch path is anchored to the
+    /// <c>status</c> field, and the TTL patch path must be a valid JSON pointer.
     /// </remarks>
     public sealed class CosmosOutboxRelayOptions
     {
@@ -50,23 +53,38 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         public Func<IServiceProvider, IOutboxBodyResolver>? BodyResolverFactory { get; set; }
 
-        /// <summary>The post-delivery retention window stamped on a delivered document, in seconds. Defaults to one day.</summary>
+        /// <summary>
+        /// The post-delivery retention window stamped on a delivered document, in seconds. Defaults to one day. Must be
+        /// positive — a delivered document must be scheduled for self-purge (a non-positive value is rejected at construction).
+        /// </summary>
         public int DeliveredTtlSeconds { get; set; } = 86400;
 
-        /// <summary>The Cosmos document-patch path for the delivery status field. Defaults to <c>/status</c>.</summary>
+        /// <summary>
+        /// The Cosmos document-patch path for the delivery status field. Defaults to <c>/status</c> and is anchored there:
+        /// it must equal <c>/</c> + the <c>status</c> field the always-applied pending gate reads, so a delivered stamp
+        /// always moves the document out of pending (any other path is rejected at construction).
+        /// </summary>
         public string StatusPatchPath { get; set; } = "/status";
 
-        /// <summary>The status value a delivered document is advanced to. Defaults to <c>delivered</c>.</summary>
+        /// <summary>
+        /// The status value a delivered document is advanced to. Defaults to <c>delivered</c>. Must be non-empty and must
+        /// differ from <c>pending</c> (an equal-to-pending value is rejected at construction).
+        /// </summary>
         public string DeliveredStatusValue { get; set; } = "delivered";
 
-        /// <summary>The Cosmos document-patch path for the system TTL property. Defaults to <c>/ttl</c>.</summary>
+        /// <summary>
+        /// The Cosmos document-patch path for the system TTL property. Defaults to <c>/ttl</c> and is FREELY configurable
+        /// (not anchored), but must be a valid JSON pointer (rejected at construction otherwise).
+        /// </summary>
         public string TtlPatchPath { get; set; } = "/ttl";
 
         /// <summary>
-        /// The predicate admitting a change-feed document as a pending outbox document to drain. Defaults to
-        /// <see cref="CosmosOutboxDocument.IsPendingOutbox"/>.
+        /// Optional. An ADDITIONAL predicate that can only further NARROW which documents the relay admits. The relay
+        /// ALWAYS applies the built-in <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard first; this predicate
+        /// runs only on documents that already passed it (logical AND) and therefore cannot replace or weaken the #222
+        /// id-guard. Defaults to <c>null</c> (no additional narrowing).
         /// </summary>
-        public Func<JsonElement, bool> PendingFilter { get; set; } = CosmosOutboxDocument.IsPendingOutbox;
+        public Func<JsonElement, bool>? AdditionalPendingFilter { get; set; }
 
         /// <summary>
         /// Optional caller-declared monitored-side change-feed source identity. When supplied (with

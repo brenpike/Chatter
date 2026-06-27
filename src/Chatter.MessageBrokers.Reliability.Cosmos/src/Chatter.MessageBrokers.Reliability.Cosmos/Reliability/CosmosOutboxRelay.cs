@@ -47,27 +47,25 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     {
         private readonly IMessagingInfrastructureProvider _infrastructureProvider;
         private readonly IBodyConverterFactory _bodyConverterFactory;
-        private readonly IOutboxBodyResolver _bodyResolver;
         private readonly OutboxDeliverySettings _settings;
 
         // The pre-seam constructor. Maps to the no-resolver verbatim-reconstruction path with the original hard-coded
         // drain behavior (OutboxDeliverySettings.Legacy) so CosmosOutboxRelayHostedService — which constructs the relay
         // this way — stays byte-identical.
         public CosmosOutboxRelay(IMessagingInfrastructureProvider infrastructureProvider, IBodyConverterFactory bodyConverterFactory)
-            : this(infrastructureProvider, bodyConverterFactory, bodyResolver: null, settings: OutboxDeliverySettings.Legacy)
+            : this(infrastructureProvider, bodyConverterFactory, OutboxDeliverySettings.Legacy)
         {
         }
 
-        // The seam constructor. An optional IOutboxBodyResolver replaces the verbatim reconstruction for an admitted
-        // pending document; OutboxDeliverySettings carries the pending predicate and the delivered/TTL stamp knobs.
+        // The seam constructor. OutboxDeliverySettings carries the admission gate (the always-applied id-guard plus any
+        // narrowing filter) and the delivered/TTL stamp knobs. The IOutboxBodyResolver is NOT held here — it is supplied
+        // per-call to ProcessChangeAsync so the relay never carries a resolver it might silently drop.
         internal CosmosOutboxRelay(IMessagingInfrastructureProvider infrastructureProvider,
                                    IBodyConverterFactory bodyConverterFactory,
-                                   IOutboxBodyResolver bodyResolver,
                                    OutboxDeliverySettings settings)
         {
             _infrastructureProvider = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
-            _bodyResolver = bodyResolver;
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         }
 
@@ -75,34 +73,42 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// Processes a single change-feed document against <paramref name="monitoredContainer"/> (the container the
         /// document lives in, used for the delivered/TTL patch). <paramref name="partitionKeyPath"/> is the container's
         /// declared partition-key path (single or hierarchical) — the document carries its partition-key value(s) at
-        /// these segments, and the delivered/TTL patch must target the SAME logical partition. A non-outbox or
-        /// non-pending document is a no-op. An outbox+pending document is reconstructed, published, then patched
-        /// delivered+TTL. A publish failure performs no patch and propagates so the host does not checkpoint the
-        /// change-feed batch.
+        /// these segments, and the delivered/TTL patch must target the SAME logical partition. A non-admitted document is
+        /// a no-op. An admitted document is reconstructed verbatim, published, then patched delivered+TTL. A publish
+        /// failure performs no patch and propagates so the host does not checkpoint the change-feed batch.
         /// </summary>
-        public async Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken = default)
+        public Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken = default)
+            => ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver: null, cancellationToken);
+
+        /// <summary>
+        /// Processes a single change-feed document, with an optional per-call <paramref name="resolver"/> owning the
+        /// brokered message to publish for an admitted document. When <paramref name="resolver"/> is null the verbatim
+        /// reconstruction path is used. A non-admitted document is a no-op. A publish (or resolver) failure performs no
+        /// patch and propagates so the host does not checkpoint the change-feed batch.
+        /// </summary>
+        internal async Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, IOutboxBodyResolver resolver, CancellationToken cancellationToken = default)
         {
             _ = monitoredContainer ?? throw new ArgumentNullException(nameof(monitoredContainer));
             _ = partitionKeyPath ?? throw new ArgumentNullException(nameof(partitionKeyPath));
 
-            if (!_settings.PendingFilter(document))
+            if (!_settings.IsAdmitted(document))
             {
                 return;
             }
 
-            if (_bodyResolver is null)
+            if (resolver is null)
             {
-                // No resolver bound: the verbatim reconstruction path is unchanged — reconstruct the brokered message
+                // No resolver supplied: the verbatim reconstruction path is unchanged — reconstruct the brokered message
                 // from the persisted outbox fields and publish it.
                 await DispatchAsync(Reconstruct(document));
             }
             else
             {
-                // A resolver is bound: it owns the message to publish. A NON-NULL resolution is dispatched; a NULL
+                // A resolver is supplied: it owns the message to publish. A NON-NULL resolution is dispatched; a NULL
                 // resolution dispatches nothing. Either way the document is then stamped delivered (a null resolution is
                 // an intentional drop-and-acknowledge). A THROW propagates below with no stamp issued.
                 OutboxDrainContext context = BuildDrainContext(document, partitionKeyPath);
-                OutboundBrokeredMessage resolved = await _bodyResolver.ResolveAsync(context, cancellationToken);
+                OutboundBrokeredMessage resolved = await resolver.ResolveAsync(context, cancellationToken);
                 if (resolved is not null)
                 {
                     await DispatchAsync(resolved);

@@ -15,9 +15,11 @@ using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
 {
-    // Covers the #222 outbox body-resolver seam (STEP-002): a relay constructed with an IOutboxBodyResolver resolves the
-    // brokered message to publish for each admitted pending document (instead of the verbatim reconstruction), and the
-    // delivered/TTL stamp + pending filter are driven by the configurable OutboxDeliverySettings rather than hard literals.
+    // Covers the #222 outbox body-resolver seam: a per-call IOutboxBodyResolver resolves the brokered message to publish
+    // for each admitted document (instead of the verbatim reconstruction), the delivered/TTL stamp is driven by the
+    // configurable OutboxDeliverySettings, and admission is the always-applied id-guard ANDed with an optional narrowing
+    // filter. The settings' constructor enforces the F2 invariants (delivered != pending, ttl > 0, status path anchored,
+    // ttl path a valid pointer) so an unsafe stamp configuration is unconstructable rather than merely unused.
     public class WhenResolvingOutboxBody : Testing.Core.Context
     {
         private const string InfrastructureType = "test-infra";
@@ -140,10 +142,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             var (provider, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var (resolver, contexts) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), resolver, OutboxDeliverySettings.Legacy);
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
 
             JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
+            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver);
 
             contexts.Should().ContainSingle("the resolver is consulted exactly once for an admitted pending document");
         }
@@ -154,12 +156,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             var (provider, published) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var (resolver, _) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), resolver, OutboxDeliverySettings.Legacy);
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
 
             // The document's own MessageId is msg-1; the resolver returns a DIFFERENT message. The dispatched message must
             // be the resolver's, proving the relay published the resolved message and not the reconstructed document body.
             JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
+            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver);
 
             OutboundBrokeredMessage dispatched = published.Should().ContainSingle().Subject;
             dispatched.MessageId.Should().Be("resolved-msg");
@@ -172,10 +174,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             var (provider, published) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var (resolver, _) = RecordingResolver(toReturn: null);
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), resolver, OutboxDeliverySettings.Legacy);
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
 
             JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
+            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver);
 
             published.Should().BeEmpty("a null resolution publishes nothing");
             patches.Should().ContainSingle("a null resolution still acknowledges the document delivered+ttl");
@@ -198,17 +200,20 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         [Fact]
-        public async Task MustStampConfiguredStatusPathValueAndTtl()
+        public async Task MustStampConfiguredStatusValueAndTtlPathWhenSafeSettingsSupplied()
         {
             var (provider, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
+            // Non-default but SAFE configuration: the delivered status value and ttl seconds and the (freely-configurable)
+            // ttl patch path all diverge from the legacy defaults; the status patch path stays anchored to "/status" (the
+            // only value the F2 invariants admit). This proves non-default safe values flow through to the stamp.
             var configured = new OutboxDeliverySettings(
                 deliveredTtlSeconds: 999,
-                statusPatchPath: "/state",
+                statusPatchPath: "/status",
                 deliveredStatusValue: "done",
                 ttlPatchPath: "/expiry",
-                pendingFilter: CosmosOutboxDocument.IsPendingOutbox);
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), bodyResolver: null, settings: configured);
+                additionalPendingFilter: null);
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), configured);
 
             JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
             await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
@@ -216,7 +221,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             IReadOnlyList<PatchOperation> ops = patches.Should().ContainSingle().Subject.ops;
             ops.Should().HaveCount(2);
             ops[0].OperationType.Should().Be(PatchOperationType.Set);
-            ops[0].Path.Should().Be("/state", "the status patch targets the configured status path");
+            ops[0].Path.Should().Be("/status", "the status patch targets the anchored status path");
             ops[1].Path.Should().Be("/expiry", "the ttl patch targets the configured ttl path");
         }
 
@@ -237,27 +242,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         [Fact]
-        public async Task MustSkipDocumentRejectedByPendingFilter()
+        public async Task MustSkipDocumentNarrowedOutByAdditionalPendingFilter()
         {
             var (provider, published) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var (resolver, contexts) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
-            // A pending filter that rejects everything: even a genuinely-pending document is skipped because the filter,
-            // not the document shape, is the gate.
-            var rejectAll = new OutboxDeliverySettings(
+            // An additional pending filter that rejects everything narrows even a genuinely-pending document out of
+            // admission, so it is never resolved, dispatched, or stamped.
+            var narrowToNothing = new OutboxDeliverySettings(
                 deliveredTtlSeconds: 86400,
                 statusPatchPath: "/status",
                 deliveredStatusValue: "delivered",
                 ttlPatchPath: "/ttl",
-                pendingFilter: _ => false);
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), resolver, rejectAll);
+                additionalPendingFilter: _ => false);
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), narrowToNothing);
 
             JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
+            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver);
 
-            contexts.Should().BeEmpty("a filtered-out document is never resolved");
-            published.Should().BeEmpty("a filtered-out document is never dispatched");
-            patches.Should().BeEmpty("a filtered-out document is never stamped delivered");
+            contexts.Should().BeEmpty("a narrowed-out document is never resolved");
+            published.Should().BeEmpty("a narrowed-out document is never dispatched");
+            patches.Should().BeEmpty("a narrowed-out document is never stamped delivered");
         }
 
         [Fact]
@@ -266,11 +271,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             var (provider, published) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var (resolver, contexts) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), resolver, OutboxDeliverySettings.Legacy);
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
 
-            // A re-drain of the relay's OWN delivered/TTL update event is filtered out by the pending predicate.
+            // A re-drain of the relay's OWN delivered/TTL update event is filtered out by the id-guard (not pending).
             JsonElement delivered = DeliveredOutboxDocument("tenant-1");
-            await relay.ProcessChangeAsync(delivered, container.Object, PartitionKeyPath);
+            await relay.ProcessChangeAsync(delivered, container.Object, PartitionKeyPath, resolver);
 
             contexts.Should().BeEmpty("an already-delivered document is not pending, so the resolver is not consulted");
             published.Should().BeEmpty();
@@ -283,10 +288,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             var (provider, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var (resolver, contexts) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), resolver, OutboxDeliverySettings.Legacy);
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
 
             JsonElement document = OutboxDocument("msg-77", "orders", new { OrderId = 7 }, "tenant-9");
-            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
+            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver);
 
             OutboxDrainContext context = contexts.Should().ContainSingle().Subject;
             context.MessageId.Should().Be("msg-77", "the context carries the drained document's verbatim message id");
@@ -302,14 +307,77 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             var (container, patches) = RecordingContainer();
             var resolveFailure = new InvalidOperationException("resolver unavailable");
             IOutboxBodyResolver resolver = ThrowingResolver(resolveFailure);
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), resolver, OutboxDeliverySettings.Legacy);
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
 
             JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            Func<Task> act = () => relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
+            Func<Task> act = () => relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver);
 
             (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(resolveFailure);
             published.Should().BeEmpty("a resolver failure dispatches nothing");
             patches.Should().BeEmpty("a resolver failure must leave the document pending — no delivered/ttl patch");
+        }
+
+        // Constructs delivery settings with one field diverged from a known-safe baseline, so a construction-throw test
+        // isolates exactly one rejected F2 invariant.
+        private static Action ConstructSettings(int deliveredTtlSeconds = 86400,
+                                                string statusPatchPath = "/status",
+                                                string deliveredStatusValue = "delivered",
+                                                string ttlPatchPath = "/ttl")
+            => () => new OutboxDeliverySettings(deliveredTtlSeconds, statusPatchPath, deliveredStatusValue, ttlPatchPath, additionalPendingFilter: null);
+
+        [Fact]
+        public void MustRejectDeliveredStatusEqualToPending()
+        {
+            ConstructSettings(deliveredStatusValue: CosmosOutboxDocument.StatusPending).Should().Throw<ArgumentException>(
+                "a delivered status equal to pending would never move the document out of pending, so it must be unconstructable");
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        public void MustRejectEmptyDeliveredStatus(string deliveredStatusValue)
+        {
+            ConstructSettings(deliveredStatusValue: deliveredStatusValue).Should().Throw<ArgumentException>(
+                "an empty delivered status cannot advance a document out of pending");
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        [InlineData(-86400)]
+        public void MustRejectNonPositiveDeliveredTtl(int deliveredTtlSeconds)
+        {
+            ConstructSettings(deliveredTtlSeconds: deliveredTtlSeconds).Should().Throw<ArgumentException>(
+                "the delivered TTL must be positive; 0, -1 (retain indefinitely), and any negative are out of scope");
+        }
+
+        [Fact]
+        public void MustRejectStatusPatchPathThatIsNotAnchoredToTheStatusField()
+        {
+            ConstructSettings(statusPatchPath: "/state").Should().Throw<ArgumentException>(
+                "a status patch path that does not target the field the pending gate reads would leave the document pending forever, so it must be unconstructable");
+        }
+
+        [Theory]
+        [InlineData(null)]   // missing
+        [InlineData("")]     // empty
+        [InlineData("status")] // no leading '/'
+        [InlineData("/")]    // no non-empty segment
+        public void MustRejectInvalidStatusPatchPath(string statusPatchPath)
+        {
+            ConstructSettings(statusPatchPath: statusPatchPath).Should().Throw<ArgumentException>(
+                "the status patch path must be a valid JSON pointer");
+        }
+
+        [Theory]
+        [InlineData(null)]   // missing
+        [InlineData("")]     // empty
+        [InlineData("ttl")]  // no leading '/'
+        [InlineData("/")]    // no non-empty segment
+        public void MustRejectInvalidTtlPatchPath(string ttlPatchPath)
+        {
+            ConstructSettings(ttlPatchPath: ttlPatchPath).Should().Throw<ArgumentException>(
+                "the ttl patch path must be a valid JSON pointer (though it is freely configurable, not anchored)");
         }
     }
 }

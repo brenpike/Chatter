@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.Reliability.Cosmos;
 using FluentAssertions;
+using System;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Xunit;
@@ -93,6 +94,54 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxDocum
 
             CosmosOutboxDocument.IsPendingOutbox(Document(messageId: "msg-1", id: foreignButReservedId)).Should().BeFalse(
                 "the id must be ForOutbox of THIS document's MessageId, not of a different message id");
+        }
+
+        // A delivery-settings instance with safe stamp knobs (so construction always succeeds) and the supplied optional
+        // additional pending filter, isolating IsAdmitted's AND-narrow composition for the tests below.
+        private static OutboxDeliverySettings SettingsWith(Func<JsonElement, bool> additionalPendingFilter)
+            => new OutboxDeliverySettings(
+                deliveredTtlSeconds: 86400,
+                statusPatchPath: "/" + CosmosOutboxDocument.StatusField,
+                deliveredStatusValue: CosmosOutboxDocument.StatusDelivered,
+                ttlPatchPath: "/ttl",
+                additionalPendingFilter: additionalPendingFilter);
+
+        [Fact]
+        public void MustAdmitGenuinePendingOutboxWhenAdditionalFilterIsNull()
+        {
+            OutboxDeliverySettings settings = SettingsWith(additionalPendingFilter: null);
+
+            settings.IsAdmitted(Document()).Should().BeTrue(
+                "with no additional filter the always-applied id-guard alone admits a genuine pending outbox document");
+        }
+
+        [Fact]
+        public void MustNotWidenAdmissionForANonOutboxDocumentEvenWhenAdditionalFilterReturnsTrue()
+        {
+            // The additional filter returns TRUE for everything; it must NOT be able to admit a document the built-in
+            // id-guard rejects — admission is the AND of the always-applied id-guard and the additional filter.
+            OutboxDeliverySettings settings = SettingsWith(additionalPendingFilter: _ => true);
+
+            settings.IsAdmitted(Document(chatterType: "aggregate")).Should().BeFalse(
+                "the additional filter cannot widen admission past the id-guard; a non-outbox document is never admitted");
+        }
+
+        [Fact]
+        public void MustNotWidenAdmissionForAForeignIdDocumentEvenWhenAdditionalFilterReturnsTrue()
+        {
+            OutboxDeliverySettings settings = SettingsWith(additionalPendingFilter: _ => true);
+
+            settings.IsAdmitted(Document(id: "app-authored-id")).Should().BeFalse(
+                "the additional filter cannot widen admission past the #222 id-guard; an outbox-shaped document whose id is not Chatter-minted is never admitted");
+        }
+
+        [Fact]
+        public void MustNarrowAdmissionWhenAdditionalFilterRejectsAGenuinePendingDocument()
+        {
+            OutboxDeliverySettings settings = SettingsWith(additionalPendingFilter: _ => false);
+
+            settings.IsAdmitted(Document()).Should().BeFalse(
+                "the additional filter can only further narrow admission; a genuine pending document it rejects is not admitted");
         }
     }
 }
