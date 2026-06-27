@@ -179,10 +179,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // resolver is never asked to resolve; nothing is published or stamped; the scope is disposed) — an acceptable cost
         // for composing the caller delegate at a single site. When a body-resolver factory is configured, a FRESH DI scope
         // is opened PER PENDING DOCUMENT and the resolver is resolved from that scope's provider, so a scoped resolver (and
-        // the scoped dependencies it pulls) never outlives the document it drains. The `using` scope WRAPS the
-        // ProcessChangeAsync call so a propagating publish/resolver failure (at-least-once: the SDK does not checkpoint and
-        // the document re-surfaces) still disposes the scope while the exception unwinds. With no factory configured the
-        // relay's no-resolver verbatim reconstruction path is used UNCHANGED and no scope is opened.
+        // the scoped dependencies it pulls) never outlives the document it drains. The scope is opened as an ASYNC scope
+        // (`await using AsyncServiceScope` / CreateAsyncScope) so a scoped resolver or dependency that implements only
+        // IAsyncDisposable is disposed via DisposeAsync rather than throwing on synchronous Dispose: a sync-dispose throw
+        // after ProcessChangeAsync has already published+stamped would escape the change-feed callback and re-deliver an
+        // already-delivered document. The `await using` scope WRAPS the ProcessChangeAsync call so a propagating
+        // publish/resolver failure (at-least-once: the SDK does not checkpoint and the document re-surfaces) still disposes
+        // the scope while the exception unwinds. With no factory configured the relay's no-resolver verbatim reconstruction
+        // path is used UNCHANGED and no scope is opened.
         private async Task ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
             if (!CosmosOutboxDocument.IsPendingOutbox(document))
@@ -196,7 +200,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 return;
             }
 
-            using IServiceScope scope = _serviceProvider.CreateScope();
+            await using AsyncServiceScope scope = _serviceProvider.CreateAsyncScope();
             // A configured factory MUST resolve a non-null resolver. A null return (e.g. GetService against a missing
             // registration) would otherwise be forwarded as the "no resolver" sentinel into ProcessChangeAsync, silently
             // selecting verbatim reconstruction — republishing the persisted body instead of the intended drain-time body.
