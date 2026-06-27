@@ -61,7 +61,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 container,
                 lease,
                 ValidateResolver(resolver),
-                ValidatePartitionKeyPath(partitionKeyPath));
+                PartitionKeyPathValidator.ValidateAndSnapshot(partitionKeyPath, nameof(partitionKeyPath)));
 
             return pipelineBuilder.AddRegistration(registration);
         }
@@ -117,7 +117,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 syntheticIdentity + ":document",
                 syntheticIdentity + ":lease",
                 ValidateResolver(resolver),
-                ValidatePartitionKeyPath(partitionKeyPath),
+                PartitionKeyPathValidator.ValidateAndSnapshot(partitionKeyPath, nameof(partitionKeyPath)),
                 documentContainerFactory,
                 leaseContainerFactory,
                 new CosmosSourceIdentity(monitoredSourceIdentity, leaseSourceIdentity));
@@ -127,28 +127,6 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static ResolvePartitionKey ValidateResolver(ResolvePartitionKey resolver)
             => resolver ?? throw new ArgumentNullException(nameof(resolver));
-
-        private static System.Collections.ObjectModel.ReadOnlyCollection<string> ValidatePartitionKeyPath(string[] partitionKeyPath)
-        {
-            if (partitionKeyPath is null || partitionKeyPath.Length == 0)
-            {
-                throw new ArgumentException("A container partition-key path is required.", nameof(partitionKeyPath));
-            }
-
-            // Clone before storing so post-registration mutation of the caller-owned array cannot corrupt the registered
-            // path, and validate every segment: document writers stamp the resolved partition-key value at this declared
-            // path, so an empty/whitespace segment would break the carriage contract.
-            var partitionKeyPathSegments = (string[])partitionKeyPath.Clone();
-            for (var i = 0; i < partitionKeyPathSegments.Length; i++)
-            {
-                if (string.IsNullOrWhiteSpace(partitionKeyPathSegments[i]))
-                {
-                    throw new ArgumentException("Every container partition-key path segment must be non-null and non-whitespace.", nameof(partitionKeyPath));
-                }
-            }
-
-            return Array.AsReadOnly(partitionKeyPathSegments);
-        }
 
         // Adds the per-type registration to the shared singleton registry (additive; duplicate command type throws) and
         // registers the singleton infrastructure ONCE and idempotently across N WithCosmosDocumentReliability<T> calls.

@@ -163,27 +163,15 @@ namespace Microsoft.Extensions.DependencyInjection
                     nameof(options.LeaseContainerFactory));
             }
 
-            if (options.PartitionKeyPath is null || options.PartitionKeyPath.Count == 0)
-            {
-                throw new ArgumentException(
-                    "A non-empty partition-key path is required. Set CosmosOutboxRelayOptions.PartitionKeyPath to the monitored container's declared partition-key path.",
-                    nameof(options.PartitionKeyPath));
-            }
-
-            // Validate every segment, mirroring the command-pipeline registration's per-segment check
-            // (Extensions.ValidatePartitionKeyPath): the relay recovers each drained document's partition key at these
-            // declared segments to target the delivered/TTL patch, so an empty/whitespace/null segment would make
-            // recovery read the whole document (or null) instead of the actual path — the delivered patch would then
-            // target the wrong logical partition and the document would stay pending/replay.
-            for (var i = 0; i < options.PartitionKeyPath.Count; i++)
-            {
-                if (string.IsNullOrWhiteSpace(options.PartitionKeyPath[i]))
-                {
-                    throw new ArgumentException(
-                        "Every partition-key path segment must be non-null and non-whitespace. Set CosmosOutboxRelayOptions.PartitionKeyPath to the monitored container's declared partition-key path.",
-                        nameof(options.PartitionKeyPath));
-                }
-            }
+            // Validate the partition-key path (non-empty, every segment non-whitespace) and store an INDEPENDENT read-only
+            // snapshot back onto the options through the SAME hardened validator the command-pipeline registration uses
+            // (PartitionKeyPathValidator). The relay recovers each drained document's partition key at these declared
+            // segments to target the delivered/TTL patch, so an empty/whitespace/null segment would make recovery read the
+            // whole document (or null) instead of the actual path — the delivered patch would then target the wrong logical
+            // partition and the document would stay pending/replay. Storing the frozen snapshot back makes the freeze
+            // effective for the captured options the host later reads (post-registration mutation of the caller-owned
+            // collection cannot corrupt the registered path).
+            options.PartitionKeyPath = PartitionKeyPathValidator.ValidateAndSnapshot(options.PartitionKeyPath, nameof(options.PartitionKeyPath));
 
             // Source identities must be declared as a PAIR or omitted as a pair. StandaloneCosmosOutboxRelayHostedService
             // .BuildSourceIdentityKey routes to the DECLARED key when EITHER side is non-null, turning a missing/blank side

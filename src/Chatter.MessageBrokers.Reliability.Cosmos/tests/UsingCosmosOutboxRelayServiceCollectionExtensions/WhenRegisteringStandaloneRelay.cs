@@ -190,6 +190,42 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             empty.Should().Throw<ArgumentException>("a non-empty partition-key path is required");
         }
 
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        [InlineData(null)]
+        public void MustRejectInvalidPartitionKeyPathSegment(string invalidSegment)
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
+                options.PartitionKeyPath = new[] { "/tenantId", invalidSegment }));
+
+            act.Should().Throw<ArgumentException>(
+                "every partition-key path segment must be non-null and non-whitespace, mirroring the command-pipeline registration");
+        }
+
+        [Fact]
+        public void MustNotBeAffectedByPostRegistrationMutationOfPartitionKeyPath()
+        {
+            CosmosOutboxRelayOptions captured = null;
+            var mutablePath = new List<string> { "/tenantId" };
+
+            var services = new ServiceCollection();
+            services.AddCosmosOutboxRelay(ValidConfigure(options =>
+            {
+                options.PartitionKeyPath = mutablePath;
+                captured = options;
+            }));
+
+            // Mutating the caller-owned list after registration must not corrupt the validated, captured path: the
+            // standalone path snapshots the partition-key path through the same hardened validator the command pipeline uses.
+            mutablePath[0] = "/corrupted";
+
+            captured.PartitionKeyPath.Should().ContainSingle().Which.Should().Be("/tenantId",
+                "AddCosmosOutboxRelay stores an independent snapshot of the partition-key path back onto the options");
+        }
+
         [Fact]
         public void MustNotEagerlyInvokeTheBodyResolverFactoryAtHostConstruction()
         {
