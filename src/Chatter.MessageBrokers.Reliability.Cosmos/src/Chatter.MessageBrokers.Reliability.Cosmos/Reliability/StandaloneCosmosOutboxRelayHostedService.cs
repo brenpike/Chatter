@@ -34,7 +34,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly IServiceProvider _serviceProvider;
         private readonly CosmosOutboxRelayOptions _options;
         private readonly CosmosOutboxRelay _relay;
-        private readonly IOutboxBodyResolver _bodyResolver;
         private ChangeFeedProcessor _processor;
 
         internal StandaloneCosmosOutboxRelayHostedService(IServiceProvider serviceProvider,
@@ -47,19 +46,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _options = options ?? throw new ArgumentNullException(nameof(options));
 
-            // Resolve the optional body resolver ONCE from the root provider at host construction, and build the relay with
-            // the options' drain knobs, so HandleChangesAsync feeds changes through a fully-configured relay core.
-            _bodyResolver = options.BodyResolverFactory?.Invoke(serviceProvider);
+            // Build the relay with the options' validated drain knobs (OutboxDeliverySettings.FromOptions enforces the F2
+            // invariants). The optional body resolver is NOT resolved here: it is created PER DOCUMENT from a fresh DI scope
+            // in HandleChangesAsync (see ProcessDocumentAsync), so a scoped resolver never outlives the document it drains
+            // and the relay never carries a resolver it might silently reuse across documents.
             _relay = new CosmosOutboxRelay(
                 infrastructureProvider,
                 bodyConverterFactory,
-                _bodyResolver,
-                BuildSettings(options));
+                OutboxDeliverySettings.FromOptions(options));
         }
-
-        // The body resolver resolved once at construction and supplied to the relay; null when no factory is configured.
-        // Exposed so the resolver wiring is unit-testable without the live SDK change-feed plumbing.
-        internal IOutboxBodyResolver BodyResolver => _bodyResolver;
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
@@ -128,8 +123,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             foreach (JsonElement document in documents.EnumerateArray())
             {
-                await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                await ProcessDocumentAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        // Drains a single change-feed document through the relay. When a body-resolver factory is configured, a FRESH DI
+        // scope is opened PER DOCUMENT and the resolver is resolved from that scope's provider, so a scoped resolver (and
+        // the scoped dependencies it pulls) never outlives the document it drains. The `using` scope WRAPS the
+        // ProcessChangeAsync call so a propagating publish failure (at-least-once: the SDK does not checkpoint and the
+        // document re-surfaces) still disposes the scope while the exception unwinds. With no factory configured the
+        // relay's no-resolver verbatim reconstruction path is used UNCHANGED and no scope is opened.
+        private async Task ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
+        {
+            if (_options.BodyResolverFactory is null)
+            {
+                await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            using IServiceScope scope = _serviceProvider.CreateScope();
+            IOutboxBodyResolver resolver = _options.BodyResolverFactory(scope.ServiceProvider);
+            await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver, cancellationToken).ConfigureAwait(false);
         }
 
         // Builds the source-identity dedup/name key the SAME way CosmosOutboxRelayHostedService does, but sourced from the
@@ -156,13 +170,5 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private Container ResolveContainer(Func<IServiceProvider, Container> factory, string role)
             => factory(_serviceProvider)
                 ?? throw new InvalidOperationException($"The configured {role}-container factory returned null.");
-
-        private static OutboxDeliverySettings BuildSettings(CosmosOutboxRelayOptions options)
-            => new OutboxDeliverySettings(
-                options.DeliveredTtlSeconds,
-                options.StatusPatchPath,
-                options.DeliveredStatusValue,
-                options.TtlPatchPath,
-                options.PendingFilter);
     }
 }

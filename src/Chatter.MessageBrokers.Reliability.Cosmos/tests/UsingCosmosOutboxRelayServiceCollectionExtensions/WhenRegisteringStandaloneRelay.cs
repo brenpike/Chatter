@@ -167,17 +167,76 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         [Fact]
-        public void MustSurfaceTheConfiguredBodyResolverToTheConstructedRelay()
+        public void MustNotEagerlyInvokeTheBodyResolverFactoryAtHostConstruction()
         {
-            var resolver = Mock.Of<IOutboxBodyResolver>();
-            ServiceProvider provider = BuildProviderWith(ValidConfigure(options => options.BodyResolverFactory = _ => resolver));
+            var invocationCount = 0;
+            ServiceProvider provider = BuildProviderWith(ValidConfigure(options => options.BodyResolverFactory = _ =>
+            {
+                invocationCount++;
+                return Mock.Of<IOutboxBodyResolver>();
+            }));
 
-            StandaloneCosmosOutboxRelayHostedService host = provider.GetServices<IHostedService>()
+            // Resolving the hosted service constructs the host. The body-resolver factory must NOT be consulted at
+            // construction: it is resolved per drained document from a fresh DI scope, so a scoped resolver never outlives
+            // the document it drains and a per-request misconfiguration does not fault host construction.
+            provider.GetServices<IHostedService>()
                 .OfType<StandaloneCosmosOutboxRelayHostedService>()
                 .Single();
 
-            host.BodyResolver.Should().BeSameAs(resolver,
-                "the configured body-resolver factory is resolved once at host construction and supplied to the relay");
+            invocationCount.Should().Be(0,
+                "the body-resolver factory is consulted per drained document from a scope, not once at host construction");
+        }
+
+        [Fact]
+        public void MustThrowAtRegistrationWhenDeliveredStatusValueEqualsPending()
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.DeliveredStatusValue = "pending"));
+
+            act.Should().Throw<ArgumentException>(
+                "a delivered status equal to pending would never advance the document out of pending — the F2 invariant is enforced at registration, before the provider is built");
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        public void MustThrowAtRegistrationWhenDeliveredTtlSecondsIsNonPositive(int deliveredTtlSeconds)
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.DeliveredTtlSeconds = deliveredTtlSeconds));
+
+            act.Should().Throw<ArgumentException>(
+                "a non-positive delivered TTL (including -1 retain-indefinitely) is rejected at registration");
+        }
+
+        [Theory]
+        [InlineData("/state")]  // valid pointer but not anchored to the status field
+        [InlineData("")]        // empty
+        [InlineData("/")]       // no non-empty segment
+        public void MustThrowAtRegistrationWhenStatusPatchPathIsUnanchoredOrInvalid(string statusPatchPath)
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.StatusPatchPath = statusPatchPath));
+
+            act.Should().Throw<ArgumentException>(
+                "a status patch path not anchored to the status field (or not a valid JSON pointer) is rejected at registration");
+        }
+
+        [Theory]
+        [InlineData("")]     // empty
+        [InlineData("ttl")]  // no leading '/'
+        [InlineData("/")]    // no non-empty segment
+        public void MustThrowAtRegistrationWhenTtlPatchPathIsInvalid(string ttlPatchPath)
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.TtlPatchPath = ttlPatchPath));
+
+            act.Should().Throw<ArgumentException>(
+                "a ttl patch path that is not a valid JSON pointer is rejected at registration");
         }
     }
 }

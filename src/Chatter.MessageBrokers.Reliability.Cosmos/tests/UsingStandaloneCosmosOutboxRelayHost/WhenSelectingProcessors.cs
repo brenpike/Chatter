@@ -7,7 +7,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosOutboxRelayHost
@@ -26,6 +30,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         private static readonly IReadOnlyList<string> PartitionKeyPath = Array.AsReadOnly(new[] { "/tenantId" });
 
         private sealed class CreateOrder : ICommand { }
+
+        // A scoped dependency the body-resolver factory resolves from each per-document scope; its disposal is the
+        // observable signal that the document's DI scope was disposed after the document was drained.
+        private sealed class ScopedTracker : IDisposable
+        {
+            public bool Disposed { get; private set; }
+
+            public void Dispose() => Disposed = true;
+        }
+
+        private static Stream StreamOf(string json) => new MemoryStream(Encoding.UTF8.GetBytes(json));
 
         // Mirrors the registry-host characterization test's mocked Container: resolved physical identity (.Id +
         // .Database.Id) and account endpoint (.Database.Client.Endpoint) are fixed so the ground-truth source-identity key
@@ -181,6 +196,48 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             sameIdentityDifferentHandles.Should().Be(firstName,
                 "the declared identity is the key, so the same declared pair derives the identical processor name regardless of the resolved handles");
             distinctIdentity.Should().NotBe(firstName, "a distinct declared source identity derives a distinct processor name");
+        }
+
+        // R-STEP-002: a configured body-resolver factory is consulted PER DRAINED DOCUMENT from a FRESH DI scope (not once
+        // at host construction, and not from the root provider), and that scope is disposed after the document — so a
+        // scoped resolver (and the scoped dependencies it resolves) never outlives the document it drained.
+        [Fact]
+        public async Task MustOpenResolveAndDisposeAFreshScopePerDrainedDocument()
+        {
+            var capturedProviders = new List<IServiceProvider>();
+            var trackers = new List<ScopedTracker>();
+
+            var rootServices = new ServiceCollection();
+            rootServices.AddScoped<ScopedTracker>();
+            using ServiceProvider root = rootServices.BuildServiceProvider();
+
+            Container monitored = PhysicalContainer("shop", "orders");
+            Container lease = PhysicalContainer("shop", "orders-leases");
+            CosmosOutboxRelayOptions options = OptionsFor(monitored, lease);
+            options.BodyResolverFactory = scopedProvider =>
+            {
+                capturedProviders.Add(scopedProvider);
+                trackers.Add(scopedProvider.GetRequiredService<ScopedTracker>());
+                return Mock.Of<IOutboxBodyResolver>();
+            };
+
+            var host = new StandaloneCosmosOutboxRelayHostedService(
+                root,
+                Mock.Of<IMessagingInfrastructureProvider>(),
+                Mock.Of<IBodyConverterFactory>(),
+                options);
+
+            // Two non-pending documents: each still drives the per-document scope-open + factory-resolve before the relay
+            // filters it out as non-admitted, so the scope lifecycle is exercised without needing the publish/stamp path.
+            using Stream batch = StreamOf("{\"Documents\":[{\"id\":\"a\"},{\"id\":\"b\"}]}");
+            await host.HandleChangesAsync(batch, monitored, PartitionKeyPath, CancellationToken.None);
+
+            capturedProviders.Should().HaveCount(2, "the body-resolver factory is consulted exactly once per drained document");
+            capturedProviders[0].Should().NotBeSameAs(capturedProviders[1], "each document is drained under its OWN per-document DI scope");
+            capturedProviders.Should().NotContain(root, "the resolver is resolved from a per-document scope, never the root provider");
+            trackers.Should().HaveCount(2);
+            trackers.Should().OnlyContain(tracker => tracker.Disposed,
+                "each per-document scope is disposed after its document, disposing the scoped dependencies the resolver factory resolved");
         }
     }
 }

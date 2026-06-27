@@ -69,6 +69,13 @@ namespace Microsoft.Extensions.DependencyInjection
                     "A non-empty partition-key path is required. Set CosmosOutboxRelayOptions.PartitionKeyPath to the monitored container's declared partition-key path.",
                     nameof(options.PartitionKeyPath));
             }
+
+            // Eagerly map the options into the relay's delivery settings so the F2 construction invariants (delivered status
+            // non-empty and != pending, delivered TTL > 0 including the -1 "retain indefinitely" rejection, status patch path
+            // anchored to the status field, ttl patch path a valid JSON pointer) throw a clear ArgumentException AT
+            // REGISTRATION — before the service provider is built — instead of deferring the failure to host construction.
+            // This reuses the SAME validating builder the host uses, so the checks are not duplicated here.
+            _ = OutboxDeliverySettings.FromOptions(options);
         }
     }
 }
