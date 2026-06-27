@@ -376,5 +376,129 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
                 Times.Never,
                 "a resolver failure leaves the document pending — no delivered/ttl stamp");
         }
+
+        // R4-STEP-001: the caller-supplied AdditionalPendingFilter is composed at EXACTLY ONE admission site (inside the
+        // relay), never twice. Over a mixed batch with exactly one admitted pending outbox doc, a counting filter is
+        // invoked exactly once and the doc is stamped delivered exactly once. Before the single-by-construction fix the
+        // host pre-scope gate re-evaluated the full admission — including this caller delegate — so the delegate ran twice
+        // per admitted document.
+        [Fact]
+        public async Task MustEvaluateTheAdditionalPendingFilterExactlyOncePerAdmittedDocument()
+        {
+            var filterInvocations = 0;
+
+            using ServiceProvider root = new ServiceCollection().BuildServiceProvider();
+
+            Mock<Container> monitored = RecordingMonitoredContainer();
+            Container lease = PhysicalContainer("shop", "orders-leases");
+            CosmosOutboxRelayOptions options = OptionsFor(monitored.Object, lease);
+            options.AdditionalPendingFilter = _ =>
+            {
+                filterInvocations++;
+                return true;
+            };
+            options.BodyResolverFactory = _ => NullResolvingResolver();
+
+            var host = new StandaloneCosmosOutboxRelayHostedService(
+                root,
+                Mock.Of<IMessagingInfrastructureProvider>(),
+                Mock.Of<IBodyConverterFactory>(),
+                options);
+
+            JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
+            string batchJson = $"{{\"Documents\":[{{\"id\":\"a\"}},{admitted.GetRawText()},{{\"id\":\"inbox:x\",\"_chatterType\":\"inbox\",\"MessageId\":\"m\"}}]}}";
+            using Stream batch = StreamOf(batchJson);
+
+            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+
+            filterInvocations.Should().Be(1,
+                "the caller-supplied AdditionalPendingFilter is composed at exactly one admission site (the relay), so an admitted document evaluates it once — not twice");
+            monitored.Verify(c => c.PatchItemAsync<JsonElement>(
+                    It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
+                    It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once,
+                "the admitted document is stamped delivered exactly once");
+        }
+
+        // R4-STEP-001 no-wedge A: a NON-IDEMPOTENT AdditionalPendingFilter (true on the first evaluation, false on the
+        // second) must NOT leave a genuine pending outbox document undrained. Under single-by-construction admission the
+        // relay evaluates the filter exactly once, so the document drains and stamps delivered. Before the fix the host
+        // gate's first evaluation returned true and the relay's second evaluation returned false, wedging the document.
+        [Fact]
+        public async Task MustNotWedgeAGenuinePendingDocumentUnderANonIdempotentFilter()
+        {
+            var filterInvocations = 0;
+
+            using ServiceProvider root = new ServiceCollection().BuildServiceProvider();
+
+            Mock<Container> monitored = RecordingMonitoredContainer();
+            Container lease = PhysicalContainer("shop", "orders-leases");
+            CosmosOutboxRelayOptions options = OptionsFor(monitored.Object, lease);
+            options.AdditionalPendingFilter = _ => Interlocked.Increment(ref filterInvocations) == 1;
+            options.BodyResolverFactory = _ => NullResolvingResolver();
+
+            var host = new StandaloneCosmosOutboxRelayHostedService(
+                root,
+                Mock.Of<IMessagingInfrastructureProvider>(),
+                Mock.Of<IBodyConverterFactory>(),
+                options);
+
+            JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
+            using Stream batch = StreamOf($"{{\"Documents\":[{admitted.GetRawText()}]}}");
+
+            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+
+            filterInvocations.Should().Be(1, "the filter is evaluated exactly once per admitted document");
+            monitored.Verify(c => c.PatchItemAsync<JsonElement>(
+                    It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
+                    It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once,
+                "a single admission evaluation lets the genuine pending document drain and stamp delivered — it is not wedged by the non-idempotent filter");
+        }
+
+        // R4-STEP-001 no-wedge B: an AdditionalPendingFilter that THROWS on a second evaluation must never get a second
+        // evaluation. Under single-by-construction admission the relay evaluates the filter exactly once, so the genuine
+        // pending document drains and stamps delivered without the throw ever occurring. Before the fix the host gate's
+        // first evaluation passed and the relay's second evaluation threw, propagating out and wedging the feed.
+        [Fact]
+        public async Task MustNotReEvaluateAFilterThatThrowsOnASecondCall()
+        {
+            var filterInvocations = 0;
+
+            using ServiceProvider root = new ServiceCollection().BuildServiceProvider();
+
+            Mock<Container> monitored = RecordingMonitoredContainer();
+            Container lease = PhysicalContainer("shop", "orders-leases");
+            CosmosOutboxRelayOptions options = OptionsFor(monitored.Object, lease);
+            options.AdditionalPendingFilter = _ =>
+            {
+                if (Interlocked.Increment(ref filterInvocations) > 1)
+                {
+                    throw new InvalidOperationException("the AdditionalPendingFilter must be evaluated exactly once per admitted document");
+                }
+
+                return true;
+            };
+            options.BodyResolverFactory = _ => NullResolvingResolver();
+
+            var host = new StandaloneCosmosOutboxRelayHostedService(
+                root,
+                Mock.Of<IMessagingInfrastructureProvider>(),
+                Mock.Of<IBodyConverterFactory>(),
+                options);
+
+            JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
+            using Stream batch = StreamOf($"{{\"Documents\":[{admitted.GetRawText()}]}}");
+
+            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+
+            await act.Should().NotThrowAsync("the filter is evaluated exactly once, so its throw-on-second-call path is never reached and the feed is not wedged");
+            filterInvocations.Should().Be(1, "the filter is evaluated exactly once per admitted document");
+            monitored.Verify(c => c.PatchItemAsync<JsonElement>(
+                    It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
+                    It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once,
+                "the genuine pending document drains and stamps delivered exactly once");
+        }
     }
 }

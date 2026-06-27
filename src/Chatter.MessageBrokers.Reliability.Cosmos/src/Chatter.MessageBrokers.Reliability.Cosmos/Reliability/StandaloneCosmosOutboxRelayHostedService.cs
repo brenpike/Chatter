@@ -47,9 +47,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _options = options ?? throw new ArgumentNullException(nameof(options));
 
             // Build the relay with the options' validated drain knobs (OutboxDeliverySettings.FromOptions enforces the F2
-            // invariants). The optional body resolver is NOT resolved here: it is created PER ADMITTED (pending outbox)
-            // document from a fresh DI scope in HandleChangesAsync (see ProcessDocumentAsync), so a scoped resolver never
-            // outlives the document it drains and the relay never carries a resolver it might silently reuse across documents.
+            // invariants), including the caller's optional AdditionalPendingFilter, which the relay's ProcessChangeAsync
+            // self-guard composes EXACTLY ONCE (the host pre-gate uses only the pure IsPendingOutbox identity guard — see
+            // ProcessDocumentAsync — so the caller filter is never double-evaluated). The optional body resolver is NOT
+            // resolved here: it is created PER PENDING (IsPendingOutbox) document from a fresh DI scope in HandleChangesAsync
+            // (see ProcessDocumentAsync), so a scoped resolver never outlives the document it drains and the relay never
+            // carries a resolver it might silently reuse across documents.
             _relay = new CosmosOutboxRelay(
                 infrastructureProvider,
                 bodyConverterFactory,
@@ -128,19 +131,26 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         }
 
         // Drains a single change-feed document through the relay. The monitored container is CO-RESIDENT (domain
-        // aggregates, inbox markers, outbox docs, and the relay's own delivered-stamp event all surface on this feed), so
-        // admission is checked FIRST — BEFORE any DI scope is opened or the body-resolver factory is invoked. A non-admitted
-        // document (a domain write, an inbox marker, a malformed item, an already-delivered doc) is skipped with NO scope,
-        // NO factory call, and NO user DI, so a throwing factory/resolver-ctor on a non-outbox write can never wedge the
-        // change feed. Only an ADMITTED (pending outbox) document proceeds: when a body-resolver factory is configured, a
-        // FRESH DI scope is opened PER ADMITTED DOCUMENT and the resolver is resolved from that scope's provider, so a
-        // scoped resolver (and the scoped dependencies it pulls) never outlives the document it drains. The `using` scope
-        // WRAPS the ProcessChangeAsync call so a propagating publish/resolver failure (at-least-once: the SDK does not
-        // checkpoint and the document re-surfaces) still disposes the scope while the exception unwinds. With no factory
-        // configured the relay's no-resolver verbatim reconstruction path is used UNCHANGED and no scope is opened.
+        // aggregates, inbox markers, outbox docs, and the relay's own delivered-stamp event all surface on this feed), so a
+        // PURE IDENTITY pre-gate is checked FIRST — BEFORE any DI scope is opened or the body-resolver factory is invoked.
+        // The pre-gate is CosmosOutboxDocument.IsPendingOutbox ALONE (pure, total, runs NO caller code and never throws): a
+        // document that is not a genuine Chatter pending outbox doc (a domain write, an inbox marker, a malformed item, an
+        // already-delivered doc) is skipped with NO scope, NO factory call, and NO user DI, so a throwing
+        // factory/resolver-ctor on a non-outbox write can never wedge the change feed. The caller-supplied
+        // AdditionalPendingFilter is deliberately NOT evaluated here: it is composed EXACTLY ONCE inside the relay's
+        // ProcessChangeAsync self-guard, so a non-idempotent or throwing caller filter cannot be double-evaluated and
+        // re-open the feed-wedge class. A document that passes IsPendingOutbox but is narrowed out by the caller filter
+        // opens a scope + invokes the body-resolver factory before the relay rejects it on the filter (one wasted scope; the
+        // resolver is never asked to resolve; nothing is published or stamped; the scope is disposed) — an acceptable cost
+        // for composing the caller delegate at a single site. When a body-resolver factory is configured, a FRESH DI scope
+        // is opened PER PENDING DOCUMENT and the resolver is resolved from that scope's provider, so a scoped resolver (and
+        // the scoped dependencies it pulls) never outlives the document it drains. The `using` scope WRAPS the
+        // ProcessChangeAsync call so a propagating publish/resolver failure (at-least-once: the SDK does not checkpoint and
+        // the document re-surfaces) still disposes the scope while the exception unwinds. With no factory configured the
+        // relay's no-resolver verbatim reconstruction path is used UNCHANGED and no scope is opened.
         private async Task ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
-            if (!_relay.IsAdmitted(document))
+            if (!CosmosOutboxDocument.IsPendingOutbox(document))
             {
                 return;
             }
