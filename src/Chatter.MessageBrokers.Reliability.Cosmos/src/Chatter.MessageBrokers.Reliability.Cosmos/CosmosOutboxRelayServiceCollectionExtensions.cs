@@ -47,6 +47,106 @@ namespace Microsoft.Extensions.DependencyInjection
             return services;
         }
 
+        /// <summary>
+        /// SAFE-BY-DEFAULT overload: registers a standalone Cosmos outbox relay AND wires its
+        /// <see cref="CosmosOutboxRelayOptions.BodyResolverFactory"/> to a typed <see cref="IOutboxBodyResolver"/>
+        /// implementation, so the common case needs no knowledge of the raw factory escape hatch. <typeparamref name="TResolver"/>
+        /// is registered <c>Scoped</c> (via <c>TryAdd</c>, so an existing registration is preserved) and resolved from the
+        /// host-owned per-document <see cref="IServiceScope"/> — a fresh instance per drained document — so it may depend on
+        /// scoped services. Use the raw <see cref="AddCosmosOutboxRelay(IServiceCollection, Action{CosmosOutboxRelayOptions})"/>
+        /// overload only when you need full control over how the resolver is obtained.
+        /// </summary>
+        /// <remarks>This overload OWNS the <see cref="CosmosOutboxRelayOptions.BodyResolverFactory"/> wiring: if
+        /// <paramref name="configure"/> ALSO sets it, an <see cref="ArgumentException"/> is thrown rather than silently
+        /// overriding the caller's intent.</remarks>
+        /// <exception cref="ArgumentNullException"><paramref name="services"/> or <paramref name="configure"/> is null.</exception>
+        /// <exception cref="ArgumentException"><paramref name="configure"/> also sets
+        /// <see cref="CosmosOutboxRelayOptions.BodyResolverFactory"/>, or the configured options omit a required factory or
+        /// partition-key path.</exception>
+        public static IServiceCollection AddCosmosOutboxRelay<TResolver>(this IServiceCollection services, Action<CosmosOutboxRelayOptions> configure)
+            where TResolver : class, IOutboxBodyResolver
+        {
+            _ = services ?? throw new ArgumentNullException(nameof(services));
+            _ = configure ?? throw new ArgumentNullException(nameof(configure));
+
+            TryAddScopedResolver(services, ServiceDescriptor.Scoped(typeof(TResolver), typeof(TResolver)));
+
+            return AddCosmosOutboxRelay(services, options =>
+            {
+                configure(options);
+                ThrowIfCallerWiredBodyResolverFactory(options);
+                options.BodyResolverFactory = serviceProvider => serviceProvider.GetRequiredService<TResolver>();
+            });
+        }
+
+        /// <summary>
+        /// KEYED overload for applications that run MULTIPLE standalone relays (one per monitored container) each needing its
+        /// OWN <see cref="IOutboxBodyResolver"/>: registers <typeparamref name="TResolver"/> as a keyed-scoped
+        /// <see cref="IOutboxBodyResolver"/> under <paramref name="serviceKey"/> (via <c>TryAdd</c>) and wires this relay's
+        /// <see cref="CosmosOutboxRelayOptions.BodyResolverFactory"/> to resolve THAT keyed resolver from the host-owned
+        /// per-document scope. Each relay binds its own keyed resolver, so two relays with two distinct keys never collide.
+        /// </summary>
+        /// <remarks>This overload OWNS the <see cref="CosmosOutboxRelayOptions.BodyResolverFactory"/> wiring: if
+        /// <paramref name="configure"/> ALSO sets it, an <see cref="ArgumentException"/> is thrown rather than silently
+        /// overriding the caller's intent.</remarks>
+        /// <exception cref="ArgumentNullException"><paramref name="services"/>, <paramref name="serviceKey"/>, or
+        /// <paramref name="configure"/> is null.</exception>
+        /// <exception cref="ArgumentException"><paramref name="configure"/> also sets
+        /// <see cref="CosmosOutboxRelayOptions.BodyResolverFactory"/>, or the configured options omit a required factory or
+        /// partition-key path.</exception>
+        public static IServiceCollection AddCosmosOutboxRelay<TResolver>(this IServiceCollection services, object serviceKey, Action<CosmosOutboxRelayOptions> configure)
+            where TResolver : class, IOutboxBodyResolver
+        {
+            _ = services ?? throw new ArgumentNullException(nameof(services));
+            _ = serviceKey ?? throw new ArgumentNullException(nameof(serviceKey));
+            _ = configure ?? throw new ArgumentNullException(nameof(configure));
+
+            // Register keyed AS IOutboxBodyResolver so the wired factory resolves GetRequiredKeyedService<IOutboxBodyResolver>(key) —
+            // this lets multiple monitored containers each bind their own keyed resolver under a distinct key.
+            TryAddScopedResolver(services, ServiceDescriptor.KeyedScoped(typeof(IOutboxBodyResolver), serviceKey, typeof(TResolver)));
+
+            return AddCosmosOutboxRelay(services, options =>
+            {
+                configure(options);
+                ThrowIfCallerWiredBodyResolverFactory(options);
+                options.BodyResolverFactory = serviceProvider => serviceProvider.GetRequiredKeyedService<IOutboxBodyResolver>(serviceKey);
+            });
+        }
+
+        // Mirrors Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAdd: the
+        // resolver descriptor is added only when no existing registration matches the SAME (service type, service key) pair,
+        // so a caller's prior registration is preserved rather than duplicated/replaced. Reimplemented here because this
+        // module declares its own static `Extensions` type in the Microsoft.Extensions.DependencyInjection namespace, which
+        // shadows the Microsoft.Extensions.DependencyInjection.Extensions namespace and makes the framework TryAdd extension
+        // methods unreachable from this file by name.
+        private static void TryAddScopedResolver(IServiceCollection services, ServiceDescriptor descriptor)
+        {
+            foreach (ServiceDescriptor existing in services)
+            {
+                if (existing.ServiceType == descriptor.ServiceType
+                    && existing.IsKeyedService == descriptor.IsKeyedService
+                    && (!descriptor.IsKeyedService || Equals(existing.ServiceKey, descriptor.ServiceKey)))
+                {
+                    return;
+                }
+            }
+
+            services.Add(descriptor);
+        }
+
+        // The typed/keyed overloads OWN the BodyResolverFactory wiring. If the caller's configure also set it, fail loudly
+        // (do not silently override the caller's delegate): either the typed/keyed overload wires the resolver, or the raw
+        // AddCosmosOutboxRelay(configure) escape hatch is used and the caller sets BodyResolverFactory itself — never both.
+        private static void ThrowIfCallerWiredBodyResolverFactory(CosmosOutboxRelayOptions options)
+        {
+            if (options.BodyResolverFactory is not null)
+            {
+                throw new ArgumentException(
+                    "AddCosmosOutboxRelay<TResolver> owns the CosmosOutboxRelayOptions.BodyResolverFactory wiring (it binds the registered resolver). Do not also set BodyResolverFactory in configure — either use the typed/keyed overload and let it wire the resolver, or use the raw AddCosmosOutboxRelay(configure) escape hatch and set BodyResolverFactory yourself.",
+                    "configure");
+            }
+        }
+
         private static void ValidateOptions(CosmosOutboxRelayOptions options)
         {
             if (options.MonitoredContainerFactory is null)

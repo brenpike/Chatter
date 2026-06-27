@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Reliability.Cosmos;
+using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,6 +9,8 @@ using Moq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelayServiceCollectionExtensions
@@ -58,6 +61,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 services.AddCosmosOutboxRelay(registration);
             }
             return services.BuildServiceProvider();
+        }
+
+        private static ServiceCollection ServicesWithBrokerDependencies()
+        {
+            var services = new ServiceCollection();
+            services.AddSingleton(Mock.Of<IMessagingInfrastructureProvider>());
+            services.AddSingleton(Mock.Of<IBodyConverterFactory>());
+            return services;
+        }
+
+        // Distinct concrete resolver types so the typed/keyed overloads' registration + factory wiring is observable.
+        private sealed class StubBodyResolver : IOutboxBodyResolver
+        {
+            public Task<OutboundBrokeredMessage> ResolveAsync(OutboxDrainContext context, CancellationToken cancellationToken = default)
+                => Task.FromResult<OutboundBrokeredMessage>(null);
+        }
+
+        private sealed class OtherStubBodyResolver : IOutboxBodyResolver
+        {
+            public Task<OutboundBrokeredMessage> ResolveAsync(OutboxDrainContext context, CancellationToken cancellationToken = default)
+                => Task.FromResult<OutboundBrokeredMessage>(null);
         }
 
         [Fact]
@@ -232,6 +256,126 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             // so a non-purging delivered stamp is unrepresentable. The ttl path is hard-wired, not a configurable knob.
             typeof(CosmosOutboxRelayOptions).GetProperty("TtlPatchPath").Should().BeNull(
                 "the ttl patch path is not configurable; the delivered stamp is hard-wired to the reserved /ttl path");
+        }
+
+        [Fact]
+        public void TypedOverloadMustRegisterTheResolverAsScoped()
+        {
+            ServiceCollection services = ServicesWithBrokerDependencies();
+
+            services.AddCosmosOutboxRelay<StubBodyResolver>(ValidConfigure());
+
+            ServiceDescriptor descriptor = services.Single(d => d.ServiceType == typeof(StubBodyResolver));
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Scoped,
+                "the typed overload registers the resolver scoped so a fresh instance is resolved per drained document");
+            services.Count(d => d.ServiceType == typeof(IHostedService)).Should().Be(1,
+                "the typed overload delegates to the base AddCosmosOutboxRelay for hosted-service registration");
+        }
+
+        [Fact]
+        public void TypedOverloadMustWireFactoryToResolveTheRegisteredResolverPerDocument()
+        {
+            CosmosOutboxRelayOptions captured = null;
+            ServiceCollection services = ServicesWithBrokerDependencies();
+
+            services.AddCosmosOutboxRelay<StubBodyResolver>(ValidConfigure(options => captured = options));
+
+            captured.BodyResolverFactory.Should().NotBeNull("the typed overload owns wiring BodyResolverFactory to the registered resolver");
+            ServiceProvider provider = services.BuildServiceProvider();
+            using IServiceScope firstDocumentScope = provider.CreateScope();
+            using IServiceScope secondDocumentScope = provider.CreateScope();
+
+            IOutboxBodyResolver firstA = captured.BodyResolverFactory(firstDocumentScope.ServiceProvider);
+            IOutboxBodyResolver firstB = captured.BodyResolverFactory(firstDocumentScope.ServiceProvider);
+            IOutboxBodyResolver second = captured.BodyResolverFactory(secondDocumentScope.ServiceProvider);
+
+            firstA.Should().BeOfType<StubBodyResolver>("the wired factory resolves the registered TResolver");
+            firstA.Should().BeSameAs(firstB, "a scoped resolver is a single instance within one per-document scope");
+            firstA.Should().NotBeSameAs(second, "a fresh per-document scope yields a fresh resolver");
+        }
+
+        [Fact]
+        public void TypedOverloadMustUseTryAddSemanticsAndNotReplaceAnExistingResolverRegistration()
+        {
+            ServiceCollection services = ServicesWithBrokerDependencies();
+            services.AddSingleton<StubBodyResolver>();
+
+            services.AddCosmosOutboxRelay<StubBodyResolver>(ValidConfigure());
+
+            ServiceDescriptor descriptor = services.Where(d => d.ServiceType == typeof(StubBodyResolver)).Should().ContainSingle(
+                "TryAdd semantics must not double-register or replace an existing resolver registration").Subject;
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton,
+                "the pre-existing singleton registration is preserved (the typed overload's scoped registration is skipped)");
+        }
+
+        [Fact]
+        public void TypedOverloadMustThrowWhenConfigureAlsoSetsBodyResolverFactory()
+        {
+            ServiceCollection services = ServicesWithBrokerDependencies();
+
+            Action act = () => services.AddCosmosOutboxRelay<StubBodyResolver>(
+                ValidConfigure(options => options.BodyResolverFactory = _ => Mock.Of<IOutboxBodyResolver>()));
+
+            act.Should().Throw<ArgumentException>(
+                "the typed overload owns the factory wiring; a caller also setting BodyResolverFactory is a conflict, not a silent override");
+        }
+
+        [Fact]
+        public void KeyedOverloadMustRegisterAKeyedScopedResolverAndWireTheFactory()
+        {
+            const string key = "orders-relay";
+            CosmosOutboxRelayOptions captured = null;
+            ServiceCollection services = ServicesWithBrokerDependencies();
+
+            services.AddCosmosOutboxRelay<StubBodyResolver>(key, ValidConfigure(options => captured = options));
+
+            ServiceDescriptor descriptor = services.Single(d => d.ServiceType == typeof(IOutboxBodyResolver) && d.IsKeyedService);
+            descriptor.ServiceKey.Should().Be(key);
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Scoped, "the keyed overload registers a keyed-scoped resolver");
+            descriptor.KeyedImplementationType.Should().Be(typeof(StubBodyResolver));
+
+            captured.BodyResolverFactory.Should().NotBeNull();
+            ServiceProvider provider = services.BuildServiceProvider();
+            using IServiceScope documentScope = provider.CreateScope();
+            captured.BodyResolverFactory(documentScope.ServiceProvider).Should().BeOfType<StubBodyResolver>(
+                "the wired factory resolves the keyed resolver for the relay's key");
+        }
+
+        [Fact]
+        public void KeyedOverloadMustResolveDistinctResolversForDistinctKeys()
+        {
+            const string ordersKey = "orders-relay";
+            const string shipmentsKey = "shipments-relay";
+            CosmosOutboxRelayOptions capturedOrders = null;
+            CosmosOutboxRelayOptions capturedShipments = null;
+            ServiceCollection services = ServicesWithBrokerDependencies();
+
+            services.AddCosmosOutboxRelay<StubBodyResolver>(ordersKey, ValidConfigure(options => capturedOrders = options));
+            services.AddCosmosOutboxRelay<OtherStubBodyResolver>(shipmentsKey, ValidConfigure(options => capturedShipments = options));
+
+            ServiceProvider provider = services.BuildServiceProvider();
+            using IServiceScope documentScope = provider.CreateScope();
+            IOutboxBodyResolver orders = capturedOrders.BodyResolverFactory(documentScope.ServiceProvider);
+            IOutboxBodyResolver shipments = capturedShipments.BodyResolverFactory(documentScope.ServiceProvider);
+
+            orders.Should().BeOfType<StubBodyResolver>("each key binds its own resolver type");
+            shipments.Should().BeOfType<OtherStubBodyResolver>("each key binds its own resolver type");
+            orders.Should().NotBeSameAs(shipments, "two distinct keys resolve two distinct resolvers");
+            services.Count(d => d.ServiceType == typeof(IHostedService)).Should().Be(2,
+                "two keyed relays register two hosted services");
+        }
+
+        [Fact]
+        public void KeyedOverloadMustThrowWhenConfigureAlsoSetsBodyResolverFactory()
+        {
+            ServiceCollection services = ServicesWithBrokerDependencies();
+
+            Action act = () => services.AddCosmosOutboxRelay<StubBodyResolver>(
+                "orders-relay",
+                ValidConfigure(options => options.BodyResolverFactory = _ => Mock.Of<IOutboxBodyResolver>()));
+
+            act.Should().Throw<ArgumentException>(
+                "the keyed overload owns the factory wiring; a caller also setting BodyResolverFactory is a conflict, not a silent override");
         }
     }
 }

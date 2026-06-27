@@ -49,12 +49,26 @@ namespace Microsoft.Extensions.DependencyInjection
         public IReadOnlyList<string> PartitionKeyPath { get; set; }
 
         /// <summary>
-        /// Optional. When supplied, binds a factory the host invokes to obtain an <see cref="IOutboxBodyResolver"/>. The
-        /// host opens a fresh <see cref="IServiceScope"/> PER DRAINED DOCUMENT and resolves the resolver from that scope
-        /// (disposed after the document is processed), so a resolver MAY depend on / capture scoped services in its
-        /// constructor. A bound resolver owns the brokered message published for each admitted pending document instead of
-        /// the relay's verbatim field reconstruction.
+        /// Optional RAW escape hatch. When supplied, binds a factory the host invokes to obtain an
+        /// <see cref="IOutboxBodyResolver"/>. A bound resolver owns the brokered message published for each admitted pending
+        /// document instead of the relay's verbatim field reconstruction.
         /// </summary>
+        /// <remarks>
+        /// LIFETIME CONTRACT (per-document scope). The host opens a fresh <see cref="IServiceScope"/> PER DRAINED DOCUMENT
+        /// and invokes this factory with THAT scope's <see cref="IServiceProvider"/>, then disposes the scope after the
+        /// document is processed. The factory MUST resolve a FRESH resolver from the supplied provider on every call and MUST
+        /// NOT cache or capture the resolver (or its scoped dependencies) across documents — a captured resolver would
+        /// outlive the per-document scope it was bound to. Because resolution happens inside the per-document scope, a
+        /// resolver MAY depend on / capture scoped services in its constructor.
+        /// <para>
+        /// SAFE-BY-DEFAULT PATH: prefer the typed
+        /// <see cref="CosmosOutboxRelayServiceCollectionExtensions.AddCosmosOutboxRelay{TResolver}(IServiceCollection, System.Action{CosmosOutboxRelayOptions})"/>
+        /// overload (or the keyed
+        /// <see cref="CosmosOutboxRelayServiceCollectionExtensions.AddCosmosOutboxRelay{TResolver}(IServiceCollection, object, System.Action{CosmosOutboxRelayOptions})"/>
+        /// overload for multiple monitored containers), which registers the resolver scoped and wires this factory correctly
+        /// for you. Set this property directly only when you need full control over how the resolver is obtained.
+        /// </para>
+        /// </remarks>
         public Func<IServiceProvider, IOutboxBodyResolver>? BodyResolverFactory { get; set; }
 
         /// <summary>

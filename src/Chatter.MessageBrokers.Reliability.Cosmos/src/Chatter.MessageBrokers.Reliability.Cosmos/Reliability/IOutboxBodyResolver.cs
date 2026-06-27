@@ -24,6 +24,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <item>A THROW propagates out of the relay with NO stamp issued, so the host does not checkpoint the change-feed
     /// batch and the document re-surfaces next pass (at-least-once).</item>
     /// </list>
+    /// LIFETIME: an implementation is resolved PER DRAINED DOCUMENT from a fresh, host-owned <c>IServiceScope</c> that is
+    /// disposed once the document is processed, so it MAY depend on scoped services and is never reused across documents.
+    /// The safe-by-default <c>AddCosmosOutboxRelay&lt;TResolver&gt;</c> overloads register and wire this lifetime for you;
+    /// see <see cref="Microsoft.Extensions.DependencyInjection.CosmosOutboxRelayOptions.BodyResolverFactory"/> for the raw
+    /// per-document-scope factory contract.
     /// </remarks>
     public interface IOutboxBodyResolver
     {
