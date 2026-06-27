@@ -132,6 +132,31 @@ services.AddCosmosOutboxRelay(options =>
 
 `AddCosmosOutboxRelay` lives in the `Microsoft.Extensions.DependencyInjection` namespace and registers **its own** `IHostedService`, **independent** of `AddChatterCqrs` / `WithCosmosDocumentReliability` and the `DocumentReliabilityRegistry`. It is **repeatable** — call it once per monitored container to run multiple standalone relays side by side. The standalone relay drains the same co-resident pending outbox documents (`_chatterType="outbox"` **and** `status="pending"`), publishes each through the broker, then stamps the document `delivered` and stamps a TTL so delivered documents self-purge — exactly as the pipeline-integrated relay does, and with the same **at-least-once** delivery and TTL-enabled-container prerequisite (see [Prerequisites](#prerequisites)).
 
+### Safe-by-default resolver registration (recommended)
+
+The raw `BodyResolverFactory` shown above is the **advanced escape hatch**: you own resolving the `IOutboxBodyResolver` and must honor its per-document-scope contract (see [Resolver DI lifetime](#the-ioutboxbodyresolver-seam) below). For the common case, prefer the generic **typed overload**, which registers your resolver `Scoped` and auto-wires the per-document factory for you — no knowledge of the raw factory required:
+
+```csharp
+services.AddCosmosOutboxRelay<OrderOutboxBodyResolver>(options =>
+{
+    options.MonitoredContainerFactory = sp => sp.GetRequiredService<CosmosClient>().GetContainer("shop", "orders");
+    options.LeaseContainerFactory     = sp => sp.GetRequiredService<CosmosClient>().GetContainer("shop", "orders-leases");
+    options.PartitionKeyPath          = "/orderId";
+    // Do NOT set options.BodyResolverFactory here — the typed overload owns that wiring (see below).
+});
+```
+
+`AddCosmosOutboxRelay<TResolver>(...)` registers `TResolver` as `Scoped` (via `TryAdd`, so an existing registration is preserved) and resolves it from the host-owned per-document scope — a fresh instance per drained document — so your resolver may depend on / capture scoped services (e.g. a scoped `DbContext`) in its constructor.
+
+For applications running **multiple monitored containers**, each with its **own** resolver, use the **keyed overload** `AddCosmosOutboxRelay<TResolver>(serviceKey, configure)`: it registers `TResolver` as a keyed-scoped `IOutboxBodyResolver` under `serviceKey` and binds *this* relay to that keyed resolver, so relays with distinct keys never collide.
+
+```csharp
+services.AddCosmosOutboxRelay<OrderOutboxBodyResolver>("orders", options => { /* orders container + lease + pk path */ });
+services.AddCosmosOutboxRelay<LedgerOutboxBodyResolver>("ledger", options => { /* ledger container + lease + pk path */ });
+```
+
+Both typed and keyed overloads **own** the `BodyResolverFactory` wiring: if `configure` **also** sets `BodyResolverFactory`, the overload throws `ArgumentException` rather than silently overriding your delegate. Either let the typed/keyed overload wire the resolver, or use the raw `AddCosmosOutboxRelay(configure)` escape hatch and set `BodyResolverFactory` yourself — never both.
+
 ### The `IOutboxBodyResolver` seam
 
 The pipeline-integrated relay always **reconstructs** the `OutboundBrokeredMessage` verbatim from the fields persisted on the outbox document. The standalone relay keeps that as its default but adds an optional **Body Resolver** seam so the message can instead be **resolved from current store state at drain time** — useful when the trigger document is a thin marker and the body should reflect the aggregate's latest state rather than its state at enqueue:
@@ -161,6 +186,8 @@ public sealed class OrderOutboxBodyResolver : IOutboxBodyResolver
 When **no** resolver is bound (`BodyResolverFactory` left null), the relay uses the unchanged **verbatim Reconstruct path** — identical to the pipeline-integrated relay. A **thin** trigger document that carries only the marker fields (no `MessageBody` / `MessageContentType` / `MessageContext`) therefore **requires** a resolver: the verbatim path throws `"no content type"` on it.
 
 > **Resolver DI lifetime.** The host opens a fresh `IServiceScope` **per drained document** and resolves the resolver from that scope, disposing the scope after the document is processed. A resolver **may** therefore depend on / capture scoped services (e.g. a scoped `DbContext`) in its constructor — each document gets its own scoped instance, so no manual per-document scope is required inside `ResolveAsync`.
+>
+> The raw `BodyResolverFactory` is the **advanced escape hatch**: because resolution happens inside the per-document scope, the factory **must resolve a fresh resolver from the supplied provider on every call and must not cache or capture** the resolver (or its scoped dependencies) across documents — a captured resolver would outlive the per-document scope it was bound to. Most applications should instead use the safe-by-default typed `AddCosmosOutboxRelay<TResolver>(...)` (or keyed) overload above, which registers the resolver scoped and wires this factory correctly for you. The typed/keyed overloads own the `BodyResolverFactory` wiring and throw `ArgumentException` if `configure` also sets it.
 
 ### Configurable knobs
 
@@ -175,13 +202,12 @@ When **no** resolver is bound (`BodyResolverFactory` left null), the relay uses 
 | `AdditionalPendingFilter` | Optional `Func<JsonElement, bool>` that can only further **narrow** admission. The relay **always** applies `CosmosOutboxDocument.IsPendingOutbox`; this predicate runs (logical `AND`) only on documents that already passed it. | null |
 | `StatusPatchPath` | Patch path for the delivered-status stamp. Anchored to the gate's status field — must equal `"/"` + the `status` field the pending gate reads. | `"/status"` |
 | `DeliveredStatusValue` | Status value written on delivery. Must differ from `pending`. | `"delivered"` |
-| `TtlPatchPath` | Patch path for the per-document TTL stamp. Freely configurable, but must be a valid JSON pointer. | `"/ttl"` |
-| `DeliveredTtlSeconds` | Per-document TTL stamped on delivery so Cosmos self-purges the document. Must be `> 0`. | `86400` (24h) |
+| `DeliveredTtlSeconds` | Per-document retention stamped on delivery so Cosmos self-purges the document. The delivered stamp's TTL is **hard-wired** to the Cosmos reserved `/ttl` property (the only field Cosmos self-purges on); this knob is the configurable retention in seconds, and must be `> 0`. | `86400` (24h) |
 | `MonitoredSourceIdentity` / `LeaseSourceIdentity` | Optional declared change-feed source identities (the relay's processor dedup keys), as on the [advanced](#advanced-per-registration-container-factories) pipeline overload. | null |
 
 The relay **always** applies the built-in pending gate `CosmosOutboxDocument.IsPendingOutbox(JsonElement)` (the **public** predicate `_chatterType="outbox"` **and** `status="pending"`) first; `AdditionalPendingFilter` can only further narrow which of those documents are admitted — it **cannot replace or weaken** the #222 id-guard. Leave it null for the default behavior, or supply a predicate to admit a strict subset of pending documents.
 
-**The stamp knobs are validated at `AddCosmosOutboxRelay` registration** (a violation throws `ArgumentException` then, not at drain time): `DeliveredStatusValue` must differ from `pending`; `DeliveredTtlSeconds` must be `> 0` (`0`, `-1`, and negatives are rejected — a delivered document must be scheduled for self-purge); `StatusPatchPath` must be anchored to the gate's status field (`"/"` + that field) so a delivered stamp always moves the document out of pending; and `TtlPatchPath` must be a valid JSON pointer. Only the reserved Cosmos `ttl` property drives self-purge, so a `TtlPatchPath` other than `"/ttl"` stamps a **custom field that Cosmos will not auto-expire** — the document is marked `delivered` but is not purged.
+**The stamp knobs are validated at `AddCosmosOutboxRelay` registration** (a violation throws `ArgumentException` then, not at drain time): `DeliveredStatusValue` must differ from `pending`; `DeliveredTtlSeconds` must be `> 0` (`0`, `-1`, and negatives are rejected — a delivered document must be scheduled for self-purge); and `StatusPatchPath` must be anchored to the gate's status field (`"/"` + that field) so a delivered stamp always moves the document out of pending. The delivered stamp's TTL patch path is **not** a knob — it is hard-wired to the Cosmos reserved `/ttl` property, the only field Cosmos self-purges on, so a delivered stamp that does not schedule self-purge is unrepresentable.
 
 The pipeline-integrated `WithCosmosDocumentReliability` path and its verbatim drain are **unchanged** and remain the default; `AddCosmosOutboxRelay` and the `IOutboxBodyResolver` seam are purely additive and backward-compatible.
 
