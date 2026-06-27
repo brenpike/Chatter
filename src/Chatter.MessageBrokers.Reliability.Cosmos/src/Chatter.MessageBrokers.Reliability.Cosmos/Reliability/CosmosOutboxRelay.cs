@@ -87,7 +87,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _ = monitoredContainer ?? throw new ArgumentNullException(nameof(monitoredContainer));
             _ = partitionKeyPath ?? throw new ArgumentNullException(nameof(partitionKeyPath));
 
-            if (!IsPendingOutbox(document))
+            if (!CosmosOutboxDocument.IsPendingOutbox(document))
             {
                 return;
             }
@@ -105,80 +105,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             await StampDeliveredAsync(document, monitoredContainer, partitionKeyPath, cancellationToken);
         }
 
-        // FILTER: an outbox document the relay must publish is exactly one whose discriminator equals the outbox kind, AND
-        // whose status equals "pending", AND whose physical id is the deterministic outbox id Chatter mints for its
-        // verbatim MessageId (id == CosmosItemId.ForOutbox(MessageId)). A domain doc, an inbox marker, an already-delivered
-        // outbox doc (the relay's own update event), or a malformed outbox doc with a missing/non-string/empty status is
-        // NOT pending -> skipped.
-        //
-        // The id-consistency check is the publish-side analogue of the inbox-side confirmation ADR-0007 already chose
-        // (the marker-409 branch confirms _chatterType=="inbox" AND MessageId match rather than inferring from the bare
-        // discriminator/namespace). The application OWNS the container and can author a document carrying
-        // _chatterType="outbox" + status="pending" through a raw Cosmos write that no staging guard closes; without this
-        // check the relay would publish that app/domain document as a broker message and then patch it status=delivered +
-        // ttl — a forbidden domain-document leak AND a mutation of app data. Requiring id == ForOutbox(MessageId) makes a
-        // document the relay drains provably one Chatter itself minted (the id is a deterministic function of the verbatim
-        // MessageId), closing that leak/mutation class by construction rather than enumerating doc shapes. A genuine
-        // Chatter outbox doc always satisfies this because CosmosOutboxDocument stamps id = ForOutbox(MessageId) and
-        // MessageId verbatim from the same message.
-        private static bool IsPendingOutbox(JsonElement document)
-        {
-            if (document.ValueKind != JsonValueKind.Object)
-            {
-                return false;
-            }
-
-            if (!TryGetString(document, CosmosOutboxDocument.DiscriminatorField, out string discriminator)
-                || !string.Equals(discriminator, CosmosItemId.OutboxKind, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            if (!TryGetString(document, CosmosOutboxDocument.StatusField, out string status)
-                || string.IsNullOrWhiteSpace(status)
-                || !string.Equals(status, CosmosOutboxDocument.StatusPending, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            if (!TryGetString(document, CosmosOutboxDocument.IdField, out string id)
-                || !TryGetString(document, CosmosOutboxDocument.MessageIdField, out string messageId)
-                || string.IsNullOrEmpty(messageId)
-                || !string.Equals(id, ExpectedOutboxId(messageId), StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            return true;
-        }
-
-        // The deterministic outbox id Chatter mints for a verbatim MessageId, recomputed from the persisted MessageId so
-        // the filter can prove a drained document is one Chatter itself authored. ForOutbox can throw (e.g. a MessageId
-        // that encodes past Cosmos's id-length limit) only for ids Chatter could never have written, so any throw here
-        // means "not a genuine Chatter outbox doc" -> treat as non-pending and skip rather than fault the whole batch.
-        private static string ExpectedOutboxId(string messageId)
-        {
-            try
-            {
-                return CosmosItemId.ForOutbox(messageId);
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-        }
-
         // RECONSTRUCT the OutboundBrokeredMessage from the persisted outbox fields, mirroring OutboxProcessor.Process:
         // MessageId verbatim, Destination, MessageBody, MessageContentType, MessageContext materialized through
         // ChatterJson.Options; content-type falls back to the persisted MessageContext when the doc content-type is
         // empty; the body bytes come from an IBodyConverterFactory converter for the resolved content type.
         private OutboundBrokeredMessage Reconstruct(JsonElement document)
         {
-            TryGetString(document, CosmosOutboxDocument.MessageIdField, out string messageId);
-            TryGetString(document, CosmosOutboxDocument.DestinationField, out string destination);
-            TryGetString(document, CosmosOutboxDocument.MessageBodyField, out string messageBody);
-            TryGetString(document, CosmosOutboxDocument.MessageContentTypeField, out string messageContentType);
-            TryGetString(document, CosmosOutboxDocument.MessageContextField, out string serializedMessageContext);
+            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageIdField, out string messageId);
+            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.DestinationField, out string destination);
+            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageBodyField, out string messageBody);
+            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageContentTypeField, out string messageContentType);
+            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageContextField, out string serializedMessageContext);
 
             // MaterializePersistedContext deserializes the persisted MessageContext JSON string through
             // ChatterJson.Options, restoring the CLR types the typed (string)/(DateTime?)/integer reads downstream
@@ -208,7 +145,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // touched and the aggregate-shaped wire body is left untouched.
         private static async Task StampDeliveredAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
-            if (!TryGetString(document, CosmosOutboxDocument.IdField, out string id) || string.IsNullOrEmpty(id))
+            if (!CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string id) || string.IsNullOrEmpty(id))
             {
                 throw new InvalidOperationException("A pending outbox document is missing its 'id'; cannot stamp it delivered.");
             }
@@ -273,18 +210,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
 
             return current;
-        }
-
-        private static bool TryGetString(JsonElement document, string propertyName, out string value)
-        {
-            if (document.TryGetProperty(propertyName, out JsonElement element) && element.ValueKind == JsonValueKind.String)
-            {
-                value = element.GetString();
-                return true;
-            }
-
-            value = null;
-            return false;
         }
     }
 }
