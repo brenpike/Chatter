@@ -72,6 +72,26 @@ namespace Microsoft.Extensions.DependencyInjection
                 throw new ArgumentException("ReadBackInterval must be non-negative.", nameof(options.ReadBackInterval));
             }
 
+            // A positive MarkerTimeToLive stamps the dedup-window TTL at the Cosmos-reserved `ttl` field; the marker then
+            // stamps the partition value at the container's partition-key path. "ttl" is deliberately ABSENT from the
+            // marker's reserved-root-field collision guard (so the document tier keeps a legal `/ttl` partition path — it
+            // emits no TTL). But the STANDALONE inbox DOES emit a TTL, so a partition-key path rooted at `/ttl` here would
+            // have its partition-value stamp OVERWRITE the numeric TTL — corrupting it (execute-time failure or a silently
+            // defeated dedup window). Guard the one path that actually emits a TTL, fail-loud at registration BEFORE any
+            // Cosmos write, rather than widening the shared reserved set. Root-segment extraction mirrors the stamping.
+            if (options.MarkerTimeToLive > 0)
+            {
+                var partitionRootSegments = partitionKeyPath[0].Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (partitionRootSegments.Length > 0 && string.Equals(partitionRootSegments[0], CosmosOutboxDocument.TtlField, StringComparison.Ordinal))
+                {
+                    throw new ArgumentException(
+                        "A positive MarkerTimeToLive stamps the Cosmos-reserved 'ttl' field, which collides with a " +
+                        "partition-key path rooted at '/ttl' (the partition-value stamp would overwrite the numeric TTL). " +
+                        "Use a non-'/ttl' partition-key path (default '/idempotencyKey') or leave MarkerTimeToLive unset.",
+                        nameof(options.PartitionKeyPath));
+                }
+            }
+
             string database = options.Database;
             string container = options.Container;
             int? markerTimeToLive = options.MarkerTimeToLive;

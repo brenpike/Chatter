@@ -257,6 +257,34 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosBrokeredMes
         }
 
         [Fact]
+        public async Task MustStillAttemptCompensationDeleteWithANonCanceledTokenWhenTheReceiveTokenIsAlreadyCanceled()
+        {
+            var container = new Mock<Container>();
+            SetupCreate(container, () => Response(HttpStatusCode.Created));
+            container.Setup(c => c.DeleteItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()))
+                     .ReturnsAsync(Response(HttpStatusCode.NoContent));
+
+            // The graceful-shutdown path: the receive token is already canceled when the handler fails. Compensation must
+            // NOT reuse it — a canceled token makes DeleteItemStreamAsync a guaranteed no-op that strands the write-ahead
+            // marker, so redelivery confirms it and silently skips the handler (message loss).
+            using var canceled = new CancellationTokenSource();
+            canceled.Cancel();
+            var context = new MessageBrokerContext("msg-1", Array.Empty<byte>(), null, "receiver", canceled.Token, new JsonBodyConverter());
+
+            Func<Task> act = () => InboxOver(container.Object, new Clock()).ReceiveViaInbox(new object(), context, () =>
+                throw new InvalidOperationException("handler-boom"));
+
+            (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("handler-boom",
+                "the ORIGINAL handler exception is rethrown after compensation");
+            container.Verify(c => c.DeleteItemStreamAsync(
+                    CosmosItemId.ForInbox("msg-1"),
+                    It.IsAny<PartitionKey>(),
+                    It.IsAny<ItemRequestOptions>(),
+                    It.Is<CancellationToken>(t => !t.IsCancellationRequested)),
+                Times.Once, "compensation issues the delete with an independent, non-canceled cleanup token so the marker is genuinely removed on the cancellation path");
+        }
+
+        [Fact]
         public async Task MustThrowNotSupportedFromHasBeenReceivedBecauseDedupIsTheWriteAheadClaimNotARead()
         {
             IInboxDeduplicator inbox = InboxOver(new Mock<Container>().Object, new Clock());

@@ -121,7 +121,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
             catch
             {
-                await BestEffortCompensationDelete(marker.Id, partitionKey, cancellationToken).ConfigureAwait(false);
+                // Compensation MUST NOT reuse the receive cancellation token: the handler commonly fails BECAUSE that
+                // token was canceled (graceful shutdown), and DeleteItemStreamAsync would then throw on an already-canceled
+                // token before ever issuing the delete — turning the swallowed best-effort compensation into a GUARANTEED
+                // no-op exactly when it is needed, stranding the write-ahead marker so redelivery confirms it and silently
+                // skips the handler (message loss). Use an independent cleanup token so the delete is actually attempted;
+                // the Cosmos SDK's own request timeout bounds it. Compensation stays best-effort (failures swallowed).
+                await BestEffortCompensationDelete(marker.Id, partitionKey, CancellationToken.None).ConfigureAwait(false);
                 throw;
             }
         }

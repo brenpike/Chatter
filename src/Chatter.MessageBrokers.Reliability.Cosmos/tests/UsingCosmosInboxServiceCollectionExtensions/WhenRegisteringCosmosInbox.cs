@@ -153,6 +153,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosInboxServic
         }
 
         [Fact]
+        public void MustRejectAPositiveMarkerTtlCombinedWithATtlRootedPartitionKeyPath()
+        {
+            // A positive MarkerTimeToLive stamps the Cosmos-reserved `ttl` field; a `/ttl` partition path would then have
+            // its partition-value stamp overwrite that numeric TTL (corrupting it / defeating the dedup window). Reject
+            // the combination fail-loud at registration, before any Cosmos write.
+            Action act = () => CaptureBuilder(b => b.WithCosmosInbox(Valid(o =>
+            {
+                o.PartitionKeyPath = new[] { "/ttl" };
+                o.MarkerTimeToLive = 60;
+            })));
+
+            act.Should().Throw<ArgumentException>("a positive marker TTL collides with a /ttl-rooted partition-key path");
+        }
+
+        [Fact]
+        public void MustAllowATtlRootedPartitionKeyPathWhenNoMarkerTtlIsConfigured()
+        {
+            // Without a positive MarkerTimeToLive the marker emits no ttl field, so a `/ttl` partition path has nothing to
+            // collide with — it stays legal (parity with the document-tier marker, which never emits a ttl).
+            Action act = () => CaptureBuilder(b => b.WithCosmosInbox(Valid(o => o.PartitionKeyPath = new[] { "/ttl" })));
+
+            act.Should().NotThrow();
+        }
+
+        [Fact]
         public void MustRejectANegativeReadBackInterval()
         {
             Action act = () => CaptureBuilder(b => b.WithCosmosInbox(Valid(o => o.ReadBackInterval = TimeSpan.FromMilliseconds(-1))));
