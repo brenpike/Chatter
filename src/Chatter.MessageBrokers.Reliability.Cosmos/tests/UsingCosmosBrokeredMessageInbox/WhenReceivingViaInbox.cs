@@ -23,9 +23,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosBrokeredMes
     /// completed. A create-409 confirm is THREE-WAY: a genuine COMPLETED marker for this id is a confirmed duplicate
     /// (skip); a genuine but PENDING/abandoned marker is TAKEN OVER (run the handler, then complete); a non-marker /
     /// different-id / non-success / 404-exhausted read redelivers. A phase-2 completion-write failure THROWS (redeliver),
-    /// a missing id fails loud, and a handler failure best-effort compensation-deletes the marker. Mocks
-    /// <see cref="Container"/> directly (in-tree InternalsVisibleTo/DynamicProxy precedent) and drives the confirm
-    /// read-back at zero wall-clock via the internal test-seam constructor.
+    /// a missing id fails loud, and a handler failure rethrows the ORIGINAL exception while LEAVING the pending marker in
+    /// place for take-over — never deleting it, so the shared marker state is MONOTONIC (absent -> pending -> completed,
+    /// TTL purge the only removal; ADR-0009 D1 third amendment). Mocks <see cref="Container"/> directly (in-tree
+    /// InternalsVisibleTo/DynamicProxy precedent) and drives the confirm read-back at zero wall-clock via the internal
+    /// test-seam constructor.
     /// </summary>
     public class WhenReceivingViaInbox : Testing.Core.Context
     {
@@ -289,22 +291,78 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosBrokeredMes
         }
 
         [Fact]
-        public async Task MustCompensationDeleteMarkerAndRethrowWhenHandlerThrowsAfterAFreshClaim()
+        public async Task MustRethrowOriginalExceptionAndLeaveThePendingMarkerWithoutDeletingWhenHandlerThrowsAfterAFreshClaim()
         {
+            // MONOTONIC MARKER (ADR-0009 D1 third amendment): a handler failure on a fresh claim rethrows the ORIGINAL
+            // exception and issues NO destructive delete — the write-ahead PENDING marker is LEFT IN PLACE for the
+            // existing take-over path to adopt and re-run on redelivery.
             var container = new Mock<Container>();
             SetupCreate(container, () => Response(HttpStatusCode.Created));
-            container.Setup(c => c.DeleteItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()))
-                     .ReturnsAsync(Response(HttpStatusCode.NoContent));
 
             Func<Task> act = () => InboxOver(container.Object, new Clock()).ReceiveViaInbox(new object(), Context("msg-1"), () =>
                 throw new InvalidOperationException("handler-boom"));
 
             (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("handler-boom",
-                "the ORIGINAL handler exception is rethrown after compensation");
-            container.Verify(c => c.DeleteItemStreamAsync(CosmosItemId.ForInbox("msg-1"), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
-                Times.Once, "the fresh claim is compensation-deleted so a redelivery can re-claim");
+                "the ORIGINAL handler exception propagates so the transport redelivers");
+            container.Verify(c => c.DeleteItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Never, "the monotonic marker is never destructively deleted — the pending marker is left for a redelivery to take over");
             container.Verify(c => c.PatchItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(), It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()),
                 Times.Never, "a failed handler never reaches Phase 2 completion");
+        }
+
+        [Fact]
+        public async Task MustNeverDeleteAConflictConfirmedCompletedMarkerWrittenByAForeignDelivery()
+        {
+            // Gate-corruption regression (ADR-0009 D1 third amendment): a create-409 whose confirm read finds a
+            // Completed=true marker (a concurrent same-id delivery completed it) SKIPS and NEVER deletes, so the completed
+            // gate state cannot be reverted to absent.
+            var handlerRuns = 0;
+            var container = new Mock<Container>();
+            SetupCreate(container, () => Response(HttpStatusCode.Conflict));
+            SetupRead(container, () => Response(HttpStatusCode.OK, CompletedMarkerPayload("msg-1")));
+
+            await InboxOver(container.Object, new Clock()).ReceiveViaInbox(new object(), Context("msg-1"), () =>
+            {
+                handlerRuns++;
+                return Task.CompletedTask;
+            });
+
+            handlerRuns.Should().Be(0, "a confirmed COMPLETED-marker duplicate skips the handler");
+            container.Verify(c => c.DeleteItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Never, "a marker another delivery patched to Completed=true is NEVER deleted — no completed->absent regression");
+        }
+
+        [Fact]
+        public async Task MustLeaveACompletedMarkerIntactWhenAFreshClaimsHandlerFailsSoARedeliveryStillConfirmsCompletedAndSkips()
+        {
+            // Gate-corruption regression (ADR-0009 D1 third amendment). marker.Id is deterministic from the message id, so
+            // a destructive compensation-delete on a fresh claim's handler failure could delete a marker ANOTHER concurrent
+            // same-id delivery already patched to Completed=true — reverting completed->absent and defeating once-only.
+            // Removing the destructive op makes the shared marker state MONOTONIC: a failed fresh claim only rethrows, so
+            // the completed marker survives and a later redelivery confirms COMPLETED and skips.
+            var handlerRuns = 0;
+            var container = new Mock<Container>();
+            // Delivery A: a fresh 201 claim whose handler then fails. Delivery B (not modeled) meanwhile completes the
+            // marker; the redelivery's create-409 confirm read returns that COMPLETED marker.
+            container.SetupSequence(c => c.CreateItemStreamAsync(It.IsAny<Stream>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()))
+                     .ReturnsAsync(Response(HttpStatusCode.Created))
+                     .ReturnsAsync(Response(HttpStatusCode.Conflict));
+            SetupRead(container, () => Response(HttpStatusCode.OK, CompletedMarkerPayload("msg-1")));
+            var inbox = InboxOver(container.Object, new Clock());
+
+            Func<Task> failingDelivery = () => inbox.ReceiveViaInbox(new object(), Context("msg-1"), () =>
+                throw new InvalidOperationException("handler-boom"));
+            await failingDelivery.Should().ThrowAsync<InvalidOperationException>();
+
+            await inbox.ReceiveViaInbox(new object(), Context("msg-1"), () =>
+            {
+                handlerRuns++;
+                return Task.CompletedTask;
+            });
+
+            handlerRuns.Should().Be(0, "the redelivery confirms the COMPLETED marker (never reverted to absent) and skips the handler");
+            container.Verify(c => c.DeleteItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
+                Times.Never, "the failed fresh claim never deletes — the completed marker another delivery wrote stays intact (monotonic gate state)");
         }
 
         [Fact]
@@ -327,50 +385,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosBrokeredMes
             await act.Should().ThrowAsync<CosmosException>("a completion-write failure after a fresh claim must redeliver, never ack a pending marker");
             handlerRuns.Should().Be(1, "the handler ran before the completion write failed");
             container.Verify(c => c.DeleteItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()),
-                Times.Never, "a completion-write failure does not compensation-delete — the handler already ran, so the pending marker is left for a redelivery to take over");
-        }
-
-        [Fact]
-        public async Task MustSwallowCompensationDeleteFailureButStillRethrowTheOriginalHandlerException()
-        {
-            var container = new Mock<Container>();
-            SetupCreate(container, () => Response(HttpStatusCode.Created));
-            container.Setup(c => c.DeleteItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()))
-                     .ThrowsAsync(new Exception("delete-failed"));
-
-            Func<Task> act = () => InboxOver(container.Object, new Clock()).ReceiveViaInbox(new object(), Context("msg-1"), () =>
-                throw new InvalidOperationException("handler-boom"));
-
-            (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("handler-boom",
-                "a failed compensation-delete is swallowed so the original handler exception still drives redelivery");
-        }
-
-        [Fact]
-        public async Task MustStillAttemptCompensationDeleteWithANonCanceledTokenWhenTheReceiveTokenIsAlreadyCanceled()
-        {
-            var container = new Mock<Container>();
-            SetupCreate(container, () => Response(HttpStatusCode.Created));
-            container.Setup(c => c.DeleteItemStreamAsync(It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()))
-                     .ReturnsAsync(Response(HttpStatusCode.NoContent));
-
-            // The graceful-shutdown path: the receive token is already canceled when the handler fails. Compensation must
-            // NOT reuse it — a canceled token makes DeleteItemStreamAsync a guaranteed no-op that strands the write-ahead
-            // marker, so redelivery confirms it and silently skips the handler (message loss).
-            using var canceled = new CancellationTokenSource();
-            canceled.Cancel();
-            var context = new MessageBrokerContext("msg-1", Array.Empty<byte>(), null, "receiver", canceled.Token, new JsonBodyConverter());
-
-            Func<Task> act = () => InboxOver(container.Object, new Clock()).ReceiveViaInbox(new object(), context, () =>
-                throw new InvalidOperationException("handler-boom"));
-
-            (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("handler-boom",
-                "the ORIGINAL handler exception is rethrown after compensation");
-            container.Verify(c => c.DeleteItemStreamAsync(
-                    CosmosItemId.ForInbox("msg-1"),
-                    It.IsAny<PartitionKey>(),
-                    It.IsAny<ItemRequestOptions>(),
-                    It.Is<CancellationToken>(t => !t.IsCancellationRequested)),
-                Times.Once, "compensation issues the delete with an independent, non-canceled cleanup token so the marker is genuinely removed on the cancellation path");
+                Times.Never, "the monotonic marker is never deleted — the handler already ran, so the pending marker is left for a redelivery to take over");
         }
 
         [Fact]

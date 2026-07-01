@@ -37,13 +37,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// non-marker / different-id / non-success / 404-exhausted read → REDELIVER (throws). A not-yet-visible 404 retries
     /// within a bounded budget. The read is cold-path-only (the 409 branch), gates no write, and is therefore not a TOCTOU.
     /// <para>
-    /// SIDE-EFFECT TIMING / handler-idempotency contract. The claim is write-ahead, so on a handler failure the marker is
-    /// best-effort compensation-deleted and the ORIGINAL exception rethrown for redelivery; on handler SUCCESS a phase-2
-    /// completion-write FAILURE THROWS (redeliver) rather than acking with a pending marker. Non-batched handler side
-    /// effects (external HTTP, non-Cosmos writes) that ran before a failure re-run on redelivery (AT-LEAST-ONCE), a
-    /// pending-marker take-over re-runs the handler (AT-LEAST-ONCE), and a failed compensation-delete after a partial
-    /// handler is a documented edge. Handlers behind this inbox MUST be idempotent AND concurrency-safe (safe under
-    /// concurrent execution of the same id).
+    /// SIDE-EFFECT TIMING / handler-idempotency contract. The claim is write-ahead, so on a handler failure the ORIGINAL
+    /// exception simply propagates for redelivery and the write-ahead PENDING marker is LEFT IN PLACE for the take-over
+    /// path to adopt and re-run — never destructively deleted; on handler SUCCESS a phase-2 completion-write FAILURE THROWS
+    /// (redeliver) rather than acking with a pending marker. MONOTONIC MARKER INVARIANT: the shared marker state only ever
+    /// moves absent -> pending -> completed, and a TTL purge is the ONLY removal. This closes a gate-corruption class BY
+    /// CONSTRUCTION by eliminating the only destructive op: because <c>marker.Id</c> is deterministic from the message id,
+    /// an unconditional compensation-delete on a handler failure could, under concurrent same-id delivery, remove a marker
+    /// another delivery already PATCHED to <c>Completed=true</c> — reverting completed -> absent and defeating once-only;
+    /// removing the delete makes that impossible. This adds NO ownership/lease primitive and leaves the P1
+    /// concurrent-execution posture (below) UNCHANGED. Non-batched handler side effects (external HTTP, non-Cosmos writes)
+    /// that ran before a failure re-run on redelivery (AT-LEAST-ONCE), and a pending-marker take-over re-runs the handler
+    /// (AT-LEAST-ONCE). Handlers behind this inbox MUST be idempotent AND concurrency-safe (safe under concurrent execution
+    /// of the same id).
     /// </para>
     /// <para>
     /// CONCURRENT TAKE-OVER (accepted, ADR-0009 D1 sub-note). Take-over adopts a PENDING marker whether it is abandoned (a
@@ -151,27 +157,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         }
 
         // Runs the handler for a fresh claim or a pending-marker take-over, then Phase 2 flips the claim to completed. On a
-        // handler EXCEPTION the write-ahead marker is best-effort compensation-deleted and the ORIGINAL exception rethrown
-        // for redelivery; the completion write is NOT reached. On handler SUCCESS the claim is completed — a
-        // completion-write FAILURE THROWS (redeliver), never swallowed (ADR-0009 D1 amendment).
+        // handler EXCEPTION the ORIGINAL exception simply propagates (the completion write is NOT reached) and the
+        // write-ahead PENDING marker is LEFT IN PLACE — never deleted — for the take-over path to adopt on redelivery
+        // (MONOTONIC MARKER: absent -> pending -> completed, TTL purge the only removal; ADR-0009 D1 third amendment). Not
+        // deleting on failure is what closes the gate-corruption class by construction: a delete of the deterministic
+        // marker.Id could, under concurrent same-id delivery, revert a marker another delivery already completed. On
+        // handler SUCCESS the claim is completed — a completion-write FAILURE THROWS (redeliver), never swallowed.
         private async Task RunHandlerThenComplete(Func<Task> messageReceiver, string markerId, PartitionKey partitionKey, CancellationToken cancellationToken)
         {
-            try
-            {
-                await messageReceiver().ConfigureAwait(false);
-            }
-            catch
-            {
-                // Compensation MUST NOT reuse the receive cancellation token: the handler commonly fails BECAUSE that
-                // token was canceled (graceful shutdown), and DeleteItemStreamAsync would then throw on an already-canceled
-                // token before ever issuing the delete — turning the swallowed best-effort compensation into a GUARANTEED
-                // no-op exactly when it is needed, stranding the write-ahead marker so redelivery confirms it and silently
-                // skips the handler (message loss). Use an independent cleanup token so the delete is actually attempted;
-                // the Cosmos SDK's own request timeout bounds it. Compensation stays best-effort (failures swallowed).
-                await BestEffortCompensationDelete(markerId, partitionKey, CancellationToken.None).ConfigureAwait(false);
-                throw;
-            }
-
+            await messageReceiver().ConfigureAwait(false);
             await CompleteClaim(markerId, partitionKey, cancellationToken).ConfigureAwait(false);
         }
 
@@ -275,21 +269,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             // A genuine inbox marker for this id whose Completed field is boolean true -> confirmed duplicate -> skip.
             Completed,
-        }
-
-        // Best-effort compensation after a handler failure on a fresh claim: swallow ANY delete failure (a thrown
-        // exception OR a non-success ResponseMessage) so the ORIGINAL handler exception is the one that propagates and
-        // drives redelivery. A failed compensation-delete after a partial handler is a documented edge (ADR-0009).
-        private async Task BestEffortCompensationDelete(string markerId, PartitionKey partitionKey, CancellationToken cancellationToken)
-        {
-            try
-            {
-                using ResponseMessage delete = await _container.DeleteItemStreamAsync(markerId, partitionKey, cancellationToken: cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                // INVARIANT: compensation is best-effort — never let a delete failure mask the original handler exception.
-            }
         }
 
         // Parses the conflicting document ONCE and classifies it (ADR-0009 D1 amendment). Confirm-not-infer runs FIRST:

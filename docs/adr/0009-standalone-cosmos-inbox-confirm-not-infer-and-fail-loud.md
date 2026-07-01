@@ -10,6 +10,15 @@ confirm-on-COMPLETION that closes an abandoned-marker permanent-loss defect. Con
 and fail-loud (D2) are RETAINED; the document tier is UNAFFECTED (its marker commits inside the
 aggregate `TransactionalBatch`, so completion IS existence, and its marker render stays byte-identical).
 
+Amended again 2026-06-30 (third D1 sub-decision, "monotonic marker" below): the best-effort
+compensation-delete on a handler failure is REMOVED. It was the only operation that could move the
+shared marker state backward (completed → absent), and because `marker.Id` is deterministic from the
+message id it could, under concurrent same-id delivery, delete a marker another delivery had already
+patched to `Completed=true` — a gate-corruption class that defeats once-only. A handler failure now
+simply RETHROWS and LEAVES the pending marker for the existing take-over path to adopt and re-run.
+This REMOVES machinery (it is NOT the rejected liveness lease — no lease container, no relay, no owner
+token, no TTL heartbeat) and does NOT change the accepted P1 concurrent-execution posture.
+
 ## Context
 
 Issue #253 adds a lease-less, relay-less standalone Cosmos inbox-dedup gate
@@ -109,6 +118,32 @@ way that conflicts with the doctrine the document tier shipped in 0.3.0 (ADR-000
      change: this records an inherent consequence of the lease-less + at-least-once design, not a new
      mechanism.
 
+   - **Monotonic marker: REMOVE the compensation-delete; a handler failure LEAVES the pending marker
+     for take-over (closes a gate-corruption class by eliminating the only destructive op).** The
+     two-phase amendment above still best-effort compensation-DELETED the write-ahead marker on a
+     handler failure (rethrowing the original exception, delete failures swallowed). That delete is
+     the ONLY operation that moves the shared marker state backward — `completed`/`pending` → `absent`
+     — and `marker.Id` is DETERMINISTIC from the message id, so it is not scoped to the failing
+     delivery's own claim. Under concurrent same-id delivery it can therefore delete a marker ANOTHER
+     delivery already patched to `Completed=true`: delivery A gets a fresh 201 and runs a slow handler;
+     delivery B arrives, 409s, TAKES OVER A's pending marker, runs the handler, and PATCHES the marker
+     to `Completed=true`; A's handler then fails and its compensation-delete removes the now-COMPLETED
+     marker — reverting `completed` → `absent`, so a later redelivery re-claims and re-runs a handler
+     the gate already recorded as done (a once-only defeat). DECISION: the compensation-delete is
+     REMOVED. A handler failure (fresh claim OR take-over) simply RETHROWS the original exception and
+     LEAVES the pending marker in place; the existing take-over path adopts it on the next delivery and
+     re-runs the handler. The shared marker state is thereby MONOTONIC — it only ever moves `absent` →
+     `pending` → `completed`, and a TTL purge (`MarkerTimeToLive`) is the ONLY removal — so the
+     gate-corruption class is closed BY CONSTRUCTION rather than by a new guard. This is NOT the
+     rejected liveness lease: it adds NO lease container, NO relay, NO owner token, and NO TTL
+     heartbeat — it REMOVES the destructive operation and its cancellation-token rationale. It does NOT
+     change the accepted P1 concurrent-execution posture above: two genuinely-concurrent in-flight
+     same-id deliveries still both run the handler; only the backward marker transition is eliminated.
+     Cost: none removed from the happy path (the delete only ever ran on the failure path); the failure
+     path is now a bare rethrow. Confirm-not-infer (D1) and D2 fail-loud are RETAINED, and the DOCUMENT
+     tier is UNAFFECTED (it never compensation-deleted — its marker commits and rolls back inside the
+     aggregate `TransactionalBatch`).
+
 2. **Fail loud on a missing id.** A null/whitespace `MessageId` throws `InvalidOperationException`
    (handler never runs, nothing written), matching the document tier and the in-memory inbox, NOT
    the EF relational inbox. For a primitive whose entire purpose is the once-only guarantee,
@@ -127,16 +162,25 @@ way that conflicts with the doctrine the document tier shipped in 0.3.0 (ADR-000
 - The standalone inbox inherits the same soundness basis as the document tier: an app-authored
   `inbox:`-prefixed collision is detected and redelivered, never silently dropped.
 - Handlers behind this inbox must be idempotent AND safe under concurrent execution of the same id:
-  the claim is write-ahead, so on a handler failure the marker is best-effort compensation-deleted
-  and the exception rethrown for redelivery; non-batched handler side effects (external HTTP,
-  non-Cosmos writes) that ran before the failure re-run on redelivery (AT-LEAST-ONCE for those), and
-  a failed compensation-delete after a partial handler is a documented edge. This is the same
-  side-effect-timing contract the document tier documents (ADR-0007). Additionally, because take-over
-  cannot distinguish an abandoned pending marker from a live in-flight one (D1 sub-note), two
-  genuinely-concurrent in-flight deliveries of the same id run the handler concurrently — this inbox
-  dedups redeliveries, it does not serialize concurrent delivery (the transport's message-lock /
-  session provides that), so the handler must tolerate concurrent same-id execution, not merely
-  sequential retry.
+  the claim is write-ahead, so on a handler failure the ORIGINAL exception simply propagates for
+  redelivery and the write-ahead PENDING marker is LEFT IN PLACE (never deleted) for the take-over path
+  to adopt and re-run; non-batched handler side effects (external HTTP, non-Cosmos writes) that ran
+  before the failure re-run on redelivery (AT-LEAST-ONCE for those). The shared marker state is
+  MONOTONIC — it only ever moves `absent` → `pending` → `completed`, and a TTL purge is the only removal
+  — so there is no compensation-delete and thus no completed → absent gate-corruption window (D1
+  monotonic-marker sub-note). This is the same side-effect-timing contract the document tier documents
+  (ADR-0007). Additionally, because take-over cannot distinguish an abandoned pending marker from a live
+  in-flight one (D1 sub-note), two genuinely-concurrent in-flight deliveries of the same id run the
+  handler concurrently — this inbox dedups redeliveries, it does not serialize concurrent delivery (the
+  transport's message-lock / session provides that), so the handler must tolerate concurrent same-id
+  execution, not merely sequential retry.
+- A poison / permanently-failing message with no `MarkerTimeToLive` leaves a persistent PENDING marker
+  that each redelivery re-takes-over and re-runs — this is correct at-least-once behavior (the transport
+  eventually dead-letters the message per its own delivery-count policy), but the pending marker itself
+  is never purged. Setting `MarkerTimeToLive` bounds this marker accumulation (Cosmos self-purges the
+  pending marker after the window); without it a permanently-poison id's marker persists until manually
+  removed. This is the deliberate consequence of removing the compensation-delete (the monotonic-marker
+  invariant): the gate never destructively deletes, so purge is TTL-driven, not failure-driven.
 - A consumer whose messages can arrive without an id (a raw Azure Service Bus producer) must set a
   message id upstream or accept a loud failure at the inbox.
 - `WithCosmosInbox` restricts v1 to a single-segment partition-key path (default `/idempotencyKey`);
