@@ -213,6 +213,54 @@ The relay **always** applies the built-in pending gate `CosmosOutboxDocument.IsP
 
 The pipeline-integrated `WithCosmosDocumentReliability` path and its verbatim drain are **unchanged** and remain the default; `AddCosmosOutboxRelay` and the `IOutboxBodyResolver` seam are purely additive and backward-compatible.
 
+## Standalone Inbox (`WithCosmosInbox`)
+
+The [document tier](#change-feed-relay) dedups *inside* the aggregate's `TransactionalBatch`. For a **stateless consumer** that has no Cosmos aggregate, no transactional outbox, and no lease container — a message ACL hop that must simply not process the same message twice — `WithCosmosInbox` registers a **standalone, lease-less inbox-dedup gate** on the command pipeline. It performs an **anti-TOCTOU write-ahead claim** — a `CreateItemStream` of an `inbox:` marker on an `/idempotencyKey`-partitioned container — through the existing `InboxBehavior<T>` seam, **skipping the handler on a confirmed duplicate**. See [ADR-0009](../../docs/adr/0009-standalone-cosmos-inbox-confirm-not-infer-and-fail-loud.md) for the design.
+
+```csharp
+public void ConfigureServices(IServiceCollection services)
+{
+    // App owns the CosmosClient — the inbox derives the idempotency container from it and owns no client.
+    services.AddSingleton(new CosmosClient(Configuration.GetConnectionString("Cosmos")));
+
+    services.AddChatterCqrs(Configuration, pipeline =>
+            {
+                pipeline.WithCosmosInbox(options =>
+                {
+                    options.Database  = "shop";
+                    options.Container = "idempotency"; // partitioned by /idempotencyKey
+                    // Optional dedup-window TTL so Cosmos self-purges old markers (default: persist indefinitely).
+                    options.MarkerTimeToLive = 604800; // 7 days, in seconds
+                });
+            })
+            .AddMessageBrokers(/* message broker options */);
+}
+```
+
+`WithCosmosInbox` **replaces** the default `IBrokeredMessageInbox` with the standalone Cosmos inbox and adds `InboxBehavior<>` — and **registers nothing else**: **no lease container, no change-feed relay, no outbox, no router replacement, and no unit-of-work behavior**. It is registered `Scoped` (EF-inbox parity).
+
+### Prerequisites
+
+- **App-registered `CosmosClient`.** The application registers a `CosmosClient` singleton in DI; the inbox derives the idempotency container from it via `client.GetContainer(database, container)` and owns no client. A missing `CosmosClient` throws at resolution time.
+- **A `/idempotencyKey`-partitioned container.** The application provisions the idempotency container with a **single-segment** partition-key path (default `/idempotencyKey`); the partition value of each marker is the inbound message id. The provider **provisions nothing** — it neither creates the container nor enables TTL. Hierarchical (multi-segment) partition-key paths are rejected in v1 (deferred to backlog #254); a `MarkerTimeToLive` only takes effect if the container has TTL enabled (`defaultTtl` set).
+
+### Confirm-not-infer, and the write-ahead-claim idempotency contract
+
+The claim is **write-ahead**: the marker `CreateItemStream` runs **before** the handler. A `201` create means a fresh identity — the handler runs exactly once. A **409 create-conflict is a *candidate* duplicate, not a confirmed one**: because the app owns the container it can author a colliding `inbox:`-prefixed id through a non-staging path, so the inbox **point-reads the conflicting document and skips the handler only when it is a genuine Chatter inbox marker for this message id** (`_chatterType="inbox"` **and** `MessageId` equal to the inbound id). A not-yet-visible `404` retries within a bounded read-back budget (`ReadBackMaxAttempts` / `ReadBackInterval`); an exhausted or non-confirmable read **redelivers (throws)** rather than silently skipping. This closes the silent-first-delivery-loss class by construction, matching the document tier.
+
+Because the claim precedes the handler, **handlers behind this inbox MUST be idempotent**:
+
+- **The marker claim is closed-by-construction.** A confirmed-duplicate redelivery is suppressed without re-running the handler.
+- **Non-Cosmos handler side effects are AT-LEAST-ONCE.** On a handler **failure** after a fresh claim, the marker is **best-effort compensation-deleted** (so a redelivery can re-claim) and the original exception is rethrown for redelivery — but any side effect the handler already performed before failing (external HTTP, a non-Cosmos write) has **already happened** and re-runs on redelivery. A failed compensation-delete after a partial handler is a documented edge. This is the same side-effect-timing contract the [document tier documents](#handler-idempotency-contract).
+- **A null/whitespace `MessageId` FAILS LOUD.** The marker is keyed on the message identity, so a message with no id cannot be deduped. The inbox throws `InvalidOperationException` before writing anything — the handler never runs — matching the document tier and the in-memory inbox (not the EF relational inbox's run-with-no-dedup). A raw Azure Service Bus producer that omits the message id must set one upstream or accept this loud failure.
+
+### Contrast with the document tier, and composition
+
+Unlike `WithCosmosDocumentReliability<TCommand>`, the standalone inbox is **lease-less, relay-less, and stateless**: it opens no `TransactionalBatch`, registers no outbox / unit-of-work, and skips the handler on a confirmed duplicate (rather than deduping batched writes after the handler runs). It is the once-only gate for a consumer that persists nothing through Chatter.
+
+- **`WithCosmosDocumentReliability` + `WithCosmosInbox` is UNSUPPORTED** in one pipeline (ADR-0009 D3). They dedup by different mechanisms; registering both makes `InboxBehavior<>` fire the standalone write-ahead claim **before** the handler for document-tier participant commands too, pre-empting the document tier's atomic in-batch dedup. This is **documented, not code-guarded** — no current consumer uses the document tier.
+- **`AddCosmosOutboxRelay` + `WithCosmosInbox` is fully SUPPORTED.** The standalone outbox relay and the standalone inbox are orthogonal lease-less primitives and compose cleanly (a consumer that drains its own outbox container and dedups inbound messages).
+
 ## Domain Language
 
 See [CONTEXT.md](../../Chatter.MessageBrokers/CONTEXT.md) for the domain glossary (Document Tier, Document-Tier Batch-Lifecycle Behavior, Atomic-Write Handle, Partition-Key Resolver, Co-Resident Outbox / Inbox Marker, Outbox Relay, Participation).
