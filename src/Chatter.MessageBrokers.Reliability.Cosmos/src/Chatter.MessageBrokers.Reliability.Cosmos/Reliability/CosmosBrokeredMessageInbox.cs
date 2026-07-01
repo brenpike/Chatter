@@ -22,18 +22,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// lease/relay/outbox, and stands alone as the once-only gate for a stateless consumer.
     /// </summary>
     /// <remarks>
-    /// SOUNDNESS (ADR-0009 D1, confirm-not-infer). A create-409 is NOT trusted as a bare duplicate: the application owns
-    /// the container (it registers the <see cref="CosmosClient"/> the container is derived from) and can author a
-    /// colliding <c>inbox:</c>-prefixed id through a non-staging path no guard closes, so inferring "duplicate" from the
-    /// bare 409 would silently lose the colliding message's first delivery. On a 409 the inbox point-reads the conflicting
-    /// document and skips the handler ONLY when it is a genuine Chatter inbox marker for THIS message id; a not-yet-visible
-    /// 404 retries within a bounded budget, and an exhausted or non-confirmable read REDELIVERS (throws) rather than
-    /// silently skipping. The read is cold-path-only (the 409 branch), gates no write, and is therefore not a TOCTOU.
+    /// SOUNDNESS (ADR-0009 D1, confirm-not-infer + two-phase claim→complete). The claim is TWO-PHASE (ADR-0009 D1
+    /// amendment): phase 1 <c>CreateItemStream</c>s a PENDING marker (<c>Completed=false</c>) before the handler; a fresh
+    /// 201 runs the handler, then phase 2 <c>PatchItemStream</c>s the marker to <c>Completed=true</c>. A redelivery
+    /// confirms a duplicate on COMPLETION, not mere existence — this closes the abandoned-marker permanent-loss defect
+    /// (a marker persisted but abandoned by a hard-kill between the 201 and handler completion, which best-effort
+    /// compensation cannot delete because the <c>catch</c> never runs on a SIGKILL). A create-409 is NOT trusted as a bare
+    /// duplicate: the application owns the container (it registers the <see cref="CosmosClient"/> the container is derived
+    /// from) and can author a colliding <c>inbox:</c>-prefixed id through a non-staging path no guard closes, so inferring
+    /// "duplicate" from the bare 409 would silently lose the colliding message's first delivery. On a 409 the inbox
+    /// point-reads the conflicting document (confirm-not-infer: <c>_chatterType == "inbox"</c> AND <c>MessageId</c> equals
+    /// this id, checked BEFORE inspecting completion) and resolves THREE ways: a genuine COMPLETED marker for this id is a
+    /// confirmed duplicate → SKIP; a genuine but PENDING/abandoned marker → TAKE OVER (run the handler, then complete); a
+    /// non-marker / different-id / non-success / 404-exhausted read → REDELIVER (throws). A not-yet-visible 404 retries
+    /// within a bounded budget. The read is cold-path-only (the 409 branch), gates no write, and is therefore not a TOCTOU.
     /// <para>
     /// SIDE-EFFECT TIMING / handler-idempotency contract. The claim is write-ahead, so on a handler failure the marker is
-    /// best-effort compensation-deleted and the ORIGINAL exception rethrown for redelivery; non-batched handler side
-    /// effects (external HTTP, non-Cosmos writes) that ran before the failure re-run on redelivery (AT-LEAST-ONCE), and a
-    /// failed compensation-delete after a partial handler is a documented edge. Handlers behind this inbox MUST be idempotent.
+    /// best-effort compensation-deleted and the ORIGINAL exception rethrown for redelivery; on handler SUCCESS a phase-2
+    /// completion-write FAILURE THROWS (redeliver) rather than acking with a pending marker. Non-batched handler side
+    /// effects (external HTTP, non-Cosmos writes) that ran before a failure re-run on redelivery (AT-LEAST-ONCE), a
+    /// pending-marker take-over re-runs the handler (AT-LEAST-ONCE), and a failed compensation-delete after a partial
+    /// handler is a documented edge. Handlers behind this inbox MUST be idempotent.
     /// </para>
     /// </remarks>
     public sealed class CosmosBrokeredMessageInbox : IBrokeredMessageInbox, IInboxDeduplicator
@@ -95,7 +104,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             CancellationToken cancellationToken = messageBrokerContext.CancellationToken;
             var partitionKey = new PartitionKey(messageId);
-            CosmosInboxMarker marker = CosmosInboxMarker.From(messageId, _markerTimeToLive);
+            // Phase 1 stamps a PENDING claim (Completed=false), so a genuine standalone marker ALWAYS carries the
+            // completion field and a redelivery confirms a duplicate on COMPLETION, not mere existence (ADR-0009 D1
+            // amendment). This closes the abandoned-marker permanent-loss defect the single-phase confirm-on-existence had.
+            CosmosInboxMarker marker = CosmosInboxMarker.From(messageId, _markerTimeToLive, completed: false);
             using Stream payload = BuildMarkerStream(marker, partitionKey);
 
             // Write-ahead claim. CreateItemStreamAsync returns a NON-throwing ResponseMessage — branch on the status code
@@ -104,17 +116,35 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             {
                 if (create.StatusCode == HttpStatusCode.Conflict)
                 {
-                    await ConfirmDuplicateOrRedeliver(marker.Id, messageId, partitionKey, cancellationToken).ConfigureAwait(false);
-                    return;
+                    // THREE-WAY confirm (ADR-0009 D1 amendment). A genuine COMPLETED marker for this id is a confirmed
+                    // duplicate -> skip. A genuine but PENDING/abandoned marker -> fall through and TAKE OVER (run the
+                    // handler, then complete). A non-confirmable / non-marker / 404-exhausted read throws (redeliver).
+                    bool alreadyCompleted = await ConfirmDuplicateCompletion(marker.Id, messageId, partitionKey, cancellationToken).ConfigureAwait(false);
+                    if (alreadyCompleted)
+                    {
+                        return;
+                    }
                 }
-
-                // Any other non-success (429/503/500/…) cannot claim the message, so REDELIVER (throw) rather than run
-                // the handler; EnsureSuccessStatusCode surfaces the CosmosException for the observed status.
-                create.EnsureSuccessStatusCode();
+                else
+                {
+                    // Any other non-success (429/503/500/…) cannot claim the message, so REDELIVER (throw) rather than run
+                    // the handler; EnsureSuccessStatusCode surfaces the CosmosException for the observed status.
+                    create.EnsureSuccessStatusCode();
+                }
             }
 
-            // Fresh claim (201). Run the handler; on failure best-effort compensation-delete the marker so a redelivery
-            // can re-claim, then ALWAYS rethrow the original exception.
+            // A fresh 201 claim OR a pending-marker take-over converges here: run the handler, then Phase 2 completes the
+            // claim. Both cases are identical from here — a fresh claim wrote its own pending marker; a take-over adopts
+            // an abandoned pending marker written by an earlier delivery.
+            await RunHandlerThenComplete(messageReceiver, marker.Id, partitionKey, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Runs the handler for a fresh claim or a pending-marker take-over, then Phase 2 flips the claim to completed. On a
+        // handler EXCEPTION the write-ahead marker is best-effort compensation-deleted and the ORIGINAL exception rethrown
+        // for redelivery; the completion write is NOT reached. On handler SUCCESS the claim is completed — a
+        // completion-write FAILURE THROWS (redeliver), never swallowed (ADR-0009 D1 amendment).
+        private async Task RunHandlerThenComplete(Func<Task> messageReceiver, string markerId, PartitionKey partitionKey, CancellationToken cancellationToken)
+        {
             try
             {
                 await messageReceiver().ConfigureAwait(false);
@@ -127,9 +157,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // no-op exactly when it is needed, stranding the write-ahead marker so redelivery confirms it and silently
                 // skips the handler (message loss). Use an independent cleanup token so the delete is actually attempted;
                 // the Cosmos SDK's own request timeout bounds it. Compensation stays best-effort (failures swallowed).
-                await BestEffortCompensationDelete(marker.Id, partitionKey, CancellationToken.None).ConfigureAwait(false);
+                await BestEffortCompensationDelete(markerId, partitionKey, CancellationToken.None).ConfigureAwait(false);
                 throw;
             }
+
+            await CompleteClaim(markerId, partitionKey, cancellationToken).ConfigureAwait(false);
+        }
+
+        // PHASE 2 (ADR-0009 D1 amendment): flip the write-ahead claim from pending to Completed=true via a single
+        // PatchItemStream set-op. Confirm-on-COMPLETION (a redelivery skips ONLY a completed marker) requires this write
+        // to actually land, so a completion-write FAILURE THROWS (EnsureSuccessStatusCode surfaces the CosmosException)
+        // and the message REDELIVERS rather than acking with a still-pending marker — never swallowed. PatchItemStream
+        // (not ReplaceItem) so only the completion field is touched.
+        private async Task CompleteClaim(string markerId, PartitionKey partitionKey, CancellationToken cancellationToken)
+        {
+            var completion = new[] { PatchOperation.Set("/" + CosmosInboxMarker.CompletedField, true) };
+            using ResponseMessage patch = await _container.PatchItemStreamAsync(markerId, partitionKey, completion, requestOptions: null, cancellationToken: cancellationToken).ConfigureAwait(false);
+            patch.EnsureSuccessStatusCode();
         }
 
         /// <summary>
@@ -156,11 +200,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return new MemoryStream(bytes, writable: false);
         }
 
-        // CONFIRM (ADR-0009 D1): point-read the conflicting marker and RETURN (caller skips the handler) only when it is a
-        // genuine Chatter inbox marker for this message id. A not-yet-visible 404 retries within the bounded budget with
-        // backoff; an exhausted budget, a non-success read, or a non-confirmable payload (non-marker / different
-        // MessageId) THROWS so the message is redelivered rather than silently skipped.
-        private async Task ConfirmDuplicateOrRedeliver(string markerId, string messageId, PartitionKey partitionKey, CancellationToken cancellationToken)
+        // CONFIRM (ADR-0009 D1 amendment): point-read the conflicting marker and decide among THREE outcomes. Returns true
+        // when it is a genuine Chatter inbox marker for this id that is COMPLETED (confirmed duplicate -> caller skips the
+        // handler). Returns false when it is a genuine but NOT-yet-completed (pending/abandoned) marker for this id (caller
+        // TAKES OVER: runs the handler, then completes). THROWS when the conflict is non-confirmable — a non-marker /
+        // different-id doc, a non-success read, or a 404 whose read-back budget is exhausted — so the message REDELIVERS
+        // rather than silently skipping. A not-yet-visible 404 retries within the bounded budget with backoff.
+        private async Task<bool> ConfirmDuplicateCompletion(string markerId, string messageId, PartitionKey partitionKey, CancellationToken cancellationToken)
         {
             for (var attempt = 0; attempt < _readBackMaxAttempts; attempt++)
             {
@@ -179,12 +225,22 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     break;
                 }
 
-                // A non-success read (429/503/…) cannot confirm -> redeliver. A successful read confirms ONLY when the
-                // conflicting doc is a genuine inbox marker for this id; any other success (non-marker / different id) is
-                // an app-authored collision that must redeliver, never skip.
-                if (read.IsSuccessStatusCode && IsConfirmedInboxMarker(read.Content, messageId))
+                // A successful read is classified by inspecting the conflicting doc: a genuine COMPLETED marker for this id
+                // is a confirmed duplicate (skip); a genuine but pending/abandoned marker is taken over (run the handler,
+                // then complete); anything else (non-marker / different id) is an app-authored collision that must
+                // redeliver. A non-success read (429/503/…) cannot confirm -> redeliver.
+                if (read.IsSuccessStatusCode)
                 {
-                    return;
+                    ConflictingMarkerState state = InspectConflictingMarker(read.Content, messageId);
+                    if (state == ConflictingMarkerState.Completed)
+                    {
+                        return true;
+                    }
+
+                    if (state == ConflictingMarkerState.Pending)
+                    {
+                        return false;
+                    }
                 }
 
                 break;
@@ -195,6 +251,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 "conflicting document is a genuine Chatter inbox marker for that id within the read-back budget. Redelivering " +
                 "rather than silently skipping the handler (an unconfirmed 409 could be an app-authored id collision whose " +
                 "first delivery would otherwise be lost).");
+        }
+
+        // The three ways a conflicting document classifies on the 409 branch (ADR-0009 D1 amendment).
+        private enum ConflictingMarkerState
+        {
+            // Not a genuine Chatter inbox marker for the expected id (non-marker / different id / unparseable) -> redeliver.
+            NotConfirmable,
+
+            // A genuine inbox marker for this id that is NOT yet completed (pending or abandoned) -> take over.
+            Pending,
+
+            // A genuine inbox marker for this id whose Completed field is boolean true -> confirmed duplicate -> skip.
+            Completed,
         }
 
         // Best-effort compensation after a handler failure on a fresh claim: swallow ANY delete failure (a thrown
@@ -212,16 +281,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
         }
 
-        // Confirms the conflicting document is a genuine Chatter inbox marker for the expected message id: the JSON root
-        // must be an object whose discriminator equals the inbox kind AND whose MessageId equals expectedMessageId
-        // (ordinal). An empty, unparseable, non-object, or field-missing payload is NOT confirmed (returns false) so the
-        // caller redelivers rather than swallowing. Re-implements the document tier's confirm shape
+        // Parses the conflicting document ONCE and classifies it (ADR-0009 D1 amendment). Confirm-not-infer runs FIRST:
+        // the JSON root must be an object whose discriminator equals the inbox kind AND whose MessageId equals
+        // expectedMessageId (ordinal); only THEN is completion inspected. A Completed field equal to boolean true is
+        // Completed; any other genuine-marker shape (Completed=false, absent, or non-boolean) is Pending, so a
+        // persisted-but-abandoned marker — including a pre-amendment single-phase marker with no Completed field — is
+        // taken over rather than confirming a false duplicate. An empty, unparseable, non-object, or non-marker payload is
+        // NotConfirmable (the caller redelivers). Re-implements the document tier's confirm shape
         // (DocumentTierBatchLifecycleBehavior.IsConfirmedInboxMarker) — a private helper this cannot call.
-        private static bool IsConfirmedInboxMarker(Stream content, string expectedMessageId)
+        private static ConflictingMarkerState InspectConflictingMarker(Stream content, string expectedMessageId)
         {
             if (content is null)
             {
-                return false;
+                return ConflictingMarkerState.NotConfirmable;
             }
 
             try
@@ -229,27 +301,35 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 using JsonDocument document = JsonDocument.Parse(content);
                 if (document.RootElement.ValueKind != JsonValueKind.Object)
                 {
-                    return false;
+                    return ConflictingMarkerState.NotConfirmable;
                 }
 
                 if (!document.RootElement.TryGetProperty(CosmosOutboxDocument.DiscriminatorField, out JsonElement discriminator)
                     || discriminator.ValueKind != JsonValueKind.String
                     || !string.Equals(discriminator.GetString(), CosmosItemId.InboxKind, StringComparison.Ordinal))
                 {
-                    return false;
+                    return ConflictingMarkerState.NotConfirmable;
                 }
 
                 if (!document.RootElement.TryGetProperty(CosmosInboxMarker.MessageIdField, out JsonElement markerMessageId)
-                    || markerMessageId.ValueKind != JsonValueKind.String)
+                    || markerMessageId.ValueKind != JsonValueKind.String
+                    || !string.Equals(markerMessageId.GetString(), expectedMessageId, StringComparison.Ordinal))
                 {
-                    return false;
+                    return ConflictingMarkerState.NotConfirmable;
                 }
 
-                return string.Equals(markerMessageId.GetString(), expectedMessageId, StringComparison.Ordinal);
+                // Genuine marker for this id. Confirm-on-COMPLETION: only a Completed==true marker is a duplicate.
+                if (document.RootElement.TryGetProperty(CosmosInboxMarker.CompletedField, out JsonElement completed)
+                    && completed.ValueKind == JsonValueKind.True)
+                {
+                    return ConflictingMarkerState.Completed;
+                }
+
+                return ConflictingMarkerState.Pending;
             }
             catch (JsonException)
             {
-                return false;
+                return ConflictingMarkerState.NotConfirmable;
             }
         }
     }

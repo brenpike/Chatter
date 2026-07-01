@@ -69,6 +69,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosInboxMarker
             document.TryGetProperty("status", out _).Should().BeFalse("inbox markers carry no delivery status");
             document.TryGetProperty("ttl", out _).Should().BeFalse("inbox markers carry no TTL");
             document.TryGetProperty("_ts", out _).Should().BeFalse("the Chatter wire shape stamps no Cosmos system fields");
+            // NO completion field when the caller does not opt in (byte-identical to the pre-amendment / document-tier shape).
+            document.TryGetProperty("Completed", out _).Should().BeFalse("a marker with no completion opt-in carries no Completed field");
+        }
+
+        [Fact]
+        public void MustCarryCompletedFieldOnlyWhenOptedIn()
+        {
+            // ADR-0009 D1 amendment: the standalone inbox opts into the two-phase completion state — a pending claim
+            // renders Completed=false, a completed marker renders Completed=true.
+            var pendingMarker = CosmosInboxMarker.From("msg-1", completed: false);
+            var completedMarker = CosmosInboxMarker.From("msg-1", completed: true);
+
+            var pendingDocument = Render(pendingMarker, new[] { "/tenantId" }, PartitionKeyValues("tenant-1"));
+            var completedDocument = Render(completedMarker, new[] { "/tenantId" }, PartitionKeyValues("tenant-1"));
+
+            pendingDocument.GetProperty("Completed").GetBoolean().Should().BeFalse("a pending standalone claim carries Completed=false");
+            completedDocument.GetProperty("Completed").GetBoolean().Should().BeTrue("a completed standalone marker carries Completed=true");
         }
 
         [Fact]

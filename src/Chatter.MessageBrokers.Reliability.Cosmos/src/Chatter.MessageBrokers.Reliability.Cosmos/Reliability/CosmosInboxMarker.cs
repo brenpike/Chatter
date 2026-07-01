@@ -40,6 +40,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public const string ReceivedAtUtcField = nameof(ReceivedAtUtc);
 
         /// <summary>
+        /// The optional two-phase completion-state field name (#253, ADR-0009 D1 amendment). Emitted ONLY when the caller
+        /// opts in; the document-tier call site never opts in, so its marker render stays byte-identical.
+        /// </summary>
+        public const string CompletedField = nameof(Completed);
+
+        /// <summary>
         /// The Chatter-reserved root field names for the inbox marker. A container partition-key path whose ROOT segment
         /// matches any of these would overwrite a required marker field (most damaging: <c>/id</c> would replace the
         /// deterministic <c>inbox:{encoded(MessageId)}</c> item id with the partition value, defeating the dedup). The
@@ -57,12 +63,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// <summary>The Chatter-reserved root field names (read-only view of the collision-guard set).</summary>
         public static IReadOnlyCollection<string> ReservedRootFields => _reservedRootFields;
 
-        public CosmosInboxMarker(string id, string messageId, DateTime receivedAtUtc, int? ttlSeconds = null)
+        public CosmosInboxMarker(string id, string messageId, DateTime receivedAtUtc, int? ttlSeconds = null, bool? completed = null)
         {
             Id = id ?? throw new ArgumentNullException(nameof(id));
             MessageId = messageId;
             ReceivedAtUtc = receivedAtUtc;
             TtlSeconds = ttlSeconds;
+            Completed = completed;
         }
 
         /// <summary>The physical Cosmos item id, <c>inbox:{encoded(MessageId)}</c>.</summary>
@@ -82,18 +89,30 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public int? TtlSeconds { get; }
 
         /// <summary>
+        /// The optional two-phase completion state (#253, ADR-0009 D1 amendment). Null means the <see cref="CompletedField"/>
+        /// is NOT emitted (the document-tier call site leaves it unset, so its marker renders byte-identically); false
+        /// stamps a PENDING claim; true stamps a COMPLETED marker. A standalone-inbox redelivery skips the handler ONLY on
+        /// a COMPLETED marker (confirm-on-completion), so a persisted-but-abandoned pending marker is taken over rather
+        /// than confirming a false duplicate.
+        /// </summary>
+        public bool? Completed { get; }
+
+        /// <summary>
         /// Builds the inbox marker for <paramref name="messageId"/>: id <c>inbox:{encoded(messageId)}</c> via the shared
         /// Cosmos-id-safe encoder (inheriting its ≤1023-char id-length guard), the raw message id stored verbatim, and
         /// <see cref="ReceivedAtUtc"/> set to <see cref="DateTime.UtcNow"/>. The optional <paramref name="ttlSeconds"/>
-        /// carries the dedup-window TTL (#253) onto <see cref="TtlSeconds"/>; the default null keeps the marker
-        /// persistent (the document-tier call site passes none, rendering byte-identically).
+        /// carries the dedup-window TTL (#253) onto <see cref="TtlSeconds"/>; the optional <paramref name="completed"/>
+        /// carries the two-phase completion state (#253, ADR-0009 D1 amendment) onto <see cref="Completed"/>. The defaults
+        /// (both null) keep the marker persistent with no completion field, so the document-tier call site — which passes
+        /// neither — renders byte-identically.
         /// </summary>
-        public static CosmosInboxMarker From(string messageId, int? ttlSeconds = null)
+        public static CosmosInboxMarker From(string messageId, int? ttlSeconds = null, bool? completed = null)
             => new CosmosInboxMarker(
                 id: CosmosItemId.ForInbox(messageId),
                 messageId: messageId,
                 receivedAtUtc: DateTime.UtcNow,
-                ttlSeconds: ttlSeconds);
+                ttlSeconds: ttlSeconds,
+                completed: completed);
 
         /// <summary>
         /// Composes the marker body, stamping each resolved partition-key value at its declared container path segment
@@ -103,10 +122,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// <see cref="ChatterJson.Options"/> (ISO-8601). The optional <paramref name="ttlSeconds"/> is the render-time
         /// dedup-window TTL (#253): when a positive value is available — the explicit argument wins, else the marker's
         /// own <see cref="TtlSeconds"/> — the Cosmos-reserved <c>ttl</c> field is stamped so Cosmos self-purges the
-        /// marker. A null/non-positive TTL emits NO <c>ttl</c> field, so the document-tier call site (which passes
-        /// neither) renders byte-identically to the pre-TTL wire shape.
+        /// marker. A null/non-positive TTL emits NO <c>ttl</c> field. The optional <paramref name="completed"/> is the
+        /// render-time two-phase completion state (#253, ADR-0009 D1 amendment): when a value is available — the explicit
+        /// argument wins, else the marker's own <see cref="Completed"/> — the <see cref="CompletedField"/> is stamped;
+        /// null emits NO completion field. Because the document-tier call site passes NEITHER a TTL nor a completion
+        /// value, its marker renders byte-identically to the pre-amendment wire shape.
         /// </summary>
-        public JsonObject ToJsonObject(IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonElement> partitionKeyValues, int? ttlSeconds = null)
+        public JsonObject ToJsonObject(IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonElement> partitionKeyValues, int? ttlSeconds = null, bool? completed = null)
         {
             var document = new JsonObject
             {
@@ -124,6 +146,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             if (effectiveTtlSeconds > 0)
             {
                 document[CosmosOutboxDocument.TtlField] = effectiveTtlSeconds.Value;
+            }
+
+            // Optional two-phase completion state (#253, ADR-0009 D1 amendment): stamp the Completed field ONLY when a
+            // value is opted into (the explicit argument wins, else the marker's own Completed). CompletedField is
+            // deliberately NOT in _reservedRootFields (like ttl). A null value emits NO field, so the document-tier call
+            // site — which opts into neither ttl nor completion — renders byte-identically to the pre-amendment shape.
+            bool? effectiveCompleted = completed ?? Completed;
+            if (effectiveCompleted.HasValue)
+            {
+                document[CompletedField] = effectiveCompleted.Value;
             }
 
             CosmosPartitionKeyStamping.Stamp(document, partitionKeyPath, partitionKeyValues, _reservedRootFields);

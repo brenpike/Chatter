@@ -436,6 +436,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
         }
 
         [Fact]
+        public async Task MustRenderDocTierMarkerByteIdenticalWithNoCompletionField()
+        {
+            // ADR-0009 D1 amendment (regression guard): the standalone inbox's two-phase completion field is OPT-IN and
+            // the document-tier call site (From(messageId) + ToJsonObject(path, values), no extra arg) opts into neither
+            // TTL nor completion, so its staged marker carries NO completion field and renders byte-identically to the
+            // pre-amendment wire shape. The completion field must not leak into the document tier.
+            var (container, _, staged) = MockContainer(SuccessResponse());
+            var registry = new DocumentReliabilityRegistry();
+            registry.Add(Registration<RegisteredCommand>("shop", "orders", _ => new PartitionKey("tenant-1"), "/tenantId"));
+            var factory = FactoryFor("shop", "orders", container.Object);
+            var surface = new DocumentTierReliabilitySurface();
+            var behavior = new DocumentTierBatchLifecycleBehavior<RegisteredCommand>(registry, factory, surface);
+
+            await behavior.Handle(new RegisteredCommand(), ContextWithMessageId("msg-1"), () => Task.CompletedTask);
+
+            var markerDocument = ReadStagedDocument(staged[MarkerOperationIndex]);
+            markerDocument.TryGetProperty("Completed", out _).Should().BeFalse("the document-tier marker never opts into the standalone two-phase completion field");
+            markerDocument.TryGetProperty("completed", out _).Should().BeFalse("neither casing of the completion field appears on the document tier");
+        }
+
+        [Fact]
         public async Task MustStampMarkerWithHierarchicalPartitionKeyAtNestedPaths()
         {
             var partitionKey = new PartitionKeyBuilder().Add("acme").Add("us-east").Build();
