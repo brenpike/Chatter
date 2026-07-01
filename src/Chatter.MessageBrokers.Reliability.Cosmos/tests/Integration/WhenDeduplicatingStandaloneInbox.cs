@@ -1,4 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Chatter.CQRS;
@@ -111,6 +115,74 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                 "the standalone inbox registers no Cosmos outbox — the outbox stays the framework default");
         }
 
+        // CHARACTERIZATION (#253, ADR-0009 D1 amendment): an ABANDONED pre-completion marker is TAKEN OVER, not confirmed a
+        // duplicate — closing the abandoned-marker permanent-loss defect the single-phase confirm-on-existence had. A
+        // pending claim (Completed=false, NO completion write) is seeded directly to simulate a delivery hard-killed between
+        // the 201 claim and handler completion; a fresh delivery of the SAME identity then 409s on create, the confirm
+        // read-back classifies the conflicting marker PENDING, and the inbox TAKES OVER: the handler RUNS (no loss) and the
+        // marker is driven to Completed=true.
+        [RequiresDockerFact]
+        public async Task AbandonedPendingMarkerIsTakenOverSoTheHandlerRunsAndTheMarkerCompletes()
+        {
+            await using CosmosTestClient testClient = await CosmosTestClient.CreateAsync(_emulator.GetEmulatorEndpoint(), CosmosEmulatorFixture.WellKnownEmulatorKey);
+            await EnsureInboxContainerAsync(testClient.Client);
+            Container inboxContainer = testClient.Client.GetContainer(CosmosTestClient.DatabaseName, InboxContainerName);
+
+            string messageId = "msg-" + Guid.NewGuid().ToString("N");
+
+            // Seed an abandoned PENDING claim directly (Completed=false, no completion write) — the exact wire shape phase 1
+            // stamps before the handler, rendered through the SAME marker + partition-key + JSON path the production inbox
+            // uses, so the confirm read-back classifies it PENDING exactly as it would a real abandoned claim.
+            await SeedPendingMarkerAsync(inboxContainer, messageId);
+            JsonElement seeded = await ReadMarkerAsync(inboxContainer, messageId);
+            InspectCompleted(seeded).Should().BeFalse(
+                "the seeded marker is an abandoned PENDING claim (Completed=false), not a completed one");
+
+            var invocations = new HandlerInvocationCounter();
+            await using CosmosReliabilityHarness harness = BuildHarness(testClient.Client, invocations);
+
+            // A delivery of the same identity 409s on create; the confirm classifies the conflicting marker PENDING and the
+            // inbox TAKES OVER rather than confirming a duplicate — the handler runs and the claim is completed.
+            await harness.DeliverAsync(messageId, new StandaloneInboxCommand { Payload = "takeover" }, ReceiverPath);
+
+            invocations.Count.Should().Be(1,
+                "an abandoned PENDING marker is taken over — the handler RUNS (no permanent loss), it is NOT skipped as a duplicate");
+
+            JsonElement completed = await ReadMarkerAsync(inboxContainer, messageId);
+            InspectCompleted(completed).Should().BeTrue(
+                "the take-over completes the claim, driving the marker to Completed=true");
+        }
+
+        // CHARACTERIZATION (#253, ADR-0009 D1 amendment): a normally-COMPLETED marker (first delivery ran the handler then
+        // completed the claim) makes a redelivery confirm a duplicate on COMPLETION and SKIP the handler. Confirm-on-
+        // completion is what the skip hinges on: the first delivery must leave Completed=true, and only then does the
+        // redelivery suppress the handler.
+        [RequiresDockerFact]
+        public async Task CompletedMarkerSuppressesTheRedeliveredHandler()
+        {
+            await using CosmosTestClient testClient = await CosmosTestClient.CreateAsync(_emulator.GetEmulatorEndpoint(), CosmosEmulatorFixture.WellKnownEmulatorKey);
+            await EnsureInboxContainerAsync(testClient.Client);
+            Container inboxContainer = testClient.Client.GetContainer(CosmosTestClient.DatabaseName, InboxContainerName);
+
+            string messageId = "msg-" + Guid.NewGuid().ToString("N");
+            var invocations = new HandlerInvocationCounter();
+            await using CosmosReliabilityHarness harness = BuildHarness(testClient.Client, invocations);
+
+            // First delivery: the write-ahead claim runs the handler once, then phase 2 completes the marker.
+            await harness.DeliverAsync(messageId, new StandaloneInboxCommand { Payload = "first" }, ReceiverPath);
+
+            invocations.Count.Should().Be(1, "the first delivery of a fresh identity runs the handler exactly once");
+            JsonElement afterFirst = await ReadMarkerAsync(inboxContainer, messageId);
+            InspectCompleted(afterFirst).Should().BeTrue(
+                "a normally-handled first delivery drives the marker to Completed=true (confirm-on-completion)");
+
+            // Redelivery: the create 409s, the confirm reads a COMPLETED marker, and the handler is SKIPPED as a confirmed duplicate.
+            await harness.DeliverAsync(messageId, new StandaloneInboxCommand { Payload = "duplicate" }, ReceiverPath);
+
+            invocations.Count.Should().Be(1,
+                "a redelivery against a COMPLETED marker confirms a duplicate on completion and SKIPS the handler");
+        }
+
         // Provisions the /idempotencyKey marker container on the shared suite database, create-if-not-exists so re-runs and
         // concurrent suite runs are idempotent (markers are keyed by a per-test-unique message id, so they never collide).
         private static async Task EnsureInboxContainerAsync(CosmosClient client)
@@ -130,6 +202,41 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                     options.Container = InboxContainerName;
                 }),
                 services => services.AddSingleton(invocations));
+
+        // Seeds an abandoned PENDING claim directly on the inbox container: the exact wire shape phase 1 stamps before the
+        // handler (Completed=false, no completion write), rendered through the SAME CosmosInboxMarker + partition-key + JSON
+        // path the production inbox uses, so the confirm read-back classifies it PENDING exactly as it would a real
+        // hard-killed-before-completion claim.
+        private static async Task SeedPendingMarkerAsync(Container container, string messageId)
+        {
+            CosmosInboxMarker pending = CosmosInboxMarker.From(messageId, ttlSeconds: null, completed: false);
+            var partitionKey = new PartitionKey(messageId);
+            IReadOnlyList<JsonElement> partitionKeyValues =
+                CosmosPartitionKeyStamping.RecoverPartitionKeyValues(partitionKey, new[] { InboxPartitionKeyPath });
+            JsonObject document = pending.ToJsonObject(new[] { InboxPartitionKeyPath }, partitionKeyValues);
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(document, ChatterJson.Options);
+
+            using var payload = new MemoryStream(bytes, writable: false);
+            using ResponseMessage seeded = await container.CreateItemStreamAsync(payload, partitionKey);
+            seeded.EnsureSuccessStatusCode();
+        }
+
+        // Reads the marker for messageId at the edge of the test and returns a DETACHED copy of its JSON (RootElement.Clone)
+        // so the caller can inspect the completion state after the ResponseMessage/stream is disposed.
+        private static async Task<JsonElement> ReadMarkerAsync(Container container, string messageId)
+        {
+            using ResponseMessage read = await container.ReadItemStreamAsync(CosmosItemId.ForInbox(messageId), new PartitionKey(messageId));
+            read.IsSuccessStatusCode.Should().BeTrue(
+                "the inbox marker for the message id must be present to inspect its completion state");
+            using JsonDocument document = JsonDocument.Parse(read.Content);
+            return document.RootElement.Clone();
+        }
+
+        // The marker's two-phase completion state: true only when the Completed field is boolean true (a completed claim);
+        // false for a pending/abandoned claim (Completed=false or absent) — mirroring the inbox's confirm-on-completion read.
+        private static bool InspectCompleted(JsonElement marker)
+            => marker.TryGetProperty(CosmosInboxMarker.CompletedField, out JsonElement completed)
+               && completed.ValueKind == JsonValueKind.True;
     }
 
     // A stateless standalone-consumer command: it carries no aggregate/outbox/partition — the standalone inbox partitions
