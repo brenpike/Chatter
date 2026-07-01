@@ -213,6 +213,63 @@ The relay **always** applies the built-in pending gate `CosmosOutboxDocument.IsP
 
 The pipeline-integrated `WithCosmosDocumentReliability` path and its verbatim drain are **unchanged** and remain the default; `AddCosmosOutboxRelay` and the `IOutboxBodyResolver` seam are purely additive and backward-compatible.
 
+## Standalone Inbox (`WithCosmosInbox`)
+
+The [document tier](#change-feed-relay) dedups *inside* the aggregate's `TransactionalBatch`. For a **stateless consumer** that has no Cosmos aggregate, no transactional outbox, and no lease container — a message ACL hop that must simply not process the same message twice — `WithCosmosInbox` registers a **standalone, lease-less inbox-dedup gate** on the command pipeline. It performs an **anti-TOCTOU two-phase write-ahead claim** through the existing `InboxBehavior<T>` seam: phase 1 `CreateItemStream`s a *pending* `inbox:` marker on an `/idempotencyKey`-partitioned container **before** the handler, and phase 2 `PatchItemStream`s it to *completed* **after** the handler returns — so a redelivery **confirms a duplicate on *completion*, not mere existence**, and **skips the handler only on a confirmed completed marker** (an abandoned *pending* marker is taken over and the handler re-runs, not skipped). See [ADR-0009](../../docs/adr/0009-standalone-cosmos-inbox-confirm-not-infer-and-fail-loud.md) (amended D1) for the design.
+
+```csharp
+public void ConfigureServices(IServiceCollection services)
+{
+    // App owns the CosmosClient — the inbox derives the idempotency container from it and owns no client.
+    services.AddSingleton(new CosmosClient(Configuration.GetConnectionString("Cosmos")));
+
+    services.AddChatterCqrs(Configuration, pipeline =>
+            {
+                pipeline.WithCosmosInbox(options =>
+                {
+                    options.Database  = "shop";
+                    options.Container = "idempotency"; // partitioned by /idempotencyKey
+                    // Optional dedup-window TTL so Cosmos self-purges old markers (default: persist indefinitely).
+                    options.MarkerTimeToLive = 604800; // 7 days, in seconds
+                });
+            })
+            .AddMessageBrokers(/* message broker options */);
+}
+```
+
+`WithCosmosInbox` **replaces** the default `IBrokeredMessageInbox` with the standalone Cosmos inbox and adds `InboxBehavior<>` — and **registers nothing else**: **no lease container, no change-feed relay, no outbox, no router replacement, and no unit-of-work behavior**. It is registered `Scoped` (EF-inbox parity).
+
+### Prerequisites
+
+- **App-registered `CosmosClient`.** The application registers a `CosmosClient` singleton in DI; the inbox derives the idempotency container from it via `client.GetContainer(database, container)` and owns no client. A missing `CosmosClient` throws at resolution time.
+- **A `/idempotencyKey`-partitioned container.** The application provisions the idempotency container with a **single-segment** partition-key path (default `/idempotencyKey`); the partition value of each marker is the inbound message id. The provider **provisions nothing** — it neither creates the container nor enables TTL. Hierarchical (multi-segment) partition-key paths are rejected in v1 (deferred to backlog #254); a `MarkerTimeToLive` only takes effect if the container has TTL enabled (`defaultTtl` set).
+
+### Confirm-not-infer, two-phase claim→complete, and the write-ahead-claim idempotency contract
+
+The claim is **two-phase and write-ahead**: **phase 1** `CreateItemStream`s a *pending* marker (`Completed=false`) **before** the handler; on a fresh `201` the handler runs, then **phase 2** `PatchItemStream`s the marker to `Completed=true` **after** the handler returns. A redelivery therefore confirms a duplicate on **completion, not mere existence** — this closes the abandoned-marker permanent-loss defect a single-phase confirm-on-existence had: a marker persisted but then **abandoned** (the process hard-killed between the `201` and handler completion) would otherwise be mistaken for a completed one and its handler would never run. There is no compensation-delete at all (it was removed — see the **monotonic-marker** guarantee below): even a hypothetical best-effort compensation could not close that window, since a compensation `catch` fires only on a handler *exception*, never on a SIGKILL between the create and completion — so the safety net is confirm-on-completion plus take-over, not compensation.
+
+A **409 create-conflict is a *candidate* duplicate, not a confirmed one**: because the app owns the container it can author a colliding `inbox:`-prefixed id through a non-staging path, so the inbox **point-reads the conflicting document** and resolves it **three ways**, checking `_chatterType="inbox"` **and** `MessageId` equal to the inbound id (confirm-not-infer) **before** inspecting completion:
+
+- **A genuine `Completed=true` marker for this id → SKIP** — a confirmed duplicate; the handler does not re-run.
+- **A genuine but *pending* (abandoned) marker for this id → TAKE OVER** — the handler **runs** (no loss) and phase 2 then completes the claim. An abandoned pending marker is adopted, **not** confirmed as a duplicate.
+- **A non-confirmable read** — a non-marker doc, a different-id marker, a non-success read, or a `404` whose bounded read-back budget (`ReadBackMaxAttempts` / `ReadBackInterval`) is exhausted — **redelivers (throws)** rather than silently skipping.
+
+This closes the silent-first-delivery-loss class **and** the abandoned-marker permanent-loss class by construction. It costs **one extra completion write** — a single `PatchItemStream` per fresh (or taken-over) delivery.
+
+Because the claim precedes the handler **and** an abandoned claim is taken over (re-running the handler), **handlers behind this inbox MUST be idempotent AND concurrency-safe (safe under concurrent execution of the same id)**:
+
+- **A confirmed *completed* duplicate is closed-by-construction.** Its redelivery is suppressed without re-running the handler.
+- **Take-over and completion-retry are AT-LEAST-ONCE; the marker is MONOTONIC.** A pending/abandoned marker is taken over, so the handler **re-runs**; and a phase-2 completion-write **failure THROWS** — the message redelivers rather than acking with a still-pending marker — so the handler can run again on that redelivery. On a handler **failure** (fresh claim or take-over) the original exception simply **propagates for redelivery** and the write-ahead **pending marker is LEFT IN PLACE — never deleted** — so a redelivery **takes it over** and re-runs the handler; any side effect the handler already performed before failing (external HTTP, a non-Cosmos write) has **already happened** and re-runs on that redelivery. The shared marker state is **MONOTONIC**: it only ever moves *absent → pending → completed*, and a **TTL purge (`MarkerTimeToLive`) is the only removal** — the gate never moves *completed → absent*, so a marker another delivery already completed can never be reverted (there is no compensation-delete to corrupt it under concurrent same-id delivery). A poison / permanently-failing message with no `MarkerTimeToLive` therefore leaves a persistent pending marker that each redelivery re-takes-over and re-runs (correct at-least-once — the transport eventually dead-letters it); set `MarkerTimeToLive` to bound this marker accumulation. This is the same side-effect-timing contract the [document tier documents](#handler-idempotency-contract).
+- **The gate dedups redeliveries; it does NOT serialize genuinely-concurrent in-flight deliveries of the same id.** Take-over adopts a *pending* marker whether that marker is abandoned (a hard-kill) **or** still live — written by a concurrent in-flight delivery of the same id whose handler has not yet completed — because the lease-less design cannot distinguish the two without the liveness lease it rejects. Two genuinely-concurrent deliveries of the same message therefore both run the handler, **concurrently**. This gate is a dedup gate, **not a distributed lock**: mutual exclusion for concurrent delivery is the **transport's** responsibility — the message-lock / session an at-least-once broker holds while a delivery is in-flight (e.g. Azure Service Bus PeekLock or a session) is what prevents a second concurrent delivery, and the dedup gate is not a substitute for it. Hence the contract is *concurrency-safe*, not merely *sequential-retry-safe*.
+- **A null/whitespace `MessageId` FAILS LOUD.** The marker is keyed on the message identity, so a message with no id cannot be deduped. The inbox throws `InvalidOperationException` before writing anything — the handler never runs — matching the document tier and the in-memory inbox (not the EF relational inbox's run-with-no-dedup). A raw Azure Service Bus producer that omits the message id must set one upstream or accept this loud failure.
+
+### Contrast with the document tier, and composition
+
+Unlike `WithCosmosDocumentReliability<TCommand>`, the standalone inbox is **lease-less, relay-less, and stateless**: it opens no `TransactionalBatch`, registers no outbox / unit-of-work, and skips the handler on a confirmed *completed* duplicate (rather than deduping batched writes after the handler runs). It is the once-only gate for a consumer that persists nothing through Chatter.
+
+- **`WithCosmosDocumentReliability` + `WithCosmosInbox` is UNSUPPORTED** in one pipeline (ADR-0009 D3). They dedup by different mechanisms; registering both makes `InboxBehavior<>` fire the standalone write-ahead claim **before** the handler for document-tier participant commands too, pre-empting the document tier's atomic in-batch dedup. This is **documented, not code-guarded** — no current consumer uses the document tier.
+- **`AddCosmosOutboxRelay` + `WithCosmosInbox` is fully SUPPORTED.** The standalone outbox relay and the standalone inbox are orthogonal lease-less primitives and compose cleanly (a consumer that drains its own outbox container and dedups inbound messages).
+
 ## Domain Language
 
 See [CONTEXT.md](../../Chatter.MessageBrokers/CONTEXT.md) for the domain glossary (Document Tier, Document-Tier Batch-Lifecycle Behavior, Atomic-Write Handle, Partition-Key Resolver, Co-Resident Outbox / Inbox Marker, Outbox Relay, Participation).

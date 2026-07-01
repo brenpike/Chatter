@@ -99,7 +99,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // each non-leaf segment so the value lands at the real container path rather than a flattened fixed field. A
         // fresh JsonNode is minted from the JsonElement on every call so this document never receives a node that is
         // already parented to another document — cross-document reparenting is structurally impossible.
-        private static void StampPartitionKeySegment(JsonObject root, string partitionKeyPath, JsonElement partitionKeyValue, ISet<string> reservedRootFields)
+        // Extracts the ROOT (first) property-name segment of a container partition-key path (e.g. "/tenant/id" -> "tenant").
+        // Shared by render-time collision-guard stamping and registration-time fail-loud validation so both derive the
+        // partition path's root segment through ONE primitive rather than duplicating the split.
+        internal static string ExtractRootSegment(string partitionKeyPath)
         {
             var segments = partitionKeyPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (segments.Length == 0)
@@ -107,14 +110,22 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 throw new ArgumentException("A partition-key path segment must contain at least one property name.", nameof(partitionKeyPath));
             }
 
+            return segments[0];
+        }
+
+        private static void StampPartitionKeySegment(JsonObject root, string partitionKeyPath, JsonElement partitionKeyValue, ISet<string> reservedRootFields)
+        {
+            var segments = partitionKeyPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            string rootSegment = ExtractRootSegment(partitionKeyPath);
+
             // COLLISION GUARD: a partition-key path whose ROOT segment is a Chatter-reserved field would overwrite a
             // required Chatter value (e.g. /id replaces the deterministic document id, colliding every doc in the
             // partition). Fail loudly rather than silently corrupt the document. This eliminates the
             // reserved-field-overwrite class by construction. The reserved set belongs to the caller's document shape.
-            if (reservedRootFields.Contains(segments[0]))
+            if (reservedRootFields.Contains(rootSegment))
             {
                 throw new InvalidOperationException(
-                    $"The container partition-key path '{partitionKeyPath}' targets the Chatter-reserved field '{segments[0]}'. " +
+                    $"The container partition-key path '{partitionKeyPath}' targets the Chatter-reserved field '{rootSegment}'. " +
                     "A co-resident document cannot be stamped on a partition-key path whose root segment is one of " +
                     $"[{string.Join(", ", reservedRootFields)}] without overwriting a required field. Use a non-reserved partition-key path for the container.");
             }
