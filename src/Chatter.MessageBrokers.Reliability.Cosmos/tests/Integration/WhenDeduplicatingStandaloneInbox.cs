@@ -183,6 +183,61 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
                 "a redelivery against a COMPLETED marker confirms a duplicate on completion and SKIPS the handler");
         }
 
+        // CHARACTERIZATION (#253, ADR-0009 D1 THIRD amendment — MONOTONIC MARKER): once a marker is Completed, NOTHING moves
+        // it completed->absent — not even a redelivery whose handler is wired to THROW. Removing BestEffortCompensationDelete
+        // made the marker monotonic (absent -> pending -> completed, TTL purge the only removal), so a Completed marker is a
+        // STABLE TERMINAL state a failing redelivery cannot revert or resurrect. The true completed->absent race — a concurrent
+        // take-over whose LOSING handler failed while the WINNER had already driven the marker to Completed=true — is not
+        // deterministically reproducible against the emulator, so this encodes the guarantee as an ORDERED sequence instead of a
+        // timing race: because the completed marker 409s the create and the confirm read-back classifies it COMPLETED, the
+        // redelivery is SUPPRESSED BEFORE the handler is reached. The poisoned handler is therefore a TRAP that never springs —
+        // had ANY redelivery path (even a failing one) reached the handler, DeliverAsync would surface the throw and fail this
+        // test — proving no code path touches, deletes, or reverts the completed marker.
+        [RequiresDockerFact]
+        public async Task PoisonedRedeliveryDoesNotResurrectACompletedMarker()
+        {
+            await using CosmosTestClient testClient = await CosmosTestClient.CreateAsync(_emulator.GetEmulatorEndpoint(), CosmosEmulatorFixture.WellKnownEmulatorKey);
+            await EnsureInboxContainerAsync(testClient.Client);
+            Container inboxContainer = testClient.Client.GetContainer(CosmosTestClient.DatabaseName, InboxContainerName);
+
+            string messageId = "msg-" + Guid.NewGuid().ToString("N");
+            var invocations = new HandlerInvocationCounter();
+            await using CosmosReliabilityHarness harness = BuildHarness(testClient.Client, invocations);
+
+            // 1) First delivery of a fresh identity: the handler runs exactly once and phase 2 drives the marker to Completed=true.
+            await harness.DeliverAsync(messageId, new StandaloneInboxCommand { Payload = "first" }, ReceiverPath);
+
+            invocations.Count.Should().Be(1, "the first delivery of a fresh identity runs the handler exactly once");
+            JsonElement afterFirst = await ReadMarkerAsync(inboxContainer, messageId);
+            InspectCompleted(afterFirst).Should().BeTrue(
+                "a normally-handled first delivery drives the marker to Completed=true (confirm-on-completion)");
+
+            // 2) Redelivery of the SAME identity whose handler is wired to THROW (dedup is keyed by the inbound message id, not
+            // the command type, so this poisoned command exercises the completed-marker skip for the same id). The completed
+            // marker 409s the create and the confirm classifies it COMPLETED, so the redelivery is SUPPRESSED BEFORE the poisoned
+            // handler is reached: DeliverAsync does NOT throw (the trap never springs) and the marker is STILL Completed=true —
+            // the failing redelivery neither reverted nor deleted it (no completed->absent transition).
+            Func<Task> poisonedRedelivery = () => harness.DeliverAsync(messageId, new PoisonedStandaloneInboxCommand { Payload = "poison" }, ReceiverPath);
+
+            await poisonedRedelivery.Should().NotThrowAsync(
+                "the completed marker suppresses the redelivery before the poisoned handler is reached — had it run, the handler would have thrown");
+            invocations.Count.Should().Be(1,
+                "the poisoned redelivery is suppressed by the completed marker — no handler (normal or poisoned) is re-invoked");
+
+            JsonElement afterPoison = await ReadMarkerAsync(inboxContainer, messageId);
+            InspectCompleted(afterPoison).Should().BeTrue(
+                "a failing redelivery cannot revert or delete a completed marker — it stays Completed=true (no completed->absent)");
+
+            // 3) A third, NORMAL redelivery is likewise SKIPPED: the completed marker still dedups and the handler is not invoked.
+            await harness.DeliverAsync(messageId, new StandaloneInboxCommand { Payload = "third" }, ReceiverPath);
+
+            invocations.Count.Should().Be(1,
+                "the completed marker still dedups a subsequent normal redelivery — the handler is not re-invoked");
+            JsonElement afterThird = await ReadMarkerAsync(inboxContainer, messageId);
+            InspectCompleted(afterThird).Should().BeTrue(
+                "the completed marker remains the stable terminal state across repeated redeliveries");
+        }
+
         // Provisions the /idempotencyKey marker container on the shared suite database, create-if-not-exists so re-runs and
         // concurrent suite runs are idempotent (markers are keyed by a per-test-unique message id, so they never collide).
         private static async Task EnsureInboxContainerAsync(CosmosClient client)
@@ -260,6 +315,24 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
             _invocations.Increment();
             return Task.CompletedTask;
         }
+    }
+
+    // A parallel standalone-consumer command routed to a handler wired to THROW. Dedup is keyed by the inbound message id,
+    // not the command type, so redelivering an already-completed id as this poisoned command exercises the completed-marker
+    // skip while arming a trap: if the redelivery ever reached the handler, the throw would surface and fail the test.
+    public sealed class PoisonedStandaloneInboxCommand : ICommand
+    {
+        public string Payload { get; set; }
+    }
+
+    // The poisoned handler THROWS on every invocation. A completed inbox marker must suppress a redelivery BEFORE the handler
+    // is reached, so this handler must never be invoked; reaching it means the completed-marker dedup skip did not fire.
+    public sealed class PoisonedStandaloneInboxHandler : IMessageHandler<PoisonedStandaloneInboxCommand>
+    {
+        public Task Handle(PoisonedStandaloneInboxCommand message, IMessageHandlerContext context)
+            => throw new InvalidOperationException(
+                "The poisoned standalone handler must never be invoked: a completed inbox marker must suppress the redelivery " +
+                "before the handler is reached. Reaching it means the completed-marker dedup skip did not fire.");
     }
 
     // A thread-safe invocation tally shared (as a DI singleton) between the test and the handler it drives, so a
