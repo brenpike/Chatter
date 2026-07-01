@@ -42,7 +42,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// completion-write FAILURE THROWS (redeliver) rather than acking with a pending marker. Non-batched handler side
     /// effects (external HTTP, non-Cosmos writes) that ran before a failure re-run on redelivery (AT-LEAST-ONCE), a
     /// pending-marker take-over re-runs the handler (AT-LEAST-ONCE), and a failed compensation-delete after a partial
-    /// handler is a documented edge. Handlers behind this inbox MUST be idempotent.
+    /// handler is a documented edge. Handlers behind this inbox MUST be idempotent AND concurrency-safe (safe under
+    /// concurrent execution of the same id).
+    /// </para>
+    /// <para>
+    /// CONCURRENT TAKE-OVER (accepted, ADR-0009 D1 sub-note). Take-over adopts a PENDING marker whether it is abandoned (a
+    /// hard-kill between the 201 and completion) OR still LIVE — written by a genuinely-concurrent in-flight delivery of
+    /// the same id whose handler has not yet completed — because the lease-less design cannot distinguish "abandoned" from
+    /// "live-in-flight" without the liveness lease it rejects. Two concurrent in-flight deliveries of the same id therefore
+    /// both run the handler, CONCURRENTLY. This gate DEDUPS REDELIVERIES; it is NOT a distributed lock and does NOT
+    /// serialize concurrent delivery — mutual exclusion for concurrent delivery is the TRANSPORT's message-lock / session
+    /// (e.g. Azure Service Bus PeekLock or a session), not this dedup gate. Hence the contract is concurrency-safe, not
+    /// merely sequential-retry-safe.
     /// </para>
     /// </remarks>
     public sealed class CosmosBrokeredMessageInbox : IBrokeredMessageInbox, IInboxDeduplicator

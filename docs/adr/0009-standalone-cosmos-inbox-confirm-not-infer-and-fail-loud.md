@@ -87,6 +87,28 @@ way that conflicts with the doctrine the document tier shipped in 0.3.0 (ADR-000
      field is opt-in and the document-tier call site opts into neither TTL nor completion (ADR-0007,
      D3 above).
 
+   - **Take-over also adopts a LIVE in-flight pending marker — concurrent same-id deliveries run the
+     handler concurrently (accepted).** The take-over above is framed around an ABANDONED pending
+     marker (a hard-kill between the 201 and completion), but the lease-less design cannot distinguish
+     an abandoned marker from a marker that is still LIVE — written by a genuinely-concurrent in-flight
+     delivery of the SAME MessageId whose handler has not yet completed. On the create-409 branch,
+     confirm sees a genuine PENDING marker for this id and TAKES OVER either way, so two concurrent
+     in-flight deliveries of the same id (delivery A mid-handler, delivery B arriving and reading A's
+     still-pending marker) both RUN the handler — concurrently. Distinguishing "abandoned" from
+     "live-in-flight" would require exactly the lease/liveness signal (an owner token + TTL heartbeat)
+     this ADR rejects; without it, take-over cannot be conditional on the marker being dead. ACCEPTED
+     posture: this inbox DEDUPLICATES REDELIVERIES — sequential re-arrivals of an already-completed (or
+     abandoned) message — and is NOT a distributed lock; it does NOT serialize genuinely-concurrent
+     in-flight deliveries of the same id. Mutual exclusion for concurrent delivery is the TRANSPORT's
+     responsibility: the message-lock / session an at-least-once broker holds while a delivery is
+     in-flight (e.g. Azure Service Bus PeekLock or a session) is what prevents a second concurrent
+     delivery of the same message, and a dedup gate is not a substitute for it. STRENGTHENED CONTRACT:
+     the prior "handlers must be idempotent" contract is sequential-retry-safe but weaker than
+     concurrency-safe — handlers behind this inbox must be idempotent AND safe under CONCURRENT
+     execution of the same id (not merely safe under sequential retry). No protocol-code or wire-shape
+     change: this records an inherent consequence of the lease-less + at-least-once design, not a new
+     mechanism.
+
 2. **Fail loud on a missing id.** A null/whitespace `MessageId` throws `InvalidOperationException`
    (handler never runs, nothing written), matching the document tier and the in-memory inbox, NOT
    the EF relational inbox. For a primitive whose entire purpose is the once-only guarantee,
@@ -104,12 +126,17 @@ way that conflicts with the doctrine the document tier shipped in 0.3.0 (ADR-000
 
 - The standalone inbox inherits the same soundness basis as the document tier: an app-authored
   `inbox:`-prefixed collision is detected and redelivered, never silently dropped.
-- Handlers behind this inbox must be idempotent: the claim is write-ahead, so on a handler
-  failure the marker is best-effort compensation-deleted and the exception rethrown for
-  redelivery; non-batched handler side effects (external HTTP, non-Cosmos writes) that ran before
-  the failure re-run on redelivery (AT-LEAST-ONCE for those), and a failed compensation-delete
-  after a partial handler is a documented edge. This is the same side-effect-timing contract the
-  document tier documents (ADR-0007).
+- Handlers behind this inbox must be idempotent AND safe under concurrent execution of the same id:
+  the claim is write-ahead, so on a handler failure the marker is best-effort compensation-deleted
+  and the exception rethrown for redelivery; non-batched handler side effects (external HTTP,
+  non-Cosmos writes) that ran before the failure re-run on redelivery (AT-LEAST-ONCE for those), and
+  a failed compensation-delete after a partial handler is a documented edge. This is the same
+  side-effect-timing contract the document tier documents (ADR-0007). Additionally, because take-over
+  cannot distinguish an abandoned pending marker from a live in-flight one (D1 sub-note), two
+  genuinely-concurrent in-flight deliveries of the same id run the handler concurrently — this inbox
+  dedups redeliveries, it does not serialize concurrent delivery (the transport's message-lock /
+  session provides that), so the handler must tolerate concurrent same-id execution, not merely
+  sequential retry.
 - A consumer whose messages can arrive without an id (a raw Azure Service Bus producer) must set a
   message id upstream or accept a loud failure at the inbox.
 - `WithCosmosInbox` restricts v1 to a single-segment partition-key path (default `/idempotencyKey`);
