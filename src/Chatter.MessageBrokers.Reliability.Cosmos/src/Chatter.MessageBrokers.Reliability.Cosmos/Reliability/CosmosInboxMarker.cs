@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -62,6 +63,28 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>The Chatter-reserved root field names (read-only view of the collision-guard set).</summary>
         public static IReadOnlyCollection<string> ReservedRootFields => _reservedRootFields;
+
+        /// <summary>
+        /// The STANDALONE-inbox reserved root field names (#253), DERIVED BY CONSTRUCTION from the fields the standalone
+        /// marker actually renders rather than enumerated: it reads the top-level field names off a representative render
+        /// of <see cref="BuildBaseDocument"/> — the SAME field-name source <see cref="ToJsonObject"/> composes — so any
+        /// FUTURE optional render field is reserved automatically (no per-field guard to add). This is a SUPERSET of
+        /// <see cref="_reservedRootFields"/>: the standalone marker always opts into completion, so <see cref="CompletedField"/>
+        /// is always reserved, and it stamps <see cref="CosmosOutboxDocument.TtlField"/> iff a positive
+        /// <paramref name="markerTimeToLive"/> is configured, so <c>ttl</c> is reserved ONLY then. This set is scoped to the
+        /// standalone inbox: the document tier renders neither <c>Completed</c> nor <c>ttl</c>, so its narrower
+        /// <see cref="_reservedRootFields"/> guard (and its legal doc-tier <c>/ttl</c>/<c>/Completed</c> partition paths)
+        /// is unaffected.
+        /// </summary>
+        public static IReadOnlyCollection<string> StandaloneReservedRootFields(int? markerTimeToLive)
+        {
+            // Render a representative standalone base document (no partition stamping) and read its top-level field names.
+            // The standalone marker always renders Completed, and renders ttl iff a positive TTL is configured; the id,
+            // message id and received-at values are irrelevant here — only the FIELD NAMES the render emits matter.
+            CosmosInboxMarker representative = new CosmosInboxMarker(id: string.Empty, messageId: string.Empty, receivedAtUtc: default);
+            JsonObject baseDocument = representative.BuildBaseDocument(effectiveTtlSeconds: markerTimeToLive, effectiveCompleted: false);
+            return new HashSet<string>(baseDocument.Select(pair => pair.Key), StringComparer.Ordinal);
+        }
 
         public CosmosInboxMarker(string id, string messageId, DateTime receivedAtUtc, int? ttlSeconds = null, bool? completed = null)
         {
@@ -130,6 +153,25 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// </summary>
         public JsonObject ToJsonObject(IReadOnlyList<string> partitionKeyPath, IReadOnlyList<JsonElement> partitionKeyValues, int? ttlSeconds = null, bool? completed = null)
         {
+            // The explicit argument wins, else the marker's own configured value.
+            int? effectiveTtlSeconds = ttlSeconds ?? TtlSeconds;
+            bool? effectiveCompleted = completed ?? Completed;
+
+            JsonObject document = BuildBaseDocument(effectiveTtlSeconds, effectiveCompleted);
+
+            CosmosPartitionKeyStamping.Stamp(document, partitionKeyPath, partitionKeyValues, _reservedRootFields);
+
+            return document;
+        }
+
+        /// <summary>
+        /// Composes the marker body's top-level fields WITHOUT partition-key stamping. This is the SINGLE field-name
+        /// source shared by <see cref="ToJsonObject"/> (which stamps the partition value onto the returned object) and
+        /// <see cref="StandaloneReservedRootFields"/> (which reads the emitted field names to derive the standalone
+        /// reserved-root set by construction). Any optional field added here is therefore reserved automatically.
+        /// </summary>
+        private JsonObject BuildBaseDocument(int? effectiveTtlSeconds, bool? effectiveCompleted)
+        {
             var document = new JsonObject
             {
                 [IdField] = Id,
@@ -140,25 +182,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             // Optional dedup-window TTL (#253, ADR-0009 D3): stamp the Cosmos-reserved ttl field ONLY when a positive
             // ttl is available. "ttl" is deliberately NOT in _reservedRootFields — adding it would newly reject a
-            // legitimate /ttl partition-key path on the document tier — so the collision guard does not cover it; the
-            // standalone inbox always partitions on a non-ttl path (/idempotencyKey).
-            int? effectiveTtlSeconds = ttlSeconds ?? TtlSeconds;
+            // legitimate /ttl partition-key path on the document tier, which never emits a ttl. The standalone inbox DOES
+            // emit a ttl, so its own registration-time guard (StandaloneReservedRootFields) reserves it fail-loud instead.
             if (effectiveTtlSeconds > 0)
             {
                 document[CosmosOutboxDocument.TtlField] = effectiveTtlSeconds.Value;
             }
 
             // Optional two-phase completion state (#253, ADR-0009 D1 amendment): stamp the Completed field ONLY when a
-            // value is opted into (the explicit argument wins, else the marker's own Completed). CompletedField is
-            // deliberately NOT in _reservedRootFields (like ttl). A null value emits NO field, so the document-tier call
-            // site — which opts into neither ttl nor completion — renders byte-identically to the pre-amendment shape.
-            bool? effectiveCompleted = completed ?? Completed;
+            // value is opted into. CompletedField is deliberately NOT in _reservedRootFields (like ttl). A null value
+            // emits NO field, so the document-tier call site — which opts into neither ttl nor completion — renders
+            // byte-identically to the pre-amendment shape.
             if (effectiveCompleted.HasValue)
             {
                 document[CompletedField] = effectiveCompleted.Value;
             }
-
-            CosmosPartitionKeyStamping.Stamp(document, partitionKeyPath, partitionKeyValues, _reservedRootFields);
 
             return document;
         }

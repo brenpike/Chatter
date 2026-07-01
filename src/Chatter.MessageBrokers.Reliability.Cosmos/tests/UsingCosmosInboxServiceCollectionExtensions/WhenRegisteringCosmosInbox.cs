@@ -178,6 +178,44 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosInboxServic
         }
 
         [Fact]
+        public void MustRejectACompletedRootedPartitionKeyPathWithoutAMarkerTtl()
+        {
+            // The standalone marker ALWAYS renders `Completed` (the two-phase confirm-on-completion field), regardless of
+            // MarkerTimeToLive. A `/Completed` partition path would have its message-id partition value overwrite that
+            // field, so the phase-2 `/Completed=true` patch collides and confirm-on-completion reads a non-boolean — the
+            // message stalls Pending forever. Reject fail-loud at registration, EVEN WITHOUT a MarkerTimeToLive.
+            Action act = () => CaptureBuilder(b => b.WithCosmosInbox(Valid(o => o.PartitionKeyPath = new[] { "/Completed" })));
+
+            act.Should().Throw<ArgumentException>("a /Completed-rooted partition-key path collides with the always-rendered Completed field");
+        }
+
+        [Fact]
+        public void MustRejectACompletedRootedPartitionKeyPathWithAMarkerTtl()
+        {
+            // Same collision as above, and it must hold with a positive MarkerTimeToLive too (the ttl field is additive,
+            // Completed is reserved independent of it).
+            Action act = () => CaptureBuilder(b => b.WithCosmosInbox(Valid(o =>
+            {
+                o.PartitionKeyPath = new[] { "/Completed" };
+                o.MarkerTimeToLive = 60;
+            })));
+
+            act.Should().Throw<ArgumentException>("a /Completed-rooted partition-key path collides with the always-rendered Completed field");
+        }
+
+        [Fact]
+        public void MustAllowTheDefaultIdempotencyKeyPartitionKeyPath()
+        {
+            // The documented default `/idempotencyKey` is not a rendered marker field, so it is accepted both with and
+            // without a MarkerTimeToLive.
+            Action withoutTtl = () => CaptureBuilder(b => b.WithCosmosInbox(Valid()));
+            Action withTtl = () => CaptureBuilder(b => b.WithCosmosInbox(Valid(o => o.MarkerTimeToLive = 60)));
+
+            withoutTtl.Should().NotThrow();
+            withTtl.Should().NotThrow();
+        }
+
+        [Fact]
         public void MustRejectANegativeReadBackInterval()
         {
             Action act = () => CaptureBuilder(b => b.WithCosmosInbox(Valid(o => o.ReadBackInterval = TimeSpan.FromMilliseconds(-1))));

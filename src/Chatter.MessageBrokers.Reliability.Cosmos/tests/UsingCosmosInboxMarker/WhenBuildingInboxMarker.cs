@@ -3,6 +3,7 @@ using Chatter.MessageBrokers.Reliability.Cosmos;
 using FluentAssertions;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using Xunit;
 
@@ -130,6 +131,28 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosInboxMarker
             doc1.GetProperty("region").GetString().Should().Be("us-east");
             doc0.GetProperty("MessageId").GetString().Should().Be("msg-0");
             doc1.GetProperty("MessageId").GetString().Should().Be("msg-1");
+        }
+
+        [Fact]
+        public void StandaloneReservedRootFieldsMustEqualTheRenderedTopLevelFieldNames()
+        {
+            // Closed-by-construction (#256): the standalone reserved-root set is DERIVED from the same render source as
+            // ToJsonObject — it is NOT a hardcoded {Completed, ttl} constant — so it must equal the top-level field names a
+            // representative standalone marker actually renders (base fields ∪ Completed ∪ ttl-when-configured), less the
+            // stamped partition-key field. A future optional field added to the render is therefore reserved automatically.
+            const string partitionField = "tenantId";
+
+            var markerWithTtl = CosmosInboxMarker.From("msg-1", ttlSeconds: 60, completed: false);
+            var renderedWithTtl = markerWithTtl.ToJsonObject(new[] { "/" + partitionField }, PartitionKeyValues("tenant-1"));
+            var renderedNamesWithTtl = renderedWithTtl.Select(pair => pair.Key).Where(name => name != partitionField);
+
+            CosmosInboxMarker.StandaloneReservedRootFields(60).Should().BeEquivalentTo(renderedNamesWithTtl);
+
+            var markerNoTtl = CosmosInboxMarker.From("msg-1", completed: false);
+            var renderedNoTtl = markerNoTtl.ToJsonObject(new[] { "/" + partitionField }, PartitionKeyValues("tenant-1"));
+            var renderedNamesNoTtl = renderedNoTtl.Select(pair => pair.Key).Where(name => name != partitionField);
+
+            CosmosInboxMarker.StandaloneReservedRootFields(null).Should().BeEquivalentTo(renderedNamesNoTtl);
         }
 
         [Theory]

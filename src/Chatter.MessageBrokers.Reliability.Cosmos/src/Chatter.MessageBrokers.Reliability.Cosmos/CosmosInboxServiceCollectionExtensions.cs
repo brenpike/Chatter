@@ -5,6 +5,7 @@ using Chatter.MessageBrokers.Reliability.Inbox;
 using Microsoft.Azure.Cosmos;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -72,24 +73,27 @@ namespace Microsoft.Extensions.DependencyInjection
                 throw new ArgumentException("ReadBackInterval must be non-negative.", nameof(options.ReadBackInterval));
             }
 
-            // A positive MarkerTimeToLive stamps the dedup-window TTL at the Cosmos-reserved `ttl` field; the marker then
-            // stamps the partition value at the container's partition-key path. "ttl" is deliberately ABSENT from the
-            // marker's reserved-root-field collision guard (so the document tier keeps a legal `/ttl` partition path — it
-            // emits no TTL). But the STANDALONE inbox DOES emit a TTL, so a partition-key path rooted at `/ttl` here would
-            // have its partition-value stamp OVERWRITE the numeric TTL — corrupting it (execute-time failure or a silently
-            // defeated dedup window). Guard the one path that actually emits a TTL, fail-loud at registration BEFORE any
-            // Cosmos write, rather than widening the shared reserved set. Root-segment extraction mirrors the stamping.
-            if (options.MarkerTimeToLive > 0)
+            // CLOSED-BY-CONSTRUCTION reserved-root guard (#256): the standalone marker renders more root fields than the
+            // shared _reservedRootFields collision guard covers — it always emits `Completed` and emits the Cosmos-reserved
+            // `ttl` iff a positive MarkerTimeToLive is configured. Neither is in _reservedRootFields on purpose (the document
+            // tier renders neither, so widening the shared set would newly reject its legal `/ttl` and `/Completed` partition
+            // paths). A partition-key path rooted at any field the STANDALONE marker renders would have its partition-value
+            // stamp OVERWRITE that field — the message-id value clobbers `Completed`, the phase-2 `/Completed=true` patch
+            // collides, and confirm-on-completion reads a non-boolean → the message stalls Pending forever. So reject
+            // fail-loud at registration, BEFORE any Cosmos write, against the render-DERIVED standalone reserved set (base
+            // fields ∪ Completed ∪ ttl-when-configured) rather than enumerating each field with its own `if` — any future
+            // optional render field is reserved automatically. Root-segment extraction shares one primitive with stamping.
+            IReadOnlyCollection<string> standaloneReservedRootFields = CosmosInboxMarker.StandaloneReservedRootFields(options.MarkerTimeToLive);
+            string partitionRootSegment = CosmosPartitionKeyStamping.ExtractRootSegment(partitionKeyPath[0]);
+            if (standaloneReservedRootFields.Contains(partitionRootSegment, StringComparer.Ordinal))
             {
-                var partitionRootSegments = partitionKeyPath[0].Split('/', StringSplitOptions.RemoveEmptyEntries);
-                if (partitionRootSegments.Length > 0 && string.Equals(partitionRootSegments[0], CosmosOutboxDocument.TtlField, StringComparison.Ordinal))
-                {
-                    throw new ArgumentException(
-                        "A positive MarkerTimeToLive stamps the Cosmos-reserved 'ttl' field, which collides with a " +
-                        "partition-key path rooted at '/ttl' (the partition-value stamp would overwrite the numeric TTL). " +
-                        "Use a non-'/ttl' partition-key path (default '/idempotencyKey') or leave MarkerTimeToLive unset.",
-                        nameof(options.PartitionKeyPath));
-                }
+                throw new ArgumentException(
+                    $"The container partition-key path '{partitionKeyPath[0]}' is rooted at '{partitionRootSegment}', a field the " +
+                    $"standalone Cosmos inbox marker renders ([{string.Join(", ", standaloneReservedRootFields)}]). The partition-value " +
+                    "stamp would overwrite that required field (corrupting the marker / stalling confirm-on-completion). Use a " +
+                    "non-reserved partition-key path (default '/idempotencyKey'); note 'ttl' is reserved only when a positive " +
+                    "MarkerTimeToLive is configured.",
+                    nameof(options.PartitionKeyPath));
             }
 
             string database = options.Database;
