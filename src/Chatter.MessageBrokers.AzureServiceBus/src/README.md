@@ -108,13 +108,7 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
       "AzureServiceBus": {
         "ConnectionString": "Endpoint=sb://your-namespace.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...",
         "MaxConcurrentCalls": 1,
-        "PrefetchCount": 0,
-        "RetryPolicy": {
-          "MinimumBackoffInSeconds": 0,
-          "MaximumBackoffInSeconds": 0,
-          "DeltaBackoffInSeconds": 0,
-          "MaximumRetryCount": 0
-        }
+        "PrefetchCount": 0
       }
     }
   }
@@ -128,12 +122,10 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 | `ConnectionString` | (required) | Azure Service Bus namespace connection string. |
 | `MaxConcurrentCalls` | `1` | Maximum number of messages processed concurrently. |
 | `PrefetchCount` | `0` | Number of messages eagerly fetched from the broker. |
-| `Policy` (`RetryPolicy`) | `RetryPolicy.Default` | ASB client-level retry policy derived from the `RetryPolicy` config section. |
+| `RetryOptions` (`ServiceBusRetryOptions`) | `null` | ASB client-level retry options, set through the `WithNoRetry()` / `WithExponentialDelay(...)` builder methods. When `null`, the Azure SDK's own default retry applies, because the shared client is created without an explicit `RetryOptions`. |
 | `TokenCredential` | `null` | AAD `Azure.Core.TokenCredential` (see [Authentication](#authentication)). |
 | `SessionIdleTimeout` | `00:01:00` (60 s) | How long a held session may yield no message before it is released and the receiver rolls. Applies only to session-enabled receivers. |
 | `MaxSessionLockRenewalDuration` | `00:05:00` (5 min) | Ceiling on how long a held session's lock is renewed for long-running processing. Applies only to session-enabled receivers. |
-
-The `RetryPolicy` configuration section maps to an ASB `RetryExponential` policy via `MinimumBackoffInSeconds`, `MaximumBackoffInSeconds`, `DeltaBackoffInSeconds`, and `MaximumRetryCount`. When all values are `0`, `RetryPolicy.NoRetry` is used; when the section is absent, `RetryPolicy.Default` applies.
 
 ### `ServiceBusOptionsBuilder` methods
 
@@ -144,8 +136,8 @@ The `AddAzureServiceBus(asb => ...)` delegate exposes a `ServiceBusOptionsBuilde
 | `WithConnectionString(string)` | Sets the namespace connection string in code. |
 | `WithMaxConcurrentCalls(int)` | Sets `MaxConcurrentCalls`. |
 | `WithPrefetchCount(int)` | Sets `PrefetchCount`. |
-| `WithNoRetry()` | Uses `RetryPolicy.NoRetry` for the ASB client. |
-| `WithExponentialDelay(maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds, deltaBackoffInSeconds)` | Configures a `RetryExponential` client retry policy. |
+| `WithNoRetry()` | Sets `RetryOptions` to a `ServiceBusRetryOptions` with `MaxRetries = 0`. |
+| `WithExponentialDelay(maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds, deltaBackoffInSeconds)` | Sets `RetryOptions` to a `ServiceBusRetryOptions` with `Mode = ServiceBusRetryMode.Exponential`, `MaxRetries = maximumRetryCount`, `Delay = minimumBackoffInSeconds`, and `MaxDelay = maximumBackoffInSeconds`. `deltaBackoffInSeconds` is accepted for source compatibility and has no effect. |
 | `UseConfig(configSectionName)` | Binds `ServiceBusOptions` from the given configuration section (default `Chatter:Infrastructure:AzureServiceBus`). |
 | `AddTokenProvider(TokenCredential)` / `AddTokenProvider(Func<TokenCredential>)` | Supplies an AAD `Azure.Core.TokenCredential`; the `Func<TokenCredential>` overload is invoked eagerly at registration, not deferred (see [Authentication](#authentication)). |
 | `WithSessionIdleTimeout(TimeSpan)` | Overrides how long a held session may yield no message before rolling to the next. Default: 60 s. See [Sessions](#sessions). |
@@ -162,7 +154,7 @@ Receive-side recovery is driven by the broker-agnostic retry and circuit-breaker
 - `ServiceBusRetryExceptionPredicatesProvider` (`IRetryExceptionPredicatesProvider`)
 - `ServiceBusCircuitBreakerExceptionPredicatesProvider` (`ICircuitBreakerExceptionPredicatesProvider`)
 
-Both treat the following as transient (when `IsTransient` is `true`): `ServiceBusException`, `ServiceBusCommunicationException`, `ServerBusyException`, and `ServiceBusTimeoutException`. The per-receiver `maxReceiveAttempts` (default `10`) bounds redelivery attempts before a message is routed to its configured `errorQueuePath`.
+Both treat a `ServiceBusException` as transient when its `IsTransient` is `true`, or when its `Reason` is `ServiceBusFailureReason.ServiceCommunicationProblem`, `ServiceBusFailureReason.ServiceBusy`, or `ServiceBusFailureReason.ServiceTimeout`. The per-receiver `maxReceiveAttempts` (default `10`) bounds redelivery attempts before a message is routed to its configured `errorQueuePath`.
 
 ## Authentication
 
