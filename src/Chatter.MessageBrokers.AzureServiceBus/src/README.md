@@ -129,7 +129,7 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 | `MaxConcurrentCalls` | `1` | Maximum number of messages processed concurrently. |
 | `PrefetchCount` | `0` | Number of messages eagerly fetched from the broker. |
 | `Policy` (`RetryPolicy`) | `RetryPolicy.Default` | ASB client-level retry policy derived from the `RetryPolicy` config section. |
-| `TokenProvider` | `NullTokenProvider` | AAD/token credential (see [Authentication](#authentication)). |
+| `TokenCredential` | `null` | AAD `Azure.Core.TokenCredential` (see [Authentication](#authentication)). |
 | `SessionIdleTimeout` | `00:01:00` (60 s) | How long a held session may yield no message before it is released and the receiver rolls. Applies only to session-enabled receivers. |
 | `MaxSessionLockRenewalDuration` | `00:05:00` (5 min) | Ceiling on how long a held session's lock is renewed for long-running processing. Applies only to session-enabled receivers. |
 
@@ -147,7 +147,7 @@ The `AddAzureServiceBus(asb => ...)` delegate exposes a `ServiceBusOptionsBuilde
 | `WithNoRetry()` | Uses `RetryPolicy.NoRetry` for the ASB client. |
 | `WithExponentialDelay(maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds, deltaBackoffInSeconds)` | Configures a `RetryExponential` client retry policy. |
 | `UseConfig(configSectionName)` | Binds `ServiceBusOptions` from the given configuration section (default `Chatter:Infrastructure:AzureServiceBus`). |
-| `AddTokenProvider(ITokenProvider)` / `AddTokenProvider(Func<ITokenProvider>)` | Supplies an AAD token provider (see [Authentication](#authentication)). |
+| `AddTokenProvider(TokenCredential)` / `AddTokenProvider(Func<TokenCredential>)` | Supplies an AAD `Azure.Core.TokenCredential`; the `Func<TokenCredential>` overload is invoked eagerly at registration, not deferred (see [Authentication](#authentication)). |
 | `WithSessionIdleTimeout(TimeSpan)` | Overrides how long a held session may yield no message before rolling to the next. Default: 60 s. See [Sessions](#sessions). |
 | `WithMaxSessionLockRenewalDuration(TimeSpan)` | Overrides the ceiling on held-session lock renewal. Default: 5 min. See [Sessions](#sessions). |
 | `AddQueueReceiver<TMessage>(...)` | Registers a queue receiver for an `ICommand`. |
@@ -166,7 +166,7 @@ Both treat the following as transient (when `IsTransient` is `true`): `ServiceBu
 
 ## Authentication
 
-The connection string above uses SAS-based auth. Azure Active Directory (AAD) authentication — token providers such as managed identity / `ITokenProvider` integrations — is provided by the sibling package [`Chatter.MessageBrokers.AzureServiceBus.Auth`](#chatter-azureservicebus-auth). When a token provider is supplied (via `AddTokenProvider(...)`) and the connection string contains no SAS token/key, that token provider is used to authenticate to the namespace.
+The connection string above uses SAS-based auth. Azure Active Directory (AAD) authentication — via an `Azure.Core.TokenCredential` (falling back to `DefaultAzureCredential` when no explicit credential is given) — is provided by the sibling package [`Chatter.MessageBrokers.AzureServiceBus.Auth`](#chatter-azureservicebus-auth). When a token credential is supplied (via `AddTokenProvider(...)`) and the connection string contains no SAS token/key, that credential is used to authenticate to the namespace.
 
 ## Testing
 
