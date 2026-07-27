@@ -4,12 +4,12 @@ Azure Active Directory token-based authentication for the Azure Service Bus brok
 
 ## Language
 
-**AAD Token Provider**: Supplies Azure Active Directory access tokens (scoped to `https://servicebus.azure.net/.default`) used to authenticate the Service Bus connection — `AzureActiveDirectoryTokenProvider`.
+**AAD Token Provider**: Supplies Azure Active Directory access tokens (scoped to `https://servicebus.azure.net/.default`) used to authenticate the Service Bus connection — an `Azure.Core.TokenCredential` produced by the Token Provider Factory.
 _Avoid_: credential provider.
 
-**Token Provider Factory**: Builds an AAD Token Provider from configured options (`AadTokenProviderFactory`), via MSAL confidential-client.
+**Token Provider Factory**: Builds an AAD Token Provider from configured options (`AadTokenProviderFactory`), via `Azure.Identity` — returns a `ClientSecretCredential`, `ClientCertificateCredential`, or `InteractiveBrowserCredential` depending on Credential Mode, falling back to `DefaultAzureCredential` when the distinguishing credential value is not supplied.
 
-**Credential Mode**: How the token is acquired — client-secret, client-certificate (X509 thumbprint), or interactive (`UseAadTokenProviderWithSecret` / `WithCert` / `Interactively`).
+**Credential Mode**: How the token is acquired — client-secret, client-certificate (X509 thumbprint), or interactive (`UseAadTokenProviderWithSecret` / `UseAadTokenProviderWithCert` / `UseAadTokenProviderInteractively`).
 
 **Default Credential Fallback**: When no explicit credential is supplied, `DefaultAzureCredential` is used (managed identity, env, Azure CLI, etc.).
 
