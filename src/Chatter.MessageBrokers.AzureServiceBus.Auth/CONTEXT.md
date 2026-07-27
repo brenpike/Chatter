@@ -9,7 +9,7 @@ _Avoid_: credential provider.
 
 **Token Provider Factory**: Builds an AAD Token Provider from configured options (`AadTokenProviderFactory`), via `Azure.Identity` — returns a `ClientSecretCredential`, `ClientCertificateCredential`, or `InteractiveBrowserCredential` depending on Credential Mode, falling back to `DefaultAzureCredential` when the distinguishing credential value is not supplied.
 
-**Credential Mode**: How the token is acquired — client-secret, client-certificate (X509 thumbprint), or interactive (`UseAadTokenProviderWithSecret` / `WithCert` / `Interactively`).
+**Credential Mode**: How the token is acquired — client-secret, client-certificate (X509 thumbprint), or interactive (`UseAadTokenProviderWithSecret` / `UseAadTokenProviderWithCert` / `UseAadTokenProviderInteractively`).
 
 **Default Credential Fallback**: When no explicit credential is supplied, `DefaultAzureCredential` is used (managed identity, env, Azure CLI, etc.).
 
