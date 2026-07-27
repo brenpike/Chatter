@@ -122,7 +122,6 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 | `ConnectionString` | (required) | Azure Service Bus namespace connection string. |
 | `MaxConcurrentCalls` | `1` | Maximum number of messages processed concurrently. |
 | `PrefetchCount` | `0` | Number of messages eagerly fetched from the broker. |
-| `RetryOptions` (`ServiceBusRetryOptions`) | `null` | ASB client-level retry options, set through the `WithNoRetry()` / `WithExponentialDelay(...)` builder methods. When `null`, the Azure SDK's own default retry applies, because the shared client is created without an explicit `RetryOptions`. |
 | `TokenCredential` | `null` | AAD `Azure.Core.TokenCredential` (see [Authentication](#authentication)). |
 | `SessionIdleTimeout` | `00:01:00` (60 s) | How long a held session may yield no message before it is released and the receiver rolls. Applies only to session-enabled receivers. |
 | `MaxSessionLockRenewalDuration` | `00:05:00` (5 min) | Ceiling on how long a held session's lock is renewed for long-running processing. Applies only to session-enabled receivers. |
