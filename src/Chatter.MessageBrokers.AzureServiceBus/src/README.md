@@ -248,6 +248,14 @@ options.WithMessageContext(ASBMessageContext.PartitionKey, message.OrderId);
 
 A mismatched partition key throws `ArgumentOutOfRangeException` from the Azure SDK's `ServiceBusMessage.PartitionKey` setter — client-side, before the message ever reaches the broker.
 
+### Inbound context inheritance
+
+A handler that sends or publishes through `IMessageHandlerContext` (for example `context.AzureServiceBus().Send(...)`) inherits the entire inbound message context. A message received from a session-stamped entity therefore emits an outbound `ServiceBusMessage.SessionId` equal to the inbound one, even if the handler's own `SendOptions` never called `WithGroupId`.
+
+This is by design and is not special to Group Id: `CorrelationId`, `Subject`, `ReplyTo`, `ReplyToSessionId`, `To`, and `TimeToLive` are inherited the same way. It's load-bearing only when the destination is session-enabled or partitioned — on a plain queue or topic an inherited Group Id is an inert wire property, but on a partitioned destination it still affects partition affinity even when that destination is not session-enabled.
+
+To opt out, either resolve `IBrokeredMessageDispatcher` and call the overload that takes a `TransactionContext` instead of an `IMessageHandlerContext` — that overload does not merge inbound context — or supply your own Group Id on the outbound options, since caller-supplied options win the merge.
+
 ### Durable per-session state
 
 During handler execution a handler can read, write, and clear durable session state stored on the Azure Service Bus entity for the currently held session:
