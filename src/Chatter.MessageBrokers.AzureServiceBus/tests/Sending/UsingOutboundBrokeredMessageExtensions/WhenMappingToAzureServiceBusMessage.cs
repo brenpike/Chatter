@@ -46,15 +46,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
         }
 
         [Fact]
-        public void MustThrowWhenGroupIdSetWithoutMatchingPartitionKey()
+        public void MustMapSessionIdFromGroupIdWhenNoPartitionKey()
         {
-            // INVARIANT: the mapping assigns SessionId then PartitionKey on the SDK ServiceBusMessage; for
-            // a partitioned message the SDK requires PartitionKey == SessionId, so a GroupId without a
-            // matching PartitionKey makes set_PartitionKey throw ArgumentOutOfRangeException
-            // (Azure.Messaging.ServiceBus validates the setter and rejects the mismatch).
+            // INVARIANT: an absent partition key means "not specified", not "explicitly null" -- the
+            // mapping skips assigning ServiceBusMessage.PartitionKey entirely when GetPartitionKey() is
+            // empty, so SessionId is set from GroupId alone and no mismatch is possible.
             var context = new Dictionary<string, object> { [MessageContext.GroupId] = "group-1" };
-            Action map = () => CreateSut(context: context).AsAzureServiceBusMessage();
-            map.Should().Throw<ArgumentOutOfRangeException>();
+            var message = CreateSut(context: context).AsAzureServiceBusMessage();
+            message.SessionId.Should().Be("group-1");
+            message.PartitionKey.Should().BeNull();
         }
 
         [Fact]
@@ -66,6 +66,35 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
             message.SessionId.Should().Be("group-1");
             message.PartitionKey.Should().Be("group-1");
         }
+
+        [Fact]
+        public void MustThrowWhenGroupIdSetWithDifferentPartitionKey()
+        {
+            // INVARIANT: for a partitioned message the SDK requires PartitionKey == SessionId, so a
+            // GroupId paired with a genuinely different, non-empty partition key makes set_PartitionKey
+            // throw ArgumentOutOfRangeException (Azure.Messaging.ServiceBus validates the setter and
+            // rejects the mismatch).
+            var sut = CreateSut().WithPartitionKey("different-key");
+            sut.MessageContext[MessageContext.GroupId] = "group-1";
+            Action map = () => sut.AsAzureServiceBusMessage();
+            map.Should().Throw<ArgumentOutOfRangeException>();
+        }
+
+        [Fact]
+        public void MustNotThrowWhenGroupIdSetWithEmptyPartitionKey()
+        {
+            // An empty-string partition key is treated the same as absent ("not specified"), per the
+            // IsNullOrEmpty check in AsAzureServiceBusMessage.
+            var sut = CreateSut().WithPartitionKey(string.Empty);
+            sut.MessageContext[MessageContext.GroupId] = "group-1";
+            var message = sut.AsAzureServiceBusMessage();
+            message.SessionId.Should().Be("group-1");
+            message.PartitionKey.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustLeavePartitionKeyNullWhenNeitherGroupIdNorPartitionKeySet()
+            => CreateSut().AsAzureServiceBusMessage().PartitionKey.Should().BeNull();
 
         [Fact]
         public void MustMapReplyToFromReplyToAddress()

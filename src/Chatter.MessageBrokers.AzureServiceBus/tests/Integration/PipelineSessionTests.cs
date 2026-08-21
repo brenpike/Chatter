@@ -171,17 +171,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
 
         // Builds the SendOptions that route a message to the given session. SendOptions.WithGroupId stamps
         // MessageContext.GroupId, which the existing ASB mapping forwards to ServiceBusMessage.SessionId. The
-        // mapping (OutboundBrokeredMessageExtensions.AsAzureServiceBusMessage) assigns SessionId then
-        // PartitionKey on the SDK message, and the SDK requires PartitionKey == SessionId for a session/
-        // partitioned message — so the matching PartitionKey must be set alongside the Group Id or the setter
-        // throws (this is the documented send-side contract, pinned by the unit test
-        // MustMapSessionIdFromGroupIdWhenPartitionKeyMatches). Set both to the session id here.
+        // mapping (OutboundBrokeredMessageExtensions.AsAzureServiceBusMessage) only assigns PartitionKey on the
+        // SDK message when one was explicitly set, so a plain session send needs only the Group Id — no
+        // PartitionKey is required. The matching-PartitionKey variant is pinned separately by the unit tests in
+        // tests/Sending/UsingOutboundBrokeredMessageExtensions/WhenMappingToAzureServiceBusMessage.cs.
         private static SendOptions SessionSend(string sessionId)
-        {
-            var options = new SendOptions().WithGroupId(sessionId);
-            options.WithMessageContext(ASBMessageContext.PartitionKey, sessionId);
-            return options;
-        }
+            => new SendOptions().WithGroupId(sessionId);
 
         // Bounded poll until the recorder has captured at least minCount invocations, returning the observed
         // count (which may be below minCount if the timeout elapses — the caller asserts on it so a
