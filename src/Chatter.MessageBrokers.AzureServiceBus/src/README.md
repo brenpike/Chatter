@@ -224,7 +224,7 @@ public class ProcessOrderHandler : IMessageHandler<ProcessOrder>
 
 ### Sending a message to a session
 
-Set `WithGroupId` on `SendOptions` to route the outbound message to the target session. Azure Service Bus requires `PartitionKey == SessionId` for session messages on partitioned entities; set `WithPartitionKey` to the same value, otherwise the broker will reject the message with `ArgumentOutOfRangeException`:
+Set `WithGroupId` on `SendOptions` to route the outbound message to the target session:
 
 ```csharp
 public class DispatchOrderHandler : IMessageHandler<DispatchOrder>
@@ -232,8 +232,7 @@ public class DispatchOrderHandler : IMessageHandler<DispatchOrder>
     public async Task Handle(DispatchOrder message, IMessageHandlerContext context)
     {
         var options = new SendOptions()
-            .WithGroupId(message.OrderId)        // sets ServiceBusMessage.SessionId
-            .WithPartitionKey(message.OrderId);  // must equal SessionId for session messages
+            .WithGroupId(message.OrderId);  // sets ServiceBusMessage.SessionId
 
         await context.AzureServiceBus()
                      .Send(new ProcessOrder { OrderId = message.OrderId }, "orders-session-queue", options);
@@ -241,7 +240,13 @@ public class DispatchOrderHandler : IMessageHandler<DispatchOrder>
 }
 ```
 
-`WithGroupId` and `WithPartitionKey` are both on the core `SendOptions` type; `WithPartitionKey` writes to `ASBMessageContext.PartitionKey`, which `OutboundBrokeredMessageExtensions` maps to `ServiceBusMessage.PartitionKey` when the message is sent.
+`WithGroupId` alone is enough: the mapping only assigns `ServiceBusMessage.PartitionKey` when a non-empty partition key was explicitly supplied, letting `SessionId` stand in for it otherwise. An explicit partition key is optional; if set, it must equal the Group Id, and it has to be a separate statement — `WithMessageContext` returns `RoutingOptions`, not `SendOptions`, so it cannot terminate the fluent chain above:
+
+```csharp
+options.WithMessageContext(ASBMessageContext.PartitionKey, message.OrderId);
+```
+
+A mismatched partition key throws `ArgumentOutOfRangeException` from the Azure SDK's `ServiceBusMessage.PartitionKey` setter — client-side, before the message ever reaches the broker.
 
 ### Durable per-session state
 

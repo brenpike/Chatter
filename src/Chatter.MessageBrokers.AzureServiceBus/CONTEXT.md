@@ -26,6 +26,8 @@ Azure Service Bus implementation of the Chatter.MessageBrokers interfaces for se
 
 **Group Id ↔ SessionId realization**: The Azure Service Bus `SessionId` is the broker realization of the suite's existing Group Id (AMQP group-id) term. Inbound, a session message's `SessionId` is surfaced under `MessageContext.GroupId`; outbound, `SendOptions.WithGroupId` sets `ServiceBusMessage.SessionId`. No `WithSessionId` alias is introduced — Group Id is the single canonical surface.
 
+**Partition Key**: Optional outbound value written via `ASBMessageContext.PartitionKey`, mapped to `ServiceBusMessage.PartitionKey` only when explicitly supplied; otherwise `SessionId` (from Group Id) stands in for it. When both a Group Id and a Partition Key are set, the Partition Key must equal the Group Id.
+
 **Session Idle Timeout**: Operator knob (`SessionIdleTimeout` / `WithSessionIdleTimeout`) controlling how long a held session may yield no message before it is released and the receiver rolls to the next session. Default: 60 seconds. Fluent call wins over configuration.
 
 **Max Session Lock Renewal Duration**: Operator knob (`MaxSessionLockRenewalDuration` / `WithMaxSessionLockRenewalDuration`) setting the ceiling on how long a held session's lock is renewed for long-running processing. Once reached, renewal stops and the session is allowed to expire or roll naturally. Default: 5 minutes. Fluent call wins over configuration.
@@ -44,7 +46,7 @@ Azure Service Bus implementation of the Chatter.MessageBrokers interfaces for se
 > **Domain expert:** "Configure Service Bus Options with the connection and paths; the Service Bus Receiver and Sender wire into the broker abstraction automatically."
 
 > **Dev:** "How do I process session messages in strict order per session?"
-> **Domain expert:** "Register the queue or subscription with `AddSessionQueueReceiver` or `AddSessionTopicSubscription`. The inbound SessionId is available in the handler as `MessageContext.GroupId`. For outbound messages targeting a session, set `WithGroupId` on `SendOptions` — and also set `WithPartitionKey` to the same value, because Azure Service Bus requires `PartitionKey == SessionId` for session messages."
+> **Domain expert:** "Register the queue or subscription with `AddSessionQueueReceiver` or `AddSessionTopicSubscription`. The inbound SessionId is available in the handler as `MessageContext.GroupId`. For outbound messages targeting a session, set `WithGroupId` on `SendOptions`."
 
 ## Flagged ambiguities
 

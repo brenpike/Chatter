@@ -18,11 +18,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
                 ReplyTo = brokeredMessage.GetReplyToAddress(),
                 ReplyToSessionId = brokeredMessage.GetReplyToGroupId(),
                 SessionId = brokeredMessage.GetGroupId(),
-                PartitionKey = brokeredMessage.GetPartitionKey(),
                 TransactionPartitionKey = brokeredMessage.GetViaPartitionKey(),
                 To = brokeredMessage.GetToAddress()
             }
             .WithApplicationProperties(brokeredMessage.MessageContext);
+
+            // An absent partition key means "not specified" here, not "explicitly null": the SDK's
+            // set_PartitionKey rejects any value that differs from an already-set SessionId -- including
+            // null -- so only assign it when a partition key was actually supplied, letting SessionId
+            // stand in for it otherwise. An explicit mismatch between two set values must still throw.
+            if (!string.IsNullOrEmpty(brokeredMessage.GetPartitionKey()))
+            {
+                message.PartitionKey = brokeredMessage.GetPartitionKey();
+            }
 
             if (brokeredMessage.GetTimeToLive() != null)
             {
