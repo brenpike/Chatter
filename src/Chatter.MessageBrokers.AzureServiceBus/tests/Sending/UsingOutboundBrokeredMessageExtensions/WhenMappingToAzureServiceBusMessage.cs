@@ -97,6 +97,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
             => CreateSut().AsAzureServiceBusMessage().PartitionKey.Should().BeNull();
 
         [Fact]
+        public void MustPreserveExplicitEmptyPartitionKeyWhenNoGroupIdSet()
+        {
+            // INVARIANT: without a SessionId there is no SDK mismatch to guard against, so an
+            // explicitly supplied empty string is a real signal, not "absent" -- it must be
+            // preserved on the outgoing message rather than silently becoming null.
+            var sut = CreateSut().WithPartitionKey(string.Empty);
+            var message = sut.AsAzureServiceBusMessage();
+            message.SessionId.Should().BeNull();
+            message.PartitionKey.Should().Be(string.Empty);
+        }
+
+        [Fact]
         public void MustMapReplyToFromReplyToAddress()
         {
             var context = new Dictionary<string, object> { [MessageContext.ReplyToAddress] = "reply-here" };
