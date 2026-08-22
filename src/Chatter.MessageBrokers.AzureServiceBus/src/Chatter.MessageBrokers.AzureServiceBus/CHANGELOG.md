@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.4.1] - 2026-08-21
+
+### Fixed
+
+- `AsAzureServiceBusMessage` now assigns `ServiceBusMessage.PartitionKey` only when a partition key was explicitly supplied, instead of unconditionally. Previously, sending a message that carried only a Group Id threw `ArgumentOutOfRangeException` from the Azure SDK's `set_PartitionKey`, because a null partition key differs from an already-set `SessionId`. This reached consumers who never asked for sessions or partitioning at all: the receive path promotes an inbound `SessionId` onto `MessageContext.GroupId`, and republishing via the inbound `IMessageHandlerContext` inherits it. Sending with a Group Id alongside a genuinely different, non-empty partition key still throws, as intended (#262). Upgraders should note this makes the by-design inheritance observable for the first time: a handler that republishes via the inbound `IMessageHandlerContext` now emits a message carrying the inbound Group Id instead of throwing.
+
 ## [1.4.0] - 2026-06-14
 
 ### Added
