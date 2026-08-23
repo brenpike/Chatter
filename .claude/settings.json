@@ -33,7 +33,6 @@
       "Bash(gh repo view *)",
       "Bash(grep *)",
       "Bash(cat > .hivemind/*)",
-      "Write(.hivemind/review-loop/*)",
       "Bash(mkdir -p .hivemind/review-loop)",
       "Monitor",
       "Bash(jq *)",
@@ -54,7 +53,13 @@
       "Bash(git grep *)",
       "Bash(bash tools/policy_check.sh*)",
       "Bash(bash tools/validate_reports.sh*)",
-      "Bash(bash -n *)"
+      "Bash(bash -n *)",
+      "Edit(.hivemind/review-loop/*)",
+      "Edit(.hivemind/runs/.init-inputs-*.json)",
+      "Edit(.hivemind/runs/.record-inputs-*.json)",
+      "Edit(.hivemind/runs/.markfb-inputs-*.json)",
+      "Edit(.hivemind/spawn-inputs.*.json)",
+      "Edit(.hivemind/seed-inputs-*.json)"
     ]
   },
   "hooks": {
