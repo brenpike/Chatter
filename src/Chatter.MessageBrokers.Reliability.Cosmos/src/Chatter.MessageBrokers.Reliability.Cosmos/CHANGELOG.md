@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-22
+
+### Fixed
+
+- Corrected the NuGet package `<Description>`, which described standalone inbox marker behavior the library does not have. The description now also notes the gate's concurrency posture: it deduplicates redeliveries but does not serialize concurrent delivery, so two concurrent deliveries of the same message id both run the handler, and handlers must be idempotent and safe under concurrent execution. Package metadata only — no behavior change, nothing to do on upgrade.
+
 ## [0.4.0] - 2026-06-30
 
 ### Added
