@@ -40,11 +40,13 @@ Azure Cosmos DB document-tier reliability provider implementing the inbox/outbox
 
 ### Relay
 
-**Outbox Relay**: The change-feed drain that reads pending outbox documents, publishes each through the broker, marks it delivered, and stamps a TTL; one change-feed processor per distinct database/container/lease. _Avoid_: dispatcher, relay worker, drainer.
+**Outbox Relay**: The change-feed drain that reads pending outbox documents, publishes each through the broker, marks it delivered, and stamps a TTL; one change-feed processor per distinct Change-Feed Source Identity. _Avoid_: dispatcher, relay worker, drainer.
+
+**Change-Feed Source Identity**: The relay's dedup and processor-name key, declared-or-ground-truth and never inferred from a caller-controlled handle — caller-declared monitored/lease tokens on the advanced overload, and on the plain overload the resolved ground truth (account endpoint + database id + container id, for both the monitored and the lease container). _Avoid_: database/container/lease triple (the account endpoint is part of the key, so identically-named containers in different accounts stay distinct).
 
 **Standalone Outbox Relay**: The lease-backed relay registered as its own hosted service, independent of the command pipeline, for applications that only drain a container.
 
-**Standalone Inbox Gate**: The lease-less inbox-dedup gate registered through the inbox behavior seam for stateless consumers with no aggregate, outbox, or lease container.
+**Standalone Inbox Gate**: The lease-less inbox-dedup gate registered through the inbox behavior seam for stateless services with no aggregate, outbox, or lease container.
 
 **Outbox Body Resolver**: The drain-time seam invoked per pending document so the brokered-message body can be sourced from current store state rather than reconstructed verbatim from the persisted document.
 
@@ -57,7 +59,7 @@ Azure Cosmos DB document-tier reliability provider implementing the inbox/outbox
 - The Batch-Lifecycle Behavior consults the Document Reliability Registry, invokes the Partition-Key Resolver only for participants, and publishes the Atomic-Write Handle on the Document-Tier Reliability Surface.
 - The Handle-Gated Outbound Router gates outbound routing on the presence of that handle, so non-participant dispatch never reaches the Cosmos outbox.
 - The Co-Resident Outbox Document and the Inbox Marker share one container and one Reserved Item-Id Namespace, and encode their id segment identically.
-- The Outbox Relay consumes Co-Resident Outbox Documents and publishes them through the broker; delivery is at-least-once, so downstream consumers deduplicate via the Inbox Marker.
+- The Outbox Relay consumes Co-Resident Outbox Documents and publishes them through the broker; delivery is at-least-once, so downstream receivers deduplicate via the Inbox Marker.
 - The Outbox Relay hands each admitted document to the Outbox Body Resolver via an Outbox Drain Context before publishing.
 
 ## Example dialogue
@@ -67,5 +69,5 @@ Azure Cosmos DB document-tier reliability provider implementing the inbox/outbox
 
 ## Flagged ambiguities
 
-- **Inbox** covers two different registrations: the full document-tier inbox co-resident with the aggregate, and the lease-less Standalone Inbox Gate for stateless consumers. Name which one is meant.
+- **Inbox** covers two different registrations: the full document-tier inbox co-resident with the aggregate, and the lease-less Standalone Inbox Gate for stateless services. Name which one is meant.
 - The Standalone Inbox Gate deduplicates redeliveries only, not concurrent delivery — two concurrent deliveries of one message id both run the handler, so mutual exclusion for concurrent delivery stays the transport's responsibility.

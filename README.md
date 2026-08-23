@@ -117,7 +117,7 @@ Document-tier (NoSQL) implementation of the Chatter.MessageBrokers reliability p
 - Co-resident **outbox** staged atomically with the aggregate write, plus a co-resident **inbox** marker for TOCTOU-free idempotent dedup (confirmed-duplicate marker-409 fails the batch atomically).
 - **Change-feed outbox relay**: a hosted `ChangeFeedProcessor` drains co-resident pending outbox documents, publishes each through the broker at-least-once, then marks delivered with a TTL self-purge.
 - **Standalone outbox relay** (`AddCosmosOutboxRelay`): the same change-feed relay registered as its own `IHostedService`, independent of the command pipeline and repeatable per monitored container, carrying the `IOutboxBodyResolver` drain-time body-resolution seam.
-- **Standalone inbox** (`WithCosmosInbox`): a lease-less inbox-dedup gate for a service that needs once-only handling with no aggregate write, outbox, or lease container.
+- **Standalone inbox** (`WithCosmosInbox`): a lease-less redelivery-dedup gate for a service with no aggregate write, outbox, or lease container — it skips the handler on a confirmed *completed* marker, but does not serialize genuinely-concurrent deliveries of the same id (that mutual exclusion stays the transport's responsibility).
 - Entry points: `CommandPipelineBuilder.WithCosmosDocumentReliability<TCommand>(...)` (document tier), `services.AddCosmosOutboxRelay(...)` (standalone relay), `CommandPipelineBuilder.WithCosmosInbox(...)` (standalone inbox).
 
 ### [Chatter.SqlChangeFeed](./src/Chatter.SqlChangeFeed/src/README.md#chatter-sqlchangefeed)
