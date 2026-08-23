@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-22
+
+### Fixed
+
+- Stale published package metadata on the `<Description>` NuGet element (no source change). It falsely described the standalone inbox gate as best-effort compensation-DELETING the write-ahead marker on a handler failure and confirming a create-409 by point-reading the conflicting marker BEFORE skipping the handler — both describing the interim single-phase design removed before 0.4.0 shipped, not the design that actually shipped. The description now matches the shipped two-phase write-ahead claim: a pending `CosmosInboxMarker` created before the handler and PATCHED to completed after, so a redelivery confirms a duplicate on COMPLETION rather than mere existence; a create-409 resolves THREE ways (a completed marker SKIPS the handler, a pending or abandoned marker is TAKEN OVER and re-run, an unconfirmable conflict REDELIVERS); and a handler failure RETHROWS the original exception and LEAVES the pending marker in place for the take-over path to adopt, rather than deleting it — keeping marker state MONOTONIC (absent -> pending -> completed, with a `MarkerTimeToLive` purge the only removal). Published package metadata only — no source, behavior, wire-shape, or public API change.
+
 ## [0.4.0] - 2026-06-30
 
 ### Added
