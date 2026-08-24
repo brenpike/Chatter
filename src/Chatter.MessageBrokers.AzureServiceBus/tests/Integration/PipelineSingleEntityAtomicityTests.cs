@@ -14,11 +14,13 @@ using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
 {
-    // Single-entity FullAtomicityViaInfrastructure coverage driven THROUGH Chatter. A receiver on
-    // chatter.atomic runs in TransactionMode.FullAtomicityViaInfrastructure; when its handler is invoked for
-    // the original message it sends a follow-up to the SAME entity (chatter.atomic) via the broker context's
-    // Send (which enlists in the receiver's atomic TransactionScope). The scope commits, settling the original
-    // and committing the follow-up send atomically. Because both operations target a single top-level entity,
+    // Single-entity FullAtomicityViaInfrastructure coverage driven THROUGH Chatter. Each test instance leases
+    // its OWN queue from the emulator fixture's pool (xUnit constructs a new test-class instance per test), so
+    // a message one test strands on its entity can never be consumed by another. A receiver on the leased queue
+    // runs in TransactionMode.FullAtomicityViaInfrastructure; when its handler is invoked for the original
+    // message it sends a follow-up to the SAME entity (the leased queue) via the broker context's Send (which
+    // enlists in the receiver's atomic TransactionScope). The scope commits, settling the original and
+    // committing the follow-up send atomically. Because both operations target a single top-level entity,
     // this stays within what the Azure Service Bus emulator supports (it rejects only multi-top-level-entity /
     // cross-entity transactions), so the emulator CI lane can run it.
     //
@@ -32,13 +34,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
     [Collection(ServiceBusEmulatorCollection.Name)]
     public class PipelineSingleEntityAtomicityTests
     {
-        private const string AtomicQueue = "chatter.atomic";
         private static readonly TimeSpan HandlerWait = TimeSpan.FromSeconds(30);
 
         private readonly ServiceBusEmulatorFixture _emulator;
 
+        // INVARIANT: leased per test-class INSTANCE, never static. xUnit constructs a new instance per test
+        // method, so every test — present and future — gets its own entity and cannot observe another test's
+        // stranded messages.
+        private readonly string _atomicQueue;
+
         public PipelineSingleEntityAtomicityTests(ServiceBusEmulatorFixture emulator)
-            => _emulator = emulator;
+        {
+            _emulator = emulator;
+            _atomicQueue = emulator.LeaseQueue();
+        }
 
         // IsFollowUp distinguishes the original message (which triggers the follow-up send) from the follow-up
         // itself (which must NOT re-trigger, avoiding unbounded recursion on the same entity).
@@ -46,6 +55,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         {
             public string Value { get; set; }
             public bool IsFollowUp { get; set; }
+        }
+
+        // Carries the per-test leased queue name to the DI-resolved handlers, which can no longer close over a
+        // class constant. Registered as a SINGLETON because handler resolution is transient per receive scope
+        // and both the original and the follow-up delivery must target the same leased entity.
+        private sealed class AtomicQueueTarget
+        {
+            public AtomicQueueTarget(string queueName)
+                => QueueName = queueName ?? throw new ArgumentNullException(nameof(queueName));
+
+            public string QueueName { get; }
         }
 
         // A Chatter IMessageHandler<AtomicCommand> that, on the ORIGINAL message, sends a follow-up to the
@@ -56,9 +76,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         private sealed class ForwardingAtomicHandler : IMessageHandler<AtomicCommand>
         {
             private readonly HandlerSignalRegistry _registry;
+            private readonly AtomicQueueTarget _queueTarget;
 
-            public ForwardingAtomicHandler(HandlerSignalRegistry registry)
-                => _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+            public ForwardingAtomicHandler(HandlerSignalRegistry registry, AtomicQueueTarget queueTarget)
+            {
+                _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+                _queueTarget = queueTarget ?? throw new ArgumentNullException(nameof(queueTarget));
+            }
 
             public async Task Handle(AtomicCommand message, IMessageHandlerContext context)
             {
@@ -72,7 +96,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
                     // together.
                     await context.Send(
                         new AtomicCommand { Value = message.Value + "-followup", IsFollowUp = true },
-                        AtomicQueue);
+                        _queueTarget.QueueName);
                 }
             }
         }
@@ -99,11 +123,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         {
             private readonly HandlerSignalRegistry _registry;
             private readonly FollowUpObserver _followUpObserver;
+            private readonly AtomicQueueTarget _queueTarget;
 
-            public RollbackAtomicHandler(HandlerSignalRegistry registry, FollowUpObserver followUpObserver)
+            public RollbackAtomicHandler(
+                HandlerSignalRegistry registry,
+                FollowUpObserver followUpObserver,
+                AtomicQueueTarget queueTarget)
             {
                 _registry = registry ?? throw new ArgumentNullException(nameof(registry));
                 _followUpObserver = followUpObserver ?? throw new ArgumentNullException(nameof(followUpObserver));
+                _queueTarget = queueTarget ?? throw new ArgumentNullException(nameof(queueTarget));
             }
 
             public async Task Handle(AtomicCommand message, IMessageHandlerContext context)
@@ -124,7 +153,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
                 // BEFORE returning so the scope never completes — the follow-up send must roll back with it.
                 await context.Send(
                     new AtomicCommand { Value = message.Value + "-followup", IsFollowUp = true },
-                    AtomicQueue);
+                    _queueTarget.QueueName);
 
                 throw new InvalidOperationException(
                     "force the atomic scope to roll back after enlisting the follow-up send");
@@ -141,7 +170,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
                 _emulator.GetConnectionString(),
                 sb =>
                 {
-                    sb.AddQueueReceiver<AtomicCommand>(AtomicQueue, transactionMode: TransactionMode.FullAtomicityViaInfrastructure);
+                    sb.AddQueueReceiver<AtomicCommand>(_atomicQueue, transactionMode: TransactionMode.FullAtomicityViaInfrastructure);
+                    // The leased queue name the handlers send their follow-up to; singleton so both the original
+                    // and the follow-up receive scope resolve the same target.
+                    sb.Services.AddSingleton(new AtomicQueueTarget(_atomicQueue));
                     // Register the forwarding handler as the IMessageHandler<AtomicCommand> Chatter resolves on
                     // the receive path (instead of the harness's RecordingMessageHandler), so the handler can
                     // emit the follow-up within the atomic scope.
@@ -152,7 +184,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             var dispatcher = harness.CreateDispatcher(out var scope);
             using (scope)
             {
-                await dispatcher.Send(new AtomicCommand { Value = "atomic" }, AtomicQueue);
+                await dispatcher.Send(new AtomicCommand { Value = "atomic" }, _atomicQueue);
             }
 
             // First handling: the original message.
@@ -195,9 +227,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
                 sb =>
                 {
                     sb.AddQueueReceiver<AtomicCommand>(
-                        AtomicQueue,
+                        _atomicQueue,
                         transactionMode: TransactionMode.FullAtomicityViaInfrastructure,
                         maxReceiveAttempts: 3);
+                    // The leased queue name the handlers send their follow-up to; singleton so both the original
+                    // and the follow-up receive scope resolve the same target.
+                    sb.Services.AddSingleton(new AtomicQueueTarget(_atomicQueue));
                     // The shared observer the test reads to prove no follow-up ever reaches the handler.
                     sb.Services.AddSingleton(followUpObserver);
                     // The rollback handler sends the follow-up then throws, so the atomic scope never completes.
@@ -208,7 +243,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
             var dispatcher = harness.CreateDispatcher(out var scope);
             using (scope)
             {
-                await dispatcher.Send(new AtomicCommand { Value = "rollback" }, AtomicQueue);
+                await dispatcher.Send(new AtomicCommand { Value = "rollback" }, _atomicQueue);
             }
 
             // First handling: the original message (which sends the follow-up, then throws).
