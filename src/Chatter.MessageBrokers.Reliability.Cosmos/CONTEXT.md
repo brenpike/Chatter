@@ -64,7 +64,7 @@ The module ships three independently registrable primitives — the **Document T
 
 ## Relationships
 
-- The Document Tier implements the Outbox reliability port and the Standalone Inbox Gate implements the Inbox reliability port defined in the Message Brokers context, together forming the Cosmos-backed alternative to the EntityFramework provider; the Standalone Outbox Relay implements neither port.
+- The Document Tier implements the Outbox reliability port and the Standalone Inbox Gate implements the Inbox reliability port defined in the Message Brokers context; the Standalone Outbox Relay implements neither port.
 - The Document-Tier Batch-Lifecycle Behavior wraps command dispatch as the outermost behavior in the Command Pipeline defined by the CQRS context.
 - The Batch-Lifecycle Behavior consults the Document Reliability Registry, invokes the Partition-Key Resolver only for participants, and publishes the Atomic-Write Handle on the Document-Tier Reliability Surface.
 - The Handle-Gated Outbound Router gates outbound routing on the presence of that handle, so non-participant dispatch never reaches the Cosmos outbox.

@@ -23,4 +23,4 @@ Library suite for building domain-driven .NET Core Web APIs and microservices vi
 - **Azure Service Bus Auth** supplies credentials to **Azure Service Bus**.
 - **Reliability (EntityFramework)** implements the inbox/outbox persistence ports defined by **Message Brokers**.
 - **SQL Change Feed** emits change notifications that can be relayed through **Message Brokers**, often over **SQL Service Broker**.
-- **Reliability (Cosmos)** implements the same inbox/outbox persistence ports as **Reliability (EntityFramework)** — the Outbox port via its Document Tier, the Inbox port via its Standalone Inbox Gate — and drains outbox documents back through **Message Brokers** via its Outbox Relay.
+- **Reliability (Cosmos)** implements the inbox/outbox persistence ports defined by **Message Brokers** over Azure Cosmos DB — the Outbox port via its Document Tier, the Inbox port via its separately-registered Standalone Inbox Gate — and drains outbox documents back through **Message Brokers** via its Outbox Relay.
