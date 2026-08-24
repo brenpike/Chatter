@@ -51,8 +51,6 @@
       "Bash(git tag -l*)",
       "Bash(git tag --list*)",
       "Bash(git grep *)",
-      "Bash(bash tools/policy_check.sh*)",
-      "Bash(bash tools/validate_reports.sh*)",
       "Bash(bash -n *)",
       "Edit(.hivemind/review-loop/*)",
       "Edit(.hivemind/runs/.init-inputs-*.json)",
