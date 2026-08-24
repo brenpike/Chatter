@@ -185,9 +185,9 @@ The adapter supports the broker-agnostic transaction modes that map cleanly onto
 
 ## Known limitations
 
-### Single RabbitMQ queue receiver per process (0.1.0)
+### Single RabbitMQ queue receiver per process
 
-0.1.0 supports exactly **one RabbitMQ queue receiver per process**. Registering more than one RabbitMQ queue receiver fails fast at startup with `NotSupportedException` — the connection source owns one receive channel and one consumer registration, so a second receiver would clobber the first and recovery would re-register only the last. There is no silent stall: the error surfaces immediately at `AddRabbitMq(...)` registration time, before the host starts.
+This package supports exactly **one RabbitMQ queue receiver per process**. Registering more than one RabbitMQ queue receiver fails fast at startup with `NotSupportedException` — the connection source owns one receive channel and one consumer registration, so a second receiver would clobber the first and recovery would re-register only the last. There is no silent stall: the error surfaces immediately at `AddRabbitMq(...)` registration time, before the host starts.
 
 Full multi-receiver support is tracked in [#195](https://github.com/brenpike/Chatter/issues/195).
 

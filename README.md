@@ -17,17 +17,17 @@ Chatter is a suite of modular .NET libraries for building domain-driven Web APIs
                         │  inbox/outbox · recovery     │
                         └──────┬───────────────┬───────┘
               implements       │               │      reliability port
-        ┌────────────────┬─────┘               └──────────┬──────────┐
-        ▼                ▼                                 ▼          ▼
- AzureServiceBus   SqlServiceBroker          Reliability.        Reliability.
-   (+ .Auth AAD)     (SQL Server)            EntityFramework      Cosmos
-                                            (durable EF          (Cosmos DB
-                                             inbox/outbox)        document tier)
+        ┌────────────┬─────────┤               └──────────┬──────────┐
+        ▼            ▼         ▼                           ▼          ▼
+ AzureServiceBus  RabbitMQ  SqlServiceBroker   Reliability.        Reliability.
+   (+ .Auth AAD)   (AMQP)     (SQL Server)      EntityFramework     Cosmos
+                                               (durable EF          (Cosmos DB
+                                                inbox/outbox)        document tier)
 
  Chatter.SqlChangeFeed — emits SQL Server row-change notifications (Service Broker)
 ```
 
-Chatter.MessageBrokers defines the transport interfaces; you pick a concrete implementation (**Azure Service Bus** or **SQL Server Service Broker**) and, optionally, durable reliability storage (relational **Entity Framework** or document-tier **Cosmos DB**).
+Chatter.MessageBrokers defines the transport interfaces; you pick a concrete implementation (**Azure Service Bus**, **RabbitMQ**, or **SQL Server Service Broker**) and, optionally, durable reliability storage (relational **Entity Framework** or document-tier **Cosmos DB**).
 
 ## Modules
 
@@ -85,6 +85,18 @@ A SQL Server Service Broker transport for Chatter.MessageBrokers — sends and r
 - **Does not auto-provision** Service Broker objects — queues, services, contracts, and `ENABLE_BROKER` are set up manually.
 - Entry point: `IChatterBuilder.AddSqlServiceBroker(...)` (chained off `AddMessageBrokers`).
 
+### [Chatter.MessageBrokers.RabbitMQ](./src/Chatter.MessageBrokers.RabbitMQ/src/README.md#chatter-messagebrokers-rabbitmq)
+`dotnet add package Chatter.MessageBrokers.RabbitMQ`
+
+A RabbitMQ transport for Chatter.MessageBrokers — sends and receives brokered messages over RabbitMQ exchanges and queues.
+
+- `AddQueueReceiver<TMessage>` binds a message type to a queue, with an error/dead-letter queue path and `maxReceiveAttempts` (default `10`).
+- Default-exchange addressing (routing key = destination queue name), overridable with `.WithRabbitMqRouting(exchange, routingKey)`.
+- Delivery counting by queue type: **Quorum** queues read the native `x-delivery-count` (the recommended default), **Classic** queues use a header-stamped republish counter — trade-offs in the module's ADR 0001.
+- **Provisions no topology** — exchanges, queues, bindings, and dead-letter routing are created externally, mirroring the SqlServiceBroker manual-provisioning stance.
+- `TransactionMode.FullAtomicityViaInfrastructure` is rejected at startup — use the **Outbox** for transactional send.
+- Entry point: `IChatterBuilder.AddRabbitMq(...)` (chained off `AddMessageBrokers`).
+
 ### [Chatter.MessageBrokers.Reliability.EntityFramework](./src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md#chatter-reliability-entityframework)
 `dotnet add package Chatter.MessageBrokers.Reliability.EntityFramework`
 
@@ -104,7 +116,9 @@ Document-tier (NoSQL) implementation of the Chatter.MessageBrokers reliability p
 - Per-command **participation registry** (`WithCosmosDocumentReliability<TCommand>(...)`) with per-command database/container/lease, enabling multi-container support — unregistered commands bypass the document tier untouched.
 - Co-resident **outbox** staged atomically with the aggregate write, plus a co-resident **inbox** marker for TOCTOU-free idempotent dedup (confirmed-duplicate marker-409 fails the batch atomically).
 - **Change-feed outbox relay**: a hosted `ChangeFeedProcessor` drains co-resident pending outbox documents, publishes each through the broker at-least-once, then marks delivered with a TTL self-purge.
-- Entry point: `CommandPipelineBuilder.WithCosmosDocumentReliability<TCommand>(...)`.
+- **Standalone outbox relay** (`AddCosmosOutboxRelay`): the same change-feed relay registered as its own `IHostedService`, independent of the command pipeline and repeatable per monitored container, carrying the `IOutboxBodyResolver` drain-time body-resolution seam.
+- **Standalone inbox** (`WithCosmosInbox`): a lease-less redelivery-dedup gate for a service with no aggregate write, outbox, or lease container — it skips the handler on a confirmed *completed* marker, but does not serialize genuinely-concurrent deliveries of the same id (that mutual exclusion stays the transport's responsibility).
+- Entry points: `CommandPipelineBuilder.WithCosmosDocumentReliability<TCommand>(...)` (document tier), `services.AddCosmosOutboxRelay(...)` (standalone relay), `CommandPipelineBuilder.WithCosmosInbox(...)` (standalone inbox).
 
 ### [Chatter.SqlChangeFeed](./src/Chatter.SqlChangeFeed/src/README.md#chatter-sqlchangefeed)
 `dotnet add package Chatter.SqlChangeFeed`
@@ -120,7 +134,7 @@ Emits strongly-typed notifications when rows in a watched SQL Server table are i
 ## Getting started
 
 1. Install **Chatter.CQRS** and register it: `services.AddChatterCqrs(...)`.
-2. To exchange messages across services, add **Chatter.MessageBrokers** plus a transport — **AzureServiceBus** or **SqlServiceBroker**.
+2. To exchange messages across services, add **Chatter.MessageBrokers** plus a transport — **AzureServiceBus**, **RabbitMQ**, or **SqlServiceBroker**.
 3. For durable reliability, add **Reliability.EntityFramework** (relational — apply its entity configurations to your `DbContext`) or **Reliability.Cosmos** (document-tier — register a `CosmosClient` and a per-command participation entry).
 
 Each module's README (linked above) has installation, configuration, and worked examples.

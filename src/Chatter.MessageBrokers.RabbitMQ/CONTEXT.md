@@ -46,4 +46,4 @@ _Avoid_: dispatcher (reserved for the Message Brokers Brokered Message Dispatche
 
 ## Known limitations
 
-- **Single RabbitMQ queue receiver per process (0.1.0)**: the connection source owns one receive channel and one consumer registration. Registering more than one RabbitMQ queue receiver fails fast at startup with `NotSupportedException`; recovery would otherwise re-register only the last receiver. Full multi-receiver support is tracked in [#195](https://github.com/brenpike/Chatter/issues/195).
+- **Single RabbitMQ queue receiver per process**: the connection source owns one receive channel and one consumer registration. Registering more than one RabbitMQ queue receiver fails fast at startup with `NotSupportedException`; recovery would otherwise re-register only the last receiver. Full multi-receiver support is tracked in [#195](https://github.com/brenpike/Chatter/issues/195).
