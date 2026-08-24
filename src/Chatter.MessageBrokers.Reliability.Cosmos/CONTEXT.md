@@ -1,12 +1,12 @@
 # Chatter.MessageBrokers.Reliability.Cosmos
 
-Azure Cosmos DB reliability provider implementing the inbox/outbox reliability ports of Chatter.MessageBrokers.
+Azure Cosmos DB reliability provider for Chatter.MessageBrokers.
 
 ## Scope rule
 
 The module ships three independently registrable primitives — the **Document Tier**, the **Standalone Inbox Gate**, and the **Standalone Outbox Relay**. A new primitive is added to this list before anything else in this file is written about it.
 
-Applicability is stated here, never assumed. A statement sitting under a heading that names a primitive, or naming a variant term, holds for that variant alone; **every other statement in this file is a claim over all three primitives and must be true of all three**. A term whose content differs by primitive is therefore written as a superordinate asserting only what is common to every primitive, plus a named variant for each primitive that adds to it — so no variant occupies the superordinate's slot unnamed.
+**Every claim in this file names its owner** — the primitive, term, or the module itself that the claim is about — in the heading above it, in its own term name, or in its opening phrase. A claim that cannot name a single owner is split until each part can.
 
 ## Language
 
@@ -38,7 +38,7 @@ Applicability is stated here, never assumed. A statement sitting under a heading
 
 **Co-Resident Outbox Document**: The Document Tier variant of the Outbox Document, written into the same container and logical partition as the handler's aggregate and committed with it on one Atomic-Write Handle.
 
-**Inbox Marker**: The `inbox:{encoded(MessageId)}` document recording that a message id has been claimed in a partition, discriminated by `_chatterType=inbox`. It has two variants whose lifecycles differ — the Batched Inbox Marker and the Claimed Inbox Marker — so name the variant whenever the lifecycle is what is meant.
+**Inbox Marker**: The `inbox:{encoded(MessageId)}` document this module writes to dedup a message id within a partition, discriminated by `_chatterType=inbox`. It has two variants whose lifecycles differ — the Batched Inbox Marker and the Claimed Inbox Marker — so name the variant whenever the lifecycle is what is meant.
 
 **Batched Inbox Marker**: The document-tier variant, staged as the first operation on the Atomic-Write Handle and committed with the aggregate write and the Co-Resident Outbox Document in one batch. It carries no completion state, so its state is simply absent then present; a create-409 confirmed at batch execute rolls the whole batch back as a duplicate.
 
@@ -52,7 +52,7 @@ Applicability is stated here, never assumed. A statement sitting under a heading
 
 ### Relay
 
-**Outbox Relay**: The lease-backed change-feed drain that admits the pending Outbox Documents surfacing on a monitored container's change feed, publishes each admitted document's brokered message through the broker, then marks that document delivered and stamps a TTL on it in one patch; one change-feed processor per distinct Change-Feed Source Identity. _Avoid_: dispatcher, relay worker, drainer.
+**Outbox Relay**: The lease-backed change-feed drain shared by the Document-Tier Outbox Relay and the Standalone Outbox Relay: it admits the pending Outbox Documents surfacing on a monitored container's change feed, publishes whatever brokered message its variant resolves for that document, then marks the document delivered and stamps a TTL on it in one patch; one change-feed processor per distinct Change-Feed Source Identity. _Avoid_: dispatcher, relay worker, drainer.
 
 **Change-Feed Source Identity**: The Outbox Relay's dedup and processor-name key, declared-or-ground-truth and never inferred from a caller-controlled handle — the caller-declared monitored/lease tokens when a registration declares them, and otherwise the resolved ground truth (account endpoint + database id + container id, for both the monitored and the lease container). _Avoid_: database/container/lease triple (the account endpoint is part of the key, so identically-named containers in different accounts stay distinct).
 
@@ -62,20 +62,20 @@ Applicability is stated here, never assumed. A statement sitting under a heading
 
 **Standalone Inbox Gate**: The lease-less inbox-dedup gate registered through the inbox behavior seam for stateless services with no aggregate, outbox, or lease container.
 
-**Outbox Body Resolver**: The Standalone Outbox Relay's optional drain-time seam, invoked per admitted document so the brokered-message body can be sourced from current store state rather than reconstructed verbatim from the persisted document.
+**Outbox Body Resolver**: The Standalone Outbox Relay's optional drain-time seam, invoked per admitted document so the brokered-message body can be sourced from current store state rather than reconstructed verbatim from the persisted document. A resolution of nothing publishes nothing yet still marks the document delivered — an intentional drop-and-acknowledge.
 
 **Outbox Drain Context**: The per-document context the Standalone Outbox Relay hands to its Outbox Body Resolver, carrying the verbatim message id, recovered partition key, declared partition-key path, and the raw document.
 
 ## Relationships
 
-- Implements the Outbox and Inbox reliability ports defined in the Message Brokers context, as a Cosmos-backed alternative to the EntityFramework provider.
+- The Document Tier implements the Outbox reliability port and the Standalone Inbox Gate implements the Inbox reliability port defined in the Message Brokers context, together forming the Cosmos-backed alternative to the EntityFramework provider; the Standalone Outbox Relay implements neither port.
 - The Document-Tier Batch-Lifecycle Behavior wraps command dispatch as the outermost behavior in the Command Pipeline defined by the CQRS context.
 - The Batch-Lifecycle Behavior consults the Document Reliability Registry, invokes the Partition-Key Resolver only for participants, and publishes the Atomic-Write Handle on the Document-Tier Reliability Surface.
 - The Handle-Gated Outbound Router gates outbound routing on the presence of that handle, so non-participant dispatch never reaches the Cosmos outbox.
 - The Co-Resident Outbox Document and the Batched Inbox Marker are co-resident: both live in the container selected by the participant's Document Reliability Registration, in the aggregate's logical partition, and commit together on one Atomic-Write Handle.
 - The Claimed Inbox Marker instead lives in the Standalone Inbox Gate's own idempotency container, partitioned by the inbound message id (default path `/idempotencyKey`); Chatter writes no aggregate and no Outbox Document beside it there.
 - The Co-Resident Outbox Document, the Batched Inbox Marker, and the Claimed Inbox Marker all draw their ids from one Reserved Item-Id Namespace and encode their id segment identically.
-- The Outbox Relay consumes Outbox Documents and publishes them through the broker; delivery is at-least-once, so downstream receivers deduplicate via the Inbox Marker.
+- The Outbox Relay drains Outbox Documents to the broker; delivery is at-least-once, so downstream receivers deduplicate via the Inbox Marker.
 - Only the Standalone Outbox Relay consults an Outbox Body Resolver, and only when one is configured: it hands each admitted document to that resolver via an Outbox Drain Context before publishing. The Document-Tier Outbox Relay always reconstructs the message verbatim from the persisted document.
 
 ## Example dialogue
@@ -84,7 +84,7 @@ Applicability is stated here, never assumed. A statement sitting under a heading
 > **Domain expert:** "Register the command type in the Document Reliability Registry and supply a Partition-Key Resolver. The Batch-Lifecycle Behavior opens one batch on the aggregate's partition, your write and the Co-Resident Outbox Document stage on the same Atomic-Write Handle, and both land or neither does. The Document-Tier Outbox Relay publishes it afterwards."
 
 > **Dev:** "My service has no command pipeline and no aggregate — it just writes trigger documents into a container and needs them published. What do I register?"
-> **Domain expert:** "A Standalone Outbox Relay on its own. It consults no Document Reliability Registry, so its Change-Feed Source Identity comes from the monitored and lease containers you configure rather than from a registration. Give each trigger document the Reserved Item-Id Namespace id `outbox:{encoded(MessageId)}` for its own message id or the relay will not drain it, and bind an Outbox Body Resolver if the body should be read from current store state at drain rather than carried on the document."
+> **Domain expert:** "A Standalone Outbox Relay on its own. It consults no Document Reliability Registry: declare `MonitoredSourceIdentity` and `LeaseSourceIdentity` to key its Change-Feed Source Identity on your own tokens, or leave both unset and it keys on the resolved ground truth of the containers it opens. Give each trigger document the Reserved Item-Id Namespace id `outbox:{encoded(MessageId)}` for its own message id or the relay will not drain it, and bind an Outbox Body Resolver if the body should be read from current store state at drain rather than carried on the document."
 
 ## Flagged ambiguities
 
