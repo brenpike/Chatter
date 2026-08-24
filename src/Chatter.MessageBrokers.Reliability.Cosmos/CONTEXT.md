@@ -30,13 +30,17 @@ Azure Cosmos DB document-tier reliability provider implementing the inbox/outbox
 
 **Co-Resident Outbox Document**: The pending outbound message persisted as `outbox:{encoded(MessageId)}` in the same container and partition as the aggregate, discriminated by `_chatterType=outbox`. _Avoid_: outbox row, outbox table entry.
 
-**Inbox Marker**: The `inbox:{encoded(MessageId)}` document recording delivery progress for a message id, whose state is monotonic — absent, then pending, then completed.
+**Inbox Marker**: The `inbox:{encoded(MessageId)}` document recording that a message id has been claimed in a partition, discriminated by `_chatterType=inbox`. It has two variants whose lifecycles differ — the Batched Inbox Marker and the Claimed Inbox Marker — so name the variant whenever the lifecycle is what is meant.
 
-**Write-Ahead Claim**: The anti-TOCTOU two-phase inbox protocol — create a pending marker before the handler, patch it to completed after — so a redelivery confirms a duplicate on completion rather than on mere existence.
+**Batched Inbox Marker**: The document-tier variant, staged as the first operation on the Atomic-Write Handle and committed with the aggregate write and the Co-Resident Outbox Document in one batch. It carries no completion state, so its state is simply absent then present; a create-409 confirmed at batch execute rolls the whole batch back as a duplicate.
 
-**Marker Take-Over**: The resolution path for a create-409 conflict in which a pending or abandoned marker is adopted and its handler re-run, while a completed marker skips the handler and an unconfirmable conflict redelivers.
+**Claimed Inbox Marker**: The Standalone Inbox Gate variant, the only one carrying a completion state, whose state is monotonic — absent, then pending, then completed.
 
-**Marker Time-To-Live**: The container-level TTL purge that is the only removal of an inbox marker.
+**Write-Ahead Claim**: The Standalone Inbox Gate's anti-TOCTOU two-phase protocol — create a pending Claimed Inbox Marker before the handler, patch it to completed after — so a redelivery confirms a duplicate on completion rather than on mere existence. The document tier makes no such claim: its marker is staged inside the batch and lands only when the batch commits.
+
+**Marker Take-Over**: The Standalone Inbox Gate's resolution path for a create-409 conflict in which a pending or abandoned Claimed Inbox Marker is adopted and its handler re-run, while a completed marker skips the handler and an unconfirmable conflict redelivers. The document tier has no take-over: a conflict it confirms is always a duplicate.
+
+**Marker Time-To-Live**: The optional dedup-window TTL stamped onto each Claimed Inbox Marker, and the only removal of a marker; left unset — as it always is on the document tier — the marker persists indefinitely.
 
 ### Relay
 
