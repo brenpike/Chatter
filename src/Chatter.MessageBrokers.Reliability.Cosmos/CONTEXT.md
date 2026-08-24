@@ -2,11 +2,7 @@
 
 Azure Cosmos DB reliability provider for Chatter.MessageBrokers.
 
-## Scope rule
-
-The module ships three independently registrable primitives — the **Document Tier**, the **Standalone Inbox Gate**, and the **Standalone Outbox Relay**. A new primitive is added to this list before anything else in this file is written about it.
-
-**Every claim in this file names its owner** — the primitive, term, or the module itself that the claim is about — in the heading above it, in its own term name, or in its opening phrase. A claim that cannot name a single owner is split until each part can.
+The module ships three independently registrable primitives — the **Document Tier**, the **Standalone Inbox Gate**, and the **Standalone Outbox Relay**.
 
 ## Language
 
@@ -32,7 +28,7 @@ The module ships three independently registrable primitives — the **Document T
 
 ### Staging Surface
 
-**Reserved Item-Id Namespace**: The `inbox:` / `outbox:` item-id prefixes every Chatter-authored document in this module draws its id from. What the namespace requires of an APPLICATION differs by primitive, so each is stated: on the Document Tier's public staging surface it is a PROHIBITION enforced at stage time — an application document staged there may not carry either prefix; on a Standalone Outbox Relay's monitored container it is an OBLIGATION — an application-authored trigger document is drained only when its id is exactly `outbox:{encoded(MessageId)}` for the verbatim message id that document carries; the Standalone Inbox Gate exposes no staging surface, so Chatter is the namespace's only author there.
+**Reserved Item-Id Namespace**: The `inbox:` / `outbox:` item-id prefixes every Chatter-authored document in this module draws its id from. What the namespace requires of an APPLICATION differs by primitive, so each is stated: on the Document Tier's public staging surface it is a PROHIBITION enforced at stage time — an application document staged there may not carry either prefix; on a Standalone Outbox Relay's monitored container it is an OBLIGATION — an application-authored trigger document is drained only when its id is exactly `outbox:{encoded(MessageId)}` for the verbatim message id that document carries; the Standalone Inbox Gate exposes no staging surface to guard, and the application owns its idempotency container, so an application-authored `inbox:`-prefixed collision is possible there — it is confirmed against the marker's discriminator and message id and redelivered, never inferred to be a duplicate.
 
 **Outbox Document**: The pending outbound message persisted under the Reserved Item-Id Namespace id `outbox:{encoded(MessageId)}`, discriminated by `_chatterType=outbox`, and entering the container at `status=pending`. _Avoid_: outbox row, outbox table entry.
 
