@@ -345,3 +345,6 @@ CLAUDE.local.md
 
 # Claude Code worktree sessions
 .claude/worktrees/
+
+# direnv personal overrides
+.envrc
