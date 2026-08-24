@@ -14,7 +14,7 @@ Library suite for building domain-driven .NET Core Web APIs and microservices vi
 | SQL Service Broker | [src/Chatter.MessageBrokers.SqlServiceBroker/CONTEXT.md](./src/Chatter.MessageBrokers.SqlServiceBroker/CONTEXT.md) | SQL Server Service Broker implementation of the broker interfaces. |
 | SQL Change Feed | [src/Chatter.SqlChangeFeed/CONTEXT.md](./src/Chatter.SqlChangeFeed/CONTEXT.md) | Table-change notifications sourced from SQL Server. |
 | RabbitMQ | [src/Chatter.MessageBrokers.RabbitMQ/CONTEXT.md](./src/Chatter.MessageBrokers.RabbitMQ/CONTEXT.md) | RabbitMQ implementation of the broker interfaces. |
-| Reliability (Cosmos) | [src/Chatter.MessageBrokers.Reliability.Cosmos/CONTEXT.md](./src/Chatter.MessageBrokers.Reliability.Cosmos/CONTEXT.md) | Cosmos DB document-tier reliability: atomic-write batch, co-resident inbox/outbox, change-feed relay. |
+| Reliability (Cosmos) | [src/Chatter.MessageBrokers.Reliability.Cosmos/CONTEXT.md](./src/Chatter.MessageBrokers.Reliability.Cosmos/CONTEXT.md) | Cosmos DB reliability: Document Tier atomic-write batch, Standalone Inbox Gate, Standalone Outbox Relay. |
 
 ## Context Relationships
 
@@ -23,4 +23,4 @@ Library suite for building domain-driven .NET Core Web APIs and microservices vi
 - **Azure Service Bus Auth** supplies credentials to **Azure Service Bus**.
 - **Reliability (EntityFramework)** implements the inbox/outbox persistence ports defined by **Message Brokers**.
 - **SQL Change Feed** emits change notifications that can be relayed through **Message Brokers**, often over **SQL Service Broker**.
-- **Reliability (Cosmos)** implements the same inbox/outbox persistence ports as **Reliability (EntityFramework)**, over an Azure Cosmos DB partition-scoped batch, and relays outbox documents back through **Message Brokers**.
+- **Reliability (Cosmos)** implements the same inbox/outbox persistence ports as **Reliability (EntityFramework)** — via its Document Tier, Standalone Inbox Gate, and Standalone Outbox Relay — and relays outbox documents back through **Message Brokers**.
