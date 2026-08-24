@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Testcontainers.ServiceBus;
 using Chatter.Testing.Core.Integration;
@@ -20,11 +21,47 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         public const string QueueA = "queue.a";
         public const string QueueB = "queue.b";
 
+        // INVARIANT: every name in LeasableQueues has a queue entry of the same name in Integration/Config.json.
+        // The emulator provisions entities declaratively at container start and rejects receivers for entities
+        // it was never told about.
+        private static readonly string[] LeasableQueues =
+        {
+            "chatter.leased.00",
+            "chatter.leased.01",
+            "chatter.leased.02",
+            "chatter.leased.03",
+            "chatter.leased.04",
+            "chatter.leased.05",
+            "chatter.leased.06",
+            "chatter.leased.07",
+        };
+
+        private static int _leasedQueueIndex = -1;
+
         // The official Azure Service Bus emulator image. Passed explicitly to ServiceBusBuilder (the
         // parameterless ctor is obsolete); the emulator publishes :latest as its documented tag.
         private const string EmulatorImage = "mcr.microsoft.com/azure-messaging/servicebus-emulator:latest";
 
         private ServiceBusContainer _container;
+
+        // Hands out a pooled queue name no other caller has taken, so no two tests share an entity on the
+        // long-lived emulator. Pure string allocation: it touches neither the container nor the emulator, so it
+        // still works when Docker is absent and InitializeAsync started nothing.
+        public string LeaseQueue()
+        {
+            var leasedIndex = Interlocked.Increment(ref _leasedQueueIndex);
+
+            if (leasedIndex >= LeasableQueues.Length)
+            {
+                throw new InvalidOperationException(
+                    $"The integration queue pool is exhausted; all {LeasableQueues.Length} leasable queues are " +
+                    "taken. Add another name to LeasableQueues in Integration/ServiceBusEmulatorFixture.cs AND a " +
+                    "matching queue entry with that exact name to Integration/Config.json. Both files must " +
+                    "declare the same queue names.");
+            }
+
+            return LeasableQueues[leasedIndex];
+        }
 
         public string GetConnectionString()
         {
