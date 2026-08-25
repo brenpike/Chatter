@@ -22,7 +22,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         /// Creates a <see cref="TokenCredential"/> using a client secret. If no client secret is provided a <see cref="DefaultAzureCredential"/> is returned.
         /// </summary>
         /// <param name="clientSecret">The client secret to use to authenticate with Azure AD</param>
-        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is the first path segment and any deeper segments are ignored, so a /v2.0-suffixed issuer URL copied out of the Azure portal is accepted. The scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
+        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is the first non-empty path segment and any deeper segments are ignored, so a /v2.0-suffixed issuer URL copied out of the Azure portal is accepted. The scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
         /// <returns>A <see cref="TokenCredential"/>: a <see cref="ClientSecretCredential"/> when a secret is supplied, otherwise a <see cref="DefaultAzureCredential"/>.</returns>
         public TokenCredential WithSecret(string clientSecret, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null)
         {
@@ -41,7 +41,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         /// Creates a <see cref="TokenCredential"/> using a certificate. If no thumbprint is provided a <see cref="DefaultAzureCredential"/> is returned.
         /// </summary>
         /// <param name="thumbPrint">The thumbprint of the certificate to use for authentication</param>
-        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is the first path segment and any deeper segments are ignored, so a /v2.0-suffixed issuer URL copied out of the Azure portal is accepted. The scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
+        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is the first non-empty path segment and any deeper segments are ignored, so a /v2.0-suffixed issuer URL copied out of the Azure portal is accepted. The scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
         /// <param name="validCertsOnly">Indicates if only valid certificates can be found and used from the X509 cert store. If using self-signed certs, this value should be false.</param>
         /// <returns>A <see cref="TokenCredential"/>: a <see cref="ClientCertificateCredential"/> when a thumbprint is supplied, otherwise a <see cref="DefaultAzureCredential"/>.</returns>
         public TokenCredential WithCert(string thumbPrint, string authority, bool validCertsOnly, Action<DefaultAzureCredentialOptions> optBuilder = null)
