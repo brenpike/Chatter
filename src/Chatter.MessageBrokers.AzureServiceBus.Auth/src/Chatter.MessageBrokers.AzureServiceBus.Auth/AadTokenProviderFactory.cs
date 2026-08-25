@@ -2,6 +2,7 @@ using Azure.Core;
 using Azure.Identity;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Auth
@@ -21,7 +22,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         /// Creates a <see cref="TokenCredential"/> using a client secret. If no client secret is provided a <see cref="DefaultAzureCredential"/> is returned.
         /// </summary>
         /// <param name="clientSecret">The client secret to use to authenticate with Azure AD</param>
-        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is parsed from the path and the scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
+        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is the first path segment and any deeper segments are ignored, so a /v2.0-suffixed issuer URL copied out of the Azure portal is accepted. The scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
         /// <returns>A <see cref="TokenCredential"/>: a <see cref="ClientSecretCredential"/> when a secret is supplied, otherwise a <see cref="DefaultAzureCredential"/>.</returns>
         public TokenCredential WithSecret(string clientSecret, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null)
         {
@@ -40,7 +41,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         /// Creates a <see cref="TokenCredential"/> using a certificate. If no thumbprint is provided a <see cref="DefaultAzureCredential"/> is returned.
         /// </summary>
         /// <param name="thumbPrint">The thumbprint of the certificate to use for authentication</param>
-        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is parsed from the path and the scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
+        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is the first path segment and any deeper segments are ignored, so a /v2.0-suffixed issuer URL copied out of the Azure portal is accepted. The scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
         /// <param name="validCertsOnly">Indicates if only valid certificates can be found and used from the X509 cert store. If using self-signed certs, this value should be false.</param>
         /// <returns>A <see cref="TokenCredential"/>: a <see cref="ClientCertificateCredential"/> when a thumbprint is supplied, otherwise a <see cref="DefaultAzureCredential"/>.</returns>
         public TokenCredential WithCert(string thumbPrint, string authority, bool validCertsOnly, Action<DefaultAzureCredentialOptions> optBuilder = null)
@@ -108,10 +109,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
 
         // INVARIANT: the legacy MSAL authority was a full directory URL (scheme+host+tenant path),
         // e.g. https://login.microsoftonline.com/{tenant}/. Azure.Identity credentials take the
-        // tenant id separately and the scheme+host as AuthorityHost, so the URL is split here:
-        // the first path segment is the tenant id; the scheme+host becomes AuthorityHost. A null,
-        // empty, or unparseable authority yields a null tenant id and null AuthorityHost, deferring
-        // to the credential's own defaults (mirrors the old (authority ?? "") coercion).
+        // tenant id separately and the scheme+host as AuthorityHost, so the URL is split here: the
+        // tenant id is the FIRST NON-EMPTY path segment; every deeper segment is authority-endpoint
+        // routing (v2.0, oauth2/v2.0/token) and is ignored. First non-empty rather than Segments[1]
+        // because a double-slash authority (host followed by //{tenant}/) carries an empty leading
+        // segment, which Segments[1] would resolve to as the tenant id. The scheme+host becomes
+        // AuthorityHost. A null, empty, or unparseable authority yields a null tenant id and null
+        // AuthorityHost, deferring to the credential's own defaults (mirrors the old
+        // (authority ?? "") coercion).
+        // Accepted residue: a non-AAD routing prefix (B2C /tfp/, ADFS, DSTS) puts a routing segment
+        // first, so it resolves to a character-set-valid but WRONG tenant id — the credential
+        // constructs successfully and the failure moves from construction to first token
+        // acquisition. Accepted because those authority types cannot authenticate to Azure Service
+        // Bus at all, so no supported configuration reaches that shape.
         private static (string tenantId, Uri authorityHost) ParseAuthority(string authority)
         {
             if (string.IsNullOrWhiteSpace(authority)
@@ -120,7 +130,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
                 return (null, null);
             }
 
-            var tenantId = authorityUri.AbsolutePath.Trim('/');
+            var tenantId = authorityUri.Segments
+                .Select(segment => segment.Trim('/'))
+                .FirstOrDefault(segment => !string.IsNullOrWhiteSpace(segment));
             var authorityHost = new Uri(authorityUri.GetLeftPart(UriPartial.Authority));
             return (string.IsNullOrWhiteSpace(tenantId) ? null : tenantId, authorityHost);
         }
