@@ -117,11 +117,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         // AuthorityHost. A null, empty, or unparseable authority yields a null tenant id and null
         // AuthorityHost, deferring to the credential's own defaults (mirrors the old
         // (authority ?? "") coercion).
-        // Accepted residue: a non-AAD routing prefix (B2C /tfp/, ADFS, DSTS) puts a routing segment
-        // first, so it resolves to a character-set-valid but WRONG tenant id — the credential
-        // constructs successfully and the failure moves from construction to first token
-        // acquisition. Accepted because those authority types cannot authenticate to Azure Service
-        // Bus at all, so no supported configuration reaches that shape.
+        // Accepted residue: the tenant id is whatever the first non-empty segment is, so ANY authority
+        // whose first segment is not the tenant id resolves a character-set-valid but WRONG tenant id and
+        // the credential constructs — failure moves from construction to first token acquisition. Two
+        // shapes reach this: a non-AAD routing prefix (B2C /tfp/{tenant}/{policy}, ADFS, DSTS), which
+        // cannot authenticate to Azure Service Bus at all, and a malformed AAD URL that omits the tenant
+        // (e.g. the token endpoint https://login.microsoftonline.com/oauth2/v2.0/token). In both, the
+        // misparsed segment names no real directory, so no token is ever issued — the failure is late but
+        // loud, never a wrong-principal token — and this matches pre-3.0.0 MSAL, which also took the first
+        // path segment; 3.0.0-3.1.0's construction-time rejection was an accident of Azure.Identity's
+        // tenant-charset validation, not a designed guarantee.
         private static (string tenantId, Uri authorityHost) ParseAuthority(string authority)
         {
             if (string.IsNullOrWhiteSpace(authority)
