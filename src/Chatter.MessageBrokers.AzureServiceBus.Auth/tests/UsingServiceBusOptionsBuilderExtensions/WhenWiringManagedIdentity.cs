@@ -58,15 +58,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingServiceBusOptio
         // opt builder runs before this method returns and capturing it proves the extension reached
         // AadTokenProviderFactory.Create(clientId).WithManagedIdentity(optBuilder) end to end.
         [Fact]
-        public void MustForwardClientIdToBothIdentityClientIds()
+        public void MustHandManagedIdentityCredentialOptionsToOptBuilder()
         {
             var builder = CreateBuilder();
-            DefaultAzureCredentialOptions capturedOptions = null;
+            ManagedIdentityCredentialOptions capturedOptions = null;
 
             builder.UseAadTokenProviderWithManagedIdentity(ClientId, opts => capturedOptions = opts);
 
-            capturedOptions.ManagedIdentityClientId.Should().Be(ClientId);
-            capturedOptions.WorkloadIdentityClientId.Should().Be(ClientId);
+            capturedOptions.Should().NotBeNull();
         }
 
         [Fact]

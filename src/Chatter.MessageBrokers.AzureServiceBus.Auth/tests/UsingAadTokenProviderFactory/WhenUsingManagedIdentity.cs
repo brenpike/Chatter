@@ -2,6 +2,7 @@ using Azure.Core;
 using Azure.Identity;
 using FluentAssertions;
 using System;
+using System.Reflection;
 using Xunit;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProviderFactory
@@ -9,16 +10,27 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
     public class WhenUsingManagedIdentity : global::Chatter.Testing.Core.Context
     {
         private const string ClientId = "client-id";
-        private const string UserAssignedIdentityResourceId = "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/identity";
 
         private readonly AadTokenProviderFactory _factory = AadTokenProviderFactory.Create(ClientId);
 
         [Fact]
-        public void MustReturnDefaultAzureCredential()
+        public void MustReturnManagedIdentityCredential()
         {
             var credential = _factory.WithManagedIdentity();
 
-            credential.Should().BeOfType<DefaultAzureCredential>();
+            credential.Should().BeOfType<ManagedIdentityCredential>();
+        }
+
+        // INVARIANT: managed identity must not be requested through a credential chain. A chain
+        // selects which arm answers from ambient host state, so an environment-backed service
+        // principal can satisfy the request instead of the managed identity the caller asked for.
+        // No chain means no ambient arm selection.
+        [Fact]
+        public void MustNotReturnDefaultAzureCredential()
+        {
+            var credential = _factory.WithManagedIdentity();
+
+            credential.Should().NotBeOfType<DefaultAzureCredential>();
         }
 
         [Fact]
@@ -27,45 +39,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
             var build = () => _factory.WithManagedIdentity();
 
             build.Should().NotThrow();
-        }
-
-        [Fact]
-        public void MustPinClientIdToManagedIdentityClientId()
-        {
-            string capturedClientId = null;
-
-            _factory.WithManagedIdentity(opts => capturedClientId = opts.ManagedIdentityClientId);
-
-            capturedClientId.Should().Be(ClientId);
-        }
-
-        [Fact]
-        public void MustPinClientIdToWorkloadIdentityClientId()
-        {
-            string capturedClientId = null;
-
-            _factory.WithManagedIdentity(opts => capturedClientId = opts.WorkloadIdentityClientId);
-
-            capturedClientId.Should().Be(ClientId);
-        }
-
-        // INVARIANT: the pin runs before the opt builder, so an explicit assignment wins. The
-        // in-callback assertion proves the pin already ran; the post-return assertion on the same
-        // options instance proves nothing re-pins it after the callback.
-        [Fact]
-        public void MustLetOptBuilderOverrideThePinnedClientId()
-        {
-            const string overrideClientId = "override-client-id";
-            DefaultAzureCredentialOptions capturedOptions = null;
-
-            _factory.WithManagedIdentity(opts =>
-            {
-                opts.ManagedIdentityClientId.Should().Be(ClientId);
-                opts.ManagedIdentityClientId = overrideClientId;
-                capturedOptions = opts;
-            });
-
-            capturedOptions.ManagedIdentityClientId.Should().Be(overrideClientId);
         }
 
         [Fact]
@@ -78,69 +51,77 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
             invocationCount.Should().Be(1);
         }
 
-        // INVARIANT: ManagedIdentityClientId and WorkloadIdentityClientId both default to the
-        // AZURE_CLIENT_ID environment variable, so a null assertion would hold only on a host with no
-        // Azure tooling configured. Compare against a freshly constructed options instance instead,
-        // which carries whatever default this host resolves. Tests never mutate environment variables:
-        // they are process-global and xUnit parallelises within a collection.
+        [Fact]
+        public void MustResolveSuppliedClientIdToUserAssignedIdentity()
+        {
+            var identity = AadTokenProviderFactory.ResolveManagedIdentityId(ClientId);
+
+            identity.ToString().Should().Be("ClientId client-id");
+        }
+
         [Theory]
         [InlineData(null)]
         [InlineData("")]
         [InlineData("   ")]
-        public void MustLeaveIdentityClientIdsAtTheirDefaultsWhenClientIdIsBlank(string clientId)
+        public void MustResolveBlankClientIdToSystemAssignedIdentity(string clientId)
         {
-            var defaults = new DefaultAzureCredentialOptions();
-            DefaultAzureCredentialOptions capturedOptions = null;
+            var identity = AadTokenProviderFactory.ResolveManagedIdentityId(clientId);
 
-            AadTokenProviderFactory.Create(clientId).WithManagedIdentity(opts => capturedOptions = opts);
-
-            capturedOptions.ManagedIdentityClientId.Should().Be(defaults.ManagedIdentityClientId);
-            capturedOptions.WorkloadIdentityClientId.Should().Be(defaults.WorkloadIdentityClientId);
+            identity.ToString().Should().Be("SystemAssigned");
         }
 
-        // CHARACTERIZATION: the Azure SDK rejects a managed identity configured by both client id and
-        // resource id, and it rejects it eagerly while the credential chain is constructed. That guard
-        // sits inside the managed-identity arm, so a chain narrowed away from managed identity (via the
-        // AZURE_TOKEN_CREDENTIALS environment variable, or an opt builder setting
-        // ExcludeManagedIdentityCredential) never reaches it and never throws. ASSUMED: the SDK treats
-        // the pinned client id exactly as a directly assigned one, so probing the SDK under equivalent
-        // options reports whether this host builds the arm at all. The alternative -- forcing the arm
-        // on by setting environment variables -- is forbidden here: they are process-global and xUnit
-        // parallelises within a collection.
         [Fact]
-        public void MustThrowWhenOptBuilderAlsoSetsManagedIdentityResourceId()
+        public void MustLetOptBuilderConfigureInheritedAuthorityHost()
         {
-            var build = () => _factory.WithManagedIdentity(opts => opts.ManagedIdentityResourceId = new ResourceIdentifier(UserAssignedIdentityResourceId));
+            var authorityHost = new Uri("https://login.microsoftonline.us/");
+            ManagedIdentityCredentialOptions capturedOptions = null;
 
-            if (ManagedIdentityArmRejectsBothIdentifiers())
+            _factory.WithManagedIdentity(opts =>
             {
-                build.Should().Throw<ArgumentException>();
-            }
-            else
-            {
-                build.Should().NotThrow();
-            }
+                opts.AuthorityHost = authorityHost;
+                capturedOptions = opts;
+            });
+
+            capturedOptions.AuthorityHost.Should().Be(authorityHost);
         }
 
-        private static bool ManagedIdentityArmRejectsBothIdentifiers()
+        // CHARACTERIZATION: ManagedIdentityCredentialOptions.ManagedIdentityId is internal to the
+        // Azure SDK assembly, so capturing the options in the opt builder cannot observe which
+        // identity was requested and every other test here would still pass against a hardcoded
+        // identity. Reflection over the SDK's internals is the only way to prove the resolved
+        // identity actually reaches the constructed credential. ACCEPTED RESIDUE: this proves the
+        // identity handed to the credential, not which managed-identity transport the credential
+        // later selects from host state; on a federated-token host the blank case authenticates as
+        // the platform-bound workload identity rather than literally system-assigned.
+        [Theory]
+        [InlineData(ClientId, "ClientId client-id")]
+        [InlineData(null, "SystemAssigned")]
+        [InlineData("", "SystemAssigned")]
+        [InlineData("   ", "SystemAssigned")]
+        public void MustPassResolvedIdentityIntoTheCredential(string clientId, string expectedIdentity)
         {
-            var options = new DefaultAzureCredentialOptions
-            {
-                ManagedIdentityClientId = ClientId,
-                ManagedIdentityResourceId = new ResourceIdentifier(UserAssignedIdentityResourceId)
-            };
+            var credential = AadTokenProviderFactory.Create(clientId).WithManagedIdentity();
 
-            try
+            ReadManagedIdentityIdFrom(credential).Should().Be(expectedIdentity);
+        }
+
+        private static string ReadManagedIdentityIdFrom(TokenCredential credential)
+        {
+            const BindingFlags InternalInstance = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance;
+
+            var client = credential.GetType().GetProperty("Client", InternalInstance)?.GetValue(credential);
+            if (client is null)
             {
-                _ = new DefaultAzureCredential(options);
-                return false;
+                throw new InvalidOperationException($"{credential.GetType().FullName} no longer exposes a 'Client' property; this SDK characterization needs updating.");
             }
-            catch (ArgumentException)
+
+            var identity = client.GetType().GetProperty("ManagedIdentityId", InternalInstance)?.GetValue(client);
+            if (identity is null)
             {
-                // INVARIANT: the throw IS this probe's observation, not a discarded failure -- it
-                // reports that this host builds the managed-identity arm of the credential chain.
-                return true;
+                throw new InvalidOperationException($"{client.GetType().FullName} no longer exposes a 'ManagedIdentityId' property; this SDK characterization needs updating.");
             }
+
+            return identity.ToString();
         }
     }
 }

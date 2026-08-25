@@ -53,13 +53,13 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         /// <summary>
-        /// Uses a <see cref="Azure.Core.TokenCredential"/> for Azure Service Bus authentication as an Azure managed identity. A <see cref="DefaultAzureCredential"/> is used deliberately here rather than as a fallback, so no client secret, certificate, or authority is required.
+        /// Uses a <see cref="Azure.Core.TokenCredential"/> for Azure Service Bus authentication as an Azure managed identity, so no client secret, certificate, or authority is required. A <see cref="ManagedIdentityCredential"/> is constructed directly: this mode never consults the <see cref="DefaultAzureCredential"/> chain, so no other credential source can answer in the managed identity's place and the AZURE_TOKEN_CREDENTIALS environment variable does not affect it.
         /// </summary>
         /// <param name="builder">The <see cref="ServiceBusOptionsBuilder"/> used to configure Azure Service Bus authentication</param>
         /// <param name="clientId">The client ID of the user-assigned managed identity. Omit it, or supply null or whitespace, to authenticate as the system-assigned managed identity.</param>
-        /// <param name="optBuilder">An optional builder to construct <see cref="DefaultAzureCredentialOptions"/>, invoked after <paramref name="clientId"/> has been applied so an explicit assignment here wins. To supply only an opt builder, use the named-argument form <c>UseAadTokenProviderWithManagedIdentity(optBuilder: opts =&gt; ...)</c>: a bare lambda in the first positional slot is a compile error because that slot is <paramref name="clientId"/>.</param>
+        /// <param name="optBuilder">An optional builder to construct <see cref="ManagedIdentityCredentialOptions"/>, invoked before the credential is constructed. To supply only an opt builder, use the named-argument form <c>UseAadTokenProviderWithManagedIdentity(optBuilder: opts =&gt; ...)</c>: a bare lambda in the first positional slot is a compile error because that slot is <paramref name="clientId"/>.</param>
         /// <returns>a <see cref="ServiceBusOptionsBuilder"/></returns>
-        public static ServiceBusOptionsBuilder UseAadTokenProviderWithManagedIdentity(this ServiceBusOptionsBuilder builder, string clientId = null, Action<DefaultAzureCredentialOptions> optBuilder = null)
+        public static ServiceBusOptionsBuilder UseAadTokenProviderWithManagedIdentity(this ServiceBusOptionsBuilder builder, string clientId = null, Action<ManagedIdentityCredentialOptions> optBuilder = null)
         {
             builder.AddTokenProvider(() => AadTokenProviderFactory.Create(clientId).WithManagedIdentity(optBuilder));
             return builder;

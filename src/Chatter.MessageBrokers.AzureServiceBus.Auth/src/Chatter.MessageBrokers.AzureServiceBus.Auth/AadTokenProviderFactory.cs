@@ -80,27 +80,27 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         /// <summary>
         /// Creates a <see cref="TokenCredential"/> that authenticates as a managed identity, with no client secret, certificate, or authority required.
         /// </summary>
-        /// <param name="optBuilder">Configures the <see cref="DefaultAzureCredentialOptions"/> after the client id supplied to <see cref="Create(string)"/> has been applied, so an explicit assignment here wins.</param>
-        /// <returns>A <see cref="DefaultAzureCredential"/> whose managed identity and workload identity client ids are the client id supplied to <see cref="Create(string)"/>.</returns>
-        public TokenCredential WithManagedIdentity(Action<DefaultAzureCredentialOptions> optBuilder = null)
-            => BuildDefaultAzureCredential(_clientId, optBuilder);
+        /// <param name="optBuilder">Configures the <see cref="ManagedIdentityCredentialOptions"/> before the credential is constructed.</param>
+        /// <returns>A <see cref="ManagedIdentityCredential"/> for the user-assigned managed identity named by the client id supplied to <see cref="Create(string)"/>, or for the system-assigned managed identity when that client id is null or whitespace.</returns>
+        public TokenCredential WithManagedIdentity(Action<ManagedIdentityCredentialOptions> optBuilder = null)
+        {
+            var options = new ManagedIdentityCredentialOptions(ResolveManagedIdentityId(_clientId));
+            optBuilder?.Invoke(options);
+            return new ManagedIdentityCredential(options);
+        }
+
+        // INVARIANT: the requested identity is carried by the credential itself, never selected from
+        // a credential chain. A chain picks its arm from ambient host state, so an environment-backed
+        // service principal can answer a managed identity request; constructing the credential
+        // directly from the caller's client id makes that substitution unrepresentable.
+        internal static ManagedIdentityId ResolveManagedIdentityId(string clientId)
+            => string.IsNullOrWhiteSpace(clientId)
+                ? ManagedIdentityId.SystemAssigned
+                : ManagedIdentityId.FromUserAssignedClientId(clientId);
 
         private static DefaultAzureCredential BuildDefaultAzureCredential(Action<DefaultAzureCredentialOptions> optBuilder)
-            => BuildDefaultAzureCredential(null, optBuilder);
-
-        // INVARIANT: ManagedIdentityClientId and WorkloadIdentityClientId both default to the
-        // AZURE_CLIENT_ID environment variable, so a blank identityClientId must leave them untouched
-        // rather than overwrite an ambient identity with an empty pin. The pin is applied before
-        // optBuilder runs so an explicit assignment by the caller still wins.
-        private static DefaultAzureCredential BuildDefaultAzureCredential(string identityClientId, Action<DefaultAzureCredentialOptions> optBuilder)
         {
             var opts = new DefaultAzureCredentialOptions();
-            if (!string.IsNullOrWhiteSpace(identityClientId))
-            {
-                opts.ManagedIdentityClientId = identityClientId;
-                opts.WorkloadIdentityClientId = identityClientId;
-            }
-
             optBuilder?.Invoke(opts);
             return new DefaultAzureCredential(opts);
         }
