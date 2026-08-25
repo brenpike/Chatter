@@ -77,9 +77,30 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
             return new InteractiveBrowserCredential(options);
         }
 
+        /// <summary>
+        /// Creates a <see cref="TokenCredential"/> that authenticates as a managed identity, with no client secret, certificate, or authority required.
+        /// </summary>
+        /// <param name="optBuilder">Configures the <see cref="DefaultAzureCredentialOptions"/> after the client id supplied to <see cref="Create(string)"/> has been applied, so an explicit assignment here wins.</param>
+        /// <returns>A <see cref="DefaultAzureCredential"/> whose managed identity and workload identity client ids are the client id supplied to <see cref="Create(string)"/>.</returns>
+        public TokenCredential WithManagedIdentity(Action<DefaultAzureCredentialOptions> optBuilder = null)
+            => BuildDefaultAzureCredential(_clientId, optBuilder);
+
         private static DefaultAzureCredential BuildDefaultAzureCredential(Action<DefaultAzureCredentialOptions> optBuilder)
+            => BuildDefaultAzureCredential(null, optBuilder);
+
+        // INVARIANT: ManagedIdentityClientId and WorkloadIdentityClientId both default to the
+        // AZURE_CLIENT_ID environment variable, so a blank identityClientId must leave them untouched
+        // rather than overwrite an ambient identity with an empty pin. The pin is applied before
+        // optBuilder runs so an explicit assignment by the caller still wins.
+        private static DefaultAzureCredential BuildDefaultAzureCredential(string identityClientId, Action<DefaultAzureCredentialOptions> optBuilder)
         {
             var opts = new DefaultAzureCredentialOptions();
+            if (!string.IsNullOrWhiteSpace(identityClientId))
+            {
+                opts.ManagedIdentityClientId = identityClientId;
+                opts.WorkloadIdentityClientId = identityClientId;
+            }
+
             optBuilder?.Invoke(opts);
             return new DefaultAzureCredential(opts);
         }
