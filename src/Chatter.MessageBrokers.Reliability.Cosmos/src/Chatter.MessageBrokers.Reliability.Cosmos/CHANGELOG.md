@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-24
+
+### Fixed
+
+- Corrected the NuGet package `<Description>`, which made four claims the library does not support. The package is no longer scoped as document-tier — it is described as shipping three independently registrable primitives: the Document Tier, the Standalone Inbox Gate, and the Standalone Outbox Relay. Removed the false claim that Chatter exclusively owns the reserved `inbox:`/`outbox:` item-id namespace; the Reserved Item-Id Namespace is now stated directionally — a prohibition on the Document Tier's public staging surface, an obligation on a Standalone Outbox Relay's monitored container. Removed the banned "database/container/lease" alias for the Change-Feed Source Identity, and dropped `ChangeFeedProcessor` cardinality entirely as an internal detail. The Outbox Body Resolver is now attributed to the Standalone Outbox Relay only, and only when one is configured — the Document-Tier Outbox Relay always reconstructs the message verbatim. The description was also materially shortened (356 → 196 words), with the implementation detail that duplicated the README and the module glossary removed. Package metadata only — no behavior change, nothing to do on upgrade.
+
 ## [0.4.1] - 2026-08-22
 
 ### Fixed
