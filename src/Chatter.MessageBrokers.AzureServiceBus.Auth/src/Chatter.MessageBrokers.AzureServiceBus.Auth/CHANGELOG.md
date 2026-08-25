@@ -12,6 +12,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [3.1.0] - 2026-08-24
+
+### Added
+
+- `AadTokenProviderFactory.WithManagedIdentity(Action<DefaultAzureCredentialOptions> optBuilder = null)` — an explicit managed-identity credential mode requiring no client secret, certificate, or authority. It returns a `DefaultAzureCredential` with the client id supplied to `AadTokenProviderFactory.Create(string)` pinned onto **both** `ManagedIdentityClientId` and `WorkloadIdentityClientId`; it does not return a `ManagedIdentityCredential`. Both arms are pinned because `WorkloadIdentityClientId` also defaults to the `AZURE_CLIENT_ID` environment variable and `WorkloadIdentityCredential` precedes `ManagedIdentityCredential` in the `DefaultAzureCredential` chain. The pin is applied before `optBuilder` runs, so an explicit assignment in `optBuilder` still wins. A null or whitespace client id pins nothing, which is how a caller asks for the system-assigned managed identity.
+- `ServiceBusOptionsBuilder.UseAadTokenProviderWithManagedIdentity(string clientId = null, Action<DefaultAzureCredentialOptions> optBuilder = null)` — wires the credential above into `ServiceBusOptions.TokenCredential`. To supply only an opt builder, use the named-argument form `UseAadTokenProviderWithManagedIdentity(optBuilder: opts => ...)`; a bare lambda in the first positional slot is a compile error because that slot is `clientId`.
+- Both members are additive. The blank-argument `DefaultAzureCredential` fallbacks in `WithSecret`, `WithCert`, and `WithInteractive` are unchanged: they still resolve a managed identity ambiently, with no client id pinned onto either arm. The pin applies only to the new managed-identity path.
+
+### Fixed
+
+- Corrected the NuGet package `<Description>`, which named a nonexistent `Chatter.MessageBrokers.AzureServiceProvider` package and still described the package as shipping `TokenProvider` implementations — wording that predates 3.0.0, which moved to `Azure.Core.TokenCredential` via `Azure.Identity` and removed the legacy `ITokenProvider` and the MSAL dependency. Package metadata only — no behavior change, nothing to do on upgrade.
+
 ## [3.0.0] - 2026-06-08
 
 ### Changed
