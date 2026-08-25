@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [3.1.1] - 2026-08-25
+
+### Fixed
+
+- Authority URLs carrying path segments beyond the tenant — notably the `https://login.microsoftonline.com/{tenant}/v2.0` issuer form Microsoft publishes and the Azure portal hands out — were rejected at credential construction with `ArgumentException: Invalid tenant id provided (Parameter 'tenantId')`. This was an undeclared regression introduced in 3.0.0: before 3.0.0 the module passed the raw authority to MSAL, which took the first path segment itself, so these URLs worked. The tenant id is now taken from the first non-empty path segment of the authority, and any deeper segments are ignored, so behavior is strictly widening — no authority that worked before behaves differently. One residue remains: an authority whose first segment is a non-AAD routing prefix (Azure AD B2C's `/tfp/`, ADFS, DSTS) now resolves that prefix as the tenant id and fails at token acquisition instead of at construction. This is accepted because those authority types cannot authenticate to Azure Service Bus regardless.
+
 ## [3.1.0] - 2026-08-24
 
 ### Added
