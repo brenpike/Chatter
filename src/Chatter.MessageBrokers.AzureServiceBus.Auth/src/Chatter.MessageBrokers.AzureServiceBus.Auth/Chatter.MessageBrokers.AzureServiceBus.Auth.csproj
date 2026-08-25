@@ -4,10 +4,10 @@
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <PackageId>Chatter.MessageBrokers.AzureServiceBus.Auth</PackageId>
-    <Version>3.0.0</Version>
+    <Version>3.1.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
-    <Description>Provides TokenProvider implementations for Chatter.MessageBrokers.AzureServiceProvider.</Description>
+    <Description>Provides Azure AD authentication for Chatter.MessageBrokers.AzureServiceBus, building Azure.Identity credentials (client secret, client certificate, interactive browser, and managed identity) for Azure Service Bus.</Description>
     <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>Messaging,.NET,Azure,ServiceBus,TokenProvider,Authentication</PackageTags>

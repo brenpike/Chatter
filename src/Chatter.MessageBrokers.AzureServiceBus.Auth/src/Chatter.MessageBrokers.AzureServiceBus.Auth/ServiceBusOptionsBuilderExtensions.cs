@@ -51,5 +51,18 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.AddTokenProvider(() => AadTokenProviderFactory.Create(clientId).WithInteractive(redirectUri, optBuilder));
             return builder;
         }
+
+        /// <summary>
+        /// Uses a <see cref="Azure.Core.TokenCredential"/> for Azure Service Bus authentication as an Azure managed identity, so no client secret, certificate, or authority is required. A <see cref="ManagedIdentityCredential"/> is constructed directly: this mode never consults the <see cref="DefaultAzureCredential"/> chain, so no other credential source can answer in place of a requested user-assigned identity and the AZURE_TOKEN_CREDENTIALS environment variable does not affect it. See <paramref name="clientId"/> for the one bounded exception on the blank/system-assigned case.
+        /// </summary>
+        /// <param name="builder">The <see cref="ServiceBusOptionsBuilder"/> used to configure Azure Service Bus authentication</param>
+        /// <param name="clientId">The client ID of the user-assigned managed identity. Omit it, or supply null or whitespace, to authenticate as the system-assigned managed identity. Bounded exception: on a federated-token host (for example AKS workload identity) the SDK's token-exchange managed-identity source falls back to the AZURE_CLIENT_ID environment variable when no identity was supplied, so the blank case authenticates as the platform-bound workload identity rather than literally system-assigned. Supplying a client ID closes that fallback.</param>
+        /// <param name="optBuilder">An optional builder to construct <see cref="ManagedIdentityCredentialOptions"/>, invoked before the credential is constructed. To supply only an opt builder, use the named-argument form <c>UseAadTokenProviderWithManagedIdentity(optBuilder: opts =&gt; ...)</c>: a bare lambda in the first positional slot is a compile error because that slot is <paramref name="clientId"/>.</param>
+        /// <returns>a <see cref="ServiceBusOptionsBuilder"/></returns>
+        public static ServiceBusOptionsBuilder UseAadTokenProviderWithManagedIdentity(this ServiceBusOptionsBuilder builder, string clientId = null, Action<ManagedIdentityCredentialOptions> optBuilder = null)
+        {
+            builder.AddTokenProvider(() => AadTokenProviderFactory.Create(clientId).WithManagedIdentity(optBuilder));
+            return builder;
+        }
     }
 }

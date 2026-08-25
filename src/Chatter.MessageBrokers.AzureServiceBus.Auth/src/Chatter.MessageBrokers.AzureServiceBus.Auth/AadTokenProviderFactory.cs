@@ -77,6 +77,28 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
             return new InteractiveBrowserCredential(options);
         }
 
+        /// <summary>
+        /// Creates a <see cref="TokenCredential"/> that authenticates as a managed identity, with no client secret, certificate, or authority required.
+        /// </summary>
+        /// <param name="optBuilder">Configures the <see cref="ManagedIdentityCredentialOptions"/> before the credential is constructed.</param>
+        /// <returns>A <see cref="ManagedIdentityCredential"/> for the user-assigned managed identity named by the client id supplied to <see cref="Create(string)"/>, or for the system-assigned managed identity when that client id is null or whitespace.</returns>
+        /// <remarks>No credential chain is constructed, so no ambient credential source can answer in place of a requested user-assigned identity. One bounded exception applies to the blank/system-assigned case only: on a federated-token host (for example AKS workload identity) the SDK's token-exchange managed-identity source falls back to the AZURE_CLIENT_ID environment variable when no identity was supplied, so that case authenticates as the platform-bound workload identity rather than literally system-assigned. Supplying a client id closes that fallback.</remarks>
+        public TokenCredential WithManagedIdentity(Action<ManagedIdentityCredentialOptions> optBuilder = null)
+        {
+            var options = new ManagedIdentityCredentialOptions(ResolveManagedIdentityId(_clientId));
+            optBuilder?.Invoke(options);
+            return new ManagedIdentityCredential(options);
+        }
+
+        // INVARIANT: the requested identity is carried by the credential itself, never selected from
+        // a credential chain. A chain picks its arm from ambient host state, so an environment-backed
+        // service principal can answer a managed identity request; constructing the credential
+        // directly from the caller's client id makes that substitution unrepresentable.
+        internal static ManagedIdentityId ResolveManagedIdentityId(string clientId)
+            => string.IsNullOrWhiteSpace(clientId)
+                ? ManagedIdentityId.SystemAssigned
+                : ManagedIdentityId.FromUserAssignedClientId(clientId);
+
         private static DefaultAzureCredential BuildDefaultAzureCredential(Action<DefaultAzureCredentialOptions> optBuilder)
         {
             var opts = new DefaultAzureCredentialOptions();

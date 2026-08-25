@@ -12,6 +12,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [3.1.0] - 2026-08-24
+
+### Added
+
+- `AadTokenProviderFactory.WithManagedIdentity(Action<ManagedIdentityCredentialOptions> optBuilder = null)` — an explicit managed-identity credential mode requiring no client secret, certificate, or authority. It returns a `ManagedIdentityCredential` whose identity **is** the client id supplied to `AadTokenProviderFactory.Create(string)`, via `ManagedIdentityId.FromUserAssignedClientId(clientId)`; a null or whitespace client id resolves to `ManagedIdentityId.SystemAssigned`, which is how a caller asks for the system-assigned managed identity. This path constructs no credential chain, so no other credential source can answer in the managed identity's place, and neither the `AZURE_TOKEN_CREDENTIALS` environment variable nor the `Exclude*` flags of `DefaultAzureCredentialOptions` apply to it.
+- `optBuilder` now configures `ManagedIdentityCredentialOptions` (previously `DefaultAzureCredentialOptions`) and is invoked before the credential is constructed. It cannot redirect the requested identity: the SDK's `ManagedIdentityCredentialOptions.ManagedIdentityId` property is internal and get-only, so the compiler forbids reassigning it.
+- `ServiceBusOptionsBuilder.UseAadTokenProviderWithManagedIdentity(string clientId = null, Action<ManagedIdentityCredentialOptions> optBuilder = null)` — wires the credential above into `ServiceBusOptions.TokenCredential`. To supply only an opt builder, use the named-argument form `UseAadTokenProviderWithManagedIdentity(optBuilder: opts => ...)`; a bare lambda in the first positional slot is a compile error because that slot is `clientId`.
+- A blank client id no longer implicitly adopts the `AZURE_CLIENT_ID` environment variable as the identity, as it did while this mode was backed by `DefaultAzureCredentialOptions` defaults. One bounded exception remains: on a federated-token host (for example AKS workload identity), the SDK's token-exchange managed-identity source falls back to `AZURE_CLIENT_ID` when no identity was supplied, so the blank/system-assigned case authenticates as the platform-bound workload identity rather than literally system-assigned. Supplying a client id closes that fallback entirely. The residue cannot be closed further — the SDK's exclusion switch for that source is internal, and excluding it would break AKS.
+- Both members are additive. The blank-argument `DefaultAzureCredential` fallbacks in `WithSecret`, `WithCert`, and `WithInteractive` are unchanged, and they remain the package's only ambient-resolution path — including the local-development story, since they still honor `az login`. Choosing the managed-identity mode in Azure and one of those fallbacks locally is the supported way to keep a single code path across environments.
+
+### Fixed
+
+- Corrected the NuGet package `<Description>`, which named a nonexistent `Chatter.MessageBrokers.AzureServiceProvider` package and still described the package as shipping `TokenProvider` implementations — wording that predates 3.0.0, which moved to `Azure.Core.TokenCredential` via `Azure.Identity` and removed the legacy `ITokenProvider` and the MSAL dependency. Package metadata only — no behavior change, nothing to do on upgrade.
+
 ## [3.0.0] - 2026-06-08
 
 ### Changed
