@@ -82,6 +82,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         /// </summary>
         /// <param name="optBuilder">Configures the <see cref="ManagedIdentityCredentialOptions"/> before the credential is constructed.</param>
         /// <returns>A <see cref="ManagedIdentityCredential"/> for the user-assigned managed identity named by the client id supplied to <see cref="Create(string)"/>, or for the system-assigned managed identity when that client id is null or whitespace.</returns>
+        /// <remarks>No credential chain is constructed, so no ambient credential source can answer in place of a requested user-assigned identity. One bounded exception applies to the blank/system-assigned case only: on a federated-token host (for example AKS workload identity) the SDK's token-exchange managed-identity source falls back to the AZURE_CLIENT_ID environment variable when no identity was supplied, so that case authenticates as the platform-bound workload identity rather than literally system-assigned. Supplying a client id closes that fallback.</remarks>
         public TokenCredential WithManagedIdentity(Action<ManagedIdentityCredentialOptions> optBuilder = null)
         {
             var options = new ManagedIdentityCredentialOptions(ResolveManagedIdentityId(_clientId));
