@@ -74,18 +74,28 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
         }
 
         // CHARACTERIZATION: accepted residue of resolving the tenant id as the first non-empty path
-        // segment. A non-AAD directory authority prefixes the tenant with a routing segment (B2C
-        // /tfp/, ADFS, DSTS), so the first segment is a character-set-valid but wrong tenant id: the
-        // credential constructs successfully and the failure moves from construction to token
-        // acquisition. Accepted because those authority types cannot authenticate to Azure Service Bus
-        // at all — Service Bus RBAC does not honour B2C tokens — so no supported configuration reaches
-        // this shape. Pinned so the residue stays visible instead of hidden.
+        // segment. ANY authority whose first non-empty segment is not the tenant id resolves a
+        // character-set-valid but WRONG tenant id: the credential constructs and the failure moves from
+        // construction to first token acquisition. Two shapes reach this: a non-AAD routing prefix (B2C
+        // /tfp/{tenant}/{policy}, ADFS, DSTS), which cannot authenticate to Azure Service Bus at all,
+        // and a malformed AAD URL that omits the tenant (e.g. the token endpoint
+        // https://login.microsoftonline.com/oauth2/v2.0/token). In both, the misparsed segment names no
+        // real directory, so no token is ever issued. The two facts below pin one subset each. Pinned so
+        // the residue stays visible instead of hidden.
         [Fact]
         public void MustResolveNonAadRoutingSegmentAsTenantId()
         {
             var credential = _factory.WithSecret("secret", "https://login.microsoftonline.com/tfp/tenant/policy");
 
             ReadTenantIdFrom(credential).Should().Be("tfp");
+        }
+
+        [Fact]
+        public void MustResolveMalformedAadEndpointSegmentAsTenantId()
+        {
+            var credential = _factory.WithSecret("secret", "https://login.microsoftonline.com/oauth2/v2.0/token");
+
+            ReadTenantIdFrom(credential).Should().Be("oauth2");
         }
 
         // CHARACTERIZATION: ParseAuthority yields a null tenant id for a null, empty, whitespace, or
