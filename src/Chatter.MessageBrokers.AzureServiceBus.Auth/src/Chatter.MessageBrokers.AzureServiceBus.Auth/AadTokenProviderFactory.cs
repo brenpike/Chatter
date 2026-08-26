@@ -121,8 +121,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         // is unobservable from WithSecret and WithCert.
         // An authority whose first segment is not the tenant id resolves a wrong tenant id and still
         // constructs; that is an operator configuration error, not a case handled here, and CONTEXT.md
-        // "Directory Authority" carries the accepted-residue disposition. Every claim in this block is
-        // pinned by WhenSelectingCredentialBranches — do not add one that is not.
+        // "Directory Authority" carries the accepted-residue disposition.
+        // SCOPE RULE: this block states construction-time facts about THIS code only, and each such fact
+        // is pinned by a WhenSelectingCredentialBranches assertion whose failure would falsify it. What
+        // Entra does with the constructed credential is outside this code's authority — no claim about
+        // token-acquisition outcomes may be added to this block, pinned or not.
         private static (string tenantId, Uri authorityHost) ParseAuthority(string authority)
         {
             if (string.IsNullOrWhiteSpace(authority)

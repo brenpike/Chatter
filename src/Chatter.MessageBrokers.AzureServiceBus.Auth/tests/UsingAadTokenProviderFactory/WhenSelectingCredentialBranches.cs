@@ -76,9 +76,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
         // CHARACTERIZATION: accepted residue of resolving the tenant id as the first non-empty path
         // segment. ANY authority whose first non-empty segment is not the tenant id resolves a
         // character-set-valid but WRONG tenant id: the credential constructs, so the misconfiguration
-        // is not detected until first token acquisition. The three facts below pin the residue and its
-        // bound — one non-AAD routing prefix, one tenant-less AAD URL, and the client id surviving a
-        // mis-resolved tenant. Pinned so the residue stays visible instead of hidden.
+        // is not detected until first token acquisition. The three facts below pin the residue — one non-AAD routing prefix, one tenant-less AAD URL,
+        // and the constructed credential carrying the operator-supplied client id. All three are
+        // construction-time code facts; none asserts anything about what Entra does with the credential.
+        // Pinned so the residue stays visible instead of hidden.
         [Fact]
         public void MustResolveNonAadRoutingSegmentAsTenantId()
         {
