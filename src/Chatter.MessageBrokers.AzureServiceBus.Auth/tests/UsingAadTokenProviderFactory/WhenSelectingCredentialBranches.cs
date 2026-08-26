@@ -75,13 +75,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
 
         // CHARACTERIZATION: accepted residue of resolving the tenant id as the first non-empty path
         // segment. ANY authority whose first non-empty segment is not the tenant id resolves a
-        // character-set-valid but WRONG tenant id: the credential constructs and the failure moves from
-        // construction to first token acquisition. Two shapes reach this: a non-AAD routing prefix (B2C
-        // /tfp/{tenant}/{policy}, ADFS, DSTS), which cannot authenticate to Azure Service Bus at all,
-        // and a malformed AAD URL that omits the tenant (e.g. the token endpoint
-        // https://login.microsoftonline.com/oauth2/v2.0/token). In both, the misparsed segment names no
-        // real directory, so no token is ever issued. The two facts below pin one subset each. Pinned so
-        // the residue stays visible instead of hidden.
+        // character-set-valid but WRONG tenant id: the credential constructs, so the misconfiguration
+        // is not detected until first token acquisition. The three facts below pin the residue and its
+        // bound — one non-AAD routing prefix, one tenant-less AAD URL, and the client id surviving a
+        // mis-resolved tenant. Pinned so the residue stays visible instead of hidden.
         [Fact]
         public void MustResolveNonAadRoutingSegmentAsTenantId()
         {
@@ -96,6 +93,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
             var credential = _factory.WithSecret("secret", "https://login.microsoftonline.com/oauth2/v2.0/token");
 
             ReadTenantIdFrom(credential).Should().Be("oauth2");
+        }
+
+        [Fact]
+        public void MustPreserveClientIdWhenAuthorityResolvesWrongTenantId()
+        {
+            var credential = _factory.WithSecret("secret", "https://login.microsoftonline.com/tfp/tenant/policy");
+
+            ReadClientIdFrom(credential).Should().Be("client-id");
         }
 
         // CHARACTERIZATION: ParseAuthority yields a null tenant id for a null, empty, whitespace, or
@@ -193,6 +198,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth.Tests.UsingAadTokenProvide
             }
 
             return (string)tenantId.GetValue(credential);
+        }
+
+        private static string ReadClientIdFrom(TokenCredential credential)
+        {
+            const BindingFlags InternalInstance = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance;
+
+            var clientId = credential.GetType().GetProperty("ClientId", InternalInstance);
+            if (clientId is null)
+            {
+                throw new InvalidOperationException($"{credential.GetType().FullName} no longer exposes a 'ClientId' property; this SDK characterization needs updating.");
+            }
+
+            return (string)clientId.GetValue(credential);
         }
 
         private static Uri ReadAuthorityHostFrom(TokenCredential credential)

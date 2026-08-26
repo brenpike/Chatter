@@ -113,20 +113,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Auth
         // tenant id is the FIRST NON-EMPTY path segment; every deeper segment is authority-endpoint
         // routing (v2.0, oauth2/v2.0/token) and is ignored. First non-empty rather than Segments[1]
         // because a double-slash authority (host followed by //{tenant}/) carries an empty leading
-        // segment, which Segments[1] would resolve to as the tenant id. The scheme+host becomes
-        // AuthorityHost. A null, empty, or unparseable authority yields a null tenant id and null
-        // AuthorityHost, deferring to the credential's own defaults (mirrors the old
-        // (authority ?? "") coercion).
-        // Accepted residue: the tenant id is whatever the first non-empty segment is, so ANY authority
-        // whose first segment is not the tenant id resolves a character-set-valid but WRONG tenant id and
-        // the credential constructs — failure moves from construction to first token acquisition. Two
-        // shapes reach this: a non-AAD routing prefix (B2C /tfp/{tenant}/{policy}, ADFS, DSTS), which
-        // cannot authenticate to Azure Service Bus at all, and a malformed AAD URL that omits the tenant
-        // (e.g. the token endpoint https://login.microsoftonline.com/oauth2/v2.0/token). In both, the
-        // misparsed segment names no real directory, so no token is ever issued — the failure is late but
-        // loud, never a wrong-principal token — and this matches pre-3.0.0 MSAL, which also took the first
-        // path segment; 3.0.0-3.1.0's construction-time rejection was an accident of Azure.Identity's
-        // tenant-charset validation, not a designed guarantee.
+        // segment, which Segments[1] would resolve to as the tenant id.
+        // A blank, non-absolute, or path-less authority yields a null tenant id. Every caller hands
+        // that straight to an Azure.Identity credential constructor, which rejects null, so those
+        // shapes throw ArgumentNullException at construction — nothing is defaulted. A null
+        // authorityHost only ever accompanies a null tenant id, so the null arm of ApplyAuthorityHost
+        // is unobservable from WithSecret and WithCert.
+        // An authority whose first segment is not the tenant id resolves a wrong tenant id and still
+        // constructs; that is an operator configuration error, not a case handled here, and CONTEXT.md
+        // "Directory Authority" carries the accepted-residue disposition. Every claim in this block is
+        // pinned by WhenSelectingCredentialBranches — do not add one that is not.
         private static (string tenantId, Uri authorityHost) ParseAuthority(string authority)
         {
             if (string.IsNullOrWhiteSpace(authority)
