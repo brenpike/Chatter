@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [3.1.1] - 2026-08-25
+
+### Fixed
+
+- Authority URLs carrying path segments beyond the tenant — notably the `https://login.microsoftonline.com/{tenant}/v2.0` issuer form Microsoft publishes and the Azure portal hands out — were rejected at credential construction with `ArgumentException: Invalid tenant id provided (Parameter 'tenantId')`. This was an undeclared regression introduced in 3.0.0: before 3.0.0 the module passed the raw authority to MSAL, which took the first path segment itself, so these URLs worked. The tenant id is now taken from the first non-empty path segment of the authority, and any deeper segments are ignored, so behavior is strictly widening — no authority that worked before behaves differently. One residue remains: any authority whose first non-empty path segment is not the tenant id — a non-AAD routing prefix (Azure AD B2C's `/tfp/`, ADFS, DSTS) or a malformed AAD URL that omits the tenant (e.g. the `/oauth2/v2.0/token` token endpoint) — now resolves that segment as the tenant id, so the credential constructs and the misconfiguration is not detected until first token acquisition instead of at construction. The credential still carries the operator-supplied client id and secret or certificate; what a request made with a mis-resolved tenant id yields at token acquisition is decided by Microsoft Entra, and this package asserts no bound on that outcome. Accepted as an operator configuration error, and because this matches the pre-3.0.0 first-segment behavior this fix restores.
+
 ## [3.1.0] - 2026-08-24
 
 ### Added

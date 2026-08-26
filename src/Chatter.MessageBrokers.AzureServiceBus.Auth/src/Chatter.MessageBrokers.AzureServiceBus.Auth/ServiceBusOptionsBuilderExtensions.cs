@@ -13,7 +13,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <param name="builder">The <see cref="ServiceBusOptionsBuilder"/> used to configure Azure Service Bus authentication</param>
         /// <param name="clientId">The client ID of the service principal</param>
         /// <param name="clientSecret">The client secret to use to authenticate with Azure AD</param>
-        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/</param>
+        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is the first non-empty path segment and any deeper segments are ignored, so a /v2.0-suffixed issuer URL copied out of the Azure portal is accepted. The scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
         /// <param name="optBuilder">An optional builder to construct <see cref="DefaultAzureCredentialOptions"/> to be used with <see cref="DefaultAzureCredential"/> when no client secret is provided.</param>
         /// <returns>a <see cref="ServiceBusOptionsBuilder"/></returns>
         public static ServiceBusOptionsBuilder UseAadTokenProviderWithSecret(this ServiceBusOptionsBuilder builder, string clientId, string clientSecret, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null)
@@ -28,7 +28,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <param name="builder">The <see cref="ServiceBusOptionsBuilder"/> used to configure Azure Service Bus authentication</param>
         /// <param name="clientId">The client ID of the service principal</param>
         /// <param name="thumbPrint">The thumbprint of the certificate to be used for authentication</param>
-        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/</param>
+        /// <param name="authority">A URL that indicates a directory to request tokens from. For example, https://login.microsoftonline.com/{AzureADTenantID}/. The tenant id is the first non-empty path segment and any deeper segments are ignored, so a /v2.0-suffixed issuer URL copied out of the Azure portal is accepted. The scheme+host becomes the credential's <see cref="Azure.Identity.TokenCredentialOptions.AuthorityHost"/>.</param>
         /// <param name="optBuilder">An optional builder to construct <see cref="DefaultAzureCredentialOptions"/> to be used with <see cref="DefaultAzureCredential"/> when no thumbprint is provided.</param>
         /// <param name="validCertsOnly"></param>
         /// <returns>a <see cref="ServiceBusOptionsBuilder"/></returns>
