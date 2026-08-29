@@ -252,29 +252,67 @@ Two verified facts make this safe by default:
   `AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE`. Both literals are present in the resolved
   `Azure.Core` 1.46.2 assembly (verified in its user-string heap; the resolved version is pinned by
   `src/Chatter.MessageBrokers.AzureServiceBus/tests/packages.lock.json`).
-  **UNVERIFIED in this repository:** that the SDK *caches* the switch value in a static constructor —
-  and therefore that the switch must be set **before first touch of the SDK type** — is taken from
-  the Azure SDK's documented behavior, not confirmed by inspecting SDK source here. Applications
-  should treat "set it at process start" as the safe instruction regardless.
+  **NOW VERIFIED (previously recorded here as UNVERIFIED): the SDK caches the switch value in a
+  static constructor**, so "set it before first touch of the SDK type" is an ESTABLISHED requirement
+  rather than a documented-behavior inference. Established by decompiling the resolved package:
+  `Azure.Messaging.ServiceBus` 7.20.1 compiles its own internal copy of the `Azure.Core` shared
+  source, and that copy's `internal static class Azure.Core.Pipeline.ActivityExtensions` declares
+  `static ActivityExtensions() => ResetFeatureSwitch();`, where `ResetFeatureSwitch` assigns
+  `SupportsActivitySource` from `AppContextSwitchHelper.GetConfigValue` reading the
+  `Azure.Experimental.EnableActivitySource` AppContext switch with the
+  `AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE` environment variable as its fallback.
+  `DiagnosticScopeFactory.GetActivitySource` then returns `null` unless that cached value is true, so
+  a switch set after the type is initialized leaves the SDK with no `ActivitySource` at all and emits
+  nothing. The consequence is carried in the test suite:
+  `src/Chatter.MessageBrokers.AzureServiceBus/tests/Integration/AzureSdkActivitySourceSwitch.cs`
+  sets the switch from a `[ModuleInitializer]` for exactly this reason and records the same
+  decompilation.
 - **`RabbitMQ.Client` 7.2.1 is OFF by default.** Publish-side activity creation and context
   injection are gated on `RabbitMQActivitySource.PublisherHasListeners`. Both
   `RabbitMQActivitySource` and `PublisherHasListeners` are verified present in the shipped
-  assembly's metadata.
+  assembly's metadata. **ACCURACY NOTE:** `PublisherHasListeners` is **`internal`** on
+  `RabbitMQ.Client` 7.2.1. The only PUBLIC members of `RabbitMQActivitySource` are the
+  `PublisherSourceName` / `SubscriberSourceName` consts and the `ContextInjector`,
+  `ContextExtractor`, `UseRoutingKeyAsOperationName` and `TracingOptions` properties. The gate is
+  therefore read reflectively (`BindingFlags.NonPublic`) wherever a test must assert on it, so a
+  package upgrade that renames or removes the gate fails loudly instead of quietly voiding the
+  premise.
 
-**NEWLY FOUND INTEROP CONSEQUENCE — the ASB SDK's `Diagnostic-Id` stamping is SUPPRESSED.**
-Azure's `MessagingClientDiagnostics.InstrumentMessage` short-circuits when the message already
-carries `"Diagnostic-Id"` or `"traceparent"`. Because Chatter writes `"traceparent"` (D5), the SDK
-does not stamp its own legacy `Diagnostic-Id`. Verified in this repository: the
-`Azure.Messaging.ServiceBus` 7.20.1 assembly contains both `MessagingClientDiagnostics` and
-`InstrumentMessage` in its metadata and the literal `"Diagnostic-Id"` in its user-string heap, and
-`Azure.Core` 1.46.2 contains the literal `"traceparent"`. **UNVERIFIED in this repository:** the
-short-circuit *control flow* itself is taken from the Azure SDK's published shared source, not
-confirmed by inspecting SDK source here.
+**MEASURED AGAINST A REAL BROKER — RabbitMQ interop.** D8's nesting and last-writer-wins claims are
+no longer reasoned only from the gate. With a .NET BCL `System.Diagnostics.ActivityListener`
+attached to `"RabbitMQ.Client.Publisher"`, the SDK emits **exactly one** publisher span per dispatch
+call, that span is a **direct child** of Chatter's send span, and the SDK **does overwrite** the
+`traceparent` header Chatter wrote. The overwrite is harmless in precisely the way D8 predicts: the
+delivered `traceparent` carries the **same trace id** and names the SDK's own descendant span, so
+trace-id continuity holds under last-writer-wins. Pinned in
+`src/Chatter.MessageBrokers.RabbitMQ/tests/Integration/RabbitMqTraceContextInteropTests.cs`, which
+also pins the SDK-off cell where Chatter's `traceparent` arrives byte-for-byte unmodified.
+
+**NEWLY FOUND INTEROP CONSEQUENCE — the ASB SDK's `Diagnostic-Id` stamping is SUPPRESSED, AND SO IS
+ITS PER-MESSAGE SPAN.** Azure's `MessagingClientDiagnostics.InstrumentMessage` short-circuits when
+the message already carries `"Diagnostic-Id"` or `"traceparent"`. Because Chatter writes
+`"traceparent"` (D5), the SDK does neither of the two things that guard stands in front of.
+
+**NOW VERIFIED (previously recorded here as UNVERIFIED): the short-circuit control flow.**
+Decompiling the resolved `Azure.Messaging.ServiceBus` 7.20.1 shows the guard exactly as this ADR
+described it — `if (!properties.ContainsKey("Diagnostic-Id") && !properties.ContainsKey("traceparent"))`
+wrapping both the scope creation and the `Diagnostic-Id` stamping. No divergence from the earlier
+description was found, and the conformance test needed no adjustment to pass.
+
+**WIDER THAN FIRST RECORDED.** Because that guard wraps the **scope creation** and not merely the
+stamp, it also suppresses the SDK's per-message span on the `ActivitySource`
+`"Azure.Messaging.ServiceBus.Message"`. The SDK's send span on
+`"Azure.Messaging.ServiceBus.ServiceBusSender"` is **UNAFFECTED** and nests inside Chatter's send
+span, exactly as D8's opening claim requires. Both behaviors are asserted in
+`src/Chatter.MessageBrokers.AzureServiceBus/tests/Integration/AzureServiceBusTraceContextInteropTests.cs`,
+against a control case in which Chatter wrote no trace context and the SDK consequently both stamps
+`Diagnostic-Id` and emits its per-message span.
 
 **Mitigation, documented for applications that rely on `Diagnostic-Id`-based correlation:** set
 `AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE=true` (or the equivalent AppContext switch) so the SDK
 reads `traceparent` instead of stamping and reading `Diagnostic-Id`. This is a one-line environment
-change and is the SDK's own forward path.
+change and is the SDK's own forward path — but it must be in place **before the process first
+touches an SDK type**, per the static-constructor caching established above.
 
 ### D9 — Sampling: a sampled-out span still propagates
 
@@ -363,10 +401,21 @@ assumed.
 - **Outbox replay generally.** The shared materialization recipe coerces a JSON string to `DateTime`
   only when `JsonElement.TryGetDateTime` succeeds, and otherwise returns the string unchanged
   (`MessageContext.cs:90-97`). A W3C `traceparent`
-  (`00-<32 hex>-<16 hex>-<2 hex>`) is not ISO-8601-shaped, so it round-trips as a `string`.
-  **This last point is reasoned from the code, not yet executed**; a conformance test pinning
-  `traceparent` round-trip through `MaterializePersistedContext` is required by the implementing
-  step rather than assumed here.
+  (`00-<32 hex>-<16 hex>-<2 hex>`) is not ISO-8601-shaped, so it round-trips as a `string`. The
+  mechanism, precisely: the `traceparent`'s two-character version prefix puts the first `-` at
+  **index 2**, where an ISO-8601 date requires a digit, so `JsonElement.TryGetDateTime`'s strict
+  parse declines it.
+  **EXECUTED AND HOLDS — this was previously recorded as reasoned-from-code and not executed.**
+  Proven independently by two conformance suites:
+  `src/Chatter.MessageBrokers.SqlServiceBroker/tests/Diagnostics/WhenTraceContextCrossesTheServiceBrokerBoundary.cs`
+  runs it as a `Theory` over three `traceparent` shapes (sampled, unsampled, and an all-digit trace
+  id), both directly through `MessageContext.MaterializePersistedContext` and through the full
+  envelope round-trip, and pairs them with a **control** proving the same recipe **does** coerce a
+  genuine ISO-8601 string to a `DateTime` — so the pass is a property of the `traceparent`'s shape
+  rather than of a materializer that never coerces anything; and
+  `src/Chatter.MessageBrokers/tests/Diagnostics/WhenSendingWithTracingEnabled.cs`
+  (`MustSurviveOutboxReplayAsAString`) proves it on a real `traceparent` produced by a real send
+  span, serialized with `ChatterJson.Options`.
 
 **Trace context does NOT survive for:**
 
@@ -434,9 +483,13 @@ Explicitly out of scope for this decision and the work it governs:
   "operation"** until the ASB SDK advances its own convention pin (D4). Both are correct under their
   own pins.
 - **Applications relying on ASB `Diagnostic-Id` correlation must set
-  `AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE=true`** once Chatter tracing is enabled (D8). This is
-  the single behavior change an opting-in application may notice, and it is documented with its
-  one-line mitigation.
+  `AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE=true`** once Chatter tracing is enabled, and must set it
+  before the process first touches an SDK type, because the SDK caches the switch in a static
+  constructor (D8). The suppression is **wider than the `Diagnostic-Id` stamp alone**: the SDK's
+  per-message span (`ActivitySource` `"Azure.Messaging.ServiceBus.Message"`) is suppressed with it,
+  while the SDK's send span (`"Azure.Messaging.ServiceBus.ServiceBusSender"`) is unaffected and nests
+  inside Chatter's. This is the single behavior change an opting-in application may notice, and it is
+  documented with its one-line mitigation.
 - **Two propagation gaps are documented, not silently tolerated** — the SqlServiceBroker
   `DefaultType`/deadletter paths and SqlChangeFeed. Both predate this change, both affect all
   headers, and both are pinned by conformance tests so a future change that accidentally *fixes* or
