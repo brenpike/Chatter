@@ -16,6 +16,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
+- The outbound dispatch sequence is now documented as single-pass on both seams it crosses (`IRouteBrokeredMessages.Route` and `IMessagingInfrastructureDispatcher.Dispatch`): the sequence is lazy and its iterator carries per-yield side effects — message id generation, message body conversion, W3C trace-context propagation — plus the send span's batch count, so an implementation must enumerate it exactly once and must not walk it with `Count()`/`Any()`/`ToList()` in addition to the real enumeration. This documents a contract the pipeline already relied on; no behavior change (#274).
 - Bundled dependency uplift to Chatter.CQRS 0.9.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it); no behavioral change to Chatter.MessageBrokers itself beyond the additions above.
 
 ## [0.14.1] - 2026-06-15

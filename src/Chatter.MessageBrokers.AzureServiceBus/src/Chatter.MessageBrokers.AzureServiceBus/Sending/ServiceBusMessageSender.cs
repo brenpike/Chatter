@@ -4,7 +4,6 @@ using Chatter.MessageBrokers.Sending;
 using Azure.Messaging.ServiceBus;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using System.Transactions;
 
@@ -42,7 +41,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             ServiceBusReceivedMessage receivedMessage = null;
             transactionContext?.Container.TryGet(out receivedMessage);
 
-            var dispatchTasks = new List<Task>(brokeredMessages.Count());
+            // INVARIANT: brokeredMessages is enumerated exactly once, per the single-pass
+            // enumeration contract on IMessagingInfrastructureDispatcher.Dispatch. No capacity
+            // hint is taken: sizing the list would walk the sequence a second time, re-running a
+            // lazy producer's per-yield side effects. Do not reintroduce one.
+            var dispatchTasks = new List<Task>();
 
             //TODO: this won't work if leveraging partitioning - won't be able to send messages to multiple partitions in one transactionscope...
             using var scope = CreateTransactionScope(transactionContext?.TransactionMode ?? TransactionMode.None);
