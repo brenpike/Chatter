@@ -132,7 +132,11 @@ namespace Chatter.MessageBrokers.Routing
             }
             finally
             {
-                BrokerDiagnostics.RecordSend(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationRouterContext.DestinationPath, RepliedMessageCount, failure);
+                // The count reflects messages actually handed to the router, not messages intended: isRoutingStarted
+                // is set only once _router.Route has been called with the built outbound message, so a failure
+                // recorded before that point (e.g. BuildReply throwing) contributes 0, not RepliedMessageCount.
+                var handedOffCount = isRoutingStarted ? RepliedMessageCount : 0;
+                BrokerDiagnostics.RecordSend(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationRouterContext.DestinationPath, handedOffCount, failure);
                 sendActivity?.Dispose();
             }
         }

@@ -1,8 +1,13 @@
 using Chatter.CQRS.Diagnostics;
 using Chatter.MessageBrokers.Diagnostics;
+using Chatter.MessageBrokers.Exceptions;
+using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Routing;
+using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Sending;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
+using Moq;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -323,6 +328,46 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 sentMessages.Value.Should().Be(YieldedBeforeFault);
                 sentMessages.TryGetTag(ChatterTelemetryTags.ErrorType, out var errorType).Should().BeTrue();
                 errorType.Should().Be(typeof(DiagnosticsProbeException).FullName);
+            }
+        }
+
+        [Fact]
+        public async Task MustCountZeroOnTheSentInstrumentWhenAReplysConstructionFailsBeforeRouting()
+        {
+            // DiagnosticsSendHarness exercises BrokeredMessageDispatcher.Send/Publish and never reaches ReplyRouter,
+            // so this reply-specific case is built inline rather than forcing that harness to express something it
+            // structurally cannot. The Router mock is STRICT and unconfigured, so an unexpected Route call - i.e. a
+            // regression back to handing the router a message that was never built - fails this test outright.
+            using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
+            {
+                var router = new Mock<IRouteBrokeredMessages>(MockBehavior.Strict);
+                var messageIdGenerator = new Mock<IMessageIdGenerator>();
+                messageIdGenerator.Setup(generator => generator.GenerateId(It.IsAny<byte[]>())).Returns(Guid.NewGuid());
+
+                var bodyConverter = new JsonBodyConverter();
+                var inbound = new InboundBrokeredMessage(
+                    "inbound-message-id",
+                    bodyConverter.Convert(new TracedDelivery { Value = "inbound" }),
+                    new Dictionary<string, object>(),
+                    "receiver-path",
+                    bodyConverter);
+
+                // A blank destination makes OutboundBrokeredMessage's constructor throw INSIDE BuildReply, before
+                // the router is ever reached.
+                var destinationRouterContext = new ReplyToRoutingContext(" ", "reply-group");
+
+                Func<Task> reply = () => new ReplyRouter(router.Object, messageIdGenerator.Object)
+                    .Route(inbound, null, destinationRouterContext);
+
+                var thrown = (await reply.Should().ThrowAsync<ReplyToRoutingExceptions>()).Which;
+                thrown.InnerException.Should().BeOfType<ArgumentException>();
+
+                // messaging.client.sent.messages counts what was actually handed to broker infrastructure. Nothing
+                // reached the router here, so the count is zero even though the failure is still recorded.
+                var sentMessages = meterScope.MeasurementsFor(BrokerDiagnostics.SentMessagesInstrumentName).Should().ContainSingle().Subject;
+                sentMessages.Value.Should().Be(0);
+                sentMessages.TryGetTag(ChatterTelemetryTags.ErrorType, out var errorType).Should().BeTrue();
+                errorType.Should().Be(typeof(ArgumentException).FullName, "error.type must record the INNER cause, not the ReplyToRoutingExceptions wrapper (ADR-0010)");
             }
         }
 
