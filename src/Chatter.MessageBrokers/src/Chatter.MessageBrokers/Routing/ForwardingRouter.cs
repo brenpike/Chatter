@@ -84,9 +84,11 @@ namespace Chatter.MessageBrokers.Routing
                 // ALIASING, DELIBERATE: the outbound message was handed the INBOUND message's context dictionary by
                 // reference (the OutboundBrokeredMessage constructor already mutates that same instance), so writing
                 // here OVERWRITES the inbound record in place and a later reader - the routing slip's next hop,
-                // deadletter stamping - sees this hop's traceparent. Overwriting is required rather than optional: the
-                // inbound context is reused wholesale on this path, so a stale upstream traceparent would otherwise
-                // ride out. It is safe because of an ORDERING RULE: trace context is extracted at Brokered Message
+                // deadletter stamping - sees this hop's traceparent. The overwrite happens ONLY when
+                // traceContextActivity is non-null; on the null-activity paths - diagnostics off, metrics-only, or
+                // sampled out with no ambient activity - the inbound traceparent rides out unchanged, deliberately
+                // (see TraceContextPropagator.SetTraceContextValue).
+                // It is safe because of an ORDERING RULE: trace context is extracted at Brokered Message
                 // Receiver worker entry, strictly before the Received Message Dispatcher hands the message to any
                 // handler, so the receive span is already built from the original context by the time a handler can
                 // forward. Preserve that ordering if the receiving path is ever restructured.

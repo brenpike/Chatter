@@ -42,6 +42,7 @@ namespace Chatter.SqlChangeFeed.Tests.Diagnostics
     /// <see cref="BrokeredMessageReceiver{TMessage}"/>. That is the whole reason the worker was chosen as the seam,
     /// and it is pinned below.
     /// </remarks>
+    [Collection(DiagnosticsCollection.Name)]
     public class WhenChangeFeedMessagesAreProcessed : Testing.Core.Context
     {
         private const string SchemaName = "dbo";

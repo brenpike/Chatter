@@ -465,9 +465,28 @@ downstream hops that sample independently.
 
 ### D10 — AOT and trimming: safe
 
-The instrumentation adds **no reflection and no dynamic code**. `ActivitySource`, `Meter`, and
+The instrumentation adds **no dynamic code**. `ActivitySource`, `Meter`, and
 `DistributedContextPropagator` are all statically resolvable, and the tag/attribute names are
 constants.
+
+**AMENDED — the "no reflection" half of that claim was FALSE; the conclusion stands.** An earlier
+wording read "no reflection and no dynamic code". There IS reflection, in one place on each surface:
+`ResolveTelemetryVersion` (`Diagnostics/BrokerDiagnostics.cs:328-340` and its twin
+`Diagnostics/ChatterDiagnostics.cs:133-145`) calls
+`Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()` and `Assembly.GetName()` to
+stamp the `ActivitySource`/`Meter` version, and it runs from a **static field initializer**
+(`_telemetryVersion`, consumed by the `ActivitySource` and `Meter` constructors declared immediately
+below it) — so it executes once per process at type initialization, never per message.
+
+The heading still stands, because both APIs are **trim-safe**: neither carries
+`RequiresUnreferencedCode`. Verified by reading the custom attributes on both members in the
+`System.Runtime` reference assembly under **both** `Microsoft.NETCore.App.Ref/8.0.30/ref/net8.0/` and
+`Microsoft.NETCore.App.Ref/10.0.8/ref/net10.0/` — neither `Assembly.GetName` nor
+`CustomAttributeExtensions.GetCustomAttribute` carries any trim or AOT annotation on either TFM.
+Under aggressive trimming the worst outcome is that the informational-version attribute is trimmed
+away and the version string **degrades to `null`** — an `ActivitySource` with no version, which is
+legal — rather than the instrumentation failing. **Nothing is removed on account of this
+correction:** it is a wording fix to this ADR, not a change to the implementation.
 
 Noted separately and explicitly **not in scope**: `QueryDispatcher` already dispatches through
 `dynamic` (`src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs:36-37`), which is a
@@ -557,6 +576,33 @@ started — every span entry point still runs its own `HasListeners()` guard and
 `traceparent` is written, because R2 keys injection on an explicitly passed `Activity` and there is
 none. What such an application pays is a start timestamp and the instrumented method's async state
 machine, which is what it asked for by enabling the instruments.
+
+**RECORDED CONSEQUENCE — a STALE INBOUND `traceparent` SURVIVES OUTWARD on every path where Chatter
+writes none.** This is the other half of the metrics-only path, and it applies equally when
+diagnostics are off entirely and when a span is sampled out with no ambient `Activity`. Chatter
+carries an inbound message's context outward on all three paths:
+`BrokeredMessageDispatcher.MergeSendOptionsWithMessageContext` COPIES it (`SendOptions.Create` builds
+a `new Dictionary<string, object>(messageContext)`), while the forward and reply paths ALIAS THE SAME
+DICTIONARY BY REFERENCE — `Routing/ForwardingRouter.cs:47` and `Routing/ReplyRouter.cs:64` hand
+`inboundBrokeredMessage.MessageContext` straight to the `OutboundBrokeredMessage` constructor, which
+assigns it without copying (`Sending/OutboundBrokeredMessage.cs:17`). If the upstream producer put a
+`traceparent` in that context, it is still there on the way out:
+`TraceContextPropagator.Inject` returns immediately on a `null` activity
+(`Diagnostics/TraceContextPropagator.cs:46-51`), so it neither overwrites the stale value nor removes
+it.
+
+**This is ACCEPTED under R2 rather than stripped.** Removing the header would itself be a write to the
+wire on behalf of an application that never opted into the feature — exactly what R2 exists to
+prevent, only inverted. The behavior also **pre-dates this branch**: copying the inbound context
+outward, aliasing it through the forward and reply paths, and assigning it into the outbound message
+without a copy are all present on `master`, and like the two gaps under
+[Propagation scope](#propagation-scope) they affect **all** headers rather than just trace context.
+
+**This does not weaken R2's [closed-by-construction claim](#closed-by-construction-acceptance-test),
+and the distinction is the whole point.** The surviving value is the UPSTREAM PRODUCER'S header,
+forwarded unchanged; **Chatter never wrote it**. "Chatter put a `traceparent` on the wire even though
+I never enabled it" therefore remains impossible. What happens here is that **Chatter did not REMOVE
+someone else's header** — an omission, not an emission.
 
 **AMENDED — the on/off throw-timing divergence at three seams, ACCEPTED as a bounded property.** With
 diagnostics ACTIVE, a synchronous throw at `CommandDispatcher.Dispatch`, `ReplyRouter.Route` and

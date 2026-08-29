@@ -208,9 +208,12 @@ namespace Chatter.MessageBrokers.Sending
                 // IRouteBrokeredMessages is DI-replaced by the outbox routers, so writing it at the router would drop
                 // trace context for every outbox-routed send. Written here it is already inside the MessageContext the
                 // outbox persists, so it survives store-and-forward (ADR-0010 D5 and the ADR's Propagation scope).
-                // It OVERWRITES: MergeSendOptionsWithMessageContext copies an inbound context outward, so a stale
-                // upstream traceparent must not ride out on this hop. `traceContextActivity` is null whenever broker
-                // diagnostics are off, and Inject then writes nothing at all (ADR-0010 R2).
+                // It OVERWRITES: MergeSendOptionsWithMessageContext copies an inbound context outward, so this hop's
+                // traceparent replaces the upstream one in the copy. That happens ONLY when `traceContextActivity` is
+                // non-null; it is null whenever broker diagnostics are off, and also on the metrics-only and
+                // sampled-out-with-no-ambient-activity paths. Inject then writes nothing and the inbound traceparent
+                // rides out unchanged, deliberately, because stripping it would be a wire write the application never
+                // opted into (ADR-0010 R2; see TraceContextPropagator.SetTraceContextValue).
                 TraceContextPropagator.Inject(traceContextActivity, outbound.MessageContext);
 
                 if (yieldedMessageCounter != null)

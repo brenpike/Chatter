@@ -84,8 +84,26 @@ namespace Chatter.MessageBrokers.Diagnostics
 
         /// <summary>
         /// OVERWRITES rather than adds: the inbound context dictionary is copied outward on the merge, forward and
-        /// reply paths, so a stale upstream <c>traceparent</c> must not survive this hop.
+        /// reply paths, so when this hop HAS trace context of its own it replaces the upstream record in place rather
+        /// than leaving the upstream value behind.
         /// </summary>
+        /// <remarks>
+        /// The overwrite runs ONLY when <see cref="Inject"/> was handed a non-null <see cref="Activity"/>. Three
+        /// reachable paths hand it <c>null</c>: (1) broker diagnostics fully off, where the routers return on their
+        /// <c>BrokerDiagnostics.IsEnabled</c> guard before <see cref="Inject"/> is reached at all and the dispatcher's
+        /// off path passes <c>null</c> explicitly; (2) metrics-only, where <c>BrokerDiagnostics.IsEnabled</c> is an OR
+        /// across the <see cref="ActivitySource"/> AND the instruments, so an application carrying only a .NET
+        /// <c>MeterListener</c> enters the instrumented path while the source has no .NET <c>ActivityListener</c> and
+        /// the send span is therefore <c>null</c>; and (3) a sampled-out span with no ambient
+        /// <see cref="Activity.Current"/> to fall back on. On all three the inbound <c>traceparent</c> rides out on the
+        /// hop UNCHANGED, because nothing here overwrites it.
+        ///
+        /// That is DELIBERATE, not a defect. Stripping the stale value would put a write on the wire that the
+        /// application never opted into, which is the one thing ADR-0010 R2 forbids. The outward copy also PRE-DATES
+        /// the telemetry work entirely: <c>BrokeredMessageDispatcher.MergeSendOptionsWithMessageContext</c>, and the
+        /// routers' by-reference reuse of the inbound context dictionary, carried the inbound context outward long
+        /// before any span existed to overwrite it.
+        /// </remarks>
         private static void SetTraceContextValue(object carrier, string fieldName, string fieldValue)
         {
             if (carrier is IDictionary<string, object> messageContext)
