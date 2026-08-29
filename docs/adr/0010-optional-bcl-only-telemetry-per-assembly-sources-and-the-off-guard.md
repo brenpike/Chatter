@@ -298,6 +298,82 @@ Two consequences follow, both recorded deliberately:
   the original shape the tag was already set AFTER `StartActivity` had made that decision — no sampler
   ever consumed it.
 
+**AMENDED AGAIN — "the ONE enumeration the router already performs" was an UNSTATED ASSUMPTION, and
+Azure Service Bus violated it.** The amendment above stated that premise as though it were a fact.
+It was an assertion about how components this instrumentation does NOT own consume the sequence, and
+it was false: `ServiceBusMessageSender.Dispatch` took a `brokeredMessages.Count()` capacity hint for
+its task list and then walked the sequence again to send, so a batch of N was reported as `2N` on
+BOTH `messaging.batch.message_count` and `messaging.client.sent.messages`. The count therefore went
+through three shapes, and all three are recorded because this ADR asserted the second one:
+
+1. an EAGER pre-walk of the caller's sequence — withdrawn above, because it moved a lazy caller's
+   iterator side effects, exception origin and outbox-transaction scoping whenever diagnostics were
+   active;
+2. a counter incremented inside the dispatcher's own `yield return` iterator, claimed
+   closed-by-construction on the premise quoted above — WRONG, by the Azure Service Bus violation;
+   and
+3. that same counter, with the implicit contract made EXPLICIT and the one violator fixed. This is
+   what shipped.
+
+**The double walk was ALSO a pre-existing production defect with nothing to do with telemetry.** The
+dispatcher's iterator generates a message id and converts the message body per yield — the
+`OutboundBrokeredMessage` constructor chain runs `IMessageIdGenerator.GenerateId` and
+`IBrokeredMessageBodyConverter.Convert` (`Sending/OutboundBrokeredMessage.cs:37-44`) — so every
+message in a batch was serialized twice and identified twice with the first pass's results discarded;
+the discarded pass sat ABOVE the `CreateTransactionScope` call and so ran outside whatever scope the
+send pass runs under; and a caller-supplied one-shot lazy sequence broke outright, because nothing
+remained for the send pass to yield. Removing the hint fixes all of it, and `Chatter.MessageBrokers.AzureServiceBus`
+takes a PATCH bump (1.4.1 → 1.4.2) for that fix on its own merits.
+
+**The single-pass seam contract is now DECLARED, and enforced by contract tests rather than by prose.**
+`IRouteBrokeredMessages.Route` and `IMessagingInfrastructureDispatcher.Dispatch` carry XML doc
+requiring an implementation to enumerate the sequence EXACTLY ONCE, naming the per-yield side effects
+and the batch count as what a second pass corrupts, and requiring a Router to preserve the guarantee
+when it hands the sequence onward. The declaration is pinned per implementation:
+`BrokeredMessageRouter`, `OutboxBrokeredMessageRouter` and `InMemoryBrokeredMessageOutbox`
+(`src/Chatter.MessageBrokers/tests/Diagnostics/WhenDownstreamEnumeratesTheDispatchSequence.cs`),
+`RabbitMqSender`, the EntityFramework outbox, and the Cosmos outbox together with
+`HandleGatedOutboxRouter` (one `WhenDispatchSequenceIsEnumerated` suite per module) — plus the Azure
+Service Bus batch overload, which had NO test coverage at all before this.
+
+**THE GENERAL RULE, which is the reusable part and would have caught both failed shapes.** Telemetry
+MUST be derived only from execution the emitting component owns. When a value depends on how an
+UNOWNED downstream component drives a sequence, callback or stream, either the seam contract must pin
+that consumption — declared, and contract-tested per implementation — or the value must not be
+emitted. Never obtain a telemetry value by adding a walk, copy or count that the un-instrumented path
+would not perform. Both halves are load-bearing and each failed shape broke a different one: shape 1
+added a walk, shape 2 depended on unowned consumption.
+
+**RESIDUALS, recorded rather than papered over.**
+
+- **A third-party `IRouteBrokeredMessages` or `IMessagingInfrastructureDispatcher` outside this
+  repository can still double-walk and corrupt the count.** The contract is documentation plus
+  in-repo tests, not a runtime guard. A runtime guard — a wrapper that throws on a second
+  `GetEnumerator` — was CONSIDERED and DECLINED: the dispatch iterator cannot intercept its own
+  second `GetEnumerator` call, so the guard needs a wrapper object allocated per dispatch, on the OFF
+  path as much as the on path. That collides with the acceptance criterion this whole ADR is built
+  around (**Off must mean OFF** — no measurable per-message cost when the feature is not opted into),
+  and the criterion wins over a guard against a hypothetical external implementation.
+- **`SqlServiceBrokerSender` has NO contract test, and the reason is honest rather than
+  circumstantial.** It opens its connection and begins its transaction BEFORE the dispatch loop, so
+  at unit scope `BeginTransactionAsync` throws on the unopened connection and a probe test would
+  record ZERO enumerator requests — passing unchanged even if the sender walked the sequence twice. A
+  vacuous pin was deliberately not written. A sweep of every in-repo Router and
+  messaging-infrastructure dispatcher confirms the sender enumerates exactly once today (a single
+  `foreach`, no LINQ walk), so this is a MISSING REGRESSION GUARD rather than an unverified
+  violation; adding a production connection or transaction seam purely for testability was judged
+  the worse trade.
+
+**The harness gap was CAUSAL, and is now closed.** The reason this defect shipped is that the test
+suite could not express it: the pre-existing `SinglePassEventSequence` fixture THROWS from its second
+`GetEnumerator`, which pins single-pass consumption well but makes a multi-enumerating downstream
+component structurally inexpressible — the second pass dies at the call instead of being observed. A
+complementary fixture (`tests/Diagnostics/EnumerationProbeSequence.cs`, in `Chatter.Testing.Core` so
+every module can reach it) PERMITS re-enumeration and RECORDS it, registering the request in
+`GetEnumerator` so an abandoned pass — exactly the shape a `Count()` takes — still counts. The two
+fixtures are complements: one refuses, one observes, and the class of defect that hid here needs the
+observing one.
+
 **RECEIVE: one span per delivery, not per retry.** The recovery strategy **wraps** dispatch —
 `BrokeredMessageReceiver.cs:1025-1027` invokes `DispatchReceivedMessageAsync` inside
 `_recoveryStrategy.ExecuteAsync(...)`. A span opened outside that wrapper therefore spans **all**
@@ -571,9 +647,15 @@ assumed.
 - **"Chatter emits `messaging.operation` here and `messaging.operation.type` there."** Impossible by
   D4's single-pin rule plus a single constants home: there is one spelling per concept, defined once.
 
-The one thing this design does **not** close by construction is per-emit-site guard discipline (R1):
-a future emit site could be written without its `HasListeners()` guard. That is a review-and-test
-obligation, and it is why a guard-cost probe is part of the implementing work rather than a nice-to-have.
+**AMENDED — there are TWO things this design does not close by construction, not one.** The first is
+per-emit-site guard discipline (R1): a future emit site could be written without its `HasListeners()`
+guard. That is a review-and-test obligation, and it is why a guard-cost probe is part of the
+implementing work rather than a nice-to-have. The second was recorded late, after the batch count was
+gotten wrong twice: **single-pass consumption of the dispatch sequence** by every Router and
+messaging-infrastructure dispatcher the batch count depends on (D7 as amended). It is declared on the
+seam and contract-tested for every in-repo implementation, but a runtime guard was declined on
+off-path allocation cost, so an out-of-repo implementation can still break it. Both are obligations,
+not guarantees, and neither is claimed as closed here.
 
 ## Non-goals
 
