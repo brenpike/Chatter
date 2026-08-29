@@ -314,6 +314,29 @@ Or via configuration:
 
 These knobs apply only to session-enabled receivers. Non-session receivers are unaffected.
 
+## Trace Context and the Azure SDK's `Diagnostic-Id`
+
+Chatter's [opt-in tracing](../../Chatter.MessageBrokers/src/README.md#diagnostics-and-trace-context-optional-opt-in) writes the W3C `traceparent` header onto outbound messages, where it rides the application properties in both directions. This has one interop consequence worth knowing about before you turn tracing on.
+
+The Azure Service Bus SDK stamps its own legacy `Diagnostic-Id` correlation identifier **only when the message does not already carry a correlation identifier**. Because Chatter writes `traceparent`, the SDK's own `Diagnostic-Id` stamping is expected to be suppressed on Chatter-sent messages.
+
+> **Confidence note.** The presence of both mechanisms in the shipped `Azure.Messaging.ServiceBus` / `Azure.Core` assemblies is verified; the short-circuit **control flow** itself is taken from the Azure SDK's published source and is **not verified in this repository**. Treat the mitigation below as the safe course if your correlation depends on `Diagnostic-Id`, and confirm against your own traces.
+
+**Mitigation for applications that rely on `Diagnostic-Id`-based correlation:** enable the SDK's `ActivitySource` support so it reads `traceparent` instead of stamping and reading `Diagnostic-Id`:
+
+```bash
+AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE=true
+```
+
+```csharp
+// equivalent AppContext switch
+AppContext.SetSwitch("Azure.Experimental.EnableActivitySource", true);
+```
+
+Set it **at process start**, before the first Azure SDK type is touched: the SDK is documented to read the switch once, though that caching is likewise not verified here. Applications that do not correlate on `Diagnostic-Id` need no change — the SDK's own tracing stays off by default either way, and Chatter neither suppresses nor namespaces it.
+
+One further observation on a mixed trace: Chatter's broker-boundary spans use the OpenTelemetry semantic conventions pinned at **v1.30.0** (`messaging.operation.type`), while `Azure.Messaging.ServiceBus` still emits the older `messaging.operation` spelling. Both are valid under their respective pins; Chatter deliberately emits one spelling per concept rather than both. See [ADR-0010](../../../docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+
 ## Domain Language
 
 See the [domain glossary](../CONTEXT.md) for definitions of Service Bus Receiver, Session Queue Receiver, Session Topic Subscription, Service Bus Sender, Service Bus Options, Service Bus Retry, Service Bus Circuit Breaker, Session, Session State, and Group Id ↔ SessionId realization.

@@ -185,6 +185,53 @@ var slip = RoutingSlipBuilder.NewRoutingSlip(Guid.NewGuid())
 
 `RoutingSlipBehavior` advances the slip across the configured `RoutingStep`s; helper extensions (`MessageBrokerContextExtensions`, `SendOptionsExtensions`, `CommandPipelineBuilderExtensions`) attach and read the slip on the message/context.
 
+## Diagnostics and Trace Context (optional, opt-in)
+
+The brokered message boundary is instrumented with OpenTelemetry-compatible tracing and metrics, and W3C **trace context** is propagated across it. Both are **off until an application opts in**, and `Chatter.MessageBrokers` takes **no dependency on any `OpenTelemetry.*` NuGet package** — the instrumentation is built on the .NET base class library only: `System.Diagnostics.ActivitySource` for spans and `System.Diagnostics.Metrics.Meter` for instruments.
+
+### Turning it on
+
+The `ActivitySource` and the `Meter` are both named after the emitting assembly — **`Chatter.MessageBrokers`**. `Chatter.CQRS` emits under its own separate scope, named after *its* assembly, so send/receive and in-process dispatch can be sampled and filtered independently. Subscribe with a prefix wildcard to get both, or name the scopes exactly:
+
+```csharp
+services.AddOpenTelemetry()
+        .WithTracing(t => t.AddSource("Chatter.*"))    // or .AddSource("Chatter.CQRS", "Chatter.MessageBrokers")
+        .WithMetrics(m => m.AddMeter("Chatter.*"));    // or .AddMeter("Chatter.CQRS", "Chatter.MessageBrokers")
+```
+
+Any .NET `ActivityListener` / `MeterListener` works just as well — an OpenTelemetry provider merely subscribes to these base-class-library primitives, it is not a prerequisite for them.
+
+### Off means off
+
+**When nothing subscribes to the `Chatter.MessageBrokers` source or meter, nothing is emitted and nothing extra goes on the wire.** Each emit site checks whether Chatter's own source has a subscriber as its first statement and returns before a span name, a tag collection, or a `traceparent` header is constructed — so an application that never opts in pays no per-message cost and its messages are byte-identical to the un-instrumented ones. In particular, **no `traceparent` is written unless Chatter itself started a span**: the injection is a pure function of the span Chatter started, never of the ambient `Activity.Current`, which is non-null in any host running unrelated instrumentation. The guarantee is per-operation; constructing the `ActivitySource` and `Meter` themselves is a one-time static initialization per process, which is unavoidable for any `ActivitySource`-based design.
+
+### Attribute names are data, not API
+
+Broker-boundary spans carry OpenTelemetry semantic-convention attributes pinned to **v1.30.0** (`messaging.system`, `messaging.operation.name`, `messaging.operation.type`, `messaging.destination.name`, `messaging.message.id`, `messaging.batch.message_count`, `error.type`). Because telemetry attributes are emitted data rather than a compile-time type surface, **they may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in this package's CHANGELOG.
+
+### Propagation scope
+
+Trace context rides the **Message Context** as the ordinary `traceparent` / `tracestate` headers, so it survives anywhere the whole context survives. Scope is deliberately partial and stated honestly.
+
+**Trace context flows for:**
+
+| Path | Notes |
+| --- | --- |
+| Azure Service Bus | Both directions — the context is projected onto the message's application properties on send and read back on receive. |
+| RabbitMQ | Both directions, as a preserved non-core header. |
+| The EntityFramework outbox | Persisted with the context and rehydrated on replay. |
+| The Cosmos outbox | Same shape — serialized on stage, materialized on relay. |
+| Outbox replay generally | A `traceparent` round-trips as a string through context materialization. |
+
+**Trace context does NOT flow for:**
+
+- **`Chatter.MessageBrokers.SqlServiceBroker`'s `DEFAULT`-message-type receive path.** That path builds a fresh header dictionary, so all upstream context is dropped. Only the Chatter envelope path — taken when the sending application supplies the Chatter brokered-message type — round-trips the context. The deadletter path likewise builds a fresh dictionary.
+- **`Chatter.SqlChangeFeed`.** Its messages originate from a SQL trigger. There is no producer-side Chatter dispatch and no headers at all, so there is nothing to propagate and nothing to extract.
+
+Both gaps are **pre-existing limitations that affect all headers alike** — they are not introduced by tracing, and closing them is a change to those receive paths, not to the instrumentation. Both are pinned by conformance tests, so a change that accidentally fixes or worsens either is visible.
+
+Design rationale, the propagation scope, and the off-guard rules are recorded in [ADR-0010](../../../docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+
 ## Domain Language
 
 Terminology used throughout this module (Brokered Message, Receiver, Dispatcher, Router/Forwarder, Inbox/Outbox, Recovery, Circuit Breaker, Critical Failure, Error Queue, Max Receives Exceeded, Body Converter) is defined in the [domain glossary](../CONTEXT.md).

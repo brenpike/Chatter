@@ -7,7 +7,7 @@
     /// <remarks>
     /// Names prefixed <c>chatter.</c> are Chatter-native: no OpenTelemetry semantic convention covers
     /// in-process CQRS dispatch. The remaining names are OpenTelemetry semantic conventions pinned to
-    /// specification v1.44.0 (https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.44.0)
+    /// specification v1.30.0 (https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.30.0)
     /// and each is marked <c>Stable</c> in that release's attribute registry.
     /// </remarks>
     public static class ChatterTelemetryTags
@@ -24,31 +24,31 @@
 
         /// <summary>
         /// The class of error a dispatch ended with, carried as the fully qualified exception type name.
-        /// OpenTelemetry semantic convention <c>error.type</c> (registry: error, Stable, semconv v1.44.0).
+        /// OpenTelemetry semantic convention <c>error.type</c> (registry: error, Stable, semconv v1.30.0).
         /// </summary>
         public const string ErrorType = "error.type";
 
         /// <summary>
         /// The name of the span event carrying exception detail. OpenTelemetry semantic convention
-        /// <c>exception</c> (semconv v1.44.0).
+        /// <c>exception</c> (semconv v1.30.0).
         /// </summary>
         public const string ExceptionEventName = "exception";
 
         /// <summary>
         /// The fully qualified exception type name on an exception event. OpenTelemetry semantic convention
-        /// <c>exception.type</c> (registry: exception, Stable, semconv v1.44.0).
+        /// <c>exception.type</c> (registry: exception, Stable, semconv v1.30.0).
         /// </summary>
         public const string ExceptionType = "exception.type";
 
         /// <summary>
         /// The exception message on an exception event. OpenTelemetry semantic convention
-        /// <c>exception.message</c> (registry: exception, Stable, semconv v1.44.0).
+        /// <c>exception.message</c> (registry: exception, Stable, semconv v1.30.0).
         /// </summary>
         public const string ExceptionMessage = "exception.message";
 
         /// <summary>
         /// The stringified exception, including its stack trace, on an exception event. OpenTelemetry semantic
-        /// convention <c>exception.stacktrace</c> (registry: exception, Stable, semconv v1.44.0).
+        /// convention <c>exception.stacktrace</c> (registry: exception, Stable, semconv v1.30.0).
         /// </summary>
         public const string ExceptionStackTrace = "exception.stacktrace";
 

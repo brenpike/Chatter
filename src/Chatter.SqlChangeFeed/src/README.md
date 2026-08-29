@@ -174,6 +174,14 @@ At runtime the queue is drained by Chatter's SQL Service Broker receiver. A `Cha
 
 **Provisioning is manual, not automatic.** Registration (`AddSqlChangeFeed`) only wires up DI; the SQL objects are created only when `UseChangeFeedSqlMigrations` is invoked at startup. The scripts are idempotent (`IF NOT EXISTS` guards), so running them on each startup is safe.
 
+## Header Propagation (including Trace Context)
+
+Change-feed messages carry **no headers at all**. They originate from the SQL trigger this package provisions, which `SEND`s a `DEFAULT`-message-type message directly onto the Service Broker queue — there is no producer-side Chatter dispatch to stamp a Message Context, so there is nothing to propagate and nothing for a receiver to extract.
+
+The consequence for the opt-in tracing added in [ADR-0010](../../../docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md): W3C trace context (`traceparent` / `tracestate`) does **not** flow into a change-feed message, so handling a row change **starts a new trace** rather than continuing the trace of whatever wrote the row.
+
+This is inherent to the change feed's trigger origin and is a **pre-existing property that affects all headers alike** — it is not something tracing introduced. It compounds with the receive side: because the trigger sends the `DEFAULT` message type, the queue is drained through the SQL Service Broker receiver's `DEFAULT` path, which itself builds a fresh header dictionary (see [Header Propagation in the SqlServiceBroker README](../../Chatter.MessageBrokers.SqlServiceBroker/src/README.md#header-propagation-including-trace-context)). Both ends are pinned by conformance tests, so a change that accidentally alters either is visible.
+
 ## Domain Language
 
 See [`../CONTEXT.md`](../CONTEXT.md) for the change-feed / Table Watcher glossary and relationships.
