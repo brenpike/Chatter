@@ -77,6 +77,13 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// </summary>
         public const string Settlement = "chatter.messaging.settlement";
 
+        /// <summary>
+        /// The name of the span event carrying one Recovery retry of a single delivery. Chatter-native: semconv
+        /// v1.30.0 defines no retry event, and its <c>settle</c> operation type describes a settlement rather than a
+        /// re-attempt.
+        /// </summary>
+        public const string ReceiveRetryEventName = "chatter.messaging.receive.retry";
+
         private static readonly string _telemetryVersion = ResolveTelemetryVersion();
         private static readonly ActivitySource _source = new ActivitySource(ActivitySourceName, _telemetryVersion);
         private static readonly Meter _meter = new Meter(MeterName, _telemetryVersion);

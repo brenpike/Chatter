@@ -28,13 +28,6 @@ namespace Chatter.MessageBrokers.Receiving
     /// </remarks>
     public partial class BrokeredMessageReceiver<TMessage> where TMessage : class, IMessage
     {
-        /// <summary>
-        /// The name of the span event carrying one Recovery retry of a single delivery. Chatter-native: OpenTelemetry
-        /// messaging semantic conventions v1.30.0 define no retry event, and the pinned <c>settle</c> operation type
-        /// describes a settlement rather than a re-attempt.
-        /// </summary>
-        private const string ReceiveRetryEventName = "chatter.messaging.receive.retry";
-
         // INVARIANT: the per-delivery diagnostics scope travels down the worker's OWN async flow, never through a
         // field on this receiver. Up to MaxConcurrentCalls workers run concurrently over a single receiver instance,
         // so a shared field would cross-attribute one delivery's retries and settlement onto another delivery's span.
@@ -140,7 +133,7 @@ namespace Chatter.MessageBrokers.Receiving
                 return;
             }
 
-            activity.AddEvent(new ActivityEvent(ReceiveRetryEventName, tags: new ActivityTagsCollection { { BrokerDiagnostics.ReceiveAttempts, receiveDiagnostics.Attempts } }));
+            activity.AddEvent(new ActivityEvent(BrokerDiagnostics.ReceiveRetryEventName, tags: new ActivityTagsCollection { { BrokerDiagnostics.ReceiveAttempts, receiveDiagnostics.Attempts } }));
         }
 
         /// <summary>
