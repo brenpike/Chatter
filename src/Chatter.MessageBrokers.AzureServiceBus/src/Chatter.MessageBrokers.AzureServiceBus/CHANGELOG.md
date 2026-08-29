@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.4.2] - 2026-08-30
+
+### Fixed
+
+- Batch dispatch now enumerates the outbound message sequence exactly once. Previously, a capacity hint enumerated the sequence before the real send pass, so message bodies were serialized twice per message with the first pass's results discarded, and a caller-supplied one-shot lazy sequence failed outright because nothing remained for the send pass to yield. Single-message sends were unaffected. Batch telemetry counts (introduced elsewhere in this release) were also inflated by the double enumeration; that is corrected as a side effect of this fix (#274).
+
 ## [1.4.1] - 2026-08-21
 
 ### Fixed
