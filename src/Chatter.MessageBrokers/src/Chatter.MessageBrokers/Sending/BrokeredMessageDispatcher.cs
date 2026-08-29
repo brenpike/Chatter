@@ -10,7 +10,6 @@ using Chatter.MessageBrokers.Routing.Options;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Sending
@@ -93,7 +92,7 @@ namespace Chatter.MessageBrokers.Sending
             // diagnostics.
             if (!BrokerDiagnostics.IsEnabled)
             {
-                var outbounds = Dispatch(messages, destinationPath, options, traceContextActivity: null, yieldedMessageCounter: null);
+                var outbounds = Dispatch(messages, destinationPath, options, traceContextActivity: null, batchObservation: null);
                 options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
                 return _messageRouter.Route(outbounds, transactionContext, (string)infraType);
             }
@@ -107,12 +106,21 @@ namespace Chatter.MessageBrokers.Sending
         /// since all N messages share one context dictionary and a per-message trace context is not representable).
         /// </summary>
         /// <remarks>
-        /// INVARIANT: the batch count is derived from the ONE enumeration the router already performs, never from a
-        /// walk, copy or count of the caller's own sequence. A caller that supplies a lazily-built sequence therefore
-        /// sees it enumerated at exactly the same moment, with the same side effects and the same outbox-transaction
-        /// scoping, whether or not diagnostics are on. The count is consequently unknown until the router is done, so
-        /// the span carries it at STOP, and a dispatch that faults mid-enumeration records the messages actually
-        /// yielded rather than an eagerly pre-walked total.
+        /// INVARIANT: everything this span reports about the batch — the message count AND the destination — is derived
+        /// from the ONE enumeration the router already performs, never from a walk, copy, count or eager resolution of
+        /// the caller's own sequence. A caller that supplies a lazily-built sequence therefore sees it enumerated at
+        /// exactly the same moment, with the same side effects and the same outbox-transaction scoping, whether or not
+        /// diagnostics are on. Both values are consequently unknown until the router is done, so the span carries them
+        /// at STOP, and a dispatch that faults mid-enumeration records what was actually yielded rather than an eagerly
+        /// pre-walked total.
+        /// THE DESTINATION OF AN ATTRIBUTE-ROUTED DISPATCH. The overloads that omit an explicit destination let the
+        /// iterator resolve one PER MESSAGE from the message's own <see cref="BrokeredMessageAttribute"/>, so this span
+        /// cannot know the destination when it starts. It is observed as each message is yielded and reported at stop —
+        /// but only when EVERY message of the call resolved to the SAME destination. A heterogeneous batch has no one
+        /// destination, and semconv v1.30.0's <c>messaging.destination.name</c> is a single value, so the attribute is
+        /// left UNSET there rather than given the first message's destination or an invented composite. Unset means
+        /// "this call had no single destination", which is true; a first-message value would be a false claim about the
+        /// other messages.
         /// </remarks>
         private async Task DispatchWithDiagnostics<TMessage, TOptions>(IEnumerable<TMessage> messages, TransactionContext transactionContext, TOptions options, string destinationPath)
         where TMessage : IMessage
@@ -124,12 +132,13 @@ namespace Chatter.MessageBrokers.Sending
             // has; when the options carry none the tag is left unset rather than given an invented value.
             var messagingSystem = (string)infraType;
             var startTimestamp = Stopwatch.GetTimestamp();
-            var yieldedMessageCounter = new StrongBox<int>();
+            var batchObservation = new SendBatchObservation();
             Exception failure = null;
 
-            // The span starts with a count of zero because nothing has been enumerated yet; the tag is rewritten with
-            // the yielded count below, before the span stops, and no listener can observe the placeholder because the
-            // count tag is set after StartActivity has already made its sampling decision.
+            // The span starts with a count of zero because nothing has been enumerated yet, and — on the overloads
+            // that omit one — with no destination, because none has been resolved yet. Both are written below, before
+            // the span stops, and no listener can observe either placeholder because StartActivity has already made
+            // its sampling decision by then.
             using (var sendActivity = BrokerDiagnostics.StartSend(messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationPath, messageCount: 0))
             {
                 // ADR-0010 D9/R3: head sampling makes StartSend return null while Chatter .NET ActivityListeners are
@@ -141,7 +150,7 @@ namespace Chatter.MessageBrokers.Sending
 
                 try
                 {
-                    await _messageRouter.Route(Dispatch(messages, destinationPath, options, traceContextActivity, yieldedMessageCounter), transactionContext, messagingSystem).ConfigureAwait(false);
+                    await _messageRouter.Route(Dispatch(messages, destinationPath, options, traceContextActivity, batchObservation), transactionContext, messagingSystem).ConfigureAwait(false);
                 }
                 catch (Exception e)
                 {
@@ -151,8 +160,15 @@ namespace Chatter.MessageBrokers.Sending
                 }
                 finally
                 {
-                    sendActivity?.SetTag(BrokerDiagnostics.BatchMessageCount, yieldedMessageCounter.Value);
-                    BrokerDiagnostics.RecordSend(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationPath, yieldedMessageCounter.Value, failure);
+                    // An explicit destination is what the caller asked for and is authoritative; only when the caller
+                    // gave none does the enumeration's own resolution stand in, and only when it was uniform.
+                    var resolvedDestination = string.IsNullOrWhiteSpace(destinationPath)
+                        ? batchObservation.UniformDestination
+                        : destinationPath;
+
+                    sendActivity?.SetTag(BrokerDiagnostics.BatchMessageCount, batchObservation.YieldedMessageCount);
+                    BrokerDiagnostics.RecordResolvedDestination(sendActivity, BrokerDiagnostics.OperationTypes.Send, resolvedDestination);
+                    BrokerDiagnostics.RecordSend(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Send, resolvedDestination, batchObservation.YieldedMessageCount, failure);
                 }
             }
         }
@@ -163,10 +179,12 @@ namespace Chatter.MessageBrokers.Sending
         // EXPLICITLY: an Activity.Current lookup here would read whatever activity happened to be current at
         // ENUMERATION time rather than at dispatch time, and would violate ADR-0010 R2. A future change that makes
         // this method eager must keep passing the activity explicitly rather than reaching for ambient state.
-        // `yieldedMessageCounter` is the send span's batch count, counted HERE because this is the only place every
-        // message of the batch is walked; it is null whenever broker diagnostics are off, so the counting costs one
-        // null check per message on that path.
-        IEnumerable<OutboundBrokeredMessage> Dispatch<TMessage, TOptions>(IEnumerable<TMessage> messages, string destinationPath, TOptions options, Activity traceContextActivity, StrongBox<int> yieldedMessageCounter)
+        // `batchObservation` is everything the send span reports ABOUT the batch — the yielded count and the
+        // destination the messages resolved to — observed HERE because this is the only place every message of the
+        // batch is walked, and because the destination of an attribute-routed dispatch is resolved by this very loop.
+        // It is ONE sink rather than one per reported value, so the opted-out path still pays exactly ONE null check
+        // per message; it is null whenever broker diagnostics are off.
+        IEnumerable<OutboundBrokeredMessage> Dispatch<TMessage, TOptions>(IEnumerable<TMessage> messages, string destinationPath, TOptions options, Activity traceContextActivity, SendBatchObservation batchObservation)
         where TMessage : IMessage
         where TOptions : RoutingOptions, new()
         {
@@ -216,9 +234,9 @@ namespace Chatter.MessageBrokers.Sending
                 // opted into (ADR-0010 R2; see TraceContextPropagator.SetTraceContextValue).
                 TraceContextPropagator.Inject(traceContextActivity, outbound.MessageContext);
 
-                if (yieldedMessageCounter != null)
+                if (batchObservation != null)
                 {
-                    yieldedMessageCounter.Value++;
+                    batchObservation.Observe(destination);
                 }
 
                 yield return outbound;
@@ -230,5 +248,55 @@ namespace Chatter.MessageBrokers.Sending
 
         private PublishOptions MergePublishOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, PublishOptions options)
             => PublishOptions.Create(messageHandlerContext?.GetInboundBrokeredMessage()?.MessageContextImpl).Merge(options);
+
+        /// <summary>
+        /// What the ONE enumeration the router performs revealed about a dispatch call: how many messages it actually
+        /// yielded, and the destination they resolved to WHEN THEY ALL RESOLVED TO THE SAME ONE.
+        /// </summary>
+        /// <remarks>
+        /// A single sink for every batch-derived value the send span reports, so instrumentation costs the
+        /// un-instrumented path exactly ONE null check per message no matter how many such values are reported
+        /// (ADR-0010 R1, R4). Nothing here walks, copies, counts or resolves anything the un-instrumented path would
+        /// not: <see cref="Observe"/> is handed the destination the iterator had ALREADY resolved for that message.
+        /// Mutated only from the iterator's own single-threaded walk, so it needs no synchronisation.
+        /// </remarks>
+        private sealed class SendBatchObservation
+        {
+            private bool _sawFirstMessage;
+            private bool _heterogeneous;
+
+            /// <summary>How many messages the dispatch call actually yielded.</summary>
+            internal int YieldedMessageCount { get; private set; }
+
+            /// <summary>
+            /// The destination every yielded message resolved to, or <c>null</c> when nothing was yielded or the batch
+            /// resolved to more than one destination.
+            /// </summary>
+            internal string UniformDestination { get; private set; }
+
+            /// <summary>Records one yielded message and the destination the iterator resolved for it.</summary>
+            internal void Observe(string destination)
+            {
+                YieldedMessageCount++;
+
+                if (_heterogeneous)
+                {
+                    return;
+                }
+
+                if (!_sawFirstMessage)
+                {
+                    _sawFirstMessage = true;
+                    UniformDestination = destination;
+                    return;
+                }
+
+                if (!string.Equals(UniformDestination, destination, StringComparison.Ordinal))
+                {
+                    _heterogeneous = true;
+                    UniformDestination = null;
+                }
+            }
+        }
     }
 }

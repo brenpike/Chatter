@@ -297,6 +297,66 @@ namespace Chatter.Testing.Core.Diagnostics
     }
 
     /// <summary>
+    /// Attaches a .NET <see cref="ActivityListener"/> that listens to the named <see cref="ActivitySource"/> but
+    /// samples every activity OUT, so <see cref="ActivitySource.HasListeners"/> is true while
+    /// <see cref="ActivitySource.StartActivity"/> returns <c>null</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is the head-sampling condition of ADR-0010 D9: Chatter tracing IS opted into, so every guard keyed on
+    /// <see cref="ActivitySource.HasListeners"/> passes, yet no <see cref="Activity"/> exists. It is the shape in
+    /// which the propagation fallback and the ambient-activity handling must still behave. The prior
+    /// <see cref="Activity.Current"/> is captured at construction and restored on <see cref="Dispose"/>.
+    /// </remarks>
+    public sealed class SampledOutActivityScope : IDisposable
+    {
+        private readonly ActivityListener _netActivityListener;
+        private readonly List<Activity> _startedActivities = new List<Activity>();
+        private readonly Activity _priorActivity;
+        private bool _disposed;
+
+        public SampledOutActivityScope(string sourceName)
+        {
+            if (string.IsNullOrWhiteSpace(sourceName))
+            {
+                throw new ArgumentException("A source name is required.", nameof(sourceName));
+            }
+
+            _priorActivity = Activity.Current;
+
+            _netActivityListener = new ActivityListener
+            {
+                ShouldListenTo = source => source.Name == sourceName,
+                Sample = SampleNone,
+                SampleUsingParentId = SampleNoneFromParentId,
+                ActivityStarted = _startedActivities.Add,
+            };
+
+            ActivitySource.AddActivityListener(_netActivityListener);
+        }
+
+        /// <summary>Every activity that was nonetheless started; empty is the point of this scope.</summary>
+        public IReadOnlyList<Activity> StartedActivities => _startedActivities.ToArray();
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _netActivityListener.Dispose();
+            Activity.Current = _priorActivity;
+        }
+
+        private static ActivitySamplingResult SampleNone(ref ActivityCreationOptions<ActivityContext> options)
+            => ActivitySamplingResult.None;
+
+        private static ActivitySamplingResult SampleNoneFromParentId(ref ActivityCreationOptions<string> options)
+            => ActivitySamplingResult.None;
+    }
+
+    /// <summary>
     /// Establishes the "foreign instrumentation" condition: an <see cref="ActivitySource"/> whose name is
     /// unrelated to Chatter is listened to by its own .NET <see cref="ActivityListener"/> and an
     /// <see cref="Activity"/> is started on it, so <see cref="Activity.Current"/> is NON-NULL for the life of

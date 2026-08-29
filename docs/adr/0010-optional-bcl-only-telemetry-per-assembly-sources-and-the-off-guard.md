@@ -288,10 +288,39 @@ Verified empirically on `net8.0` against the installed shared framework rather t
 unaddressed, receiver startup or a poll loop reaching the worker through `Task.Run` would make every
 headerless delivery a child of one unrelated, potentially process-lifetime host activity — the exact
 false causality this decision rejects on the extracted branch. `Activity.Current` is therefore
-CLEARED across the start call and restored when the .NET BCL
-`System.Diagnostics.ActivityListener` sampled the span out, so the sampled-out propagation fallback
-(D9) still sees the ambient context. Pinned by
+CLEARED across the start call. Pinned by
 `WhenReceivingWithTracingEnabled.MustLinkAnAmbientActivityWithoutParentingToItWhenNoTraceParentIsPresent`.
+
+**AMENDED AGAIN — the ambient activity is restored on BOTH sampling paths, and `StartReceive` returns
+a SCOPE so the restore cannot be forgotten.** The first version of the amendment above restored the
+ambient only when the span was sampled OUT. That was wrong on the sampled-IN path and the ADR
+described the wrong behavior as if it were the decision. `Activity.Stop` restores what the started
+activity recorded as its PARENT, which is null precisely because the ambient was cleared to make the
+span a root — so once the receive span stopped, the ambient was **permanently lost for the remainder
+of that delivery's async flow**. The suppression exists ONLY to keep the receive span off the
+ambient's tree; the caller's ambient activity is not Chatter's to end.
+
+The two paths are now symmetric, and the asymmetry is in WHEN, not WHETHER:
+
+- **Sampled OUT** — no span exists, so the ambient is restored IMMEDIATELY, inside
+  `StartHeaderlessReceive`, and the sampled-out propagation fallback (D9) still sees it. Unchanged.
+- **Sampled IN** — the span must stay current for the whole delivery, so the suppressed ambient is
+  carried out of the start call and restored AFTER the span stops.
+
+**The carrier is `BrokerDiagnostics.ReceiveSpan`, a `readonly struct` `IDisposable`** holding the
+`Activity` and the suppressed ambient. `StartReceive` returns it instead of a bare `Activity`, and
+disposing it stops the span and then restores the ambient, in that order. This is a
+[closed-by-construction](#closed-by-construction-acceptance-test) choice rather than a convention: a
+call site cannot obtain the span WITHOUT the disposal that restores the ambient, so "a receive-span
+call site forgot to restore the suppressed ambient" is not representable. It is a struct, so
+`default` is the well-formed "no span was started" value and R1/R4 are untouched — the opted-out path
+still allocates nothing.
+
+This is a PRE-SHIP public-API shape change to `StartReceive` (`Chatter.MessageBrokers` is unreleased
+at 0.15.0), taken for the same reason `Source` was narrowed under D2: fixing the shape after the
+package ships is not available. Pinned by
+`WhenReceivingWithTracingEnabled.MustRestoreTheAmbientActivityAfterTheHeaderlessReceiveSpanStops` and
+`...MustLeaveTheAmbientActivityCurrentWhenTheHeaderlessReceiveSpanIsSampledOut`.
 
 ### D7 — Span granularity: per dispatch call on send, per delivery on receive
 
@@ -403,6 +432,51 @@ every module can reach it) PERMITS re-enumeration and RECORDS it, registering th
 `GetEnumerator` so an abandoned pass — exactly the shape a `Count()` takes — still counts. The two
 fixtures are complements: one refuses, one observes, and the class of defect that hid here needs the
 observing one.
+
+**AMENDED — the DESTINATION of an attribute-routed dispatch is observed the same way, and is left
+UNSET for a heterogeneous batch.** The `Send`/`Publish` overloads that omit an explicit destination
+let the dispatch iterator resolve one PER MESSAGE from the message's own `BrokeredMessageAttribute`
+(`_brokeredMessageDetailProvider.GetMessageName`). The send span originally reported
+`messaging.destination.name` as unset on those overloads, recorded as a deliberate limitation —
+"leave unset rather than invent a value" — on the grounds that resolving it would duplicate the
+iterator's resolution, move the existing `ArgumentNullException` earlier, and be wrong for a
+heterogeneous batch. The first two grounds are answered by observing rather than resolving; the third
+is real and is what the decision below turns on.
+
+- **It is OBSERVED, never resolved.** The iterator hands the destination it had ALREADY computed for
+  that message to the same per-call sink that carries the yielded count. Nothing walks, copies,
+  counts or resolves anything the un-instrumented path would not — this is the general rule stated
+  above, applied to a second value. The count and the destination now share ONE sink object
+  (`SendBatchObservation`) precisely so the opted-out path keeps paying exactly ONE null check per
+  message no matter how many values the span reports.
+- **UNIFORM batch → reported. HETEROGENEOUS batch → left unset.** semconv v1.30.0's
+  `messaging.destination.name` is a SINGLE value and a batch whose messages resolved to different
+  destinations has no single destination. Reporting the first message's destination would be a false
+  claim about the rest; unset reads as "this call had no one destination", which is true. The
+  messages themselves are still routed to the destinations they each resolved — only the span's
+  single-valued attribute is withheld.
+- **An EXPLICIT destination stays authoritative.** The iterator never consults the attribute provider
+  when the caller supplied one, so neither does the span.
+- **Reported at span STOP, exactly as the batch count is**, and for the same reason: the value is not
+  known until the router is done. It is written through
+  `BrokerDiagnostics.RecordResolvedDestination`, which sets the tag and rewrites
+  `Activity.DisplayName` to the semconv span-name convention `{operation} {destination}`. Neither is
+  observable to a .NET BCL `System.Diagnostics.ActivityListener` before the span stops:
+  `StartActivity` has made its sampling decision by then, and `DisplayName` is read at
+  `ActivityStopped`. **`Activity.OperationName` is fixed at creation and therefore stays the bare
+  `send` on these overloads** — `DisplayName` is what an exporter emits as the span name, so the wire
+  name is correct while the in-process `OperationName` is not the full convention. Recorded rather
+  than worked around; making `OperationName` correct would require knowing the destination before the
+  enumeration, which is the eager resolve this rule forbids.
+- **The send METRIC gains the dimension too**, because `RecordSend` is handed the same resolved
+  destination. An application that was grouping attribute-routed sends under an absent
+  `messaging.destination.name` will see them split by destination. This is a CHANGE, and the more
+  truthful one.
+
+Pinned by `WhenSendingWithTracingEnabled.MustNameAndTagTheSendSpanWithTheDestinationResolvedFromMessageAttributes`,
+`...MustLeaveTheDestinationUnsetWhenABatchResolvesToMoreThanOneDestination`,
+`...MustLeaveTheDestinationUnsetWhenTheRouterNeverEnumerates` and
+`...MustKeepAnExplicitDestinationEvenWhenTheAttributeProviderWouldResolveAnother`.
 
 **RECEIVE: one span per delivery, not per retry.** The recovery strategy **wraps** dispatch —
 `BrokeredMessageReceiver.cs:1025-1027` invokes `DispatchReceivedMessageAsync` inside
@@ -567,6 +641,51 @@ application with only a .NET `MeterListener` still starts no span. R1 and R4 are
 clause is metadata on the success path, it allocates nothing, it adds no async state machine, and it
 is reached only when a delivery has ALREADY faulted.
 
+**AMENDED — the filter is the choke point for faults that LEAVE the processing block, and there is a
+SECOND class it structurally cannot see.** A C# exception filter observes every fault that leaves the
+block it guards. A settle-path fault never leaves it: the receiver's settle helpers catch the fault,
+log it, and return `false`, so the processing block completes NORMALLY and the filter is never
+entered. The concrete case is a delivery whose HANDLING SUCCEEDED and whose acknowledgement then
+failed after Recovery — the receive was reported as a success carrying an `ack` settlement and no
+`error.type`, while the message stayed unsettled and eligible for redelivery.
+
+This is NOT a regression of the choke point and NOT a branch that forgot to retain. It is a second
+place a fault can be lost, and the two are exhaustive by construction: a fault either leaves the
+processing block (the filter sees it) or is swallowed into a `bool` (this does).
+
+**The decision: ONE swallow site, and the retention lives there.** The four settle helpers —
+`TryAckWithRecoveryAsync`, `TryNackWithRecoveryAsync`, `TryDeadletterWithRecoveryAsync` and
+`TryExecuteFailedRecoveryAction` — were four copies of the same `try { … } catch { log; return false; }`
+shape. They are consolidated onto ONE `TrySettleWithRecoveryAsync(settle, failureDescription, token)`
+that performs the Recovery call, the log and the swallow; each helper is now a one-line delegation.
+The retention is inside that single catch. Answering the
+[acceptance test](#closed-by-construction-acceptance-test): this does not enumerate the settle paths
+that must retain — it removes the settle path as the retention key, exactly as the filter removed the
+ladder branch. A settle path added later cannot forget the retention, because it cannot perform the
+swallow itself. Control flow is otherwise byte-for-byte unchanged: same broad catch, same
+`LogError`, same `false`.
+
+**ONE retention primitive, not two.** `RetainSettlementFailure` writes the SAME
+`ReceiveDiagnosticsScope.Failure` field on the SAME per-delivery `AsyncLocal` scope the filter writes,
+marks the SAME span through `BrokerDiagnostics.RecordFailure`, and is read back by the SAME
+`RecordReceive` call. Two observation points, one retained fault. It carries the same
+`BrokerDiagnostics.IsEnabled` guard (a metrics-only application must see this failure too) and the
+same `IsShutdownCancellation` exemption.
+
+**FIRST WRITER WINS, and the filter is always the first writer when it fires.** A fault that already
+left the processing block is the fault that ENDED the delivery; the ladder's answering nack or
+deadletter subsequently failing is a consequence of it, not a competing cause. `RetainSettlementFailure`
+therefore retains only when nothing has been retained yet — which is exactly the
+handling-succeeded-then-settlement-failed case. The filter runs in the FIRST PASS, before any catch
+body and therefore before any settle call, so the ordering is structural rather than incidental.
+
+**The settlement tag is unchanged and still records what Chatter ANSWERED with.** A failed ack leaves
+`messaging.settlement = ack` alongside `error.type`: "we answered ack and the ack failed" is the
+truthful pair, and dropping the settlement would lose which one was attempted. Pinned by
+`WhenReceivingWithTracingEnabled.MustRecordAnAcknowledgementFailureThatWasSwallowedIntoABool`,
+`...MustKeepTheFaultThatEndedTheDeliveryWhenTheAnsweringSettlementAlsoFails` and
+`WhenReceivingWithMetricsOnly.MustTagTheReceiveMetricsWithTheErrorTypeOfAnAcknowledgementThatFailed`.
+
 **A shutdown-cancelled delivery is NOT a failed receive.** When the receiver is torn down underneath
 an in-flight delivery, the worker observes `OperationCanceledException` or `ObjectDisposedException`
 with its own token cancelled. `IsShutdownCancellation` exempts exactly that case from retention, and
@@ -637,10 +756,13 @@ legitimate uses, all structurally unreachable when Chatter tracing is off:
 - the **receive-side link** (D6); and
 - the **headerless-receive ambient suppression** (D6 as amended) — the one place Chatter WRITES
   `Activity.Current` rather than reading it, clearing it across the start call so a delivery with no
-  trace context becomes a root rather than a child of an unrelated host activity, and restoring it
-  when the span was sampled out so the first bullet still holds. The write is confined to the
-  worker's own async flow: `AsyncMethodBuilderCore.Start` restores the caller's `ExecutionContext`,
-  so the receive loop never observes it.
+  trace context becomes a root rather than a child of an unrelated host activity, and **restoring it
+  on BOTH sampling paths**: immediately when the span was sampled out, so the first bullet still
+  holds, and on `ReceiveSpan.Dispose` after the span stops when it was sampled in. There are
+  therefore exactly TWO writes on the sampled-in path (clear, then restore) and two on the sampled-out
+  path (clear, then restore) — never a clear left standing. Both writes are confined to the worker's
+  own async flow: `AsyncMethodBuilderCore.Start` restores the caller's `ExecutionContext`, so the
+  receive loop never observes either.
 
 **R4 — No hot-path shape change.** `CommandDispatcher.Dispatch` keeps its synchronous
 `Task`-returning shape (`src/Chatter.CQRS/src/Chatter.CQRS/Commands/CommandDispatcher.cs:38-59`
@@ -809,6 +931,20 @@ assumed.
   not by extending the set of branches that call a retain helper — which is what the three preceding
   review passes each did, and which is why each one spawned the next.
 
+- **"A receive-span call site cleared the ambient activity to make a headerless delivery a root, and
+  never gave it back."** Impossible by D6 as amended again: `StartReceive` returns a `ReceiveSpan`
+  scope, not a bare `Activity`, and the disposal that stops the span is the same disposal that
+  restores the suppressed ambient. There is no way to obtain the span WITHOUT the restore. The class
+  is eliminated by changing what the start call hands back, not by adding a restore call to the one
+  call site that exists today.
+- **"A settle path swallowed its fault into a `bool` and the receive metric still reported the
+  delivery as a success."** Impossible by D11 as amended: there is exactly ONE place a settle-path
+  fault is swallowed (`TrySettleWithRecoveryAsync`), and the retention is inside it, so a settle path
+  added later cannot forget it — it cannot perform the swallow itself. This is the same move as the
+  exception filter one level up, applied to the one fault class a filter structurally cannot observe;
+  the two together are exhaustive, because a fault either leaves the processing block or is swallowed
+  into a `bool`.
+
 **AMENDED — there are TWO things this design does not close by construction, not one.** The first is
 per-emit-site guard discipline (R1): a future emit site could be written without its `HasListeners()`
 guard. That is a review-and-test obligation, and it is why a guard-cost probe is part of the
@@ -862,6 +998,10 @@ Explicitly out of scope for this decision and the work it governs:
   `ReplyRouter.Route` and `ForwardingRouter.Route`, because the instrumented path is `async`. The
   exception instance and type are unchanged, every framework caller awaits, and the OFF path keeps its
   shape — this is an accepted bounded property, recorded under [The off-guard](#the-off-guard).
+- **`messaging.destination.name` is now reported for attribute-routed sends**, on both the span and
+  the send metric, whenever every message of the dispatch call resolved to the SAME destination
+  (D7 as amended). An application that was grouping those sends under an absent destination will see
+  them split by destination. A heterogeneous batch still reports no destination.
 - **Telemetry attribute names are data, not API.** They may change on a semconv pin advance in a
   minor release (D4). Dashboards and alert queries that hard-code them are the application's
   responsibility to revisit; the pin bump is announced in the CHANGELOG.

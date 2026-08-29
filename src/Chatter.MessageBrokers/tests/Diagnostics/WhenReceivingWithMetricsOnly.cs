@@ -93,6 +93,27 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
             }
         }
 
+        /// <summary>
+        /// The settle path is the ONE place a delivery's fault is swallowed into a <c>bool</c> instead of leaving the
+        /// worker's processing block, so the exception-filter choke point cannot observe it. A metrics-only
+        /// application has no span to read the failure off, which makes this the case the metric must carry
+        /// (ADR-0010 D4, D11).
+        /// </summary>
+        [Fact]
+        public async Task MustTagTheReceiveMetricsWithTheErrorTypeOfAnAcknowledgementThatFailed()
+        {
+            using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
+            using (var harness = new DiagnosticsReceiveHarness())
+            {
+                harness.ArmAckFailure(new DiagnosticsProbeException("The acknowledgment failed deliberately."));
+                harness.Deliver(new Dictionary<string, object>());
+
+                await harness.RunUntilSettledAsync(ReceiverCall.Ack);
+
+                AssertErrorType(meterScope, typeof(DiagnosticsProbeException).FullName);
+            }
+        }
+
         [Fact]
         public async Task MustLeaveTheReceiveMetricsUntaggedWhenTheDeliverySucceeds()
         {

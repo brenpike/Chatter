@@ -67,6 +67,98 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         }
 
         [Fact]
+        public async Task MustNameAndTagTheSendSpanWithTheDestinationResolvedFromMessageAttributes()
+        {
+            // The Send/Publish overloads that omit a destination let the iterator resolve one per message from the
+            // message's own BrokeredMessageAttribute. That destination IS known — it is resolved by the single
+            // enumeration the Router already performs — so leaving messaging.destination.name unset would drop a
+            // dimension the operation actually has.
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness();
+                var batch = harness.CreateSinglePassBatch(BatchSize);
+
+                await harness.PublishSequence(batch);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(BrokerDiagnostics.DestinationName).Should().Be(DiagnosticsSendHarness.DestinationPath);
+                span.DisplayName.Should().Be(BrokerDiagnostics.OperationTypes.Send + " " + DiagnosticsSendHarness.DestinationPath);
+                span.GetTagItem(BrokerDiagnostics.BatchMessageCount).Should().Be(BatchSize);
+
+                // The destination came out of the Router's OWN single enumeration, exactly as the batch count does.
+                // Instrumentation that resolved it eagerly would show here as a pre-Router enumerator request or as a
+                // second enumeration the batch refuses (ADR-0010 D7 and the telemetry-ownership rule).
+                batch.EnumeratorRequestCount.Should().Be(1);
+                harness.DispatchTimeline.Should().Equal(BuildExpectedPullTimeline(BatchSize));
+            }
+        }
+
+        [Fact]
+        public async Task MustLeaveTheDestinationUnsetWhenABatchResolvesToMoreThanOneDestination()
+        {
+            // DECIDED, not incidental. semconv v1.30.0's messaging.destination.name is a SINGLE value and a
+            // heterogeneous batch has no single destination, so the attribute is left unset. Unset reads as "this
+            // call had no one destination", which is true; the first message's destination would be a false claim
+            // about the rest. The span name degrades to the bare operation for the same reason.
+            var destinations = new[] { "destination-alpha", "destination-beta" };
+
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness(attributeDestinations: destinations);
+
+                await harness.PublishBatch(BatchSize);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(BrokerDiagnostics.DestinationName).Should().BeNull();
+                span.DisplayName.Should().Be(BrokerDiagnostics.OperationTypes.Send);
+                span.GetTagItem(BrokerDiagnostics.BatchMessageCount).Should().Be(BatchSize);
+
+                // The messages themselves are still routed to the destinations they each resolved; only the span's
+                // single-valued attribute is withheld.
+                harness.RoutedMessages.Should().HaveCount(BatchSize);
+                harness.RoutedMessages[0].Destination.Should().Be(destinations[0]);
+                harness.RoutedMessages[1].Destination.Should().Be(destinations[1]);
+            }
+        }
+
+        [Fact]
+        public async Task MustLeaveTheDestinationUnsetWhenTheRouterNeverEnumerates()
+        {
+            // Nothing was yielded, so no destination was resolved. Reporting one would describe a resolution that
+            // never happened — and pre-resolving it to avoid the gap is exactly the eager walk the telemetry-ownership
+            // rule forbids.
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness(routerEnumerates: false);
+                var batch = harness.CreateSinglePassBatch(BatchSize);
+
+                await harness.PublishSequence(batch);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(BrokerDiagnostics.DestinationName).Should().BeNull();
+                span.DisplayName.Should().Be(BrokerDiagnostics.OperationTypes.Send);
+                batch.EnumeratorRequestCount.Should().Be(0);
+            }
+        }
+
+        [Fact]
+        public async Task MustKeepAnExplicitDestinationEvenWhenTheAttributeProviderWouldResolveAnother()
+        {
+            // An explicit destination is what the caller asked for and is authoritative: the iterator never consults
+            // the attribute provider for it, so neither does the span.
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness(attributeDestinations: new[] { "attribute-resolved-destination" });
+
+                await harness.SendOne();
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(BrokerDiagnostics.DestinationName).Should().Be(DiagnosticsSendHarness.DestinationPath);
+                span.DisplayName.Should().Be(BrokerDiagnostics.OperationTypes.Send + " " + DiagnosticsSendHarness.DestinationPath);
+            }
+        }
+
+        [Fact]
         public async Task MustWriteOneSharedTraceParentAcrossEveryMessageOfABatch()
         {
             using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
@@ -305,51 +397,6 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 .Should().BeTrue("the outbound message should carry a '" + TraceContextHeaders.TraceParent + "'");
 
             return traceParent.Should().BeOfType<string>().Subject;
-        }
-
-        /// <summary>
-        /// Attaches a .NET <see cref="ActivityListener"/> that samples <see cref="ActivitySamplingResult.None"/>, so
-        /// <see cref="ActivitySource.HasListeners"/> is <c>true</c> while <see cref="ActivitySource.StartActivity(string, ActivityKind)"/>
-        /// returns <c>null</c>.
-        /// </summary>
-        /// <remarks>
-        /// The shared <see cref="RecordingActivityScope"/> forces <see cref="ActivitySamplingResult.AllDataAndRecorded"/>
-        /// by design, so it cannot express the sampled-out side of the gate this scope exists to exercise.
-        /// </remarks>
-        private sealed class SampledOutActivityScope : IDisposable
-        {
-            private readonly ActivityListener _netActivityListener;
-            private readonly List<Activity> _startedActivities = new List<Activity>();
-            private readonly Activity _priorActivity;
-
-            public SampledOutActivityScope(string sourceName)
-            {
-                _priorActivity = Activity.Current;
-
-                _netActivityListener = new ActivityListener
-                {
-                    ShouldListenTo = source => source.Name == sourceName,
-                    Sample = SampleNone,
-                    SampleUsingParentId = SampleNoneFromParentId,
-                    ActivityStarted = _startedActivities.Add,
-                };
-
-                ActivitySource.AddActivityListener(_netActivityListener);
-            }
-
-            public IReadOnlyList<Activity> StartedActivities => _startedActivities.ToArray();
-
-            public void Dispose()
-            {
-                _netActivityListener.Dispose();
-                Activity.Current = _priorActivity;
-            }
-
-            private static ActivitySamplingResult SampleNone(ref ActivityCreationOptions<ActivityContext> options)
-                => ActivitySamplingResult.None;
-
-            private static ActivitySamplingResult SampleNoneFromParentId(ref ActivityCreationOptions<string> options)
-                => ActivitySamplingResult.None;
         }
     }
 }

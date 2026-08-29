@@ -96,13 +96,31 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         /// Whether the Router walks the sequence it is handed. A Router that does NOT — an outbox router that
         /// persists the sequence for later, for instance — is the case in which nothing is ever yielded.
         /// </param>
-        public DiagnosticsSendHarness(bool routerEnumerates = true)
+        /// <param name="attributeDestinations">
+        /// The destinations the <see cref="BrokeredMessageAttribute"/> detail provider resolves, one per resolution in
+        /// order, for the overloads that omit an explicit destination. Null resolves <see cref="DestinationPath"/>
+        /// every time; a list SHORTER than the batch repeats its last entry, so a two-entry list makes a batch
+        /// heterogeneous. This is what makes an attribute-routed batch's destination observable at all.
+        /// </param>
+        public DiagnosticsSendHarness(bool routerEnumerates = true, IReadOnlyList<string> attributeDestinations = null)
         {
             _routerEnumerates = routerEnumerates;
 
             var bodyConverter = new JsonBodyConverter();
             _bodyConverterFactory.Setup(factory => factory.CreateBodyConverter(It.IsAny<string>())).Returns(bodyConverter);
-            _detailProvider.Setup(provider => provider.GetMessageName(It.IsAny<Type>())).Returns(DestinationPath);
+
+            if (attributeDestinations is null)
+            {
+                _detailProvider.Setup(provider => provider.GetMessageName(It.IsAny<Type>())).Returns(DestinationPath);
+            }
+            else
+            {
+                var resolutionCount = 0;
+                _detailProvider
+                    .Setup(provider => provider.GetMessageName(It.IsAny<Type>()))
+                    .Returns(() => attributeDestinations[Math.Min(resolutionCount++, attributeDestinations.Count - 1)]);
+            }
+
             _idGenerator.Setup(generator => generator.GenerateId(It.IsAny<byte[]>())).Returns(() => Guid.NewGuid());
 
             _messageRouter
@@ -340,6 +358,14 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
 
         /// <summary>How many times the Received Message Dispatcher was invoked for the delivery.</summary>
         public int DispatchCount => _dispatchCount;
+
+        /// <summary>
+        /// Arms the Messaging Infrastructure so every acknowledgement raises <paramref name="ackFailure"/>, which is
+        /// the delivery whose HANDLING SUCCEEDED and whose settlement then failed. The receiver swallows that fault
+        /// into a <c>bool</c>, so it never leaves the worker's processing block and the exception-filter choke point
+        /// cannot observe it (ADR-0010 D11).
+        /// </summary>
+        public void ArmAckFailure(Exception ackFailure) => _infrastructureReceiver.ArmAckFailure(ackFailure);
 
         /// <summary>Queues one delivery carrying <paramref name="messageContextValues"/> as its context.</summary>
         public MessageBrokerContext Deliver(IDictionary<string, object> messageContextValues = null, byte[] body = null)

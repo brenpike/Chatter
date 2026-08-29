@@ -157,7 +157,7 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 [TraceContextHeaders.TraceParent] = ProducerTraceParent,
             };
 
-            var measurement = GuardCostProbe.Measure<Activity>(
+            var measurement = GuardCostProbe.Measure<BrokerDiagnostics.ReceiveSpan>(
                 () => BrokerDiagnostics.StartReceive(DiagnosticsReceiveHarness.MessagingSystem, BrokerDiagnostics.OperationTypes.Receive, DiagnosticsReceiveHarness.ReceiverPath, "message-id", messageContext));
 
             measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no trace context may be extracted while off: " + measurement);

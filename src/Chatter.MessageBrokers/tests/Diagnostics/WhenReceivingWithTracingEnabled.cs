@@ -140,6 +140,113 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         }
 
         [Fact]
+        public void MustRestoreTheAmbientActivityAfterTheHeaderlessReceiveSpanStops()
+        {
+            // ADR-0010 D6/R3. The suppression exists ONLY to keep the receive span off the ambient's tree; the
+            // caller's ambient activity is not Chatter's to end. Activity.Stop restores what the started activity
+            // recorded as its PARENT — null, precisely because the ambient was cleared to make the span a root — so
+            // without the restore the ambient would be permanently lost for the rest of the delivery's async flow.
+            // Exercised directly against BrokerDiagnostics because the ambient's fate AFTER the span stops is a
+            // property of the scope the receiver holds, and the receiver's own worker flow ends the moment it stops.
+            using (var foreignInstrumentation = new ForeignInstrumentationScope())
+            using (new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var ambient = Activity.Current;
+                ambient.Should().BeSameAs(foreignInstrumentation.ForeignActivity);
+
+                using (var receiveSpan = StartHeaderlessReceiveSpan())
+                {
+                    // The span is a ROOT, and it is what is current for the whole delivery, so anything a handler
+                    // starts parents to it rather than to the ambient activity.
+                    receiveSpan.Activity.Should().NotBeNull();
+                    receiveSpan.Activity.Parent.Should().BeNull();
+                    receiveSpan.Activity.ParentSpanId.Should().Be(default(ActivitySpanId));
+                    Activity.Current.Should().BeSameAs(receiveSpan.Activity);
+                }
+
+                Activity.Current.Should().BeSameAs(ambient, "the suppressed ambient activity is restored once the receive span stops");
+            }
+        }
+
+        [Fact]
+        public void MustLeaveTheAmbientActivityCurrentWhenTheHeaderlessReceiveSpanIsSampledOut()
+        {
+            // ADR-0010 D9: head sampling makes StartActivity return null while Chatter .NET ActivityListeners are
+            // attached. There is no span to keep the ambient off, so the ambient is restored IMMEDIATELY rather than
+            // at disposal, and the sampled-out propagation fallback still finds it.
+            using (var foreignInstrumentation = new ForeignInstrumentationScope())
+            using (var sampledOutScope = new SampledOutActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                BrokerDiagnostics.Source.HasListeners().Should().BeTrue();
+
+                using (var receiveSpan = StartHeaderlessReceiveSpan())
+                {
+                    receiveSpan.Activity.Should().BeNull();
+                    Activity.Current.Should().BeSameAs(foreignInstrumentation.ForeignActivity);
+                }
+
+                sampledOutScope.StartedActivities.Should().BeEmpty();
+                Activity.Current.Should().BeSameAs(foreignInstrumentation.ForeignActivity);
+            }
+        }
+
+        [Fact]
+        public async Task MustRecordAnAcknowledgementFailureThatWasSwallowedIntoABool()
+        {
+            // ADR-0010 D11. The exception filter observes every fault that LEAVES the worker's processing block; a
+            // settlement fault does not leave it, because the receiver's settle path catches it and returns false. So
+            // handling succeeds, the delivery is answered with an ack, the ack fails, and the message stays unsettled
+            // — which must not read as a successful receive.
+            var ackFailure = new DiagnosticsProbeException("The acknowledgment failed deliberately.");
+
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            using (var harness = new DiagnosticsReceiveHarness())
+            {
+                harness.ArmAckFailure(ackFailure);
+                harness.Deliver(BuildTraceContext(ProducerTraceParent));
+
+                await harness.RunUntilSettledAsync(ReceiverCall.Ack);
+
+                harness.DispatchCount.Should().Be(1, "the handling itself succeeded; only the settlement failed");
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(ChatterTelemetryTags.ErrorType).Should().Be(typeof(DiagnosticsProbeException).FullName);
+
+                // The settlement tag still records what Chatter ANSWERED the delivery with. "We answered ack and the
+                // ack failed" is the truthful pair; dropping the settlement would lose which one was attempted.
+                span.GetTagItem(BrokerDiagnostics.Settlement).Should().Be(BrokerDiagnostics.Settlements.Ack);
+            }
+        }
+
+        [Fact]
+        public async Task MustKeepTheFaultThatEndedTheDeliveryWhenTheAnsweringSettlementAlsoFails()
+        {
+            // FIRST WRITER WINS. The dispatch fault is what ENDED this delivery; the nack that answers it then
+            // failing is a consequence, not a competing cause. The filter retains the dispatch fault first, so the
+            // settlement retention must not overwrite it.
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            using (var harness = new DiagnosticsReceiveHarness(failedDispatchCount: int.MaxValue, deliveryCount: 1, maxReceiveAttempts: 10))
+            {
+                harness.ArmAckFailure(new DiagnosticsProbeException("Never reached: this delivery is nacked."));
+                harness.Deliver(new Dictionary<string, object>());
+
+                await harness.RunUntilSettledAsync(ReceiverCall.Nack);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(ChatterTelemetryTags.ErrorType).Should().Be(typeof(DiagnosticsProbeException).FullName);
+                span.GetTagItem(BrokerDiagnostics.Settlement).Should().Be(BrokerDiagnostics.Settlements.Nack);
+            }
+        }
+
+        private static BrokerDiagnostics.ReceiveSpan StartHeaderlessReceiveSpan()
+            => BrokerDiagnostics.StartReceive(
+                DiagnosticsReceiveHarness.MessagingSystem,
+                BrokerDiagnostics.OperationTypes.Receive,
+                DiagnosticsReceiveHarness.ReceiverPath,
+                "message-id",
+                new Dictionary<string, object>());
+
+        [Fact]
         public async Task MustStartOneSpanPerDeliveryAcrossEveryRecoveryAttempt()
         {
             const int totalAttempts = 3;

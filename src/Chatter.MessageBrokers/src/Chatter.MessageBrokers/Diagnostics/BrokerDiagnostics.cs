@@ -153,26 +153,38 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// <param name="destinationName">The value for <see cref="DestinationName"/>; also the second word of the span name.</param>
         /// <param name="messageId">The value for <see cref="MessageId"/>, or <c>null</c> when the infrastructure supplied none.</param>
         /// <param name="messageContext">The inbound message's context dictionary, carrying the producer's trace context.</param>
-        /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
+        /// <returns>
+        /// The <see cref="ReceiveSpan"/> scope for the delivery. Its <see cref="ReceiveSpan.Activity"/> is <c>null</c>
+        /// when no span was started, and disposing the scope both stops the span and restores any ambient activity the
+        /// start suppressed.
+        /// </returns>
         /// <remarks>The extracted context is the PARENT and an ambient activity that differs from it is attached as a
         /// LINK, never promoted to parent: a message's causal parent is its producer, and re-parenting to whatever
         /// happened to be current at delivery time would sever the distributed trace at every hop (ADR-0010 D6).</remarks>
-        public static Activity StartReceive(string messagingSystem, string operationName, string destinationName, string messageId, IReadOnlyDictionary<string, object> messageContext)
+        public static ReceiveSpan StartReceive(string messagingSystem, string operationName, string destinationName, string messageId, IReadOnlyDictionary<string, object> messageContext)
         {
             if (!_source.HasListeners())
             {
-                return null;
+                return default;
             }
 
             var spanName = BuildSpanName(operationName, destinationName);
+            Activity activity;
+            Activity suppressedAmbient;
 
-            var activity = TraceContextPropagator.TryExtract(messageContext, out var producerContext)
-                ? _source.StartActivity(spanName, ActivityKind.Consumer, producerContext, links: BuildAmbientLinks(producerContext))
-                : StartHeaderlessReceive(spanName);
+            if (TraceContextPropagator.TryExtract(messageContext, out var producerContext))
+            {
+                activity = _source.StartActivity(spanName, ActivityKind.Consumer, producerContext, links: BuildAmbientLinks(producerContext));
+                suppressedAmbient = null;
+            }
+            else
+            {
+                activity = StartHeaderlessReceive(spanName, out suppressedAmbient);
+            }
 
             if (activity is null)
             {
-                return null;
+                return default;
             }
 
             SetOperationTags(activity, messagingSystem, operationName, OperationTypes.Receive, destinationName);
@@ -182,7 +194,7 @@ namespace Chatter.MessageBrokers.Diagnostics
                 activity.SetTag(MessageId, messageId);
             }
 
-            return activity;
+            return new ReceiveSpan(activity, suppressedAmbient);
         }
 
         /// <summary>
@@ -274,6 +286,32 @@ namespace Chatter.MessageBrokers.Diagnostics
         }
 
         /// <summary>
+        /// Writes the destination a dispatch call turned out to target onto <paramref name="activity"/>, for the
+        /// overloads whose destination is not known until the messages have been routed.
+        /// </summary>
+        /// <param name="activity">The send span, or <c>null</c> when no span was started.</param>
+        /// <param name="operationName">The value of <see cref="OperationName"/>; the first word of the span name.</param>
+        /// <param name="destinationName">The resolved destination, or <c>null</c> to leave the attribute unset.</param>
+        /// <remarks>
+        /// Called at span STOP rather than at start, because the destination of an attribute-routed dispatch is
+        /// resolved BY the one enumeration the Router performs and is therefore unknown when the span begins — exactly
+        /// as <see cref="BatchMessageCount"/> is (ADR-0010 D7). Neither value is observable to a .NET
+        /// <c>ActivityListener</c> before the span stops, so rewriting the span name here changes nothing a listener
+        /// already saw: <see cref="ActivitySource.StartActivity"/> has made its sampling decision by then, and
+        /// <see cref="Activity.DisplayName"/> is read at <c>ActivityStopped</c>.
+        /// </remarks>
+        public static void RecordResolvedDestination(Activity activity, string operationName, string destinationName)
+        {
+            if (!_source.HasListeners() || activity is null || string.IsNullOrEmpty(destinationName))
+            {
+                return;
+            }
+
+            activity.SetTag(DestinationName, destinationName);
+            activity.DisplayName = BuildSpanName(operationName, destinationName);
+        }
+
+        /// <summary>
         /// The span name convention of semconv v1.30.0: <c>{messaging.operation.name} {destination}</c>.
         /// </summary>
         private static string BuildSpanName(string operationName, string destinationName)
@@ -322,15 +360,30 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// activity happened to be current at delivery time — receiver startup or a poll loop can flow one in
         /// through <c>Task.Run</c> — producing false causality, which is exactly what D6 rejects on the
         /// extracted-parent branch. <see cref="Activity.Current"/> is cleared across the start call so the fallback
-        /// cannot fire, and restored when the .NET <c>ActivityListener</c> sampled the span out, so the sampled-out
-        /// propagation fallback still sees the ambient context (ADR-0010 D9). Reading and writing
-        /// <see cref="Activity.Current"/> here is legitimate only because the caller already ran the
+        /// cannot fire. The ambient is then restored on BOTH sampling outcomes, because the suppression exists to keep
+        /// the span off the ambient's tree, never to end the ambient:
+        /// <list type="bullet">
+        /// <item><description>SAMPLED OUT — no span exists, so the ambient is restored IMMEDIATELY, before this method
+        /// returns, and the sampled-out propagation fallback still sees it (ADR-0010 D9).</description></item>
+        /// <item><description>SAMPLED IN — the span must stay current for the whole delivery, so the ambient is handed
+        /// back through <paramref name="suppressedAmbient"/> and restored by <see cref="ReceiveSpan.Dispose"/> AFTER the
+        /// span stops. <see cref="Activity.Stop"/> restores what the started activity recorded as its parent, which is
+        /// null here precisely because the ambient was cleared, so without that restore the ambient would be lost for
+        /// the remainder of the delivery's async flow.</description></item>
+        /// </list>
+        /// Reading and writing <see cref="Activity.Current"/> here is legitimate only because the caller already ran the
         /// <see cref="ActivitySource.HasListeners"/> guard (ADR-0010 R3), so an application that never opted in
         /// never reaches this method.
         /// </remarks>
-        private static Activity StartHeaderlessReceive(string spanName)
+        /// <param name="spanName">The span name, already built by the caller.</param>
+        /// <param name="suppressedAmbient">
+        /// The ambient activity whose restoration is still OUTSTANDING when this returns, or <c>null</c> when there is
+        /// nothing left to restore — no ambient existed, or the span was sampled out and the ambient is already back.
+        /// </param>
+        private static Activity StartHeaderlessReceive(string spanName, out Activity suppressedAmbient)
         {
             var ambient = Activity.Current;
+            suppressedAmbient = null;
 
             if (ambient is null)
             {
@@ -348,9 +401,13 @@ namespace Chatter.MessageBrokers.Diagnostics
             }
             finally
             {
-                if (Activity.Current is null)
+                if (activity is null)
                 {
                     Activity.Current = ambient;
+                }
+                else
+                {
+                    suppressedAmbient = ambient;
                 }
             }
 
@@ -385,6 +442,57 @@ namespace Chatter.MessageBrokers.Diagnostics
 
             var buildMetadataIndex = informationalVersion.IndexOf('+');
             return buildMetadataIndex < 0 ? informationalVersion : informationalVersion.Substring(0, buildMetadataIndex);
+        }
+
+        /// <summary>
+        /// One delivery's receive span TOGETHER WITH the ambient <see cref="Activity"/> its start suppressed, so
+        /// stopping the span and restoring that ambient are ONE disposal rather than two obligations on a call site.
+        /// </summary>
+        /// <remarks>
+        /// WHY A SCOPE RATHER THAN A BARE <see cref="Activity"/>. A headerless delivery must become a fresh ROOT, and
+        /// that costs an explicit <see cref="Activity.Current"/> clear across the start call because
+        /// <see cref="Activity.Start"/> otherwise falls back to the ambient activity as parent (ADR-0010 D6 as
+        /// amended). <see cref="Activity.Stop"/> then restores what the started activity recorded as its PARENT —
+        /// null, precisely because the ambient was cleared — so a call site holding only the <see cref="Activity"/>
+        /// would leave the ambient permanently lost on that async flow the moment the span stopped. Returning a scope
+        /// makes the restore impossible to forget: there is no way to obtain the span WITHOUT the disposal that
+        /// restores the ambient, so "a receive-span call site forgot to restore the suppressed ambient" is not a
+        /// representable defect rather than one this type merely happens to avoid.
+        /// The ambient is restored rather than left cleared because the suppression exists ONLY to keep the receive
+        /// span off the ambient's tree (ADR-0010 D6); the caller's ambient activity is not Chatter's to end.
+        /// A <c>readonly struct</c>, so an application that never opted in still allocates nothing on this path and
+        /// <c>default</c> is the well-formed "no span was started" value (ADR-0010 R1, R4).
+        /// </remarks>
+        public readonly struct ReceiveSpan : IDisposable
+        {
+            private readonly Activity _suppressedAmbient;
+
+            internal ReceiveSpan(Activity activity, Activity suppressedAmbient)
+            {
+                Activity = activity;
+                _suppressedAmbient = suppressedAmbient;
+            }
+
+            /// <summary>
+            /// The receive span, or <c>null</c> when no .NET <c>ActivityListener</c> is attached to the
+            /// <see cref="ActivitySourceName"/> scope or the listener declined to sample.
+            /// </summary>
+            public Activity Activity { get; }
+
+            /// <summary>
+            /// Stops the receive span, then restores the ambient activity the start suppressed. The order matters:
+            /// stopping the span sets <see cref="Activity.Current"/> to the span's own (null) parent, so the restore
+            /// has to come after it.
+            /// </summary>
+            public void Dispose()
+            {
+                Activity?.Dispose();
+
+                if (_suppressedAmbient != null)
+                {
+                    System.Diagnostics.Activity.Current = _suppressedAmbient;
+                }
+            }
         }
 
         /// <summary>

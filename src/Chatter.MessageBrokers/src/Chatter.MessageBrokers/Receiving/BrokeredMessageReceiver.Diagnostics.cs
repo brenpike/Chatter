@@ -59,9 +59,11 @@ namespace Chatter.MessageBrokers.Receiving
             /// and poisoned delivery as a successful operation, omitting the <c>error.type</c> attribute semconv
             /// v1.30.0 requires on a failed operation — visible to a metrics-only application, which has no span to
             /// read the failure off (ADR-0010 D4).
-            /// Written ONLY by <see cref="RetainReceiveFailure"/>, from the exception filter that is the single
-            /// choke point every ladder branch passes through, so no branch can settle a fault without retaining it
-            /// (ADR-0010 D11).
+            /// Written by <see cref="RetainReceiveFailure"/>, from the exception filter that is the single choke
+            /// point every fault LEAVING the worker's processing block passes through, so no ladder branch can settle
+            /// a fault without retaining it; and by <see cref="RetainSettlementFailure"/>, from the single place a
+            /// settle-path fault is swallowed into a <c>bool</c> and therefore never leaves that block at all. Two
+            /// observation points, ONE retained fault: the filter is the first writer whenever it fires (ADR-0010 D11).
             /// </remarks>
             internal Exception Failure;
         }
@@ -94,8 +96,14 @@ namespace Chatter.MessageBrokers.Receiving
             var messagingSystem = _options.InfrastructureType;
             var inboundMessage = messageContext?.BrokeredMessage;
 
-            using (var activity = BrokerDiagnostics.StartReceive(messagingSystem, BrokerDiagnostics.OperationTypes.Receive, this.MessageReceiverPath, inboundMessage?.MessageId, inboundMessage?.MessageContext))
+            // INVARIANT: the receive span and the ambient activity its start may have suppressed are ONE scope, so
+            // disposing it stops the span AND restores that ambient. A headerless delivery becomes a fresh root by
+            // CLEARING Activity.Current across the start call, and Activity.Stop restores the span's own (null)
+            // parent, so a call site that held only the Activity would lose the caller's ambient for the rest of this
+            // worker's async flow (ADR-0010 D6, R3).
+            using (var receiveSpan = BrokerDiagnostics.StartReceive(messagingSystem, BrokerDiagnostics.OperationTypes.Receive, this.MessageReceiverPath, inboundMessage?.MessageId, inboundMessage?.MessageContext))
             {
+                var activity = receiveSpan.Activity;
                 var receiveDiagnostics = new ReceiveDiagnosticsScope(activity);
                 _receiveDiagnostics.Value = receiveDiagnostics;
 
@@ -216,6 +224,52 @@ namespace Chatter.MessageBrokers.Receiving
             BrokerDiagnostics.RecordFailure(receiveDiagnostics.Activity, deliveryFault);
 
             return false;
+        }
+
+        /// <summary>
+        /// Retains a settle-path fault that was swallowed into a <c>bool</c> return, on the SAME per-delivery scope
+        /// the worker's exception-filter choke point writes.
+        /// </summary>
+        /// <param name="settlementFault">The fault raised while settling, already logged by the caller.</param>
+        /// <param name="settlementToken">The token that identifies a shutdown cancellation.</param>
+        /// <remarks>
+        /// WHY A SECOND OBSERVATION POINT IS NEEDED AT ALL, given <see cref="RetainReceiveFailure"/> is the choke
+        /// point. That filter observes every fault that LEAVES the worker's processing try block. A settle-path
+        /// fault never leaves it: <see cref="TrySettleWithRecoveryAsync"/> catches it and converts it to
+        /// <c>false</c>, so the block completes normally and the filter cannot see it. Without this, a delivery whose
+        /// handling SUCCEEDED but whose acknowledgement then failed would report a successful receive carrying an
+        /// <c>ack</c> settlement and no <c>error.type</c>, while the message stayed unsettled and eligible for
+        /// redelivery.
+        /// This is ONE retention primitive, not two: the fault lands on the same
+        /// <see cref="ReceiveDiagnosticsScope.Failure"/> field, is marked on the same span, and is read back by the
+        /// same <c>RecordReceive</c> call. It is retained at the ONE place a settle-path fault is swallowed
+        /// (<see cref="TrySettleWithRecoveryAsync"/>), so — exactly as with the filter — a settle path added later
+        /// cannot forget it (ADR-0010 D11).
+        /// FIRST WRITER WINS. A fault that already left the processing block is the fault that ENDED the delivery;
+        /// the ladder's answering nack or deadletter then failing is a consequence of it, not a competing cause. So a
+        /// settle-path fault is retained only when nothing has been retained yet, which is exactly the
+        /// handling-succeeded-then-settlement-failed case.
+        /// Guarded by <see cref="BrokerDiagnostics.IsEnabled"/> rather than the .NET <c>ActivitySource</c> guard,
+        /// because a metrics-only application must see this failure too; the span call carries its own
+        /// <c>HasListeners</c> guard (ADR-0010 R1). A shutdown-cancelled settlement is exempt for the same reason a
+        /// shutdown-cancelled delivery is (<see cref="IsShutdownCancellation"/>).
+        /// </remarks>
+        private static void RetainSettlementFailure(Exception settlementFault, CancellationToken settlementToken)
+        {
+            if (!BrokerDiagnostics.IsEnabled || IsShutdownCancellation(settlementFault, settlementToken))
+            {
+                return;
+            }
+
+            var receiveDiagnostics = _receiveDiagnostics.Value;
+
+            if (receiveDiagnostics is null || receiveDiagnostics.Failure != null)
+            {
+                return;
+            }
+
+            receiveDiagnostics.Failure = settlementFault;
+            BrokerDiagnostics.RecordFailure(receiveDiagnostics.Activity, settlementFault);
         }
 
         /// <summary>
