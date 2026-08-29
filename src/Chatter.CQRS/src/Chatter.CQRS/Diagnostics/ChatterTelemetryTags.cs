@@ -13,7 +13,8 @@
     public static class ChatterTelemetryTags
     {
         /// <summary>
-        /// The fully qualified type name of the Command, Query or Event being dispatched. Chatter-native.
+        /// The fully qualified type name of the Command or Event being dispatched. Chatter-native. Query dispatch
+        /// is a non-goal (ADR-0010), so this never carries a Query type.
         /// </summary>
         public const string MessageType = "chatter.message.type";
 

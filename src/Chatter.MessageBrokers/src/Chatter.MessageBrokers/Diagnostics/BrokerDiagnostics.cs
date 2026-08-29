@@ -106,19 +106,22 @@ namespace Chatter.MessageBrokers.Diagnostics
 
         /// <summary>
         /// Whether an application has opted into broker diagnostics, either by attaching a .NET
-        /// <c>ActivityListener</c> to <see cref="Source"/> or by enabling one of the instruments on a .NET
-        /// <c>MeterListener</c>. This is the outer guard a call site checks before reading a start timestamp.
+        /// <c>ActivityListener</c> to the <see cref="ActivitySourceName"/> scope or by enabling one of the
+        /// <see cref="MeterName"/> scope's instruments on a .NET <c>MeterListener</c>. This is the outer guard a
+        /// call site checks before reading a start timestamp; it is an OR across tracing AND metrics, so enabling
+        /// only an instrument is enough to take the instrumented path with no .NET <c>ActivityListener</c> attached.
         /// </summary>
         public static bool IsEnabled => _source.HasListeners() || _operationDuration.Enabled || _sentMessages.Enabled || _consumedMessages.Enabled;
 
         /// <summary>
         /// Starts a span covering one dispatch call to broker infrastructure, or returns <c>null</c> when no .NET
-        /// <c>ActivityListener</c> is attached to <see cref="Source"/> or the listener declined to sample.
+        /// <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/> scope or the listener
+        /// declined to sample.
         /// </summary>
         /// <param name="messagingSystem">The value for <see cref="MessagingSystem"/>.</param>
         /// <param name="operationName">The value for <see cref="OperationName"/>; also the first word of the span name.</param>
         /// <param name="destinationName">The value for <see cref="DestinationName"/>; also the second word of the span name.</param>
-        /// <param name="messageCount">The value for <see cref="BatchMessageCount"/>: one dispatch call carries N messages that share one context (ADR-0010 D7).</param>
+        /// <param name="messageCount">The value for <see cref="BatchMessageCount"/>: one dispatch call carries N messages that share one context (ADR-0010 D7). A caller that cannot know N until its batch has been enumerated passes zero here and rewrites the tag before the span stops.</param>
         /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
         public static Activity StartSend(string messagingSystem, string operationName, string destinationName, int messageCount)
         {
@@ -142,7 +145,8 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// <summary>
         /// Starts a span covering one delivery from broker infrastructure, parented to the trace context the
         /// producer wrote onto <paramref name="messageContext"/>, or returns <c>null</c> when no .NET
-        /// <c>ActivityListener</c> is attached to <see cref="Source"/> or the listener declined to sample.
+        /// <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/> scope or the listener
+        /// declined to sample.
         /// </summary>
         /// <param name="messagingSystem">The value for <see cref="MessagingSystem"/>.</param>
         /// <param name="operationName">The value for <see cref="OperationName"/>; also the first word of the span name.</param>

@@ -1,3 +1,4 @@
+using Chatter.CQRS.Diagnostics;
 using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Sending;
 using Chatter.Testing.Core.Diagnostics;
@@ -15,10 +16,18 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
     /// The opted-in send path: one span per dispatch call, its trace context written onto every message the call
     /// carries, and propagation that survives lazy enumeration, outbox replay and a sampled-out span.
     /// </summary>
+    /// <remarks>
+    /// The batch count is the load-bearing case here. It is derived from the ONE enumeration the Router already
+    /// performs, so a caller's lazily-built batch is walked at exactly the same moment, with the same side effects
+    /// and the same exception origin, whether or not diagnostics are on — including in a host that opted into
+    /// METRICS ONLY, which turns <see cref="BrokerDiagnostics.IsEnabled"/> true with no .NET
+    /// <c>ActivityListener</c> attached at all.
+    /// </remarks>
     [Collection(DiagnosticsCollection.Name)]
     public class WhenSendingWithTracingEnabled : Testing.Core.Context
     {
         private const int BatchSize = 3;
+        private const int YieldedBeforeFault = 2;
 
         [Fact]
         public async Task MustStartExactlyOneSpanForABatchDispatchCall()
@@ -103,6 +112,129 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         }
 
         [Fact]
+        public async Task MustNotWalkTheCallersBatchBeforeTheRouterDoes()
+        {
+            using (new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness();
+                var batch = harness.CreateSinglePassBatch(BatchSize);
+
+                await harness.PublishSequence(batch);
+
+                // INVARIANT: the batch count is derived from the Router's own single enumeration, never from a walk
+                // or copy of the caller's sequence. Instrumentation that walked it to count it would show here as an
+                // enumerator requested BEFORE the Router was entered, or as a second enumeration the batch refuses.
+                batch.EnumeratorRequestCount.Should().Be(1);
+                harness.DispatchTimeline.Should().Equal(BuildExpectedPullTimeline(BatchSize));
+            }
+        }
+
+        [Fact]
+        public async Task MustTagTheBatchCountTakenFromTheRoutersEnumerationOfALazyBatch()
+        {
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness();
+                var batch = harness.CreateSinglePassBatch(BatchSize);
+
+                await harness.PublishSequence(batch);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(BrokerDiagnostics.BatchMessageCount).Should().Be(BatchSize);
+                batch.YieldedCount.Should().Be(BatchSize);
+                harness.RoutedMessages.Should().HaveCount(BatchSize);
+            }
+        }
+
+        [Fact]
+        public async Task MustTagTheYieldedCountWhenTheCallersBatchRaisesPartway()
+        {
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness();
+                var batch = harness.CreateSinglePassBatch(BatchSize, faultAfterYieldCount: YieldedBeforeFault);
+
+                Func<Task> publish = () => harness.PublishSequence(batch);
+
+                // The caller's OWN exception instance surfaces, raised from the Router's enumeration rather than
+                // from an earlier instrumentation walk, so the failure's origin is unmoved.
+                (await publish.Should().ThrowAsync<DiagnosticsProbeException>()).Which.Should().BeSameAs(batch.Fault);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(BrokerDiagnostics.BatchMessageCount).Should().Be(YieldedBeforeFault);
+                span.GetTagItem(ChatterTelemetryTags.ErrorType).Should().Be(typeof(DiagnosticsProbeException).FullName);
+                batch.YieldedCount.Should().Be(YieldedBeforeFault);
+                harness.DispatchTimeline.Should().Equal(BuildExpectedPullTimeline(YieldedBeforeFault));
+            }
+        }
+
+        [Fact]
+        public async Task MustTagAZeroBatchCountWhenTheRouterNeverEnumerates()
+        {
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness(routerEnumerates: false);
+                var batch = harness.CreateSinglePassBatch(BatchSize);
+
+                await harness.PublishSequence(batch);
+
+                // A Router that hands the sequence on without walking it has yielded nothing, so zero is the truthful
+                // count for this dispatch call rather than a total the call never actually carried.
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(BrokerDiagnostics.BatchMessageCount).Should().Be(0);
+                batch.EnumeratorRequestCount.Should().Be(0);
+                batch.YieldedCount.Should().Be(0);
+                harness.DispatchTimeline.Should().Equal(DiagnosticsSendHarness.RouterEnteredEntry);
+            }
+        }
+
+        [Fact]
+        public async Task MustNotWalkTheCallersBatchWhenOnlyMetricsAreOptedInto()
+        {
+            // BrokerDiagnostics.IsEnabled is HasListeners OR an enabled instrument, so a host carrying ONLY a .NET
+            // MeterListener and no .NET ActivityListener at all still takes the instrumented dispatch path. Eager
+            // materialisation would move the caller's iterator side effects in THAT host too, which is why
+            // non-materialisation is pinned here and not only under tracing.
+            using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
+            {
+                var harness = new DiagnosticsSendHarness();
+                var batch = harness.CreateSinglePassBatch(BatchSize);
+
+                BrokerDiagnostics.IsEnabled.Should().BeTrue();
+                BrokerDiagnostics.Source.HasListeners().Should().BeFalse();
+
+                await harness.PublishSequence(batch);
+
+                batch.EnumeratorRequestCount.Should().Be(1);
+                harness.DispatchTimeline.Should().Equal(BuildExpectedPullTimeline(BatchSize));
+
+                var sentMessages = meterScope.MeasurementsFor(BrokerDiagnostics.SentMessagesInstrumentName).Should().ContainSingle().Subject;
+                sentMessages.Value.Should().Be(BatchSize);
+            }
+        }
+
+        [Fact]
+        public async Task MustCountOnlyTheYieldedMessagesOnTheSentInstrumentWhenTheCallersBatchRaisesPartway()
+        {
+            using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
+            {
+                var harness = new DiagnosticsSendHarness();
+                var batch = harness.CreateSinglePassBatch(BatchSize, faultAfterYieldCount: YieldedBeforeFault);
+
+                Func<Task> publish = () => harness.PublishSequence(batch);
+
+                await publish.Should().ThrowAsync<DiagnosticsProbeException>();
+
+                // messaging.client.sent.messages counts what was actually handed to broker infrastructure, so a
+                // dispatch that raises partway reports the YIELDED count and not the batch the caller intended.
+                var sentMessages = meterScope.MeasurementsFor(BrokerDiagnostics.SentMessagesInstrumentName).Should().ContainSingle().Subject;
+                sentMessages.Value.Should().Be(YieldedBeforeFault);
+                sentMessages.TryGetTag(ChatterTelemetryTags.ErrorType, out var errorType).Should().BeTrue();
+                errorType.Should().Be(typeof(DiagnosticsProbeException).FullName);
+            }
+        }
+
+        [Fact]
         public async Task MustSurviveOutboxReplayAsAString()
         {
             using (new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
@@ -145,6 +277,26 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 ResolveTraceParent(routedMessage).Should().StartWith(
                     "00-" + foreignInstrumentation.ForeignActivity.TraceId.ToHexString() + "-" + foreignInstrumentation.ForeignActivity.SpanId.ToHexString());
             }
+        }
+
+        /// <summary>
+        /// The timeline a single-pass batch must produce: the Router entered FIRST, then exactly one enumerator
+        /// request, then one entry per message the Router pulled.
+        /// </summary>
+        private static string[] BuildExpectedPullTimeline(int yieldedCount)
+        {
+            var timeline = new List<string>
+            {
+                DiagnosticsSendHarness.RouterEnteredEntry,
+                SinglePassEventSequence.EnumeratorRequestedEntry,
+            };
+
+            for (var index = 0; index < yieldedCount; index++)
+            {
+                timeline.Add(SinglePassEventSequence.YieldedEntryPrefix + index);
+            }
+
+            return timeline.ToArray();
         }
 
         private static string ResolveTraceParent(OutboundBrokeredMessage outboundMessage)

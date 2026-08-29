@@ -46,6 +46,21 @@ subscription type. It is never a **Brokered Message Receiver** (`Chatter.Message
   that match the package boundary consumers already reason about.
 - **Option 5 — a single flat `"Chatter"` instrumentation scope** (as issue #274 proposes).
   Rejected; see D3.
+- **Option 6 — a readonly-struct `OperationScope` opened around each seam's inline body, with the seams
+  kept non-`async`.** Raised during the adversarial review of the implemented change, as a structural
+  replacement for the per-seam instrumented methods (`DispatchToHandlerWithDiagnostics`,
+  `RouteWithDiagnostics`, `DispatchWithDiagnostics`) and on the argument that it would eliminate the
+  on/off shape divergence those methods introduce. **REJECTED on a specific defect:** in a non-`async`
+  seam, an exception surfacing after the first `await` never reaches the seam's `catch`, so
+  `scope.Fail` would run only for a SYNCHRONOUS throw — an asynchronous fault would go unrecorded and
+  the span's duration would cover only the synchronous prefix, so a failed send would read as a
+  successful one. Repairing that converges on re-implementing what `async`/`await` already provides.
+  Two secondary objections stand independently: `throw scope.Fail(e)` resets the stack trace,
+  introducing a NEW on/off divergence while eliminating another; and the `Activity.Current` restore the
+  scope requires holds only if every exit path routes through `Complete`/`Fail`, which trades a
+  compiler-enforced guarantee for a convention. **Recorded judgment: the approach RELOCATED a
+  convention rather than eliminating a class**, so it does not pass the
+  [closed-by-construction acceptance test](#closed-by-construction-acceptance-test).
 
 ## Decision
 
@@ -95,6 +110,26 @@ zero new dependency edges**.
 `Queries/QueryDispatcher.cs:8-9`). There is **no** `InternalsVisibleTo` from `Chatter.CQRS` to
 `Chatter.MessageBrokers`, so an `internal` diagnostics surface would be unreachable from the broker
 packages that must emit through it.
+
+**AMENDED — PUBLIC, but narrowed to what a caller actually needs.** The adversarial review found two
+members that were public without ever having been contract. Both are narrowed, before either package
+ships:
+
+- **`ChatterDiagnostics.Source` and `BrokerDiagnostics.Source` are `internal`.** D3's opt-in is by
+  NAME — `.AddSource("Chatter.*")` / `.AddMeter("Chatter.*")` — so `ActivitySourceName` is the
+  contract and the `ActivitySource` INSTANCE never was. The one need the instance served, a call site
+  running the off-guard before building an argument, is entirely in-assembly.
+- **`ChatterTelemetryTags.DispatchKinds.Query` is removed.** It was public API with no emitter: query
+  dispatch is an explicit [non-goal](#non-goals), so the tag can never carry that value.
+
+**The instrumentation ENTRY POINTS are deliberately NOT narrowed.** `StartSend`, `StartReceive`,
+`RecordSend`, `RecordReceive`, `RecordFailure`, `RecordSettlement`, `StartDispatch`,
+`RecordDispatchDuration` and `IsEnabled` stay public even though none currently has a cross-assembly
+PRODUCTION caller — every production emit site today lives in the assembly that owns its surface. They
+are the surface a separately-packaged broker adapter would call, and D3's per-assembly scope naming
+deliberately leaves that door open, so narrowing them would CLOSE AN EXTENSIBILITY SURFACE rather than
+remove an accident. That is the line the review adjudicated: `Source` and `DispatchKinds.Query` were
+public by accident and cost an application nothing to withdraw; the entry points are public by intent.
 
 ### D3 — `ActivitySource` and `Meter` are named PER EMITTING ASSEMBLY
 
@@ -161,6 +196,16 @@ OpenTelemetry convention covers in-process CQRS dispatch, so inventing a `messag
 it would be a false claim of conformance. The concrete constant set lives in one place
 (`ChatterTelemetryTags`) so the vocabulary has a single definition point, mirroring how ADR-0004
 made `MessageContext` the single ground truth for header keys.
+
+**AMENDED — which exception `error.type` is taken from on the reply path: the INNER cause, never the
+wrapper.** `ReplyRouter` wraps a SYNCHRONOUS routing failure in `ReplyToRoutingExceptions` but lets an
+ASYNCHRONOUS fault surface unwrapped — the off path returns the router's `Task` without awaiting it, so
+only a synchronous throw is ever wrapped, and the instrumented path matches that exactly. The recorded
+decision is that `error.type` carries the inner cause on BOTH paths. Recording the wrapper instead
+would make the metric dimension depend on WHERE the router happened to throw, spelling ONE root failure
+two ways — exactly the one-concept-two-spellings failure this decision exists to prevent. The inner
+cause is uniform across both paths; and the wrapper is a near-constant, low-cardinality value whose
+only information is which seam failed, which the span name already carries.
 
 **Attribute names are NOT compile-time API.** They are emitted telemetry data, not a type surface.
 The expectation recorded here is that Chatter's attribute names track the pinned semconv version and
@@ -231,6 +276,27 @@ share it. A per-message `traceparent` is therefore **not representable** without
 dispatcher's context-sharing shape, which is out of scope and would change existing correlation
 behavior. The send span is tagged with the batch message count
 (`messaging.batch.message_count`, per D4).
+
+**AMENDED — the batch count is OBSERVED during the router's own enumeration, and the sent-messages
+metric changed meaning with it.** The count was originally taken from an EAGER pre-walk of the
+caller's sequence, which made instrumentation change WHEN a lazily-built sequence is enumerated — a
+violation of the same off-must-mean-off spirit R1–R4 encode, extended to the on path. It is now
+derived from the ONE enumeration the router already performs: the dispatch iterator increments a
+counter as each message is yielded, so a caller's sequence is enumerated at exactly the same moment,
+with the same side effects and the same outbox-transaction scoping, whether or not diagnostics are on.
+Two consequences follow, both recorded deliberately:
+
+- **`messaging.client.sent.messages` changed meaning.** It previously added the pre-walked batch total
+  on EVERY dispatch, including a FAILED one, so it counted as sent messages that never left. It now
+  adds the number actually YIELDED during the router's enumeration: a failure mid-enumeration or
+  mid-route reports a PARTIAL count, and a router that never enumerates reports `0`. This is the more
+  truthful number, and it is also a CHANGE — a dashboard differencing this counter against a
+  broker-side counter will see the two diverge on failure paths where they previously agreed.
+- **`messaging.batch.message_count` moved from span START to span STOP.** The span now starts carrying
+  a zero placeholder, and the tag is rewritten with the yielded count before the span stops. This is
+  NOT observable to a .NET BCL `System.Diagnostics.ActivityListener`'s sampling decision, because in
+  the original shape the tag was already set AFTER `StartActivity` had made that decision — no sampler
+  ever consumed it.
 
 **RECEIVE: one span per delivery, not per retry.** The recovery strategy **wraps** dispatch —
 `BrokeredMessageReceiver.cs:1025-1027` invokes `DispatchReceivedMessageAsync` inside
@@ -378,6 +444,64 @@ receive-side wrapper returns the original `Task` directly on the off path. **No 
 is introduced when tracing is off**, and no additional allocation is added to the non-instrumented
 dispatch path.
 
+**AMENDED — the "off path is the original body verbatim" framing is RETIRED.** An earlier framing
+of R1/R4 described the off path that way. It is not literally true and is withdrawn: the shared send
+iterator and the reply/forward route paths call the trace-context propagation helper
+UNCONDITIONALLY, passing the `null` activity a caller holds when diagnostics are off, and the iterator
+additionally carries a null check on the batch counter. The truthful framing, which every guarantee
+enumerated in R1–R4 still satisfies: **the off path is the on path minus the payload.** Every
+off-path diagnostics call it reaches is a documented branch-and-return that allocates nothing, reads
+no timestamp, starts no span and writes no header — R2's `null`-activity early return is precisely
+such a branch, and it is the mechanism by which "no Chatter `Activity`" becomes "no wire change".
+Only the word *verbatim* was wrong; R1–R4 are unchanged.
+
+**AMENDED — the diagnostics path is NOT tracing-gated, and the name `IsEnabled` is what misleads.**
+The outer exit a call site evaluates is an OR across tracing AND metrics, on BOTH surfaces:
+
+- `BrokerDiagnostics.IsEnabled` is
+  `_source.HasListeners() || _operationDuration.Enabled || _sentMessages.Enabled || _consumedMessages.Enabled`
+- `ChatterDiagnostics.IsEnabled` has the same shape:
+  `_source.HasListeners() || _dispatchDuration.Enabled`
+
+Both are recorded here deliberately. The shape is SYMMETRIC across the two surfaces, and recording
+only the broker one would read as an asymmetry that does not exist.
+
+This is the intended design rather than a defect. The METRICS half of the surface must be reachable
+WITHOUT tracing — an application that wires a `Meter` and no tracing still expects its duration
+histograms and message counters — so a call site's outer exit cannot key on `HasListeners()` alone.
+`IsEnabled` is the OUTER cheap exit; the INNER per-entry-point guards are what actually decide the
+work (`HasListeners()` for spans, `Instrument.Enabled` for metrics), and those inner guards are the
+ones R1 governs.
+
+The consequence that matters to a reader: **an application with broad metrics wiring takes the
+diagnostics path with ZERO .NET BCL `System.Diagnostics.ActivityListener`s attached.** A wildcard
+`AddMeter` that never names Chatter, or a .NET BCL `System.Diagnostics.Metrics.MeterListener` that
+enables instruments by a broad predicate, is enough to make `IsEnabled` true. On that path no span is
+started — every span entry point still runs its own `HasListeners()` guard and returns `null` — and no
+`traceparent` is written, because R2 keys injection on an explicitly passed `Activity` and there is
+none. What such an application pays is a start timestamp and the instrumented method's async state
+machine, which is what it asked for by enabling the instruments.
+
+**AMENDED — the on/off throw-timing divergence at three seams, ACCEPTED as a bounded property.** With
+diagnostics ACTIVE, a synchronous throw at `CommandDispatcher.Dispatch`, `ReplyRouter.Route` and
+`ForwardingRouter.Route` surfaces as a FAULTED `Task` rather than as a throw from the call itself,
+because the instrumented path is an `async` method. The exception INSTANCE and TYPE are preserved on
+both paths; only the DELIVERY TIMING differs. This is accepted — not a defect, and not a deferral —
+for three reasons:
+
+- every framework caller of these seams awaits the returned `Task`, so the difference is
+  indistinguishable in practice;
+- the seam family already carries off-path timing irregularity of exactly this kind: `EventDispatcher`'s
+  OFF path is itself `async`, and `BrokeredMessageDispatcher`'s `ContentType` validation throws lazily
+  at ENUMERATION inside the router on both paths; and
+- R4 promises no shape change for the OFF path only, and the off path is intact — it still returns the
+  original `Task` directly, with no async state machine added.
+
+The whole of the divergence is that an application catching synchronously around a non-awaited call
+would see the exception move to the `Task` once it opts in. It is documented rather than designed
+away, because designing it away means making the instrumented path non-`async`, which
+[Option 6](#considered-options) shows is worse.
+
 ## Propagation scope
 
 Propagation is bounded and stated honestly. Both limitations below are **PRE-EXISTING**, affect
@@ -475,7 +599,17 @@ Explicitly out of scope for this decision and the work it governs:
   as source in two existing packages.
 - **The diagnostics surface is public API of `Chatter.CQRS`.** It is therefore subject to SemVer:
   adding to it is a minor bump, changing or removing from it is a major bump. This is the price of
-  D2's no-`InternalsVisibleTo` reality, and it is paid deliberately.
+  D2's no-`InternalsVisibleTo` reality, and it is paid deliberately. The `ActivitySource` INSTANCES
+  are deliberately NOT part of it — `Source` is `internal` on both surfaces, because the opt-in
+  contract is the scope NAME (D2 as amended, D3).
+- **`messaging.client.sent.messages` counts the messages actually YIELDED**, not a pre-walked batch
+  total, so a dispatch that fails mid-enumeration reports a partial count and one that never
+  enumerates reports `0` (D7 as amended). An application differencing this counter against a
+  broker-side counter will see them diverge on failure paths.
+- **Opting in moves a synchronous throw to a faulted `Task`** at `CommandDispatcher.Dispatch`,
+  `ReplyRouter.Route` and `ForwardingRouter.Route`, because the instrumented path is `async`. The
+  exception instance and type are unchanged, every framework caller awaits, and the OFF path keeps its
+  shape — this is an accepted bounded property, recorded under [The off-guard](#the-off-guard).
 - **Telemetry attribute names are data, not API.** They may change on a semconv pin advance in a
   minor release (D4). Dashboards and alert queries that hard-code them are the application's
   responsibility to revisit; the pin bump is announced in the CHANGELOG.

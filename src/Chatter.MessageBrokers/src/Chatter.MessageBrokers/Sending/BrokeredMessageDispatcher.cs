@@ -86,10 +86,11 @@ namespace Chatter.MessageBrokers.Sending
         where TMessage : IMessage
         where TOptions : RoutingOptions, new()
         {
-            // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is the first thing evaluated and nothing below it is
-            // built when broker diagnostics are off. The off branch is the original body verbatim: no start timestamp
-            // is read, no span is started, no trace-context header is written and no async state machine is added, so
-            // an application that never opted in keeps both its performance and its wire representation.
+            // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides. The off path is the on path minus
+            // the payload: every off-path diagnostics call it reaches is a documented branch-and-return that
+            // allocates nothing, reads no start timestamp, starts no span, and writes no trace-context header, and
+            // this path itself adds no async state machine when an application has not opted into broker
+            // diagnostics.
             if (!BrokerDiagnostics.IsEnabled)
             {
                 var outbounds = Dispatch(messages, destinationPath, options, traceContextActivity: null, yieldedMessageCounter: null);

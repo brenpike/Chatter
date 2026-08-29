@@ -12,6 +12,7 @@ using Chatter.MessageBrokers.Tests.Receiving.Fakes;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -79,6 +80,11 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         /// <summary>The destination every dispatch in these tests targets.</summary>
         public const string DestinationPath = "diagnostics-destination";
 
+        /// <summary>The <see cref="DispatchTimeline"/> entry recorded the moment the Router is handed the sequence.</summary>
+        public const string RouterEnteredEntry = "router-entered";
+
+        private readonly List<string> _dispatchTimeline = new List<string>();
+        private readonly bool _routerEnumerates;
         private readonly Mock<IRouteBrokeredMessages> _messageRouter = new Mock<IRouteBrokeredMessages>();
         private readonly Mock<IForwardMessages> _forwarder = new Mock<IForwardMessages>();
         private readonly Mock<IBrokeredMessageAttributeDetailProvider> _detailProvider = new Mock<IBrokeredMessageAttributeDetailProvider>();
@@ -86,8 +92,14 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         private readonly Mock<IMessageIdGenerator> _idGenerator = new Mock<IMessageIdGenerator>();
         private readonly BrokeredMessageDispatcher _dispatcher;
 
-        public DiagnosticsSendHarness()
+        /// <param name="routerEnumerates">
+        /// Whether the Router walks the sequence it is handed. A Router that does NOT — an outbox router that
+        /// persists the sequence for later, for instance — is the case in which nothing is ever yielded.
+        /// </param>
+        public DiagnosticsSendHarness(bool routerEnumerates = true)
         {
+            _routerEnumerates = routerEnumerates;
+
             var bodyConverter = new JsonBodyConverter();
             _bodyConverterFactory.Setup(factory => factory.CreateBodyConverter(It.IsAny<string>())).Returns(bodyConverter);
             _detailProvider.Setup(provider => provider.GetMessageName(It.IsAny<Type>())).Returns(DestinationPath);
@@ -120,6 +132,12 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         /// <summary>The Messaging Infrastructure identity the Router was told to route to.</summary>
         public string RoutedInfrastructureType { get; private set; }
 
+        /// <summary>
+        /// The ordered record of Router entry and of every pull a <see cref="SinglePassEventSequence"/> built here
+        /// received, so the two can be compared for ORDER rather than merely for count.
+        /// </summary>
+        public IReadOnlyList<string> DispatchTimeline => _dispatchTimeline.ToArray();
+
         public Task SendOne() => _dispatcher.Send(new TracedCommand { Value = "one" }, DestinationPath, (TransactionContext)null, BuildSendOptions());
 
         public Task PublishBatch(int messageCount)
@@ -133,6 +151,22 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
 
             return _dispatcher.Publish(messages, (TransactionContext)null, BuildPublishOptions());
         }
+
+        /// <summary>
+        /// Builds a lazily-pulled publish batch wired to this harness's <see cref="DispatchTimeline"/>.
+        /// </summary>
+        /// <param name="messageCount">How many messages the batch yields before completing.</param>
+        /// <param name="faultAfterYieldCount">How many messages to yield before raising, or -1 to yield them all.</param>
+        public SinglePassEventSequence CreateSinglePassBatch(int messageCount, int faultAfterYieldCount = -1)
+            => new SinglePassEventSequence(messageCount, faultAfterYieldCount, _dispatchTimeline);
+
+        /// <summary>
+        /// Publishes a caller-supplied sequence, so the batch stays exactly as lazy as the caller built it all the
+        /// way into the Router. <see cref="PublishBatch"/> hands over an already-materialised list and therefore
+        /// cannot show whether anything walked the caller's own sequence.
+        /// </summary>
+        public Task PublishSequence(IEnumerable<TracedEvent> messages)
+            => _dispatcher.Publish(messages, (TransactionContext)null, BuildPublishOptions());
 
         /// <summary>The routed message's context keys, ordered, so two runs can be compared for wire equality.</summary>
         public IReadOnlyList<string> RoutedContextKeys(int messageIndex = 0)
@@ -155,9 +189,97 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         // The materialisation happens HERE, inside the Router, because that is where it happens in production.
         private void CaptureRoutedMessages(IEnumerable<OutboundBrokeredMessage> outboundMessages, TransactionContext transactionContext, string infrastructureType)
         {
+            _dispatchTimeline.Add(RouterEnteredEntry);
             RoutedSequence = outboundMessages;
             RoutedInfrastructureType = infrastructureType;
+
+            if (!_routerEnumerates)
+            {
+                return;
+            }
+
             RoutedMessages = outboundMessages.ToArray();
+        }
+    }
+
+    /// <summary>
+    /// A publish batch that is built as it is pulled, records every pull onto a shared timeline, and REFUSES a
+    /// second enumeration.
+    /// </summary>
+    /// <remarks>
+    /// This shape is what makes eager materialisation STRUCTURALLY detectable rather than merely unasserted.
+    /// Instrumentation that walked the caller's own sequence to obtain a batch count would either request its
+    /// enumerator BEFORE the Router was entered — visible as an out-of-order <see cref="DiagnosticsSendHarness.DispatchTimeline"/>
+    /// — or leave the Router's own enumeration to be the SECOND one, which this type rejects outright. It also moves
+    /// the caller's iterator side effects, so a batch that raises partway proves where the exception originated.
+    /// Declared beside <see cref="DiagnosticsSendHarness"/> because the harness is what wires it to a timeline.
+    /// </remarks>
+    public sealed class SinglePassEventSequence : IEnumerable<TracedEvent>
+    {
+        /// <summary>The timeline entry recorded each time an enumerator is asked for.</summary>
+        public const string EnumeratorRequestedEntry = "sequence-enumerator-requested";
+
+        /// <summary>The timeline entry prefix recorded per yielded message; the zero-based index is appended.</summary>
+        public const string YieldedEntryPrefix = "sequence-yielded-";
+
+        private readonly int _messageCount;
+        private readonly int _faultAfterYieldCount;
+        private readonly List<string> _dispatchTimeline;
+        private int _enumeratorRequestCount;
+        private int _yieldedCount;
+
+        internal SinglePassEventSequence(int messageCount, int faultAfterYieldCount, List<string> dispatchTimeline)
+        {
+            _messageCount = messageCount;
+            _faultAfterYieldCount = faultAfterYieldCount;
+            _dispatchTimeline = dispatchTimeline;
+
+            Fault = faultAfterYieldCount < 0
+                ? null
+                : new DiagnosticsProbeException($"The publish batch failed deliberately after {faultAfterYieldCount} message(s).");
+        }
+
+        /// <summary>The exception this batch raises mid-enumeration, or <c>null</c> when it yields its whole batch.</summary>
+        public DiagnosticsProbeException Fault { get; }
+
+        /// <summary>How many times an enumerator was asked for; anything above one has already thrown.</summary>
+        public int EnumeratorRequestCount => _enumeratorRequestCount;
+
+        /// <summary>How many messages were actually handed out.</summary>
+        public int YieldedCount => _yieldedCount;
+
+        public IEnumerator<TracedEvent> GetEnumerator()
+        {
+            _dispatchTimeline.Add(EnumeratorRequestedEntry);
+            _enumeratorRequestCount++;
+
+            // Raised HERE rather than from the iterator body below, so that a count, copy or `ToList` of this batch
+            // fails at the call itself rather than being silently tolerated until someone pulls from it.
+            if (_enumeratorRequestCount > 1)
+            {
+                throw new InvalidOperationException(
+                    "The publish batch was enumerated more than once, so something walked it besides the Router.");
+            }
+
+            return YieldMessages();
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        private IEnumerator<TracedEvent> YieldMessages()
+        {
+            for (var index = 0; index < _messageCount; index++)
+            {
+                if (_yieldedCount == _faultAfterYieldCount)
+                {
+                    throw Fault;
+                }
+
+                _dispatchTimeline.Add(YieldedEntryPrefix + index);
+                _yieldedCount++;
+
+                yield return new TracedEvent { Value = "event-" + index };
+            }
         }
     }
 

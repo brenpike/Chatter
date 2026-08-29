@@ -11,9 +11,11 @@ namespace Chatter.CQRS.Diagnostics
     /// consuming applications choose their own collector without Chatter taking a telemetry dependency.
     /// </summary>
     /// <remarks>
-    /// Diagnostics are OFF until an application opts in by attaching a .NET <c>ActivityListener</c> to
-    /// <see cref="Source"/> or by enabling the <see cref="DispatchDurationInstrumentName"/> instrument on a
-    /// .NET <c>MeterListener</c>. While off, every entry point below returns after a single boolean read and
+    /// Diagnostics are OFF until an application opts in BY NAME (<c>.AddSource("Chatter.*")</c> /
+    /// <c>.AddMeter("Chatter.*")</c>, or by naming each scope exactly; ADR-0010 D3): either by attaching a .NET
+    /// <c>ActivityListener</c> to the <see cref="ActivitySourceName"/> scope, or by enabling the
+    /// <see cref="DispatchDurationInstrumentName"/> instrument of the <see cref="MeterName"/> scope on a .NET
+    /// <c>MeterListener</c>. While off, every entry point below returns after a single boolean read and
     /// allocates nothing.
     /// INVARIANT: the off-guard is Chatter's own <see cref="ActivitySource.HasListeners"/> or
     /// <see cref="Instrument.Enabled"/> — never <see cref="Activity.Current"/>, which is non-null in any host
@@ -52,14 +54,17 @@ namespace Chatter.CQRS.Diagnostics
 
         /// <summary>
         /// Whether an application has opted into Chatter diagnostics, either by attaching a .NET
-        /// <c>ActivityListener</c> to <see cref="Source"/> or by enabling the dispatch duration histogram.
-        /// This is the outer guard a dispatch path checks before doing any diagnostics work.
+        /// <c>ActivityListener</c> to the <see cref="ActivitySourceName"/> scope or by enabling the dispatch
+        /// duration histogram of the <see cref="MeterName"/> scope. This is the outer guard a dispatch path
+        /// checks before doing any diagnostics work; it is an OR across tracing AND metrics, so enabling only
+        /// the histogram is enough to take the instrumented path with no .NET <c>ActivityListener</c> attached.
         /// </summary>
         public static bool IsEnabled => _source.HasListeners() || _dispatchDuration.Enabled;
 
         /// <summary>
         /// Starts a dispatch span for <typeparamref name="TMessage"/>, or returns <c>null</c> when no .NET
-        /// <c>ActivityListener</c> is attached to <see cref="Source"/> or the listener declined to sample.
+        /// <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/> scope or the listener
+        /// declined to sample.
         /// </summary>
         /// <typeparam name="TMessage">The compile-time type of the message being dispatched.</typeparam>
         /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
