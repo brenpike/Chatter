@@ -41,7 +41,14 @@ namespace Chatter.CQRS.Diagnostics
         /// The <see cref="ActivitySource"/> Chatter emits dispatch spans from. Exposed so a call site can run the
         /// <see cref="ActivitySource.HasListeners"/> off-guard itself before building any argument.
         /// </summary>
-        public static ActivitySource Source => _source;
+        /// <remarks>
+        /// Internal, not public: an application opts in by NAME through <c>.AddSource("Chatter.*")</c> /
+        /// <c>.AddMeter("Chatter.*")</c> (ADR-0010 D3), so <see cref="ActivitySourceName"/> is the contract and the
+        /// instance itself never was. The one need the instance served — a call site running the off-guard before
+        /// building an argument — is entirely in-assembly. Widening this later is non-breaking; narrowing it after
+        /// the package ships is not.
+        /// </remarks>
+        internal static ActivitySource Source => _source;
 
         /// <summary>
         /// Whether an application has opted into Chatter diagnostics, either by attaching a .NET

@@ -62,9 +62,6 @@
 
             /// <summary>An Event dispatched by the Message Dispatcher to zero or many handlers.</summary>
             public const string Event = "event";
-
-            /// <summary>A Query routed by the Query Dispatcher to its handler.</summary>
-            public const string Query = "query";
         }
     }
 }

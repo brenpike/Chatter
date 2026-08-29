@@ -37,9 +37,11 @@ namespace Chatter.MessageBrokers.Routing
                 return Task.CompletedTask;
             }
 
-            // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides, and the off branch is the original
-            // body verbatim: no start timestamp is read, no span is started, no trace-context header is written and no
-            // async state machine is added when an application has not opted into broker diagnostics.
+            // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides. The off path is the on path minus
+            // the payload: every off-path diagnostics call it reaches is a documented branch-and-return that
+            // allocates nothing, reads no start timestamp, starts no span, and writes no trace-context header, and
+            // this path itself adds no async state machine when an application has not opted into broker
+            // diagnostics.
             if (!BrokerDiagnostics.IsEnabled)
             {
                 try
