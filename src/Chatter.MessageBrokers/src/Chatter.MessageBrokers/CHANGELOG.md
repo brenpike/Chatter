@@ -6,6 +6,25 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-29
+
+### Added
+
+- Optional, opt-in OpenTelemetry-compatible tracing and metrics built entirely on the BCL (`System.Diagnostics.ActivitySource` and `System.Diagnostics.Metrics.Meter`) with no `OpenTelemetry.*` package dependency. The `ActivitySource` and the `Meter` are both named `Chatter.MessageBrokers`; an application opts in with `.AddSource("Chatter.*")` / `.AddMeter("Chatter.*")` on its own provider. When nothing subscribes to the source or the meter there is no cost and no change to what goes on the wire (#274).
+- W3C trace-context propagation (`traceparent` / `tracestate`) across the brokered message boundary, carried on the message context so it survives the outbox and replay. Scope is deliberately partial: trace context flows for Azure Service Bus, RabbitMQ, the EntityFramework outbox, and the Cosmos outbox. It does not flow across the SQL Service Broker `DefaultType` receive path, nor for SQL Change Feed messages, which originate from a SQL trigger with no producer to stamp them. Both gaps are pre-existing limitations that affect all headers alike and are not introduced by tracing (#274).
+
+### Changed
+
+- Bundled dependency uplift to Chatter.CQRS 0.9.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it); no behavioral change to Chatter.MessageBrokers itself beyond the additions above.
+
+## [0.14.1] - 2026-06-15
+
+### Fixed
+
+- A handler-supplied outbound `MessageId` set via `SendOptions`/`PublishOptions` now survives the handler-context Send/Publish merge and is no longer replaced by a framework-generated id (#245).
+
+## [0.14.0] - 2026-06-14
+
 ### Added
 
 - `IAtomicWriteHandle` — a tier-neutral marker abstraction the `SendToOutbox` enqueue contract is abstracted over; satisfied by the relational `IPersistanceTransaction` and the future document-tier atomic-write handle (#216).
@@ -16,9 +35,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - **BREAKING:** `IBrokeredMessageOutbox` is split into `IBrokeredMessageOutbox` (retaining only the two `SendToOutbox` overloads, with the single-message overload remaining a default-interface-method) and a new relational-only `IPollableOutboxStore` carrying the polling-dispatch trio (`GetUnprocessedMessagesFromOutbox`, `GetUnprocessedBatch`, `UpdateProcessedDate`). `IPersistanceTransaction` now derives from `IAtomicWriteHandle`, and `IUnitOfWork` is documented as relational-only (ambient-transaction tier; the document tier never implements it). Breaking for code that implements the reliability port; ordinary adapter consumers are unaffected (#216).
 - Secondary reliability facets (`IPollableOutboxStore`, `IInboxDeduplicator`) are no longer independently registered or resolved as DI services. Poll consumers obtain each secondary facet by casting the single resolved primary (`IBrokeredMessageOutbox` / `IBrokeredMessageInbox`) at the consumption site — the same pattern `OutboxProcessor` uses to obtain `IUnitOfWork`. A custom store must implement both facets on one concrete or the cast throws `InvalidCastException` at the poll site. Split-store is impossible by construction: there is exactly one resolved reliability-store instance per pair; no descriptor inspection, lifetime reconciliation, or fail-fast registration. `AddReliabilityPair` and `ReliabilityStoreLifetimeException` are deleted (#216).
 
+## [0.13.2] - 2026-06-13
+
 ### Fixed
 
-- A handler-supplied outbound `MessageId` set via `SendOptions`/`PublishOptions` now survives the handler-context Send/Publish merge and is no longer replaced by a framework-generated id (#245).
 - Per-send `SendOptions`/`PublishOptions` no longer leak into the inbound handler message context: `SendOptions.Create`/`PublishOptions.Create` now copy the inbound context so a routed/configured send does not persist its options (exchange/routing key, subject, TTL, correlation-id, etc.) into subsequent sends on the same handler context (#201).
 
 ## [0.13.1] - 2026-06-09
