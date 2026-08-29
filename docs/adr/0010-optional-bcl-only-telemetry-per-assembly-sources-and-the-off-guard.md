@@ -207,6 +207,20 @@ two ways — exactly the one-concept-two-spellings failure this decision exists 
 cause is uniform across both paths; and the wrapper is a near-constant, low-cardinality value whose
 only information is which seam failed, which the span name already carries.
 
+**AMENDED — the RECEIVE metric carries `error.type` for a failure the worker's error ladder SETTLED,
+not only for one that escaped.** The ladder deadletters or nacks a poisoned message, an exhausted
+delivery or a failed dispatch and then returns NORMALLY, so the worker's success path cannot see the
+fault. Reading the settled failure back off the per-delivery diagnostics scope — the same scope the
+attempt count travels on — is what keeps the metric truthful; without it,
+`messaging.client.operation.duration` and `messaging.client.consumed.messages` would report every
+nacked and deadlettered delivery as a SUCCESSFUL operation. That is invisible to a tracing
+application, whose span already records the failure at the ladder site itself, and it is exactly what
+a **metrics-only** application (D2 as amended, and the `IsEnabled` consequence recorded under
+[The off-guard](#the-off-guard)) has no other way to observe. The retention guard is therefore
+`BrokerDiagnostics.IsEnabled` rather than `HasListeners()`; the span calls behind it keep their own
+`HasListeners()` guards, so no span is started for an application that subscribed to instruments
+only. Pinned by `WhenReceivingWithMetricsOnly`.
+
 **Attribute names are NOT compile-time API.** They are emitted telemetry data, not a type surface.
 The expectation recorded here is that Chatter's attribute names track the pinned semconv version and
 **may change in a minor release** when the pin advances. Applications that hard-code attribute names
@@ -262,6 +276,22 @@ Rationale: a message's causal parent is its producer. Re-parenting to whatever l
 happened to be current at delivery time would sever the distributed trace at every hop. A link
 preserves the local-ambient relationship — useful when a poll loop or host activity is worth seeing —
 without detaching the message from the trace that produced it.
+
+**AMENDED — the rule holds on the HEADERLESS branch too, and holding it there costs an explicit
+ambient suppression.** A delivery carrying no usable `traceparent` starts a FRESH ROOT with the
+ambient activity attached as a link, exactly as the extracted branch does; it is not a child of the
+ambient activity. Simply not passing a parent does NOT achieve that: neither
+`StartActivity(name, kind)` nor `StartActivity(name, kind, default(ActivityContext))` produces a
+root, because `Activity.Start` falls back to `Activity.Current` whenever the created activity was
+given neither a parent id nor a parent span id, and a default `ActivityContext` supplies neither.
+Verified empirically on `net8.0` against the installed shared framework rather than assumed. Left
+unaddressed, receiver startup or a poll loop reaching the worker through `Task.Run` would make every
+headerless delivery a child of one unrelated, potentially process-lifetime host activity — the exact
+false causality this decision rejects on the extracted branch. `Activity.Current` is therefore
+CLEARED across the start call and restored when the .NET BCL
+`System.Diagnostics.ActivityListener` sampled the span out, so the sampled-out propagation fallback
+(D9) still sees the ambient context. Pinned by
+`WhenReceivingWithTracingEnabled.MustLinkAnAmbientActivityWithoutParentingToItWhenNoTraceParentIsPresent`.
 
 ### D7 — Span granularity: per dispatch call on send, per delivery on receive
 
@@ -524,13 +554,19 @@ is both a measurable per-message cost and an **observable behavior change while 
 The guard must therefore key on **Chatter's own** .NET BCL `System.Diagnostics.ActivityListener`s,
 never on ambient activity.
 
-**R3 — `Activity.Current` may be read ONLY inside a `HasListeners()` guard.** It has exactly two
-legitimate uses, both structurally unreachable when Chatter tracing is off:
+**R3 — `Activity.Current` may be read ONLY inside a `HasListeners()` guard.** It has exactly three
+legitimate uses, all structurally unreachable when Chatter tracing is off:
 
 - the **sampled-out fallback** — `StartActivity` returns `null` under head sampling while
   .NET BCL `System.Diagnostics.ActivityListener`s exist, so propagation continues from the ambient
-  context (D9); and
-- the **receive-side link** (D6).
+  context (D9);
+- the **receive-side link** (D6); and
+- the **headerless-receive ambient suppression** (D6 as amended) — the one place Chatter WRITES
+  `Activity.Current` rather than reading it, clearing it across the start call so a delivery with no
+  trace context becomes a root rather than a child of an unrelated host activity, and restoring it
+  when the span was sampled out so the first bullet still holds. The write is confined to the
+  worker's own async flow: `AsyncMethodBuilderCore.Start` restores the caller's `ExecutionContext`,
+  so the receive loop never observes it.
 
 **R4 — No hot-path shape change.** `CommandDispatcher.Dispatch` keeps its synchronous
 `Task`-returning shape (`src/Chatter.CQRS/src/Chatter.CQRS/Commands/CommandDispatcher.cs:38-59`

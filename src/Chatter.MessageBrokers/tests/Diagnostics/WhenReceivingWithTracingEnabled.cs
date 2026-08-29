@@ -113,6 +113,33 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         }
 
         [Fact]
+        public async Task MustLinkAnAmbientActivityWithoutParentingToItWhenNoTraceParentIsPresent()
+        {
+            // ADR-0010 D6 applies to a HEADERLESS delivery too. Neither StartActivity(name, kind) nor
+            // StartActivity(name, kind, default(ActivityContext)) yields a root — Activity.Start falls back to
+            // Activity.Current whenever no parent id and no parent span id were supplied — so a delivery with no
+            // trace context would silently become a child of an unrelated host activity that reached the receive
+            // loop through Task.Run. The ambient activity is a LINK here exactly as it is on the extracted branch.
+            using (var foreignInstrumentation = new ForeignInstrumentationScope())
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            using (var harness = new DiagnosticsReceiveHarness())
+            {
+                harness.Deliver(new Dictionary<string, object>());
+
+                await harness.RunUntilSettledAsync(ReceiverCall.Ack);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.Parent.Should().BeNull();
+                span.ParentSpanId.Should().Be(default(ActivitySpanId));
+                span.TraceId.Should().NotBe(foreignInstrumentation.ForeignActivity.TraceId);
+
+                var link = span.Links.Should().ContainSingle().Subject;
+                link.Context.TraceId.Should().Be(foreignInstrumentation.ForeignActivity.TraceId);
+                link.Context.SpanId.Should().Be(foreignInstrumentation.ForeignActivity.SpanId);
+            }
+        }
+
+        [Fact]
         public async Task MustStartOneSpanPerDeliveryAcrossEveryRecoveryAttempt()
         {
             const int totalAttempts = 3;

@@ -168,7 +168,7 @@ namespace Chatter.MessageBrokers.Diagnostics
 
             var activity = TraceContextPropagator.TryExtract(messageContext, out var producerContext)
                 ? _source.StartActivity(spanName, ActivityKind.Consumer, producerContext, links: BuildAmbientLinks(producerContext))
-                : _source.StartActivity(spanName, ActivityKind.Consumer);
+                : StartHeaderlessReceive(spanName);
 
             if (activity is null)
             {
@@ -307,6 +307,54 @@ namespace Chatter.MessageBrokers.Diagnostics
             }
 
             return tags;
+        }
+
+        /// <summary>
+        /// Starts the receive span for a delivery that carried no usable trace context, as a FRESH ROOT with the
+        /// ambient activity attached as a LINK rather than promoted to parent (ADR-0010 D6).
+        /// </summary>
+        /// <remarks>
+        /// WHY THE AMBIENT ACTIVITY IS SUPPRESSED RATHER THAN JUST NOT PASSED. Neither
+        /// <c>StartActivity(name, kind)</c> nor <c>StartActivity(name, kind, default(ActivityContext))</c> produces a
+        /// root: <see cref="Activity.Start"/> falls back to <see cref="Activity.Current"/> whenever the created
+        /// activity was given neither a parent id nor a parent span id, and a default <see cref="ActivityContext"/>
+        /// supplies neither. A headerless delivery would therefore become a CHILD of whatever unrelated host
+        /// activity happened to be current at delivery time — receiver startup or a poll loop can flow one in
+        /// through <c>Task.Run</c> — producing false causality, which is exactly what D6 rejects on the
+        /// extracted-parent branch. <see cref="Activity.Current"/> is cleared across the start call so the fallback
+        /// cannot fire, and restored when the .NET <c>ActivityListener</c> sampled the span out, so the sampled-out
+        /// propagation fallback still sees the ambient context (ADR-0010 D9). Reading and writing
+        /// <see cref="Activity.Current"/> here is legitimate only because the caller already ran the
+        /// <see cref="ActivitySource.HasListeners"/> guard (ADR-0010 R3), so an application that never opted in
+        /// never reaches this method.
+        /// </remarks>
+        private static Activity StartHeaderlessReceive(string spanName)
+        {
+            var ambient = Activity.Current;
+
+            if (ambient is null)
+            {
+                return _source.StartActivity(spanName, ActivityKind.Consumer);
+            }
+
+            var ambientLinks = new[] { new ActivityLink(ambient.Context) };
+            Activity activity = null;
+
+            Activity.Current = null;
+
+            try
+            {
+                activity = _source.StartActivity(spanName, ActivityKind.Consumer, default(ActivityContext), links: ambientLinks);
+            }
+            finally
+            {
+                if (Activity.Current is null)
+                {
+                    Activity.Current = ambient;
+                }
+            }
+
+            return activity;
         }
 
         /// <summary>

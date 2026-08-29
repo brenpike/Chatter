@@ -48,6 +48,19 @@ namespace Chatter.MessageBrokers.Receiving
 
             /// <summary>How many times Recovery has attempted this delivery.</summary>
             internal int Attempts;
+
+            /// <summary>
+            /// The failure the worker's error ladder SETTLED this delivery with, or <c>null</c> when the delivery
+            /// succeeded.
+            /// </summary>
+            /// <remarks>
+            /// The ladder deadletters or nacks an expected fault and then returns NORMALLY, so the worker's own
+            /// success path cannot see it. Without this the receive metric would report every nacked, deadlettered
+            /// and poisoned delivery as a successful operation, omitting the <c>error.type</c> attribute semconv
+            /// v1.30.0 requires on a failed operation — visible to a metrics-only application, which has no span to
+            /// read the failure off (ADR-0010 D4).
+            /// </remarks>
+            internal Exception Failure;
         }
 
         // INVARIANT: ADR-0010 R1/R4 — the off-guard is evaluated before any argument is constructed, and the off path
@@ -86,7 +99,12 @@ namespace Chatter.MessageBrokers.Receiving
                 try
                 {
                     await ProcessReceivedMessageWorkerAsync(messageContext, transactionContext, workerToken).ConfigureAwait(false);
-                    BrokerDiagnostics.RecordReceive(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Receive, this.MessageReceiverPath, null);
+
+                    // Returning normally does NOT mean the delivery succeeded: the worker's error ladder settles an
+                    // expected fault and swallows it, so the failure it settled with is read back off the scope here
+                    // and carried into the metric as error.type. The span already carries it, recorded at the ladder
+                    // site itself; this is what keeps the metrics-only half of the surface truthful.
+                    BrokerDiagnostics.RecordReceive(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Receive, this.MessageReceiverPath, receiveDiagnostics.Failure);
                 }
                 catch (Exception deliveryError)
                 {
@@ -158,15 +176,29 @@ namespace Chatter.MessageBrokers.Receiving
         /// <param name="settlement">One of <see cref="BrokerDiagnostics.Settlements"/>.</param>
         /// <remarks>Recorded at the ladder site that CHOOSES the settlement rather than after the settlement call:
         /// every settlement helper is best-effort and reports its own failure through the receiver's logging, so the
-        /// tag records the settlement Chatter answered the failure with.</remarks>
+        /// tag records the settlement Chatter answered the failure with.
+        /// The outer guard is <see cref="BrokerDiagnostics.IsEnabled"/> rather than the .NET
+        /// <c>ActivitySource</c> guard the span work needs, because the failure must also be RETAINED for the
+        /// metric a tracing-free application subscribed to; the span calls below carry their own
+        /// <c>HasListeners</c> guards, so an application with only a .NET <c>MeterListener</c> still starts no span
+        /// (ADR-0010 R1).</remarks>
         private static void RecordReceiveFailure(Exception exception, string settlement)
         {
-            if (!BrokerDiagnostics.Source.HasListeners())
+            if (!BrokerDiagnostics.IsEnabled)
             {
                 return;
             }
 
-            var activity = _receiveDiagnostics.Value?.Activity;
+            var receiveDiagnostics = _receiveDiagnostics.Value;
+
+            if (receiveDiagnostics is null)
+            {
+                return;
+            }
+
+            receiveDiagnostics.Failure = exception;
+
+            var activity = receiveDiagnostics.Activity;
             BrokerDiagnostics.RecordFailure(activity, exception);
             BrokerDiagnostics.RecordSettlement(activity, settlement);
         }
