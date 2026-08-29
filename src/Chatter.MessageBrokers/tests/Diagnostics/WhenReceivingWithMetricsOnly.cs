@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Tests.Receiving.Fakes;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Xunit;
@@ -19,6 +20,8 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
     /// and then returns NORMALLY, so the worker's success path cannot observe it. Reporting those deliveries
     /// without <c>error.type</c> would show a failed receive as a successful operation, which is what semconv
     /// v1.30.0 requires the attribute to prevent (ADR-0010 D4).
+    /// The fault is retained ONCE, at the worker's exception-filter choke point, so these cases pin the choke
+    /// point rather than each ladder branch's own bookkeeping (ADR-0010 D11).
     /// </remarks>
     [Collection(DiagnosticsCollection.Name)]
     public class WhenReceivingWithMetricsOnly : Testing.Core.Context
@@ -48,6 +51,45 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 await harness.RunUntilSettledAsync(ReceiverCall.Nack);
 
                 AssertErrorType(meterScope, typeof(DiagnosticsProbeException).FullName);
+            }
+        }
+
+        /// <summary>
+        /// The generic ladder branch that deadletters an EXHAUSTED delivery reaches its settlement only after the
+        /// delivery-count probe returns, so it is a different branch from the poisoned-message deadletter above.
+        /// </summary>
+        [Fact]
+        public async Task MustTagTheReceiveMetricsWithTheErrorTypeOfADeliveryTheLadderDeadletteredForExceedingTheMaximum()
+        {
+            using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
+            using (var harness = new DiagnosticsReceiveHarness(failedDispatchCount: int.MaxValue, deliveryCount: 5, maxReceiveAttempts: 1))
+            {
+                harness.Deliver(new Dictionary<string, object>());
+
+                await harness.RunUntilSettledAsync(ReceiverCall.Deadletter);
+
+                AssertErrorType(meterScope, typeof(DiagnosticsProbeException).FullName);
+            }
+        }
+
+        /// <summary>
+        /// A cancellation raised while the receiver is still running is a GENUINE failed receive, and is reported
+        /// as one. Only a cancellation observed while the worker's own token is cancelled — the receiver being torn
+        /// down underneath an in-flight delivery — is exempt, so a clean shutdown does not emit a burst of failed
+        /// receives (ADR-0010 D11). This pins the running half of that decision boundary.
+        /// </summary>
+        [Fact]
+        public async Task MustTagTheReceiveMetricsWithTheErrorTypeOfACancellationRaisedWhileTheReceiverIsStillRunning()
+        {
+            using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
+            using (var harness = new DiagnosticsReceiveHarness(deliveryCount: 1, maxReceiveAttempts: 10))
+            {
+                harness.OnDispatch = _ => throw new OperationCanceledException("The handler cancelled its own work.");
+                harness.Deliver(new Dictionary<string, object>());
+
+                await harness.RunUntilSettledAsync(ReceiverCall.Nack);
+
+                AssertErrorType(meterScope, typeof(OperationCanceledException).FullName);
             }
         }
 

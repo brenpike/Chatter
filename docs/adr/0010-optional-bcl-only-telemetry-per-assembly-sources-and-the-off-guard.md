@@ -523,6 +523,80 @@ Noted separately and explicitly **not in scope**: `QueryDispatcher` already disp
 pre-existing DLR dependency and a pre-existing AOT/trimming constraint. This ADR neither introduces
 nor fixes it.
 
+### D11 — The receive failure is retained at ONE choke point, and a shutdown-cancelled delivery is not a failure
+
+**The problem this replaces.** D4 as amended requires the receive metric to carry `error.type` for a
+failure the worker's error ladder SETTLED. That was first implemented by calling a
+`RecordReceiveFailure(exception, settlement)` helper from each ladder branch that settles. Three
+review passes then found the same defect three times, each naming a different branch that had been
+missed — poison/deadletter/nack first, then the `CriticalReceiverException` branch and the branch
+where the delivery-count probe itself throws, with the two shutdown swallows
+(`OperationCanceledException` / `ObjectDisposedException`) sitting un-retained behind them. The
+finding was never "this branch is wrong"; it was **"a ladder branch can forget to retain"**, and
+adding a fourth, fifth and sixth call site answers the instances rather than the class.
+
+**The decision: retain in an exception FILTER on the worker's processing try block.** A single
+`catch (Exception deliveryFault) when (RetainReceiveFailure(deliveryFault, workerToken))` clause is
+placed FIRST in `ProcessReceivedMessageWorkerAsync`'s ladder
+(`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs`), and
+`RetainReceiveFailure` ALWAYS returns `false`.
+
+Why that is the choke point rather than one more call site:
+
+- A C# exception filter runs in the **first pass** of two-pass exception handling — before the stack
+  unwinds and before **any** catch body executes. Every fault that leaves the processing block is
+  therefore observed *before* the ladder selects a branch, so retention happens whether the fault is
+  settled, swallowed, published to `_workerCriticalFault`, or escapes the ladder entirely.
+- Because the filter always returns `false`, **no exception is ever admitted by it**: catch-clause
+  ordering, settlement choice, swallow semantics, the lifecycle CAS, the teardown gate, disposition
+  monotonicity and the single-shot disposal claim are all untouched. The receiver's control flow is
+  byte-for-byte what it was; the only addition is an observation.
+- The retention site is no longer a branch, so **a branch added later cannot forget it**. Answering
+  the acceptance test in [Closed-by-construction acceptance test](#closed-by-construction-acceptance-test):
+  this does not enumerate the branches that must retain — it removes the branch as the retention key.
+
+The ladder sites keep recording only what the choke point cannot know: the settlement Chatter
+ANSWERED the fault with, through `RecordReceiveSettlement`. A branch therefore has one telemetry
+obligation instead of two, and forgetting it costs a `messaging.settlement` tag on a span — never a
+failed receive reported as a success.
+
+**Retention stays guarded by `BrokerDiagnostics.IsEnabled`, not by `Source.HasListeners()`**, exactly
+as D4 as amended requires: a metrics-only application must retain the fault too. The span call behind
+that guard (`BrokerDiagnostics.RecordFailure`) carries its own `HasListeners()` guard, so an
+application with only a .NET `MeterListener` still starts no span. R1 and R4 are unaffected: a filter
+clause is metadata on the success path, it allocates nothing, it adds no async state machine, and it
+is reached only when a delivery has ALREADY faulted.
+
+**A shutdown-cancelled delivery is NOT a failed receive.** When the receiver is torn down underneath
+an in-flight delivery, the worker observes `OperationCanceledException` or `ObjectDisposedException`
+with its own token cancelled. `IsShutdownCancellation` exempts exactly that case from retention, and
+the exemption is DELIBERATE rather than incidental — it is a named predicate a reader can see was
+decided:
+
+- Recording it would make **every clean shutdown emit a burst of failed receives**, one per delivery
+  in flight, so an error-rate dashboard would spike on every deployment. A metric that fires on
+  routine operations is worse than one that stays quiet, because it trains its readers to ignore it.
+- The lost signal is small and is not lost from the system: the receiver already logs the shutdown
+  path, and a delivery cancelled at teardown is not settled as failed either — it is left for
+  redelivery, which is normal at-least-once behavior, not an error.
+- The predicate deliberately **mirrors the ladder's own shutdown-swallow filters**
+  (`when (workerToken.IsCancellationRequested)`), so "the ladder swallowed this as benign teardown"
+  and "diagnostics did not count it as a failure" are one condition, not two that can drift apart.
+- The exemption is keyed on the token, not on the exception type alone. An `OperationCanceledException`
+  raised while the receiver is still running is a GENUINE failure, is settled by the ladder as one,
+  and IS retained. Pinned by
+  `WhenReceivingWithMetricsOnly.MustTagTheReceiveMetricsWithTheErrorTypeOfACancellationRaisedWhileTheReceiverIsStillRunning`.
+
+**Recorded test-coverage limitation.** The two branches the last review named — the
+`CriticalReceiverException` branch and the branch where the delivery-count probe throws — are covered
+by CONSTRUCTION but are NOT pinned by a test, because neither is expressible through
+`DiagnosticsReceiveHarness` as it stands: the critical branch records no settlement, so the harness's
+settle-then-drain wait has nothing to wait on, and the in-memory Messaging Infrastructure's
+`MessageDeliveryCountAsync` cannot be made to throw. Nor is the shutdown-cancellation exemption
+itself pinned, for the same reason — the harness owns the loop's cancellation and cancels it only
+AFTER a settlement. This is a harness gap, recorded here rather than papered over, and the closure
+argument above rests on the filter's first-pass semantics rather than on those tests.
+
 ## The off-guard
 
 This section is the acceptance criterion for the whole change. Four rules, all four load-bearing.
@@ -728,6 +802,12 @@ assumed.
   adds no `MessageContext` key. The existing completeness gate keeps doing its job unchanged.
 - **"Chatter emits `messaging.operation` here and `messaging.operation.type` there."** Impossible by
   D4's single-pin rule plus a single constants home: there is one spelling per concept, defined once.
+- **"A new worker error-ladder branch settled a delivery and the receive metric still reported it as
+  a success."** Impossible by D11: the ladder branch is no longer the retention key. The fault is
+  retained in an exception filter that runs in the first pass, before any branch is selected, so a
+  branch cannot be the thing that forgets. The class is eliminated by moving the observation point,
+  not by extending the set of branches that call a retain helper — which is what the three preceding
+  review passes each did, and which is why each one spawned the next.
 
 **AMENDED — there are TWO things this design does not close by construction, not one.** The first is
 per-emit-site guard discipline (R1): a future emit site could be written without its `HasListeners()`
@@ -738,6 +818,14 @@ messaging-infrastructure dispatcher the batch count depends on (D7 as amended). 
 seam and contract-tested for every in-repo implementation, but a runtime guard was declined on
 off-path allocation cost, so an out-of-repo implementation can still break it. Both are obligations,
 not guarantees, and neither is claimed as closed here.
+
+**A THIRD was recorded and has since been CLOSED.** Per-branch failure retention in the receive
+error ladder was an obligation of exactly this shape — every settling branch had to remember to call
+a retain helper — and three review passes each found a different branch that had not. D11 closes it
+by construction: retention moved off the branch and into an exception filter that runs before any
+branch is selected. It is listed here because the pattern is the reusable lesson — an obligation
+distributed over N sites is a defect class waiting to be enumerated one review comment at a time, and
+the fix is to find the seam every site already crosses, not to complete the set.
 
 ## Non-goals
 

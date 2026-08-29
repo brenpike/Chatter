@@ -50,15 +50,18 @@ namespace Chatter.MessageBrokers.Receiving
             internal int Attempts;
 
             /// <summary>
-            /// The failure the worker's error ladder SETTLED this delivery with, or <c>null</c> when the delivery
-            /// succeeded.
+            /// The fault that ended this delivery, or <c>null</c> when the delivery succeeded or ended in a
+            /// shutdown cancellation.
             /// </summary>
             /// <remarks>
-            /// The ladder deadletters or nacks an expected fault and then returns NORMALLY, so the worker's own
+            /// The worker's error ladder settles an expected fault and then returns NORMALLY, so the worker's own
             /// success path cannot see it. Without this the receive metric would report every nacked, deadlettered
             /// and poisoned delivery as a successful operation, omitting the <c>error.type</c> attribute semconv
             /// v1.30.0 requires on a failed operation — visible to a metrics-only application, which has no span to
             /// read the failure off (ADR-0010 D4).
+            /// Written ONLY by <see cref="RetainReceiveFailure"/>, from the exception filter that is the single
+            /// choke point every ladder branch passes through, so no branch can settle a fault without retaining it
+            /// (ADR-0010 D11).
             /// </remarks>
             internal Exception Failure;
         }
@@ -101,9 +104,10 @@ namespace Chatter.MessageBrokers.Receiving
                     await ProcessReceivedMessageWorkerAsync(messageContext, transactionContext, workerToken).ConfigureAwait(false);
 
                     // Returning normally does NOT mean the delivery succeeded: the worker's error ladder settles an
-                    // expected fault and swallows it, so the failure it settled with is read back off the scope here
-                    // and carried into the metric as error.type. The span already carries it, recorded at the ladder
-                    // site itself; this is what keeps the metrics-only half of the surface truthful.
+                    // expected fault and swallows it, so the fault retained at the worker's exception-filter choke
+                    // point is read back off the scope here and carried into the metric as error.type. The span
+                    // already carries it, recorded at that same choke point; this is what keeps the metrics-only
+                    // half of the surface truthful.
                     BrokerDiagnostics.RecordReceive(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Receive, this.MessageReceiverPath, receiveDiagnostics.Failure);
                 }
                 catch (Exception deliveryError)
@@ -158,6 +162,12 @@ namespace Chatter.MessageBrokers.Receiving
         /// Records how the delivery in flight was settled, on its receive span.
         /// </summary>
         /// <param name="settlement">One of <see cref="BrokerDiagnostics.Settlements"/>.</param>
+        /// <remarks>Called at the ladder site that CHOOSES the settlement rather than after the settlement call:
+        /// every settlement helper is best-effort and reports its own failure through the receiver's logging, so
+        /// the tag records the settlement Chatter ANSWERED with. A ladder site records only its settlement — the
+        /// fault itself is recorded and retained once, at the worker's exception-filter choke point
+        /// (<see cref="RetainReceiveFailure"/>), so a branch cannot report a settlement without a fault or a fault
+        /// without a settlement by forgetting one of two calls (ADR-0010 D11).</remarks>
         private static void RecordReceiveSettlement(string settlement)
         {
             if (!BrokerDiagnostics.Source.HasListeners())
@@ -169,38 +179,62 @@ namespace Chatter.MessageBrokers.Receiving
         }
 
         /// <summary>
-        /// Records the failure that ended the delivery in flight together with the settlement Chatter answered it
-        /// with, on its receive span.
+        /// Retains the fault that ended the delivery in flight and records it on that delivery's receive span.
         /// </summary>
-        /// <param name="exception">The failure that ended the delivery.</param>
-        /// <param name="settlement">One of <see cref="BrokerDiagnostics.Settlements"/>.</param>
-        /// <remarks>Recorded at the ladder site that CHOOSES the settlement rather than after the settlement call:
-        /// every settlement helper is best-effort and reports its own failure through the receiver's logging, so the
-        /// tag records the settlement Chatter answered the failure with.
-        /// The outer guard is <see cref="BrokerDiagnostics.IsEnabled"/> rather than the .NET
-        /// <c>ActivitySource</c> guard the span work needs, because the failure must also be RETAINED for the
-        /// metric a tracing-free application subscribed to; the span calls below carry their own
-        /// <c>HasListeners</c> guards, so an application with only a .NET <c>MeterListener</c> still starts no span
-        /// (ADR-0010 R1).</remarks>
-        private static void RecordReceiveFailure(Exception exception, string settlement)
+        /// <param name="deliveryFault">The fault leaving the worker's processing try block.</param>
+        /// <param name="workerToken">The worker's cancellation token, which identifies a shutdown cancellation.</param>
+        /// <returns>Always <c>false</c>, so the exception filter this runs in NEVER admits the exception.</returns>
+        /// <remarks>
+        /// INVARIANT: this is the ONE place the diagnostics half observes a delivery fault, and it is invoked from
+        /// an exception FILTER on the worker's processing try block. A filter runs in the first pass of exception
+        /// handling — before the stack unwinds and before any catch body — so every fault leaving that block is
+        /// retained BEFORE the error ladder chooses a branch. Retention therefore cannot be forgotten by a ladder
+        /// branch, present or future; a branch records only the settlement it CHOSE, through
+        /// <see cref="RecordReceiveSettlement"/> (ADR-0010 D11).
+        /// The outer guard is <see cref="BrokerDiagnostics.IsEnabled"/> rather than the .NET <c>ActivitySource</c>
+        /// guard the span work needs, because the fault must also be RETAINED for the metric a tracing-free
+        /// application subscribed to; <see cref="BrokerDiagnostics.RecordFailure"/> carries its own
+        /// <c>HasListeners</c> guard, so an application with only a .NET <c>MeterListener</c> still starts no span
+        /// (ADR-0010 R1). Nothing is allocated and no state machine is entered on the opted-out path, and the
+        /// filter is reached only when a delivery has already faulted.
+        /// </remarks>
+        private static bool RetainReceiveFailure(Exception deliveryFault, CancellationToken workerToken)
         {
-            if (!BrokerDiagnostics.IsEnabled)
+            if (!BrokerDiagnostics.IsEnabled || IsShutdownCancellation(deliveryFault, workerToken))
             {
-                return;
+                return false;
             }
 
             var receiveDiagnostics = _receiveDiagnostics.Value;
 
             if (receiveDiagnostics is null)
             {
-                return;
+                return false;
             }
 
-            receiveDiagnostics.Failure = exception;
+            receiveDiagnostics.Failure = deliveryFault;
+            BrokerDiagnostics.RecordFailure(receiveDiagnostics.Activity, deliveryFault);
 
-            var activity = receiveDiagnostics.Activity;
-            BrokerDiagnostics.RecordFailure(activity, exception);
-            BrokerDiagnostics.RecordSettlement(activity, settlement);
+            return false;
         }
+
+        /// <summary>
+        /// Decides whether <paramref name="deliveryFault"/> is the receiver being shut down underneath an in-flight
+        /// delivery rather than a failed receive.
+        /// </summary>
+        /// <remarks>
+        /// DECIDED, not incidental (ADR-0010 D11): a shutdown-cancelled delivery is NOT a failed receive, so it is
+        /// neither retained for <c>error.type</c> nor marked on the span. Every deployment would otherwise emit a
+        /// burst of failed receives — one per delivery in flight — and the resulting error-rate spike on every
+        /// clean restart is worse than the lost cancellation signal, which the receiver already logs.
+        /// The predicate deliberately MIRRORS the worker error ladder's own shutdown-swallow filters
+        /// (<c>catch (OperationCanceledException) when (workerToken.IsCancellationRequested)</c> and its
+        /// <c>ObjectDisposedException</c> twin), so "the ladder swallowed this as benign teardown" and "diagnostics
+        /// did not count this as a failure" are one and the same condition. A cancellation raised while the worker
+        /// token is NOT cancelled is a genuine failure, is settled by the ladder as one, and IS retained.
+        /// </remarks>
+        private static bool IsShutdownCancellation(Exception deliveryFault, CancellationToken workerToken)
+            => workerToken.IsCancellationRequested
+            && (deliveryFault is OperationCanceledException || deliveryFault is ObjectDisposedException);
     }
 }

@@ -848,6 +848,16 @@ namespace Chatter.MessageBrokers.Receiving
                 await ProcessMessageAsync(messageContext, transactionContext, workerToken);
                 _logger.LogTrace("Message processed successfully");
             }
+            // INVARIANT: THE single choke point at which the diagnostics half observes a delivery fault. A C#
+            // exception FILTER runs during the FIRST PASS of exception handling — before the stack unwinds and
+            // before ANY catch body below executes — so every fault that leaves the try above is observed here
+            // regardless of which ladder branch settles it, including branches added later. RetainReceiveFailure
+            // ALWAYS returns false, so this clause never admits an exception: clause ordering, settlement choice,
+            // swallow semantics and the concurrency invariants of the ladder below are byte-for-byte unchanged.
+            catch (Exception deliveryFault) when (RetainReceiveFailure(deliveryFault, workerToken))
+            {
+                throw; // unreachable: the filter above never admits.
+            }
             catch (CriticalReceiverException e)
             {
                 // First writer wins: publish to the loop-observed fault field so the loop stops and the existing
@@ -873,7 +883,7 @@ namespace Chatter.MessageBrokers.Receiving
             catch (PoisonedMessageException e)
             {
                 _logger.LogError(e, "Poisoned message received. Deadlettering.");
-                RecordReceiveFailure(e, BrokerDiagnostics.Settlements.Deadletter);
+                RecordReceiveSettlement(BrokerDiagnostics.Settlements.Deadletter);
                 await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken);
             }
             catch (Exception e)
@@ -896,7 +906,7 @@ namespace Chatter.MessageBrokers.Receiving
                     var deliveryCount = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, workerToken), workerToken);
                     if (deliveryCount >= _options.MaxReceiveAttempts)
                     {
-                        RecordReceiveFailure(e, BrokerDiagnostics.Settlements.Deadletter);
+                        RecordReceiveSettlement(BrokerDiagnostics.Settlements.Deadletter);
                         if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken))
                         {
                             await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
@@ -904,7 +914,7 @@ namespace Chatter.MessageBrokers.Receiving
                     }
                     else
                     {
-                        RecordReceiveFailure(e, BrokerDiagnostics.Settlements.Nack);
+                        RecordReceiveSettlement(BrokerDiagnostics.Settlements.Nack);
                         await TryNackWithRecoveryAsync(messageContext, transactionContext, workerToken);
                     }
                 }
