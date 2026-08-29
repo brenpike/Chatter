@@ -136,11 +136,20 @@ namespace Chatter.Testing.Core.Diagnostics
     /// measurement published while the scope is open. Safe to nest; a <see cref="Meter"/> supports any number
     /// of attached .NET listeners and each scope detaches only its own.
     /// </summary>
+    /// <remarks>
+    /// <see cref="MeterListener.Dispose"/> alone does NOT unsubscribe the listener from the instruments it
+    /// enabled via <see cref="MeterListener.EnableMeasurementEvents(Instrument, object)"/> — the instrument
+    /// stays <see cref="Instrument.Enabled"/> and keeps delivering measurements to this scope after disposal.
+    /// This type therefore records every instrument it enables and calls
+    /// <see cref="MeterListener.DisableMeasurementEvents(Instrument)"/> for each one before disposing the
+    /// underlying .NET <see cref="MeterListener"/>.
+    /// </remarks>
     public sealed class RecordingMeterScope : IDisposable
     {
         private readonly HashSet<string> _meterNames;
         private readonly MeterListener _netMeterListener;
         private readonly List<RecordedMeasurement> _measurements = new List<RecordedMeasurement>();
+        private readonly List<Instrument> _enabledInstruments = new List<Instrument>();
         private readonly object _sync = new object();
         private bool _disposed;
 
@@ -196,6 +205,18 @@ namespace Chatter.Testing.Core.Diagnostics
             }
 
             _disposed = true;
+
+            Instrument[] enabledInstruments;
+            lock (_sync)
+            {
+                enabledInstruments = _enabledInstruments.ToArray();
+            }
+
+            foreach (var instrument in enabledInstruments)
+            {
+                _netMeterListener.DisableMeasurementEvents(instrument);
+            }
+
             _netMeterListener.Dispose();
         }
 
@@ -204,6 +225,11 @@ namespace Chatter.Testing.Core.Diagnostics
             if (_meterNames.Contains(instrument.Meter.Name))
             {
                 netMeterListener.EnableMeasurementEvents(instrument);
+
+                lock (_sync)
+                {
+                    _enabledInstruments.Add(instrument);
+                }
             }
         }
 

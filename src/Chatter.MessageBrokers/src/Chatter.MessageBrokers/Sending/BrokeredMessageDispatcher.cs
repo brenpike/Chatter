@@ -3,11 +3,13 @@ using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Options;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Sending
@@ -83,12 +85,96 @@ namespace Chatter.MessageBrokers.Sending
         where TMessage : IMessage
         where TOptions : RoutingOptions, new()
         {
-            var outbounds = Dispatch(messages, destinationPath, options);
-            options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
-            return _messageRouter.Route(outbounds, transactionContext, (string)infraType);
+            // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is the first thing evaluated and nothing below it is
+            // built when broker diagnostics are off. The off branch is the original body verbatim: no start timestamp
+            // is read, no span is started, no trace-context header is written and no async state machine is added, so
+            // an application that never opted in keeps both its performance and its wire representation.
+            if (!BrokerDiagnostics.IsEnabled)
+            {
+                var outbounds = Dispatch(messages, destinationPath, options, traceContextActivity: null);
+                options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
+                return _messageRouter.Route(outbounds, transactionContext, (string)infraType);
+            }
+
+            return DispatchWithDiagnostics(messages, transactionContext, options, destinationPath);
         }
 
-        IEnumerable<OutboundBrokeredMessage> Dispatch<TMessage, TOptions>(IEnumerable<TMessage> messages, string destinationPath, TOptions options)
+        /// <summary>
+        /// Dispatches with one send span covering the whole call. The span is started HERE, in the eager overload,
+        /// because the overload below is lazy (ADR-0010 D7: one span per dispatch call, tagged with the batch count,
+        /// since all N messages share one context dictionary and a per-message trace context is not representable).
+        /// </summary>
+        private async Task DispatchWithDiagnostics<TMessage, TOptions>(IEnumerable<TMessage> messages, TransactionContext transactionContext, TOptions options, string destinationPath)
+        where TMessage : IMessage
+        where TOptions : RoutingOptions, new()
+        {
+            var batch = ResolveCountableBatch(messages, out var messageCount);
+            options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
+
+            // The Messaging Infrastructure the routing options name is the only messaging-system identity this package
+            // has; when the options carry none the tag is left unset rather than given an invented value.
+            var messagingSystem = (string)infraType;
+            var startTimestamp = Stopwatch.GetTimestamp();
+            Exception failure = null;
+
+            using (var sendActivity = BrokerDiagnostics.StartSend(messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationPath, messageCount))
+            {
+                // ADR-0010 D9/R3: head sampling makes StartSend return null while Chatter .NET ActivityListeners are
+                // still attached, and a sampled-out span must not break the trace for a downstream hop that samples
+                // independently - so propagation falls back to the ambient context. Reading Activity.Current is legal
+                // ONLY here, inside Chatter's own HasListeners guard; it is never the off-guard itself (ADR-0010 R2),
+                // because it is non-null in any host running unrelated instrumentation.
+                var traceContextActivity = sendActivity ?? (BrokerDiagnostics.Source.HasListeners() ? Activity.Current : null);
+
+                try
+                {
+                    await _messageRouter.Route(Dispatch(batch, destinationPath, options, traceContextActivity), transactionContext, messagingSystem).ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    failure = e;
+                    BrokerDiagnostics.RecordFailure(sendActivity, e);
+                    throw;
+                }
+                finally
+                {
+                    BrokerDiagnostics.RecordSend(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationPath, messageCount, failure);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Resolves the batch the send span counts. Reached only once the off-guard has passed: a
+        /// sequence that is not already a collection has to be walked to be counted, so it is walked once here and the
+        /// walked result is what the lazy overload below consumes. An application that has not opted into broker
+        /// diagnostics keeps the caller's own sequence, with its original enumeration timing, untouched.
+        /// </summary>
+        private static IEnumerable<TMessage> ResolveCountableBatch<TMessage>(IEnumerable<TMessage> messages, out int messageCount)
+        {
+            if (messages is null)
+            {
+                messageCount = 0;
+                return null;
+            }
+
+            if (messages is IReadOnlyCollection<TMessage> batch)
+            {
+                messageCount = batch.Count;
+                return messages;
+            }
+
+            var walkedMessages = new List<TMessage>(messages);
+            messageCount = walkedMessages.Count;
+            return walkedMessages;
+        }
+
+        // INVARIANT: this overload is a `yield return` ITERATOR. Its body does not run when it is called - it runs when
+        // the result is ENUMERATED, which happens inside the router, and for an outbox-routed send inside the outbox's
+        // own enumeration. That is why the span is started by the eager overload above and the activity is passed in
+        // EXPLICITLY: an Activity.Current lookup here would read whatever activity happened to be current at
+        // ENUMERATION time rather than at dispatch time, and would violate ADR-0010 R2. A future change that makes
+        // this method eager must keep passing the activity explicitly rather than reaching for ambient state.
+        IEnumerable<OutboundBrokeredMessage> Dispatch<TMessage, TOptions>(IEnumerable<TMessage> messages, string destinationPath, TOptions options, Activity traceContextActivity)
         where TMessage : IMessage
         where TOptions : RoutingOptions, new()
         {
@@ -125,6 +211,15 @@ namespace Chatter.MessageBrokers.Sending
                 {
                     outbound = new OutboundBrokeredMessage(options.MessageId, message, options.MessageContext, destination, converter);
                 }
+
+                // The trace context is written at OutboundBrokeredMessage CREATION rather than at the router:
+                // IRouteBrokeredMessages is DI-replaced by the outbox routers, so writing it at the router would drop
+                // trace context for every outbox-routed send. Written here it is already inside the MessageContext the
+                // outbox persists, so it survives store-and-forward (ADR-0010 D5 and the ADR's Propagation scope).
+                // It OVERWRITES: MergeSendOptionsWithMessageContext copies an inbound context outward, so a stale
+                // upstream traceparent must not ride out on this hop. `traceContextActivity` is null whenever broker
+                // diagnostics are off, and Inject then writes nothing at all (ADR-0010 R2).
+                TraceContextPropagator.Inject(traceContextActivity, outbound.MessageContext);
 
                 yield return outbound;
             }

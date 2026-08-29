@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Recovery;
 using Microsoft.Extensions.Logging;
@@ -15,7 +16,7 @@ namespace Chatter.MessageBrokers.Receiving
     /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
-    public class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage>, IReceiverStartupSignal where TMessage : class, IMessage
+    public partial class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage>, IReceiverStartupSignal where TMessage : class, IMessage
     {
         private IMessagingInfrastructureReceiver _infrastructureReceiver;
         private readonly IMessagingInfrastructureProvider _infrastructureProvider;
@@ -817,7 +818,7 @@ namespace Chatter.MessageBrokers.Receiving
             // worker could hit a disposed source during shutdown. This keeps the worker's cancellation-swallow filters
             // valid through teardown.
             var workerToken = _messageReceiverLoopTokenSource.Token;
-            var worker = Task.Run(() => ProcessReceivedMessageWorkerAsync(messageContext, transactionContext, workerToken));
+            var worker = Task.Run(() => RunProcessingWorkerAsync(messageContext, transactionContext, workerToken));
 
             lock (_inFlightTasksLock)
             {
@@ -872,6 +873,7 @@ namespace Chatter.MessageBrokers.Receiving
             catch (PoisonedMessageException e)
             {
                 _logger.LogError(e, "Poisoned message received. Deadlettering.");
+                RecordReceiveFailure(e, BrokerDiagnostics.Settlements.Deadletter);
                 await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken);
             }
             catch (Exception e)
@@ -894,6 +896,7 @@ namespace Chatter.MessageBrokers.Receiving
                     var deliveryCount = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, workerToken), workerToken);
                     if (deliveryCount >= _options.MaxReceiveAttempts)
                     {
+                        RecordReceiveFailure(e, BrokerDiagnostics.Settlements.Deadletter);
                         if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken))
                         {
                             await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
@@ -901,6 +904,7 @@ namespace Chatter.MessageBrokers.Receiving
                     }
                     else
                     {
+                        RecordReceiveFailure(e, BrokerDiagnostics.Settlements.Nack);
                         await TryNackWithRecoveryAsync(messageContext, transactionContext, workerToken);
                     }
                 }
@@ -1024,12 +1028,14 @@ namespace Chatter.MessageBrokers.Receiving
             using var localTransaction = _infrastructureReceiver.CreateLocalTransaction(transactionContext);
             await _recoveryStrategy.ExecuteAsync(async () =>
                 {
+                    CountReceiveAttempt();
                     await DispatchReceivedMessageAsync(brokeredMessagePayload, messageContext, receiverTokenSource);
                     return true;
                 }, receiverTokenSource);
 
             if (!receiverTokenSource.IsCancellationRequested)
             {
+                RecordReceiveSettlement(BrokerDiagnostics.Settlements.Ack);
                 if (await TryAckWithRecoveryAsync(messageContext, transactionContext, receiverTokenSource))
                 {
                     localTransaction?.Complete();
@@ -1037,6 +1043,7 @@ namespace Chatter.MessageBrokers.Receiving
             }
             else
             {
+                RecordReceiveSettlement(BrokerDiagnostics.Settlements.Nack);
                 await TryNackWithRecoveryAsync(messageContext, transactionContext, receiverTokenSource);
             }
         }

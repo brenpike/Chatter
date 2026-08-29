@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Reflection;
@@ -37,8 +36,6 @@ namespace Chatter.CQRS.Diagnostics
         private static readonly ActivitySource _source = new ActivitySource(ActivitySourceName, _telemetryVersion);
         private static readonly Meter _meter = new Meter(MeterName, _telemetryVersion);
         private static readonly Histogram<double> _dispatchDuration = _meter.CreateHistogram<double>(DispatchDurationInstrumentName, "s", "Duration of a Chatter CQRS dispatch.");
-        private static readonly ConcurrentDictionary<Type, string> _spanNamesByMessageType = new ConcurrentDictionary<Type, string>();
-        private static readonly Func<Type, string> _spanNameFactory = BuildSpanName;
 
         /// <summary>
         /// The <see cref="ActivitySource"/> Chatter emits dispatch spans from. Exposed so a call site can run the
@@ -73,28 +70,6 @@ namespace Chatter.CQRS.Diagnostics
         }
 
         /// <summary>
-        /// Starts a dispatch span for a message whose type is only known at run time, or returns <c>null</c> when
-        /// no .NET <c>ActivityListener</c> is attached to <see cref="Source"/> or the listener declined to sample.
-        /// </summary>
-        /// <param name="messageType">The run-time type of the message being dispatched.</param>
-        /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
-        /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
-        public static Activity StartDispatch(Type messageType, string dispatchKind)
-        {
-            if (!_source.HasListeners())
-            {
-                return null;
-            }
-
-            if (messageType is null)
-            {
-                throw new ArgumentNullException(nameof(messageType));
-            }
-
-            return StartDispatchActivity(_spanNamesByMessageType.GetOrAdd(messageType, _spanNameFactory), messageType.FullName, dispatchKind);
-        }
-
-        /// <summary>
         /// Records the duration of a dispatch of <typeparamref name="TMessage"/>, in seconds.
         /// </summary>
         /// <typeparam name="TMessage">The compile-time type of the message that was dispatched.</typeparam>
@@ -109,28 +84,6 @@ namespace Chatter.CQRS.Diagnostics
             }
 
             RecordDispatchDuration(startTimestamp, DispatchNames<TMessage>.MessageTypeName, dispatchKind, errorType);
-        }
-
-        /// <summary>
-        /// Records the duration of a dispatch of a message whose type is only known at run time, in seconds.
-        /// </summary>
-        /// <param name="startTimestamp">The <see cref="Stopwatch.GetTimestamp"/> value read when dispatch began.</param>
-        /// <param name="messageType">The run-time type of the message that was dispatched.</param>
-        /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
-        /// <param name="errorType">The value for <see cref="ChatterTelemetryTags.ErrorType"/>, or <c>null</c> when the dispatch succeeded.</param>
-        public static void RecordDispatchDuration(long startTimestamp, Type messageType, string dispatchKind, string errorType)
-        {
-            if (!_dispatchDuration.Enabled)
-            {
-                return;
-            }
-
-            if (messageType is null)
-            {
-                throw new ArgumentNullException(nameof(messageType));
-            }
-
-            RecordDispatchDuration(startTimestamp, messageType.FullName, dispatchKind, errorType);
         }
 
         private static Activity StartDispatchActivity(string spanName, string messageTypeName, string dispatchKind)
