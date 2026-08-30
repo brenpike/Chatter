@@ -907,7 +907,13 @@ namespace Chatter.MessageBrokers.Receiving
                     if (deliveryCount >= _options.MaxReceiveAttempts)
                     {
                         RecordReceiveSettlement(BrokerDiagnostics.Settlements.Deadletter);
-                        if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken))
+                        var deadletterResult = await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken);
+
+                        // TWO independent conditions, and they are deliberately not one. The delivery must have been
+                        // SETTLED — a delivery still eligible for redelivery has not exhausted anything yet — AND the
+                        // infrastructure must not already own the Error Queue write, or the recovery action would put
+                        // a SECOND copy of the same delivery in the same Error Queue.
+                        if (deadletterResult.IsSettled && !_infrastructureReceiver.WritesToErrorQueue)
                         {
                             await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
                         }
@@ -1046,7 +1052,13 @@ namespace Chatter.MessageBrokers.Receiving
             if (!receiverTokenSource.IsCancellationRequested)
             {
                 RecordReceiveSettlement(BrokerDiagnostics.Settlements.Ack);
-                if (await TryAckWithRecoveryAsync(messageContext, transactionContext, receiverTokenSource))
+
+                // INVARIANT: the local transaction is completed for a SETTLED acknowledgement ONLY. IsSettled — not
+                // "the outcome was not Failed" — is what preserves the former `false` reading exactly across the
+                // NotRequired/Failed split: an infrastructure with nothing to acknowledge has not acknowledged
+                // anything, so committing the local transaction against it would claim a settlement that never
+                // happened.
+                if ((await TryAckWithRecoveryAsync(messageContext, transactionContext, receiverTokenSource)).IsSettled)
                 {
                     localTransaction?.Complete();
                 }
@@ -1058,48 +1070,67 @@ namespace Chatter.MessageBrokers.Receiving
             }
         }
 
-        // INVARIANT: THE single place a settle-path fault is SWALLOWED INTO A BOOL. Every "try to settle, report
-        // success as a bool, never rethrow" path routes through here, so the swallow — and the diagnostics retention
+        // INVARIANT: THE single place a settle-path failure is SWALLOWED INTO A RETURN VALUE. Every "try to settle,
+        // report the outcome, never rethrow" path routes through here, so the swallow — and the diagnostics retention
         // that must accompany it — exists once rather than once per settle path. This is deliberately the twin of the
         // exception FILTER on the worker's processing try block: the filter observes every fault that LEAVES that
-        // block, and a fault converted to `false` here never does, so this is the only other point at which a
-        // delivery's fault can be lost. A settle path added later cannot forget the retention, because it cannot
-        // perform the swallow itself (ADR-0010 D11).
-        // Control flow is byte-for-byte what each per-settlement method did before: the same broad catch, the same
-        // LogError, the same `false`. Only the retention is new.
-        private async Task<bool> TrySettleWithRecoveryAsync(Func<Task<bool>> settle, string failureDescription, CancellationToken settlementToken)
+        // block, and a failure converted to a returned SettlementResult here never does, so this is the only other
+        // point at which a delivery's failure can be lost. A settle path added later cannot forget the retention,
+        // because it cannot perform the swallow itself (ADR-0010 D11).
+        // The two failure shapes are retained IDENTICALLY: a settlement that THREW, and a settlement the
+        // infrastructure ANSWERED as Failed without raising anything. Only the first carries an exception, so only
+        // the first stamps an exception span event; both owe the receive metric an error.type.
+        private async Task<SettlementResult> TrySettleWithRecoveryAsync(Func<Task<SettlementResult>> settle, string failureDescription, CancellationToken settlementToken)
         {
+            SettlementResult settlementResult;
+
             try
             {
-                return await _recoveryStrategy.ExecuteAsync(settle, settlementToken);
+                settlementResult = await _recoveryStrategy.ExecuteAsync(settle, settlementToken);
             }
             catch (Exception settlementFault)
             {
                 _logger.LogError(settlementFault, failureDescription);
                 RetainSettlementFailure(settlementFault, settlementToken);
-                return false;
+                return SettlementResult.Failed(failureDescription);
             }
+
+            // A Failed the infrastructure RETURNED is as much a failed receive as one it threw, and it is TERMINAL:
+            // Recovery has already run and returning does not re-enter it, so the failure is reported here and the
+            // delivery is left to the infrastructure's own redelivery rules. NotRequired is not a failure and is
+            // deliberately silent — collapsing the two is the defect this outcome type exists to remove.
+            if (settlementResult.Outcome == SettlementOutcome.Failed)
+            {
+                _logger.LogError("{FailureDescription}: {SettlementReason}", failureDescription, settlementResult.Reason);
+                RetainSettlementFailure(BrokerDiagnostics.ErrorTypes.SettlementFailed, settlementResult.Reason);
+            }
+
+            return settlementResult;
         }
 
-        private Task<bool> TryAckWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+        private Task<SettlementResult> TryAckWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
             => TrySettleWithRecoveryAsync(
                 () => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource),
                 "Unable to send acknowledgment",
                 receiverTokenSource);
 
-        private Task<bool> TryNackWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+        private Task<SettlementResult> TryNackWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
             => TrySettleWithRecoveryAsync(
                 () => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource),
                 "Unable to send negative acknowledgment",
                 receiverTokenSource);
 
-        private Task<bool> TryDeadletterWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, Exception e, CancellationToken receiverTokenSource)
+        private Task<SettlementResult> TryDeadletterWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, Exception e, CancellationToken receiverTokenSource)
             => TrySettleWithRecoveryAsync(
                 () => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Poisoned message received", e.ToString(), receiverTokenSource),
                 "Unable to deadletter message",
                 receiverTokenSource);
 
-        private Task<bool> TryExecuteFailedRecoveryAction(MessageBrokerContext messageContext, string failureDescription, Exception exception, int deliveryCount, TransactionContext transactionContext)
+        // NOT an infrastructure settlement: the recovery action is Chatter's own, so its result is constructed here
+        // and is only ever Settled (the action ran) or Failed (it threw and the shared choke point swallowed it).
+        // NotRequired is not representable on this path, because there is no infrastructure to report that nothing
+        // needed doing.
+        private Task<SettlementResult> TryExecuteFailedRecoveryAction(MessageBrokerContext messageContext, string failureDescription, Exception exception, int deliveryCount, TransactionContext transactionContext)
         {
             // Built ONCE, on the first Recovery attempt, and reused by every retry — the shape this method always had.
             // It is built INSIDE the settle delegate rather than before the call so that its own argument validation
@@ -1112,7 +1143,7 @@ namespace Chatter.MessageBrokers.Receiving
                 {
                     failureContext ??= new FailureContext(messageContext.BrokeredMessage, this.ErrorQueueName, failureDescription, exception, deliveryCount, transactionContext);
                     await _failedRecoveryAction.ExecuteAsync(failureContext);
-                    return true;
+                    return SettlementResult.Settled();
                 },
                 "Unable to execute recovery action",
                 messageContext.CancellationToken);

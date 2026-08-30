@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Transactions;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.Diagnostics
@@ -366,6 +367,26 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         /// cannot observe it (ADR-0010 D11).
         /// </summary>
         public void ArmAckFailure(Exception ackFailure) => _infrastructureReceiver.ArmAckFailure(ackFailure);
+
+        /// <summary>
+        /// Arms the Messaging Infrastructure so every acknowledgement RETURNS <paramref name="ackOutcome"/> rather
+        /// than raising, which is how an infrastructure reports that it settled nothing or that the settlement it
+        /// attempted did not happen. A returned failure never leaves the worker's processing block either, so it is
+        /// retained at the same single swallow site the raised one is (ADR-0010 D11).
+        /// </summary>
+        public void ArmAckOutcome(SettlementResult ackOutcome) => _infrastructureReceiver.ArmAckOutcome(ackOutcome);
+
+        /// <summary>
+        /// Arms the Messaging Infrastructure to hand the receiver a real local transaction, so
+        /// <see cref="LocalTransactionStatus"/> reports whether the delivery's settlement completed it.
+        /// </summary>
+        public void ArmLocalTransaction() => _infrastructureReceiver.ArmLocalTransaction();
+
+        /// <summary>
+        /// Whether the local transaction armed by <see cref="ArmLocalTransaction"/> was committed, aborted, or never
+        /// created. Read after the delivery has drained.
+        /// </summary>
+        public TransactionStatus? LocalTransactionStatus => _infrastructureReceiver.LocalTransactionStatus;
 
         /// <summary>Queues one delivery carrying <paramref name="messageContextValues"/> as its context.</summary>
         public MessageBrokerContext Deliver(IDictionary<string, object> messageContextValues = null, byte[] body = null)

@@ -11,7 +11,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System;
 using System.Collections.Generic;
-using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -45,6 +44,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Returns<Func<Task<MessageBrokerContext>>, CancellationToken>((action, _) => action());
             mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
+            mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
             mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>((action, _) => action());
             return mock;
@@ -133,6 +134,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
             recovery
+                .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
+            recovery
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>((action, _) => action());
 
@@ -174,10 +178,10 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 "the receive itself faulted critically, so no message must reach the dispatcher");
         }
 
-        // ------------------------------------------------------------------ (2) DeliveryCount >= max + deadletter returns false → MaxReceivesExceededAction NOT invoked
+        // ------------------------------------------------------------------ (2) DeliveryCount >= max + deadletter reports Failed → MaxReceivesExceededAction NOT invoked
 
         [Fact]
-        public async Task MustNotInvokeMaxReceivesActionWhenDeadletterRecoveryReturnsFalseAtMax()
+        public async Task MustNotInvokeMaxReceivesActionWhenDeadletterRecoveryFailsAtMax()
         {
             const int maxAttempts = 3;
 
@@ -185,8 +189,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             infraReceiver.DeliveryCount = maxAttempts; // >= Max
 
             // The handler throws generic so the worker enters its delivery-count ladder. DeliveryCount >= Max routes to
-            // TryDeadletterWithRecoveryAsync, whose recovery Func<Task<bool>> overload THROWS — TryDeadletterWithRecoveryAsync
-            // catches and returns false, so the `if (await TryDeadletter...)` false branch SKIPS IMaxReceivesExceededAction.
+            // TryDeadletterWithRecoveryAsync, whose recovery Func<Task<SettlementResult>> overload THROWS —
+            // TryDeadletterWithRecoveryAsync catches and reports Failed, so the not-settled branch SKIPS IMaxReceivesExceededAction.
             var handlerThrew = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var dispatcher = new Mock<IReceivedMessageDispatcher>();
             dispatcher
@@ -197,28 +201,22 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                     throw new InvalidOperationException("handler boom at max");
                 });
 
-            // The bool recovery overload is invoked twice for this message: FIRST for the dispatch action (which delegates
-            // through so the dispatcher's own throw routes the worker to its generic catch), THEN for the deadletter call
-            // (which THROWS so TryDeadletterWithRecoveryAsync catches and returns false). The int (delivery-count) overload
-            // delegates through so the probe returns DeliveryCount (>= max).
+            // The bool overload carries the dispatch action ONLY, and delegates through so the dispatcher's own throw routes
+            // the worker to its generic catch. The SettlementResult overload carries the deadletter call and THROWS, so
+            // TryDeadletterWithRecoveryAsync catches and reports Failed. The int (delivery-count) overload delegates through
+            // so the probe returns DeliveryCount (>= max).
             var deadletterAttempted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var boolRecoveryCalls = new StrongBox<int>(0);
             var recovery = new Mock<IRecoveryStrategy>();
             recovery
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<MessageBrokerContext>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<MessageBrokerContext>>, CancellationToken>((action, _) => action());
             recovery
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
-                .Returns<Func<Task<bool>>, CancellationToken>((action, _) =>
+                .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
+            recovery
+                .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((_, __) =>
                 {
-                    if (Interlocked.Increment(ref boolRecoveryCalls.Value) == 1)
-                    {
-                        // Dispatch action: delegate through so the dispatcher's InvalidOperationException routes the worker
-                        // to its generic-error delivery-count ladder.
-                        return action();
-                    }
-
-                    // Deadletter recovery: throw so TryDeadletterWithRecoveryAsync returns false.
                     deadletterAttempted.TrySetResult(true);
                     throw new Exception("deadletter recovery failed");
                 });
@@ -245,7 +243,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             await handlerThrew.Task;
 
             var deadletterCompleted = await Task.WhenAny(deadletterAttempted.Task, Task.Delay(TimeSpan.FromSeconds(15)));
-            deadletterCompleted.Should().BeSameAs(deadletterAttempted.Task, "the worker must attempt the deadletter recovery (which throws → returns false)");
+            deadletterCompleted.Should().BeSameAs(deadletterAttempted.Task, "the worker must attempt the deadletter recovery (which throws → reports Failed)");
             await deadletterAttempted.Task;
 
             cts.Cancel();
@@ -254,7 +252,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             await loop;
 
             maxReceivesAction.Verify(a => a.ExecuteAsync(It.IsAny<FailureContext>()), Times.Never,
-                "a failed deadletter (recovery returned false) must SKIP the MaxReceivesExceededAction");
+                "a failed deadletter (recovery threw → Failed) must SKIP the MaxReceivesExceededAction");
         }
     }
 }

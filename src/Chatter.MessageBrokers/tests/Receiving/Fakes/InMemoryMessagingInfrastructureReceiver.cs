@@ -48,6 +48,24 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         // existing tests are unaffected; armed via ArmAckFailure.
         private Exception _ackFailure;
 
+        // INVARIANT: optional opt-in outcome that EVERY AckMessageAsync call returns in place of the default Settled.
+        // Lets a test drive each of the three settlement outcomes through the receiver's ladder, in particular the
+        // Failed the infrastructure ANSWERS with rather than raises — the case an undeclared bool return could not
+        // tell apart from NotRequired. Default null (disarmed) so existing tests are unaffected; armed via
+        // ArmAckOutcome.
+        private SettlementResult? _ackOutcome;
+
+        // INVARIANT: optional opt-in local transaction. CreateLocalTransaction returns null by default, so the
+        // receiver's `localTransaction?.Complete()` is a no-op and no test pays for an ambient transaction it does
+        // not assert on. When armed, a real TransactionScope is created and its final status is captured from the
+        // ambient Transaction's completion callback — NOT read back from the Transaction afterwards, which throws
+        // ObjectDisposedException once the scope has been disposed. Whether the receiver COMMITTED it is what
+        // distinguishes a settled delivery from one the infrastructure declined or never needed to settle. Armed via
+        // ArmLocalTransaction.
+        private const int UnsetTransactionStatus = -1;
+        private bool _localTransactionArmed;
+        private int _localTransactionStatus = UnsetTransactionStatus;
+
         private TaskCompletionSource<bool> _disposeAsyncGate;
         private TaskCompletionSource<bool> _disposeAsyncGateEntered;
         private int _gateThenThrowOnceOnDisposeArmed;
@@ -135,6 +153,38 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         public void ArmAckFailure(Exception ackFailure) => _ackFailure = ackFailure ?? throw new ArgumentNullException(nameof(ackFailure));
 
         /// <summary>
+        /// Arms <see cref="AckMessageAsync"/> to RETURN <paramref name="ackOutcome"/> on every call instead of the
+        /// default <see cref="SettlementResult.Settled"/>, so a test can drive an outcome the infrastructure answers
+        /// with rather than one it raises. <see cref="ArmAckFailure"/> takes precedence when both are armed, because
+        /// a call that throws never returns a value.
+        /// </summary>
+        public void ArmAckOutcome(SettlementResult ackOutcome) => _ackOutcome = ackOutcome;
+
+        /// <summary>
+        /// Arms <see cref="CreateLocalTransaction"/> to return a real <see cref="TransactionScope"/> whose final
+        /// status <see cref="LocalTransactionStatus"/> reports. Async flow is enabled because the receiver awaits
+        /// inside the scope and disposes it from a continuation.
+        /// </summary>
+        public void ArmLocalTransaction() => _localTransactionArmed = true;
+
+        /// <summary>
+        /// The status of the local transaction armed by <see cref="ArmLocalTransaction"/>:
+        /// <see cref="TransactionStatus.Committed"/> once the receiver completed it,
+        /// <see cref="TransactionStatus.Aborted"/> once the scope was disposed without completion, or <c>null</c>
+        /// when no local transaction was ever created.
+        /// </summary>
+        /// <remarks>Written from the transaction's own completion callback on the worker's thread and read from the
+        /// test's thread, so both sides go through <see cref="Volatile"/>.</remarks>
+        public TransactionStatus? LocalTransactionStatus
+        {
+            get
+            {
+                var status = Volatile.Read(ref _localTransactionStatus);
+                return status == UnsetTransactionStatus ? (TransactionStatus?)null : (TransactionStatus)status;
+            }
+        }
+
+        /// <summary>
         /// Arms a one-shot hook so the FIRST <see cref="DisposeAsync"/> call (a) awaits a test-releasable gate, then
         /// (b) throws an <see cref="InvalidOperationException"/> exactly once; subsequent <see cref="DisposeAsync"/> calls
         /// behave normally (record <see cref="ReceiverCall.Dispose"/>). <see cref="StopReceiver"/> is never affected.
@@ -196,7 +246,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
             return null; // unreachable: the await above always throws on cancellation.
         }
 
-        public Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public Task<SettlementResult> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             // The call is RECORDED BEFORE the arming check, so a test waiting on ReceiverCall.Ack still unblocks when
             // the acknowledgement is armed to fail. That mirrors the real infrastructures: the settle call was made,
@@ -205,22 +255,22 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
 
             if (_ackFailure != null)
             {
-                return Task.FromException<bool>(_ackFailure);
+                return Task.FromException<SettlementResult>(_ackFailure);
             }
 
-            return Task.FromResult(true);
+            return Task.FromResult(_ackOutcome ?? SettlementResult.Settled());
         }
 
-        public Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public Task<SettlementResult> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             RecordCall(ReceiverCall.Nack);
-            return Task.FromResult(true);
+            return Task.FromResult(SettlementResult.Settled());
         }
 
-        public Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+        public Task<SettlementResult> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
             RecordCall(ReceiverCall.Deadletter);
-            return Task.FromResult(true);
+            return Task.FromResult(SettlementResult.Settled());
         }
 
         public Task StopReceiver()
@@ -234,9 +284,21 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         public Task<int> MessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken)
             => Task.FromResult(_deliveryCount);
 
-        /// <summary>Returns null so the loop's <c>localTransaction?.Complete()</c> is a no-op.</summary>
+        /// <summary>
+        /// Returns null so the loop's <c>localTransaction?.Complete()</c> is a no-op, unless
+        /// <see cref="ArmLocalTransaction"/> armed a real scope whose completion a test asserts on.
+        /// </summary>
         public TransactionScope CreateLocalTransaction(TransactionContext context)
-            => null;
+        {
+            if (!_localTransactionArmed)
+            {
+                return null;
+            }
+
+            var scope = new TransactionScope(TransactionScopeOption.RequiresNew, TransactionScopeAsyncFlowOption.Enabled);
+            Transaction.Current.TransactionCompleted += RecordLocalTransactionStatus;
+            return scope;
+        }
 
         // ------------------------------------------------------------------ IAsyncDisposable / IDisposable
 
@@ -280,6 +342,11 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
                 throw new InvalidOperationException("Simulated infrastructure teardown failure (throw-once).");
             }
         }
+
+        // The status is captured HERE, inside the completion callback, because the Transaction is disposed with its
+        // scope and reading TransactionInformation afterwards throws ObjectDisposedException.
+        private void RecordLocalTransactionStatus(object sender, TransactionEventArgs completion)
+            => Volatile.Write(ref _localTransactionStatus, (int)completion.Transaction.TransactionInformation.Status);
 
         private void RecordCall(ReceiverCall call)
         {
