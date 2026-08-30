@@ -1,3 +1,4 @@
+using Chatter.MessageBrokers.AzureServiceBus.Exceptions;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving;
@@ -8,6 +9,7 @@ using FluentAssertions;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Moq;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -18,12 +20,14 @@ using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBusReceiver
 {
-    // Characterization tests pinning the ack/nack/deadletter guard branches that return BEFORE
+    // Characterization tests pinning the ack/nack/deadletter guard branches that resolve BEFORE
     // touching InnerReceiver (which would open a live connection):
     //   1. When the effective ServiceBusReceiveMode != PeekLock (i.e. TransactionMode.None =>
-    //      ReceiveAndDelete) every ack/nack/deadletter returns false without inspecting the container.
+    //      ReceiveAndDelete) every ack/nack/deadletter returns false without inspecting the container:
+    //      there is no lock to settle, so the no-op is correct.
     //   2. When in PeekLock mode but no ServiceBusReceivedMessage is in the context container, every
-    //      ack/nack/deadletter returns false and logs a warning.
+    //      ack/nack/deadletter throws ServiceBusMessageSettlementException and settles nothing. The
+    //      lock exists but cannot be released, so silently reporting false would strand the delivery.
     // The InitializeAsync receive-mode flip is observed indirectly: initializing with a non-None
     // TransactionMode flips the receiver into PeekLock, so guard branch (2) becomes reachable.
     public class WhenAcknowledgingMessage : Testing.Core.Context
@@ -88,6 +92,25 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
         private const int MaxDeadLetterErrorDescriptionLength = 4096;
 
+        private const string AckOperation = "ack";
+        private const string NackOperation = "nack";
+        private const string DeadletterOperation = "deadletter";
+
+        // Mirrors the raw substrings DefaultExceptionsPredicateProvider matches against Exception.Message.
+        private static readonly string[] DefaultRetryPredicateSubstrings =
+        {
+            "retry", "timeout", "time out", "rerun", "internal server error", "waiting", "wait until", "service unavailable",
+        };
+
+        private static Func<Task> CreateSettlementCall(ServiceBusReceiver sut, string operation, MessageBrokerContext context, TransactionContext transactionContext)
+            => operation switch
+            {
+                AckOperation => () => sut.AckMessageAsync(context, transactionContext, CancellationToken.None),
+                NackOperation => () => sut.NackMessageAsync(context, transactionContext, CancellationToken.None),
+                DeadletterOperation => () => sut.DeadletterMessageAsync(context, transactionContext, "reason", "description", CancellationToken.None),
+                _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, "Unknown settlement operation."),
+            };
+
         [Fact]
         public async Task MustReturnFalseFromAckWhenNotPeekLock()
         {
@@ -112,28 +135,58 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             result.Should().BeFalse();
         }
 
-        [Fact]
-        public async Task MustReturnFalseFromAckWhenPeekLockButNoMessageInContext()
+        [Theory]
+        [InlineData(AckOperation)]
+        [InlineData(NackOperation)]
+        [InlineData(DeadletterOperation)]
+        public async Task MustThrowSettlementExceptionWhenPeekLockButNoMessageInContext(string operation)
         {
             var sut = await CreatePeekLockSutAsync();
-            var result = await sut.AckMessageAsync(CreateEmptyContext(), new TransactionContext("receiver"), CancellationToken.None);
-            result.Should().BeFalse();
+
+            var settle = CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"));
+
+            await settle.Should().ThrowAsync<ServiceBusMessageSettlementException>();
         }
 
-        [Fact]
-        public async Task MustReturnFalseFromNackWhenPeekLockButNoMessageInContext()
+        [Theory]
+        [InlineData(AckOperation)]
+        [InlineData(NackOperation)]
+        [InlineData(DeadletterOperation)]
+        public async Task MustNotSettleAnythingWhenPeekLockButNoMessageInContext(string operation)
         {
-            var sut = await CreatePeekLockSutAsync();
-            var result = await sut.NackMessageAsync(CreateEmptyContext(), new TransactionContext("receiver"), CancellationToken.None);
-            result.Should().BeFalse();
+            var inMemory = new InMemoryServiceBusMessageReceiver();
+            var sut = CreateInMemorySut(inMemory);
+            await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = "receiver", TransactionMode = TransactionMode.ReceiveOnly }, CancellationToken.None);
+
+            var settle = CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"));
+
+            await settle.Should().ThrowAsync<ServiceBusMessageSettlementException>();
+            inMemory.CompletedMessages.Should().BeEmpty();
+            inMemory.AbandonedMessages.Should().BeEmpty();
+            inMemory.DeadLetteredMessages.Should().BeEmpty();
         }
 
-        [Fact]
-        public async Task MustReturnFalseFromDeadletterWhenPeekLockButNoMessageInContext()
+        // Regression guard on the settlement message TEXT, which is a contract rather than prose:
+        // DefaultExceptionsPredicateProvider is registered unconditionally and matches these raw
+        // case-insensitive substrings against Exception.Message, so a reworded message containing any
+        // of them would silently convert this fail-fast into a retry-to-exhaustion and rewrite the
+        // error.type telemetry attribute to MaxRetryAttemptsExceededException.
+        [Theory]
+        [InlineData(AckOperation)]
+        [InlineData(NackOperation)]
+        [InlineData(DeadletterOperation)]
+        public async Task MustNotUseSettlementMessageMatchingTheDefaultRetryPredicates(string operation)
         {
             var sut = await CreatePeekLockSutAsync();
-            var result = await sut.DeadletterMessageAsync(CreateEmptyContext(), new TransactionContext("receiver"), "reason", "description", CancellationToken.None);
-            result.Should().BeFalse();
+
+            var settle = CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"));
+
+            var thrown = await settle.Should().ThrowAsync<ServiceBusMessageSettlementException>();
+            var message = thrown.Which.Message.ToLowerInvariant();
+            foreach (var retryTriggeringSubstring in DefaultRetryPredicateSubstrings)
+            {
+                message.Should().NotContain(retryTriggeringSubstring);
+            }
         }
 
         [Fact]
