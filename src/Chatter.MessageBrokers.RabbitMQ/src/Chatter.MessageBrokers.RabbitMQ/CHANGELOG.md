@@ -6,6 +6,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-30
+
+### Changed
+
+- **BREAKING:** `RabbitMqReceiver`'s settlement members (`AckMessageAsync`, `NackMessageAsync`, `DeadletterMessageAsync`) now return `Task<SettlementResult>` instead of `Task<bool>`, in step with the `Chatter.MessageBrokers` 0.16.0 seam. A custom caller depending on the prior `bool` return must migrate to read `SettlementResult.IsSettled`/`.Outcome`. Both deadletter branches (dead-letter-queue-configured and error-only) are otherwise unchanged (#283).
+- A settlement whose delivery arrived on a receive channel that has since been recycled (AMQP connection auto-recovery with the delivery in flight) is now reported as a FAILED settlement instead of being indistinguishable from "nothing to settle". Previously the epoch-mismatch skip returned the same `false` a genuine no-op settlement returned; it now returns `SettlementResult.Failed`, so error-rate metrics and receive spans surface these recovery events, which were previously invisible (#283).
+
 ## [0.2.0] - 2026-06-13
 
 ### Added

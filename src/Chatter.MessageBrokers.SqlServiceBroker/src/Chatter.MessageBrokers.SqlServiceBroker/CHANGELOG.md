@@ -12,6 +12,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.13.0] - 2026-08-30
+
+### Changed
+
+- **BREAKING:** `SqlServiceBrokerReceiver`'s settlement members (`AckMessageAsync`, `NackMessageAsync`, `DeadletterMessageAsync`) now return `Task<SettlementResult>` instead of `Task<bool>`, in step with the `Chatter.MessageBrokers` 0.16.0 seam. A custom caller depending on the prior `bool` return must migrate to read `SettlementResult.IsSettled`/`.Outcome`. `DeadletterMessageAsync` with no received message carried in the context now returns a `Failed` outcome instead of throwing `ArgumentException` — Recovery no longer retries this deterministic fault, since retrying it could not succeed (#283).
+
+### Fixed
+
 - Receive-side SQL transaction now honors the per-receiver `ReceiverOptions.TransactionMode` (set via `AddQueueReceiver<T>(transactionMode:)`) instead of always falling back to the global `MessageBrokerOptions.TransactionMode` — two receivers configured with different modes both previously used the global mode. (#235)
 
 ## [0.12.1] - 2026-06-14

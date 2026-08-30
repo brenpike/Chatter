@@ -32,6 +32,19 @@ _Avoid_: forwarder (a Router specialization).
 
 **Max Receives Exceeded**: The condition where a message has been delivered more times than allowed, triggering a configured action.
 
+**Settlement**: The answer the Brokered Message Receiver gives broker infrastructure about a delivery it has handled — acknowledge (ack), negatively acknowledge (nack), or deadletter. The three settlement members of the receiving-infrastructure seam (`AckMessageAsync`, `NackMessageAsync`, `DeadletterMessageAsync`) are where a delivery's fate is reported back to the infrastructure.
+
+**Settlement Outcome**: What the infrastructure reports back about a Settlement — one of exactly three values, which are never collapsed to two:
+- **Settled**: the infrastructure settled the delivery (a PeekLock ack succeeded, a receive transaction committed, a republish-then-ack completed).
+- **Not Required**: there was nothing to settle, which is NOT a failure — the delivery was already removed before it was handled (Azure Service Bus `ReceiveAndDelete`, RabbitMQ at-most-once), or nothing at all was owed (a SQL Service Broker acknowledgment with neither a received message to end the Conversation for nor a receive transaction to commit; a negative acknowledgment with no receive transaction to roll back). Reported silently: no failure is recorded.
+- **Failed**: the settlement was attempted and did not happen. It is TERMINAL for that delivery — the receiver logs it, reports it as a failed receive — carrying the `settlement_failed` error type when telemetry is subscribed to — and does NOT retry it; the delivery's fate is then whatever the infrastructure's own redelivery rules dictate. This is how a DETERMINISTIC settlement fault is reported: retrying it could never succeed, so it is answered rather than raised — for example an Azure Service Bus PeekLock settlement, a RabbitMQ settlement or a SQL Service Broker deadletter whose delivery is absent from the message broker context, or a RabbitMQ settlement whose delivery tag belongs to a channel that has since been recycled.
+
+A genuinely TRANSIENT settlement fault must keep THROWING rather than reporting Failed. Recovery wraps the settlement call, so a thrown fault is retried and a reported one is not; reporting Failed deliberately removes the fault from the retry path. See ADR-0010 D11.
+_Avoid_: reading a Settlement Outcome as a boolean settled/not-settled — that collapse is precisely what makes a settlement that FAILED indistinguishable from one that was never REQUIRED.
+
+**Error-Queue Write Ownership** (`WritesToErrorQueue`): A control signal on the receiving-infrastructure seam declaring that the infrastructure writes a failed delivery to the Error Queue ITSELF, so the receiver must not run its own error-recovery action for that delivery. A SEPARATE concern from the Settlement Outcome and deliberately not derived from it: an infrastructure that owns the Error Queue write has still SETTLED the delivery, so gating the receiver's error-recovery action on the outcome alone would put a SECOND copy of the same poison message in the same Error Queue. The two conditions are independent — the delivery must have been Settled AND the infrastructure must not already own the write. Defaults to false: the receiver owns the Error Queue write.
+_Avoid_: misreporting the Settlement Outcome to suppress the duplicate write (the reason this signal is declared separately).
+
 **Body Converter**: Serializes/deserializes a brokered message body to/from a domain message type.
 
 **Two-Tier Reliability**: the reliability port supports two coexisting persistence models — a relational ambient-transaction tier and a NoSQL/document stage-then-commit tier — sharing the enqueue, inbox, and transaction-context seam.
@@ -95,6 +108,8 @@ _Avoid_: listener (the reserved alias above — the .NET BCL subscription type i
 - A Brokered Message Receiver consumes infrastructure messages and hands them to the Brokered Message Dispatcher.
 - The Dispatcher relays to a Command or Event handler (Chatter.CQRS) by message type.
 - Recovery (Retry, Circuit Breaker) wraps receiving; exhausting it yields a Critical Failure routed to the Error Queue.
+- A Settlement Outcome reports back whether the infrastructure Settled a delivery, was owed nothing (Not Required), or attempted a settlement that Failed; because Recovery wraps the settlement call, a THROWN settlement fault is retried while a reported Failed is terminal and is recorded once as a failed receive.
+- Error-Queue Write Ownership is decided independently of the Settlement Outcome: the receiver runs its own error-recovery action for a deadlettered delivery only when that delivery was Settled AND the infrastructure does not already write it to the Error Queue itself.
 - Inbox and Outbox use in-memory implementations by default; durable storage is supplied by the Reliability.EntityFramework context.
 - Reliability is two-tier: a relational (ambient-transaction) tier and a NoSQL/document (stage-then-commit) tier share **only** the abstract enqueue (SendToOutbox, abstracted over an Atomic-Write Handle), inbox, and message contracts — NOT the EF-shaped `TransactionContext`/`InboxBehavior` mechanics; the document tier carries its document-store primitives on its own provider-shaped document-tier reliability surface (partition key, bound container, batch handle/lifecycle, inbox-marker enlistment, ETag). Durable storage is supplied by provider packages (EntityFramework for relational; Cosmos for document).
 - A Routing Slip drives a Router across a sequence of destinations.
@@ -105,6 +120,9 @@ _Avoid_: listener (the reserved alias above — the .NET BCL subscription type i
 
 > **Dev:** "A handler keeps throwing — where does the message end up?"
 > **Domain expert:** "Recovery retries it under the Circuit Breaker. Once Max Receives is exceeded it's a Critical Failure, so it's moved to the Error Queue and a Critical Failure Event fires."
+
+> **Dev:** "The ack didn't happen. Is that a failed receive?"
+> **Domain expert:** "Read the Settlement Outcome. Not Required means nothing was owed — the delivery was already gone, so nothing failed. Failed means the ack was attempted and didn't happen: that's terminal for the delivery, we record a failed receive, and redelivery is the infrastructure's call from there."
 
 ## Flagged ambiguities
 

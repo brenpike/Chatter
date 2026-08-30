@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.10.0] - 2026-08-30
+
+### Added
+
+- `ActivityOutcome.RecordFailure(Activity, string errorType, string description)` — a non-exception failure overload that marks the span as `Error` and stamps `error.type` with `errorType`, without attaching an `exception` span event (there is no exception to describe). Lets a call site report a failure the infrastructure itself DETECTED — e.g. a settlement the broker answered as failed without throwing — identically to an exception-raised failure, through the same single `ActivityOutcome` choke point. Additive; the existing exception-shaped `RecordFailure` overload is unchanged (#283).
+
 ## [0.9.0] - 2026-08-29
 
 ### Added
