@@ -1,4 +1,4 @@
-using Chatter.MessageBrokers.Context;
+﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Tests.Receiving.Fakes;
 using Chatter.Testing.Core.Diagnostics;
@@ -181,8 +181,25 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
             BrokerDiagnostics.IsEnabled.Should().BeFalse();
 
             var startTimestamp = Stopwatch.GetTimestamp();
+            var failure = new DiagnosticsProbeException("never recorded");
+
+            var successMeasurement = GuardCostProbe.Measure(
+                () => BrokerDiagnostics.RecordReceive(startTimestamp, DiagnosticsReceiveHarness.MessagingSystem, BrokerDiagnostics.OperationTypes.Receive, DiagnosticsReceiveHarness.ReceiverPath, (Exception)null));
+            var failureMeasurement = GuardCostProbe.Measure(
+                () => BrokerDiagnostics.RecordReceive(startTimestamp, DiagnosticsReceiveHarness.MessagingSystem, BrokerDiagnostics.OperationTypes.Receive, DiagnosticsReceiveHarness.ReceiverPath, failure));
+
+            successMeasurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no tag list may be built while off: " + successMeasurement);
+            failureMeasurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no error type may be resolved while off: " + failureMeasurement);
+        }
+
+        [Fact]
+        public void MustNotAllocateWhileRecordingAReceiveThatFailedWithoutAnExceptionWhileOff()
+        {
+            BrokerDiagnostics.IsEnabled.Should().BeFalse();
+
+            var startTimestamp = Stopwatch.GetTimestamp();
             var measurement = GuardCostProbe.Measure(
-                () => BrokerDiagnostics.RecordReceive(startTimestamp, DiagnosticsReceiveHarness.MessagingSystem, BrokerDiagnostics.OperationTypes.Receive, DiagnosticsReceiveHarness.ReceiverPath, null));
+                () => BrokerDiagnostics.RecordReceive(startTimestamp, DiagnosticsReceiveHarness.MessagingSystem, BrokerDiagnostics.OperationTypes.Receive, DiagnosticsReceiveHarness.ReceiverPath, BrokerDiagnostics.ErrorTypes.SettlementFailed));
 
             measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no tag list may be built while off: " + measurement);
         }
@@ -199,6 +216,17 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
 
             failureMeasurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no exception detail may be materialised while off: " + failureMeasurement);
             settlementMeasurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no tag may be set while off: " + settlementMeasurement);
+        }
+
+        [Fact]
+        public void MustNotAllocateWhileRecordingAFailureWithoutAnExceptionThatIsOff()
+        {
+            BrokerDiagnostics.Source.HasListeners().Should().BeFalse();
+
+            var measurement = GuardCostProbe.Measure(
+                () => BrokerDiagnostics.RecordFailure(null, BrokerDiagnostics.ErrorTypes.SettlementFailed, "never recorded"));
+
+            measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no status or error type may be set while off: " + measurement);
         }
 
         [Fact]

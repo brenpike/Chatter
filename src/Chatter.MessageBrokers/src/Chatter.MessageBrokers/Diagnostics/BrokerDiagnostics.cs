@@ -214,6 +214,26 @@ namespace Chatter.MessageBrokers.Diagnostics
         }
 
         /// <summary>
+        /// Marks <paramref name="activity"/> as failed when NO exception was raised, through
+        /// <see cref="ActivityOutcome"/> so a broker span records an exception-shaped failure and a
+        /// description-shaped one identically.
+        /// </summary>
+        /// <param name="activity">The span to mark, or <c>null</c> when no span was started.</param>
+        /// <param name="errorType">The class of failure; values come from <see cref="ErrorTypes"/>.</param>
+        /// <param name="description">What did not happen, carried as the span's status description.</param>
+        /// <remarks>No <c>exception</c> span event is added, because no exception exists: a never-thrown marker
+        /// exception would stamp a synthetic stack trace describing nothing that happened.</remarks>
+        public static void RecordFailure(Activity activity, string errorType, string description)
+        {
+            if (!_source.HasListeners())
+            {
+                return;
+            }
+
+            ActivityOutcome.RecordFailure(activity, errorType, description);
+        }
+
+        /// <summary>
         /// Records how a delivery was settled on <paramref name="activity"/>.
         /// </summary>
         /// <param name="activity">The receive span, or <c>null</c> when no span was started.</param>
@@ -244,7 +264,7 @@ namespace Chatter.MessageBrokers.Diagnostics
                 return;
             }
 
-            var tags = BuildOperationTags(messagingSystem, operationName, OperationTypes.Send, destinationName, exception);
+            var tags = BuildOperationTags(messagingSystem, operationName, OperationTypes.Send, destinationName, ActivityOutcome.ResolveErrorType(exception));
 
             if (_operationDuration.Enabled)
             {
@@ -265,6 +285,9 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// <param name="operationName">The value for <see cref="OperationName"/>.</param>
         /// <param name="destinationName">The value for <see cref="DestinationName"/>.</param>
         /// <param name="exception">The exception that ended the delivery, or <c>null</c> when it succeeded.</param>
+        /// <remarks>INVARIANT: the off-guard is re-evaluated here rather than left to the overload this delegates to,
+        /// so the error type is resolved only once an instrument is enabled and the off path stays a boolean read
+        /// (ADR-0010 R1).</remarks>
         public static void RecordReceive(long startTimestamp, string messagingSystem, string operationName, string destinationName, Exception exception)
         {
             if (!_operationDuration.Enabled && !_consumedMessages.Enabled)
@@ -272,7 +295,26 @@ namespace Chatter.MessageBrokers.Diagnostics
                 return;
             }
 
-            var tags = BuildOperationTags(messagingSystem, operationName, OperationTypes.Receive, destinationName, exception);
+            RecordReceive(startTimestamp, messagingSystem, operationName, destinationName, ActivityOutcome.ResolveErrorType(exception));
+        }
+
+        /// <summary>
+        /// Records the duration of one delivery from broker infrastructure, and counts the delivered message, for a
+        /// delivery whose failure is not carried by an exception.
+        /// </summary>
+        /// <param name="startTimestamp">The <see cref="Stopwatch.GetTimestamp"/> value read when the delivery began.</param>
+        /// <param name="messagingSystem">The value for <see cref="MessagingSystem"/>.</param>
+        /// <param name="operationName">The value for <see cref="OperationName"/>.</param>
+        /// <param name="destinationName">The value for <see cref="DestinationName"/>.</param>
+        /// <param name="errorType">The class of failure that ended the delivery, or <c>null</c> when it succeeded; values come from <see cref="ErrorTypes"/>.</param>
+        public static void RecordReceive(long startTimestamp, string messagingSystem, string operationName, string destinationName, string errorType)
+        {
+            if (!_operationDuration.Enabled && !_consumedMessages.Enabled)
+            {
+                return;
+            }
+
+            var tags = BuildOperationTags(messagingSystem, operationName, OperationTypes.Receive, destinationName, errorType);
 
             if (_operationDuration.Enabled)
             {
@@ -326,10 +368,17 @@ namespace Chatter.MessageBrokers.Diagnostics
         }
 
         /// <summary>
-        /// Builds the metric attribute set. <see cref="TagList"/> is a struct that holds up to eight entries inline,
-        /// so no array is allocated, and it is only ever built inside an <see cref="Instrument.Enabled"/> guard.
+        /// Builds the metric attribute set from an ALREADY RESOLVED <paramref name="errorType"/>. <see cref="TagList"/>
+        /// is a struct that holds up to eight entries inline, so no array is allocated, and it is only ever built
+        /// inside an <see cref="Instrument.Enabled"/> guard.
         /// </summary>
-        private static TagList BuildOperationTags(string messagingSystem, string operationName, string operationType, string destinationName, Exception exception)
+        /// <remarks>
+        /// INVARIANT: the error type is resolved by the CALLER, so the exception-shaped and description-shaped
+        /// failure paths meet at one point and cannot spell one failure two ways. The emptiness test mirrors
+        /// <see cref="ActivityOutcome.RecordFailure(Activity, string, string)"/>'s own no-op condition, so a span's
+        /// status and its metric's <c>error.type</c> cannot diverge on a blank error type either.
+        /// </remarks>
+        private static TagList BuildOperationTags(string messagingSystem, string operationName, string operationType, string destinationName, string errorType)
         {
             var tags = new TagList
             {
@@ -339,9 +388,9 @@ namespace Chatter.MessageBrokers.Diagnostics
                 { DestinationName, destinationName }
             };
 
-            if (exception != null)
+            if (!string.IsNullOrWhiteSpace(errorType))
             {
-                tags.Add(ChatterTelemetryTags.ErrorType, ActivityOutcome.ResolveErrorType(exception));
+                tags.Add(ChatterTelemetryTags.ErrorType, errorType);
             }
 
             return tags;
@@ -530,6 +579,18 @@ namespace Chatter.MessageBrokers.Diagnostics
 
             /// <summary>The delivery was moved to the Error Queue.</summary>
             public const string Deadletter = "deadletter";
+        }
+
+        /// <summary>
+        /// The values Chatter emits for <c>error.type</c> when the failure raised NO exception, so there is no
+        /// exception type name to take it from. Semconv v1.30.0 leaves the vocabulary to the instrumentation for
+        /// exactly this case; an exception-shaped failure keeps taking the fully qualified type name through
+        /// <see cref="ActivityOutcome.ResolveErrorType"/>.
+        /// </summary>
+        public static class ErrorTypes
+        {
+            /// <summary>Broker infrastructure was asked to settle a delivery and reported that it did not.</summary>
+            public const string SettlementFailed = "settlement_failed";
         }
     }
 }
