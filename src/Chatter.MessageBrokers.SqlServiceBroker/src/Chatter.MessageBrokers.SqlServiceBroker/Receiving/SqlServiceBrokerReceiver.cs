@@ -263,7 +263,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private async Task<SqlTransaction> CreateTransaction(SqlConnection connection, CancellationToken cancellationToken)
             => (_transactionMode != TransactionMode.None ? await connection.BeginTransactionAsync(cancellationToken) : null) as SqlTransaction;
 
-        public async Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public async Task<SettlementResult> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             ReceivedMessage msg = null;
             if (!context?.Container.TryGet(out msg) ?? false)
@@ -291,8 +291,19 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                     _logger.LogTrace($"Unable end dialog conversation during message acknowledgment. {nameof(msg)} is null.");
                 }
                 await session.CommitAsync(cancellationToken);
+
+                // Under TransactionMode.None the session's commit is a no-op, so with no ReceivedMessage to
+                // END CONVERSATION for there was neither a conversation to end nor a receive transaction to
+                // commit — nothing was owed and nothing happened. With either one present something WAS
+                // settled: the END CONVERSATION removed the delivery from the conversation, or the commit
+                // settled the RECEIVE.
+                if (msg == null && transaction == null)
+                {
+                    return SettlementResult.NotRequired($"no {nameof(ReceivedMessage)} to end the conversation for and no receive transaction to commit");
+                }
+
                 _logger.LogTrace("Message acknowledgment complete");
-                return true;
+                return SettlementResult.Settled();
             }
             finally
             {
@@ -300,7 +311,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
         }
 
-        public async Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public async Task<SettlementResult> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             transactionContext.Container.TryGet<SqlConnection>(out var connection);
             transactionContext.Container.TryGet<SqlTransaction>(out var transaction);
@@ -309,8 +320,17 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             try
             {
                 await session.RollbackAsync(cancellationToken);
+
+                // Under TransactionMode.None the session's rollback is a no-op: the RECEIVE already
+                // autocommitted, so there is no receive transaction to undo and nothing is returned to the
+                // Queue for redelivery. Nothing was owed, so no negative acknowledgment is reported missing.
+                if (transaction == null)
+                {
+                    return SettlementResult.NotRequired("no receive transaction to roll back, so nothing is returned to the queue for redelivery");
+                }
+
                 _logger.LogTrace("Message negative acknowledgment complete");
-                return true;
+                return SettlementResult.Settled();
             }
             finally
             {
@@ -318,12 +338,18 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
         }
 
-        public async Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+        public async Task<SettlementResult> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
             ReceivedMessage msg = null;
-            if (!context?.Container.TryGet(out msg) ?? false)
+            context?.Container.TryGet(out msg);
+
+            // A missing ReceivedMessage leaves no Conversation to end and no body to dispatch to the
+            // deadletter queue. The fault is DETERMINISTIC — retrying cannot make the message appear — so it
+            // is reported as a terminal Failed instead of thrown, deliberately removing it from Recovery's
+            // retry path. A genuinely transient deadletter fault below still throws so Recovery can retry it.
+            if (msg == null)
             {
-                throw new ArgumentException($"Unable to deadletter message. No {nameof(ReceivedMessage)} contained in {nameof(context)}.", nameof(msg));
+                return SettlementResult.Failed($"unable to deadletter message: no {nameof(ReceivedMessage)} contained in {nameof(context)}");
             }
 
             transactionContext.Container.TryGet<SqlConnection>(out var connection);
@@ -359,7 +385,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 await session.CommitAsync(cancellationToken);
                 _localReceiverDeliveryAttempts.TryRemove(msg.ConvHandle, out var _);
                 _logger.LogTrace($"Message deadlettered.");
-                return true;
+                return SettlementResult.Settled();
             }
             finally
             {

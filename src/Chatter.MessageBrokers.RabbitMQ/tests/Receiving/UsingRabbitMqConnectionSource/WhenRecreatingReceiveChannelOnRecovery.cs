@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Chatter.MessageBrokers.RabbitMQ.Receiving;
 using Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver;
+using Chatter.MessageBrokers.Receiving;
 using FluentAssertions;
 using Moq;
 using RabbitMQ.Client;
@@ -60,7 +61,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
 
             var acked = await harness.Receiver.AckMessageAsync(context, transactionContext: null, CancellationToken.None);
 
-            acked.Should().BeFalse("a delivery stamped under the pre-recovery epoch must no-op at settle");
+            // A recycled channel makes this a settlement that was ATTEMPTED and did not happen: Failed, which the
+            // core reports as a failed receive. The broker redelivers the delivery under the new epoch.
+            acked.Outcome.Should().Be(SettlementOutcome.Failed, "a delivery stamped under the pre-recovery epoch must no-op at settle");
             preRecoveryChannel.Acks.Should().BeEmpty("the recycled channel's delivery tag must never be acked");
             harness.ConnectionSource.ReceiveChannel.Acks.Should().BeEmpty("the post-recovery channel never saw this delivery tag");
         }
@@ -78,7 +81,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
 
             var acked = await harness.Receiver.AckMessageAsync(context, transactionContext: null, CancellationToken.None);
 
-            acked.Should().BeTrue("a delivery stamped under the post-recovery epoch settles");
+            acked.Outcome.Should().Be(SettlementOutcome.Settled, "a delivery stamped under the post-recovery epoch settles");
             harness.ConnectionSource.ReceiveChannel.Acks.Single().DeliveryTag.Should().Be(21UL);
         }
 
@@ -98,7 +101,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
                 "a delivery buffered before recovery survives the consumer re-registration");
 
             var acked = await harness.Receiver.AckMessageAsync(context, transactionContext: null, CancellationToken.None);
-            acked.Should().BeFalse("the pre-recovery delivery still carries the stale epoch and no-ops at settle");
+            acked.Outcome.Should().Be(SettlementOutcome.Failed, "the pre-recovery delivery still carries the stale epoch and no-ops at settle");
         }
 
         // (d) Bump + re-registration are atomic under the gate: rapid repeated recoveries each produce exactly one
