@@ -139,6 +139,24 @@ Emits strongly-typed notifications when rows in a watched SQL Server table are i
 
 Each module's README (linked above) has installation, configuration, and worked examples.
 
+## Diagnostics (optional, opt-in)
+
+Chatter emits OpenTelemetry-compatible **tracing** and **metrics**, and both are **off until you opt in**. Chatter takes **no dependency on any `OpenTelemetry.*` NuGet package** — the instrumentation is built on the .NET base class library only: `System.Diagnostics.ActivitySource` for spans and `System.Diagnostics.Metrics.Meter` for instruments. You choose the collector.
+
+The `ActivitySource` and the `Meter` are named **per emitting assembly** — `Chatter.CQRS` and `Chatter.MessageBrokers` — so each module can be sampled and filtered on its own. Opt in on your own OpenTelemetry provider with a prefix wildcard, or by naming both scopes exactly:
+
+```csharp
+services.AddOpenTelemetry()
+        .WithTracing(t => t.AddSource("Chatter.*"))    // or .AddSource("Chatter.CQRS", "Chatter.MessageBrokers")
+        .WithMetrics(m => m.AddMeter("Chatter.*"));    // or .AddMeter("Chatter.CQRS", "Chatter.MessageBrokers")
+```
+
+**When nothing subscribes to the Chatter sources, nothing is emitted and nothing extra goes on the wire.** Each instrumented operation first checks whether Chatter's own source has a subscriber and returns before building a span name, a tag collection, or a `traceparent` header — so an application that never opts in pays no per-operation cost and its messages are byte-identical to the un-instrumented ones. The guarantee is per-operation: constructing the `ActivitySource` and `Meter` themselves is a one-time static initialization per process, which is unavoidable for any `ActivitySource`-based design.
+
+> **Telemetry attribute names are data, not compile-time API.** Chatter's broker-boundary attribute names track the pinned **OpenTelemetry semantic conventions v1.30.0**, and **may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in the affected package's CHANGELOG.
+
+Design rationale, the propagation scope, and the off-guard rules are recorded in [ADR-0010](./docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+
 ## Domain language
 
 Chatter's ubiquitous language is documented per bounded context — see [CONTEXT-MAP.md](./CONTEXT-MAP.md) and the `CONTEXT.md` in each module directory.

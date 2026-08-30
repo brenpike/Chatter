@@ -42,6 +42,12 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         // concurrent teardown to reach the escalation short-circuit, then release so the parked DisposeAsync throws once.
         // StopReceiver is NEVER affected by this hook. Default DISARMED (null fields) so all existing tests and the
         // existing ArmThrowOnceOnTeardown / ThrowOnceIfArmed paths are byte-unchanged; armed via ArmGateThenThrowOnceOnDisposeAsync.
+        // INVARIANT: optional opt-in fault that makes EVERY AckMessageAsync call raise it. Lets a test drive the
+        // handling-succeeded-then-acknowledgement-failed case, in which the fault is swallowed into a bool by the
+        // receiver's settle path and therefore never leaves the worker's processing block. Default null (disarmed) so
+        // existing tests are unaffected; armed via ArmAckFailure.
+        private Exception _ackFailure;
+
         private TaskCompletionSource<bool> _disposeAsyncGate;
         private TaskCompletionSource<bool> _disposeAsyncGateEntered;
         private int _gateThenThrowOnceOnDisposeArmed;
@@ -123,6 +129,12 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         public void ArmThrowOnceOnTeardown() => Interlocked.Exchange(ref _throwOnceOnTeardownArmed, 1);
 
         /// <summary>
+        /// Arms <see cref="AckMessageAsync"/> to raise <paramref name="ackFailure"/> on every call, after recording
+        /// the call, so a test can exercise a delivery whose handling succeeded and whose acknowledgement then failed.
+        /// </summary>
+        public void ArmAckFailure(Exception ackFailure) => _ackFailure = ackFailure ?? throw new ArgumentNullException(nameof(ackFailure));
+
+        /// <summary>
         /// Arms a one-shot hook so the FIRST <see cref="DisposeAsync"/> call (a) awaits a test-releasable gate, then
         /// (b) throws an <see cref="InvalidOperationException"/> exactly once; subsequent <see cref="DisposeAsync"/> calls
         /// behave normally (record <see cref="ReceiverCall.Dispose"/>). <see cref="StopReceiver"/> is never affected.
@@ -186,7 +198,16 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
 
         public Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
+            // The call is RECORDED BEFORE the arming check, so a test waiting on ReceiverCall.Ack still unblocks when
+            // the acknowledgement is armed to fail. That mirrors the real infrastructures: the settle call was made,
+            // it just did not succeed.
             RecordCall(ReceiverCall.Ack);
+
+            if (_ackFailure != null)
+            {
+                return Task.FromException<bool>(_ackFailure);
+            }
+
             return Task.FromResult(true);
         }
 

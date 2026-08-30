@@ -101,7 +101,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         }
     }
 
-    [CollectionDefinition(Name)]
+    // This collection hosts the classes that attach a .NET ActivityListener to
+    // BrokerDiagnostics.ActivitySourceName. That .NET ActivityListener is PROCESS-GLOBAL, so a collection
+    // scheduled concurrently would observe BrokerDiagnostics.IsEnabled == true and take the instrumented path.
+    // DisableParallelization serialises every class in this collection against that hazard.
+    [CollectionDefinition(Name, DisableParallelization = true)]
     public sealed class ServiceBusEmulatorCollection : ICollectionFixture<ServiceBusEmulatorFixture>
     {
         public const string Name = "ServiceBusEmulator";

@@ -1,7 +1,9 @@
 ﻿using Chatter.CQRS.Context;
+using Chatter.CQRS.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 
@@ -34,7 +36,21 @@ namespace Chatter.CQRS.Events
         /// <returns>An awaitable <see cref="Task"/></returns>
         /// <remarks><see cref="IEvent"/> can have multiple handlers and all will be invoked when 
         /// the <paramref name="message"/> is dispatched by <see cref="IMessageDispatcher"/></remarks>
-        public async Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
+        public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
+        {
+            // INVARIANT: ADR-0010 R1/R4 — the off-guard is evaluated before any argument is constructed, and the
+            // off path returns the original Task from the uninstrumented dispatch. The diagnostics locals live in
+            // the instrumented method alone, so an application that has not opted in keeps the same single async
+            // state machine it had before instrumentation and pays no extra allocation, timestamp or string work.
+            if (!ChatterDiagnostics.IsEnabled)
+            {
+                return DispatchToHandlers(message, messageHandlerContext);
+            }
+
+            return DispatchToHandlersWithDiagnostics(message, messageHandlerContext);
+        }
+
+        private async Task DispatchToHandlers<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
             try
             {
@@ -49,6 +65,32 @@ namespace Chatter.CQRS.Events
             {
                 _logger.LogError($"Error dispatching event of type '{typeof(TMessage).Name}': {e.StackTrace}");
                 throw;
+            }
+        }
+
+        private async Task DispatchToHandlersWithDiagnostics<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
+        {
+            var startTimestamp = Stopwatch.GetTimestamp();
+            string errorType = null;
+
+            using (var activity = ChatterDiagnostics.StartDispatch<TMessage>(ChatterTelemetryTags.DispatchKinds.Event))
+            {
+                try
+                {
+                    await DispatchToHandlers(message, messageHandlerContext).ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    // INVARIANT: the span status and the metric's error.type come from the same resolver, so the
+                    // two signals can never disagree about how a dispatch failed (ADR-0010 D4).
+                    errorType = ActivityOutcome.ResolveErrorType(e);
+                    ActivityOutcome.RecordFailure(activity, e);
+                    throw;
+                }
+                finally
+                {
+                    ChatterDiagnostics.RecordDispatchDuration<TMessage>(startTimestamp, ChatterTelemetryTags.DispatchKinds.Event, errorType);
+                }
             }
         }
     }

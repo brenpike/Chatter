@@ -234,6 +234,44 @@ services.AddPipelineBehavior(typeof(LoggingBehavior<>)); // open generic → all
 services.AddPipelineBehavior(typeof(ValidateCreateOrderBehavior)); // closed generic → one command
 ```
 
+## Diagnostics (optional, opt-in)
+
+Command and Event dispatch are instrumented with OpenTelemetry-compatible tracing and metrics. The instrumentation is **off until an application opts in**, and `Chatter.CQRS` takes **no dependency on any `OpenTelemetry.*` NuGet package** — it is built on the .NET base class library only: `System.Diagnostics.ActivitySource` for spans and `System.Diagnostics.Metrics.Meter` for instruments.
+
+### Turning it on
+
+The `ActivitySource` and the `Meter` are both named after the emitting assembly — **`Chatter.CQRS`**. Subscribe on your own OpenTelemetry provider with a prefix wildcard, or name the scopes exactly:
+
+```csharp
+services.AddOpenTelemetry()
+        .WithTracing(t => t.AddSource("Chatter.*"))    // or .AddSource("Chatter.CQRS")
+        .WithMetrics(m => m.AddMeter("Chatter.*"));    // or .AddMeter("Chatter.CQRS")
+```
+
+`Chatter.MessageBrokers` emits under its own separate scope, also named after its assembly, so the two modules can be sampled and filtered independently. The `"Chatter.*"` form above subscribes to both.
+
+Any .NET `ActivityListener` / `MeterListener` works just as well — an OpenTelemetry provider merely subscribes to these base-class-library primitives, it is not a prerequisite for them.
+
+### What is emitted
+
+- A dispatch span per Command dispatch and per Event dispatch, carrying the dispatched message type and which dispatch path handled it.
+- A dispatch duration histogram, recorded in seconds.
+- On failure, the span is marked with an error status and the exception's type; full exception detail is attached only when the subscriber asked for all data.
+
+Query dispatch is not instrumented.
+
+### Off means off
+
+**When nothing subscribes to the `Chatter.CQRS` source or meter, nothing is emitted and no work is done.** Every entry point checks whether Chatter's own source has a subscriber as its first statement and returns before a span name, a tag collection, or a timestamp is constructed, and dispatch keeps its existing shape — no async state machine and no extra allocation is introduced on the un-instrumented path. The guarantee is per-dispatch: constructing the `ActivitySource` and `Meter` themselves is a one-time static initialization per process, which is unavoidable for any `ActivitySource`-based design.
+
+The guard is Chatter's own subscriber check — never `Activity.Current`, which is non-null in any host running unrelated instrumentation and therefore does not mean Chatter diagnostics are on.
+
+### Attribute names are data, not API
+
+Attributes prefixed `chatter.` are Chatter-native: no OpenTelemetry semantic convention covers in-process CQRS dispatch. The remaining names (`error.type`, `exception.*`) are OpenTelemetry semantic conventions pinned to **v1.30.0**. Because telemetry attributes are emitted data rather than a compile-time type surface, **they may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in this package's CHANGELOG.
+
+Design rationale and the off-guard rules are recorded in [ADR-0010](../../../docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+
 ## Domain Language
 
 Terms such as Command, Query, Read Model, Event (Domain vs Integration), Aggregate, Command Pipeline, Message Context, and Dispatcher follow the project's ubiquitous language. See [../CONTEXT.md](../CONTEXT.md) for the full glossary and relationships.

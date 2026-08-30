@@ -42,6 +42,10 @@ Each bounded context owns its ubiquitous language in a local `CONTEXT.md`; start
 - `IExternalDispatcher` is a no-op by default; a broker module replaces it (`./src/Chatter.CQRS/CONTEXT.md`).
 - `Forwarder` is a specialization of `Router` (`ForwardingRouter` / `IBrokeredMessageForwarder` overlap — `./src/Chatter.MessageBrokers/CONTEXT.md`).
 
+## Development Process
+
+Production code changes are developed test-first via the `hivemind:tdd` skill (red-green-refactor). Use judgment where TDD does not meaningfully apply — documentation, changelog/release-metadata edits, version bumps, and pure configuration. Pairs with the `dotnet test` validation procedure and the test conventions above.
+
 ## Workflow & Agents
 
 Branch, commit, PR, review, version-bump, agent dispatch, model routing, and skill selection are governed by the [hivemind plugin](https://github.com/brenpike/hivemind) (see `.claude/settings.json` → `enabledPlugins.hivemind@brenpike` and `agent: hivemind:overlord`). Do not restate or override those rules here.

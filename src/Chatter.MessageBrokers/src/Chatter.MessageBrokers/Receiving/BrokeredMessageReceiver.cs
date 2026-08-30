@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Recovery;
 using Microsoft.Extensions.Logging;
@@ -15,7 +16,7 @@ namespace Chatter.MessageBrokers.Receiving
     /// An infrastructure agnostic receiver of brokered messages of type <typeparamref name="TMessage"/>
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
-    public class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage>, IReceiverStartupSignal where TMessage : class, IMessage
+    public partial class BrokeredMessageReceiver<TMessage> : IBrokeredMessageReceiver<TMessage>, IReceiverStartupSignal where TMessage : class, IMessage
     {
         private IMessagingInfrastructureReceiver _infrastructureReceiver;
         private readonly IMessagingInfrastructureProvider _infrastructureProvider;
@@ -817,7 +818,7 @@ namespace Chatter.MessageBrokers.Receiving
             // worker could hit a disposed source during shutdown. This keeps the worker's cancellation-swallow filters
             // valid through teardown.
             var workerToken = _messageReceiverLoopTokenSource.Token;
-            var worker = Task.Run(() => ProcessReceivedMessageWorkerAsync(messageContext, transactionContext, workerToken));
+            var worker = Task.Run(() => RunProcessingWorkerAsync(messageContext, transactionContext, workerToken));
 
             lock (_inFlightTasksLock)
             {
@@ -847,6 +848,16 @@ namespace Chatter.MessageBrokers.Receiving
                 await ProcessMessageAsync(messageContext, transactionContext, workerToken);
                 _logger.LogTrace("Message processed successfully");
             }
+            // INVARIANT: THE single choke point at which the diagnostics half observes a delivery fault. A C#
+            // exception FILTER runs during the FIRST PASS of exception handling — before the stack unwinds and
+            // before ANY catch body below executes — so every fault that leaves the try above is observed here
+            // regardless of which ladder branch settles it, including branches added later. RetainReceiveFailure
+            // ALWAYS returns false, so this clause never admits an exception: clause ordering, settlement choice,
+            // swallow semantics and the concurrency invariants of the ladder below are byte-for-byte unchanged.
+            catch (Exception deliveryFault) when (RetainReceiveFailure(deliveryFault, workerToken))
+            {
+                throw; // unreachable: the filter above never admits.
+            }
             catch (CriticalReceiverException e)
             {
                 // First writer wins: publish to the loop-observed fault field so the loop stops and the existing
@@ -872,6 +883,7 @@ namespace Chatter.MessageBrokers.Receiving
             catch (PoisonedMessageException e)
             {
                 _logger.LogError(e, "Poisoned message received. Deadlettering.");
+                RecordReceiveSettlement(BrokerDiagnostics.Settlements.Deadletter);
                 await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken);
             }
             catch (Exception e)
@@ -894,6 +906,7 @@ namespace Chatter.MessageBrokers.Receiving
                     var deliveryCount = await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.MessageDeliveryCountAsync(messageContext, workerToken), workerToken);
                     if (deliveryCount >= _options.MaxReceiveAttempts)
                     {
+                        RecordReceiveSettlement(BrokerDiagnostics.Settlements.Deadletter);
                         if (await TryDeadletterWithRecoveryAsync(messageContext, transactionContext, e, workerToken))
                         {
                             await TryExecuteFailedRecoveryAction(messageContext, "Max message receive attempts exceeded", e, deliveryCount, transactionContext);
@@ -901,6 +914,7 @@ namespace Chatter.MessageBrokers.Receiving
                     }
                     else
                     {
+                        RecordReceiveSettlement(BrokerDiagnostics.Settlements.Nack);
                         await TryNackWithRecoveryAsync(messageContext, transactionContext, workerToken);
                     }
                 }
@@ -1024,12 +1038,14 @@ namespace Chatter.MessageBrokers.Receiving
             using var localTransaction = _infrastructureReceiver.CreateLocalTransaction(transactionContext);
             await _recoveryStrategy.ExecuteAsync(async () =>
                 {
+                    CountReceiveAttempt();
                     await DispatchReceivedMessageAsync(brokeredMessagePayload, messageContext, receiverTokenSource);
                     return true;
                 }, receiverTokenSource);
 
             if (!receiverTokenSource.IsCancellationRequested)
             {
+                RecordReceiveSettlement(BrokerDiagnostics.Settlements.Ack);
                 if (await TryAckWithRecoveryAsync(messageContext, transactionContext, receiverTokenSource))
                 {
                     localTransaction?.Complete();
@@ -1037,65 +1053,69 @@ namespace Chatter.MessageBrokers.Receiving
             }
             else
             {
+                RecordReceiveSettlement(BrokerDiagnostics.Settlements.Nack);
                 await TryNackWithRecoveryAsync(messageContext, transactionContext, receiverTokenSource);
             }
         }
 
-        private async Task<bool> TryAckWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+        // INVARIANT: THE single place a settle-path fault is SWALLOWED INTO A BOOL. Every "try to settle, report
+        // success as a bool, never rethrow" path routes through here, so the swallow — and the diagnostics retention
+        // that must accompany it — exists once rather than once per settle path. This is deliberately the twin of the
+        // exception FILTER on the worker's processing try block: the filter observes every fault that LEAVES that
+        // block, and a fault converted to `false` here never does, so this is the only other point at which a
+        // delivery's fault can be lost. A settle path added later cannot forget the retention, because it cannot
+        // perform the swallow itself (ADR-0010 D11).
+        // Control flow is byte-for-byte what each per-settlement method did before: the same broad catch, the same
+        // LogError, the same `false`. Only the retention is new.
+        private async Task<bool> TrySettleWithRecoveryAsync(Func<Task<bool>> settle, string failureDescription, CancellationToken settlementToken)
         {
             try
             {
-                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
+                return await _recoveryStrategy.ExecuteAsync(settle, settlementToken);
             }
-            catch (Exception e)
+            catch (Exception settlementFault)
             {
-                _logger.LogError(e, "Unable to send acknowledgment");
+                _logger.LogError(settlementFault, failureDescription);
+                RetainSettlementFailure(settlementFault, settlementToken);
                 return false;
             }
         }
 
-        private async Task<bool> TryNackWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
-        {
-            try
-            {
-                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource), receiverTokenSource);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable to send negative acknowledgment");
-                return false;
-            }
-        }
+        private Task<bool> TryAckWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+            => TrySettleWithRecoveryAsync(
+                () => _infrastructureReceiver.AckMessageAsync(messageContext, transactionContext, receiverTokenSource),
+                "Unable to send acknowledgment",
+                receiverTokenSource);
 
-        private async Task<bool> TryDeadletterWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, Exception e, CancellationToken receiverTokenSource)
-        {
-            try
-            {
-                return await _recoveryStrategy.ExecuteAsync(() => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Poisoned message received", e.ToString(), receiverTokenSource), receiverTokenSource);
-            }
-            catch (Exception inner)
-            {
-                _logger.LogError(inner, "Unable to deadletter message");
-                return false;
-            }
-        }
+        private Task<bool> TryNackWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken receiverTokenSource)
+            => TrySettleWithRecoveryAsync(
+                () => _infrastructureReceiver.NackMessageAsync(messageContext, transactionContext, receiverTokenSource),
+                "Unable to send negative acknowledgment",
+                receiverTokenSource);
 
-        private async Task<bool> TryExecuteFailedRecoveryAction(MessageBrokerContext messageContext, string failureDescription, Exception exception, int deliveryCount, TransactionContext transactionContext)
+        private Task<bool> TryDeadletterWithRecoveryAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, Exception e, CancellationToken receiverTokenSource)
+            => TrySettleWithRecoveryAsync(
+                () => _infrastructureReceiver.DeadletterMessageAsync(messageContext, transactionContext, "Poisoned message received", e.ToString(), receiverTokenSource),
+                "Unable to deadletter message",
+                receiverTokenSource);
+
+        private Task<bool> TryExecuteFailedRecoveryAction(MessageBrokerContext messageContext, string failureDescription, Exception exception, int deliveryCount, TransactionContext transactionContext)
         {
-            try
-            {
-                var failureContext = new FailureContext(messageContext.BrokeredMessage, this.ErrorQueueName, failureDescription, exception, deliveryCount, transactionContext);
-                return await _recoveryStrategy.ExecuteAsync(async () =>
+            // Built ONCE, on the first Recovery attempt, and reused by every retry — the shape this method always had.
+            // It is built INSIDE the settle delegate rather than before the call so that its own argument validation
+            // stays behind the same swallow it was behind before this method was routed through the shared choke
+            // point; hoisting it out would have turned an ArgumentException into an escape from the error ladder.
+            FailureContext failureContext = null;
+
+            return TrySettleWithRecoveryAsync(
+                async () =>
                 {
+                    failureContext ??= new FailureContext(messageContext.BrokeredMessage, this.ErrorQueueName, failureDescription, exception, deliveryCount, transactionContext);
                     await _failedRecoveryAction.ExecuteAsync(failureContext);
                     return true;
-                }, messageContext.CancellationToken);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable to execute recovery action");
-                return false;
-            }
+                },
+                "Unable to execute recovery action",
+                messageContext.CancellationToken);
         }
 
         // CANONICAL ASYNC DISPOSE SHAPE: DisposeAsync delegates the async cleanup to DisposeAsyncCore, then runs the

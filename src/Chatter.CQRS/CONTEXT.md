@@ -31,6 +31,9 @@ _Avoid_: mediator (used as the pattern name, not the type).
 
 **External Dispatcher**: The outbound-publish seam (`IExternalDispatcher`), a no-op by default (`NoOpExternalDispatcher`); a broker module replaces it to publish Integration Events.
 
+**Diagnostics Surface**: The opt-in tracing and metrics surface Chatter dispatch emits through (`ChatterDiagnostics`), built on the .NET base class library only — `System.Diagnostics.ActivitySource` for spans and `System.Diagnostics.Metrics.Meter` for instruments — with no dependency on any OpenTelemetry package. It is defined here and is public, so every other module emits through it; each emitting assembly names its own `ActivitySource` and `Meter` after itself (`Chatter.CQRS`, `Chatter.MessageBrokers`), and that name is the scope an application subscribes to. It emits nothing until an application subscribes: every emit site guards on whether Chatter's own source has a subscriber, never on the ambient `Activity.Current`, which is non-null in any host running unrelated instrumentation. See ADR-0010.
+_Avoid_: listener (a reserved alias — the .NET BCL subscription type is always named in full as a .NET `ActivityListener`); OpenTelemetry as a prerequisite (a provider merely subscribes to the surface; it is not a dependency of it).
+
 ## Relationships
 
 - An Aggregate is changed by Commands and produces Domain Events.
@@ -39,6 +42,7 @@ _Avoid_: mediator (used as the pattern name, not the type).
 - A Command Pipeline wraps all Command handlers.
 - A Domain Event may be promoted to an Integration Event, published outward via the External Dispatcher (replaced by a broker module).
 - Message Context accompanies every dispatch through the pipeline and handlers.
+- The Diagnostics Surface observes Command and Event dispatch through the Message Dispatcher; Query dispatch is not instrumented, and nothing is emitted until an application subscribes.
 
 ## Example dialogue
 

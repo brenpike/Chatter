@@ -6,6 +6,31 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-29
+
+### Added
+
+- Optional, opt-in OpenTelemetry-compatible tracing and metrics built entirely on the BCL (`System.Diagnostics.ActivitySource` and `System.Diagnostics.Metrics.Meter`) with no `OpenTelemetry.*` package dependency. The `ActivitySource` and the `Meter` are both named `Chatter.MessageBrokers`; an application opts in BY NAME with `.AddSource("Chatter.*")` / `.AddMeter("Chatter.*")` on its own provider. The scope names are the opt-in contract — the `ActivitySource` and `Meter` instances themselves are not public surface. When nothing subscribes to the source or the meter there is no cost and no change to what goes on the wire (#274).
+- Broker-boundary instrumentation: a send span per dispatch call and a receive span per delivery, a `messaging.client.operation.duration` histogram in seconds, and `messaging.client.sent.messages` / `messaging.client.consumed.messages` counters. Instrumentation never materializes a lazily-supplied publish batch — a caller's sequence is enumerated once, by the router, at the same moment and with the same side effects whether diagnostics are on or off. The batch count is therefore observed DURING that enumeration and carried on the send span at stop, and `messaging.client.sent.messages` reports the messages actually yielded, so a dispatch that fails mid-enumeration records a partial count rather than a whole batch (#274).
+- Receive metrics carry `error.type` for a delivery the worker's error ladder SETTLED — a poisoned message, an exhausted delivery, a nack — not only for a failure that escaped the worker, so an application subscribed to the meter and to no `ActivitySource` does not see a failed receive reported as a successful operation (#274).
+- A delivery carrying no usable `traceparent` starts a fresh root span with any ambient activity attached as a link, matching how a delivery that does carry one treats ambient context. A headerless delivery is no longer a child of whatever unrelated host activity happened to be current when the receive loop started, and the ambient activity that suppression sets aside is restored once the receive span stops, so it is intact for the rest of that delivery's flow whether the span was sampled in or out (#274).
+- The send span and the send metrics carry `messaging.destination.name` for the `Send`/`Publish` overloads that omit an explicit destination and let each message's `BrokeredMessageAttribute` resolve one. The destination is observed during the single enumeration the router already performs — never resolved eagerly — and is reported only when every message of the dispatch call resolved to the SAME destination; a batch spanning several destinations reports none, because the attribute holds one value (#274).
+- Receive metrics carry `error.type` when message handling succeeded but the settlement then failed — an acknowledgement, negative acknowledgement, deadletter or failed-recovery action that Recovery could not complete. Such a failure is swallowed into a `false` return by design and so never leaves the processing worker, which means it would otherwise have been reported as a successful receive while the message stayed unsettled and eligible for redelivery (#274).
+- W3C trace-context propagation (`traceparent` / `tracestate`) across the brokered message boundary, carried on the message context so it survives the outbox and replay. Scope is deliberately partial: trace context flows for Azure Service Bus, RabbitMQ, the EntityFramework outbox, and the Cosmos outbox. It does not flow across the SQL Service Broker `DefaultType` receive path, nor for SQL Change Feed messages, which originate from a SQL trigger with no producer to stamp them. Both gaps are pre-existing limitations that affect all headers alike and are not introduced by tracing (#274).
+
+### Changed
+
+- The outbound dispatch sequence is now documented as single-pass on both seams it crosses (`IRouteBrokeredMessages.Route` and `IMessagingInfrastructureDispatcher.Dispatch`): the sequence is lazy and its iterator carries per-yield side effects — message id generation, message body conversion, W3C trace-context propagation — plus the send span's batch count, so an implementation must enumerate it exactly once and must not walk it with `Count()`/`Any()`/`ToList()` in addition to the real enumeration. This documents a contract the pipeline already relied on; no behavior change (#274).
+- Bundled dependency uplift to Chatter.CQRS 0.9.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it); no behavioral change to Chatter.MessageBrokers itself beyond the additions above.
+
+## [0.14.1] - 2026-06-15
+
+### Fixed
+
+- A handler-supplied outbound `MessageId` set via `SendOptions`/`PublishOptions` now survives the handler-context Send/Publish merge and is no longer replaced by a framework-generated id (#245).
+
+## [0.14.0] - 2026-06-14
+
 ### Added
 
 - `IAtomicWriteHandle` — a tier-neutral marker abstraction the `SendToOutbox` enqueue contract is abstracted over; satisfied by the relational `IPersistanceTransaction` and the future document-tier atomic-write handle (#216).
@@ -16,9 +41,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - **BREAKING:** `IBrokeredMessageOutbox` is split into `IBrokeredMessageOutbox` (retaining only the two `SendToOutbox` overloads, with the single-message overload remaining a default-interface-method) and a new relational-only `IPollableOutboxStore` carrying the polling-dispatch trio (`GetUnprocessedMessagesFromOutbox`, `GetUnprocessedBatch`, `UpdateProcessedDate`). `IPersistanceTransaction` now derives from `IAtomicWriteHandle`, and `IUnitOfWork` is documented as relational-only (ambient-transaction tier; the document tier never implements it). Breaking for code that implements the reliability port; ordinary adapter consumers are unaffected (#216).
 - Secondary reliability facets (`IPollableOutboxStore`, `IInboxDeduplicator`) are no longer independently registered or resolved as DI services. Poll consumers obtain each secondary facet by casting the single resolved primary (`IBrokeredMessageOutbox` / `IBrokeredMessageInbox`) at the consumption site — the same pattern `OutboxProcessor` uses to obtain `IUnitOfWork`. A custom store must implement both facets on one concrete or the cast throws `InvalidCastException` at the poll site. Split-store is impossible by construction: there is exactly one resolved reliability-store instance per pair; no descriptor inspection, lifetime reconciliation, or fail-fast registration. `AddReliabilityPair` and `ReliabilityStoreLifetimeException` are deleted (#216).
 
+## [0.13.2] - 2026-06-13
+
 ### Fixed
 
-- A handler-supplied outbound `MessageId` set via `SendOptions`/`PublishOptions` now survives the handler-context Send/Publish merge and is no longer replaced by a framework-generated id (#245).
 - Per-send `SendOptions`/`PublishOptions` no longer leak into the inbound handler message context: `SendOptions.Create`/`PublishOptions.Create` now copy the inbound context so a routed/configured send does not persist its options (exchange/routing key, subject, TTL, correlation-id, etc.) into subsequent sends on the same handler context (#201).
 
 ## [0.13.1] - 2026-06-09

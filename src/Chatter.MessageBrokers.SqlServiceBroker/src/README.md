@@ -113,6 +113,17 @@ On receive, the library filters by message type: only `//Chatter/BrokeredMessage
 
 > Note: automatic provisioning of Service Broker objects (queues, services, contracts, message types, `ENABLE_BROKER`) lives in the separate `Chatter.SqlChangeFeed` package, not here.
 
+## Header Propagation (including Trace Context)
+
+Only the **Chatter envelope** message type round-trips the Message Context. Two receive paths deliberately build a **fresh, empty header dictionary**, so every upstream header is dropped:
+
+- The **`DEFAULT` message type** receive path. A `DEFAULT`-typed message carries a raw body with no Chatter envelope, so there is no context to restore; the receiver hands the handler a fresh dictionary. Context survives only when the sending application supplies the `//Chatter/BrokeredMessage` message type, whose deserialized envelope carries its own `MessageContext`.
+- The **deadletter** path, which likewise constructs a fresh dictionary for the dead-lettered message.
+
+This is a **pre-existing limitation that affects all headers alike** — correlation id, group id, application headers, and (since [ADR-0010](../../../docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md)) the W3C trace-context headers `traceparent` / `tracestate`. It is not something Chatter's opt-in tracing introduced, and closing it is a change to these receive paths rather than to the instrumentation.
+
+The consequence for tracing: a distributed trace continues across this transport on the Chatter envelope path, and **starts a new trace** on the `DEFAULT` path. Both behaviors are pinned by conformance tests, so a change that accidentally fixes or worsens either is visible.
+
 ## Domain Language
 
 See the [domain glossary](../CONTEXT.md) for definitions of Service Broker Receiver, Service Broker Sender, Queue, Conversation, Setup Scripts, and Service Broker Options.
