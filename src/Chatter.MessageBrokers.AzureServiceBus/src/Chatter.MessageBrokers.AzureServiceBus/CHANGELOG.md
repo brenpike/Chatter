@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [1.4.3] - 2026-08-30
+
+### Fixed
+
+- In PeekLock mode, the three settlement operations — acknowledge, reject/abandon, and dead-letter — now throw `ServiceBusMessageSettlementException` when the received message cannot be found in the message broker context, instead of logging a warning and silently returning `false`. Previously the delivery was left unsettled, the broker redelivered it after the lock expired, and the application processed the same message twice with no signal (#284). Upgraders should note this makes previously-invisible failures visible: a delivery that used to report a successful acknowledgement now surfaces as a failed receive carrying an `error.type`, so dashboards may show new failures that were always occurring.
+
 ## [1.4.2] - 2026-08-30
 
 ### Fixed

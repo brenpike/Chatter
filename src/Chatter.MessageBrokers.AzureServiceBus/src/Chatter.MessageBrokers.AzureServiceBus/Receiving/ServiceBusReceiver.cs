@@ -1,4 +1,5 @@
 using Chatter.MessageBrokers.AzureServiceBus.DependencyInjection;
+using Chatter.MessageBrokers.AzureServiceBus.Exceptions;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
@@ -241,8 +242,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                _logger.LogWarning($"Unable to acknowledge message. No {nameof(ServiceBusReceivedMessage)} contained in {nameof(context)}.");
-                return false;
+                throw new ServiceBusMessageSettlementException($"Unable to complete the Azure Service Bus message. No {nameof(ServiceBusReceivedMessage)} was contained in the message broker context, so the PeekLock delivery was not settled.");
             }
 
             await this.InnerReceiver.CompleteAsync(msg);
@@ -259,8 +259,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                _logger.LogWarning($"Unable to negative acknowledge message. No {nameof(ServiceBusReceivedMessage)} contained in {nameof(context)}.");
-                return false;
+                throw new ServiceBusMessageSettlementException($"Unable to abandon the Azure Service Bus message. No {nameof(ServiceBusReceivedMessage)} was contained in the message broker context, so the PeekLock delivery was not settled.");
             }
 
             await this.InnerReceiver.AbandonAsync(msg, new Dictionary<string, object>(msg.ApplicationProperties));
@@ -277,8 +276,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                _logger.LogWarning($"Unable to deadletter message. No {nameof(ServiceBusReceivedMessage)} contained in {nameof(context)}.");
-                return false;
+                throw new ServiceBusMessageSettlementException($"Unable to deadletter the Azure Service Bus message. No {nameof(ServiceBusReceivedMessage)} was contained in the message broker context, so the PeekLock delivery was not settled.");
             }
 
             await this.InnerReceiver.DeadLetterAsync(msg, deadLetterReason, CapDeadLetterErrorDescription(deadLetterErrorDescription));
