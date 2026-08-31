@@ -218,10 +218,12 @@ Two spans, one Chatter-native span event alongside the standard `exception` even
 
 Those two are the whole span inventory. `messaging.operation.type` also declares the semconv values `create`, `process` and `settle`, but Chatter emits none of them, so a query written against those values matches nothing.
 
-Two attributes are deliberately absent in stated cases:
+Two **span** attributes are deliberately absent in stated cases:
 
 - An **attribute-routed dispatch** — the `Send` / `Publish` overloads that take no explicit destination — starts a bare `send` span with `messaging.destination.name` **unset**, because the destination is resolved by the one enumeration the Router performs. It is written, and the span name rewritten, at span stop, so what an exporter reads at stop is the resolved value rather than the start-time placeholder. A .NET `ActivityListener` that inspects the span at `ActivityStarted` does see the bare shape — the write happens after start — but sampling has already been decided by then, so the placeholder can never affect it. A batch whose messages resolve to different destinations has no single destination, so the attribute stays unset — at stop as well as at start — rather than being given the first message's value. `Forward` always takes an explicit destination, so a send span started by a forward never has this shape.
 - `messaging.system` is left **unset** when the message carries no Messaging Infrastructure identifier. Nothing is invented in its place.
+
+Both are absences **on the span**. The instruments below build one fixed attribute set, so `messaging.system` and `messaging.destination.name` are always present on a measurement as attribute *keys* and carry a **null value** in the two cases above rather than being omitted. Write "the attribute is missing" queries against the spans; against the metrics, write them against a null value.
 
 **Span events**
 
@@ -242,7 +244,7 @@ Two attributes are deliberately absent in stated cases:
 
 All three carry exactly `messaging.system`, `messaging.operation.name`, `messaging.operation.type` and `messaging.destination.name`, plus `error.type` on failure.
 
-**Metric attributes are a strict subset of the span attributes.** `messaging.batch.message_count`, `messaging.message.id`, `chatter.messaging.settlement` and `chatter.messaging.receive.attempts` are **span-only** and are not available as metric attributes. A rate broken down by settlement outcome, by message id, or by attempt count therefore cannot be built from these instruments — that breakdown has to come from the spans.
+**Metric attribute names are a strict subset of the span attribute names.** `messaging.batch.message_count`, `messaging.message.id`, `chatter.messaging.settlement` and `chatter.messaging.receive.attempts` are **span-only** and are not available as metric attributes. A rate broken down by settlement outcome, by message id, or by attempt count therefore cannot be built from these instruments — that breakdown has to come from the spans.
 
 **`error.type` takes two shapes.** When an exception carried the failure it is the **fully qualified exception type name**. When the receiving infrastructure *returns* a `Failed` Settlement Outcome without throwing, it is **`settlement_failed`**. That second value carries no `exception` span event, deliberately: there is no exception, and a never-thrown marker exception would attach a synthetic stack trace as false evidence about something that never happened.
 
