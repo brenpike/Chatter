@@ -319,16 +319,22 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         private readonly BrokeredMessageReceiver<TracedDelivery> _receiver;
         private readonly int _failedDispatchCount;
         private readonly int _maxReceiveAttempts;
+        private readonly string _infrastructureType;
         private int _dispatchCount;
 
         /// <param name="failedDispatchCount">How many leading dispatches raise a <see cref="DiagnosticsProbeException"/>.</param>
         /// <param name="maxRecoveryAttempts">How many times Recovery re-runs a failing dispatch before giving up.</param>
         /// <param name="deliveryCount">The delivery count the infrastructure reports, which selects Nack versus Deadletter.</param>
         /// <param name="maxReceiveAttempts">The receiver's configured maximum delivery count.</param>
-        public DiagnosticsReceiveHarness(int failedDispatchCount = 0, int maxRecoveryAttempts = 1, int deliveryCount = 1, int maxReceiveAttempts = 10)
+        /// <param name="infrastructureType">
+        /// The Messaging Infrastructure identity the receiver options name. Defaults to <see cref="MessagingSystem"/>,
+        /// so a test that does not name one is unaffected; a BLANK value is the receiver configured without one.
+        /// </param>
+        public DiagnosticsReceiveHarness(int failedDispatchCount = 0, int maxRecoveryAttempts = 1, int deliveryCount = 1, int maxReceiveAttempts = 10, string infrastructureType = MessagingSystem)
         {
             _failedDispatchCount = failedDispatchCount;
             _maxReceiveAttempts = maxReceiveAttempts;
+            _infrastructureType = infrastructureType;
             _infrastructureReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 1) { DeliveryCount = deliveryCount };
 
             _receivedMessageDispatcher
@@ -436,7 +442,7 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         private ReceiverOptions BuildReceiverOptions()
             => new ReceiverOptions
             {
-                InfrastructureType = MessagingSystem,
+                InfrastructureType = _infrastructureType,
                 MessageReceiverPath = ReceiverPath,
                 SendingPath = ReceiverPath,
                 ErrorQueuePath = "diagnostics-error-queue",
