@@ -67,8 +67,9 @@ namespace Chatter.MessageBrokers.Routing
         /// </summary>
         private async Task RouteWithDiagnostics(OutboundBrokeredMessage outboundMessage, TransactionContext transactionContext)
         {
-            // The Messaging Infrastructure the message names is the only messaging-system identity this package has;
-            // when the message carries none the tag is left unset rather than given an invented value.
+            // The Messaging Infrastructure the message names is the only messaging-system identity this package
+            // has; it is passed through here AS-IS. BrokerDiagnostics normalizes a blank identifier to an unset
+            // span attribute (the metric keeps the key with a null value) rather than inventing one.
             var messagingSystem = outboundMessage.InfrastructureType;
             var startTimestamp = Stopwatch.GetTimestamp();
             Exception failure = null;

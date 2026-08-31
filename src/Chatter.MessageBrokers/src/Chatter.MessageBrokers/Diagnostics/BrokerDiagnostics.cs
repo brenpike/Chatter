@@ -359,9 +359,34 @@ namespace Chatter.MessageBrokers.Diagnostics
         private static string BuildSpanName(string operationName, string destinationName)
             => string.IsNullOrEmpty(destinationName) ? operationName : operationName + " " + destinationName;
 
+        /// <summary>
+        /// Resolves the value written for <see cref="MessagingSystem"/>, normalizing a BLANK infrastructure type to
+        /// <c>null</c> so the attribute is left UNSET rather than reported as an empty string.
+        /// </summary>
+        /// <param name="messagingSystem">The infrastructure type the call site named, which may be blank or null.</param>
+        /// <returns>The infrastructure type, or <c>null</c> when it is null, empty, or whitespace.</returns>
+        /// <remarks>
+        /// INVARIANT: a blank infrastructure type is a VALID Messaging Infrastructure LOOKUP KEY — blank means "the
+        /// first registered Messaging Infrastructure", which is why
+        /// <see cref="Sending.BrokeredMessageDispatcher"/> passes it to the Router as-is — and an INVALID telemetry
+        /// attribute value. A valid lookup key and a valid attribute value are not the same thing, so the routing
+        /// options and the Message Context are NEVER mutated: the normalization happens HERE, at the one point where
+        /// the value becomes a signal.
+        /// INVARIANT: this is the ONLY place <see cref="MessagingSystem"/> is written, so the span and the metric
+        /// cannot spell one absence two ways. They still differ BY DESIGN: an attribute unset on a span still appears
+        /// on the instruments as a key carrying a null value, because a metric's attribute set is fixed per
+        /// instrument.
+        /// It sits BELOW Chatter's off-guard and costs an application that never opted in nothing (ADR-0010 R1):
+        /// <see cref="SetOperationTags"/> runs only after <see cref="ActivitySource.HasListeners"/> has returned true
+        /// AND an <see cref="Activity"/> was started, and <see cref="BuildOperationTags"/> is only ever built inside
+        /// an <see cref="Instrument.Enabled"/> guard.
+        /// </remarks>
+        private static string NormalizeMessagingSystem(string messagingSystem)
+            => string.IsNullOrWhiteSpace(messagingSystem) ? null : messagingSystem;
+
         private static void SetOperationTags(Activity activity, string messagingSystem, string operationName, string operationType, string destinationName)
         {
-            activity.SetTag(MessagingSystem, messagingSystem);
+            activity.SetTag(MessagingSystem, NormalizeMessagingSystem(messagingSystem));
             activity.SetTag(OperationName, operationName);
             activity.SetTag(OperationType, operationType);
             activity.SetTag(DestinationName, destinationName);
@@ -382,7 +407,7 @@ namespace Chatter.MessageBrokers.Diagnostics
         {
             var tags = new TagList
             {
-                { MessagingSystem, messagingSystem },
+                { MessagingSystem, NormalizeMessagingSystem(messagingSystem) },
                 { OperationName, operationName },
                 { OperationType, operationType },
                 { DestinationName, destinationName }

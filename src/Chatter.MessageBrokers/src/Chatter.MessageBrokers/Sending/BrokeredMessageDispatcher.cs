@@ -128,8 +128,9 @@ namespace Chatter.MessageBrokers.Sending
         {
             options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
 
-            // The Messaging Infrastructure the routing options name is the only messaging-system identity this package
-            // has; when the options carry none the tag is left unset rather than given an invented value.
+            // The Messaging Infrastructure the routing options name is the only messaging-system identity this
+            // package has; it is passed through here AS-IS. BrokerDiagnostics normalizes a blank identifier to an
+            // unset span attribute (the metric keeps the key with a null value) rather than inventing one.
             var messagingSystem = (string)infraType;
             var startTimestamp = Stopwatch.GetTimestamp();
             var batchObservation = new SendBatchObservation();

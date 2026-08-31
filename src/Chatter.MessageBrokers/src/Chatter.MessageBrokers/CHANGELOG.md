@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-08-31
+
+### Fixed
+
+- The send span no longer emits `messaging.system` as an empty string when a consumer explicitly selects the default Messaging Infrastructure via `UseMessagingInfrastructure(t => t.Default)`; the attribute is now left unset across all three send paths (dispatch, forward, reply). Send metric measurements carry the `messaging.system` key with a null value in that case, as the key is kept rather than omitted. Consumers filtering or grouping on the empty-string bucket will see those spans as having no `messaging.system` (#293).
+
 ## [0.16.1] - 2026-08-31
 
 ### Fixed

@@ -1,8 +1,9 @@
-using Chatter.CQRS;
+﻿using Chatter.CQRS;
 using Chatter.CQRS.Commands;
 using Chatter.CQRS.Events;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery;
 using Chatter.MessageBrokers.Routing;
@@ -86,6 +87,7 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
 
         private readonly List<string> _dispatchTimeline = new List<string>();
         private readonly bool _routerEnumerates;
+        private readonly string _infrastructureType;
         private readonly Mock<IRouteBrokeredMessages> _messageRouter = new Mock<IRouteBrokeredMessages>();
         private readonly Mock<IForwardMessages> _forwarder = new Mock<IForwardMessages>();
         private readonly Mock<IBrokeredMessageAttributeDetailProvider> _detailProvider = new Mock<IBrokeredMessageAttributeDetailProvider>();
@@ -103,9 +105,14 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         /// every time; a list SHORTER than the batch repeats its last entry, so a two-entry list makes a batch
         /// heterogeneous. This is what makes an attribute-routed batch's destination observable at all.
         /// </param>
-        public DiagnosticsSendHarness(bool routerEnumerates = true, IReadOnlyList<string> attributeDestinations = null)
+        /// <param name="infrastructureType">
+        /// The Messaging Infrastructure identity the routing options name. Defaults to <see cref="MessagingSystem"/>,
+        /// so a test that does not name one is unaffected; a BLANK value is the dispatch configured without one.
+        /// </param>
+        public DiagnosticsSendHarness(bool routerEnumerates = true, IReadOnlyList<string> attributeDestinations = null, string infrastructureType = MessagingSystem)
         {
             _routerEnumerates = routerEnumerates;
+            _infrastructureType = infrastructureType;
 
             var bodyConverter = new JsonBodyConverter();
             _bodyConverterFactory.Setup(factory => factory.CreateBodyConverter(It.IsAny<string>())).Returns(bodyConverter);
@@ -191,17 +198,17 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         public IReadOnlyList<string> RoutedContextKeys(int messageIndex = 0)
             => RoutedMessages[messageIndex].MessageContext.Keys.OrderBy(key => key, StringComparer.Ordinal).ToArray();
 
-        private static SendOptions BuildSendOptions()
+        private SendOptions BuildSendOptions()
         {
             var options = new SendOptions();
-            options.UseMessagingInfrastructure(_ => MessagingSystem);
+            options.UseMessagingInfrastructure(_ => _infrastructureType);
             return options;
         }
 
-        private static PublishOptions BuildPublishOptions()
+        private PublishOptions BuildPublishOptions()
         {
             var options = new PublishOptions();
-            options.UseMessagingInfrastructure(_ => MessagingSystem);
+            options.UseMessagingInfrastructure(_ => _infrastructureType);
             return options;
         }
 
@@ -299,6 +306,59 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
 
                 yield return new TracedEvent { Value = "event-" + index };
             }
+        }
+    }
+
+    /// <summary>
+    /// A Router that captures the single message routed to it, plus the message-id generator the forward and
+    /// reply routers need.
+    /// </summary>
+    /// <remarks>
+    /// Declared here rather than in its own file because it is shared by the forward/reply aliasing tests and the
+    /// send-side absent-infrastructure-type tests, which is also part of the set this file's collection definition
+    /// serialises.
+    /// </remarks>
+    public sealed class CapturingRoutingHarness
+    {
+        private readonly Mock<IRouteBrokeredMessages> _router = new Mock<IRouteBrokeredMessages>();
+        private readonly Mock<IMessageIdGenerator> _messageIdGenerator = new Mock<IMessageIdGenerator>();
+
+        public CapturingRoutingHarness()
+        {
+            _messageIdGenerator.Setup(generator => generator.GenerateId(It.IsAny<byte[]>())).Returns(() => Guid.NewGuid());
+
+            _router
+                .Setup(router => router.Route(It.IsAny<OutboundBrokeredMessage>(), It.IsAny<TransactionContext>()))
+                .Callback<OutboundBrokeredMessage, TransactionContext>((outboundMessage, _) => RoutedMessage = outboundMessage)
+                .Returns(Task.CompletedTask);
+        }
+
+        public IRouteBrokeredMessages Router => _router.Object;
+
+        public IMessageIdGenerator MessageIdGenerator => _messageIdGenerator.Object;
+
+        public OutboundBrokeredMessage RoutedMessage { get; private set; }
+
+        /// <summary>
+        /// Builds the delivery a Forwarding Router or Reply Router is handed, carrying
+        /// <paramref name="infrastructureType"/> and <paramref name="traceParent"/> on its context.
+        /// </summary>
+        /// <param name="traceParent">The inbound W3C <c>traceparent</c>, or <c>null</c> for a headerless delivery.</param>
+        /// <param name="infrastructureType">
+        /// The Messaging Infrastructure identity the delivery names. Defaults to
+        /// <see cref="DiagnosticsSendHarness.MessagingSystem"/>, so a test that does not name one is unaffected; a
+        /// BLANK value is the delivery that names none.
+        /// </param>
+        public static InboundBrokeredMessage BuildInbound(string traceParent, string infrastructureType = DiagnosticsSendHarness.MessagingSystem)
+        {
+            var bodyConverter = new JsonBodyConverter();
+            var messageContext = new Dictionary<string, object>
+            {
+                [MessageContext.InfrastructureType] = infrastructureType,
+                [TraceContextHeaders.TraceParent] = traceParent,
+            };
+
+            return new InboundBrokeredMessage("inbound-message-id", bodyConverter.Convert(new TracedDelivery { Value = "inbound" }), messageContext, "receiver-path", bodyConverter);
         }
     }
 
