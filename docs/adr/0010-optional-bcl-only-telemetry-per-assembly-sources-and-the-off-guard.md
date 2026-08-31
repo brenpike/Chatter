@@ -716,6 +716,74 @@ itself pinned, for the same reason — the harness owns the loop's cancellation 
 AFTER a settlement. This is a harness gap, recorded here rather than papered over, and the closure
 argument above rests on the filter's first-pass semantics rather than on those tests.
 
+**AMENDED — the second retention class was itself TWO classes: a settlement that THREW, and a
+settlement the infrastructure ANSWERED as failed.** The amendment above named two exhaustive classes
+of lost fault — one that LEAVES the processing block (the filter sees it) and one swallowed into a
+`bool` (the settle choke point sees it). The second class is not one thing. Broker infrastructure can
+report that a settlement did not happen without raising anything, and the settlement seam's
+undeclared `bool` could not express that: `false` meant BOTH "the settlement was attempted and did
+not happen" and "there was nothing to settle" (Azure Service Bus `ReceiveAndDelete`, RabbitMQ
+at-most-once). Collapsed onto one value, a settlement that FAILED was indistinguishable from one that
+was never REQUIRED, so the failed one could not be retained without also retaining the routine one.
+
+**The decision: the settlement seam reports THREE outcomes, and the choke point retains on two of
+them.** `IMessagingInfrastructureReceiver`'s three settlement members return `Task<SettlementResult>`
+(`Settled` / `NotRequired` / `Failed`, with a reason on every unsettled outcome) instead of `Task<bool>`
+(`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/SettlementResult.cs`). The swallow
+site is STILL exactly one — `TrySettleWithRecoveryAsync` — and it now retains through two calls
+rather than one:
+
+- `RetainSettlementFailure(Exception, CancellationToken)` from the `catch`, for a settlement that
+  THREW. Unchanged, including the `IsShutdownCancellation` exemption.
+- `RetainSettlementFailure(string, string)` after the call returns, when
+  `SettlementResult.Outcome` is `SettlementOutcome.Failed` — a failed receive that no exception ever
+  carried. Its `error.type` is `BrokerDiagnostics.ErrorTypes.SettlementFailed` (`settlement_failed`),
+  and its span status description is the `Reason` the infrastructure supplied. There is no
+  shutdown-cancellation exemption on this path because there is no cancellation to recognise: the
+  exemption is keyed on an exception raised while the worker token is cancelled, and no exception was
+  raised here.
+
+`NotRequired` retains nothing and is deliberately silent — suppressing the routine case is the whole
+reason the third value exists. First-writer-wins is unchanged and still holds across both calls: they
+write the SAME `ReceiveDiagnosticsScope.Failure` field the filter writes, and the filter is still the
+first writer whenever it fires.
+
+**A `Failed` outcome is marked through `ActivityOutcome`'s NON-EXCEPTION overload, and there is no
+never-thrown marker exception.** `ActivityOutcome.RecordFailure(Activity, string errorType, string
+description)` sets `ActivityStatusCode.Error` with the description and stamps `error.type` with the
+supplied value, and adds NO `exception` span event — because no exception exists. The rejected
+alternative was to raise-and-catch (or merely construct) a marker exception so the existing
+exception overload could be reused; it would have stamped a synthetic stack trace as an `exception`
+span event, which is fabricated evidence about something that never happened. For the same reason the
+retained failure is a `ReceiveFailure` value (`Exception` / `ErrorType` / `Description` / `HasValue`)
+rather than an `Exception`: a failure with no exception is representable without inventing one.
+
+**The two shapes still cannot spell one failure differently.** `BuildOperationTags` takes an ALREADY
+RESOLVED `error.type` string, so the exception path (`ActivityOutcome.ResolveErrorType`, the fully
+qualified exception type name) and the non-exception path (`ErrorTypes.SettlementFailed`) meet at one
+point instead of resolving the value independently; and the tag's emptiness test mirrors
+`ActivityOutcome.RecordFailure(Activity, string, string)`'s own no-op condition, so a blank error type
+cannot leave a span marked failed while its metric goes untagged. D4 as amended therefore holds for a
+failure that raised nothing, exactly as it does for one that threw: one retained fault, one spelling,
+span status and metric `error.type` in agreement.
+
+**A `Failed` outcome is TERMINAL for the delivery, and a transient fault must still THROW.** Recovery
+WRAPS the settle call, so a thrown fault is retried and a returned `Failed` is not — returning it
+deliberately removes the fault from the retry path, which is correct only where retrying could never
+succeed (a PeekLock settlement whose delivery is absent from the message broker context; a RabbitMQ
+delivery tag belonging to a recycled channel). The delivery's fate is then whatever the
+infrastructure's own redelivery rules dictate. This is a diagnostics-visible consequence, not just a
+control-flow one: a deterministic fault reported as `Failed` is retained ONCE, where the same fault
+thrown would have been retried by Recovery first.
+
+Pinned by `WhenSettlementOutcomesReachTheLadder` —
+`MustReportASettlementTheInfrastructureDeclinedAsAFailedReceive`,
+`MustNotReportAFailureWhenTheInfrastructureHadNothingToSettle`,
+`MustCompleteTheLocalTransactionOnlyWhenTheInfrastructureSettled` and
+`MustStillRecordAnExceptionEventWhenTheSettlementFaultWasRaised` — which drive all three outcomes
+through the receiver's error ladder and assert the span, the metric and the local transaction for
+each.
+
 ## The off-guard
 
 This section is the acceptance criterion for the whole change. Four rules, all four load-bearing.

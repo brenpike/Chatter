@@ -316,17 +316,17 @@ namespace Chatter.SqlChangeFeed.Tests.Diagnostics
 
             public Task StopReceiver() => Task.CompletedTask;
 
-            public Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+            public Task<SettlementResult> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
             {
                 _acknowledged.TrySetResult(true);
-                return Task.FromResult(true);
+                return Task.FromResult(SettlementResult.Settled());
             }
 
-            public Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
-                => Task.FromResult(true);
+            public Task<SettlementResult> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+                => Task.FromResult(SettlementResult.Settled());
 
-            public Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
-                => Task.FromResult(true);
+            public Task<SettlementResult> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+                => Task.FromResult(SettlementResult.Settled());
 
             public Task<int> MessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken)
                 => Task.FromResult(1);

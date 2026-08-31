@@ -1,4 +1,3 @@
-using Chatter.MessageBrokers.AzureServiceBus.Exceptions;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.AzureServiceBus.Receiving;
 using Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving;
@@ -10,6 +9,7 @@ using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -23,11 +23,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
     // Characterization tests pinning the ack/nack/deadletter guard branches that resolve BEFORE
     // touching InnerReceiver (which would open a live connection):
     //   1. When the effective ServiceBusReceiveMode != PeekLock (i.e. TransactionMode.None =>
-    //      ReceiveAndDelete) every ack/nack/deadletter returns false without inspecting the container:
-    //      there is no lock to settle, so the no-op is correct.
+    //      ReceiveAndDelete) every ack/nack/deadletter reports NotRequired without inspecting the
+    //      container: Azure Service Bus removed the delivery on receipt, so no settlement is owed.
     //   2. When in PeekLock mode but no ServiceBusReceivedMessage is in the context container, every
-    //      ack/nack/deadletter throws ServiceBusMessageSettlementException and settles nothing. The
-    //      lock exists but cannot be released, so silently reporting false would strand the delivery.
+    //      ack/nack/deadletter reports Failed and settles nothing. The lock exists but cannot be
+    //      released, and reporting NotRequired would claim nothing was owed when a settlement was.
+    //   3. A fault the infrastructure RAISES still propagates rather than being reported as Failed, so
+    //      Recovery keeps its chance to retry a transient broker fault.
     // The InitializeAsync receive-mode flip is observed indirectly: initializing with a non-None
     // TransactionMode flips the receiver into PeekLock, so guard branch (2) becomes reachable.
     public class WhenAcknowledgingMessage : Testing.Core.Context
@@ -65,9 +67,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             return sut;
         }
 
-        // Drives the deadletter path through the in-memory IServiceBusMessageReceiver double so the
-        // capped description handed to DeadLetterAsync is captured via DeadLetteredMessages.
-        private static ServiceBusReceiver CreateInMemorySut(InMemoryServiceBusMessageReceiver inMemory)
+        // Drives the settlement paths through an injected IServiceBusMessageReceiver double so what the
+        // receiver hands the infrastructure — and what the infrastructure raises back — is observable.
+        private static ServiceBusReceiver CreateSutOver(IServiceBusMessageReceiver innerReceiver)
         {
             var serviceBusOptions = new ServiceBusOptions
             {
@@ -77,17 +79,50 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var factory = new Mock<IBodyConverterFactory>();
             factory.Setup(f => f.CreateBodyConverter(It.IsAny<string>())).Returns(new JsonBodyConverter());
             var inboundFactory = new InboundBrokeredMessageFactory(factory.Object, Mock.Of<ILogger>());
-            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => inMemory);
+            return new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, inboundFactory, (_, __) => innerReceiver);
         }
 
         private static async Task<(ServiceBusReceiver sut, MessageBrokerContext context, TransactionContext transactionContext)> ReceivedPeekLockMessageAsync(InMemoryServiceBusMessageReceiver inMemory)
         {
             inMemory.EnqueueMessage(ServiceBusMessageFactory.ReceivedMessage());
-            var sut = CreateInMemorySut(inMemory);
+            var sut = CreateSutOver(inMemory);
             await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = "receiver", TransactionMode = TransactionMode.ReceiveOnly }, CancellationToken.None);
             var transactionContext = new TransactionContext("receiver");
             var context = await sut.ReceiveMessageAsync(transactionContext, CancellationToken.None);
             return (sut, context, transactionContext);
+        }
+
+        // Delivers one received message and then raises the supplied fault from every settlement call.
+        // Moq cannot stand in here: the DynamicProxyGenAssembly2 InternalsVisibleTo grant on the adapter
+        // assembly is strong-name-keyed, so a Castle proxy over this internal port fails to load.
+        private class SettlementFaultingServiceBusMessageReceiver : IServiceBusMessageReceiver
+        {
+            private readonly Exception _settlementFault;
+            private bool _delivered;
+
+            public SettlementFaultingServiceBusMessageReceiver(Exception settlementFault)
+                => _settlementFault = settlementFault;
+
+            public bool IsClosedOrClosing => false;
+
+            public Task<ServiceBusReceivedMessage> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                if (_delivered)
+                {
+                    return Task.FromResult<ServiceBusReceivedMessage>(null);
+                }
+
+                _delivered = true;
+                return Task.FromResult(ServiceBusMessageFactory.ReceivedMessage());
+            }
+
+            public Task CompleteAsync(ServiceBusReceivedMessage message) => throw _settlementFault;
+
+            public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify) => throw _settlementFault;
+
+            public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription) => throw _settlementFault;
+
+            public Task CloseAsync() => Task.CompletedTask;
         }
 
         private const int MaxDeadLetterErrorDescriptionLength = 4096;
@@ -96,13 +131,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         private const string NackOperation = "nack";
         private const string DeadletterOperation = "deadletter";
 
-        // Mirrors the raw substrings DefaultExceptionsPredicateProvider matches against Exception.Message.
-        private static readonly string[] DefaultRetryPredicateSubstrings =
-        {
-            "retry", "timeout", "time out", "rerun", "internal server error", "waiting", "wait until", "service unavailable",
-        };
-
-        private static Func<Task> CreateSettlementCall(ServiceBusReceiver sut, string operation, MessageBrokerContext context, TransactionContext transactionContext)
+        private static Func<Task<SettlementResult>> CreateSettlementCall(ServiceBusReceiver sut, string operation, MessageBrokerContext context, TransactionContext transactionContext)
             => operation switch
             {
                 AckOperation => () => sut.AckMessageAsync(context, transactionContext, CancellationToken.None),
@@ -111,41 +140,33 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
                 _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, "Unknown settlement operation."),
             };
 
-        [Fact]
-        public async Task MustReturnFalseFromAckWhenNotPeekLock()
+        [Theory]
+        [InlineData(AckOperation)]
+        [InlineData(NackOperation)]
+        [InlineData(DeadletterOperation)]
+        public async Task MustReportNotRequiredWhenNotPeekLock(string operation)
         {
             var sut = CreateSut();
-            var result = await sut.AckMessageAsync(CreateEmptyContext(), new TransactionContext("receiver"), CancellationToken.None);
-            result.Should().BeFalse();
-        }
 
-        [Fact]
-        public async Task MustReturnFalseFromNackWhenNotPeekLock()
-        {
-            var sut = CreateSut();
-            var result = await sut.NackMessageAsync(CreateEmptyContext(), new TransactionContext("receiver"), CancellationToken.None);
-            result.Should().BeFalse();
-        }
+            var result = await CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"))();
 
-        [Fact]
-        public async Task MustReturnFalseFromDeadletterWhenNotPeekLock()
-        {
-            var sut = CreateSut();
-            var result = await sut.DeadletterMessageAsync(CreateEmptyContext(), new TransactionContext("receiver"), "reason", "description", CancellationToken.None);
-            result.Should().BeFalse();
+            result.Outcome.Should().Be(SettlementOutcome.NotRequired);
+            result.Reason.Should().NotBeNullOrWhiteSpace();
         }
 
         [Theory]
         [InlineData(AckOperation)]
         [InlineData(NackOperation)]
         [InlineData(DeadletterOperation)]
-        public async Task MustThrowSettlementExceptionWhenPeekLockButNoMessageInContext(string operation)
+        public async Task MustReportFailedNamingTheUnsettledDeliveryWhenPeekLockButNoMessageInContext(string operation)
         {
             var sut = await CreatePeekLockSutAsync();
 
-            var settle = CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"));
+            var result = await CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"))();
 
-            await settle.Should().ThrowAsync<ServiceBusMessageSettlementException>();
+            result.Outcome.Should().Be(SettlementOutcome.Failed);
+            result.Reason.Should().Contain(nameof(ServiceBusReceivedMessage));
+            result.Reason.Should().Contain("was not settled");
         }
 
         [Theory]
@@ -155,38 +176,36 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         public async Task MustNotSettleAnythingWhenPeekLockButNoMessageInContext(string operation)
         {
             var inMemory = new InMemoryServiceBusMessageReceiver();
-            var sut = CreateInMemorySut(inMemory);
+            var sut = CreateSutOver(inMemory);
             await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = "receiver", TransactionMode = TransactionMode.ReceiveOnly }, CancellationToken.None);
 
-            var settle = CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"));
+            var result = await CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"))();
 
-            await settle.Should().ThrowAsync<ServiceBusMessageSettlementException>();
+            result.Outcome.Should().Be(SettlementOutcome.Failed);
             inMemory.CompletedMessages.Should().BeEmpty();
             inMemory.AbandonedMessages.Should().BeEmpty();
             inMemory.DeadLetteredMessages.Should().BeEmpty();
         }
 
-        // Regression guard on the settlement message TEXT, which is a contract rather than prose:
-        // DefaultExceptionsPredicateProvider is registered unconditionally and matches these raw
-        // case-insensitive substrings against Exception.Message, so a reworded message containing any
-        // of them would silently convert this fail-fast into a retry-to-exhaustion and rewrite the
-        // error.type telemetry attribute to MaxRetryAttemptsExceededException.
+        // The boundary between a RETURNED Failed and a THROWN fault: Recovery wraps the settlement call, so a
+        // thrown fault is retried and a returned outcome is not. Only the deterministic missing-delivery case
+        // is answered as Failed; a fault the infrastructure raises must keep leaving the receiver as it is.
         [Theory]
         [InlineData(AckOperation)]
         [InlineData(NackOperation)]
         [InlineData(DeadletterOperation)]
-        public async Task MustNotUseSettlementMessageMatchingTheDefaultRetryPredicates(string operation)
+        public async Task MustPropagateSettlementFaultRaisedByTheInfrastructure(string operation)
         {
-            var sut = await CreatePeekLockSutAsync();
+            var faulting = new SettlementFaultingServiceBusMessageReceiver(
+                new ServiceBusException(isTransient: true, "the broker was unreachable", null, ServiceBusFailureReason.ServiceCommunicationProblem));
+            var sut = CreateSutOver(faulting);
+            await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = "receiver", TransactionMode = TransactionMode.ReceiveOnly }, CancellationToken.None);
+            var transactionContext = new TransactionContext("receiver");
+            var context = await sut.ReceiveMessageAsync(transactionContext, CancellationToken.None);
 
-            var settle = CreateSettlementCall(sut, operation, CreateEmptyContext(), new TransactionContext("receiver"));
+            var settle = CreateSettlementCall(sut, operation, context, transactionContext);
 
-            var thrown = await settle.Should().ThrowAsync<ServiceBusMessageSettlementException>();
-            var message = thrown.Which.Message.ToLowerInvariant();
-            foreach (var retryTriggeringSubstring in DefaultRetryPredicateSubstrings)
-            {
-                message.Should().NotContain(retryTriggeringSubstring);
-            }
+            await settle.Should().ThrowAsync<ServiceBusException>();
         }
 
         [Fact]
@@ -198,7 +217,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
 
-            result.Should().BeTrue();
+            result.Outcome.Should().Be(SettlementOutcome.Settled);
             inMemory.DeadLetteredMessages.Should().ContainSingle()
                 .Which.description.Should().Be(description);
         }
@@ -212,7 +231,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
 
-            result.Should().BeTrue();
+            result.Outcome.Should().Be(SettlementOutcome.Settled);
             inMemory.DeadLetteredMessages.Should().ContainSingle()
                 .Which.description.Should().Be(description);
         }
@@ -226,7 +245,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", description, CancellationToken.None);
 
-            result.Should().BeTrue();
+            result.Outcome.Should().Be(SettlementOutcome.Settled);
             var captured = inMemory.DeadLetteredMessages.Should().ContainSingle().Subject.description;
             captured.Length.Should().BeLessThanOrEqualTo(MaxDeadLetterErrorDescriptionLength);
             captured.Should().StartWith(new string('a', 10));

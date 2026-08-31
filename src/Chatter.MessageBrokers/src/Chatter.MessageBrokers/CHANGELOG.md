@@ -6,6 +6,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-30
+
+### Changed
+
+- **BREAKING:** `IMessagingInfrastructureReceiver.AckMessageAsync`, `NackMessageAsync`, and `DeadletterMessageAsync` now return `Task<SettlementResult>` instead of `Task<bool>`. `SettlementResult` (backed by the new `SettlementOutcome` enum: `Settled`, `NotRequired`, `Failed`) distinguishes "there was nothing to settle" (e.g. Azure Service Bus `ReceiveAndDelete`, RabbitMQ at-most-once) from "settlement was attempted and did not happen" — a distinction the former `bool` collapsed into a single `false`. A custom `IMessagingInfrastructureReceiver` implementation must migrate its three settlement members to return `SettlementResult.Settled()`, `SettlementResult.NotRequired(reason)`, or `SettlementResult.Failed(reason)` in place of `true`/`false`. Receive-failure retention (the diagnostics an application observes on a failed receive) now keys on the `Failed` outcome rather than a bare `false`, so `BrokerDiagnostics.ErrorTypes.SettlementFailed` (`"settlement_failed"`) now appears as `error.type` on a receive metric for a settlement the infrastructure reported as failed without throwing, in addition to the pre-existing exception-carrying case (#283).
+- **BREAKING:** `IMessagingInfrastructureReceiver` gains a defaulted `bool WritesToErrorQueue => false` member: whether the infrastructure writes a failed delivery to the Error Queue itself, so the core must not run its own error-recovery action (`ErrorQueueDispatcher` → `IForwardMessages`) for that delivery and duplicate the write. A settlement is now eligible for the core's error-recovery action only when it is BOTH settled AND `WritesToErrorQueue` is `false` — previously an infrastructure that owned the Error Queue write could only suppress the core's duplicate by misreporting its own settlement as `false`. A custom implementation that owns its own Error Queue write must now override `WritesToErrorQueue` to report `true` instead of misreporting its settlement outcome (#283).
+- Bundled dependency uplift to Chatter.CQRS 0.10.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it); no behavioral change to Chatter.MessageBrokers itself beyond the additions above.
+
 ## [0.15.0] - 2026-08-29
 
 ### Added

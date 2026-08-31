@@ -20,6 +20,9 @@ Azure Service Bus implementation of the Chatter.MessageBrokers interfaces for se
 
 **Service Bus Circuit Breaker**: ASB-specific Circuit Breaker recovery policy applied during receiving.
 
+**PeekLock Settlement**: The Azure Service Bus realization of Settlement (Message Brokers context). Only a PeekLock receive owes one: in `ReceiveAndDelete` mode Azure Service Bus removes the delivery on receipt, so acknowledge, negative acknowledge and deadletter all report the **Not Required** Settlement Outcome. Under PeekLock, completing, abandoning or dead-lettering the received message reports **Settled**. When a PeekLock settlement finds no received message in the message broker context there is a lock to release and no message to release it with; that is reported as the **Failed** Settlement Outcome rather than THROWN, because the absence is deterministic — retrying the same context would find the same absence — so Recovery must not retry it.
+_Avoid_: a dedicated settlement exception (the adapter no longer defines or raises one; the outcome carries the reason instead).
+
 **Session**: An Azure Service Bus session-enabled receive mode. A held session owns the FIFO delivery of all messages sharing the same SessionId until the session is drained, released on idle timeout, or rolled due to a lost session lock. Sessions are provisioned externally; the adapter neither creates nor auto-enables session-capable entities.
 
 **Session State**: Durable, per-session binary payload stored on the Azure Service Bus entity for the currently held session. Readable and writable during handler execution via `GetSessionStateAsync` / `SetSessionStateAsync` / `ClearSessionStateAsync`. Only available while handling a message received through a Session Queue Receiver or Session Topic Subscription; invoking it for a non-session message throws `InvalidOperationException`.
@@ -38,6 +41,7 @@ Azure Service Bus implementation of the Chatter.MessageBrokers interfaces for se
 - Commands map to a Queue Receiver (or Session Queue Receiver in session mode); Events map to a Topic Subscription (or Session Topic Subscription in session mode).
 - Service Bus Options configure recovery (Retry, Circuit Breaker) and session behavior (Session Idle Timeout, Max Session Lock Renewal Duration) for receiving.
 - Authentication is supplied by the Azure Service Bus Auth context.
+- PeekLock Settlement realizes the Settlement Outcome contract defined in the Message Brokers context; a `ReceiveAndDelete` receiver owes no settlement at all, and a PeekLock settlement with no received message to settle reports Failed instead of raising.
 - Session State and inbound Group Id (SessionId) surfacing are entirely within this adapter; no core Message Brokers or CQRS concept is changed.
 
 ## Example dialogue

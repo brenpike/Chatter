@@ -33,20 +33,28 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// on re-registration, so deliveries buffered before recovery survive the consumer swap.
     /// INVARIANT: ack/nack/deadletter are epoch-guarded — if the delivery's carried channel-epoch no longer
     /// matches the current receive-channel epoch the channel was recycled, the broker has already redelivered
-    /// the message, and the settlement is a no-op (never a false-ack against a recycled delivery tag).
+    /// the message, and the settlement does not happen (never a false-ack against a recycled delivery tag). That
+    /// is reported as a FAILED settlement: it was attempted and did not happen.
     /// INVARIANT: <see cref="MessageContext.ReceiveAttempts"/> is stamped (as <see cref="int"/>) on every
     /// received message — the core's default <c>MessageDeliveryCountAsync</c> casts it unguarded.
     /// INVARIANT (TransactionMode.None at-most-once): under <see cref="TransactionMode.None"/> the consumer is
     /// registered with autoAck:true — the AMQP ReceiveAndDelete equivalent the sibling ASB adapter uses — so the
     /// broker removes the delivery as it pushes it, BEFORE the handler runs, closing the crash/kill-window
-    /// redelivery that manual-ack would leave open. With no manual delivery tag to settle, ack/nack/deadletter are
-    /// no-ops under None (the message is already gone). Every other mode keeps manual ack (autoAck:false) and the
-    /// epoch-guarded settlement + retry/deadletter paths.
+    /// redelivery that manual-ack would leave open. With no manual delivery tag to settle, ack/nack/deadletter
+    /// report NOT-REQUIRED under None (the message is already gone, so no settlement is owed). Every other mode
+    /// keeps manual ack (autoAck:false) and the epoch-guarded settlement + retry/deadletter paths.
     /// </remarks>
     public sealed class RabbitMqReceiver : IMessagingInfrastructureReceiver
     {
         // The native quorum-queue redelivery counter the broker increments per redelivery.
         private const string _nativeDeliveryCountHeader = "x-delivery-count";
+
+        // The settlement contract requires every unsettled outcome to explain itself; these are the two
+        // delivery-independent explanations this receiver reports.
+        private const string _atMostOnceNothingToSettleReason =
+            "TransactionMode.None registers the consumer with autoAck:true, so the broker removed the delivery at receive; there is no manual delivery tag to settle";
+        private const string _noCarriedDeliveryReason =
+            "the context carries no " + nameof(ReceivedMessage) + ", so the delivery to settle could not be located";
 
         private readonly IRabbitMqConnectionSource _connectionSource;
         private readonly RabbitMqOptions _rabbitOptions;
@@ -319,43 +327,43 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             return value >= int.MaxValue ? int.MaxValue : (int)value;
         }
 
-        public Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public Task<SettlementResult> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             // TransactionMode.None registers the consumer with autoAck:true, so the broker already removed the
-            // delivery at receive time — there is no manual delivery tag to ack. The settlement is a no-op (the
-            // at-most-once contract is already satisfied by the auto-ack).
+            // delivery at receive time — there is no manual delivery tag to ack. NOTHING IS OWED: the at-most-once
+            // contract is already satisfied by the auto-ack, so this is NotRequired, never a failed settlement.
             if (IsAtMostOnce(transactionContext))
             {
-                return Task.FromResult(false);
+                return Task.FromResult(SettlementResult.NotRequired(_atMostOnceNothingToSettleReason));
             }
 
             if (!TryGetReceivedMessage(context, out var received))
             {
                 _logger.LogTrace("No {receivedMessage} contained in context; nothing to acknowledge.", nameof(ReceivedMessage));
-                return Task.FromResult(false);
+                return Task.FromResult(SettlementResult.Failed(_noCarriedDeliveryReason));
             }
 
             return SettleOnReceiveChannelAsync(received, (channel) =>
                 channel.BasicAckAsync(received.DeliveryTag, multiple: false, cancellationToken), cancellationToken);
         }
 
-        public Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public Task<SettlementResult> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             // TransactionMode.None is at-most-once (the enum contract: "if an error occurs after a message is
             // received, it will be lost"), matching the sibling adapters — ASB receives in ReceiveAndDelete and
             // SSB skips the transaction so a rollback cannot redeliver. Under None the consumer registers with
             // autoAck:true, so the broker already removed the delivery at RECEIVE time (before the handler ran),
             // closing the crash-window redelivery. A handler-failure nack therefore has nothing to settle — the
-            // message is already gone, NOT requeued or republished — so this is a no-op (the message is dropped).
+            // message is already gone, NOT requeued or republished — so nothing is owed (the message is dropped).
             if (IsAtMostOnce(transactionContext))
             {
-                return Task.FromResult(false);
+                return Task.FromResult(SettlementResult.NotRequired(_atMostOnceNothingToSettleReason));
             }
 
             if (!TryGetReceivedMessage(context, out var received))
             {
                 _logger.LogTrace("No {receivedMessage} contained in context; nothing to negatively acknowledge.", nameof(ReceivedMessage));
-                return Task.FromResult(false);
+                return Task.FromResult(SettlementResult.Failed(_noCarriedDeliveryReason));
             }
 
             if (_rabbitOptions.QueueType == QueueType.Classic)
@@ -377,22 +385,40 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 channel.BasicNackAsync(received.DeliveryTag, multiple: false, requeue: true, cancellationToken), cancellationToken);
         }
 
-        public async Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+        /// <summary>
+        /// Whether this receiver writes a failed delivery to the Error Queue itself, so the core must not run its
+        /// own error-recovery action for that delivery.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT (DO NOT COLLAPSE THIS BACK INTO THE SETTLEMENT OUTCOME): on the ERROR-ONLY configuration (no
+        /// dead-letter queue) <see cref="DeadletterMessageAsync"/> republishes the failed delivery to the Error
+        /// Queue ITSELF and then acks the original, so it truthfully reports <c>Settled</c> — it DID settle. The
+        /// core gates its error-recovery action (ErrorQueueDispatcher -> IForwardMessages) on
+        /// <c>IsSettled &amp;&amp; !WritesToErrorQueue</c>; keying it on the outcome ALONE would make the core
+        /// forward a SECOND copy of the same poison message to the SAME Error Queue. This control signal is what
+        /// lets the receiver report the truthful outcome AND suppress the duplicate write — before the seam
+        /// declared it, the only way to suppress the duplicate was to MISREPORT the settlement as not having
+        /// happened. With a dead-letter queue configured the receiver republishes to the DEAD-LETTER queue and
+        /// never touches the Error Queue, so the core keeps ownership of that write and this is <c>false</c>.
+        /// </remarks>
+        public bool WritesToErrorQueue => string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath);
+
+        public async Task<SettlementResult> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
             // TransactionMode.None is at-most-once: a poison message is LOST, not deadlettered (the enum contract
             // and the sibling adapters' behaviour). Under None the consumer registers with autoAck:true, so the
             // broker already removed the delivery at RECEIVE time — there is no delivery to ack and nothing to
-            // republish to the DLQ, so this is a no-op (the message is dropped). This also makes the InitializeAsync
+            // republish to the DLQ, so nothing is owed (the message is dropped). This also makes the InitializeAsync
             // poison-target gate inapplicable under None (see InitializeAsync).
             if (IsAtMostOnce(transactionContext))
             {
-                return false;
+                return SettlementResult.NotRequired(_atMostOnceNothingToSettleReason);
             }
 
             if (!TryGetReceivedMessage(context, out var received))
             {
                 _logger.LogTrace("No {receivedMessage} contained in context; nothing to deadletter.", nameof(ReceivedMessage));
-                return false;
+                return SettlementResult.Failed(_noCarriedDeliveryReason);
             }
 
             // INVARIANT (both paths): republish-confirmed BEFORE the original is acked so a crash between the two
@@ -408,34 +434,32 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             if (!string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath))
             {
                 // DEAD-LETTER queue configured: explicit republish (SSB-style) to it, authoritative over any
-                // broker-side DLX, publisher-confirmed BEFORE the original is acked. Returns true so the core ALSO
-                // runs its error-recovery action (ErrorQueueDispatcher → IForwardMessages) to forward a copy to
-                // ErrorQueueName when both queues are configured.
+                // broker-side DLX, publisher-confirmed BEFORE the original is acked. Reports Settled and leaves
+                // WritesToErrorQueue false, so the core ALSO runs its error-recovery action (ErrorQueueDispatcher →
+                // IForwardMessages) to forward a copy to ErrorQueueName when both queues are configured.
                 // The delivered native Expiration is DROPPED on the deadletter hop: a dead-letter queue is for
                 // inspection, so a dead-lettered message must NOT auto-expire via the original per-message TTL.
                 return await RepublishThenAckAsync(received, _options.DeadLetterQueuePath, headerOverrides, preserveExpiration: false, cancellationToken).ConfigureAwait(false);
             }
 
             // ERROR-ONLY config (no dead-letter queue): republish-confirmed to the error queue THEN epoch-guarded
-            // ack, so loss-safety is guaranteed on this path the same way it is on the DLQ path. Return false to
-            // suppress the core's ErrorQueueDispatcher — the adapter already wrote the single durable copy above;
-            // letting the core forward again would duplicate it. (Core BrokeredMessageReceiver only runs its
-            // error-recovery action when deadletter returns true; on false it does nothing — no nack, no requeue.)
+            // ack, so loss-safety is guaranteed on this path the same way it is on the DLQ path. The outcome is the
+            // TRUTHFUL one — this path DID settle the delivery — and the duplicate error-queue write is suppressed
+            // by the SEPARATE WritesToErrorQueue control signal declared above, never by misreporting the outcome.
             // The neither-configured misconfiguration is rejected at InitializeAsync's startup gate, so this branch
             // only runs for the legitimate error-only config.
-            await RepublishThenAckAsync(received, _options.ErrorQueuePath, headerOverrides, preserveExpiration: false, cancellationToken).ConfigureAwait(false);
-            return false;
+            return await RepublishThenAckAsync(received, _options.ErrorQueuePath, headerOverrides, preserveExpiration: false, cancellationToken).ConfigureAwait(false);
         }
 
         // INVARIANT: the republish (confirms-enabled publish channel) MUST complete before the original delivery
         // is acked, so a fault between them leaves the original un-acked and the broker redelivers it. The ack is
         // epoch-guarded; if the receive channel was recycled the ack is a no-op and the broker redelivers — the
         // republished copy is then the duplicate absorbed downstream.
-        private async Task<bool> RepublishThenAckAsync(ReceivedMessage received,
-                                                       string destination,
-                                                       IReadOnlyDictionary<string, object> headerOverrides,
-                                                       bool preserveExpiration,
-                                                       CancellationToken cancellationToken)
+        private async Task<SettlementResult> RepublishThenAckAsync(ReceivedMessage received,
+                                                                   string destination,
+                                                                   IReadOnlyDictionary<string, object> headerOverrides,
+                                                                   bool preserveExpiration,
+                                                                   CancellationToken cancellationToken)
         {
             await using var rental = await _connectionSource.AcquirePublishChannelAsync(cancellationToken).ConfigureAwait(false);
 
@@ -477,10 +501,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         // INVARIANT: runs the settlement under the receive-channel gate and compares the delivery's carried epoch
         // to the current channel epoch. On a mismatch the channel was recycled since delivery — the delivery tag
-        // is meaningless on the new channel and the broker has already redelivered — so the settlement is a no-op.
-        private Task<bool> SettleOnReceiveChannelAsync(ReceivedMessage received,
-                                                       Func<IChannel, ValueTask> settle,
-                                                       CancellationToken cancellationToken)
+        // is meaningless on the new channel and the broker has already redelivered — so the settlement does not
+        // happen and is reported Failed.
+        private Task<SettlementResult> SettleOnReceiveChannelAsync(ReceivedMessage received,
+                                                                   Func<IChannel, ValueTask> settle,
+                                                                   CancellationToken cancellationToken)
         {
             return _connectionSource.RunOnReceiveChannelAsync(async (channel, currentEpoch) =>
             {
@@ -488,11 +513,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 {
                     _logger.LogTrace("Skipping settlement of delivery tag {deliveryTag}: carried epoch {carriedEpoch} no longer matches current channel epoch {currentEpoch}; broker will redeliver.",
                         received.DeliveryTag, received.ChannelEpoch, currentEpoch);
-                    return false;
+                    // The settlement was ATTEMPTED and did not happen, so it is Failed — not NotRequired. The
+                    // delivery tag is meaningless on the recycled channel and the broker redelivers the original,
+                    // so the receiver reports a failed receive and does not retry the settlement.
+                    return SettlementResult.Failed(
+                        $"the receive channel was recycled since delivery: delivery tag {received.DeliveryTag} carries epoch {received.ChannelEpoch}, which no longer matches the current channel epoch {currentEpoch}");
                 }
 
                 await settle(channel).ConfigureAwait(false);
-                return true;
+                return SettlementResult.Settled();
             }, cancellationToken);
         }
 

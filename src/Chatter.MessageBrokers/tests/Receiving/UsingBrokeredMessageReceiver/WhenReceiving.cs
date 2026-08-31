@@ -32,7 +32,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
         // The real RetryWithCircuitBreakerStrategy transitions are reserved for STEP-003.
         // All TResult shapes used by the receiver loop must be covered:
         //   Func<Task<MessageBrokerContext>> — ReceiveMessageAsync
-        //   Func<Task<bool>>                — Ack/Nack/Deadletter/DispatchReceivedMessage/FailedRecoveryAction
+        //   Func<Task<SettlementResult>>    — Ack/Nack/Deadletter
+        //   Func<Task<bool>>                — DispatchReceivedMessage
         //   Func<Task<int>>                 — MessageDeliveryCountAsync
         private static Mock<IRecoveryStrategy> PassThroughRecovery()
         {
@@ -41,6 +42,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Returns<Func<Task<MessageBrokerContext>>, CancellationToken>((action, _) => action());
             mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
+            mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
             mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>((action, _) => action());
             return mock;

@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS;
+using Chatter.CQRS.Diagnostics;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Diagnostics;
 using System;
@@ -50,7 +51,7 @@ namespace Chatter.MessageBrokers.Receiving
             internal int Attempts;
 
             /// <summary>
-            /// The fault that ended this delivery, or <c>null</c> when the delivery succeeded or ended in a
+            /// The failure that ended this delivery, or <c>default</c> when the delivery succeeded or ended in a
             /// shutdown cancellation.
             /// </summary>
             /// <remarks>
@@ -61,11 +62,57 @@ namespace Chatter.MessageBrokers.Receiving
             /// read the failure off (ADR-0010 D4).
             /// Written by <see cref="RetainReceiveFailure"/>, from the exception filter that is the single choke
             /// point every fault LEAVING the worker's processing block passes through, so no ladder branch can settle
-            /// a fault without retaining it; and by <see cref="RetainSettlementFailure"/>, from the single place a
-            /// settle-path fault is swallowed into a <c>bool</c> and therefore never leaves that block at all. Two
-            /// observation points, ONE retained fault: the filter is the first writer whenever it fires (ADR-0010 D11).
+            /// a fault without retaining it; and by <see cref="RetainSettlementFailure(Exception, CancellationToken)"/>
+            /// and <see cref="RetainSettlementFailure(string, string)"/>, from the single place a settle-path failure
+            /// is swallowed into a return value and therefore never leaves that block at all. Two observation points,
+            /// ONE retained failure: the filter is the first writer whenever it fires (ADR-0010 D11).
             /// </remarks>
-            internal Exception Failure;
+            internal ReceiveFailure Failure;
+        }
+
+        /// <summary>
+        /// What ended one delivery, whether or not an exception carried it.
+        /// </summary>
+        /// <remarks>
+        /// WHY NOT AN <see cref="Exception"/>. Broker infrastructure can report that a settlement did not happen
+        /// WITHOUT raising anything — a PeekLock ack that could not locate the message, say — and such a delivery
+        /// still owes the receive metric an <c>error.type</c>. The alternative, a never-thrown marker exception,
+        /// was rejected: it would stamp a synthetic stack trace as an <c>exception</c> span event, which is
+        /// fabricated evidence about something that never happened.
+        /// The error type is resolved HERE, once, so a retained failure carries the value the span and the metric
+        /// both report and the two cannot spell one failure differently (ADR-0010 D4).
+        /// A <c>readonly struct</c>, so retention adds no allocation to a delivery and <c>default</c> is the
+        /// well-formed "nothing has been retained" value that first-writer-wins retention tests against
+        /// (ADR-0010 R1, R4, D11).
+        /// </remarks>
+        private readonly struct ReceiveFailure
+        {
+            private ReceiveFailure(Exception exception, string errorType, string description)
+            {
+                Exception = exception;
+                ErrorType = errorType;
+                Description = description;
+            }
+
+            /// <summary>The exception that ended the delivery, or <c>null</c> when no exception carried the failure.</summary>
+            internal Exception Exception { get; }
+
+            /// <summary>The value the receive metric reports as <c>error.type</c>.</summary>
+            internal string ErrorType { get; }
+
+            /// <summary>What did not happen, carried as the receive span's status description.</summary>
+            internal string Description { get; }
+
+            /// <summary>Whether a failure has been retained for this delivery.</summary>
+            internal bool HasValue => ErrorType != null;
+
+            /// <summary>The failure an exception carried; its error type is the fully qualified exception type name.</summary>
+            internal static ReceiveFailure FromException(Exception fault)
+                => new ReceiveFailure(fault, ActivityOutcome.ResolveErrorType(fault), fault?.Message);
+
+            /// <summary>A failure broker infrastructure reported without raising anything.</summary>
+            internal static ReceiveFailure FromDescription(string errorType, string description)
+                => new ReceiveFailure(null, errorType, description);
         }
 
         // INVARIANT: ADR-0010 R1/R4 — the off-guard is evaluated before any argument is constructed, and the off path
@@ -116,7 +163,7 @@ namespace Chatter.MessageBrokers.Receiving
                     // point is read back off the scope here and carried into the metric as error.type. The span
                     // already carries it, recorded at that same choke point; this is what keeps the metrics-only
                     // half of the surface truthful.
-                    BrokerDiagnostics.RecordReceive(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Receive, this.MessageReceiverPath, receiveDiagnostics.Failure);
+                    BrokerDiagnostics.RecordReceive(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Receive, this.MessageReceiverPath, receiveDiagnostics.Failure.ErrorType);
                 }
                 catch (Exception deliveryError)
                 {
@@ -220,7 +267,7 @@ namespace Chatter.MessageBrokers.Receiving
                 return false;
             }
 
-            receiveDiagnostics.Failure = deliveryFault;
+            receiveDiagnostics.Failure = ReceiveFailure.FromException(deliveryFault);
             BrokerDiagnostics.RecordFailure(receiveDiagnostics.Activity, deliveryFault);
 
             return false;
@@ -263,13 +310,54 @@ namespace Chatter.MessageBrokers.Receiving
 
             var receiveDiagnostics = _receiveDiagnostics.Value;
 
-            if (receiveDiagnostics is null || receiveDiagnostics.Failure != null)
+            if (receiveDiagnostics is null || receiveDiagnostics.Failure.HasValue)
             {
                 return;
             }
 
-            receiveDiagnostics.Failure = settlementFault;
+            receiveDiagnostics.Failure = ReceiveFailure.FromException(settlementFault);
             BrokerDiagnostics.RecordFailure(receiveDiagnostics.Activity, settlementFault);
+        }
+
+        /// <summary>
+        /// Retains a settlement failure that broker infrastructure reported WITHOUT raising an exception, on the SAME
+        /// per-delivery scope the worker's exception-filter choke point writes.
+        /// </summary>
+        /// <param name="errorType">The class of failure; values come from <see cref="BrokerDiagnostics.ErrorTypes"/>.</param>
+        /// <param name="description">Why the infrastructure said the delivery was not settled.</param>
+        /// <remarks>
+        /// The twin of <see cref="RetainSettlementFailure(Exception, CancellationToken)"/> for the case where the
+        /// infrastructure ANSWERS that it did not settle rather than throwing. Both are the same retention: the same
+        /// <see cref="ReceiveDiagnosticsScope.Failure"/> field, the same span, and the same <c>RecordReceive</c> read
+        /// back. Without it a delivery whose handling SUCCEEDED but whose acknowledgement the infrastructure declined
+        /// would report a successful receive carrying an <c>ack</c> settlement and no <c>error.type</c>, while the
+        /// message stayed unsettled and eligible for redelivery.
+        /// FIRST WRITER WINS, exactly as in the exception twin: a failure that already ended the delivery is the
+        /// cause, and the answering settlement not happening is a consequence of it.
+        /// There is no shutdown-cancellation exemption here because there is no cancellation to recognise: that
+        /// exemption is keyed on an <see cref="OperationCanceledException"/> or <see cref="ObjectDisposedException"/>
+        /// raised while the worker token is cancelled (<see cref="IsShutdownCancellation"/>), and no exception was
+        /// raised on this path.
+        /// Guarded by <see cref="BrokerDiagnostics.IsEnabled"/> rather than the .NET <c>ActivitySource</c> guard,
+        /// because a metrics-only application must see this failure too; the span call carries its own
+        /// <c>HasListeners</c> guard (ADR-0010 R1).
+        /// </remarks>
+        private static void RetainSettlementFailure(string errorType, string description)
+        {
+            if (!BrokerDiagnostics.IsEnabled)
+            {
+                return;
+            }
+
+            var receiveDiagnostics = _receiveDiagnostics.Value;
+
+            if (receiveDiagnostics is null || receiveDiagnostics.Failure.HasValue)
+            {
+                return;
+            }
+
+            receiveDiagnostics.Failure = ReceiveFailure.FromDescription(errorType, description);
+            BrokerDiagnostics.RecordFailure(receiveDiagnostics.Activity, errorType, description);
         }
 
         /// <summary>

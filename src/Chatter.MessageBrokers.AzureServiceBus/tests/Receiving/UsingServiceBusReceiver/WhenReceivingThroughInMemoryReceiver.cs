@@ -144,7 +144,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             var result = await sut.AckMessageAsync(context, transactionContext, CancellationToken.None);
 
-            result.Should().BeTrue();
+            result.Outcome.Should().Be(SettlementOutcome.Settled);
             inMemory.CompletedMessages.Should().ContainSingle().Which.Should().BeSameAs(message);
         }
 
@@ -160,7 +160,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             var result = await sut.NackMessageAsync(context, transactionContext, CancellationToken.None);
 
-            result.Should().BeTrue();
+            result.Outcome.Should().Be(SettlementOutcome.Settled);
             inMemory.AbandonedMessages.Should().ContainSingle().Which.Should().BeSameAs(message);
         }
 
@@ -176,7 +176,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             var result = await sut.DeadletterMessageAsync(context, transactionContext, "reason", "description", CancellationToken.None);
 
-            result.Should().BeTrue();
+            result.Outcome.Should().Be(SettlementOutcome.Settled);
             var deadlettered = inMemory.DeadLetteredMessages.Should().ContainSingle().Subject;
             deadlettered.message.Should().BeSameAs(message);
             deadlettered.reason.Should().Be("reason");

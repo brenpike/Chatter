@@ -41,6 +41,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Returns<Func<Task<MessageBrokerContext>>, CancellationToken>((action, _) => action());
             mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
+            mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
             mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>((action, _) => action());
             return mock;
@@ -323,6 +325,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
             recovery
+                .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
+            recovery
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>((action, _) => action());
 
@@ -377,6 +382,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             recovery
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
+            recovery
+                .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
             recovery
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>((action, _) => action());

@@ -39,6 +39,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Returns<Func<Task<MessageBrokerContext>>, CancellationToken>((action, _) => action());
             mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
+            mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
             mock.Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>((action, _) => action());
             return mock;
@@ -212,6 +214,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
             recovery
+                .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
+            recovery
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>((action, _) =>
                 {
@@ -275,6 +280,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<bool>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<bool>>, CancellationToken>((action, _) => action());
             recovery
+                .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<SettlementResult>>>(), It.IsAny<CancellationToken>()))
+                .Returns<Func<Task<SettlementResult>>, CancellationToken>((action, _) => action());
+            recovery
                 .Setup(r => r.ExecuteAsync(It.IsAny<Func<Task<int>>>(), It.IsAny<CancellationToken>()))
                 .Returns<Func<Task<int>>, CancellationToken>(async (action, token) =>
                 {
@@ -305,6 +313,78 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             await loop; // must not throw
 
             infraReceiver.CallLog.Should().NotContain(ReceiverCall.Ack, "the handler threw, so no Ack is expected");
+        }
+
+        // ------------------------------------------------------------------ (e) max-attempts gate, WritesToErrorQueue arm: suppressed vs invoked
+
+        [Fact]
+        public async Task MustSuppressMaxReceivesActionWhenInfrastructureOwnsTheErrorQueueWrite()
+        {
+            var maxReceivesAction = new Mock<IMaxReceivesExceededAction>();
+            var infraReceiver = await RunMaxAttemptsLadderWithErrorQueueOwnershipAsync(writesToErrorQueue: true, maxReceivesAction);
+
+            infraReceiver.CallLog.Should().Contain(ReceiverCall.Deadletter, "suppressing the recovery action must not silently become message loss — the delivery is still deadlettered");
+            maxReceivesAction.Verify(a => a.ExecuteAsync(It.IsAny<FailureContext>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task MustInvokeMaxReceivesActionWhenInfrastructureDoesNotOwnTheErrorQueueWrite()
+        {
+            var maxReceivesAction = new Mock<IMaxReceivesExceededAction>();
+            var infraReceiver = await RunMaxAttemptsLadderWithErrorQueueOwnershipAsync(writesToErrorQueue: false, maxReceivesAction);
+
+            infraReceiver.CallLog.Should().Contain(ReceiverCall.Deadletter);
+            maxReceivesAction.Verify(a => a.ExecuteAsync(It.IsAny<FailureContext>()), Times.Once);
+        }
+
+        // INVARIANT: TWO-MESSAGE BARRIER. A Times.Never assertion is vacuous if the test can cancel the loop before the
+        // gate at BrokeredMessageReceiver's max-attempts branch is ever evaluated. Message one's handler throws at
+        // DeliveryCount >= Max so the ladder runs; message two succeeds and Acks. With MaxConcurrentCalls = 1 (LOAD-BEARING)
+        // the concurrency slot is released in the ladder's finally — AFTER the gate — so message two's Ack HAPPENS-AFTER
+        // message one's gate evaluation. Waiting on Ack is therefore a real happens-before barrier, not a sleep.
+        private async Task<InMemoryMessagingInfrastructureReceiver> RunMaxAttemptsLadderWithErrorQueueOwnershipAsync(
+            bool writesToErrorQueue,
+            Mock<IMaxReceivesExceededAction> maxReceivesAction)
+        {
+            const int maxAttempts = 3;
+            const int messageCount = 2;
+
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: messageCount);
+            infraReceiver.DeliveryCount = maxAttempts; // >= Max, so the first message's handler failure enters the deadletter branch
+            infraReceiver.WritesToErrorQueue = writesToErrorQueue;
+
+            var firstHandlerThrew = new StrongBox<int>(0);
+            var dispatcher = new Mock<IReceivedMessageDispatcher>();
+            dispatcher
+                .Setup(d => d.DispatchAsync(It.IsAny<FakeMessage>(), It.IsAny<MessageBrokerContext>(), It.IsAny<CancellationToken>()))
+                .Returns((FakeMessage _, MessageBrokerContext __, CancellationToken ___) =>
+                {
+                    if (Interlocked.Increment(ref firstHandlerThrew.Value) == 1)
+                    {
+                        throw new InvalidOperationException("handler boom at max");
+                    }
+                    return Task.CompletedTask;
+                });
+
+            maxReceivesAction
+                .Setup(a => a.ExecuteAsync(It.IsAny<FailureContext>()))
+                .Returns(Task.CompletedTask);
+
+            infraReceiver.Enqueue(BuildContext());
+            infraReceiver.Enqueue(BuildContext());
+
+            var sut = CreateSut(infraReceiver, dispatcher, maxReceivesAction: maxReceivesAction);
+
+            using var cts = new CancellationTokenSource();
+            var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(maxReceiveAttempts: maxAttempts, maxConcurrentCalls: 1), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await WaitUntilAsync(() => infraReceiver.CallLog.Contains(ReceiverCall.Ack), watchdog.Token);
+
+            cts.Cancel();
+            await loop;
+
+            return infraReceiver;
         }
     }
 }

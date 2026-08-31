@@ -4,8 +4,8 @@ using System.Diagnostics;
 namespace Chatter.CQRS.Diagnostics
 {
     /// <summary>
-    /// The single place a failed <see cref="Activity"/> is marked, so every Chatter call site records failure
-    /// identically and none invents its own spelling or status.
+    /// The single place a failed <see cref="Activity"/> is marked — whether the failure raised an exception or
+    /// not — so every Chatter call site records failure identically and none invents its own spelling or status.
     /// </summary>
     public static class ActivityOutcome
     {
@@ -35,6 +35,30 @@ namespace Chatter.CQRS.Diagnostics
             }
 
             AddExceptionEvent(activity, exception);
+        }
+
+        /// <summary>
+        /// Marks <paramref name="activity"/> as failed when NO exception was raised: sets
+        /// <see cref="ActivityStatusCode.Error"/> with <paramref name="description"/> and stamps
+        /// <see cref="ChatterTelemetryTags.ErrorType"/> with <paramref name="errorType"/>. No <c>exception</c>
+        /// event is added, because there is no exception: a never-thrown marker exception would attach a
+        /// synthetic stack trace that describes nothing that happened.
+        /// </summary>
+        /// <param name="activity">The span to mark, or <c>null</c> when no span was started.</param>
+        /// <param name="errorType">The class of failure, as the OpenTelemetry <c>error.type</c> convention prescribes for non-exception errors.</param>
+        /// <param name="description">What did not happen, carried as the span's status description.</param>
+        /// <remarks>Passing a <c>null</c> <paramref name="activity"/> or a <c>null</c>-or-whitespace
+        /// <paramref name="errorType"/> is a no-op, mirroring the exception overload: diagnostics must never
+        /// displace the failure being reported.</remarks>
+        public static void RecordFailure(Activity activity, string errorType, string description)
+        {
+            if (activity is null || string.IsNullOrWhiteSpace(errorType))
+            {
+                return;
+            }
+
+            activity.SetStatus(ActivityStatusCode.Error, description);
+            activity.SetTag(ChatterTelemetryTags.ErrorType, errorType);
         }
 
         /// <summary>

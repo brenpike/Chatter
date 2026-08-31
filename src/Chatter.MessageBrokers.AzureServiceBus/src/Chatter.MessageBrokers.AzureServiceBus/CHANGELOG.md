@@ -12,6 +12,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [2.0.0] - 2026-08-30
+
+### Changed
+
+- **BREAKING, SUPERSEDES 1.4.3:** In PeekLock mode, a settlement (acknowledge, reject/abandon, or dead-letter) that cannot find the received message in the message broker context no longer throws `ServiceBusMessageSettlementException` — that exception type is REMOVED. It now reports a `Failed` settlement outcome (`SettlementResult.Failed`, part of the `Chatter.MessageBrokers` 0.16.0 seam), the same terminal, deterministic-fault shape the 1.4.3 release described as a thrown exception. A consumer that caught `ServiceBusMessageSettlementException` around a settlement call must instead observe the returned `SettlementResult`/receive failure — the throw is gone. Operators lose `error.type = ServiceBusMessageSettlementException` on the affected receive metric/span in favour of `error.type = "settlement_failed"` plus a reason string carried on the settlement result; a dashboard or alert keyed on the old `error.type` value must be updated to the new one (#283).
+- Bundled dependency uplift to Chatter.MessageBrokers 0.16.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it) — required for the `SettlementResult` seam above.
+
 ## [1.4.3] - 2026-08-30
 
 ### Fixed

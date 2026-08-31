@@ -1,5 +1,4 @@
 using Chatter.MessageBrokers.AzureServiceBus.DependencyInjection;
-using Chatter.MessageBrokers.AzureServiceBus.Exceptions;
 using Chatter.MessageBrokers.AzureServiceBus.Options;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Context;
@@ -27,6 +26,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // InvalidOperationException from the client-side enlistment guard); the message text is the stable
         // discriminator across SDK versions and exception shapes.
         private const string CrossEntityTransactionRejectionMarker = "multiple top-level entities";
+        // Why a non-PeekLock settlement is owed nothing: ReceiveAndDelete removes the delivery as it is
+        // received, so there is no lock left to release and reporting a missing settlement would report a
+        // failure that never occurred.
+        private const string NothingToSettleReason = "the delivery was received in ReceiveAndDelete mode, so Azure Service Bus removed it on receipt and no settlement is owed";
 
         readonly object _syncLock;
         private readonly ILogger<ServiceBusReceiver> _logger;
@@ -233,56 +236,63 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             return messageContext;
         }
 
-        public async Task<bool> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public async Task<SettlementResult> AckMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             if (_receiveMode != ServiceBusReceiveMode.PeekLock)
             {
-                return false;
+                return SettlementResult.NotRequired(NothingToSettleReason);
             }
 
             if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                throw new ServiceBusMessageSettlementException($"Unable to complete the Azure Service Bus message. No {nameof(ServiceBusReceivedMessage)} was contained in the message broker context, so the PeekLock delivery was not settled.");
+                return SettlementResult.Failed(DescribeUnsettledDelivery("complete"));
             }
 
             await this.InnerReceiver.CompleteAsync(msg);
             _logger.LogTrace($"Message '{msg.MessageId}' completed");
-            return true;
+            return SettlementResult.Settled();
         }
 
-        public async Task<bool> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
+        public async Task<SettlementResult> NackMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, CancellationToken cancellationToken)
         {
             if (_receiveMode != ServiceBusReceiveMode.PeekLock)
             {
-                return false;
+                return SettlementResult.NotRequired(NothingToSettleReason);
             }
 
             if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                throw new ServiceBusMessageSettlementException($"Unable to abandon the Azure Service Bus message. No {nameof(ServiceBusReceivedMessage)} was contained in the message broker context, so the PeekLock delivery was not settled.");
+                return SettlementResult.Failed(DescribeUnsettledDelivery("abandon"));
             }
 
             await this.InnerReceiver.AbandonAsync(msg, new Dictionary<string, object>(msg.ApplicationProperties));
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully abandoned");
-            return true;
+            return SettlementResult.Settled();
         }
 
-        public async Task<bool> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
+        public async Task<SettlementResult> DeadletterMessageAsync(MessageBrokerContext context, TransactionContext transactionContext, string deadLetterReason, string deadLetterErrorDescription, CancellationToken cancellationToken)
         {
             if (_receiveMode != ServiceBusReceiveMode.PeekLock)
             {
-                return false;
+                return SettlementResult.NotRequired(NothingToSettleReason);
             }
 
             if (!context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                throw new ServiceBusMessageSettlementException($"Unable to deadletter the Azure Service Bus message. No {nameof(ServiceBusReceivedMessage)} was contained in the message broker context, so the PeekLock delivery was not settled.");
+                return SettlementResult.Failed(DescribeUnsettledDelivery("deadletter"));
             }
 
             await this.InnerReceiver.DeadLetterAsync(msg, deadLetterReason, CapDeadLetterErrorDescription(deadLetterErrorDescription));
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully deadlettered");
-            return true;
+            return SettlementResult.Settled();
         }
+
+        // Why a PeekLock settlement could not happen: the delivery the settlement targets is absent from the
+        // message broker context, so there is a lock to release and no message to release it with. This is
+        // DETERMINISTIC — retrying the same context would find the same absence — which is why it is reported
+        // as a Failed outcome instead of being thrown for Recovery to retry.
+        private static string DescribeUnsettledDelivery(string settlementAction)
+            => $"Unable to {settlementAction} the Azure Service Bus message. No {nameof(ServiceBusReceivedMessage)} was contained in the message broker context, so the PeekLock delivery was not settled.";
 
         // Caps the deadletter error description at the SDK's MaxDeadLetterErrorDescriptionLength UTF-16
         // chars. A null/empty or already-fitting description is returned unchanged; an over-limit
