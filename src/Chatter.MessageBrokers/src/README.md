@@ -231,7 +231,7 @@ An **unset** attribute below is an unconditional write of a null value, not a sk
 | Attribute | Span | Value | Emitted | Name origin |
 | --- | --- | --- | --- | --- |
 | `messaging.system` | send | The Messaging Infrastructure identifier the dispatch names — the infrastructure-type entry of the routing options' Message Context, or the outbound message's own on a forward or a reply. | Only when the dispatch carries that identifier; a dispatch carrying none leaves the attribute **unset**, and nothing is invented in its place. | semconv v1.30.0 |
-| `messaging.system` | receive | The receiver's configured `ReceiverOptions.InfrastructureType` — **the empty string** when the receiver was configured without one, because that property's `""` default is never normalized. | Always, the empty-string case included. | semconv v1.30.0 |
+| `messaging.system` | receive | The receiver's configured `ReceiverOptions.InfrastructureType`, normalized so that a blank value leaves the attribute **unset**. | Only when the Brokered Message Receiver was configured with one; a receiver configured without one leaves the attribute unset. | semconv v1.30.0 |
 | `messaging.operation.name` | send | `send` | Always. | semconv v1.30.0 |
 | `messaging.operation.name` | receive | `receive` | Always. | semconv v1.30.0 |
 | `messaging.operation.type` | send | `send` | Always. | semconv v1.30.0 |
@@ -267,7 +267,7 @@ An **unset** attribute below is an unconditional write of a null value, not a sk
 
 | Attribute | Instruments | Value | Emitted |
 | --- | --- | --- | --- |
-| `messaging.system` | all three | On a send measurement, the Messaging Infrastructure identifier the dispatch names — **null** when it names none. On a receive measurement, the receiver's configured `ReceiverOptions.InfrastructureType` — the empty string when the receiver was configured without one. | Always, as a key, whatever the value. |
+| `messaging.system` | all three | On a send measurement, the Messaging Infrastructure identifier the dispatch names — **null** when it names none. On a receive measurement, the receiver's configured `ReceiverOptions.InfrastructureType` — **null** when the receiver was configured without one. | Always, as a key, whatever the value. |
 | `messaging.operation.name` | all three | `send` on a send measurement, `receive` on a receive measurement. | Always, as a key. |
 | `messaging.operation.type` | all three | `send` on a send measurement, `receive` on a receive measurement. | Always, as a key. |
 | `messaging.destination.name` | all three | On a send measurement, the destination the call named or the single destination the batch resolved to — **null** when the call named none and the batch resolved to more than one, or yielded nothing. On a receive measurement, the receiver path. | Always, as a key, whatever the value. |

@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-08-31
+
+### Fixed
+
+- The receive span no longer emits `messaging.system` as an empty string when the Brokered Message Receiver was configured without a Messaging Infrastructure type; the attribute is now left unset, matching the send span. Receive metric measurements carry the `messaging.system` key with a null value in that case, as the send metrics already do. Consumers filtering or grouping on the empty-string bucket will see those spans as having no `messaging.system` (#289).
+
 ## [0.16.0] - 2026-08-30
 
 ### Changed

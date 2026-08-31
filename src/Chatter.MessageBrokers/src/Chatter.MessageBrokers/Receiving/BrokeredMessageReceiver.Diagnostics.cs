@@ -140,7 +140,16 @@ namespace Chatter.MessageBrokers.Receiving
         private async Task RunProcessingWorkerWithDiagnosticsAsync(MessageBrokerContext messageContext, TransactionContext transactionContext, CancellationToken workerToken)
         {
             var startTimestamp = Stopwatch.GetTimestamp();
-            var messagingSystem = _options.InfrastructureType;
+
+            // INVARIANT: a blank infrastructure type is normalized to null so messaging.system is left UNSET rather
+            // than reported as an empty string, matching the send path. The options are NOT mutated, because the same
+            // value is ALSO the Messaging Infrastructure lookup key, where blank legitimately means "the first
+            // registered Messaging Infrastructure" — a valid lookup key and an invalid attribute value are not the
+            // same thing. This ONE local feeds both the span and the metric, so the two cannot spell one absence
+            // differently. It is resolved below the off-guard, so an application that never opted in still pays only
+            // a single boolean read (ADR-0010 R1).
+            var infrastructureType = _options.InfrastructureType;
+            var messagingSystem = string.IsNullOrWhiteSpace(infrastructureType) ? null : infrastructureType;
             var inboundMessage = messageContext?.BrokeredMessage;
 
             // INVARIANT: the receive span and the ambient activity its start may have suppressed are ONE scope, so
