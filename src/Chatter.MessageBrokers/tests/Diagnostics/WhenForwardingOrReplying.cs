@@ -1,14 +1,11 @@
-using Chatter.MessageBrokers.Context;
+﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Context;
-using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.Tests.Receiving.Fakes;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
-using Moq;
-using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
@@ -137,16 +134,7 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         }
 
         private static InboundBrokeredMessage BuildInbound(string traceParent)
-        {
-            var bodyConverter = new JsonBodyConverter();
-            var messageContext = new Dictionary<string, object>
-            {
-                [MessageContext.InfrastructureType] = DiagnosticsSendHarness.MessagingSystem,
-                [TraceContextHeaders.TraceParent] = traceParent,
-            };
-
-            return new InboundBrokeredMessage("inbound-message-id", bodyConverter.Convert(new TracedDelivery { Value = "inbound" }), messageContext, "receiver-path", bodyConverter);
-        }
+            => CapturingRoutingHarness.BuildInbound(traceParent);
 
         private static string ResolveTraceParent(IReadOnlyDictionary<string, object> messageContext)
         {
@@ -161,31 +149,5 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
 
         private static Activity ResolveSingleSpan(RecordingActivityScope activityScope, string operationName)
             => activityScope.StoppedNamed(operationName).Should().ContainSingle().Subject;
-
-        /// <summary>
-        /// A Router that captures the single message routed to it, plus the message-id generator the forward and
-        /// reply routers need.
-        /// </summary>
-        private sealed class CapturingRoutingHarness
-        {
-            private readonly Mock<IRouteBrokeredMessages> _router = new Mock<IRouteBrokeredMessages>();
-            private readonly Mock<IMessageIdGenerator> _messageIdGenerator = new Mock<IMessageIdGenerator>();
-
-            internal CapturingRoutingHarness()
-            {
-                _messageIdGenerator.Setup(generator => generator.GenerateId(It.IsAny<byte[]>())).Returns(() => Guid.NewGuid());
-
-                _router
-                    .Setup(router => router.Route(It.IsAny<OutboundBrokeredMessage>(), It.IsAny<TransactionContext>()))
-                    .Callback<OutboundBrokeredMessage, TransactionContext>((outboundMessage, _) => RoutedMessage = outboundMessage)
-                    .Returns(Task.CompletedTask);
-            }
-
-            internal IRouteBrokeredMessages Router => _router.Object;
-
-            internal IMessageIdGenerator MessageIdGenerator => _messageIdGenerator.Object;
-
-            internal OutboundBrokeredMessage RoutedMessage { get; private set; }
-        }
     }
 }

@@ -88,7 +88,8 @@ namespace Chatter.MessageBrokers.Routing
                 var outbound = BuildReply(inboundBrokeredMessage, destinationRouterContext);
 
                 // The Messaging Infrastructure the message names is the only messaging-system identity this package
-                // has; when the message carries none the tag is left unset rather than given an invented value.
+                // has; it is passed through here AS-IS. BrokerDiagnostics normalizes a blank identifier to an unset
+                // span attribute (the metric keeps the key with a null value) rather than inventing one.
                 messagingSystem = outbound.InfrastructureType;
                 sendActivity = BrokerDiagnostics.StartSend(messagingSystem, BrokerDiagnostics.OperationTypes.Send, outbound.Destination, RepliedMessageCount);
 
