@@ -254,9 +254,29 @@ Any .NET `ActivityListener` / `MeterListener` works just as well — an OpenTele
 
 ### What is emitted
 
-- A dispatch span per Command dispatch and per Event dispatch, carrying the dispatched message type and which dispatch path handled it.
-- A dispatch duration histogram, recorded in seconds.
-- On failure, the span is marked with an error status and the exception's type; full exception detail is attached only when the subscriber asked for all data.
+**Spans.** One span per Command dispatch and per Event dispatch. The span name carries the message type's **short** name; the **fully qualified** name is carried on the `chatter.message.type` attribute.
+
+| Span | Value |
+| --- | --- |
+| Name | `dispatch <short message type name>` — for example, `dispatch SubmitOrder` |
+| Kind | `ActivityKind.Internal` |
+| Status on failure | `Error`, with the exception's message as the status description |
+
+| Span attribute | Value | Emitted | Name origin |
+| --- | --- | --- | --- |
+| `chatter.message.type` | The **fully qualified** message type name — for example, `Acme.Ordering.SubmitOrder`, where the span name above would read `dispatch SubmitOrder` | Always | Chatter-native |
+| `chatter.dispatch.kind` | `command` or `event` | Always | Chatter-native |
+| `error.type` | The fully qualified exception type name | Failure only | OpenTelemetry semantic convention |
+
+| Span event | Attributes | Emitted | Name origin |
+| --- | --- | --- | --- |
+| `exception` | `exception.type`, `exception.message`, `exception.stacktrace` | Failure only, and only when the subscriber requested all data | OpenTelemetry semantic convention |
+
+**Metrics.**
+
+| Instrument | Type | Unit | Attributes |
+| --- | --- | --- | --- |
+| `chatter.cqrs.dispatch.duration` | `Histogram<double>` | `s` (seconds) | `chatter.message.type` and `chatter.dispatch.kind` always; `error.type` only when the dispatch failed |
 
 Query dispatch is not instrumented.
 

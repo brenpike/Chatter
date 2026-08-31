@@ -205,6 +205,47 @@ Any .NET `ActivityListener` / `MeterListener` works just as well — an OpenTele
 
 **When nothing subscribes to the `Chatter.MessageBrokers` source or meter, nothing is emitted and nothing extra goes on the wire.** Each emit site checks whether Chatter's own source has a subscriber as its first statement and returns before a span name, a tag collection, or a `traceparent` header is constructed — so an application that never opts in pays no per-message cost and its messages are byte-identical to the un-instrumented ones. In particular, **no `traceparent` is written unless Chatter itself started a span**: the injection is a pure function of the span Chatter started, never of the ambient `Activity.Current`, which is non-null in any host running unrelated instrumentation. The guarantee is per-operation; constructing the `ActivitySource` and `Meter` themselves is a one-time static initialization per process, which is unavoidable for any `ActivitySource`-based design.
 
+### What is emitted
+
+Two spans, one Chatter-native span event alongside the standard `exception` event, and three instruments. Names prefixed `chatter.` are Chatter-native; `messaging.*`, `error.type` and `exception.*` are OpenTelemetry semantic conventions pinned to **v1.30.0**.
+
+**Spans**
+
+| Span name | Kind | Started by | Attributes |
+| --- | --- | --- | --- |
+| `send {messaging.destination.name}` | `ActivityKind.Producer` | `BrokeredMessageDispatcher`'s send/publish paths, `ForwardingRouter` and `ReplyRouter` — one span per dispatch call, however many messages it carries. | `messaging.system`, `messaging.operation.name` (`send`), `messaging.operation.type` (`send`), `messaging.destination.name`, `messaging.batch.message_count`, and `error.type` on failure. |
+| `receive {receiver path}` | `ActivityKind.Consumer` | `BrokeredMessageReceiver<TMessage>` at worker entry — one span per delivery, covering every Recovery attempt for it. | `messaging.system`, `messaging.operation.name` (`receive`), `messaging.operation.type` (`receive`), `messaging.destination.name`, `messaging.message.id` (when the infrastructure supplied one), `chatter.messaging.receive.attempts`, `chatter.messaging.settlement` (`ack` / `nack` / `deadletter`), and `error.type` on failure. |
+
+Those two are the whole span inventory. `messaging.operation.type` also declares the semconv values `create`, `process` and `settle`, but Chatter emits none of them, so a query written against those values matches nothing.
+
+Two attributes are deliberately absent in stated cases:
+
+- An **attribute-routed dispatch** — the `Send` / `Publish` / `Forward` overloads that take no explicit destination — starts a bare `send` span with `messaging.destination.name` **unset**, because the destination is resolved by the one enumeration the Router performs. It is written, and the span name rewritten, at span stop; nothing observes the placeholder, since sampling has already been decided and the display name is read at stop. A batch whose messages resolve to different destinations has no single destination, so the attribute stays unset rather than being given the first message's value.
+- `messaging.system` is left **unset** when the message carries no Messaging Infrastructure identifier. Nothing is invented in its place.
+
+**Span events**
+
+| Event | On | When |
+| --- | --- | --- |
+| `chatter.messaging.receive.retry` | the receive span | One per Recovery attempt *after the first*, carrying `chatter.messaging.receive.attempts`. Added only when the subscriber asked for all data (`Activity.IsAllDataRequested`), so a sampled-out span pays nothing for it. |
+| `exception` | either span | A failure an exception carried. On `net10.0` the event is produced by the base class library's `Activity.AddException`; on `net8.0` Chatter writes `exception.type`, `exception.message` and `exception.stacktrace` itself. The event name is `exception` either way. |
+
+`chatter.messaging.receive.attempts` is written at span stop, so it is **always** present on a receive span; the retry *event* appears only from the second attempt onward. The tag is the attempt count, the event is the re-attempt — they are not the same signal.
+
+**Metrics**
+
+| Instrument | Type | Unit | Records |
+| --- | --- | --- | --- |
+| `messaging.client.operation.duration` | `Histogram<double>` | `s` | The duration of one send or one receive operation. |
+| `messaging.client.sent.messages` | `Counter<long>` | `{message}` | Messages handed to broker infrastructure for delivery. |
+| `messaging.client.consumed.messages` | `Counter<long>` | `{message}` | Messages broker infrastructure delivered. "Consumed" is the pinned specification's wire spelling for what this module calls receiving. |
+
+All three carry exactly `messaging.system`, `messaging.operation.name`, `messaging.operation.type` and `messaging.destination.name`, plus `error.type` on failure.
+
+**Metric attributes are a strict subset of the span attributes.** `messaging.batch.message_count`, `messaging.message.id`, `chatter.messaging.settlement` and `chatter.messaging.receive.attempts` are **span-only** and are not available as metric attributes. A rate broken down by settlement outcome, by message id, or by attempt count therefore cannot be built from these instruments — that breakdown has to come from the spans.
+
+**`error.type` takes two shapes.** When an exception carried the failure it is the **fully qualified exception type name**. When the receiving infrastructure *returns* a `Failed` Settlement Outcome without throwing, it is **`settlement_failed`**. That second value carries no `exception` span event, deliberately: there is no exception, and a never-thrown marker exception would attach a synthetic stack trace as false evidence about something that never happened.
+
 ### Attribute names are data, not API
 
 Broker-boundary spans carry OpenTelemetry semantic-convention attributes pinned to **v1.30.0** (`messaging.system`, `messaging.operation.name`, `messaging.operation.type`, `messaging.destination.name`, `messaging.message.id`, `messaging.batch.message_count`, `error.type`). Because telemetry attributes are emitted data rather than a compile-time type surface, **they may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in this package's CHANGELOG.
