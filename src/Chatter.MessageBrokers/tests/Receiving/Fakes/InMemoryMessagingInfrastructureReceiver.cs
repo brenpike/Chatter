@@ -118,6 +118,17 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
             set => _deliveryCount = value;
         }
 
+        /// <summary>
+        /// Whether this double reports that the infrastructure owns the Error Queue write, implicitly implementing
+        /// <see cref="IMessagingInfrastructureReceiver.WritesToErrorQueue"/>.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: optional opt-in arming hook, default DISARMED (<c>false</c>) — the SAME value the default
+        /// interface member declares — so every existing test that constructs this double is behaviourally unchanged.
+        /// Only a test pinning the receiver's max-attempts suppression gate arms it to <c>true</c>.
+        /// </remarks>
+        public bool WritesToErrorQueue { get; set; }
+
         /// <summary>Enqueues a message to be returned by the next <see cref="ReceiveMessageAsync"/> call.</summary>
         public void Enqueue(MessageBrokerContext context)
         {

@@ -256,14 +256,18 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
         // --- the error-queue control signal, split off the settlement outcome ---
 
-        // REGRESSION PIN — THE DOUBLE-WRITE. The error-only config must produce EXACTLY ONE durable copy in the
-        // Error Queue. The adapter writes that copy itself, so the core must NOT run its error-recovery action for
-        // the same delivery. The core gates that action on
+        // REGRESSION PIN — THE DOUBLE-WRITE (adapter half). The error-only config must produce EXACTLY ONE durable
+        // copy in the Error Queue: the adapter writes that copy itself, so Error-Queue Write Ownership must report
+        // `WritesToErrorQueue == true` here, which is what tells the Brokered Message Receiver's error-recovery
+        // action to stay off this delivery and upholds the single-copy rule.
+        // THESE tests pin only the ADAPTER half of that contract — that `WritesToErrorQueue` has the correct
+        // polarity for each configuration (asserted below and at line ~299). The CORE gate —
         //     deadletterResult.IsSettled && !_infrastructureReceiver.WritesToErrorQueue
-        // (BrokeredMessageReceiver.cs), and the deadletter here truthfully reports Settled — so WritesToErrorQueue
-        // is the ONLY thing standing between this config and two copies of every poison message. The core gate is
-        // re-evaluated verbatim below: if a later refactor collapses the control signal back into the outcome, this
-        // test fails rather than the Error Queue silently doubling.
+        // (BrokeredMessageReceiver.cs:916) — is pinned separately, in the module that owns it, by
+        // `MustSuppressMaxReceivesActionWhenInfrastructureOwnsTheErrorQueueWrite` in Chatter.MessageBrokers.Tests.
+        // That test is where the two halves of the contract actually meet. Nothing in this file can detect a
+        // change to the real core predicate — the `coreRunsItsErrorRecoveryAction` locals below recompute the
+        // same expression locally and only DOCUMENT its shape; see the note on each.
         [Fact]
         public async Task MustSuppressTheCoresErrorRecoveryActionOnTheErrorOnlyConfig()
         {
@@ -279,6 +283,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.Receiver.WritesToErrorQueue.Should().BeTrue(
                 "the error-only config makes the adapter the owner of the Error Queue write");
 
+            // Documentation-only: recomputes the core's gating expression locally to show its expected shape for
+            // this configuration. It CANNOT detect a change to the real predicate in BrokeredMessageReceiver — see
+            // the comment above this test's [Fact].
             var coreRunsItsErrorRecoveryAction = deadlettered.IsSettled && !harness.Receiver.WritesToErrorQueue;
             coreRunsItsErrorRecoveryAction.Should().BeFalse(
                 "the core must not write a second copy of the poison message to the Error Queue the adapter already wrote");
@@ -299,6 +306,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.Receiver.WritesToErrorQueue.Should().BeFalse(
                 "with a dead-letter queue configured the adapter never writes to the Error Queue, so the core owns that write");
 
+            // Documentation-only: recomputes the core's gating expression locally to show its expected shape for
+            // this configuration. It CANNOT detect a change to the real predicate in BrokeredMessageReceiver —
+            // see the comment above MustSuppressTheCoresErrorRecoveryActionOnTheErrorOnlyConfig.
             var coreRunsItsErrorRecoveryAction = deadlettered.IsSettled && !harness.Receiver.WritesToErrorQueue;
             coreRunsItsErrorRecoveryAction.Should().BeTrue(
                 "the core must still forward its error-queue copy when the adapter deadlettered to the dead-letter queue");
