@@ -209,44 +209,71 @@ Any .NET `ActivityListener` / `MeterListener` works just as well — an OpenTele
 
 Two spans, one Chatter-native span event alongside the standard `exception` event, and three instruments. Names prefixed `chatter.` are Chatter-native; `messaging.*`, `error.type` and `exception.*` are OpenTelemetry semantic conventions pinned to **v1.30.0**.
 
+**Fill rule — every row below states when it is emitted; a blank condition cell is a defect, and `Always` is a positive claim that the emit site is unconditional rather than a default.** A condition on an attribute, event or metric-attribute row is stated *relative to its signal existing at all*: whether a span exists at all is the span table's **Started when**, and whether a measurement is taken at all is the instrument table's **Recorded when**.
+
+**Span name rule.** A span is named `{messaging.operation.name} {messaging.destination.name}`, degrading to the bare operation name when no destination is set. A bare `send` is therefore the same span under this rule rather than a further one, and a name whose destination is resolved only at span stop is rewritten there.
+
 **Spans**
 
-| Span name | Kind | Started by | Attributes |
-| --- | --- | --- | --- |
-| `send {messaging.destination.name}` | `ActivityKind.Producer` | `BrokeredMessageDispatcher`'s send/publish paths, `ForwardingRouter` and `ReplyRouter` — one span per dispatch call, however many messages it carries. | `messaging.system`, `messaging.operation.name` (`send`), `messaging.operation.type` (`send`), `messaging.destination.name`, `messaging.batch.message_count`, and `error.type` on failure. |
-| `receive {receiver path}` | `ActivityKind.Consumer` | `BrokeredMessageReceiver<TMessage>` at worker entry — one span per delivery, covering every Recovery attempt for it. | `messaging.system`, `messaging.operation.name` (`receive`), `messaging.operation.type` (`receive`), `messaging.destination.name`, `messaging.message.id` (when the infrastructure supplied one), `chatter.messaging.receive.attempts`, `chatter.messaging.settlement` (`ack` / `nack` / `deadletter`), and `error.type` on failure. |
+<!-- Fill rule: every row states when it is emitted; a blank condition cell is a defect, and `Always` is a positive claim that the emit site is unconditional rather than a default. -->
 
-Those two are the whole span inventory. `messaging.operation.type` also declares the semconv values `create`, `process` and `settle`, but Chatter emits none of them, so a query written against those values matches nothing.
+| Span | Name | Kind | Started by | Started when |
+| --- | --- | --- | --- | --- |
+| send | `send {messaging.destination.name}`, per the span name rule | `ActivityKind.Producer` | `BrokeredMessageDispatcher`'s send and publish paths, `ForwardingRouter`, `ReplyRouter` | Once per dispatch call, however many messages that call carries — and only while a .NET `ActivityListener` is attached to the `Chatter.MessageBrokers` source and samples the span. |
+| receive | `receive {messaging.destination.name}`, per the span name rule; the destination is the receiver path | `ActivityKind.Consumer` | `BrokeredMessageReceiver<TMessage>` at worker entry | Once per delivery, covering every Recovery attempt made for that delivery — and only while a .NET `ActivityListener` is attached to the `Chatter.MessageBrokers` source and samples the span. |
 
-Two **span** attributes are deliberately absent in stated cases:
+Those two are the whole span inventory; the name rule renames a span, it never adds one. `messaging.operation.type` also declares the semconv values `create`, `process` and `settle`, but Chatter emits none of them, so a query written against those values matches nothing.
 
-- An **attribute-routed dispatch** — the `Send` / `Publish` overloads that take no explicit destination — starts a bare `send` span with `messaging.destination.name` **unset**, because the destination is resolved by the one enumeration the Router performs. It is written, and the span name rewritten, at span stop, so what an exporter reads at stop is the resolved value rather than the start-time placeholder. A .NET `ActivityListener` that inspects the span at `ActivityStarted` does see the bare shape — the write happens after start — but sampling has already been decided by then, so the placeholder can never affect it. A batch whose messages resolve to different destinations has no single destination, so the attribute stays unset — at stop as well as at start — rather than being given the first message's value. `Forward` always takes an explicit destination, so a send span started by a forward never has this shape.
-- `messaging.system` is left **unset** when the message carries no Messaging Infrastructure identifier. Nothing is invented in its place.
+**Span attributes**
 
-Both are absences **on the span**. The instruments below build one fixed attribute set, so `messaging.system` and `messaging.destination.name` are always present on a measurement as attribute *keys* and carry a **null value** in the two cases above rather than being omitted. Write "the attribute is missing" queries against the spans; against the metrics, write them against a null value.
+An **unset** attribute below is an unconditional write of a null value, not a skipped write: .NET `Activity.SetTag` drops a tag whose value is null.
+
+| Attribute | Span | Value | Emitted | Name origin |
+| --- | --- | --- | --- | --- |
+| `messaging.system` | send | The Messaging Infrastructure identifier the dispatch names — the infrastructure-type entry of the routing options' Message Context, or the outbound message's own on a forward or a reply. | Only when the dispatch carries that identifier; a dispatch carrying none leaves the attribute **unset**, and nothing is invented in its place. | semconv v1.30.0 |
+| `messaging.system` | receive | The receiver's configured `ReceiverOptions.InfrastructureType` — **the empty string** when the receiver was configured without one, because that property's `""` default is never normalized. | Always, the empty-string case included. | semconv v1.30.0 |
+| `messaging.operation.name` | send | `send` | Always. | semconv v1.30.0 |
+| `messaging.operation.name` | receive | `receive` | Always. | semconv v1.30.0 |
+| `messaging.operation.type` | send | `send` | Always. | semconv v1.30.0 |
+| `messaging.operation.type` | receive | `receive` | Always. | semconv v1.30.0 |
+| `messaging.destination.name` | send | The destination the call named, when it named one; otherwise the single destination every message of the batch resolved to. | Written at span **stop**, not at start, because an attribute-routed `Send` / `Publish` resolves its destination by the one enumeration the Router performs. **Unset** when the call named none and the batch resolved to more than one destination, or yielded nothing. Sampling is decided at start, so the start-time placeholder reaches no .NET `ActivityListener` and the rewritten name is what is read at `ActivityStopped`. | semconv v1.30.0 |
+| `messaging.destination.name` | receive | The receiver path, as the Messaging Infrastructure's path builder resolved it. | Always, at span start — the path is resolved once at receiver startup, before any delivery. | semconv v1.30.0 |
+| `messaging.batch.message_count` | send | How many messages the call handed to the Router: the number a `Send` / `Publish` actually yielded, and `1` for a forward or a reply. | Always. A forward or a reply sets it at span start; a `Send` / `Publish` writes it at span **stop**, the count being unknown until the Router's one enumeration ends, and sampling is decided at start, so the start-time `0` placeholder reaches no .NET `ActivityListener`. | semconv v1.30.0 |
+| `messaging.message.id` | receive | The Messaging Infrastructure's own identifier for the delivered message. | Only when the infrastructure supplied a non-empty one. | semconv v1.30.0 |
+| `chatter.messaging.receive.attempts` | receive | How many Recovery attempts ran for this delivery; `0` when the delivery failed before Recovery began, as a poisoned body does. | Always, written at span stop. | Chatter-native |
+| `chatter.messaging.settlement` | receive | The settlement Chatter answered with: `ack` when handling completed and the worker token was not cancelled; `nack` when handling completed under a cancelled worker token, or a processing fault left the delivery count below `MaxReceiveAttempts`; `deadletter` on a poisoned body, or a processing fault whose delivery count has reached `MaxReceiveAttempts`. | Only on those branches of the worker's error ladder that choose a settlement, and recorded where the branch chooses it rather than after the settlement call, which is best-effort. A delivery that ended in a `CriticalReceiverException`, in a shutdown cancellation, or in a delivery-count probe that itself failed reaches no such branch and carries no settlement. | Chatter-native |
+| `error.type` | send | The fully qualified exception type name. | Only when an exception ended the dispatch call. | semconv v1.30.0 |
+| `error.type` | receive | The fully qualified exception type name; or `settlement_failed` when the Messaging Infrastructure *returned* a `Failed` Settlement Outcome without raising anything. | Only when a failure was retained for the delivery. A shutdown cancellation is deliberately not a failed receive — a clean restart would otherwise emit one failure per delivery in flight — and retains none. | semconv v1.30.0 |
 
 **Span events**
 
-| Event | On | When |
-| --- | --- | --- |
-| `chatter.messaging.receive.retry` | the receive span | One per Recovery attempt *after the first*, carrying `chatter.messaging.receive.attempts`. Added only when the subscriber asked for all data (`Activity.IsAllDataRequested`), so a sampled-out span pays nothing for it. |
-| `exception` | either span | A failure an exception carried. On `net10.0` the event is produced by the base class library's `Activity.AddException`; on `net8.0` Chatter writes `exception.type`, `exception.message` and `exception.stacktrace` itself. The event name is `exception` either way. |
-
-`chatter.messaging.receive.attempts` is written at span stop, so it is **always** present on a receive span; the retry *event* appears only from the second attempt onward. The tag is the attempt count, the event is the re-attempt — they are not the same signal.
+| Event | Span | Attributes | Emitted |
+| --- | --- | --- | --- |
+| `chatter.messaging.receive.retry` | receive | `chatter.messaging.receive.attempts`, carrying the number of the attempt this event records. | On every Recovery attempt after the first, and only while `Activity.IsAllDataRequested` is true, so a sampled-out or recording-only span pays nothing to construct it. |
+| `exception` | send | Provenance-split by target framework: on `net10.0` the base class library's `Activity.AddException` writes them; on `net8.0` Chatter writes the `exception.*` set itself. The event name is `exception` either way. | Only when an exception ended the dispatch call and `Activity.IsAllDataRequested` is true. |
+| `exception` | receive | Provenance-split by target framework, exactly as on the send span: `Activity.AddException` on `net10.0`, Chatter-written `exception.*` tags on `net8.0`. | Only when an exception ended the delivery and `Activity.IsAllDataRequested` is true. A `Failed` Settlement Outcome the infrastructure returned without raising carries no event, deliberately: there is no exception, and a never-thrown marker exception would attach a synthetic stack trace as false evidence about something that never happened. A shutdown cancellation likewise carries none. |
 
 **Metrics**
 
-| Instrument | Type | Unit | Records |
+| Instrument | Type | Unit | Records | Recorded when |
+| --- | --- | --- | --- | --- |
+| `messaging.client.operation.duration` | `Histogram<double>` | `s` | The elapsed time of one dispatch call, or of one delivery. | Once per dispatch call and once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. |
+| `messaging.client.sent.messages` | `Counter<long>` | `{message}` | The number of messages the dispatch call handed to broker infrastructure: the number a `Send` / `Publish` yielded, `1` for a forward, and for a reply `1` once the Router has been called or `0` when the call failed before that. | Once per dispatch call, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. |
+| `messaging.client.consumed.messages` | `Counter<long>` | `{message}` | One message per delivery. "Consumed" is the pinned specification's wire spelling for what this module calls receiving. | Once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. |
+
+**Metric attributes**
+
+| Attribute | Instruments | Value | Emitted |
 | --- | --- | --- | --- |
-| `messaging.client.operation.duration` | `Histogram<double>` | `s` | The duration of one send or one receive operation. |
-| `messaging.client.sent.messages` | `Counter<long>` | `{message}` | Messages handed to broker infrastructure for delivery. |
-| `messaging.client.consumed.messages` | `Counter<long>` | `{message}` | Messages broker infrastructure delivered. "Consumed" is the pinned specification's wire spelling for what this module calls receiving. |
+| `messaging.system` | all three | On a send measurement, the Messaging Infrastructure identifier the dispatch names — **null** when it names none. On a receive measurement, the receiver's configured `ReceiverOptions.InfrastructureType` — the empty string when the receiver was configured without one. | Always, as a key, whatever the value. |
+| `messaging.operation.name` | all three | `send` on a send measurement, `receive` on a receive measurement. | Always, as a key. |
+| `messaging.operation.type` | all three | `send` on a send measurement, `receive` on a receive measurement. | Always, as a key. |
+| `messaging.destination.name` | all three | On a send measurement, the destination the call named or the single destination the batch resolved to — **null** when the call named none and the batch resolved to more than one, or yielded nothing. On a receive measurement, the receiver path. | Always, as a key, whatever the value. |
+| `error.type` | all three | The fully qualified exception type name; or `settlement_failed` for a `Failed` Settlement Outcome the Messaging Infrastructure returned without raising anything. | Only when a non-blank error type was resolved for the operation; an operation that did not fail carries no `error.type` key at all. |
 
-All three carry exactly `messaging.system`, `messaging.operation.name`, `messaging.operation.type` and `messaging.destination.name`, plus `error.type` on failure.
+Where a span leaves an attribute **unset**, the instruments still carry that attribute as a key with a null value. Query the spans for a missing attribute; query the instruments for a null one.
 
-**Metric attribute names are a strict subset of the span attribute names.** `messaging.batch.message_count`, `messaging.message.id`, `chatter.messaging.settlement` and `chatter.messaging.receive.attempts` are **span-only** and are not available as metric attributes. A rate broken down by settlement outcome, by message id, or by attempt count therefore cannot be built from these instruments — that breakdown has to come from the spans.
-
-**`error.type` takes two shapes.** When an exception carried the failure it is the **fully qualified exception type name**. When the receiving infrastructure *returns* a `Failed` Settlement Outcome without throwing, it is **`settlement_failed`**. That second value carries no `exception` span event, deliberately: there is no exception, and a never-thrown marker exception would attach a synthetic stack trace as false evidence about something that never happened.
+**Metric attribute names are a strict subset of the span attribute names.** A rate broken down by settlement outcome, by message id or by attempt count therefore cannot be built from these instruments — that breakdown has to come from the spans.
 
 ### Attribute names are data, not API
 
