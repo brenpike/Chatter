@@ -254,9 +254,42 @@ Any .NET `ActivityListener` / `MeterListener` works just as well — an OpenTele
 
 ### What is emitted
 
-- A dispatch span per Command dispatch and per Event dispatch, carrying the dispatched message type and which dispatch path handled it.
-- A dispatch duration histogram, recorded in seconds.
-- On failure, the span is marked with an error status and the exception's type; full exception detail is attached only when the subscriber asked for all data.
+Every row below states when its signal is emitted: a blank condition cell is a defect, and `Always` is a positive claim that the emit site is unconditional, not a default. One row per facet — no comma-joined lists.
+
+**Spans.** At most one span per Command dispatch and per Event dispatch.
+
+<!-- FILL RULE: every row states when it is emitted; a blank condition cell is a defect; `Always` is a positive claim that the emit site is unconditional, not a default. One row per facet - no comma-joined lists. -->
+
+| Span | Name | Kind | Started by | Started when |
+| --- | --- | --- | --- | --- |
+| `dispatch` | `dispatch ` followed by the **short** name of the compile-time `TMessage` type argument, not the runtime type — a variable declared `SubmitOrder` gives `dispatch SubmitOrder`, a variable declared `ICommand` gives `dispatch ICommand` | `ActivityKind.Internal` | `CommandDispatcher.Dispatch<TMessage>` and `EventDispatcher.Dispatch<TMessage>` | A .NET `ActivityListener` is attached to the `Chatter.CQRS` source **and** samples this dispatch; when it is not, no span exists and only the metric below can be recorded |
+
+| Attribute | Span | Value | Emitted | Name origin |
+| --- | --- | --- | --- | --- |
+| `chatter.message.type` | `dispatch` | The **fully qualified** name of the compile-time `TMessage` type argument, not the runtime type — a variable declared `SubmitOrder` gives `Acme.Ordering.SubmitOrder` (span name `dispatch SubmitOrder`), a variable declared `ICommand` gives `Chatter.CQRS.Commands.ICommand` (span name `dispatch ICommand`) | Always — set unconditionally on every started span | Chatter-native |
+| `chatter.dispatch.kind` | `dispatch` | `command` on the Command dispatch path, `event` on the Event dispatch path | Always — set unconditionally on every started span | Chatter-native |
+| `error.type` | `dispatch` | The fully qualified exception type name | Failure only — when the dispatch threw | OpenTelemetry semantic convention |
+| Status — the span's own status field, not a tag | `dispatch` | `Error`, with the exception's message as the status description | Failure only — when the dispatch threw | `Activity.SetStatus`, .NET base class library |
+
+The `exception` event carries the same name on both target frameworks, but Chatter populates its attributes on `net8.0` only; on `net10.0` the .NET base class library writes them.
+
+| Event | Span | Attributes | Emitted |
+| --- | --- | --- | --- |
+| `exception` | `dispatch` | `exception.type` — on `net8.0` Chatter writes the fully qualified exception type name; on `net10.0` the value is whatever `Activity.AddException` writes | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
+| `exception` | `dispatch` | `exception.message` — on `net8.0` Chatter writes `Exception.Message`; on `net10.0` the value is whatever `Activity.AddException` writes | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
+| `exception` | `dispatch` | `exception.stacktrace` — on `net8.0` Chatter writes `Exception.ToString()`, which carries the type, message and stack trace; on `net10.0` the value is whatever `Activity.AddException` writes | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
+
+**Metrics.**
+
+| Instrument | Type | Unit | Records | Recorded when |
+| --- | --- | --- | --- | --- |
+| `chatter.cqrs.dispatch.duration` | `Histogram<double>` | `s` (seconds) | Elapsed time of one Command or Event dispatch, measured from before the span is started until the handler — or, for an Event, the last handler — returns or throws | Once per dispatch, on success and on failure alike, and only while the instrument itself is enabled on a .NET `MeterListener`; a dispatch that ran with diagnostics off records nothing |
+
+| Attribute | Instruments | Value | Emitted |
+| --- | --- | --- | --- |
+| `chatter.message.type` | `chatter.cqrs.dispatch.duration` | The fully qualified name of the compile-time `TMessage` type argument — the same value the span attribute above carries | Always |
+| `chatter.dispatch.kind` | `chatter.cqrs.dispatch.duration` | `command` on the Command dispatch path, `event` on the Event dispatch path | Always |
+| `error.type` | `chatter.cqrs.dispatch.duration` | The fully qualified exception type name, resolved by the same code that sets the span's `error.type`, so the two signals cannot disagree | Failure only — when the dispatch threw |
 
 Query dispatch is not instrumented.
 

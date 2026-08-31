@@ -155,6 +155,8 @@ services.AddOpenTelemetry()
 
 > **Telemetry attribute names are data, not compile-time API.** Chatter's broker-boundary attribute names track the pinned **OpenTelemetry semantic conventions v1.30.0**, and **may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in the affected package's CHANGELOG.
 
+For the exact span names, instrument names, units, and attributes, see the Diagnostics sections of the [Chatter.CQRS](./src/Chatter.CQRS/src/README.md#diagnostics-optional-opt-in) and [Chatter.MessageBrokers](./src/Chatter.MessageBrokers/src/README.md#diagnostics-and-trace-context-optional-opt-in) READMEs.
+
 Design rationale, the propagation scope, and the off-guard rules are recorded in [ADR-0010](./docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
 
 ## Domain language
