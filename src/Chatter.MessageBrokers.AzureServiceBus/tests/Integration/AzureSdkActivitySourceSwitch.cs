@@ -3,14 +3,14 @@ using System.Runtime.CompilerServices;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
 {
-    // Turns ON Azure.Messaging.ServiceBus 7.20.1's own ActivitySource tracing for THIS test process, so
+    // Turns ON Azure.Messaging.ServiceBus 7.20.2's own ActivitySource tracing for THIS test process, so
     // AzureServiceBusTraceContextInteropTests can observe how the SDK's instrumentation and Chatter's
     // instrumentation actually interact instead of asserting against an SDK that never emitted anything.
     //
     // WHY A MODULE INITIALIZER RATHER THAN TEST SETUP. The SDK reads the switch ONCE, from a static
     // constructor, and caches the answer for the life of the process. Verified against the resolved package
-    // rather than assumed: decompiling Azure.Messaging.ServiceBus 7.20.1 (which compiles its OWN internal copy
-    // of the Azure.Core shared source, so this type also exists in Azure.Core 1.46.2) shows
+    // rather than assumed: decompiling Azure.Messaging.ServiceBus 7.20.2 (which compiles its OWN internal copy
+    // of the Azure.Core shared source, so this type also exists in Azure.Core 1.60.0) shows
     //
     //     internal static class ActivityExtensions                    // Azure.Core.Pipeline
     //     {

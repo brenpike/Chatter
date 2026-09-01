@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [3.1.2] - 2026-08-31
+
+### Changed
+
+- Transitive uplift only: the sibling `Chatter.MessageBrokers.AzureServiceBus` package moved to `Azure.Messaging.ServiceBus 7.20.2`, which raises this package's transitive `Azure.Core` floor from `1.53.0` to `1.60.0`. On the `net8.0` consumer graph this also carries `Microsoft.Identity.Client` and `Microsoft.Identity.Client.Extensions.Msal` to `4.84.2`, `System.ClientModel` to `1.14.0`, `System.Text.Json` to `10.0.9`, and the `Microsoft.Extensions.*` abstractions to `10.0.9`. `Azure.Identity` itself stays pinned at `1.21.0`. No Auth API change and no behavior change in this package.
+
 ## [3.1.1] - 2026-08-25
 
 ### Fixed

@@ -183,7 +183,7 @@ heap of the shipped assembly: it contains `messaging.operation.name`, `messaging
 `messaging.message.envelope.size`, `messaging.rabbitmq.delivery_tag`, and
 `messaging.rabbitmq.destination.routing_key`.
 
-`Azure.Messaging.ServiceBus` 7.20.1, by contrast, still emits the **older** `messaging.operation`
+`Azure.Messaging.ServiceBus` 7.20.2, by contrast, still emits the **older** `messaging.operation`
 spelling (verified in its user-string heap alongside `messaging.batch.message_count` and
 `messaging.system`). Chatter does not follow the ASB SDK's older spelling and does not emit both:
 **one concept, one attribute name, taken from the pinned version.** A trace may therefore contain a
@@ -493,15 +493,16 @@ ambient `Activity` chain — whichever writes `traceparent` last writes a value 
 
 Two verified facts make this safe by default:
 
-- **`Azure.Messaging.ServiceBus` 7.20.1 is OFF by default.** Its `ActivitySource` tracing is gated
+- **`Azure.Messaging.ServiceBus` 7.20.2 is OFF by default.** Its `ActivitySource` tracing is gated
   behind the AppContext switch `Azure.Experimental.EnableActivitySource` / environment variable
   `AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE`. Both literals are present in the resolved
-  `Azure.Core` 1.46.2 assembly (verified in its user-string heap; the resolved version is pinned by
+  `Azure.Core` 1.60.0 assembly (verified by decompiling the resolved assembly on both TFMs; the
+  resolved version is pinned by
   `src/Chatter.MessageBrokers.AzureServiceBus/tests/packages.lock.json`).
   **NOW VERIFIED (previously recorded here as UNVERIFIED): the SDK caches the switch value in a
   static constructor**, so "set it before first touch of the SDK type" is an ESTABLISHED requirement
   rather than a documented-behavior inference. Established by decompiling the resolved package:
-  `Azure.Messaging.ServiceBus` 7.20.1 compiles its own internal copy of the `Azure.Core` shared
+  `Azure.Messaging.ServiceBus` 7.20.2 compiles its own internal copy of the `Azure.Core` shared
   source, and that copy's `internal static class Azure.Core.Pipeline.ActivityExtensions` declares
   `static ActivityExtensions() => ResetFeatureSwitch();`, where `ResetFeatureSwitch` assigns
   `SupportsActivitySource` from `AppContextSwitchHelper.GetConfigValue` reading the
@@ -513,6 +514,19 @@ Two verified facts make this safe by default:
   `src/Chatter.MessageBrokers.AzureServiceBus/tests/Integration/AzureSdkActivitySourceSwitch.cs`
   sets the switch from a `[ModuleInitializer]` for exactly this reason and records the same
   decompilation.
+  **RE-VERIFIED AGAINST `Azure.Messaging.ServiceBus` 7.20.2 / `Azure.Core` 1.60.0**, the versions
+  resolved after the 7.20.2 upgrade (both TFMs; pinned by the lock file cited above). Decompiling the
+  NEWLY resolved assemblies shows `ActivityExtensions` exactly as transcribed above, and diffing the
+  SDK's ENTIRE vendored copy of the `Azure.Core` diagnostics source between 7.20.1 and 7.20.2 turns up
+  exactly ONE changed line: `DiagnosticScope` now parses the incoming trace context as
+  `ActivityContext.TryParse(traceparent, tracestate, isRemote: true, out context)` — the `Azure.Core`
+  1.58.0 remote-parent change. It does not touch this premise. That line runs only once the SDK
+  already HAS an `ActivitySource`, which is to say only when the switch was read as true; and all it
+  changes is that the SDK's own span records its parent context as remote, which is what Chatter's
+  `TraceContextPropagator` has always done on extraction
+  (`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Diagnostics/TraceContextPropagator.cs:82`).
+  The re-verification was not left at decompilation: the emulator-backed
+  `AzureServiceBusTraceContextInteropTests` pass UNCHANGED on both `net8.0` and `net10.0`.
 - **`RabbitMQ.Client` 7.2.1 is OFF by default.** Publish-side activity creation and context
   injection are gated on `RabbitMQActivitySource.PublisherHasListeners`. Both
   `RabbitMQActivitySource` and `PublisherHasListeners` are verified present in the shipped
@@ -540,10 +554,12 @@ the message already carries `"Diagnostic-Id"` or `"traceparent"`. Because Chatte
 `"traceparent"` (D5), the SDK does neither of the two things that guard stands in front of.
 
 **NOW VERIFIED (previously recorded here as UNVERIFIED): the short-circuit control flow.**
-Decompiling the resolved `Azure.Messaging.ServiceBus` 7.20.1 shows the guard exactly as this ADR
+Decompiling the resolved `Azure.Messaging.ServiceBus` 7.20.2 shows the guard exactly as this ADR
 described it — `if (!properties.ContainsKey("Diagnostic-Id") && !properties.ContainsKey("traceparent"))`
 wrapping both the scope creation and the `Diagnostic-Id` stamping. No divergence from the earlier
-description was found, and the conformance test needed no adjustment to pass.
+description was found, and the conformance test needed no adjustment to pass. **RE-VERIFIED at
+7.20.2**: the guard is byte-for-byte identical on both TFMs, and `MessagingClientDiagnostics` is
+unchanged between 7.20.1 and 7.20.2.
 
 **WIDER THAN FIRST RECORDED.** Because that guard wraps the **scope creation** and not merely the
 stamp, it also suppresses the SDK's per-message span on the `ActivitySource`
