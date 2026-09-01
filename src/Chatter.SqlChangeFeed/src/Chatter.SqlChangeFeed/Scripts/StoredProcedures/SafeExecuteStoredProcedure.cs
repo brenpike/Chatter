@@ -51,10 +51,10 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
             string quotedQualifiedName = SqlIdentifier.QuoteLiteral(qualifiedName);
 
             return string.Format(@"
-                USE [{0}]
+                USE {0}
                 IF OBJECT_ID ('{1}', 'P') IS NOT NULL
                     EXEC {2}
-            ", _databaseName, quotedQualifiedName, qualifiedName);
+            ", SqlIdentifier.Escape(_databaseName), quotedQualifiedName, qualifiedName);
         }
     }
 }

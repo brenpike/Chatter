@@ -86,5 +86,15 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingSafeExecuteS
             script.Should().Contain($"IF OBJECT_ID ('{quotedQualifiedName}', 'P') IS NOT NULL");
             script.Should().Contain($"EXEC {qualifiedName}");
         }
+
+        [Fact]
+        public void MustBracketEscapeHostileDatabaseNameInUseStatement()
+        {
+            const string hostileDatabase = "My]Db'; DROP TABLE Users;--";
+            var script = new SafeExecuteStoredProcedure(ConnectionString, hostileDatabase, StoredProcedure, Schema).ToString();
+
+            script.Should().Contain("USE [My]]Db'; DROP TABLE Users;--]");
+            script.Should().NotContain("USE [My]Db'; DROP TABLE Users;--]");
+        }
     }
 }
