@@ -127,6 +127,18 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
             => Create().ToString().Should().Contain("@ExplicitCols bit = 1");
 
         [Fact]
+        public void MustQuoteNameLiveColumnNamesInTheColumnList()
+            => Create().ToString().Should().Contain("@ColumnList + '',%PFX%.'' + QUOTENAME(COLUMN_NAME)");
+
+        [Fact]
+        public void MustQuoteNameLiveColumnNamesInTheJoinColumns()
+            => Create().ToString().Should().Contain("@JoinColumns + '' AND del.'' + QUOTENAME(COLUMN_NAME) + '' = ins.'' + QUOTENAME(COLUMN_NAME)");
+
+        [Fact]
+        public void MustNotHandBracketLiveColumnNames()
+            => Create().ToString().Should().NotContain("['' + COLUMN_NAME + '']");
+
+        [Fact]
         public void MustEmitNestedServiceBrokerScriptWithDoubledQuotes()
         {
             // The nested service broker script's single quotes are doubled ('' ).

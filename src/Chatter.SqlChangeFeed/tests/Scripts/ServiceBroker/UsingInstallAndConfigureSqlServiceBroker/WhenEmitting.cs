@@ -110,6 +110,21 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.ServiceBroker.UsingInstallAndConfi
         public void MustEmitCreateQueueForConversationQueue()
             => Create().ToString().Should().Contain($"CREATE QUEUE [{Schema}].[{Queue}]");
 
+        // Queues are SCHEMA-scoped objects, so an unqualified sys.service_queues name probe matches a
+        // same-named queue in ANY schema and skips creating the target-schema queue the CREATE SERVICE
+        // below then binds to. The guard must key on the schema-qualified object identity instead.
+        [Fact]
+        public void MustGuardConversationQueueCreationOnSchemaQualifiedQueueIdentity()
+            => Create().ToString().Should().Contain($"IF OBJECT_ID('[{Schema}].[{Queue}]', 'SQ') IS NULL");
+
+        [Fact]
+        public void MustGuardDeadLetterQueueCreationOnSchemaQualifiedQueueIdentity()
+            => Create().ToString().Should().Contain($"IF OBJECT_ID('[{Schema}].[{DeadLetterQueue}]', 'SQ') IS NULL");
+
+        [Fact]
+        public void MustNotGuardQueueCreationOnAnUnqualifiedQueueName()
+            => Create().ToString().Should().NotContain("sys.service_queues WHERE name =");
+
         [Fact]
         public void MustEmitCreateServiceOnConversationQueue()
             => Create().ToString().Should().Contain($"CREATE SERVICE [{Service}] ON QUEUE [{Schema}].[{Queue}]");
@@ -131,8 +146,12 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.ServiceBroker.UsingInstallAndConfi
             => CreateHostile().ToString().Should().Contain("ALTER DATABASE [My]]Db'; DROP TABLE Users;--] SET ENABLE_BROKER");
 
         [Fact]
-        public void MustQuoteEscapeHostileQueueNameInQueueExistenceLiteral()
-            => CreateHostile().ToString().Should().Contain("sys.service_queues WHERE name = 'My]Queue''; DROP TABLE Users;--'");
+        public void MustQuoteEscapeHostileSchemaAndQueueInQueueExistenceProbe()
+            => CreateHostile().ToString().Should().Contain("OBJECT_ID('[My]]Schema''; DROP TABLE Users;--].[My]]Queue''; DROP TABLE Users;--]', 'SQ')");
+
+        [Fact]
+        public void MustQuoteEscapeHostileSchemaAndDeadLetterQueueInQueueExistenceProbe()
+            => CreateHostile().ToString().Should().Contain("OBJECT_ID('[My]]Schema''; DROP TABLE Users;--].[My]]DlQueue''; DROP TABLE Users;--]', 'SQ')");
 
         [Fact]
         public void MustBracketEscapeHostileSchemaAndQueueInCreateQueue()

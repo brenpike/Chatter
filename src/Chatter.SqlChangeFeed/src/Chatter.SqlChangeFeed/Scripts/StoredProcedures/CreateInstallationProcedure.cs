@@ -181,10 +181,16 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                         END
 
                         -- Construct column and join column strings:
+                        -- INVARIANT: live column names are delimited by QUOTENAME, never by hand-written brackets.
+                        -- COLUMN_NAME is read back from the watched table''s own catalog rows, so it can legally
+                        -- carry a closing bracket; concatenating bare bracket characters around it lets that
+                        -- bracket close the identifier early and break out into the trigger body built below.
+                        -- QUOTENAME is the server-side counterpart of the SqlIdentifier primitive the C# emitters
+                        -- use for the names known at emit time; these names are only known at install time.
                         DECLARE @ColumnList nvarchar(max) = '''';
-                        SELECT @ColumnList = @ColumnList + '',%PFX%.['' + COLUMN_NAME + '']'' FROM @tbl_Columns;
+                        SELECT @ColumnList = @ColumnList + '',%PFX%.'' + QUOTENAME(COLUMN_NAME) FROM @tbl_Columns;
                         DECLARE @JoinColumns nvarchar(max) = '''';
-                        SELECT @JoinColumns = @JoinColumns + '' AND del.['' + COLUMN_NAME + ''] = ins.['' + COLUMN_NAME + '']''
+                        SELECT @JoinColumns = @JoinColumns + '' AND del.'' + QUOTENAME(COLUMN_NAME) + '' = ins.'' + QUOTENAME(COLUMN_NAME)
                          FROM @tbl_Columns
                          WHERE PK_ORDINAL IS NOT NULL
                          ORDER BY PK_ORDINAL;

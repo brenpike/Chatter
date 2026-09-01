@@ -80,6 +80,11 @@ namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
             // blocks indefinitely with no timeout and no diagnostic.
             // INVARIANT: database ownership is left alone. Transferring it to [sa] would silently widen
             // the privileges of every EXECUTE AS OWNER module in the consumer's database.
+            // INVARIANT: the queue guards key on SCHEMA-QUALIFIED object identity (OBJECT_ID ... 'SQ'), not on
+            // an unqualified sys.service_queues name. Queues are schema-scoped, so a name probe matches a
+            // same-named queue in ANY schema and skips creating the target-schema queue that the CREATE SERVICE
+            // below binds to. Services, message types and contracts are database-scoped and have no schema, so
+            // their name probes stay as they are.
             return string.Format(@"
                 IF EXISTS (SELECT * FROM sys.databases 
                                     WHERE name = '{0}' AND is_broker_enabled = 0) 
@@ -93,22 +98,22 @@ namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
                 IF NOT EXISTS (SELECT * FROM sys.service_contracts WHERE name = '{14}')
                     CREATE CONTRACT {7} ({6} SENT BY ANY, [DEFAULT] SENT BY ANY);
 
-                IF NOT EXISTS (SELECT * FROM sys.service_queues WHERE name = '{1}')
+                IF OBJECT_ID('{1}', 'SQ') IS NULL
 	                CREATE QUEUE {3}.{9} WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
 
                 IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{2}')
 	                CREATE SERVICE {10} ON QUEUE {3}.{9} ({7})
 
-                IF NOT EXISTS (SELECT * FROM sys.service_queues WHERE name = '{4}')
+                IF OBJECT_ID('{4}', 'SQ') IS NULL
 	                CREATE QUEUE {3}.{11} WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
 
                 IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{5}')
 	                CREATE SERVICE {12} ON QUEUE {3}.{11} ({7}) 
             ", SqlIdentifier.QuoteLiteral(_databaseName),
-               SqlIdentifier.QuoteLiteral(_conversationQueueName),
+               SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _conversationQueueName)),
                SqlIdentifier.QuoteLiteral(_conversationServiceName),
                SqlIdentifier.Escape(_schemaName),
-               SqlIdentifier.QuoteLiteral(_deadLetterQueueName),
+               SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _deadLetterQueueName)),
                SqlIdentifier.QuoteLiteral(_deadLetterServiceName),
                SqlIdentifier.Escape(ServicesMessageTypes.ChatterBrokeredMessageType),
                SqlIdentifier.Escape(ServicesMessageTypes.ChatterServiceContract),
