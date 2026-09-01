@@ -19,6 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # This job also runs on `pull_request`, so where a required status check is configured a
+  # failing scan blocks the merge before any of the nine module CD workflows can publish. On
+  # `push` to master it runs in parallel with those deploy jobs rather than before them; a
+  # direct push to master, or a merge without required checks, is a knowingly accepted residual.
   dependency-vulnerabilities:
     name: no packages with known vulnerabilities
     runs-on: ubuntu-latest
@@ -38,6 +42,8 @@ jobs:
       - name: Assert no package has a known vulnerability
         run: bash .github/scripts/assert-no-vulnerable-packages.sh
 
+  # This job remains the whole-repo PR-time sweep; each CD deploy job additionally asserts its
+  # own freshly-packed package between its pack step and its push step, closing that gap.
   package-provenance:
     name: packages carry provenance metadata
     runs-on: ubuntu-latest

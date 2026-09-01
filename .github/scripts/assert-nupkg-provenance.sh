@@ -6,14 +6,26 @@
 # INVARIANT: a pack failure exits 2 while an assertion failure exits 1. A pack that never
 # produced a package leaves nothing to inspect, which would otherwise read as a clean pass.
 #
+# INVARIANT: only directories this script created are removed on exit. In already-packed mode
+# the package directory belongs to the caller and is pushed to NuGet after this gate runs;
+# deleting it would break a release while every assertion still reported success.
+#
+# Usage: assert-nupkg-provenance.sh [package-dir project-csproj]
+#   no arguments:  pack every packable project into a temporary directory and assert all of them
+#   package-dir:   directory holding one already-packed .nupkg and its .snupkg (resolved against
+#                  the caller's working directory; never deleted)
+#   project-csproj: the csproj of that single already-packed module; nothing is packed
+#
 # See https://learn.microsoft.com/en-us/dotnet/standard/library-guidance/sourcelink
 set -euo pipefail
 shopt -s nullglob
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-package_dir="$(mktemp -d)"
-pack_log="$(mktemp)"
-trap 'rm -rf "$package_dir" "$pack_log"' EXIT
+package_dir=''
+pack_log=''
+pack_before_assert=0
+cleanup_paths=()
+trap 'if [ "${#cleanup_paths[@]}" -gt 0 ]; then rm -rf "${cleanup_paths[@]}"; fi' EXIT
 
 gap_count=0
 
@@ -41,6 +53,29 @@ report_gap() {
   local package_id="$1" gap="$2"
   printf '%s: %s\n' "$package_id" "$gap" >&2
   gap_count=$((gap_count + 1))
+}
+
+resolve_invocation_mode() {
+  case "$#" in
+    0)
+      package_dir="$(mktemp -d)"
+      pack_log="$(mktemp)"
+      cleanup_paths=("$package_dir" "$pack_log")
+      pack_before_assert=1
+      ;;
+    2)
+      # Resolved against the caller's working directory, not the repository root: a deploy job
+      # passes a relative output directory such as ./dist/nuget.
+      package_dir="$(cd "$1" 2>/dev/null && pwd)" \
+        || fail_with "package directory '$1' does not exist or is not readable; the provenance assertions did not run"
+      [ -r "$package_dir" ] \
+        || fail_with "package directory '$1' is not readable; the provenance assertions did not run"
+      packable_projects=("$2")
+      ;;
+    *)
+      fail_with "Usage: assert-nupkg-provenance.sh [package-dir project-csproj]; the provenance assertions did not run"
+      ;;
+  esac
 }
 
 # This repository commits a `packages.lock.json` for every project, so restore runs in locked
@@ -150,9 +185,13 @@ assert_package_provenance() {
   assert_project_url "$package_id" "$nuspec"
 }
 
-for packable_project in "${packable_projects[@]}"; do
-  pack_project "$packable_project"
-done
+resolve_invocation_mode "$@"
+
+if [ "$pack_before_assert" -eq 1 ]; then
+  for packable_project in "${packable_projects[@]}"; do
+    pack_project "$packable_project"
+  done
+fi
 
 for packable_project in "${packable_projects[@]}"; do
   assert_package_provenance "$packable_project"
