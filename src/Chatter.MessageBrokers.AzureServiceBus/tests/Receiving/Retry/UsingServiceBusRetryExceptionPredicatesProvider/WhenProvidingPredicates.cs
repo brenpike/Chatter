@@ -8,10 +8,6 @@ using Xunit;
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.Retry.UsingServiceBusRetryExceptionPredicatesProvider
 {
     // ServiceBusRetryExceptionPredicatesProvider is internal sealed (IVT covers it).
-    // Azure.Messaging.ServiceBus 7.20.1 collapses the legacy distinct exception subtypes into a single
-    // ServiceBusException carrying a ServiceBusFailureReason; IsTransient is derived from that reason
-    // (true only for ServiceCommunicationProblem/ServiceBusy/ServiceTimeout). The predicates classify
-    // the same transient/retryable cases the legacy subtype predicates did.
     public class WhenProvidingPredicates : Testing.Core.Context
     {
         private readonly Predicate<Exception>[] _predicates =

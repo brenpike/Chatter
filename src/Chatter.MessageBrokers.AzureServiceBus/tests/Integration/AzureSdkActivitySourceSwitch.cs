@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
 {
-    // Turns ON Azure.Messaging.ServiceBus 7.20.2's own ActivitySource tracing for THIS test process, so
+    // Turns ON Azure.Messaging.ServiceBus's own ActivitySource tracing for THIS test process, so
     // AzureServiceBusTraceContextInteropTests can observe how the SDK's instrumentation and Chatter's
     // instrumentation actually interact instead of asserting against an SDK that never emitted anything.
     //
