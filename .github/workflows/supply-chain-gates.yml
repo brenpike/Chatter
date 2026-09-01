@@ -26,3 +26,22 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Assert every action reference is SHA-pinned
         run: bash .github/scripts/assert-actions-pinned.sh
+
+  dependency-vulnerabilities:
+    name: no packages with known vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+      # The script restores the solution in locked mode itself; `dotnet list package`
+      # reads the restore assets and reports nothing useful without them.
+      - name: Assert no package has a known vulnerability
+        run: bash .github/scripts/assert-no-vulnerable-packages.sh
