@@ -31,7 +31,7 @@ Chatter.MessageBrokers defines the transport interfaces; you pick a concrete imp
 
 ## Modules
 
-### [Chatter.CQRS](./src/Chatter.CQRS/src/README.md#chatter-cqrs)
+### [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md#chatter-cqrs)
 `dotnet add package Chatter.CQRS`
 
 A lightweight CQRS framework that dispatches Commands, Queries, and Events to their handlers via an in-process mediator, with automatic assembly-scanning registration and an optional command behavior pipeline.
@@ -42,7 +42,7 @@ A lightweight CQRS framework that dispatches Commands, Queries, and Events to th
 - Extensible per-dispatch **Message Context**.
 - Entry point: `services.AddChatterCqrs(...)`.
 
-### [Chatter.MessageBrokers](./src/Chatter.MessageBrokers/src/README.md#chatter-messagebrokers)
+### [Chatter.MessageBrokers](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#chatter-messagebrokers)
 `dotnet add package Chatter.MessageBrokers`
 
 Technology-agnostic brokered messaging built on Chatter.CQRS — receiving, sending/publishing/forwarding, routing, reliability, and recovery. Requires a concrete broker implementation for the transport.
@@ -54,7 +54,7 @@ Technology-agnostic brokered messaging built on Chatter.CQRS — receiving, send
 - **Routing Slips** for itinerary-style choreography.
 - Entry point: `IChatterBuilder.AddMessageBrokers(...)`.
 
-### [Chatter.MessageBrokers.AzureServiceBus](./src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#chatter-azureservicebus)
+### [Chatter.MessageBrokers.AzureServiceBus](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#chatter-azureservicebus)
 `dotnet add package Chatter.MessageBrokers.AzureServiceBus`
 
 The Azure Service Bus transport for Chatter.MessageBrokers — concrete senders and receivers (queues for commands, topic subscriptions for events) wired into the broker abstraction.
@@ -64,7 +64,7 @@ The Azure Service Bus transport for Chatter.MessageBrokers — concrete senders 
 - ASB-aware transient-exception detection feeding the core retry/circuit-breaker recovery.
 - Entry point: `IChatterBuilder.AddAzureServiceBus(...)` (chained off `AddMessageBrokers`).
 
-### [Chatter.MessageBrokers.AzureServiceBus.Auth](./src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md#chatter-azureservicebus-auth)
+### [Chatter.MessageBrokers.AzureServiceBus.Auth](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md#chatter-azureservicebus-auth)
 `dotnet add package Chatter.MessageBrokers.AzureServiceBus.Auth`
 
 Azure Active Directory token authentication for the Azure Service Bus broker — connect with AAD bearer tokens (or `DefaultAzureCredential`) instead of a connection-string shared key.
@@ -74,7 +74,7 @@ Azure Active Directory token authentication for the Azure Service Bus broker —
 - Applied only when the connection string carries no SAS key — additive by design.
 - Entry point: `ServiceBusOptionsBuilder.UseAadTokenProviderWith...` (inside `AddAzureServiceBus`).
 
-### [Chatter.MessageBrokers.SqlServiceBroker](./src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md#chatter-sqlservicebroker)
+### [Chatter.MessageBrokers.SqlServiceBroker](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md#chatter-sqlservicebroker)
 `dotnet add package Chatter.MessageBrokers.SqlServiceBroker`
 
 A SQL Server Service Broker transport for Chatter.MessageBrokers — sends and receives brokered messages over Service Broker dialogs, with no external broker dependency.
@@ -85,7 +85,7 @@ A SQL Server Service Broker transport for Chatter.MessageBrokers — sends and r
 - **Does not auto-provision** Service Broker objects — queues, services, contracts, and `ENABLE_BROKER` are set up manually.
 - Entry point: `IChatterBuilder.AddSqlServiceBroker(...)` (chained off `AddMessageBrokers`).
 
-### [Chatter.MessageBrokers.RabbitMQ](./src/Chatter.MessageBrokers.RabbitMQ/src/README.md#chatter-messagebrokers-rabbitmq)
+### [Chatter.MessageBrokers.RabbitMQ](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/src/README.md#chatter-messagebrokers-rabbitmq)
 `dotnet add package Chatter.MessageBrokers.RabbitMQ`
 
 A RabbitMQ transport for Chatter.MessageBrokers — sends and receives brokered messages over RabbitMQ exchanges and queues.
@@ -97,7 +97,7 @@ A RabbitMQ transport for Chatter.MessageBrokers — sends and receives brokered 
 - `TransactionMode.FullAtomicityViaInfrastructure` is rejected at startup — use the **Outbox** for transactional send.
 - Entry point: `IChatterBuilder.AddRabbitMq(...)` (chained off `AddMessageBrokers`).
 
-### [Chatter.MessageBrokers.Reliability.EntityFramework](./src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md#chatter-reliability-entityframework)
+### [Chatter.MessageBrokers.Reliability.EntityFramework](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md#chatter-reliability-entityframework)
 `dotnet add package Chatter.MessageBrokers.Reliability.EntityFramework`
 
 EF Core implementation of the Chatter.MessageBrokers reliability ports — durable inbox, transactional outbox, and unit of work backed by your own `DbContext`, replacing the in-memory defaults.
@@ -107,7 +107,7 @@ EF Core implementation of the Chatter.MessageBrokers reliability ports — durab
 - Ships `IEntityTypeConfiguration` types applied in your `DbContext.OnModelCreating` — messaging tables live alongside domain tables.
 - Entry point: `CommandPipelineBuilder.WithInboxBehavior<TContext>()` / `WithOutboxProcessingBehavior<TContext>()` / `WithUnitOfWorkBehavior<TContext>()`.
 
-### [Chatter.MessageBrokers.Reliability.Cosmos](./src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md#chatter-reliability-cosmos)
+### [Chatter.MessageBrokers.Reliability.Cosmos](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md#chatter-reliability-cosmos)
 `dotnet add package Chatter.MessageBrokers.Reliability.Cosmos`
 
 Document-tier (NoSQL) implementation of the Chatter.MessageBrokers reliability ports, backed by Azure Cosmos DB — the stage-then-commit sibling of the relational Entity Framework tier.
@@ -120,7 +120,7 @@ Document-tier (NoSQL) implementation of the Chatter.MessageBrokers reliability p
 - **Standalone inbox** (`WithCosmosInbox`): a lease-less redelivery-dedup gate for a service with no aggregate write, outbox, or lease container — it skips the handler on a confirmed *completed* marker, but does not serialize genuinely-concurrent deliveries of the same id (that mutual exclusion stays the transport's responsibility).
 - Entry points: `CommandPipelineBuilder.WithCosmosDocumentReliability<TCommand>(...)` (document tier), `services.AddCosmosOutboxRelay(...)` (standalone relay), `CommandPipelineBuilder.WithCosmosInbox(...)` (standalone inbox).
 
-### [Chatter.SqlChangeFeed](./src/Chatter.SqlChangeFeed/src/README.md#chatter-sqlchangefeed)
+### [Chatter.SqlChangeFeed](https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/README.md#chatter-sqlchangefeed)
 `dotnet add package Chatter.SqlChangeFeed`
 
 Emits strongly-typed notifications when rows in a watched SQL Server table are inserted, updated, or deleted — trigger-based via SQL Server Service Broker, no polling. (Formerly *Table Watcher*.)
@@ -155,13 +155,13 @@ services.AddOpenTelemetry()
 
 > **Telemetry attribute names are data, not compile-time API.** Chatter's broker-boundary attribute names track the pinned **OpenTelemetry semantic conventions v1.30.0**, and **may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in the affected package's CHANGELOG.
 
-For the exact span names, instrument names, units, and attributes, see the Diagnostics sections of the [Chatter.CQRS](./src/Chatter.CQRS/src/README.md#diagnostics-optional-opt-in) and [Chatter.MessageBrokers](./src/Chatter.MessageBrokers/src/README.md#diagnostics-and-trace-context-optional-opt-in) READMEs.
+For the exact span names, instrument names, units, and attributes, see the Diagnostics sections of the [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md#diagnostics-optional-opt-in) and [Chatter.MessageBrokers](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#diagnostics-and-trace-context-optional-opt-in) READMEs.
 
-Design rationale, the propagation scope, and the off-guard rules are recorded in [ADR-0010](./docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+Design rationale, the propagation scope, and the off-guard rules are recorded in [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
 
 ## Domain language
 
-Chatter's ubiquitous language is documented per bounded context — see [CONTEXT-MAP.md](./CONTEXT-MAP.md) and the `CONTEXT.md` in each module directory.
+Chatter's ubiquitous language is documented per bounded context — see [CONTEXT-MAP.md](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md) and the `CONTEXT.md` in each module directory.
 
 ## Building & testing
 
