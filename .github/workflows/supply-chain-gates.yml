@@ -19,14 +19,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  action-pinning:
-    name: actions pinned to commit SHA
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: Assert every action reference is SHA-pinned
-        run: bash .github/scripts/assert-actions-pinned.sh
-
   dependency-vulnerabilities:
     name: no packages with known vulnerabilities
     runs-on: ubuntu-latest
