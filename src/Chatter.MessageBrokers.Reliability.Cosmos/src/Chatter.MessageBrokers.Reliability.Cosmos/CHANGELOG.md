@@ -12,6 +12,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 - Published packages now ship a symbol package (`.snupkg`), an embedded `README`, a project URL, and are built deterministically. Package builds are now reproducible CI builds with SourceLink-resolvable sources, so a debugger can step into this package's original source from a consuming application.
 
+### Changed
+
+- Bundled dependency uplift to Chatter.MessageBrokers 0.17.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [0.4.2] - 2026-08-24
 
 ### Fixed

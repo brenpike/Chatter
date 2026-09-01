@@ -61,8 +61,8 @@ collect_findings() {
     fail_with "'dotnet list package --vulnerable' failed; the vulnerability scan did not run"
   fi
 
-  if ! jq -e '.version == 1 and (.projects | type == "array")' "$report_file" >/dev/null 2>&1; then
-    fail_with "'dotnet list package --vulnerable' did not emit a version 1 JSON report; the vulnerability scan did not run"
+  if ! jq -e '.version == 1 and (.projects | type == "array" and length > 0)' "$report_file" >/dev/null 2>&1; then
+    fail_with "'dotnet list package --vulnerable' did not emit a version 1 JSON report covering at least one project; the vulnerability scan did not run"
   fi
 
   jq -r --arg root "$repo_root/" '

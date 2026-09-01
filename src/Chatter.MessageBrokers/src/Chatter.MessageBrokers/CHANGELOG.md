@@ -15,6 +15,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Changed
 
 - Raised the net8.0-leg `Microsoft.Extensions.Hosting` dependency floor to `8.0.1`, off a dependency graph that carried an advisory-affected `System.Text.Json` 8.0.0 floor. The net10.0 leg is unchanged.
+- Bundled dependency uplift to Chatter.CQRS 0.11.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it); no behavioral change to Chatter.MessageBrokers itself.
 
 ## [0.16.2] - 2026-08-31
 

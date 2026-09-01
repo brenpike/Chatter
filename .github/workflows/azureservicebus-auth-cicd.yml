@@ -12,6 +12,9 @@ on:
     paths:
       - 'src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/**'
       - '.github/workflows/azureservicebus-auth-cicd.yml'
+      # Directory.Build.props (provenance PropertyGroup) and README.md (packed via PackageReadmeFile) are package content; a change to either must republish.
+      - 'Directory.Build.props'
+      - 'README.md'
 
 permissions:
   contents: read
