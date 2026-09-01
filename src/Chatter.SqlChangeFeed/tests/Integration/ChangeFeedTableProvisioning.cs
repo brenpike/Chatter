@@ -33,6 +33,24 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
                 cancellationToken).ConfigureAwait(false);
         }
 
+        // Idempotently creates dbo.[tableName] with the same columns as CreateTableAsync but NO PRIMARY KEY, so the
+        // install procedure's precondition gate can be exercised against a real table the trigger could not build a
+        // FULL OUTER JOIN for. Id carries a UNIQUE constraint deliberately: the gate must refuse on the absence of a
+        // PRIMARY KEY specifically, not on the absence of any key-shaped constraint.
+        public static async Task CreateTableWithoutPrimaryKeyAsync(string connectionString, string tableName, CancellationToken cancellationToken)
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            await ExecuteNonQueryAsync(connection,
+                $"IF OBJECT_ID('dbo.[{tableName}]', 'U') IS NULL " +
+                $"CREATE TABLE dbo.[{tableName}] (" +
+                "Id INT NOT NULL UNIQUE, " +
+                "Name NVARCHAR(200) NULL, " +
+                "Value NVARCHAR(200) NULL);",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         public static async Task DropTableAsync(string connectionString, string tableName, CancellationToken cancellationToken)
         {
             await using var connection = new SqlConnection(connectionString);

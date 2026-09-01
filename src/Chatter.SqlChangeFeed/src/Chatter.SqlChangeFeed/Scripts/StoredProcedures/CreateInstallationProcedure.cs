@@ -74,72 +74,100 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
 
         public override string ToString()
         {
+            // INVARIANT: everything spliced inside EXEC(' ... ') sits one single-quoted layer deep, so the created
+            // procedure name is quoted at depth 1 and every literal nested inside the procedure body at depth 2.
+            var watchedTableAsNestedLiteral = SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _tableName), 2);
+
+            // INVARIANT: CREATE OR ALTER replaces an existence guard so an already-installed database receives the
+            // current procedure body instead of silently keeping a stale one. Requires SQL Server 2016 SP1.
+            // INVARIANT: every precondition is checked before the Service Broker section, so a refusal cannot leave
+            // a partially created queue, service, or trigger behind.
             return string.Format(@"
                 USE {0}
-                IF OBJECT_ID ('{1}', 'P') IS NULL
-                BEGIN
-                    EXEC ('
-                        CREATE PROCEDURE {1}
-                            @ExplicitCols bit = 1
-                        AS
+                EXEC ('
+                    CREATE OR ALTER PROCEDURE {1}
+                        @ExplicitCols bit = 1
+                    AS
+                    BEGIN
+                        -- Precondition: Azure SQL Database (EngineEdition 5) has no Service Broker at all. Azure SQL
+                        -- Managed Instance (EngineEdition 8) does, and remains supported.
+                        IF CONVERT(int, SERVERPROPERTY(''EngineEdition'')) = 5
                         BEGIN
-                            -- Service Broker configuration statement.
-                            {2}
-
-                            IF OBJECT_ID (''{6}'', ''TR'') IS NOT NULL
-                                RETURN;
-
-                            -- Build column collection for target table:
-                            DECLARE @tbl_Columns TABLE (COLUMN_NAME sysname NOT NULL, INCLUDE_OUTPUT bit NOT NULL, PK_ORDINAL int NULL);
-                            INSERT INTO @tbl_Columns (COLUMN_NAME, INCLUDE_OUTPUT, PK_ORDINAL)
-                            SELECT cols.COLUMN_NAME,
-	                            CASE WHEN cols.DATA_TYPE IN (''text'',''ntext'',''image'',''geometry'',''geography'') THEN 0 ELSE 1 END [INCLUDE_OUTPUT],
-	                            colkeys.ORDINAL_POSITION [PK_ORDINAL]
-                             FROM INFORMATION_SCHEMA.TABLES tab
-                             INNER JOIN INFORMATION_SCHEMA.COLUMNS cols ON cols.TABLE_CATALOG = tab.TABLE_CATALOG
-	                            AND cols.TABLE_SCHEMA = tab.TABLE_SCHEMA
-	                            AND cols.TABLE_NAME = tab.TABLE_NAME
-                             LEFT JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tabcon ON tabcon.TABLE_CATALOG = tab.TABLE_CATALOG
-	                            AND tabcon.TABLE_SCHEMA = tab.TABLE_SCHEMA
-	                            AND tabcon.TABLE_NAME = tab.TABLE_NAME
-	                            AND tabcon.CONSTRAINT_TYPE = ''PRIMARY KEY''
-                             LEFT JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE colkeys ON colkeys.TABLE_CATALOG = cols.TABLE_CATALOG
-	                            AND colkeys.TABLE_SCHEMA = cols.TABLE_SCHEMA
-	                            AND colkeys.TABLE_NAME = cols.TABLE_NAME
-	                            AND colkeys.COLUMN_NAME = cols.COLUMN_NAME
-	                            AND colkeys.CONSTRAINT_NAME = tabcon.CONSTRAINT_NAME
-                             WHERE tab.TABLE_CATALOG = ''{7}''
-	                            AND tab.TABLE_SCHEMA = ''{5}''
-	                            AND tab.TABLE_NAME = ''{4}'';
-
-                            -- Construct column and join column strings:
-                            DECLARE @ColumnList nvarchar(max) = '''';
-                            SELECT @ColumnList = @ColumnList + '',%PFX%.['' + COLUMN_NAME + '']'' FROM @tbl_Columns;
-                            DECLARE @JoinColumns nvarchar(max) = '''';
-                            SELECT @JoinColumns = @JoinColumns + '' AND del.['' + COLUMN_NAME + ''] = ins.['' + COLUMN_NAME + '']''
-                             FROM @tbl_Columns
-                             WHERE PK_ORDINAL IS NOT NULL
-                             ORDER BY PK_ORDINAL;
-
-                            -- Construct statement for trigger to actually build message content:
-                            DECLARE @TriggerMessageStatement nvarchar(max) = ''
-                            SET @Message = (
-                            SELECT
-	                            JSON_QUERY(NULLIF(JSON_QUERY((SELECT '' + CASE @ExplicitCols WHEN 1 THEN REPLACE(SUBSTRING(@ColumnList, 2, LEN(@ColumnList)), ''%PFX%.'', ''ins.'') ELSE ''ins.*'' END + '' FOR JSON PATH, WITHOUT_ARRAY_WRAPPER)), ''''{{}}'''')) [Inserted],
-	                            JSON_QUERY(NULLIF(JSON_QUERY((SELECT '' + CASE @ExplicitCols WHEN 1 THEN REPLACE(SUBSTRING(@ColumnList, 2, LEN(@ColumnList)), ''%PFX%.'', ''del.'') ELSE ''del.*'' END + '' FOR JSON PATH, WITHOUT_ARRAY_WRAPPER)), ''''{{}}'''')) [Deleted]
-                            FROM INSERTED ins
-                            FULL OUTER JOIN DELETED del ON '' + SUBSTRING(@JoinColumns, 6, LEN(@JoinColumns)) + ''
-                            FOR JSON AUTO
-                            );
-                            SET @message = (SELECT JSON_QUERY(@message) [Changes] FOR JSON PATH, WITHOUT_ARRAY_WRAPPER);'';
-
-                            -- Change Feed Trigger configuration statement.
-                            DECLARE @triggerStatement NVARCHAR(MAX) = REPLACE(CONVERT(nvarchar(max), N''{3}''), ''%set_message_statement%'', @TriggerMessageStatement);
-
-                            EXEC sp_executesql @triggerStatement
+                            RAISERROR(''Chatter change feed cannot be installed on Azure SQL Database: SQL Service Broker is not available on this engine edition. Watched table: {8}.'', 16, 1);
+                            RETURN;
                         END
-                        ')
-                END
+
+                        -- Precondition: the watched table must exist before a trigger can be created on it.
+                        IF OBJECT_ID (''{8}'', ''U'') IS NULL
+                        BEGIN
+                            RAISERROR(''Chatter change feed cannot be installed: the watched table {8} does not exist.'', 16, 1);
+                            RETURN;
+                        END
+
+                        -- Build column collection for target table:
+                        DECLARE @tbl_Columns TABLE (COLUMN_NAME sysname NOT NULL, INCLUDE_OUTPUT bit NOT NULL, PK_ORDINAL int NULL);
+                        INSERT INTO @tbl_Columns (COLUMN_NAME, INCLUDE_OUTPUT, PK_ORDINAL)
+                        SELECT cols.COLUMN_NAME,
+	                        CASE WHEN cols.DATA_TYPE IN (''text'',''ntext'',''image'',''geometry'',''geography'') THEN 0 ELSE 1 END [INCLUDE_OUTPUT],
+	                        colkeys.ORDINAL_POSITION [PK_ORDINAL]
+                         FROM INFORMATION_SCHEMA.TABLES tab
+                         INNER JOIN INFORMATION_SCHEMA.COLUMNS cols ON cols.TABLE_CATALOG = tab.TABLE_CATALOG
+	                        AND cols.TABLE_SCHEMA = tab.TABLE_SCHEMA
+	                        AND cols.TABLE_NAME = tab.TABLE_NAME
+                         LEFT JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tabcon ON tabcon.TABLE_CATALOG = tab.TABLE_CATALOG
+	                        AND tabcon.TABLE_SCHEMA = tab.TABLE_SCHEMA
+	                        AND tabcon.TABLE_NAME = tab.TABLE_NAME
+	                        AND tabcon.CONSTRAINT_TYPE = ''PRIMARY KEY''
+                         LEFT JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE colkeys ON colkeys.TABLE_CATALOG = cols.TABLE_CATALOG
+	                        AND colkeys.TABLE_SCHEMA = cols.TABLE_SCHEMA
+	                        AND colkeys.TABLE_NAME = cols.TABLE_NAME
+	                        AND colkeys.COLUMN_NAME = cols.COLUMN_NAME
+	                        AND colkeys.CONSTRAINT_NAME = tabcon.CONSTRAINT_NAME
+                         WHERE tab.TABLE_CATALOG = ''{7}''
+	                        AND tab.TABLE_SCHEMA = ''{5}''
+	                        AND tab.TABLE_NAME = ''{4}'';
+
+                        -- Precondition: PK_ORDINAL is populated only from a PRIMARY KEY constraint, so a table
+                        -- carrying only a UNIQUE constraint is correctly refused here.
+                        IF NOT EXISTS (SELECT 1 FROM @tbl_Columns WHERE PK_ORDINAL IS NOT NULL)
+                        BEGIN
+                            RAISERROR(''Chatter change feed cannot be installed: the watched table {8} has no PRIMARY KEY. The change feed trigger joins INSERTED to DELETED on the primary key columns.'', 16, 1);
+                            RETURN;
+                        END
+
+                        -- Service Broker configuration statement.
+                        {2}
+
+                        IF OBJECT_ID (''{6}'', ''TR'') IS NOT NULL
+                            RETURN;
+
+                        -- Construct column and join column strings:
+                        DECLARE @ColumnList nvarchar(max) = '''';
+                        SELECT @ColumnList = @ColumnList + '',%PFX%.['' + COLUMN_NAME + '']'' FROM @tbl_Columns;
+                        DECLARE @JoinColumns nvarchar(max) = '''';
+                        SELECT @JoinColumns = @JoinColumns + '' AND del.['' + COLUMN_NAME + ''] = ins.['' + COLUMN_NAME + '']''
+                         FROM @tbl_Columns
+                         WHERE PK_ORDINAL IS NOT NULL
+                         ORDER BY PK_ORDINAL;
+
+                        -- Construct statement for trigger to actually build message content:
+                        DECLARE @TriggerMessageStatement nvarchar(max) = ''
+                        SET @Message = (
+                        SELECT
+	                        JSON_QUERY(NULLIF(JSON_QUERY((SELECT '' + CASE @ExplicitCols WHEN 1 THEN REPLACE(SUBSTRING(@ColumnList, 2, LEN(@ColumnList)), ''%PFX%.'', ''ins.'') ELSE ''ins.*'' END + '' FOR JSON PATH, WITHOUT_ARRAY_WRAPPER)), ''''{{}}'''')) [Inserted],
+	                        JSON_QUERY(NULLIF(JSON_QUERY((SELECT '' + CASE @ExplicitCols WHEN 1 THEN REPLACE(SUBSTRING(@ColumnList, 2, LEN(@ColumnList)), ''%PFX%.'', ''del.'') ELSE ''del.*'' END + '' FOR JSON PATH, WITHOUT_ARRAY_WRAPPER)), ''''{{}}'''')) [Deleted]
+                        FROM INSERTED ins
+                        FULL OUTER JOIN DELETED del ON '' + SUBSTRING(@JoinColumns, 6, LEN(@JoinColumns)) + ''
+                        FOR JSON AUTO
+                        );
+                        SET @message = (SELECT JSON_QUERY(@message) [Changes] FOR JSON PATH, WITHOUT_ARRAY_WRAPPER);'';
+
+                        -- Change Feed Trigger configuration statement.
+                        DECLARE @triggerStatement NVARCHAR(MAX) = REPLACE(CONVERT(nvarchar(max), N''{3}''), ''%set_message_statement%'', @TriggerMessageStatement);
+
+                        EXEC sp_executesql @triggerStatement
+                    END
+                    ')
             ", SqlIdentifier.Escape(_databaseName),
                SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _setupProcedureName)),
                SqlIdentifier.QuoteLiteral(_serviceBrokerConfigScript.ToString()),
@@ -147,7 +175,8 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                SqlIdentifier.QuoteLiteral(_tableName, 2),
                SqlIdentifier.QuoteLiteral(_schemaName, 2),
                SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _triggerName), 2),
-               SqlIdentifier.QuoteLiteral(_databaseName, 2));
+               SqlIdentifier.QuoteLiteral(_databaseName, 2),
+               watchedTableAsNestedLiteral);
         }
     }
 }

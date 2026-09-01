@@ -22,6 +22,12 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         private const string HostileSchema = "My]Schema'; DROP TABLE Users;--";
         private const string HostileTrigger = "My]Trigger'; DROP TABLE Users;--";
 
+        // The three precondition gates, spelled exactly as the emitted procedure body carries them (nested one
+        // single-quoted layer deep inside the EXEC(' ... ') that creates the procedure).
+        private const string EngineEditionGate = "IF CONVERT(int, SERVERPROPERTY(''EngineEdition'')) = 5";
+        private const string TableExistsGate = "IF OBJECT_ID (''[" + Schema + "].[" + Table + "]'', ''U'') IS NULL";
+        private const string PrimaryKeyGate = "IF NOT EXISTS (SELECT 1 FROM @tbl_Columns WHERE PK_ORDINAL IS NOT NULL)";
+
         private static InstallAndConfigureSqlServiceBroker ServiceBrokerScript()
             => new InstallAndConfigureSqlServiceBroker(ConnectionString, Database, "MyQueue", Service, Schema, "MyDeadLetterQueue", "MyDeadLetterService");
 
@@ -97,12 +103,12 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
             => Create().ToString().Should().Contain($"USE [{Database}]");
 
         [Fact]
-        public void MustEmitCreateProcedureWithSchemaAndProcedureName()
-            => Create().ToString().Should().Contain($"CREATE PROCEDURE [{Schema}].[{SetupProcedure}]");
+        public void MustEmitCreateOrAlterProcedureWithSchemaAndProcedureName()
+            => Create().ToString().Should().Contain($"CREATE OR ALTER PROCEDURE [{Schema}].[{SetupProcedure}]");
 
         [Fact]
-        public void MustEmitObjectIdProbeForSchemaAndProcedureName()
-            => Create().ToString().Should().Contain($"OBJECT_ID ('[{Schema}].[{SetupProcedure}]', 'P')");
+        public void MustNotGuardCreationOnTheInstallProcedureNotAlreadyExisting()
+            => Create().ToString().Should().NotContain($"OBJECT_ID ('[{Schema}].[{SetupProcedure}]', 'P')");
 
         [Fact]
         public void MustEmitObjectIdProbeForSchemaAndTriggerName()
@@ -131,14 +137,14 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
             => CreateHostile().ToString().Should().Contain("USE [My]]Db'; DROP TABLE Users;--]");
 
         [Fact]
-        public void MustEscapeHostileSchemaAndProcedureNameInObjectIdProbe()
+        public void MustNotEmitAnExistenceGuardForTheHostileInstallProcedureName()
             => CreateHostile().ToString()
-                .Should().Contain("OBJECT_ID ('[My]]Schema''; DROP TABLE Users;--].[My]]Proc''; DROP TABLE Users;--]', 'P')");
+                .Should().NotContain("OBJECT_ID ('[My]]Schema''; DROP TABLE Users;--].[My]]Proc''; DROP TABLE Users;--]', 'P')");
 
         [Fact]
-        public void MustEscapeHostileSchemaAndProcedureNameInCreateProcedure()
+        public void MustEscapeHostileSchemaAndProcedureNameInCreateOrAlterProcedure()
             => CreateHostile().ToString()
-                .Should().Contain("CREATE PROCEDURE [My]]Schema''; DROP TABLE Users;--].[My]]Proc''; DROP TABLE Users;--]");
+                .Should().Contain("CREATE OR ALTER PROCEDURE [My]]Schema''; DROP TABLE Users;--].[My]]Proc''; DROP TABLE Users;--]");
 
         [Fact]
         public void MustEscapeHostileSchemaAndTriggerNameInNestedObjectIdProbe()
@@ -159,5 +165,76 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         public void MustQuadrupleQuoteHostileTableNameInNestedTableLiteral()
             => CreateHostile().ToString()
                 .Should().Contain("tab.TABLE_NAME = ''My]Table''''; DROP TABLE Users;--''");
+
+        [Fact]
+        public void MustGateOnAzureSqlDatabaseEngineEdition()
+            => Create().ToString().Should().Contain(EngineEditionGate);
+
+        [Fact]
+        public void MustGateOnTheWatchedTableExisting()
+            => Create().ToString().Should().Contain(TableExistsGate);
+
+        [Fact]
+        public void MustGateOnTheWatchedTableHavingAPrimaryKey()
+            => Create().ToString().Should().Contain(PrimaryKeyGate);
+
+        [Fact]
+        public void MustNameTheAzureSqlDatabaseCauseAndTheWatchedTableInItsPreconditionError()
+            => Create().ToString().Should().Contain(
+                $"RAISERROR(''Chatter change feed cannot be installed on Azure SQL Database: SQL Service Broker is not available on this engine edition. Watched table: [{Schema}].[{Table}].'', 16, 1);");
+
+        [Fact]
+        public void MustNameTheMissingTableCauseAndTheWatchedTableInItsPreconditionError()
+            => Create().ToString().Should().Contain(
+                $"RAISERROR(''Chatter change feed cannot be installed: the watched table [{Schema}].[{Table}] does not exist.'', 16, 1);");
+
+        [Fact]
+        public void MustNameTheMissingPrimaryKeyCauseAndTheWatchedTableInItsPreconditionError()
+            => Create().ToString().Should().Contain(
+                $"RAISERROR(''Chatter change feed cannot be installed: the watched table [{Schema}].[{Table}] has no PRIMARY KEY. The change feed trigger joins INSERTED to DELETED on the primary key columns.'', 16, 1);");
+
+        [Fact]
+        public void MustQuadrupleQuoteHostileSchemaAndTableNameInTheTableExistenceGate()
+            => CreateHostile().ToString()
+                .Should().Contain("OBJECT_ID (''[My]]Schema''''; DROP TABLE Users;--].[My]]Table''''; DROP TABLE Users;--]'', ''U'')");
+
+        [Fact]
+        public void MustMaterializeTheColumnCollectionBeforeAnyServiceBrokerObjectIsCreated()
+        {
+            var script = Create().ToString();
+
+            var columnCollection = IndexOfOrFail(script, "INSERT INTO @tbl_Columns");
+            var enableBroker = IndexOfOrFail(script, "SET ENABLE_BROKER");
+
+            columnCollection.Should().BeLessThan(enableBroker);
+        }
+
+        [Fact]
+        public void MustRunEveryPreconditionBeforeAnyObjectIsCreated()
+        {
+            var script = Create().ToString();
+
+            var engineEditionGate = IndexOfOrFail(script, EngineEditionGate);
+            var tableExistsGate = IndexOfOrFail(script, TableExistsGate);
+            var primaryKeyGate = IndexOfOrFail(script, PrimaryKeyGate);
+            var enableBroker = IndexOfOrFail(script, "SET ENABLE_BROKER");
+            var createQueue = IndexOfOrFail(script, "CREATE QUEUE");
+            var createService = IndexOfOrFail(script, "CREATE SERVICE");
+            var createTrigger = IndexOfOrFail(script, "CREATE TRIGGER");
+
+            tableExistsGate.Should().BeGreaterThan(engineEditionGate);
+            primaryKeyGate.Should().BeGreaterThan(tableExistsGate);
+            enableBroker.Should().BeGreaterThan(primaryKeyGate);
+            createQueue.Should().BeGreaterThan(primaryKeyGate);
+            createService.Should().BeGreaterThan(primaryKeyGate);
+            createTrigger.Should().BeGreaterThan(primaryKeyGate);
+        }
+
+        private static int IndexOfOrFail(string script, string fragment)
+        {
+            var index = script.IndexOf(fragment, StringComparison.Ordinal);
+            index.Should().BeGreaterThan(-1, $"the emitted script must contain '{fragment}'");
+            return index;
+        }
     }
 }

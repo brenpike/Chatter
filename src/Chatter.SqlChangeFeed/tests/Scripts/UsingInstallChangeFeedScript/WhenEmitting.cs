@@ -87,7 +87,7 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.UsingInstallChangeFeedScript
 
         [Fact]
         public void MustEmitCreateProcedureForInstallationProcedure()
-            => Create().ToString().Should().Contain($"CREATE PROCEDURE [{Schema}].[{InstallProcedure}]");
+            => Create().ToString().Should().Contain($"CREATE OR ALTER PROCEDURE [{Schema}].[{InstallProcedure}]");
 
         [Fact]
         public void MustEmitUseDatabaseFromOptions()
