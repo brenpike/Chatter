@@ -55,6 +55,109 @@ jobs:
             exit 1
           fi
           echo "Release guard passed: $TAG does not yet exist."
+
+          # Cross-module publish-order guard. `dotnet pack` turns each direct ProjectReference
+          # into a NuGet dependency pinned at that sibling's current <Version>, so shipping before
+          # that exact sibling version exists on the feed would break consumer restore. Entries are
+          # '<package id>:<csproj path>', one per DIRECT ProjectReference of the packed project.
+          SIBLINGS=(
+            # Chatter.CQRS is the base package: it has no ProjectReference, so the assertion below
+            # is an explicit no-op here and the nine CD workflows stay structurally identical.
+          )
+
+          read_project_version() {
+            grep -m1 '<Version>' "$1" | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d ' \r'
+          }
+
+          # INVARIANT: mirrors NuGet's version normalization (lowercase, build metadata dropped,
+          # leading zeros stripped, zero fourth part omitted) so a csproj version string can be
+          # compared literally against the flat-container listing.
+          normalize_version() {
+            local raw="${1%%+*}"
+            local core="${raw%%-*}"
+            local prerelease=""
+            if [ "$core" != "$raw" ]; then
+              prerelease="-${raw#*-}"
+            fi
+            local major minor patch revision
+            IFS='.' read -r major minor patch revision <<<"$core"
+            major=$(( 10#${major:-0} ))
+            minor=$(( 10#${minor:-0} ))
+            patch=$(( 10#${patch:-0} ))
+            revision=$(( 10#${revision:-0} ))
+            if [ "$revision" -ne 0 ]; then
+              core="${major}.${minor}.${patch}.${revision}"
+            else
+              core="${major}.${minor}.${patch}"
+            fi
+            printf '%s%s' "$core" "$prerelease" | tr '[:upper:]' '[:lower:]'
+          }
+
+          resolve_flat_container() {
+            local index base
+            if ! index=$(curl -sSfL --max-time 30 --retry 3 --retry-delay 5 "$NUGET_URL"); then
+              echo "ERROR: could not read the NuGet service index at $NUGET_URL. Refusing to deploy (cannot prove dependencies are published)." >&2
+              return 1
+            fi
+            if ! base=$(printf '%s' "$index" | jq -er '[.resources[]? | select(."@type" == "PackageBaseAddress/3.0.0") | ."@id"] | first'); then
+              echo "ERROR: the NuGet service index at $NUGET_URL is unreadable or exposes no PackageBaseAddress/3.0.0 resource. Refusing to deploy (cannot prove dependencies are published)." >&2
+              return 1
+            fi
+            printf '%s' "${base%/}"
+          }
+
+          # 0 = version is listed, 1 = feed answered but the version is absent, 2 = feed unusable.
+          probe_published() {
+            local base="$1" package_id="$2" wanted="$3"
+            local id_lower response status body listed
+            id_lower=$(printf '%s' "$package_id" | tr '[:upper:]' '[:lower:]')
+            response=$(curl -sSL --max-time 30 -w '\n%{http_code}' "${base}/${id_lower}/index.json") || return 2
+            status="${response##*$'\n'}"
+            body="${response%$'\n'*}"
+            case "$status" in
+              200) ;;
+              404) return 1 ;;
+              *) echo "Publish-order guard: HTTP $status from ${base}/${id_lower}/index.json" >&2; return 2 ;;
+            esac
+            listed=$(printf '%s' "$body" | jq -r '(.versions // [])[] | ascii_downcase') || return 2
+            printf '%s\n' "$listed" | grep -Fxq "$wanted"
+          }
+
+          if [ "${#SIBLINGS[@]}" -eq 0 ]; then
+            echo "Publish-order guard: this package has no direct ProjectReference — nothing to assert."
+            exit 0
+          fi
+
+          FLAT_CONTAINER=$(resolve_flat_container) || exit 1
+          DEADLINE=$(( SECONDS + 600 ))
+          for SIBLING in "${SIBLINGS[@]}"; do
+            SIBLING_ID="${SIBLING%%:*}"
+            SIBLING_CSPROJ="${SIBLING#*:}"
+            SIBLING_VERSION=$(read_project_version "$SIBLING_CSPROJ")
+            if [ -z "$SIBLING_VERSION" ]; then
+              echo "ERROR: could not read <Version> from $SIBLING_CSPROJ. Refusing to deploy (cannot prove dependencies are published)." >&2
+              exit 1
+            fi
+            SIBLING_VERSION=$(normalize_version "$SIBLING_VERSION")
+            echo "Publish-order guard: waiting up to 10 minutes for $SIBLING_ID $SIBLING_VERSION on the feed (a concurrent module deploy may still be publishing it)."
+            while true; do
+              PROBE_STATUS=0
+              probe_published "$FLAT_CONTAINER" "$SIBLING_ID" "$SIBLING_VERSION" || PROBE_STATUS=$?
+              if [ "$PROBE_STATUS" -eq 0 ]; then
+                echo "Publish-order guard passed: $SIBLING_ID $SIBLING_VERSION is published."
+                break
+              fi
+              if [ "$SECONDS" -ge "$DEADLINE" ]; then
+                if [ "$PROBE_STATUS" -eq 2 ]; then
+                  echo "ERROR: could not confirm $SIBLING_ID $SIBLING_VERSION is published — the feed at $NUGET_URL stayed unreachable or unreadable for 10 minutes. Refusing to deploy (this package would declare an unverified dependency)." >&2
+                else
+                  echo "ERROR: $SIBLING_ID $SIBLING_VERSION is not published on $NUGET_URL after waiting 10 minutes. Refusing to deploy (this package would ship declaring a dependency version that does not exist)." >&2
+                fi
+                exit 1
+              fi
+              sleep 15
+            done
+          done
       - name: Restore
         run: dotnet restore 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj' --locked-mode
       - name: Restore tests

@@ -17,4 +17,36 @@
     <Exclude>[*.Tests]*;[Chatter.Testing.Core]*</Exclude>
   </PropertyGroup>
 
+  <!-- Package provenance, scoped to the nine packable library projects. Keying on
+       '$(IsPackable)' is impossible here: Directory.Build.props is imported before the project
+       body, so a csproj's IsPackable is still unset at this point. Every packable project lives
+       at src/<Module>/src/<Module>/, so its parent directory is named 'src'. Per-module test
+       projects (src/<Module>/tests/) and the shared test core (tests/) do not match, so nothing
+       below reaches non-packaged output.
+       ContinuousIntegrationBuild is deliberately NOT set here: it normalizes source paths and
+       breaks local debugging. The CD pack steps pass it on the command line instead. -->
+  <PropertyGroup>
+    <IsPackableLibrary Condition="'$([System.IO.Path]::GetFileName($([System.IO.Path]::GetDirectoryName($(MSBuildProjectDirectory)))))' == 'src'">true</IsPackableLibrary>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsPackableLibrary)' == 'true'">
+    <!-- SourceLink ships in the SDK and is on by default; these let it publish the repository
+         url and embed sources that are not tracked by git.
+         https://learn.microsoft.com/en-us/dotnet/standard/library-guidance/sourcelink -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <Deterministic>true</Deterministic>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/brenpike/Chatter</PackageProjectUrl>
+  </PropertyGroup>
+
+  <!-- The repository carries a single root README.md and no per-module readmes, so all nine
+       packages embed the same file. PackageReadmeFile above only names it; this item is what
+       actually places it inside the package. -->
+  <ItemGroup Condition="'$(IsPackableLibrary)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" Visible="false" />
+  </ItemGroup>
+
 </Project>
