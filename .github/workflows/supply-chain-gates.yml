@@ -1,0 +1,67 @@
+name: Supply Chain Gates
+
+# Deliberately no top-level `paths:` filter. Further gates land in this file that must
+# assert against csproj and lock-file changes, not just `.github/**`, and a workflow-wide
+# filter would silently skip them on exactly the changes they exist to catch. Narrowing
+# belongs on an individual job when a job earns it.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # This job also runs on `pull_request`, so where a required status check is configured a
+  # failing scan blocks the merge before any of the nine module CD workflows can publish. On
+  # `push` to master it runs in parallel with those deploy jobs rather than before them; a
+  # direct push to master, or a merge without required checks, is a knowingly accepted residual.
+  dependency-vulnerabilities:
+    name: no packages with known vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+      # The script restores the solution in locked mode itself; `dotnet list package`
+      # reads the restore assets and reports nothing useful without them.
+      - name: Assert no package has a known vulnerability
+        run: bash .github/scripts/assert-no-vulnerable-packages.sh
+
+  # This job remains the whole-repo PR-time sweep; each CD deploy job additionally asserts its
+  # own freshly-packed package between its pack step and its push step, closing that gap.
+  package-provenance:
+    name: packages carry provenance metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+      # The script packs all nine packable projects in Release, which is the most expensive
+      # job in this file — a deliberate cost. Provenance lives in the generated `.nuspec` and
+      # in what NuGet writes alongside the package, so nothing short of a real pack can
+      # observe it; inspecting the csproj would only assert that properties were typed, not
+      # that they survived into the shipped artifact.
+      - name: Assert every package carries provenance metadata
+        run: bash .github/scripts/assert-nupkg-provenance.sh

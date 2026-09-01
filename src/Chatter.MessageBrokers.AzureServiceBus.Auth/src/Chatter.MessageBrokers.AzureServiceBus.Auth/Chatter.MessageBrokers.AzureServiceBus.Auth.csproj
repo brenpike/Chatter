@@ -4,7 +4,7 @@
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <PackageId>Chatter.MessageBrokers.AzureServiceBus.Auth</PackageId>
-    <Version>3.1.2</Version>
+    <Version>3.2.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
     <Description>Provides Azure AD authentication for Chatter.MessageBrokers.AzureServiceBus, building Azure.Identity credentials (client secret, client certificate, interactive browser, and managed identity) for Azure Service Bus.</Description>

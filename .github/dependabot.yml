@@ -1,0 +1,18 @@
+# Workflow actions are pinned to a full commit SHA (with a trailing `# vX.Y.Z`
+# comment) for supply-chain integrity. Dependabot is what keeps those pins
+# current: it opens PRs that bump the SHA and rewrite the version comment.
+#
+# No `nuget` ecosystem entry here on purpose: this repo restores in locked
+# mode across 19 `packages.lock.json` files and ships nine independently
+# versioned packages, so automated NuGet PRs would need lock-file
+# regeneration and version-bump handling that is out of scope for this epic.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

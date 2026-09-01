@@ -6,6 +6,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-01
+
+### Added
+
+- Published packages now ship a symbol package (`.snupkg`), an embedded `README`, a project URL, and are built deterministically. Package builds are now reproducible CI builds with SourceLink-resolvable sources, so a debugger can step into this package's original source from a consuming application.
+
+### Changed
+
+- Raised the net8.0-leg `Microsoft.Extensions.Hosting` dependency floor to `8.0.1`, off a dependency graph that carried an advisory-affected `System.Text.Json` 8.0.0 floor. The net10.0 leg is unchanged.
+- Bundled dependency uplift to Chatter.CQRS 0.11.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it); no behavioral change to Chatter.MessageBrokers itself.
+
 ## [0.16.2] - 2026-08-31
 
 ### Fixed

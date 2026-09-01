@@ -303,10 +303,10 @@ The guard is Chatter's own subscriber check — never `Activity.Current`, which 
 
 Attributes prefixed `chatter.` are Chatter-native: no OpenTelemetry semantic convention covers in-process CQRS dispatch. The remaining names (`error.type`, `exception.*`) are OpenTelemetry semantic conventions pinned to **v1.30.0**. Because telemetry attributes are emitted data rather than a compile-time type surface, **they may change in a minor release** when that pin advances. Dashboards and alert queries that hard-code attribute names should expect to be revisited on a pin bump; the bump is announced in this package's CHANGELOG.
 
-Design rationale and the off-guard rules are recorded in [ADR-0010](../../../docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+Design rationale and the off-guard rules are recorded in [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
 
 ## Domain Language
 
-Terms such as Command, Query, Read Model, Event (Domain vs Integration), Aggregate, Command Pipeline, Message Context, and Dispatcher follow the project's ubiquitous language. See [../CONTEXT.md](../CONTEXT.md) for the full glossary and relationships.
+Terms such as Command, Query, Read Model, Event (Domain vs Integration), Aggregate, Command Pipeline, Message Context, and Dispatcher follow the project's ubiquitous language. See [../CONTEXT.md](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/CONTEXT.md) for the full glossary and relationships.
 
-[← All Chatter modules](../../../README.md)
+[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)

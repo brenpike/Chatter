@@ -142,6 +142,6 @@ The entity configurations map two tables (table names default to the `DbSet`/ent
 
 ## Domain Language
 
-See [CONTEXT.md](../CONTEXT.md) for the domain glossary (Brokered Message Inbox/Outbox, Unit of Work, Persistance Transaction).
+See [CONTEXT.md](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/CONTEXT.md) for the domain glossary (Brokered Message Inbox/Outbox, Unit of Work, Persistance Transaction).
 
-[← All Chatter modules](../../../README.md)
+[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)

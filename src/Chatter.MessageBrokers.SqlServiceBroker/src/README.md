@@ -4,7 +4,7 @@ A SQL Server Service Broker transport for Chatter.MessageBrokers — send and re
 
 ## Overview
 
-`Chatter.MessageBrokers.SqlServiceBroker` is a concrete, SQL Server Service Broker implementation of the technology-agnostic interfaces defined by [Chatter.MessageBrokers](../../Chatter.MessageBrokers/src/README.md#chatter-messagebrokers) (itself built on [Chatter.CQRS](../../Chatter.CQRS/src/README.md#chatter-cqrs)).
+`Chatter.MessageBrokers.SqlServiceBroker` is a concrete, SQL Server Service Broker implementation of the technology-agnostic interfaces defined by [Chatter.MessageBrokers](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#chatter-messagebrokers) (itself built on [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md#chatter-cqrs)).
 
 Where the core library defines `IMessagingInfrastructureReceiver`, `IMessagingInfrastructureDispatcher`, and the recovery abstractions (retry, circuit breaker), this package supplies the SQL Service Broker realizations:
 
@@ -120,12 +120,12 @@ Only the **Chatter envelope** message type round-trips the Message Context. Two 
 - The **`DEFAULT` message type** receive path. A `DEFAULT`-typed message carries a raw body with no Chatter envelope, so there is no context to restore; the receiver hands the handler a fresh dictionary. Context survives only when the sending application supplies the `//Chatter/BrokeredMessage` message type, whose deserialized envelope carries its own `MessageContext`.
 - The **deadletter** path, which likewise constructs a fresh dictionary for the dead-lettered message.
 
-This is a **pre-existing limitation that affects all headers alike** — correlation id, group id, application headers, and (since [ADR-0010](../../../docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md)) the W3C trace-context headers `traceparent` / `tracestate`. It is not something Chatter's opt-in tracing introduced, and closing it is a change to these receive paths rather than to the instrumentation.
+This is a **pre-existing limitation that affects all headers alike** — correlation id, group id, application headers, and (since [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md)) the W3C trace-context headers `traceparent` / `tracestate`. It is not something Chatter's opt-in tracing introduced, and closing it is a change to these receive paths rather than to the instrumentation.
 
 The consequence for tracing: a distributed trace continues across this transport on the Chatter envelope path, and **starts a new trace** on the `DEFAULT` path. Both behaviors are pinned by conformance tests, so a change that accidentally fixes or worsens either is visible.
 
 ## Domain Language
 
-See the [domain glossary](../CONTEXT.md) for definitions of Service Broker Receiver, Service Broker Sender, Queue, Conversation, Setup Scripts, and Service Broker Options.
+See the [domain glossary](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/CONTEXT.md) for definitions of Service Broker Receiver, Service Broker Sender, Queue, Conversation, Setup Scripts, and Service Broker Options.
 
-[← All Chatter modules](../../../README.md)
+[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)

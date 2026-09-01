@@ -4,7 +4,7 @@ A RabbitMQ transport for Chatter.MessageBrokers — send and receive brokered me
 
 ## Overview
 
-`Chatter.MessageBrokers.RabbitMQ` is a concrete, RabbitMQ implementation of the technology-agnostic interfaces defined by [Chatter.MessageBrokers](../../Chatter.MessageBrokers/src/README.md#chatter-messagebrokers) (itself built on [Chatter.CQRS](../../Chatter.CQRS/src/README.md#chatter-cqrs)).
+`Chatter.MessageBrokers.RabbitMQ` is a concrete, RabbitMQ implementation of the technology-agnostic interfaces defined by [Chatter.MessageBrokers](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#chatter-messagebrokers) (itself built on [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md#chatter-cqrs)).
 
 Where the core library defines `IMessagingInfrastructureReceiver`, `IMessagingInfrastructureDispatcher`, and the recovery abstractions (retry, circuit breaker), this package supplies the RabbitMQ realizations:
 
@@ -144,7 +144,7 @@ On **quorum queues**, RabbitMQ maintains a native per-message `x-delivery-count`
 
 **Classic queues** do not expose a native delivery counter. The adapter implements a **header-stamped republish counter**: on retry it republishes the message to its own queue with an incremented `x-chatter-delivery-count` header (publisher-confirmed before the original is acknowledged), then acknowledges the original delivery.
 
-This approach carries documented trade-offs (per [ADR 0001](../../../docs/adr/0001-rabbitmq-classic-queue-redelivery-counting-via-republish.md)):
+This approach carries documented trade-offs (per [ADR 0001](https://github.com/brenpike/Chatter/blob/master/docs/adr/0001-rabbitmq-classic-queue-redelivery-counting-via-republish.md)):
 
 - **Rare duplicate**: a crash between the confirmed republish and the acknowledgement of the original yields a duplicate delivery (never a loss). This is mitigated by publisher confirms and absorbed downstream by the Chatter Inbox (idempotent, once-only handling).
 - **Loss of head-of-queue ordering**: the republished message lands at the tail of the queue.
@@ -245,6 +245,6 @@ var infraType = new InfrastructureTypes().RabbitMq();
 
 ## Domain Language
 
-See the [domain glossary](../CONTEXT.md) for definitions of RabbitMq Receiver, RabbitMq Sender, Exchange, Queue, Routing Key, Binding, Dead-Letter Exchange / Dead-letter Queue, Delivery Count Strategy, RabbitMq Options, and Topology Ownership.
+See the [domain glossary](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/CONTEXT.md) for definitions of RabbitMq Receiver, RabbitMq Sender, Exchange, Queue, Routing Key, Binding, Dead-Letter Exchange / Dead-letter Queue, Delivery Count Strategy, RabbitMq Options, and Topology Ownership.
 
-[← All Chatter modules](../../../README.md)
+[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)

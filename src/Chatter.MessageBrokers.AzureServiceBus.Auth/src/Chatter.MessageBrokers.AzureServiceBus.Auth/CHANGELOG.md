@@ -12,6 +12,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [3.2.0] - 2026-09-01
+
+### Added
+
+- Published packages now ship a symbol package (`.snupkg`), an embedded `README`, a project URL, and are built deterministically. Package builds are now reproducible CI builds with SourceLink-resolvable sources, so a debugger can step into this package's original source from a consuming application.
+
+### Changed
+
+- Bundled dependency uplift to Chatter.MessageBrokers.AzureServiceBus 2.1.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [3.1.2] - 2026-08-31
 
 ### Changed

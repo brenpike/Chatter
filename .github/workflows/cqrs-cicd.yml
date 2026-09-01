@@ -12,6 +12,8 @@ on:
     paths:
       - 'src/Chatter.CQRS/src/**'
       - '.github/workflows/cqrs-cicd.yml'
+      # Directory.Build.props carries the shared packaging configuration, so a change to it alters package output and must republish. The module's own packed README lives under the src/** filter above.
+      - 'Directory.Build.props'
 
 permissions:
   contents: read
@@ -21,23 +23,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: deploy
+  # Packaging deliberately has no `environment:` and no `id-token:`. This job builds and runs
+  # the module's tests, so its test-only dependency graph must never execute inside the envelope
+  # that mints the NuGet publish credential; and every production-* environment carries a
+  # required-reviewers rule, so attaching one here would demand a human approval before the tests
+  # had even run.
+  package:
+    name: package
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    environment:
-      name: production-cqrs
-    env:
-      NUGET_URL: ${{ vars.NUGET_URL }}
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      should_publish: ${{ steps.release_guard.outputs.should_publish }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: |
             8.0.x
@@ -46,29 +50,98 @@ jobs:
           cache-dependency-path: |
             **/packages.lock.json
       - name: Guard against duplicate release
+        # Skips the publish rather than failing the job when the tag already exists. This workflow
+        # also triggers on shared packaging configuration, which legitimately reaches here with no
+        # version bump; republishing an already-released version is not the intent, so skipping is
+        # the accurate outcome. version-check.yml still fails a source change that forgot its bump.
+        id: release_guard
         shell: bash
         run: |
           VERSION=$(grep -m1 '<Version>' 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj' | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d ' \r')
           TAG='cqrs/v'"${VERSION}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "ERROR: Tag $TAG already exists — version was not bumped. Refusing to deploy (would silently discard merged code)." >&2
-            exit 1
+            echo "Version $VERSION is already released ($TAG exists). Skipping publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
           echo "Release guard passed: $TAG does not yet exist."
       - name: Restore
         run: dotnet restore 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj' --locked-mode
+      - name: Restore tests
+        run: dotnet restore 'src/Chatter.CQRS/tests/Chatter.CQRS.Tests.csproj' --locked-mode
+      - name: Build tests
+        run: dotnet build 'src/Chatter.CQRS/tests/Chatter.CQRS.Tests.csproj' -c Release --no-restore
+      - name: Test
+        run: dotnet test 'src/Chatter.CQRS/tests/Chatter.CQRS.Tests.csproj' -c Release --no-build --filter 'Category!=Integration'
       - name: Pack
-        run: dotnet pack 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj' -c Release -o ./dist/nuget
+        if: steps.release_guard.outputs.should_publish == 'true'
+        # ContinuousIntegrationBuild=true is set only in this CD pack step, not in Directory.Build.props:
+        # enabling it repo-wide breaks local debugger source path resolution.
+        run: dotnet pack 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj' -c Release -o ./dist/nuget -p:ContinuousIntegrationBuild=true
+      - name: Assert package provenance
+        if: steps.release_guard.outputs.should_publish == 'true'
+        # Asserted here on the publish path, not PR-time only: the Supply Chain Gates
+        # workflow triggers on this same push with no dependency on this job, so it would
+        # race the irreversible `dotnet nuget push` below instead of gating it.
+        run: bash .github/scripts/assert-nupkg-provenance.sh ./dist/nuget 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj'
+      - name: Upload package artifact
+        if: steps.release_guard.outputs.should_publish == 'true'
+        # Uploads the directory, not a `*.nupkg` glob: Directory.Build.props sets IncludeSymbols
+        # with SymbolPackageFormat=snupkg, and a glob would silently stop shipping the .snupkg.
+        # retention-days is 7, not 1, so the artifact outlives an unbounded reviewer-approval wait.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nupkg-cqrs
+          path: ./dist/nuget
+          if-no-files-found: error
+          retention-days: 7
+
+  # INVARIANT: this job has no `actions/checkout`, and its absence is the closure mechanism
+  # rather than an oversight. It is the only job granted `id-token: write`, so with no working
+  # tree there is no repo source, no test assemblies, no test-only dependency graph and no
+  # `.github/scripts/*.sh` for anything to load alongside the publish credential. Do not add a
+  # checkout back for any reason. The job id and name stay `deploy` because `tag` declares
+  # `needs: deploy`; renaming would silently repoint it at packaging and let a tag land without
+  # a push.
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    needs: package
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.package.outputs.should_publish == 'true'
+    environment:
+      name: production-cqrs
+    env:
+      NUGET_URL: ${{ vars.NUGET_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: nupkg-cqrs
+          path: ./dist/nuget
+      - name: Setup .NET
+        # No `cache:`/`cache-dependency-path:` here: the lock-file glob those options resolve
+        # needs a working tree, and this job deliberately has none.
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
       - name: NuGet login (OIDC)
         id: login
-        uses: NuGet/login@v1
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
         with:
           user: ${{ secrets.NUGET_USER }}
       - name: Push NuGet packages
         shell: bash
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
           dotnet nuget push "./dist/nuget/*.nupkg" \
-            --api-key '${{ steps.login.outputs.NUGET_API_KEY }}' \
+            --api-key "$NUGET_API_KEY" \
             -s '${{ env.NUGET_URL }}' \
             --skip-duplicate
 

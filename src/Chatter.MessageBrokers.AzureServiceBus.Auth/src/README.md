@@ -4,7 +4,7 @@ Azure Active Directory (AAD) token-based authentication for the Chatter Azure Se
 
 ## Overview
 
-`Chatter.MessageBrokers.AzureServiceBus.Auth` lets the [Chatter.MessageBrokers.AzureServiceBus](../../../README.md#chatter-azureservicebus) broker authenticate to Azure Service Bus with **Azure Active Directory access tokens** instead of a connection-string shared-access key (SAS).
+`Chatter.MessageBrokers.AzureServiceBus.Auth` lets the [Chatter.MessageBrokers.AzureServiceBus](https://github.com/brenpike/Chatter/blob/master/README.md#chatter-azureservicebus) broker authenticate to Azure Service Bus with **Azure Active Directory access tokens** instead of a connection-string shared-access key (SAS).
 
 Instead of embedding a `SharedAccessKey`/`SharedAccessSignature` in the connection string, you supply a service-principal client ID (and a secret, certificate, or interactive redirect URI), or ask for an Azure managed identity outright. The package builds an `Azure.Core.TokenCredential` (e.g. a `ClientSecretCredential`, `ClientCertificateCredential`, `InteractiveBrowserCredential`, or `ManagedIdentityCredential`) and hands it to the Service Bus connection. When no explicit credential is supplied, it falls back to `DefaultAzureCredential` (managed identity, environment, Azure CLI, etc.), so the same code works locally and in Azure-hosted environments.
 
@@ -102,6 +102,6 @@ sb.UseAadTokenProviderInteractively(
 
 ## Domain Language
 
-See the module domain glossary: [`../CONTEXT.md`](../CONTEXT.md).
+See the module domain glossary: [`../CONTEXT.md`](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/CONTEXT.md).
 
-[← All Chatter modules](../../../README.md)
+[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)
