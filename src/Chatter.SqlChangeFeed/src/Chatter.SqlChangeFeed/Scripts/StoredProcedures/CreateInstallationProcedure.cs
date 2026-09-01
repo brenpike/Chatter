@@ -149,9 +149,16 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                         -- PRIMARY KEY ordinals (the emitted join is explicitly ordered by them). It is HASHED rather
                         -- than embedded verbatim because a column name may contain a line break, which would break
                         -- the single-line marker comment below.
+                        -- INVARIANT: the serialization is INJECTIVE - each column name is LENGTH-PREFIXED with its
+                        -- character count. A delimited identifier may legally contain the '':'' and ''|'' separators, so
+                        -- concatenating unescaped fields does not uniquely represent a column set: names
+                        -- ''a:|3:b'',''c'' and ''a'',''b:|3:c'' serialize identically without the prefix, the hash does not
+                        -- change across that rename, and the migration returns leaving the trigger bound to the old
+                        -- column list. The length is taken with DATALENGTH/2 rather than LEN because LEN ignores
+                        -- trailing spaces, which are significant in a delimited identifier.
                         DECLARE @ColumnFingerprintMarker nvarchar(50) = ''-- chatter-change-feed-columns: '';
                         DECLARE @ColumnSignature nvarchar(max) =
-                            (SELECT CONVERT(nvarchar(20), COLUMN_ORDINAL) + '':'' + COLUMN_NAME + '':'' + ISNULL(CONVERT(nvarchar(20), PK_ORDINAL), '''') + ''|''
+                            (SELECT CONVERT(nvarchar(20), COLUMN_ORDINAL) + '':'' + CONVERT(nvarchar(20), DATALENGTH(COLUMN_NAME) / 2) + '':'' + COLUMN_NAME + '':'' + ISNULL(CONVERT(nvarchar(20), PK_ORDINAL), '''') + ''|''
                              FROM @tbl_Columns
                              ORDER BY COLUMN_ORDINAL
                              FOR XML PATH(''''), TYPE).value(''.'', ''nvarchar(max)'');

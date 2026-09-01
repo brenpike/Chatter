@@ -1,4 +1,4 @@
-using Chatter.SqlChangeFeed.Scripts.ServiceBroker;
+﻿using Chatter.SqlChangeFeed.Scripts.ServiceBroker;
 using Chatter.SqlChangeFeed.Scripts.StoredProcedures;
 using Chatter.SqlChangeFeed.Scripts.Triggers;
 using FluentAssertions;
@@ -32,6 +32,13 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         // the next run, spelled exactly as the emitted procedure body carries them.
         private const string FingerprintMarkerDeclaration = "DECLARE @ColumnFingerprintMarker nvarchar(50) = ''-- chatter-change-feed-columns: '';";
         private const string FingerprintHash = "CONVERT(nvarchar(64), HASHBYTES(''SHA2_256'', @ColumnSignature), 2)";
+        // The per-column term of the signature the fingerprint hashes. The column name is LENGTH-PREFIXED:
+        // a delimited identifier may legally contain the ':' and '|' separators, so an unprefixed
+        // concatenation is not injective and two different column sets can serialize identically.
+        private const string FingerprintSignatureTerm =
+            "CONVERT(nvarchar(20), COLUMN_ORDINAL) + '':'' + CONVERT(nvarchar(20), DATALENGTH(COLUMN_NAME) / 2) + '':'' + COLUMN_NAME + '':'' + ISNULL(CONVERT(nvarchar(20), PK_ORDINAL), '''') + ''|''";
+        private const string AmbiguousFingerprintSignatureTerm =
+            "CONVERT(nvarchar(20), COLUMN_ORDINAL) + '':'' + COLUMN_NAME + '':''";
         private const string InstalledTriggerLookup = "DECLARE @InstalledTriggerId int";
         private const string FingerprintComparison = "CHARINDEX(@ColumnFingerprintMarker + @ColumnFingerprint, definition) > 0";
         private const string FingerprintMarkerEmbed = "@ColumnFingerprintMarker + @ColumnFingerprint + CHAR(13) + CHAR(10)";
@@ -272,6 +279,14 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         [Fact]
         public void MustOrderTheColumnFingerprintByColumnOrdinal()
             => Create().ToString().Should().Contain("ORDER BY COLUMN_ORDINAL");
+
+        [Fact]
+        public void MustLengthPrefixTheColumnNameInTheFingerprintSignature()
+            => Create().ToString().Should().Contain(FingerprintSignatureTerm);
+
+        [Fact]
+        public void MustNotConcatenateTheColumnNameIntoTheFingerprintSignatureWithoutALengthPrefix()
+            => Create().ToString().Should().NotContain(AmbiguousFingerprintSignatureTerm);
 
         [Fact]
         public void MustEmbedTheColumnFingerprintMarkerInTheTriggerStatement()
