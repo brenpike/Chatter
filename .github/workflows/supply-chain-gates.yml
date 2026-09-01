@@ -1,0 +1,28 @@
+name: Supply Chain Gates
+
+# Deliberately no top-level `paths:` filter. Further gates land in this file that must
+# assert against csproj and lock-file changes, not just `.github/**`, and a workflow-wide
+# filter would silently skip them on exactly the changes they exist to catch. Narrowing
+# belongs on an individual job when a job earns it.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  action-pinning:
+    name: actions pinned to commit SHA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Assert every action reference is SHA-pinned
+        run: bash .github/scripts/assert-actions-pinned.sh
