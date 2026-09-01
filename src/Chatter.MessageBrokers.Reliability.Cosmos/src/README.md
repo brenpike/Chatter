@@ -10,7 +10,7 @@ Document-tier (NoSQL) reliability for [Chatter.MessageBrokers](#chatter-messageb
 
 The two tiers share **only** the abstract enqueue / inbox / message contracts — not the EF-shaped `TransactionContext` / `InboxBehavior` mechanics. The document tier carries its document-store primitives (resolved partition key, bound container, batch handle, ETag) on its own provider-shaped **document-tier reliability surface**.
 
-See [ADR-0006](../../docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md), [ADR-0007](../../docs/adr/0007-cosmos-outbox-co-resident-change-feed-relay.md), and [ADR-0008](../../docs/adr/0008-document-tier-participation-model-and-multi-container-via-per-command-container-registry.md) for the design.
+See [ADR-0006](https://github.com/brenpike/Chatter/blob/master/docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md), [ADR-0007](https://github.com/brenpike/Chatter/blob/master/docs/adr/0007-cosmos-outbox-co-resident-change-feed-relay.md), and [ADR-0008](https://github.com/brenpike/Chatter/blob/master/docs/adr/0008-document-tier-participation-model-and-multi-container-via-per-command-container-registry.md) for the design.
 
 ### Handler idempotency contract
 
@@ -215,7 +215,7 @@ The pipeline-integrated `WithCosmosDocumentReliability` path and its verbatim dr
 
 ## Standalone Inbox (`WithCosmosInbox`)
 
-The [document tier](#change-feed-relay) dedups *inside* the aggregate's `TransactionalBatch`. For a **stateless consumer** that has no Cosmos aggregate, no transactional outbox, and no lease container — a message ACL hop that must simply not process the same message twice — `WithCosmosInbox` registers a **standalone, lease-less inbox-dedup gate** on the command pipeline. It performs an **anti-TOCTOU two-phase write-ahead claim** through the existing `InboxBehavior<T>` seam: phase 1 `CreateItemStream`s a *pending* `inbox:` marker on an `/idempotencyKey`-partitioned container **before** the handler, and phase 2 `PatchItemStream`s it to *completed* **after** the handler returns — so a redelivery **confirms a duplicate on *completion*, not mere existence**, and **skips the handler only on a confirmed completed marker** (an abandoned *pending* marker is taken over and the handler re-runs, not skipped). See [ADR-0009](../../docs/adr/0009-standalone-cosmos-inbox-confirm-not-infer-and-fail-loud.md) (amended D1) for the design.
+The [document tier](#change-feed-relay) dedups *inside* the aggregate's `TransactionalBatch`. For a **stateless consumer** that has no Cosmos aggregate, no transactional outbox, and no lease container — a message ACL hop that must simply not process the same message twice — `WithCosmosInbox` registers a **standalone, lease-less inbox-dedup gate** on the command pipeline. It performs an **anti-TOCTOU two-phase write-ahead claim** through the existing `InboxBehavior<T>` seam: phase 1 `CreateItemStream`s a *pending* `inbox:` marker on an `/idempotencyKey`-partitioned container **before** the handler, and phase 2 `PatchItemStream`s it to *completed* **after** the handler returns — so a redelivery **confirms a duplicate on *completion*, not mere existence**, and **skips the handler only on a confirmed completed marker** (an abandoned *pending* marker is taken over and the handler re-runs, not skipped). See [ADR-0009](https://github.com/brenpike/Chatter/blob/master/docs/adr/0009-standalone-cosmos-inbox-confirm-not-infer-and-fail-loud.md) (amended D1) for the design.
 
 ```csharp
 public void ConfigureServices(IServiceCollection services)
@@ -272,6 +272,6 @@ Unlike `WithCosmosDocumentReliability<TCommand>`, the standalone inbox is **leas
 
 ## Domain Language
 
-See [CONTEXT.md](../../Chatter.MessageBrokers/CONTEXT.md) for the domain glossary (Document Tier, Document-Tier Batch-Lifecycle Behavior, Atomic-Write Handle, Partition-Key Resolver, Co-Resident Outbox / Inbox Marker, Outbox Relay, Participation).
+See [CONTEXT.md](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/CONTEXT.md) for the domain glossary (Document Tier, Document-Tier Batch-Lifecycle Behavior, Atomic-Write Handle, Partition-Key Resolver, Co-Resident Outbox / Inbox Marker, Outbox Relay, Participation).
 
-[← All Chatter modules](../../../README.md)
+[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)

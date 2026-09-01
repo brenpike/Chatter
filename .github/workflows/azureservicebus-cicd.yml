@@ -34,6 +34,8 @@ jobs:
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     permissions:
       contents: read
+    outputs:
+      should_publish: ${{ steps.release_guard.outputs.should_publish }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -48,14 +50,21 @@ jobs:
           cache-dependency-path: |
             **/packages.lock.json
       - name: Guard against duplicate release
+        # Skips the publish rather than failing the job when the tag already exists. This workflow
+        # also triggers on shared packaging configuration, which legitimately reaches here with no
+        # version bump; republishing an already-released version is not the intent, so skipping is
+        # the accurate outcome. version-check.yml still fails a source change that forgot its bump.
+        id: release_guard
         shell: bash
         run: |
           VERSION=$(grep -m1 '<Version>' 'src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/Chatter.MessageBrokers.AzureServiceBus.csproj' | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d ' \r')
           TAG='azureservicebus/v'"${VERSION}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "ERROR: Tag $TAG already exists — version was not bumped. Refusing to deploy (would silently discard merged code)." >&2
-            exit 1
+            echo "Version $VERSION is already released ($TAG exists). Skipping publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
           echo "Release guard passed: $TAG does not yet exist."
       - name: Restore
         run: dotnet restore 'src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/Chatter.MessageBrokers.AzureServiceBus.csproj' --locked-mode
@@ -66,15 +75,18 @@ jobs:
       - name: Test
         run: dotnet test 'src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj' -c Release --no-build --filter 'Category!=Integration'
       - name: Pack
+        if: steps.release_guard.outputs.should_publish == 'true'
         # ContinuousIntegrationBuild=true is set only in this CD pack step, not in Directory.Build.props:
         # enabling it repo-wide breaks local debugger source path resolution.
         run: dotnet pack 'src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/Chatter.MessageBrokers.AzureServiceBus.csproj' -c Release -o ./dist/nuget -p:ContinuousIntegrationBuild=true
       - name: Assert package provenance
+        if: steps.release_guard.outputs.should_publish == 'true'
         # Asserted here on the publish path, not PR-time only: the Supply Chain Gates
         # workflow triggers on this same push with no dependency on this job, so it would
         # race the irreversible `dotnet nuget push` below instead of gating it.
         run: bash .github/scripts/assert-nupkg-provenance.sh ./dist/nuget 'src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/Chatter.MessageBrokers.AzureServiceBus.csproj'
       - name: Upload package artifact
+        if: steps.release_guard.outputs.should_publish == 'true'
         # Uploads the directory, not a `*.nupkg` glob: Directory.Build.props sets IncludeSymbols
         # with SymbolPackageFormat=snupkg, and a glob would silently stop shipping the .snupkg.
         # retention-days is 7, not 1, so the artifact outlives an unbounded reviewer-approval wait.
@@ -96,7 +108,7 @@ jobs:
     name: deploy
     runs-on: ubuntu-latest
     needs: package
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.package.outputs.should_publish == 'true'
     environment:
       name: production-azureservicebus
     env:
