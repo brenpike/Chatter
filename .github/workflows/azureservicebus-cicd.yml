@@ -172,6 +172,11 @@ jobs:
         # ContinuousIntegrationBuild=true is set only in this CD pack step, not in Directory.Build.props:
         # enabling it repo-wide breaks local debugger source path resolution.
         run: dotnet pack 'src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/Chatter.MessageBrokers.AzureServiceBus.csproj' -c Release -o ./dist/nuget -p:ContinuousIntegrationBuild=true
+      - name: Assert package provenance
+        # Asserted here on the publish path, not PR-time only: the Supply Chain Gates
+        # workflow triggers on this same push with no dependency on this job, so it would
+        # race the irreversible `dotnet nuget push` below instead of gating it.
+        run: bash .github/scripts/assert-nupkg-provenance.sh ./dist/nuget 'src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/Chatter.MessageBrokers.AzureServiceBus.csproj'
       - name: NuGet login (OIDC)
         id: login
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
