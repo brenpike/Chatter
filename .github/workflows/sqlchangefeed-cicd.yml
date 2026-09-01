@@ -12,9 +12,8 @@ on:
     paths:
       - 'src/Chatter.SqlChangeFeed/src/**'
       - '.github/workflows/sqlchangefeed-cicd.yml'
-      # Directory.Build.props (provenance PropertyGroup) and README.md (packed via PackageReadmeFile) are package content; a change to either must republish.
+      # Directory.Build.props carries the shared packaging configuration, so a change to it alters package output and must republish. The module's own packed README lives under the src/** filter above.
       - 'Directory.Build.props'
-      - 'README.md'
 
 permissions:
   contents: read

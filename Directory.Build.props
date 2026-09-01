@@ -42,11 +42,11 @@
     <PackageProjectUrl>https://github.com/brenpike/Chatter</PackageProjectUrl>
   </PropertyGroup>
 
-  <!-- The repository carries a single root README.md and no per-module readmes, so all nine
-       packages embed the same file. PackageReadmeFile above only names it; this item is what
-       actually places it inside the package. -->
+  <!-- Each packable module owns a README at src/<Module>/src/README.md, one directory above its
+       project directory. PackageReadmeFile above only names the file inside the package; this
+       item is what places that module's own readme at the package root. -->
   <ItemGroup Condition="'$(IsPackableLibrary)' == 'true'">
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="$(MSBuildProjectDirectory)/../README.md" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
 
 </Project>
