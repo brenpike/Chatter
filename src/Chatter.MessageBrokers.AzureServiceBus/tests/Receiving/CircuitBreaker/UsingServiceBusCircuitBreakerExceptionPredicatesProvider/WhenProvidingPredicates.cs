@@ -9,9 +9,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.CircuitBreaker.
 {
     // ServiceBusCircuitBreakerExceptionPredicatesProvider is internal sealed (IVT covers it).
     // Its predicate set is byte-for-byte identical to ServiceBusRetryExceptionPredicatesProvider.
-    // Azure.Messaging.ServiceBus 7.20.1 collapses the legacy distinct exception subtypes into a single
-    // ServiceBusException carrying a ServiceBusFailureReason; IsTransient is derived from that reason
-    // (true only for ServiceCommunicationProblem/ServiceBusy/ServiceTimeout).
     public class WhenProvidingPredicates : Testing.Core.Context
     {
         private readonly Predicate<Exception>[] _predicates =

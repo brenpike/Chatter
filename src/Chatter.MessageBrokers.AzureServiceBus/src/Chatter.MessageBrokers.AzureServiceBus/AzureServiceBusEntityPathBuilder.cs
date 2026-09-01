@@ -3,9 +3,8 @@
     class AzureServiceBusEntityPathBuilder : IBrokeredMessagePathBuilder
     {
         // INVARIANT: reproduces the path shape of Azure Service Bus' internal EntityNameFormatter
-        // (FormatSubscriptionPath / FormatRulePath). Azure.Messaging.ServiceBus 7.20.1 exposes no
-        // public path formatter (the legacy public Microsoft.Azure.ServiceBus.EntityNameHelper was
-        // removed; EntityNameFormatter is internal), so the canonical segment literals are inlined.
+        // (FormatSubscriptionPath / FormatRulePath). The SDK exposes no public path formatter,
+        // so the canonical segment literals are inlined.
         private const string SubscriptionsSegment = "Subscriptions";
         private const string RulesSegment = "Rules";
 

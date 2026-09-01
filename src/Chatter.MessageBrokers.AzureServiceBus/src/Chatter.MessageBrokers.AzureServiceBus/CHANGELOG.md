@@ -12,6 +12,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [2.0.1] - 2026-08-31
+
+### Changed
+
+- `Azure.Messaging.ServiceBus` uplifted `7.20.1` -> `7.20.2`.
+- The `net10.0` target now binds the SDK's native `lib/net10.0` assembly. `7.20.1` shipped only `net8.0` and `netstandard2.0` assets, so the `net10.0` build previously resolved the `net8.0` one.
+- The transitive `Azure.Core` floor rises `1.46.2` -> `1.60.0`. On the `net8.0` consumer graph this carries forward: `Microsoft.Identity.Client` (and `Microsoft.Identity.Client.Extensions.Msal`) to `4.84.2`, `System.ClientModel` to `1.14.0`, `System.Text.Json` to `10.0.9`, and the `Microsoft.Extensions.*` abstractions to `10.0.9`.
+- The SDK's internal allocation reductions on the settlement logging path carry through. The SDK's own tracing remains off by default, and Chatter's emitted telemetry is unaffected by this uplift.
+
+UPGRADER NOTE: a consumer that explicitly down-pins `System.Text.Json`, `Microsoft.Identity.Client`, or `Microsoft.Extensions.*` at `8.x` on `net8.0` will hit `NU1605` after upgrading and must raise those pins.
+
 ## [2.0.0] - 2026-08-30
 
 ### Changed
