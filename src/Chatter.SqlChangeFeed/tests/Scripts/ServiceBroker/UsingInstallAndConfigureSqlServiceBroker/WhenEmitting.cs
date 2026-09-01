@@ -88,8 +88,12 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.ServiceBroker.UsingInstallAndConfi
             => Create().ToString().Should().Contain($"ALTER DATABASE [{Database}] SET ENABLE_BROKER");
 
         [Fact]
-        public void MustEmitAlterAuthorizationToSa()
-            => Create().ToString().Should().Contain($"ALTER AUTHORIZATION ON DATABASE::[{Database}] TO [sa]");
+        public void MustNotEmitAlterAuthorization()
+            => Create().ToString().Should().NotContain("ALTER AUTHORIZATION");
+
+        [Fact]
+        public void MustEmitEnableBrokerWithRollbackImmediate()
+            => Create().ToString().Should().Contain($"ALTER DATABASE [{Database}] SET ENABLE_BROKER WITH ROLLBACK IMMEDIATE");
 
         [Fact]
         public void MustEmitCreateMessageTypeWithChatterBrokeredMessageType()

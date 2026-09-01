@@ -75,13 +75,16 @@ namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
 
         public override string ToString()
         {
+            // INVARIANT: ENABLE_BROKER carries ROLLBACK IMMEDIATE. Without it the statement waits for
+            // every other session on the database to close, so a first install behind a connection pool
+            // blocks indefinitely with no timeout and no diagnostic.
+            // INVARIANT: database ownership is left alone. Transferring it to [sa] would silently widen
+            // the privileges of every EXECUTE AS OWNER module in the consumer's database.
             return string.Format(@"
                 IF EXISTS (SELECT * FROM sys.databases 
                                     WHERE name = '{0}' AND is_broker_enabled = 0) 
                 BEGIN
-                    ALTER DATABASE {8} SET ENABLE_BROKER; 
-
-                    ALTER AUTHORIZATION ON DATABASE::{8} TO [sa]
+                    ALTER DATABASE {8} SET ENABLE_BROKER WITH ROLLBACK IMMEDIATE; 
                 END
 
                 IF NOT EXISTS (SELECT * FROM sys.service_message_types WHERE name = '{13}')
