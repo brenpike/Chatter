@@ -82,6 +82,9 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
             // current procedure body instead of silently keeping a stale one. Requires SQL Server 2016 SP1.
             // INVARIANT: every precondition is checked before the Service Broker section, so a refusal cannot leave
             // a partially created queue, service, or trigger behind.
+            // INVARIANT: the trigger's column list is re-derived from INFORMATION_SCHEMA on every run and compared
+            // against the fingerprint the installed trigger carries, so a watched table whose columns drifted gets a
+            // refreshed trigger instead of one referencing a column that no longer exists.
             return string.Format(@"
                 USE {0}
                 EXEC ('
@@ -105,11 +108,12 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                         END
 
                         -- Build column collection for target table:
-                        DECLARE @tbl_Columns TABLE (COLUMN_NAME sysname NOT NULL, INCLUDE_OUTPUT bit NOT NULL, PK_ORDINAL int NULL);
-                        INSERT INTO @tbl_Columns (COLUMN_NAME, INCLUDE_OUTPUT, PK_ORDINAL)
+                        DECLARE @tbl_Columns TABLE (COLUMN_NAME sysname NOT NULL, INCLUDE_OUTPUT bit NOT NULL, PK_ORDINAL int NULL, COLUMN_ORDINAL int NOT NULL);
+                        INSERT INTO @tbl_Columns (COLUMN_NAME, INCLUDE_OUTPUT, PK_ORDINAL, COLUMN_ORDINAL)
                         SELECT cols.COLUMN_NAME,
 	                        CASE WHEN cols.DATA_TYPE IN (''text'',''ntext'',''image'',''geometry'',''geography'') THEN 0 ELSE 1 END [INCLUDE_OUTPUT],
-	                        colkeys.ORDINAL_POSITION [PK_ORDINAL]
+	                        colkeys.ORDINAL_POSITION [PK_ORDINAL],
+	                        cols.ORDINAL_POSITION [COLUMN_ORDINAL]
                          FROM INFORMATION_SCHEMA.TABLES tab
                          INNER JOIN INFORMATION_SCHEMA.COLUMNS cols ON cols.TABLE_CATALOG = tab.TABLE_CATALOG
 	                        AND cols.TABLE_SCHEMA = tab.TABLE_SCHEMA
@@ -138,8 +142,43 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                         -- Service Broker configuration statement.
                         {2}
 
-                        IF OBJECT_ID (''{6}'', ''TR'') IS NOT NULL
-                            RETURN;
+                        -- Fingerprint the CURRENT column set of the watched table. It is derived from the same
+                        -- @tbl_Columns collection the trigger''s SELECT and join lists are built from, so it changes
+                        -- exactly when the emitted trigger body would change: column names, their ordinals (the
+                        -- emitted SELECT lists the columns in @tbl_Columns order, which is ordinal order) and their
+                        -- PRIMARY KEY ordinals (the emitted join is explicitly ordered by them). It is HASHED rather
+                        -- than embedded verbatim because a column name may contain a line break, which would break
+                        -- the single-line marker comment below.
+                        DECLARE @ColumnFingerprintMarker nvarchar(50) = ''-- chatter-change-feed-columns: '';
+                        DECLARE @ColumnSignature nvarchar(max) =
+                            (SELECT CONVERT(nvarchar(20), COLUMN_ORDINAL) + '':'' + COLUMN_NAME + '':'' + ISNULL(CONVERT(nvarchar(20), PK_ORDINAL), '''') + ''|''
+                             FROM @tbl_Columns
+                             ORDER BY COLUMN_ORDINAL
+                             FOR XML PATH(''''), TYPE).value(''.'', ''nvarchar(max)'');
+                        DECLARE @ColumnFingerprint nvarchar(64) = CONVERT(nvarchar(64), HASHBYTES(''SHA2_256'', @ColumnSignature), 2);
+
+                        -- INVARIANT: only the trigger installed ON THE WATCHED TABLE is a refresh candidate. A
+                        -- same-named trigger on another table is left alone, so the CREATE below fails loudly on the
+                        -- duplicate name rather than dropping an object the change feed does not own.
+                        DECLARE @InstalledTriggerId int = (SELECT trg.object_id
+                                                             FROM sys.triggers trg
+                                                            WHERE trg.object_id = OBJECT_ID (''{6}'', ''TR'')
+                                                              AND trg.parent_id = OBJECT_ID (''{8}'', ''U''));
+
+                        IF @InstalledTriggerId IS NOT NULL
+                        BEGIN
+                            -- The installed trigger already carries the current fingerprint: leave it untouched.
+                            IF EXISTS (SELECT 1
+                                         FROM sys.sql_modules
+                                        WHERE object_id = @InstalledTriggerId
+                                          AND CHARINDEX(@ColumnFingerprintMarker + @ColumnFingerprint, definition) > 0)
+                                RETURN;
+
+                            -- Drift, or a marker-less trigger installed by an earlier package version: drop it so the
+                            -- CREATE below re-derives the column list from INFORMATION_SCHEMA rather than leaving a
+                            -- snapshot taken at some past install in place.
+                            DROP TRIGGER {9};
+                        END
 
                         -- Construct column and join column strings:
                         DECLARE @ColumnList nvarchar(max) = '''';
@@ -162,8 +201,11 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                         );
                         SET @message = (SELECT JSON_QUERY(@message) [Changes] FOR JSON PATH, WITHOUT_ARRAY_WRAPPER);'';
 
-                        -- Change Feed Trigger configuration statement.
-                        DECLARE @triggerStatement NVARCHAR(MAX) = REPLACE(CONVERT(nvarchar(max), N''{3}''), ''%set_message_statement%'', @TriggerMessageStatement);
+                        -- Change Feed Trigger configuration statement. The fingerprint rides in a leading comment so
+                        -- the next migration run reads it back from sys.sql_modules.definition and refreshes the
+                        -- trigger only when the watched table''s column set has actually drifted.
+                        DECLARE @triggerStatement NVARCHAR(MAX) = @ColumnFingerprintMarker + @ColumnFingerprint + CHAR(13) + CHAR(10) +
+                            REPLACE(CONVERT(nvarchar(max), N''{3}''), ''%set_message_statement%'', @TriggerMessageStatement);
 
                         EXEC sp_executesql @triggerStatement
                     END
@@ -176,7 +218,8 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                SqlIdentifier.QuoteLiteral(_schemaName, 2),
                SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _triggerName), 2),
                SqlIdentifier.QuoteLiteral(_databaseName, 2),
-               watchedTableAsNestedLiteral);
+               watchedTableAsNestedLiteral,
+               SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _triggerName)));
         }
     }
 }

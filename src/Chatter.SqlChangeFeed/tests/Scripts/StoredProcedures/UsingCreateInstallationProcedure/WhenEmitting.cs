@@ -28,6 +28,14 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         private const string TableExistsGate = "IF OBJECT_ID (''[" + Schema + "].[" + Table + "]'', ''U'') IS NULL";
         private const string PrimaryKeyGate = "IF NOT EXISTS (SELECT 1 FROM @tbl_Columns WHERE PK_ORDINAL IS NOT NULL)";
 
+        // The column-set fingerprint the emitted procedure derives, embeds in the trigger and compares against on
+        // the next run, spelled exactly as the emitted procedure body carries them.
+        private const string FingerprintMarkerDeclaration = "DECLARE @ColumnFingerprintMarker nvarchar(50) = ''-- chatter-change-feed-columns: '';";
+        private const string FingerprintHash = "CONVERT(nvarchar(64), HASHBYTES(''SHA2_256'', @ColumnSignature), 2)";
+        private const string InstalledTriggerLookup = "DECLARE @InstalledTriggerId int";
+        private const string FingerprintComparison = "CHARINDEX(@ColumnFingerprintMarker + @ColumnFingerprint, definition) > 0";
+        private const string FingerprintMarkerEmbed = "@ColumnFingerprintMarker + @ColumnFingerprint + CHAR(13) + CHAR(10)";
+
         private static InstallAndConfigureSqlServiceBroker ServiceBrokerScript()
             => new InstallAndConfigureSqlServiceBroker(ConnectionString, Database, "MyQueue", Service, Schema, "MyDeadLetterQueue", "MyDeadLetterService");
 
@@ -229,6 +237,74 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
             createService.Should().BeGreaterThan(primaryKeyGate);
             createTrigger.Should().BeGreaterThan(primaryKeyGate);
         }
+
+        [Fact]
+        public void MustCarryTheColumnOrdinalInTheMaterializedColumnCollection()
+        {
+            var script = Create().ToString();
+
+            script.Should().Contain("COLUMN_ORDINAL int NOT NULL");
+            script.Should().Contain("cols.ORDINAL_POSITION [COLUMN_ORDINAL]");
+        }
+
+        [Fact]
+        public void MustDeriveTheColumnFingerprintFromTheMaterializedColumnCollection()
+        {
+            var script = Create().ToString();
+
+            script.Should().Contain(FingerprintMarkerDeclaration);
+            script.Should().Contain(FingerprintHash);
+            script.Should().Contain("FROM @tbl_Columns");
+        }
+
+        [Fact]
+        public void MustOrderTheColumnFingerprintByColumnOrdinal()
+            => Create().ToString().Should().Contain("ORDER BY COLUMN_ORDINAL");
+
+        [Fact]
+        public void MustEmbedTheColumnFingerprintMarkerInTheTriggerStatement()
+            => Create().ToString().Should().Contain(FingerprintMarkerEmbed);
+
+        [Fact]
+        public void MustLookUpTheInstalledTriggerOnTheWatchedTable()
+        {
+            var script = Create().ToString();
+
+            script.Should().Contain(InstalledTriggerLookup);
+            script.Should().Contain($"trg.parent_id = OBJECT_ID (''[{Schema}].[{Table}]'', ''U'')");
+        }
+
+        [Fact]
+        public void MustReturnOnlyWhenTheInstalledTriggerCarriesTheCurrentColumnFingerprint()
+            => Create().ToString().Should().Contain(FingerprintComparison);
+
+        [Fact]
+        public void MustDropTheInstalledTriggerWhenItsColumnFingerprintDoesNotMatch()
+            => Create().ToString().Should().Contain($"DROP TRIGGER [{Schema}].[{Trigger}];");
+
+        [Fact]
+        public void MustNotReturnUnconditionallyWhenTheTriggerAlreadyExists()
+        {
+            var script = Create().ToString();
+
+            var columnCollection = IndexOfOrFail(script, "INSERT INTO @tbl_Columns");
+            var fingerprint = IndexOfOrFail(script, FingerprintHash);
+            var installedTrigger = IndexOfOrFail(script, InstalledTriggerLookup);
+            var comparison = IndexOfOrFail(script, FingerprintComparison);
+            var dropTrigger = IndexOfOrFail(script, $"DROP TRIGGER [{Schema}].[{Trigger}];");
+            var createTrigger = IndexOfOrFail(script, "CREATE TRIGGER");
+
+            fingerprint.Should().BeGreaterThan(columnCollection, "the fingerprint is derived from the materialized column collection");
+            installedTrigger.Should().BeGreaterThan(fingerprint);
+            comparison.Should().BeGreaterThan(installedTrigger, "an existing trigger is compared, never trusted");
+            dropTrigger.Should().BeGreaterThan(comparison, "the trigger is dropped only when the comparison fails");
+            createTrigger.Should().BeGreaterThan(dropTrigger, "the dropped trigger is recreated from the current column set");
+        }
+
+        [Fact]
+        public void MustEscapeHostileSchemaAndTriggerNameInTheDropTriggerStatement()
+            => CreateHostile().ToString()
+                .Should().Contain("DROP TRIGGER [My]]Schema''; DROP TABLE Users;--].[My]]Trigger''; DROP TABLE Users;--];");
 
         private static int IndexOfOrFail(string script, string fragment)
         {
