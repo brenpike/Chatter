@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Chatter.SqlChangeFeed.Scripts.Sql;
+using System;
 
 namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
 {
@@ -46,11 +47,14 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
 
         public override string ToString()
         {
+            string qualifiedName = SqlIdentifier.EscapeQualified(_schemaName, _storedProcedureName);
+            string quotedQualifiedName = SqlIdentifier.QuoteLiteral(qualifiedName);
+
             return string.Format(@"
                 USE [{0}]
-                IF OBJECT_ID ('{2}.{1}', 'P') IS NOT NULL
-                    EXEC {2}.{1}
-            ", _databaseName, _storedProcedureName, _schemaName);
+                IF OBJECT_ID ('{1}', 'P') IS NOT NULL
+                    EXEC {2}
+            ", _databaseName, quotedQualifiedName, qualifiedName);
         }
     }
 }

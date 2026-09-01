@@ -1,4 +1,5 @@
 ﻿using Chatter.MessageBrokers.SqlServiceBroker;
+using Chatter.SqlChangeFeed.Scripts.Sql;
 using System;
 
 namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
@@ -54,6 +55,16 @@ namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
                 throw new ArgumentException($"'{nameof(schemaName)}' cannot be null or whitespace", nameof(schemaName));
             }
 
+            if (string.IsNullOrWhiteSpace(deadLetterQueueName))
+            {
+                throw new ArgumentException($"'{nameof(deadLetterQueueName)}' cannot be null or whitespace", nameof(deadLetterQueueName));
+            }
+
+            if (string.IsNullOrWhiteSpace(deadLetterServiceName))
+            {
+                throw new ArgumentException($"'{nameof(deadLetterServiceName)}' cannot be null or whitespace", nameof(deadLetterServiceName));
+            }
+
             _databaseName = databaseName;
             _conversationQueueName = conversationQueueName;
             _conversationServiceName = conversationServiceName;
@@ -68,29 +79,43 @@ namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
                 IF EXISTS (SELECT * FROM sys.databases 
                                     WHERE name = '{0}' AND is_broker_enabled = 0) 
                 BEGIN
-                    ALTER DATABASE [{0}] SET ENABLE_BROKER; 
+                    ALTER DATABASE {8} SET ENABLE_BROKER; 
 
-                    ALTER AUTHORIZATION ON DATABASE::[{0}] TO [sa]
+                    ALTER AUTHORIZATION ON DATABASE::{8} TO [sa]
                 END
 
-                IF NOT EXISTS (SELECT * FROM sys.service_message_types WHERE name = '{6}')
-                    CREATE MESSAGE TYPE [{6}] VALIDATION = NONE;
+                IF NOT EXISTS (SELECT * FROM sys.service_message_types WHERE name = '{13}')
+                    CREATE MESSAGE TYPE {6} VALIDATION = NONE;
 
-                IF NOT EXISTS (SELECT * FROM sys.service_contracts WHERE name = '{7}')
-                    CREATE CONTRACT [{7}] ([{6}] SENT BY ANY, [DEFAULT] SENT BY ANY);
+                IF NOT EXISTS (SELECT * FROM sys.service_contracts WHERE name = '{14}')
+                    CREATE CONTRACT {7} ({6} SENT BY ANY, [DEFAULT] SENT BY ANY);
 
                 IF NOT EXISTS (SELECT * FROM sys.service_queues WHERE name = '{1}')
-	                CREATE QUEUE {3}.[{1}] WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
+	                CREATE QUEUE {3}.{9} WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
 
                 IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{2}')
-	                CREATE SERVICE [{2}] ON QUEUE {3}.[{1}] ([{7}])
+	                CREATE SERVICE {10} ON QUEUE {3}.{9} ({7})
 
                 IF NOT EXISTS (SELECT * FROM sys.service_queues WHERE name = '{4}')
-	                CREATE QUEUE {3}.[{4}] WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
+	                CREATE QUEUE {3}.{11} WITH POISON_MESSAGE_HANDLING (STATUS = OFF)
 
                 IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{5}')
-	                CREATE SERVICE [{5}] ON QUEUE {3}.[{4}] ([{7}]) 
-            ", _databaseName, _conversationQueueName, _conversationServiceName, _schemaName, _deadLetterQueueName, _deadLetterServiceName, ServicesMessageTypes.ChatterBrokeredMessageType, ServicesMessageTypes.ChatterServiceContract);
+	                CREATE SERVICE {12} ON QUEUE {3}.{11} ({7}) 
+            ", SqlIdentifier.QuoteLiteral(_databaseName),
+               SqlIdentifier.QuoteLiteral(_conversationQueueName),
+               SqlIdentifier.QuoteLiteral(_conversationServiceName),
+               SqlIdentifier.Escape(_schemaName),
+               SqlIdentifier.QuoteLiteral(_deadLetterQueueName),
+               SqlIdentifier.QuoteLiteral(_deadLetterServiceName),
+               SqlIdentifier.Escape(ServicesMessageTypes.ChatterBrokeredMessageType),
+               SqlIdentifier.Escape(ServicesMessageTypes.ChatterServiceContract),
+               SqlIdentifier.Escape(_databaseName),
+               SqlIdentifier.Escape(_conversationQueueName),
+               SqlIdentifier.Escape(_conversationServiceName),
+               SqlIdentifier.Escape(_deadLetterQueueName),
+               SqlIdentifier.Escape(_deadLetterServiceName),
+               SqlIdentifier.QuoteLiteral(ServicesMessageTypes.ChatterBrokeredMessageType),
+               SqlIdentifier.QuoteLiteral(ServicesMessageTypes.ChatterServiceContract));
         }
     }
 }

@@ -1,3 +1,4 @@
+using Chatter.SqlChangeFeed.Scripts.Sql;
 using Chatter.SqlChangeFeed.Scripts.StoredProcedures;
 using FluentAssertions;
 using System;
@@ -55,8 +56,35 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingSafeExecuteS
         public void MustEmitObjectIdGuardedExecOfStoredProcedure()
         {
             var script = Create().ToString();
-            script.Should().Contain($"IF OBJECT_ID ('{Schema}.{StoredProcedure}', 'P') IS NOT NULL");
-            script.Should().Contain($"EXEC {Schema}.{StoredProcedure}");
+            script.Should().Contain($"IF OBJECT_ID ('[{Schema}].[{StoredProcedure}]', 'P') IS NOT NULL");
+            script.Should().Contain($"EXEC [{Schema}].[{StoredProcedure}]");
+        }
+
+        [Fact]
+        public void MustEscapeHostileStoredProcedureNameInObjectIdLiteralAndExec()
+        {
+            const string hostileStoredProcedure = "Proc]'; --";
+            var script = new SafeExecuteStoredProcedure(ConnectionString, Database, hostileStoredProcedure, Schema).ToString();
+
+            string qualifiedName = SqlIdentifier.EscapeQualified(Schema, hostileStoredProcedure);
+            string quotedQualifiedName = SqlIdentifier.QuoteLiteral(qualifiedName);
+
+            script.Should().Contain($"IF OBJECT_ID ('{quotedQualifiedName}', 'P') IS NOT NULL");
+            script.Should().Contain($"EXEC {qualifiedName}");
+            script.Should().NotContain("--Proc");
+        }
+
+        [Fact]
+        public void MustEscapeHostileSchemaNameInObjectIdLiteralAndExec()
+        {
+            const string hostileSchema = "Sch]'; --ema";
+            var script = new SafeExecuteStoredProcedure(ConnectionString, Database, StoredProcedure, hostileSchema).ToString();
+
+            string qualifiedName = SqlIdentifier.EscapeQualified(hostileSchema, StoredProcedure);
+            string quotedQualifiedName = SqlIdentifier.QuoteLiteral(qualifiedName);
+
+            script.Should().Contain($"IF OBJECT_ID ('{quotedQualifiedName}', 'P') IS NOT NULL");
+            script.Should().Contain($"EXEC {qualifiedName}");
         }
     }
 }

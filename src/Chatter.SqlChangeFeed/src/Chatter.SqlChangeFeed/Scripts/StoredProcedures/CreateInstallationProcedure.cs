@@ -1,4 +1,5 @@
 ﻿using Chatter.SqlChangeFeed.Scripts.ServiceBroker;
+using Chatter.SqlChangeFeed.Scripts.Sql;
 using Chatter.SqlChangeFeed.Scripts.Triggers;
 using System;
 
@@ -57,6 +58,11 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                 throw new ArgumentException($"'{nameof(schemaName)}' cannot be null or whitespace", nameof(schemaName));
             }
 
+            if (string.IsNullOrWhiteSpace(triggerName))
+            {
+                throw new ArgumentException($"'{nameof(triggerName)}' cannot be null or whitespace", nameof(triggerName));
+            }
+
             _databaseName = databaseName;
             _setupProcedureName = setupProcedureName;
             _serviceBrokerConfigScript = serviceBrokerConfigScript ?? throw new ArgumentNullException(nameof(serviceBrokerConfigScript));
@@ -69,18 +75,18 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
         public override string ToString()
         {
             return string.Format(@"
-                USE [{0}]
-                IF OBJECT_ID ('{5}.{1}', 'P') IS NULL
+                USE {0}
+                IF OBJECT_ID ('{1}', 'P') IS NULL
                 BEGIN
                     EXEC ('
-                        CREATE PROCEDURE {5}.{1}
+                        CREATE PROCEDURE {1}
                             @ExplicitCols bit = 1
                         AS
                         BEGIN
                             -- Service Broker configuration statement.
                             {2}
 
-                            IF OBJECT_ID (''{5}.{6}'', ''TR'') IS NOT NULL
+                            IF OBJECT_ID (''{6}'', ''TR'') IS NOT NULL
                                 RETURN;
 
                             -- Build column collection for target table:
@@ -102,7 +108,7 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
 	                            AND colkeys.TABLE_NAME = cols.TABLE_NAME
 	                            AND colkeys.COLUMN_NAME = cols.COLUMN_NAME
 	                            AND colkeys.CONSTRAINT_NAME = tabcon.CONSTRAINT_NAME
-                             WHERE tab.TABLE_CATALOG = ''{0}''
+                             WHERE tab.TABLE_CATALOG = ''{7}''
 	                            AND tab.TABLE_SCHEMA = ''{5}''
 	                            AND tab.TABLE_NAME = ''{4}'';
 
@@ -134,7 +140,14 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                         END
                         ')
                 END
-            ", _databaseName, _setupProcedureName, _serviceBrokerConfigScript.ToString().Replace("'", "''"), _changeFeedTriggerConfigScript.ToString().Replace("'", "''''"), _tableName, _schemaName, _triggerName);
+            ", SqlIdentifier.Escape(_databaseName),
+               SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _setupProcedureName)),
+               SqlIdentifier.QuoteLiteral(_serviceBrokerConfigScript.ToString()),
+               SqlIdentifier.QuoteLiteral(_changeFeedTriggerConfigScript.ToString(), 2),
+               SqlIdentifier.QuoteLiteral(_tableName, 2),
+               SqlIdentifier.QuoteLiteral(_schemaName, 2),
+               SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _triggerName), 2),
+               SqlIdentifier.QuoteLiteral(_databaseName, 2));
         }
     }
 }

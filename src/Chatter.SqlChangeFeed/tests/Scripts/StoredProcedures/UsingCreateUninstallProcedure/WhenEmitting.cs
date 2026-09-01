@@ -25,6 +25,9 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateUninst
         private static CreateUninstallProcedure Create()
             => new CreateUninstallProcedure(ConnectionString, Database, UninstallProcedure, DropTriggerScript(), UninstallScript(), Schema, InstallProcedure);
 
+        private static CreateUninstallProcedure CreateHostile()
+            => new CreateUninstallProcedure(ConnectionString, "Ev]il'Db;--", "Un]in'st;--", DropTriggerScript(), UninstallScript(), Schema, "In]st'Proc;--");
+
         [Theory]
         [InlineData(null)]
         [InlineData("")]
@@ -80,23 +83,43 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateUninst
             => Create().ToString().Should().Contain($"USE [{Database}]");
 
         [Fact]
-        public void MustEmitCreateProcedureWithSchemaAndUninstallProcedureName()
-            => Create().ToString().Should().Contain($"CREATE PROCEDURE {Schema}.{UninstallProcedure}");
+        public void MustEmitCreateOrAlterProcedureWithSchemaAndUninstallProcedureName()
+            => Create().ToString().Should().Contain($"CREATE OR ALTER PROCEDURE [{Schema}].[{UninstallProcedure}]");
+
+        [Fact]
+        public void MustNotGuardCreationOnTheUninstallProcedureNotAlreadyExisting()
+            => Create().ToString().Should().NotContain("IS NULL");
 
         [Fact]
         public void MustEmitObjectIdGuardForInstallProcedure()
-            => Create().ToString().Should().Contain($"OBJECT_ID (''{Schema}.{InstallProcedure}'', ''P'')");
+            => Create().ToString().Should().Contain($"OBJECT_ID (''[{Schema}].[{InstallProcedure}]'', ''P'')");
 
         [Fact]
         public void MustEmitDropProcedureForInstallProcedure()
-            => Create().ToString().Should().Contain($"DROP PROCEDURE {Schema}.{InstallProcedure}");
+            => Create().ToString().Should().Contain($"DROP PROCEDURE [{Schema}].[{InstallProcedure}]");
 
         [Fact]
         public void MustEmitSelfDropProcedureForUninstallProcedure()
-            => Create().ToString().Should().Contain($"DROP PROCEDURE {Schema}.{UninstallProcedure}");
+            => Create().ToString().Should().Contain($"DROP PROCEDURE [{Schema}].[{UninstallProcedure}]");
 
         [Fact]
         public void MustEmitNestedScriptsWithDoubledQuotes()
-            => Create().ToString().Should().Contain($"OBJECT_ID (''{Schema}.{Trigger}'', ''TR'')");
+            => Create().ToString().Should().Contain($"OBJECT_ID (''[{Schema}].[{Trigger}]'', ''TR'')");
+
+        [Fact]
+        public void MustBracketEscapeHostileDatabaseName()
+            => CreateHostile().ToString().Should().Contain("USE [Ev]]il'Db;--]");
+
+        [Fact]
+        public void MustEscapeHostileUninstallProcedureNameForTheExecStringLiteral()
+            => CreateHostile().ToString().Should().Contain("CREATE OR ALTER PROCEDURE [dbo].[Un]]in''st;--]");
+
+        [Fact]
+        public void MustEscapeHostileInstallProcedureNameAtTheNestedObjectIdLiteralDepth()
+            => CreateHostile().ToString().Should().Contain("OBJECT_ID (''[dbo].[In]]st''''Proc;--]'', ''P'')");
+
+        [Fact]
+        public void MustNotLeaveHostileInstallProcedureNameAbleToCloseTheExecStringLiteral()
+            => CreateHostile().ToString().Should().NotContain("[In]]st'Proc;--]");
     }
 }

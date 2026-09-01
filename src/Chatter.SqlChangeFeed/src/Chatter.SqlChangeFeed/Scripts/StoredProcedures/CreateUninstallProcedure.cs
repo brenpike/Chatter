@@ -1,4 +1,5 @@
 ﻿using Chatter.SqlChangeFeed.Scripts.ServiceBroker;
+using Chatter.SqlChangeFeed.Scripts.Sql;
 using Chatter.SqlChangeFeed.Scripts.Triggers;
 using System;
 
@@ -65,32 +66,37 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
 
         public override string ToString()
         {
+            // INVARIANT: everything spliced inside EXEC(' ... ') sits one single-quoted layer deep, so escaped
+            // identifiers are quoted at depth 1 and the OBJECT_ID literal nested inside that layer at depth 2.
+            var uninstallProcedureInExec = SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _uninstallProcedureName));
+            var installProcedureInExec = SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _installProcedureName));
+            var installProcedureAsNestedLiteral = SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _installProcedureName), 2);
+
+            // INVARIANT: CREATE OR ALTER replaces an existence guard so an already-installed database receives the
+            // current procedure body instead of silently keeping a stale one. Requires SQL Server 2016 SP1.
             return string.Format(@"
-                USE [{0}]
-                IF OBJECT_ID ('{4}.{1}', 'P') IS NULL
-                BEGIN
-                    EXEC ('
-                        CREATE PROCEDURE {4}.{1}
-                        AS
-                        BEGIN
-                            {3}
+                USE {0}
+                EXEC ('
+                    CREATE OR ALTER PROCEDURE {1}
+                    AS
+                    BEGIN
+                        {3}
 
-                            {2}
+                        {2}
 
-                            IF OBJECT_ID (''{4}.{5}'', ''P'') IS NOT NULL
-                                DROP PROCEDURE {4}.{5}
-                            
-                            DROP PROCEDURE {4}.{1}
-                        END
-                        ')
-                END
+                        IF OBJECT_ID (''{4}'', ''P'') IS NOT NULL
+                            DROP PROCEDURE {5}
+
+                        DROP PROCEDURE {1}
+                    END
+                    ')
             ",
-             _databaseName,
-             _uninstallProcedureName,
-             _dropChangeFeedTriggerScript.ToString().Replace("'", "''"),
-             _serviceBrokerUninstallScript.ToString().Replace("'", "''"),
-             _schemaName,
-             _installProcedureName);
+             SqlIdentifier.Escape(_databaseName),
+             uninstallProcedureInExec,
+             SqlIdentifier.QuoteLiteral(_dropChangeFeedTriggerScript.ToString()),
+             SqlIdentifier.QuoteLiteral(_serviceBrokerUninstallScript.ToString()),
+             installProcedureAsNestedLiteral,
+             installProcedureInExec);
         }
     }
 }

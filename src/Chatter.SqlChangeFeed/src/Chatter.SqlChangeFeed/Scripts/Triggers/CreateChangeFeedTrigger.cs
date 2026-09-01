@@ -1,4 +1,5 @@
 ﻿using Chatter.MessageBrokers.SqlServiceBroker;
+using Chatter.SqlChangeFeed.Scripts.Sql;
 using System;
 using System.Text;
 
@@ -73,15 +74,15 @@ namespace Chatter.SqlChangeFeed.Scripts.Triggers
         public override string ToString()
         {
             return string.Format(@"
-                CREATE TRIGGER {4}.[{1}]
-                ON {4}.[{0}]
+                CREATE TRIGGER {4}.{1}
+                ON {4}.{0}
                 WITH EXECUTE AS OWNER
                 AFTER {2} 
                 AS
 
                 SET NOCOUNT ON;
 
-                IF EXISTS (SELECT * FROM sys.services WHERE name = '{3}')
+                IF EXISTS (SELECT * FROM sys.services WHERE name = '{6}')
                 BEGIN
                     DECLARE @message NVARCHAR(MAX);
                     %set_message_statement%
@@ -90,12 +91,18 @@ namespace Chatter.SqlChangeFeed.Scripts.Triggers
 
                 	    DECLARE @ConvHandle UNIQUEIDENTIFIER;
                 	    BEGIN DIALOG @ConvHandle 
-                            FROM SERVICE [{3}] TO SERVICE '{3}' ON CONTRACT [{5}] WITH ENCRYPTION=OFF; 
+                            FROM SERVICE {3} TO SERVICE '{6}' ON CONTRACT {5} WITH ENCRYPTION=OFF; 
 
                         SEND ON CONVERSATION @ConvHandle MESSAGE TYPE [DEFAULT] (COMPRESS(@message));
                     END
                 END
-            ", _changeFeedTableName, _changeFeedTriggerName, _changeFeedChangeType, _conversationServiceName, _schemaName, ServicesMessageTypes.ChatterServiceContract);
+            ", SqlIdentifier.Escape(_changeFeedTableName),
+               SqlIdentifier.Escape(_changeFeedTriggerName),
+               _changeFeedChangeType,
+               SqlIdentifier.Escape(_conversationServiceName),
+               SqlIdentifier.Escape(_schemaName),
+               SqlIdentifier.Escape(ServicesMessageTypes.ChatterServiceContract),
+               SqlIdentifier.QuoteLiteral(_conversationServiceName));
         }
     }
 }

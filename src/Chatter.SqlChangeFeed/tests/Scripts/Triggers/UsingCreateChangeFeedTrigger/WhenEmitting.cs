@@ -11,9 +11,16 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.Triggers.UsingCreateChangeFeedTrig
         private const string Trigger = "MyTrigger";
         private const string Service = "MyService";
         private const string Schema = "dbo";
+        private const string HostileTable = "My]Table'; DROP TABLE Users;--";
+        private const string HostileTrigger = "My]Trigger'; DROP TABLE Users;--";
+        private const string HostileService = "My]Service'; DROP TABLE Users;--";
+        private const string HostileSchema = "My]Schema'; DROP TABLE Users;--";
 
         private static CreateChangeFeedTrigger Create(ChangeTypes types = ChangeTypes.Insert)
             => new CreateChangeFeedTrigger(Table, Trigger, types, Service, Schema);
+
+        private static CreateChangeFeedTrigger CreateHostile()
+            => new CreateChangeFeedTrigger(HostileTable, HostileTrigger, ChangeTypes.Insert, HostileService, HostileSchema);
 
         [Theory]
         [InlineData(null)]
@@ -83,11 +90,11 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.Triggers.UsingCreateChangeFeedTrig
 
         [Fact]
         public void MustEmitCreateTriggerWithSchemaAndTriggerTokens()
-            => Create().ToString().Should().Contain($"CREATE TRIGGER {Schema}.[{Trigger}]");
+            => Create().ToString().Should().Contain($"CREATE TRIGGER [{Schema}].[{Trigger}]");
 
         [Fact]
         public void MustEmitOnTargetTableToken()
-            => Create().ToString().Should().Contain($"ON {Schema}.[{Table}]");
+            => Create().ToString().Should().Contain($"ON [{Schema}].[{Table}]");
 
         [Fact]
         public void MustEmitFromServiceToken()
@@ -100,5 +107,34 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.Triggers.UsingCreateChangeFeedTrig
         [Fact]
         public void MustEmitSetMessageStatementPlaceholderVerbatim()
             => Create().ToString().Should().Contain("%set_message_statement%");
+
+        [Fact]
+        public void MustEmitExecuteAsOwnerVerbatim()
+            => Create().ToString().Should().Contain("WITH EXECUTE AS OWNER");
+
+        [Fact]
+        public void MustBracketEscapeHostileSchemaAndTriggerInCreateTrigger()
+            => CreateHostile().ToString()
+                .Should().Contain("CREATE TRIGGER [My]]Schema'; DROP TABLE Users;--].[My]]Trigger'; DROP TABLE Users;--]");
+
+        [Fact]
+        public void MustBracketEscapeHostileSchemaAndTableInOnClause()
+            => CreateHostile().ToString()
+                .Should().Contain("ON [My]]Schema'; DROP TABLE Users;--].[My]]Table'; DROP TABLE Users;--]");
+
+        [Fact]
+        public void MustBracketEscapeHostileServiceInFromServiceClause()
+            => CreateHostile().ToString()
+                .Should().Contain("FROM SERVICE [My]]Service'; DROP TABLE Users;--]");
+
+        [Fact]
+        public void MustQuoteEscapeHostileServiceInToServiceLiteral()
+            => CreateHostile().ToString()
+                .Should().Contain("TO SERVICE 'My]Service''; DROP TABLE Users;--'");
+
+        [Fact]
+        public void MustQuoteEscapeHostileServiceInServiceExistenceLiteral()
+            => CreateHostile().ToString()
+                .Should().Contain("WHERE name = 'My]Service''; DROP TABLE Users;--'");
     }
 }

@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Chatter.SqlChangeFeed.Scripts.Sql;
+using System;
 
 namespace Chatter.SqlChangeFeed.Scripts.Triggers
 {
@@ -33,10 +34,12 @@ namespace Chatter.SqlChangeFeed.Scripts.Triggers
 
         public override string ToString()
         {
+            var qualifiedTriggerName = SqlIdentifier.EscapeQualified(_schemaName, _changeFeedTriggerName);
+
             return string.Format(@"
-                IF OBJECT_ID ('{1}.{0}', 'TR') IS NOT NULL
-                    DROP TRIGGER {1}.[{0}];
-            ", _changeFeedTriggerName, _schemaName);
+                IF OBJECT_ID ('{0}', 'TR') IS NOT NULL
+                    DROP TRIGGER {1};
+            ", SqlIdentifier.QuoteLiteral(qualifiedTriggerName), qualifiedTriggerName);
         }
     }
 }
