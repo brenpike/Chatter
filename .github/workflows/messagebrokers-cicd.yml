@@ -64,7 +64,9 @@ jobs:
       - name: Test
         run: dotnet test 'src/Chatter.MessageBrokers/tests/Chatter.MessageBrokers.Tests.csproj' -c Release --no-build --filter 'Category!=Integration'
       - name: Pack
-        run: dotnet pack 'src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Chatter.MessageBrokers.csproj' -c Release -o ./dist/nuget
+        # ContinuousIntegrationBuild=true is set only in this CD pack step, not in Directory.Build.props:
+        # enabling it repo-wide breaks local debugger source path resolution.
+        run: dotnet pack 'src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Chatter.MessageBrokers.csproj' -c Release -o ./dist/nuget -p:ContinuousIntegrationBuild=true
       - name: NuGet login (OIDC)
         id: login
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
