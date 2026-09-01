@@ -24,17 +24,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: deploy
+  # Packaging deliberately has no `environment:` and no `id-token:`. This job builds and runs
+  # the module's tests, so its test-only dependency graph must never execute inside the envelope
+  # that mints the NuGet publish credential; and every production-* environment carries a
+  # required-reviewers rule, so attaching one here would demand a human approval before the tests
+  # had even run. NUGET_URL therefore resolves from the repository-level variable — the
+  # environment-level variable of the same name still overrides it in `deploy`.
+  package:
+    name: package
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-    environment:
-      name: production-cqrs
     env:
       NUGET_URL: ${{ vars.NUGET_URL }}
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -178,6 +181,50 @@ jobs:
         # workflow triggers on this same push with no dependency on this job, so it would
         # race the irreversible `dotnet nuget push` below instead of gating it.
         run: bash .github/scripts/assert-nupkg-provenance.sh ./dist/nuget 'src/Chatter.CQRS/src/Chatter.CQRS/Chatter.CQRS.csproj'
+      - name: Upload package artifact
+        # Uploads the directory, not a `*.nupkg` glob: Directory.Build.props sets IncludeSymbols
+        # with SymbolPackageFormat=snupkg, and a glob would silently stop shipping the .snupkg.
+        # retention-days is 7, not 1, so the artifact outlives an unbounded reviewer-approval wait.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nupkg-cqrs
+          path: ./dist/nuget
+          if-no-files-found: error
+          retention-days: 7
+
+  # INVARIANT: this job has no `actions/checkout`, and its absence is the closure mechanism
+  # rather than an oversight. It is the only job granted `id-token: write`, so with no working
+  # tree there is no repo source, no test assemblies, no test-only dependency graph and no
+  # `.github/scripts/*.sh` for anything to load alongside the publish credential. Do not add a
+  # checkout back for any reason. The job id and name stay `deploy` because `tag` declares
+  # `needs: deploy`; renaming would silently repoint it at packaging and let a tag land without
+  # a push.
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    needs: package
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    environment:
+      name: production-cqrs
+    env:
+      NUGET_URL: ${{ vars.NUGET_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: nupkg-cqrs
+          path: ./dist/nuget
+      - name: Setup .NET
+        # No `cache:`/`cache-dependency-path:` here: the lock-file glob those options resolve
+        # needs a working tree, and this job deliberately has none.
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
       - name: NuGet login (OIDC)
         id: login
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
