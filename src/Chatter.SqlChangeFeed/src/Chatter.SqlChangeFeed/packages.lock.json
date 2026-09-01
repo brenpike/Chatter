@@ -470,7 +470,7 @@
       "chatter.messagebrokers": {
         "type": "Project",
         "dependencies": {
-          "Chatter.CQRS": "[0.8.1, )",
+          "Chatter.CQRS": "[0.10.0, )",
           "Microsoft.Extensions.Configuration.Abstractions": "[10.0.0, )",
           "Microsoft.Extensions.Hosting": "[10.0.0, )",
           "Scrutor": "[3.3.0, )"
@@ -479,7 +479,7 @@
       "chatter.messagebrokers.sqlservicebroker": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.13.2, )",
+          "Chatter.MessageBrokers": "[0.16.2, )",
           "Microsoft.Data.SqlClient": "[7.0.1, )",
           "Microsoft.Extensions.Hosting": "[10.0.0, )"
         }
@@ -953,7 +953,7 @@
       "chatter.messagebrokers": {
         "type": "Project",
         "dependencies": {
-          "Chatter.CQRS": "[0.8.1, )",
+          "Chatter.CQRS": "[0.10.0, )",
           "Microsoft.Extensions.Configuration.Abstractions": "[8.0.0, )",
           "Microsoft.Extensions.Hosting": "[8.0.0, )",
           "Scrutor": "[3.3.0, )"
@@ -962,7 +962,7 @@
       "chatter.messagebrokers.sqlservicebroker": {
         "type": "Project",
         "dependencies": {
-          "Chatter.MessageBrokers": "[0.13.2, )",
+          "Chatter.MessageBrokers": "[0.16.2, )",
           "Microsoft.Data.SqlClient": "[7.0.1, )",
           "Microsoft.Extensions.Hosting": "[8.0.0, )"
         }

@@ -45,3 +45,25 @@ jobs:
       # reads the restore assets and reports nothing useful without them.
       - name: Assert no package has a known vulnerability
         run: bash .github/scripts/assert-no-vulnerable-packages.sh
+
+  package-provenance:
+    name: packages carry provenance metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+      # The script packs all nine packable projects in Release, which is the most expensive
+      # job in this file — a deliberate cost. Provenance lives in the generated `.nuspec` and
+      # in what NuGet writes alongside the package, so nothing short of a real pack can
+      # observe it; inspecting the csproj would only assert that properties were typed, not
+      # that they survived into the shipped artifact.
+      - name: Assert every package carries provenance metadata
+        run: bash .github/scripts/assert-nupkg-provenance.sh

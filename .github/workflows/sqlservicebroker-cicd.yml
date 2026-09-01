@@ -57,6 +57,12 @@ jobs:
           echo "Release guard passed: $TAG does not yet exist."
       - name: Restore
         run: dotnet restore 'src/Chatter.MessageBrokers.SqlServiceBroker/src/Chatter.MessageBrokers.SqlServiceBroker/Chatter.MessageBrokers.SqlServiceBroker.csproj' --locked-mode
+      - name: Restore tests
+        run: dotnet restore 'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' --locked-mode
+      - name: Build tests
+        run: dotnet build 'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' -c Release --no-restore
+      - name: Test
+        run: dotnet test 'src/Chatter.MessageBrokers.SqlServiceBroker/tests/Chatter.MessageBrokers.SqlServiceBroker.Tests.csproj' -c Release --no-build --filter 'Category!=Integration'
       - name: Pack
         run: dotnet pack 'src/Chatter.MessageBrokers.SqlServiceBroker/src/Chatter.MessageBrokers.SqlServiceBroker/Chatter.MessageBrokers.SqlServiceBroker.csproj' -c Release -o ./dist/nuget
       - name: NuGet login (OIDC)

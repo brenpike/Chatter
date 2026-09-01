@@ -57,6 +57,12 @@ jobs:
           echo "Release guard passed: $TAG does not yet exist."
       - name: Restore
         run: dotnet restore 'src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/Chatter.MessageBrokers.Reliability.EntityFramework.csproj' --locked-mode
+      - name: Restore tests
+        run: dotnet restore 'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' --locked-mode
+      - name: Build tests
+        run: dotnet build 'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' -c Release --no-restore
+      - name: Test
+        run: dotnet test 'src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Chatter.MessageBrokers.Reliability.EntityFramework.Tests.csproj' -c Release --no-build --filter 'Category!=Integration'
       - name: Pack
         run: dotnet pack 'src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/Chatter.MessageBrokers.Reliability.EntityFramework.csproj' -c Release -o ./dist/nuget
       - name: NuGet login (OIDC)
