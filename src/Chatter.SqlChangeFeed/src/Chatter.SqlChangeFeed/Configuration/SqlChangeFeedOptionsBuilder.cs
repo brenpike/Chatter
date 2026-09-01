@@ -220,7 +220,7 @@ namespace Chatter.SqlChangeFeed.Configuration
                 _databaseName = connStrBuilder.InitialCatalog;
             }
 
-            return new SqlChangeFeedOptions(_connectionString, _databaseName, _tableName, _schemaName, _changeTypes, _processTableChangesViaChatter, _changeFeedQueueName)
+            return new SqlChangeFeedOptions(_connectionString, _databaseName, _tableName, _schemaName, _changeTypes, _processTableChangesViaChatter, _changeFeedQueueName, _changeFeedDeadLetterServiceName)
             {
                 ServiceBrokerOptions = new SqlServiceBrokerOptions(_connectionString, _messageBodyType, _receiverTimeoutInMilliseconds, _conversationLifetimeInSeconds, _coversationEncryption, _compressMessageBody, false),
                 ReceiverOptions = new ReceiverOptions() { ErrorQueuePath = _errorQueueName, TransactionMode = _transactionMode, DeadLetterQueuePath = _changeFeedDeadLetterServiceName, MaxReceiveAttempts = _maxReceiveAttempts }

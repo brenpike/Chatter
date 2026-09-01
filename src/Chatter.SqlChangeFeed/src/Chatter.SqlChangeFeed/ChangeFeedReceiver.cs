@@ -54,19 +54,19 @@ namespace Chatter.SqlChangeFeed
             {
                 if (changeFeedItem.Inserted != null && changeFeedItem.Deleted != null)
                 {
-                    await dispatcher.Dispatch(new RowUpdatedEvent<TRowChangeData>(changeFeedItem.Inserted, changeFeedItem.Deleted), messageContext);
+                    await dispatcher.Dispatch(new RowUpdatedEvent<TRowChangeData>(changeFeedItem.Inserted, changeFeedItem.Deleted), messageContext).ConfigureAwait(false);
                     _logger.LogTrace("Processed UPDATE from change feed");
                     updated++;
                 }
                 else if (changeFeedItem.Inserted != null && changeFeedItem.Deleted == null)
                 {
-                    await dispatcher.Dispatch(new RowInsertedEvent<TRowChangeData>(changeFeedItem.Inserted), messageContext);
+                    await dispatcher.Dispatch(new RowInsertedEvent<TRowChangeData>(changeFeedItem.Inserted), messageContext).ConfigureAwait(false);
                     _logger.LogTrace("Processed INSERT from change feed");
                     inserted++;
                 }
                 else if (changeFeedItem.Inserted == null && changeFeedItem.Deleted != null)
                 {
-                    await dispatcher.Dispatch(new RowDeletedEvent<TRowChangeData>(changeFeedItem.Deleted), messageContext);
+                    await dispatcher.Dispatch(new RowDeletedEvent<TRowChangeData>(changeFeedItem.Deleted), messageContext).ConfigureAwait(false);
                     _logger.LogTrace("Processed DELETE from change feed");
                     deleted++;
                 }
