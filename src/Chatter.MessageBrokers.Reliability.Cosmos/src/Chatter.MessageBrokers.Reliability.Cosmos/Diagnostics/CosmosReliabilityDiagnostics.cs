@@ -95,6 +95,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         private static readonly Counter<long> _drainedDocuments = _meter.CreateCounter<long>(DrainedDocumentsInstrumentName, "{document}", "Number of Outbox Documents the Outbox Relay resolved, by outcome.");
         private static readonly Counter<long> _drainedBatches = _meter.CreateCounter<long>(DrainedBatchesInstrumentName, "{batch}", "Number of change-feed batches the Outbox Relay handled, by lease.");
 
+        // INVARIANT: the representable bounds are DERIVED from DateTimeOffset rather than hardcoded, so the range
+        // guard in RecordDrainLag can never drift from the range the conversion itself accepts. Neither read can
+        // throw and neither field is read by another field initializer, so this pair adds no ordering hazard to the
+        // textual-order INVARIANT above.
+        private static readonly long _minRepresentableUnixSeconds = DateTimeOffset.MinValue.ToUnixTimeSeconds();
+        private static readonly long _maxRepresentableUnixSeconds = DateTimeOffset.MaxValue.ToUnixTimeSeconds();
+
         /// <summary>
         /// Whether an application has opted into this module's diagnostics, either by attaching a .NET
         /// <c>ActivityListener</c> to the <see cref="ActivitySourceName"/> scope or by enabling one of the
@@ -140,10 +147,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// cannot be admitted before it was written — so the skew is clamped to zero.
         /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/> and it precedes the clock
         /// read, so a tracing-only opt-in never reads a timestamp (ADR-0010 R1).
+        /// INVARIANT: an UNREPRESENTABLE timestamp records NOTHING rather than throwing. A change-feed document can
+        /// carry any JSON number that fits a 64-bit integer, and <see cref="DateTimeOffset.FromUnixTimeSeconds"/>
+        /// throws outside its own narrower range. The Outbox Relay records this lag BEFORE it reconstructs and
+        /// publishes, so a throw here would fault the change-feed handler, block the checkpoint and re-surface the
+        /// batch forever - a delivery stopped by OPTIONAL telemetry. An out-of-range value is therefore treated
+        /// exactly as an ABSENT one, which is what the relay already does for a document carrying no <c>_ts</c>.
         /// </remarks>
         internal static void RecordDrainLag(long enqueuedUnixSeconds)
         {
             if (!_drainLag.Enabled)
+            {
+                return;
+            }
+
+            if (enqueuedUnixSeconds < _minRepresentableUnixSeconds || enqueuedUnixSeconds > _maxRepresentableUnixSeconds)
             {
                 return;
             }

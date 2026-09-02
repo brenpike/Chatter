@@ -68,6 +68,28 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         }
 
         /// <summary>
+        /// A <c>_ts</c> outside the range <see cref="DateTimeOffset"/> can represent is not a measurable age, so
+        /// it is treated exactly as an ABSENT one: no lag is recorded and the caller is not disturbed. Converting
+        /// it would throw <see cref="ArgumentOutOfRangeException"/>, and the Outbox Relay records the admission
+        /// lag BEFORE it reconstructs and publishes — so an unrepresentable timestamp would fault the change-feed
+        /// handler, block the checkpoint and re-surface the batch forever. OPTIONAL telemetry may never stop a
+        /// delivery.
+        /// </summary>
+        [Theory]
+        [InlineData(long.MaxValue)]
+        [InlineData(long.MinValue)]
+        public void MustRecordNoLagForATimestampOutsideTheRepresentableRange(long unrepresentableUnixSeconds)
+        {
+            using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
+            {
+                Action recording = () => CosmosReliabilityDiagnostics.RecordDrainLag(unrepresentableUnixSeconds);
+
+                recording.Should().NotThrow("optional telemetry may never fault the drain that carries the message");
+                meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainLagInstrumentName).Should().BeEmpty();
+            }
+        }
+
+        /// <summary>
         /// One handed-over change-feed batch is TWO measurements — how many documents it carried and that it
         /// happened — and BOTH carry the lease token, so partition progress is readable off either instrument.
         /// </summary>
