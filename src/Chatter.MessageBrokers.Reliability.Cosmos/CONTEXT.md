@@ -52,6 +52,8 @@ The module ships three independently registrable primitives — the **Document T
 
 **Change-Feed Source Identity**: The Outbox Relay's dedup and processor-name key, declared-or-ground-truth and never inferred from a caller-controlled handle — the caller-declared monitored/lease tokens when a registration declares them, and otherwise the resolved ground truth (account endpoint + database id + container id, for both the monitored and the lease container). _Avoid_: database/container/lease triple (the account endpoint is part of the key, so identically-named containers in different accounts stay distinct).
 
+**Monitored-Container Contract**: The ground-truth container facts the Outbox Relay verifies once at host start, in a single read of the monitored container's properties — the partition-key path it will recover each Outbox Document's partition key at, compared against the container's actual paths in order and case-sensitively, and the container's default time-to-live mode, which must either leave items carrying no time-to-live field unexpiring or be unset, because any other setting deletes a still-pending Outbox Document before the relay ever drains it. Both facts are reconciled against one read, every violation is named in one failure, and a violation fails host start rather than leaving a relay running degraded. _Avoid_: container check, preflight, container validation.
+
 **Document-Tier Outbox Relay**: The Document Tier variant of the Outbox Relay, hosted alongside the command pipeline and drawing its source identities from the Document Reliability Registry; it always reconstructs the brokered message verbatim from the persisted document.
 
 **Standalone Outbox Relay**: The Outbox Relay variant registered as its own hosted service, independent of the command pipeline and of the Document Reliability Registry, for applications that only drain a container.
@@ -62,7 +64,11 @@ The module ships three independently registrable primitives — the **Document T
 
 **Outbox Drain Context**: The per-document context the Standalone Outbox Relay hands to its Outbox Body Resolver, carrying the verbatim message id, recovered partition key, declared partition-key path, and the raw document.
 
+**Poison Policy**: The Standalone Outbox Relay's opt-in escape from a deterministically-failing Outbox Document. After a configured number of consecutive failed drains of one document id, that document is advanced to a non-pending poisoned status the relay's admission gate no longer admits and its batch checkpoints, so the Lease Token advances past it and the documents behind it drain. It is off by default, a successful drain clears the document's count, and a document given up on is never deleted and carries no time-to-live — it stays in the container, inspectable, as the evidence of what stalled the relay. _Avoid_: dead-letter, quarantine, discard.
+
 **Drain Outcome**: How the Outbox Relay resolved one document the change feed handed it — *admitted* when it was a pending Outbox Document whose brokered message was published, *skipped* when it was not a pending Outbox Document and so was never drained, *dropped* when it was admitted but resolved to no brokered message and was marked delivered without a publish. It is the dimension the drained-document count carries, and the vocabulary is closed. _Avoid_: drain status, drain result.
+
+**Drain Failure**: One Outbox Relay drain attempt that faulted, reported against the Lease Token it faulted under. It is not a Drain Outcome: an Outcome is how a document *resolved*, a Failure is an attempt that never resolved, so a Failure is never a fourth Drain Outcome value and that vocabulary stays closed. _Avoid_: drain error, failed outcome.
 
 **Drain Lag**: The age of an Outbox Document at the moment the Outbox Relay admitted it, measured from the Cosmos server write stamp the document carries to the relay host's own clock. A negative age is not representable — a document cannot be admitted before it was written — so host clock skew is clamped to zero rather than recorded. _Avoid_: outbox latency, drain delay.
 
