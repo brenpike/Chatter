@@ -67,7 +67,7 @@ public static async Task ProvisionChangeFeedAsync(IHost host, CancellationToken 
 }
 ```
 
-A blocking bridge, `UseChangeFeedSqlMigrations<TRowChangedData>`, is also available; it calls `GetAwaiter().GetResult()` on the same work, so prefer the `Async` form wherever the host lets you await. Non-generic overloads of both take the row type as a `Type` argument, for when it is only known at runtime.
+A blocking bridge, `UseChangeFeedSqlMigrations<TRowChangedData>`, is also available; it is now `[Obsolete]` at warning level — it still compiles and still works. It now runs the install on the thread pool instead of blocking the calling thread directly, so it no longer deadlocks on a host that carries a `SynchronizationContext`. `Async` remains the recommended, eventual-destination form; prefer it wherever the host lets you await. Non-generic overloads of both take the row type as a `Type` argument, for when it is only known at runtime.
 
 Read [Install Requirements](#install-requirements) before running this against a live database.
 
@@ -87,8 +87,10 @@ If one of those is now a compile error, reach the surviving `IServiceProvider` f
 app.UseChangeFeedSqlMigrations<MyRow>();
 
 // after
-app.ApplicationServices.UseChangeFeedSqlMigrations<MyRow>();
+app.ApplicationServices.UseChangeFeedSqlMigrationsAsync<MyRow>();
 ```
+
+The synchronous `UseChangeFeedSqlMigrations<TRowChangedData>` overload still compiles for a caller who lands on it instead — it is deprecated (`[Obsolete]`, warning-level), not removed.
 
 ### 3. Handle the change notifications
 
@@ -232,7 +234,7 @@ Because every precondition is checked first, a refused install leaves no partial
 
 ## How It Works
 
-When you call `UseChangeFeedSqlMigrations<T>`, `SqlDependencyManager<T>` runs a set of generated SQL scripts (via `ISqlDependencyManager`) against the target database. For each watched row type it provisions:
+When you call `UseChangeFeedSqlMigrationsAsync<T>`, `SqlDependencyManager<T>` runs a set of generated SQL scripts (via `ISqlDependencyManager`) against the target database. For each watched row type it provisions:
 
 1. **Service Broker objects** — enables Service Broker on the database if needed (`ENABLE_BROKER WITH ROLLBACK IMMEDIATE`; see [Install Requirements](#install-requirements)) and creates the message type, contract, a conversation queue + service, and a dead-letter queue + service (`InstallAndConfigureSqlServiceBroker`). Names come from a single derivation, `ChangeFeedObjectNames`: the conversation queue and the dead-letter service honour `ChangeFeedQueueName` / `ChangeFeedDeadLetterServiceName` where configured, and every other name is derived from `ChatterServiceBrokerConstants` and the row type's simple name.
 2. **A trigger on the watched table** (`CreateChangeFeedTrigger`) — an `AFTER INSERT/UPDATE/DELETE` trigger (scoped to `ChangeFeedTriggerTypes`) that serializes the affected `inserted`/`deleted` rows and `SEND`s them onto a Service Broker conversation as a compressed message.

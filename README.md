@@ -128,7 +128,7 @@ Emits strongly-typed notifications when rows in a watched SQL Server table are i
 - Default fan-out to `RowInsertedEvent<T>` / `RowUpdatedEvent<T>` / `RowDeletedEvent<T>`, handled through `IMessageHandler<T>`.
 - Opt-in manual mode delivering the raw `ProcessChangeFeedCommand<T>` batch.
 - Selectable change types (`Insert | Update | Delete`), schema/database overrides, dead-letter and compression options.
-- Manual SQL provisioning via `UseChangeFeedSqlMigrations<T>` — re-runnable, and the repair path when the watched table's columns drift.
+- Manual SQL provisioning via `UseChangeFeedSqlMigrationsAsync<T>` — re-runnable, and the repair path when the watched table's columns drift.
 - Entry point: `IChatterBuilder.AddSqlChangeFeed<TRowChangedData>(...)`.
 
 ## Getting started

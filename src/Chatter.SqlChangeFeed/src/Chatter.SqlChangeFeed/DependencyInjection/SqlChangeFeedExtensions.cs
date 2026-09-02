@@ -92,6 +92,7 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
         /// <param name="provider">The service provider</param>
         /// <param name="token">A token to observe while waiting for the migration to complete</param>
         /// <returns></returns>
+        [Obsolete("Blocking on the asynchronous installation risks deadlocking a caller with a single-threaded SynchronizationContext. Use UseChangeFeedSqlMigrationsAsync instead.")]
         public static IServiceProvider UseChangeFeedSqlMigrations<TRowChangedData>(this IServiceProvider provider, CancellationToken token = default)
             => provider.UseChangeFeedSqlMigrations(typeof(TRowChangedData), token);
 
@@ -101,6 +102,7 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
         /// <param name="provider">The service provider</param>
         /// <param name="rowChangedDataType">The row type to use Sql migrations for</param>
         /// <param name="token">A token to observe while waiting for the migration to complete</param>
+        [Obsolete("Blocking on the asynchronous installation risks deadlocking a caller with a single-threaded SynchronizationContext. Use UseChangeFeedSqlMigrationsAsync instead.")]
         public static IServiceProvider UseChangeFeedSqlMigrations(this IServiceProvider provider, Type rowChangedDataType, CancellationToken token = default)
         {
             using var scope = provider.CreateScope();
@@ -108,14 +110,19 @@ namespace Chatter.SqlChangeFeed.DependencyInjection
 
             var objectNames = ChangeFeedObjectNames.DeriveFrom(rowChangedDataType, sdm.Options);
 
-            sdm.InstallSqlDependencies(objectNames.InstallChangeFeedStoredProcName,
-                                       objectNames.UninstallChangeFeedStoredProcName,
-                                       objectNames.ConversationQueueName,
-                                       objectNames.ConversationServiceName,
-                                       objectNames.ConversationTriggerName,
-                                       objectNames.ConversationDeadLetterQueueName,
-                                       objectNames.ConversationDeadLetterServiceName,
-                                       token).GetAwaiter().GetResult();
+            // INVARIANT: the installation is started on the thread pool so its awaits capture no ambient
+            // SynchronizationContext. Blocking on it here therefore cannot deadlock a caller running under a
+            // single-threaded context whose only pump thread is this one. The token stays an argument to
+            // InstallSqlDependencies and is deliberately NOT passed to Task.Run, which would replace the
+            // installation's own cancellation behaviour with a pre-execution scheduler cancellation.
+            Task.Run(() => sdm.InstallSqlDependencies(objectNames.InstallChangeFeedStoredProcName,
+                                                      objectNames.UninstallChangeFeedStoredProcName,
+                                                      objectNames.ConversationQueueName,
+                                                      objectNames.ConversationServiceName,
+                                                      objectNames.ConversationTriggerName,
+                                                      objectNames.ConversationDeadLetterQueueName,
+                                                      objectNames.ConversationDeadLetterServiceName,
+                                                      token)).GetAwaiter().GetResult();
 
             return provider;
         }

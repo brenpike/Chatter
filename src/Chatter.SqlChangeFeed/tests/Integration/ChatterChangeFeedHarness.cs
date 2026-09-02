@@ -14,7 +14,7 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
 {
     // The reusable end-to-end harness that boots Chatter's REAL DI graph + change-feed receiver pump against a
     // SQL Server database (the SqlChangeFeedFixture container) and drives the PRODUCTION change-feed path:
-    // UseChangeFeedSqlMigrations installs the trigger + Service Broker objects, a row mutation fires the trigger,
+    // UseChangeFeedSqlMigrationsAsync installs the trigger + Service Broker objects, a row mutation fires the trigger,
     // and the ChangeFeedReceiver dispatches RowInserted/RowUpdated/RowDeleted events through Chatter to a
     // DI-resolved RecordingChangeFeedHandler. Tests await those handler invocations. Mirrors the SQL Service
     // Broker integration ChatterSsbPipelineHarness.
