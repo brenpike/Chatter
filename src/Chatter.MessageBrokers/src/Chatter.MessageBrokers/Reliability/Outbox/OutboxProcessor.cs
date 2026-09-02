@@ -71,7 +71,22 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 {
                     await pollable.UpdateProcessedDate(message, ct);
 
-                    await DispatchObserved(dispatcherInfrastructure, outbound, infrastructureType);
+                    // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides, and it decides HERE
+                    // rather than inside the scope. Argument evaluation precedes the guard INSIDE SendScope.Open,
+                    // so a call site that reaches DispatchObserved has already resolved the persisted parent and
+                    // has already entered a second async state machine. An application that never opted into broker
+                    // diagnostics therefore takes the same bare dispatch it took before this hop was instrumented.
+                    // This matches the three sibling send sites (ForwardingRouter, ReplyRouter,
+                    // BrokeredMessageDispatcher), which each branch on the guard before their diagnostics method.
+                    if (!BrokerDiagnostics.IsEnabled)
+                    {
+                        await dispatcherInfrastructure.Dispatch(outbound, null);
+                    }
+                    else
+                    {
+                        await DispatchObserved(dispatcherInfrastructure, outbound, infrastructureType);
+                    }
+
                     _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
 
                 }, null, cancellationToken);
@@ -124,8 +139,9 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// none — one written while diagnostics were off, or received over a path that propagates no context.
         /// </summary>
         /// <remarks>
-        /// INVARIANT: ADR-0010 R1 — Chatter's own off-guard is the FIRST statement, so an application that never
-        /// opted in pays one boolean read and no extraction.
+        /// INVARIANT: ADR-0010 R1 — the drain call site has ALREADY run Chatter's own off-guard, so an application
+        /// that never opted in never reaches this method. The guard is repeated as the FIRST statement here so the
+        /// helper stays safe to call from a site that has not, and so no extraction can precede it either way.
         /// INVARIANT: <c>default</c> means ABSENCE, never "use the current activity". The deferred
         /// <see cref="SendScope"/> overload starts a FRESH ROOT for it rather than adopting the drain loop's ambient
         /// activity, which would report that the poll caused the message when the write did (ADR-0010 D6).

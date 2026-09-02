@@ -1,4 +1,4 @@
-using Chatter.CQRS.Diagnostics;
+﻿using Chatter.CQRS.Diagnostics;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Reliability;
@@ -46,6 +46,18 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         /// <summary>A drain publishes exactly one row, so the batch count on its send span is always one.</summary>
         private const int DrainedMessageCount = 1;
 
+        /// <summary>
+        /// The name of the drain's diagnostics wrapper, matched against a failed publish's async stack trace to pin
+        /// that the opted-out drain never enters it (ADR-0010 R1/R4).
+        /// </summary>
+        /// <remarks>
+        /// DELIBERATE COUPLING to a private method name. The property under test is the SHAPE of the opted-out call
+        /// path, and shape is not observable through behaviour here: the off path and the on path publish the same
+        /// bytes to the same dispatcher. Renaming the wrapper without updating this constant turns the guard test
+        /// vacuous, which is why the positive control beside it asserts the frame IS present when diagnostics are on.
+        /// </remarks>
+        private const string DiagnosticsWrapperName = "DispatchObserved";
+
         private readonly Mock<IMessagingInfrastructureProvider> _infrastructureProvider = new Mock<IMessagingInfrastructureProvider>();
         private readonly Mock<IMessagingInfrastructureDispatcher> _dispatcher = new Mock<IMessagingInfrastructureDispatcher>();
         private readonly Mock<ILogger<OutboxProcessor>> _logger = new Mock<ILogger<OutboxProcessor>>();
@@ -55,6 +67,7 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         private readonly OutboxProcessor _sut;
 
         private OutboundBrokeredMessage _dispatched;
+        private Exception _drainFailure;
 
         public WhenDrainingTheRelationalOutbox()
         {
@@ -77,6 +90,15 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
             _outbox.As<IUnitOfWork>()
                    .Setup(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()))
                    .Returns<Func<CancellationToken, Task>, TransactionContext, CancellationToken>((operation, _, token) => operation(token));
+
+            // Process SWALLOWS a publish failure after logging it, so the logger is the only place the exception —
+            // and with it the async stack trace that exposes which path the drain took — is observable.
+            _logger.Setup(l => l.Log(LogLevel.Error,
+                                     It.IsAny<EventId>(),
+                                     It.IsAny<It.IsAnyType>(),
+                                     It.IsAny<Exception>(),
+                                     (Func<It.IsAnyType, Exception, string>)It.IsAny<object>()))
+                   .Callback(new InvocationAction(invocation => _drainFailure = (Exception)invocation.Arguments[3]));
 
             _sut = new OutboxProcessor(_infrastructureProvider.Object, _logger.Object, _bodyConverterFactory.Object, _outbox.Object);
         }
@@ -230,6 +252,53 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 _dispatched.Should().NotBeNull("the drain still publishes when nothing is listening");
                 _dispatched.MessageContext[TraceContextHeaders.TraceParent].Should().Be(PersistedTraceParent);
                 Activity.Current.Should().BeSameAs(foreignInstrumentation.ForeignActivity);
+            }
+        }
+
+        [Fact]
+        public async Task MustNotEnterTheDiagnosticsWrapperOnTheDrainPathWhileDiagnosticsAreOff()
+        {
+            // ADR-0010 R1/R4, pinned STRUCTURALLY because it is not observable any other way: opted out and opted in
+            // publish the same bytes to the same dispatcher, so only the SHAPE of the call distinguishes them. The
+            // three sibling send sites (ForwardingRouter, ReplyRouter, BrokeredMessageDispatcher) each branch on
+            // Chatter's own off-guard BEFORE reaching their diagnostics method, so an application that never opted in
+            // builds no async state machine for diagnostics and evaluates no argument to SendScope.Open — argument
+            // evaluation precedes the guard INSIDE SendScope.Open, so the call site is the only place that can
+            // decide. The drain is the newest send site and must match its neighbours rather than lean on the
+            // callee's guard. A failed publish's async stack trace is what exposes the difference: the wrapper is an
+            // async method, so it carries its own frame exactly when the opted-out path went through it.
+            using (new ForeignInstrumentationScope())
+            {
+                _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                           .ThrowsAsync(new InvalidOperationException("broker unreachable"));
+
+                BrokerDiagnostics.IsEnabled.Should().BeFalse();
+
+                await _sut.Process(CreateDrainedMessage(PersistedTraceParent));
+
+                _drainFailure.Should().NotBeNull("the drain logs the publish failure it swallows");
+                _drainFailure.StackTrace.Should().NotContain(DiagnosticsWrapperName,
+                    "an application that never opted into broker diagnostics must not enter the diagnostics wrapper at all");
+            }
+        }
+
+        [Fact]
+        public async Task MustEnterTheDiagnosticsWrapperOnTheDrainPathWhenDiagnosticsAreOn()
+        {
+            // The POSITIVE CONTROL for the guard test above, without which that test would pass just as well against
+            // a drain that had no diagnostics wrapper to enter — and would keep passing if the wrapper were renamed.
+            using (new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                           .ThrowsAsync(new InvalidOperationException("broker unreachable"));
+
+                BrokerDiagnostics.IsEnabled.Should().BeTrue();
+
+                await _sut.Process(CreateDrainedMessage(PersistedTraceParent));
+
+                _drainFailure.Should().NotBeNull("the drain logs the publish failure it swallows");
+                _drainFailure.StackTrace.Should().Contain(DiagnosticsWrapperName,
+                    "the opted-in drain is observed by the wrapper, which is exactly what the opted-out path skips");
             }
         }
 
