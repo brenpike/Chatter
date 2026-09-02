@@ -210,6 +210,14 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// check-then-set that two concurrent copies could both pass and double-count the send with.
         /// The off-guard stays FIRST and the <c>||</c> short-circuits, so <c>default(SendScope)</c> still returns
         /// without touching the atomic (ADR-0010 R1, R4).
+        /// NOT EXCEPTION-SAFE: if <see cref="BrokerDiagnostics.RecordSend"/> or <c>Activity.Dispose()</c> below
+        /// throws, the span is left unstopped and the ambient <see cref="Activity"/> is left unrestored. This
+        /// hand-writes the same ordered close ceremony as <c>BrokerDiagnostics.ReceiveSpan.Dispose</c>, and shares
+        /// its root cause with that sibling: the ceremony lives at each scope type's call site instead of behind
+        /// one seam both already cross. The fix is that shared seam, not a <c>try/finally</c> wrapped around this
+        /// method alone — that would leave the sibling's copy of the same ceremony untouched, the same lesson
+        /// ADR-0010 D11 records for the receive error ladder. Deferred: opt-in diagnostics only, correct on the
+        /// normal path, and no worse than what already ships.
         /// </remarks>
         public void Dispose()
         {

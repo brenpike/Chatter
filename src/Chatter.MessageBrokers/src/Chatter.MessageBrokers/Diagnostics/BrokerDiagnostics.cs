@@ -680,6 +680,16 @@ namespace Chatter.MessageBrokers.Diagnostics
             /// stopping the span sets <see cref="Activity.Current"/> to the span's own (null) parent, so the restore
             /// has to come after it.
             /// </summary>
+            /// <remarks>
+            /// NOT EXCEPTION-SAFE: if <c>Activity.Dispose()</c> below throws, the suppressed ambient
+            /// <see cref="Activity"/> is never restored. This is the same ordered close ceremony
+            /// <see cref="SendScope.Dispose"/> hand-writes on the send side, and shares its root cause: the
+            /// ceremony lives at each scope type's call site instead of behind one seam both already cross. The
+            /// fix is that shared seam, not a <c>try/finally</c> wrapped around this method alone — that would
+            /// leave the sibling's copy of the same ceremony untouched, the same lesson ADR-0010 D11 records for
+            /// the receive error ladder. Deferred: opt-in diagnostics only, correct on the normal path, unchanged
+            /// from what already ships.
+            /// </remarks>
             public void Dispose()
             {
                 Activity?.Dispose();
