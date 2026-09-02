@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -79,25 +80,43 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly DocumentReliabilityRegistry _registry;
         private readonly CosmosContainerFactory _containerFactory;
         private readonly CosmosOutboxRelay _relay;
+        private readonly RelayFailureNotifier _failureNotifier;
         private readonly List<ChangeFeedProcessor> _processors = new List<ChangeFeedProcessor>();
 
+        // logger is OPTIONAL (defaults null) so every existing direct-construction call site keeps compiling: a null
+        // logger leaves the failure notifier's opt-in metric intact and its always-on log a silent no-op. The DI
+        // registration (AddSingleton<IHostedService, CosmosOutboxRelayHostedService>) is on the CONCRETE type, so a host
+        // with logging configured gets the logger injected and one without still constructs.
         public CosmosOutboxRelayHostedService(DocumentReliabilityRegistry registry,
                                               CosmosContainerFactory containerFactory,
                                               IMessagingInfrastructureProvider infrastructureProvider,
-                                              IBodyConverterFactory bodyConverterFactory)
+                                              IBodyConverterFactory bodyConverterFactory,
+                                              ILogger<CosmosOutboxRelayHostedService> logger = null)
         {
             _registry = registry ?? throw new ArgumentNullException(nameof(registry));
             _containerFactory = containerFactory ?? throw new ArgumentNullException(nameof(containerFactory));
             _ = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory);
+            _failureNotifier = new RelayFailureNotifier(logger);
         }
 
+        // TWO PASSES, and the split is LOAD-BEARING. Pass 1 verifies EVERY monitored container against its ground truth;
+        // only then does pass 2 build and start the processors. With a per-descriptor verify-then-start, a failure on the
+        // third descriptor would leave the first two processors RUNNING while StartAsync threw — and the host never
+        // receives StopAsync when its StartAsync threw, so those processors would leak for the process lifetime. Verifying
+        // all first makes that leak unrepresentable and gives #362/#363 the fast startup error they ask for. A verification
+        // failure deliberately takes the host down: it is a hosted-service throw at start, matching this module's existing
+        // start-time guard precedent, and there is no opt-out.
         public async Task StartAsync(CancellationToken cancellationToken)
         {
+            IReadOnlyList<RelayProcessorDescriptor> descriptors = DistinctResolvedProcessorDescriptors();
+
+            await VerifyMonitoredContainersAsync(descriptors, cancellationToken).ConfigureAwait(false);
+
             string instanceName = $"{ProcessorNamePrefix}:{Environment.MachineName}:{Guid.NewGuid()}";
 
-            foreach (RelayProcessorDescriptor descriptor in DistinctResolvedProcessorDescriptors())
+            foreach (RelayProcessorDescriptor descriptor in descriptors)
             {
                 Container monitoredContainer = descriptor.MonitoredContainer;
                 Container leaseContainer = descriptor.LeaseContainer;
@@ -117,10 +136,26 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     // re-published-then-deduped downstream (#220 inbox marker), so replaying from the start is safe
                     // for this at-least-once relay.
                     .WithStartTime(DateTime.MinValue.ToUniversalTime())
+                    // The SDK's error-notification seam is the ONLY channel carrying a lease/processor fault TOGETHER
+                    // with the lease token it faulted under; the relay core never sees the lease token, so without this
+                    // a wedged lease (a document that re-throws on every pass) is completely silent (#361).
+                    .WithErrorNotification(_failureNotifier.OnChangeFeedErrorAsync)
                     .Build();
 
                 await processor.StartAsync().ConfigureAwait(false);
                 _processors.Add(processor);
+            }
+        }
+
+        // Pass 1 of the two-pass start: reconcile EVERY monitored container's declared configuration against its ground
+        // truth before any processor is built. internal (not private) so the verify-all-before-start ordering stays
+        // unit-testable, matching DistinctResolvedProcessorDescriptors(); the assembly exposes internals to the test
+        // project.
+        internal static async Task VerifyMonitoredContainersAsync(IReadOnlyList<RelayProcessorDescriptor> descriptors, CancellationToken cancellationToken)
+        {
+            foreach (RelayProcessorDescriptor descriptor in descriptors)
+            {
+                await MonitoredContainerContract.VerifyAsync(descriptor.MonitoredContainer, descriptor.PartitionKeyPath, cancellationToken).ConfigureAwait(false);
             }
         }
 
