@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-09-02
+
+### Changed
+
+- Bundled dependency uplift to Chatter.MessageBrokers.SqlServiceBroker 0.14.1 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [0.14.0] - 2026-09-02
 
 ### Deprecated

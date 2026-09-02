@@ -6,6 +6,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-02
+
+### Added
+
+- `BrokerDiagnostics.StartSend(string, string, string, int, ActivityContext)` — an overload accepting an explicit parent trace context, so a deferred send (an outbox drain, minutes after the write) can be parented to the context persisted with the message rather than to whatever activity happens to be ambient at drain time (#407).
+- `TraceContextPropagator.TryExtractFromMessageContext(IDictionary<string, object>, out ActivityContext)` — reads a persisted trace context off a message-context dictionary (#407).
+- `SendScope` — a public readonly struct owning the send-side diagnostics ceremony (off-guard, span, propagation, failure recording, duration and count) in one place, so a module adding its own send instrumentation cannot get the disabled-path discipline wrong. `default(SendScope)` is the well-formed disabled value and allocates nothing (#407).
+
+### Changed
+
+- The relational outbox drain now emits a send span, a sent-messages count and a duration measurement. Previously the drain hop — the broker publish that happens minutes after the write, in a separate process, and can fail on its own — was entirely unobserved. For applications with diagnostics enabled the drained message now carries the drain span's trace context rather than the write-time context verbatim: the drain span is a child of the persisted context, so the chain is intact and gains a correct extra hop. This is wire-visible for opted-in applications only; with diagnostics off nothing is injected and the persisted `traceparent` rides out unchanged (#407).
+- A reply's send span now reports the same `messaging.batch.message_count` as its sent-messages counter. Previously the span always reported `1` while the counter reported `0` or `1`, so the two disagreed about the same event (#407).
+- A reply whose construction fails now produces a send span — error-statused, count `0` — alongside the failure measurement it already produced. Previously that failure was recorded on the metric with no matching span. The `messaging.system` attribute on that measurement is now the infrastructure type from the inbound message context rather than being absent (#407).
+
 ## [0.17.1] - 2026-09-02
 
 ### Fixed

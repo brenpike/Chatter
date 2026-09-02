@@ -12,6 +12,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.6.0] - 2026-09-02
+
+### Changed
+
+- The relational outbox drain this package's `BrokeredMessageOutbox<TContext>` stores rows for is now instrumented: each drain cycle emits a send span, a sent-messages count, and a duration measurement. The drain logic itself lives in `Chatter.MessageBrokers`; this package's own storage and polling behavior is unchanged (#407).
+- Bundled dependency uplift to Chatter.MessageBrokers 0.18.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [0.5.0] - 2026-09-01
 
 ### Added

@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [3.2.1] - 2026-09-02
+
+### Changed
+
+- Bundled dependency uplift to Chatter.MessageBrokers.AzureServiceBus 2.1.1 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [3.2.0] - 2026-09-01
 
 ### Added
