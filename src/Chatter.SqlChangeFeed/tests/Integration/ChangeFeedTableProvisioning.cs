@@ -188,6 +188,32 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
             return (string)definition;
         }
 
+        // The stored procedure's stored T-SQL text (sys.sql_modules.definition), or null when no such procedure
+        // exists. The topology-divergence proof reads the uninstall Change Feed Stored Procedure's body before and
+        // after a REFUSED Change Feed Migration to assert the refusal left the consumer's only handle on the
+        // already-installed objects untouched.
+        public static async Task<string> GetStoredProcedureDefinitionAsync(string connectionString, string procedureName, CancellationToken cancellationToken)
+        {
+            var definition = await ScalarAsync(connectionString,
+                "SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID('dbo.[' + @name + ']', 'P');",
+                procedureName, cancellationToken).ConfigureAwait(false);
+            return (string)definition;
+        }
+
+        // The name of the queue the named Service Broker service is bound to, or null when no such service exists.
+        // A service carries its binding in sys.services.service_queue_id, which no name probe can see, so this
+        // resolves that id through sys.service_queues - the same join the install Stored Procedure's service-binding
+        // gate performs.
+        public static async Task<string> GetQueueBoundToServiceAsync(string connectionString, string serviceName, CancellationToken cancellationToken)
+        {
+            var queueName = await ScalarAsync(connectionString,
+                "SELECT q.name FROM sys.services svc " +
+                "INNER JOIN sys.service_queues q ON q.object_id = svc.service_queue_id " +
+                "WHERE svc.name = @name;",
+                serviceName, cancellationToken).ConfigureAwait(false);
+            return (string)queueName;
+        }
+
         // True when a Service Broker queue with the given name exists (sys.service_queues).
         public static async Task<bool> QueueExistsAsync(string connectionString, string queueName, CancellationToken cancellationToken)
             => await ScalarExistsAsync(connectionString,

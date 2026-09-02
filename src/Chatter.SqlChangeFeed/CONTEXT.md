@@ -19,7 +19,7 @@ _Avoid_: change stream.
 
 **Change Feed Item**: A single captured row change (`ChangeFeedItem<T>`); a batch is delivered as `ProcessChangeFeedCommand<T>` in manual mode (`ProcessTableChangesManually()`).
 
-**Change Feed Migration**: Opt-in, re-runnable SQL provisioning (`UseChangeFeedSqlMigrations<T>`) that installs the Service Broker objects, table Trigger, and install/uninstall Stored Procedures. Not run automatically at registration. Re-running it reconciles rather than repeats: the Stored Procedures are replaced in place, and the Trigger is refreshed only when the watched table's column fingerprint differs from the one the installed Trigger carries.
+**Change Feed Migration**: Opt-in, re-runnable SQL provisioning (`UseChangeFeedSqlMigrations<T>`) that installs the Service Broker objects, table Trigger, and install/uninstall Stored Procedures. Not run automatically at registration. Re-running it reconciles rather than repeats: the Stored Procedures are replaced in place, and the Trigger is refreshed only when the watched table's column fingerprint differs from the one the installed Trigger carries. It refuses a run outright — before creating or altering any Service Broker object — when the installed Service Broker topology diverges from the configured names, that is, when a service is bound to a queue this configuration does not use. The refusal is non-destructive and repairs nothing: recovery is to run the installed uninstall Stored Procedure for that change feed, then re-run the Change Feed Migration.
 
 ## Relationships
 
