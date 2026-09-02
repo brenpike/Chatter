@@ -161,6 +161,65 @@ namespace Chatter.MessageBrokers.Diagnostics
         }
 
         /// <summary>
+        /// Starts a span covering one dispatch call to broker infrastructure, parented to an EXPLICITLY SUPPLIED
+        /// trace context rather than to whatever <see cref="Activity"/> happens to be current, or returns
+        /// <c>null</c> when no .NET <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/>
+        /// scope or the listener declined to sample.
+        /// </summary>
+        /// <param name="messagingSystem">The value for <see cref="MessagingSystem"/>.</param>
+        /// <param name="operationName">The value for <see cref="OperationName"/>; also the first word of the span name.</param>
+        /// <param name="destinationName">The value for <see cref="DestinationName"/>; also the second word of the span name.</param>
+        /// <param name="messageCount">The value for <see cref="BatchMessageCount"/>: one dispatch call carries N messages that share one context (ADR-0010 D7).</param>
+        /// <param name="parent">The trace context the span is parented to, or <c>default</c> when the caller found
+        /// none. <c>default</c> means ABSENCE, never "use the current activity".</param>
+        /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
+        /// <remarks>
+        /// WHY AN EXPLICIT PARENT AT ALL. Deferred dispatch — an outbox drained minutes after, and in another process
+        /// from, the transaction that wrote the row — has a causal parent that no longer exists as a running
+        /// <see cref="Activity"/>. It survives only as trace context the writer persisted, so a caller that has read
+        /// that context back has to be able to hand it in.
+        /// INVARIANT: a <c>default</c> <paramref name="parent"/> NEVER falls back to <see cref="Activity.Current"/>.
+        /// Neither <c>StartActivity(name, kind)</c> nor <c>StartActivity(name, kind, default(ActivityContext))</c>
+        /// produces a root — <see cref="Activity.Start"/> falls back to <see cref="Activity.Current"/> whenever the
+        /// created activity was given neither a parent id nor a parent span id, and a default
+        /// <see cref="ActivityContext"/> supplies neither — so a drain hop that found no persisted context would
+        /// become a CHILD of the drain loop, reporting that the poll caused the message when the write did. That is
+        /// the same false causality <see cref="StartHeaderlessReceive"/> rejects on the receive side (ADR-0010 D6),
+        /// and it is worse here because the correct parent demonstrably exists somewhere else.
+        /// <see cref="Activity.Current"/> is therefore cleared across the start so the fallback cannot fire, and the
+        /// ambient rides along as a LINK on both branches rather than as a parent.
+        /// WHY THIS IS INTERNAL. Clearing the ambient leaves a restore outstanding once a span is sampled in: a span
+        /// started from a trace CONTEXT records no parent <see cref="Activity"/>, so <see cref="Activity.Stop"/>
+        /// restores <see cref="Activity.Current"/> to <c>null</c> rather than to the ambient. The sole caller is
+        /// <see cref="SendScope.Open(string, string, string, int, ActivityContext)"/>, which captures the ambient
+        /// before this call and restores it in <see cref="SendScope.Dispose"/> after the span stops, so the
+        /// obligation is discharged inside Chatter and never reaches an application. That is the relationship
+        /// <see cref="StartHeaderlessReceive"/> has to <see cref="ReceiveSpan"/> on the receive side.
+        /// </remarks>
+        internal static Activity StartSend(string messagingSystem, string operationName, string destinationName, int messageCount, ActivityContext parent)
+        {
+            if (!_source.HasListeners())
+            {
+                return null;
+            }
+
+            var spanName = BuildSpanName(operationName, destinationName);
+            var ambientLinks = BuildAmbientLinks(parent);
+            var activity = parent == default(ActivityContext)
+                ? StartParentlessSend(spanName, ambientLinks)
+                : _source.StartActivity(spanName, ActivityKind.Producer, parent, links: ambientLinks);
+
+            if (activity is null)
+            {
+                return null;
+            }
+
+            SetOperationTags(activity, messagingSystem, operationName, OperationTypes.Send, destinationName);
+            activity.SetTag(BatchMessageCount, messageCount);
+            return activity;
+        }
+
+        /// <summary>
         /// Starts a span covering one delivery from broker infrastructure, parented to the trace context the
         /// producer wrote onto <paramref name="messageContext"/>, or returns <c>null</c> when no .NET
         /// <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/> scope or the listener
@@ -440,6 +499,51 @@ namespace Chatter.MessageBrokers.Diagnostics
         }
 
         /// <summary>
+        /// Starts the send span for a dispatch call whose caller found NO persisted parent, as a FRESH ROOT with the
+        /// ambient activity attached as a LINK rather than promoted to parent (ADR-0010 D6).
+        /// </summary>
+        /// <remarks>
+        /// The ambient is restored HERE on the SAMPLED-OUT outcome only, because no span then exists for the
+        /// suppression to serve. On the sampled-in outcome the span has to stay current for the whole dispatch call,
+        /// so the restore happens in <see cref="SendScope.Dispose"/> once the span stops. That obligation cannot
+        /// escape to an application: this method is reachable only through the internal
+        /// <see cref="StartSend(string, string, string, int, ActivityContext)"/>, whose sole caller is
+        /// <see cref="SendScope.Open(string, string, string, int, ActivityContext)"/>.
+        /// Reading and writing <see cref="Activity.Current"/> here is legitimate only because the caller already ran
+        /// the <see cref="ActivitySource.HasListeners"/> guard (ADR-0010 R3), so an application that never opted in
+        /// never reaches this method.
+        /// </remarks>
+        /// <param name="spanName">The span name, already built by the caller.</param>
+        /// <param name="ambientLinks">The ambient activity as a link, built by the caller BEFORE the ambient was cleared.</param>
+        private static Activity StartParentlessSend(string spanName, ActivityLink[] ambientLinks)
+        {
+            var ambient = Activity.Current;
+
+            if (ambient is null)
+            {
+                return _source.StartActivity(spanName, ActivityKind.Producer);
+            }
+
+            Activity activity = null;
+
+            Activity.Current = null;
+
+            try
+            {
+                activity = _source.StartActivity(spanName, ActivityKind.Producer, default(ActivityContext), links: ambientLinks);
+            }
+            finally
+            {
+                if (activity is null)
+                {
+                    Activity.Current = ambient;
+                }
+            }
+
+            return activity;
+        }
+
+        /// <summary>
         /// Starts the receive span for a delivery that carried no usable trace context, as a FRESH ROOT with the
         /// ambient activity attached as a LINK rather than promoted to parent (ADR-0010 D6).
         /// </summary>
@@ -576,6 +680,16 @@ namespace Chatter.MessageBrokers.Diagnostics
             /// stopping the span sets <see cref="Activity.Current"/> to the span's own (null) parent, so the restore
             /// has to come after it.
             /// </summary>
+            /// <remarks>
+            /// NOT EXCEPTION-SAFE: if <c>Activity.Dispose()</c> below throws, the suppressed ambient
+            /// <see cref="Activity"/> is never restored. This is the same ordered close ceremony
+            /// <see cref="SendScope.Dispose"/> hand-writes on the send side, and shares its root cause: the
+            /// ceremony lives at each scope type's call site instead of behind one seam both already cross. The
+            /// fix is that shared seam, not a <c>try/finally</c> wrapped around this method alone — that would
+            /// leave the sibling's copy of the same ceremony untouched, the same lesson ADR-0010 D11 records for
+            /// the receive error ladder. Deferred: opt-in diagnostics only, correct on the normal path, unchanged
+            /// from what already ships.
+            /// </remarks>
             public void Dispose()
             {
                 Activity?.Dispose();

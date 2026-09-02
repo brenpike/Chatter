@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [2.1.1] - 2026-09-02
+
+### Changed
+
+- Bundled dependency uplift to Chatter.MessageBrokers 0.18.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [2.1.0] - 2026-09-01
 
 ### Added

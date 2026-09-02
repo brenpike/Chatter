@@ -4,7 +4,6 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
@@ -65,35 +64,28 @@ namespace Chatter.MessageBrokers.Routing
         /// Routes the forwarded message under its own send span (ADR-0010 D7), writing the span's trace context onto
         /// the message before it reaches the router.
         /// </summary>
+        /// <remarks>A forward knows its destination and its message count before it starts, so it needs nothing from
+        /// <see cref="SendScope"/> beyond opening it: the count and destination the scope reports at stop are the ones
+        /// it was opened with.</remarks>
         private async Task RouteWithDiagnostics(OutboundBrokeredMessage outboundMessage, TransactionContext transactionContext)
         {
             // The Messaging Infrastructure the message names is the only messaging-system identity this package
             // has; it is passed through here AS-IS. BrokerDiagnostics normalizes a blank identifier to an unset
             // span attribute (the metric keeps the key with a null value) rather than inventing one.
-            var messagingSystem = outboundMessage.InfrastructureType;
-            var startTimestamp = Stopwatch.GetTimestamp();
-            Exception failure = null;
-
-            using (var sendActivity = BrokerDiagnostics.StartSend(messagingSystem, BrokerDiagnostics.OperationTypes.Send, outboundMessage.Destination, ForwardedMessageCount))
+            using (var sendScope = SendScope.Open(outboundMessage.InfrastructureType, BrokerDiagnostics.OperationTypes.Send, outboundMessage.Destination, ForwardedMessageCount))
             {
-                // ADR-0010 D9/R3: head sampling makes StartSend return null while Chatter .NET ActivityListeners are
-                // still attached, so propagation falls back to the ambient context and a sampled-out span does not
-                // break the trace. Reading Activity.Current is legal ONLY here, inside Chatter's own HasListeners
-                // guard; it is never the off-guard itself (ADR-0010 R2).
-                var traceContextActivity = sendActivity ?? (BrokerDiagnostics.Source.HasListeners() ? Activity.Current : null);
-
                 // ALIASING, DELIBERATE: the outbound message was handed the INBOUND message's context dictionary by
                 // reference (the OutboundBrokeredMessage constructor already mutates that same instance), so writing
                 // here OVERWRITES the inbound record in place and a later reader - the routing slip's next hop,
-                // deadletter stamping - sees this hop's traceparent. The overwrite happens ONLY when
-                // traceContextActivity is non-null; on the null-activity paths - diagnostics off, metrics-only, or
-                // sampled out with no ambient activity - the inbound traceparent rides out unchanged, deliberately
-                // (see TraceContextPropagator.SetTraceContextValue).
+                // deadletter stamping - sees this hop's traceparent. The overwrite happens ONLY when the scope has a
+                // trace context to write; on the null-activity paths - diagnostics off, metrics-only, or sampled out
+                // with no ambient activity - the inbound traceparent rides out unchanged, deliberately (see
+                // TraceContextPropagator.SetTraceContextValue).
                 // It is safe because of an ORDERING RULE: trace context is extracted at Brokered Message
                 // Receiver worker entry, strictly before the Received Message Dispatcher hands the message to any
                 // handler, so the receive span is already built from the original context by the time a handler can
                 // forward. Preserve that ordering if the receiving path is ever restructured.
-                TraceContextPropagator.Inject(traceContextActivity, outboundMessage.MessageContext);
+                sendScope.Inject(outboundMessage.MessageContext);
 
                 try
                 {
@@ -101,13 +93,8 @@ namespace Chatter.MessageBrokers.Routing
                 }
                 catch (Exception e)
                 {
-                    failure = e;
-                    BrokerDiagnostics.RecordFailure(sendActivity, e);
+                    sendScope.RecordFailure(e);
                     throw;
-                }
-                finally
-                {
-                    BrokerDiagnostics.RecordSend(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Send, outboundMessage.Destination, ForwardedMessageCount, failure);
                 }
             }
         }

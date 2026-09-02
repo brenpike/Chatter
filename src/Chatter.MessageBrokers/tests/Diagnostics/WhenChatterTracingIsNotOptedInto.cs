@@ -1,5 +1,7 @@
 ﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Diagnostics;
+using Chatter.MessageBrokers.Routing;
+using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Tests.Receiving.Fakes;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
@@ -79,6 +81,31 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 var outboundContext = harness.RoutedMessages.Should().ContainSingle().Subject.MessageContext;
                 outboundContext.Should().NotContainKey(TraceContextHeaders.TraceParent);
                 outboundContext.Should().NotContainKey(TraceContextHeaders.TraceState);
+            }
+        }
+
+        [Fact]
+        public async Task MustLeaveTheInboundTraceParentUnchangedWhenForwardingOrReplyingWhileForeignInstrumentationIsRunning()
+        {
+            // The forward and reply sites each keep their OWN off-guard, so with Chatter never opted into neither
+            // opens a send scope at all and the traceparent the delivery arrived with rides out untouched. A site
+            // that lost its guard would overwrite it with this hop's context, which is the wire write ADR-0010 R1/R2
+            // exist to prevent — and it would be invisible to a span assertion, because there is no listener to
+            // record a span with.
+            using (new ForeignInstrumentationScope())
+            {
+                var forwardRouting = new CapturingRoutingHarness();
+                var replyRouting = new CapturingRoutingHarness();
+
+                await new ForwardingRouter(forwardRouting.Router, forwardRouting.MessageIdGenerator)
+                    .Route(CapturingRoutingHarness.BuildInbound(ProducerTraceParent), ForwardDestination, null);
+
+                await new ReplyRouter(replyRouting.Router, replyRouting.MessageIdGenerator)
+                    .Route(CapturingRoutingHarness.BuildInbound(ProducerTraceParent), null, new ReplyToRoutingContext(ReplyDestination, ReplyGroupId));
+
+                BrokerDiagnostics.IsEnabled.Should().BeFalse();
+                forwardRouting.RoutedMessage.MessageContext[TraceContextHeaders.TraceParent].Should().Be(ProducerTraceParent);
+                replyRouting.RoutedMessage.MessageContext[TraceContextHeaders.TraceParent].Should().Be(ProducerTraceParent);
             }
         }
 
@@ -244,5 +271,9 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
 
         /// <summary>A well-formed W3C <c>traceparent</c> standing in for an upstream producer's trace context.</summary>
         private const string ProducerTraceParent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+        private const string ForwardDestination = "forward-destination";
+        private const string ReplyDestination = "reply-destination";
+        private const string ReplyGroupId = "reply-group";
     }
 }

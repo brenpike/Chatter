@@ -6,7 +6,6 @@ using Chatter.MessageBrokers.Routing.Context;
 using Chatter.MessageBrokers.Sending;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Routing
@@ -75,42 +74,45 @@ namespace Chatter.MessageBrokers.Routing
         /// before it reaches the router. Failure is wrapped in a <see cref="ReplyToRoutingExceptions"/> on exactly the
         /// same terms as the off path, so an awaiting caller sees the same exception type either way.
         /// </summary>
+        /// <remarks>
+        /// The scope is opened BEFORE the reply is built, because a reply whose construction fails is still a send
+        /// this router attempted: the operation is reported either way, and reporting it only once the message exists
+        /// would drop the very failures most worth seeing.
+        /// INVARIANT: the count reported is what was actually HANDED to the router, never what was intended, so the
+        /// scope opens at zero and is told the real count only once the hand-off has happened. The span tag and the
+        /// sent instrument therefore carry the SAME number for one reply, which is the whole reason the count is
+        /// reported at stop rather than at start.
+        /// </remarks>
         private async Task RouteWithDiagnostics(InboundBrokeredMessage inboundBrokeredMessage, TransactionContext transactionContext, ReplyToRoutingContext destinationRouterContext)
         {
-            var startTimestamp = Stopwatch.GetTimestamp();
-            Activity sendActivity = null;
-            string messagingSystem = null;
-            Exception failure = null;
+            var sendScope = default(SendScope);
             var isRoutingStarted = false;
 
             try
             {
-                var outbound = BuildReply(inboundBrokeredMessage, destinationRouterContext);
-
                 // The Messaging Infrastructure the message names is the only messaging-system identity this package
                 // has; it is passed through here AS-IS. BrokerDiagnostics normalizes a blank identifier to an unset
-                // span attribute (the metric keeps the key with a null value) rather than inventing one.
-                messagingSystem = outbound.InfrastructureType;
-                sendActivity = BrokerDiagnostics.StartSend(messagingSystem, BrokerDiagnostics.OperationTypes.Send, outbound.Destination, RepliedMessageCount);
+                // span attribute (the metric keeps the key with a null value) rather than inventing one. It is read
+                // off the INBOUND context because the reply ALIASES that same dictionary, so it is the identity the
+                // reply carries - and it is known before the reply is built.
+                inboundBrokeredMessage.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
 
-                // ADR-0010 D9/R3: head sampling makes StartSend return null while Chatter .NET ActivityListeners are
-                // still attached, so propagation falls back to the ambient context and a sampled-out span does not
-                // break the trace. Reading Activity.Current is legal ONLY here, inside Chatter's own HasListeners
-                // guard; it is never the off-guard itself (ADR-0010 R2).
-                var traceContextActivity = sendActivity ?? (BrokerDiagnostics.Source.HasListeners() ? Activity.Current : null);
+                sendScope = SendScope.Open((string)infraType, BrokerDiagnostics.OperationTypes.Send, destinationRouterContext.DestinationPath, messageCount: 0);
+
+                var outbound = BuildReply(inboundBrokeredMessage, destinationRouterContext);
 
                 // ALIASING, DELIBERATE: the reply was handed the INBOUND message's context dictionary by reference
                 // (the OutboundBrokeredMessage constructor already mutates that same instance), so writing here
                 // OVERWRITES the inbound record in place and a later reader - the routing slip's next hop, deadletter
-                // stamping - sees this hop's traceparent. The overwrite happens ONLY when traceContextActivity is
-                // non-null; on the null-activity paths - diagnostics off, metrics-only, or sampled out with no
-                // ambient activity - the inbound traceparent rides out unchanged, deliberately (see
+                // stamping - sees this hop's traceparent. The overwrite happens ONLY when the scope has a trace
+                // context to write; on the null-activity paths - diagnostics off, metrics-only, or sampled out with
+                // no ambient activity - the inbound traceparent rides out unchanged, deliberately (see
                 // TraceContextPropagator.SetTraceContextValue).
                 // It is safe because of an ORDERING RULE: trace context is extracted at Brokered Message Receiver
                 // worker entry, strictly before the Received Message Dispatcher hands the message to any handler, so
                 // the receive span is already built from the original context by the time a handler can reply.
                 // Preserve that ordering if the receiving path is ever restructured.
-                TraceContextPropagator.Inject(traceContextActivity, outbound.MessageContext);
+                sendScope.Inject(outbound.MessageContext);
 
                 var routing = _router.Route(outbound, transactionContext);
                 isRoutingStarted = true;
@@ -118,8 +120,7 @@ namespace Chatter.MessageBrokers.Routing
             }
             catch (Exception e)
             {
-                failure = e;
-                BrokerDiagnostics.RecordFailure(sendActivity, e);
+                sendScope.RecordFailure(e);
 
                 // INVARIANT: the off path returns the router's Task without awaiting it, so it wraps only a
                 // SYNCHRONOUS throw and lets an asynchronous fault surface unwrapped. Match that exactly - opting into
@@ -133,12 +134,15 @@ namespace Chatter.MessageBrokers.Routing
             }
             finally
             {
-                // The count reflects messages actually handed to the router, not messages intended: isRoutingStarted
-                // is set only once _router.Route has been called with the built outbound message, so a failure
-                // recorded before that point (e.g. BuildReply throwing) contributes 0, not RepliedMessageCount.
-                var handedOffCount = isRoutingStarted ? RepliedMessageCount : 0;
-                BrokerDiagnostics.RecordSend(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationRouterContext.DestinationPath, handedOffCount, failure);
-                sendActivity?.Dispose();
+                // isRoutingStarted is set only once _router.Route has been called with the built reply, so a failure
+                // recorded before that point (e.g. BuildReply throwing) leaves the count at the zero the scope was
+                // opened with rather than claiming RepliedMessageCount.
+                if (isRoutingStarted)
+                {
+                    sendScope.RecordResolvedMessageCount(RepliedMessageCount);
+                }
+
+                sendScope.Dispose();
             }
         }
     }
