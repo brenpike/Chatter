@@ -56,6 +56,30 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         }
 
         [Fact]
+        public async Task MustEmitExactlyOneSendSpanAndOneMeasurementPerInstrumentForOneDispatchCall()
+        {
+            // THE NO-DOUBLE-EMISSION PROOF for the dispatch site, asserted across tracing AND metrics at once: one
+            // dispatch call is ONE observed send however many messages it carries, so exactly one span stops and
+            // exactly one measurement lands on each send instrument. Two emitters reporting the same call — the
+            // hazard of moving the ceremony into a shared scope — would show here as a second span or a doubled
+            // measurement rather than as a wrong count.
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
+            {
+                var harness = new DiagnosticsSendHarness();
+
+                await harness.PublishBatch(BatchSize);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.GetTagItem(BrokerDiagnostics.BatchMessageCount).Should().Be(BatchSize);
+
+                var sentMessages = meterScope.MeasurementsFor(BrokerDiagnostics.SentMessagesInstrumentName).Should().ContainSingle().Subject;
+                sentMessages.Value.Should().Be(BatchSize);
+                meterScope.MeasurementsFor(BrokerDiagnostics.OperationDurationInstrumentName).Should().ContainSingle();
+            }
+        }
+
+        [Fact]
         public async Task MustNameTheSendSpanForItsOperationAndDestination()
         {
             using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))

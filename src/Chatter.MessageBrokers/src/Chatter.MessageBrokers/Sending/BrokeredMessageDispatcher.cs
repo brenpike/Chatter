@@ -132,31 +132,24 @@ namespace Chatter.MessageBrokers.Sending
             // package has; it is passed through here AS-IS. BrokerDiagnostics normalizes a blank identifier to an
             // unset span attribute (the metric keeps the key with a null value) rather than inventing one.
             var messagingSystem = (string)infraType;
-            var startTimestamp = Stopwatch.GetTimestamp();
             var batchObservation = new SendBatchObservation();
-            Exception failure = null;
 
-            // The span starts with a count of zero because nothing has been enumerated yet, and — on the overloads
-            // that omit one — with no destination, because none has been resolved yet. Both are written below, before
+            // The scope opens with a count of zero because nothing has been enumerated yet, and — on the overloads
+            // that omit one — with no destination, because none has been resolved yet. Both are reported below, before
             // the span stops, and no listener can observe either placeholder because StartActivity has already made
             // its sampling decision by then.
-            using (var sendActivity = BrokerDiagnostics.StartSend(messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationPath, messageCount: 0))
+            using (var sendScope = SendScope.Open(messagingSystem, BrokerDiagnostics.OperationTypes.Send, destinationPath, messageCount: 0))
             {
-                // ADR-0010 D9/R3: head sampling makes StartSend return null while Chatter .NET ActivityListeners are
-                // still attached, and a sampled-out span must not break the trace for a downstream hop that samples
-                // independently - so propagation falls back to the ambient context. Reading Activity.Current is legal
-                // ONLY here, inside Chatter's own HasListeners guard; it is never the off-guard itself (ADR-0010 R2),
-                // because it is non-null in any host running unrelated instrumentation.
-                var traceContextActivity = sendActivity ?? (BrokerDiagnostics.Source.HasListeners() ? Activity.Current : null);
-
                 try
                 {
-                    await _messageRouter.Route(Dispatch(messages, destinationPath, options, traceContextActivity, batchObservation), transactionContext, messagingSystem).ConfigureAwait(false);
+                    // The trace context is read out of the scope HERE, before the router is entered, and passed down
+                    // explicitly: the sequence below is a `yield return` iterator that injects per message at
+                    // ENUMERATION time, so it can never reach for ambient state of its own (ADR-0010 R2).
+                    await _messageRouter.Route(Dispatch(messages, destinationPath, options, sendScope.TraceContextActivity, batchObservation), transactionContext, messagingSystem).ConfigureAwait(false);
                 }
                 catch (Exception e)
                 {
-                    failure = e;
-                    BrokerDiagnostics.RecordFailure(sendActivity, e);
+                    sendScope.RecordFailure(e);
                     throw;
                 }
                 finally
@@ -167,9 +160,8 @@ namespace Chatter.MessageBrokers.Sending
                         ? batchObservation.UniformDestination
                         : destinationPath;
 
-                    sendActivity?.SetTag(BrokerDiagnostics.BatchMessageCount, batchObservation.YieldedMessageCount);
-                    BrokerDiagnostics.RecordResolvedDestination(sendActivity, BrokerDiagnostics.OperationTypes.Send, resolvedDestination);
-                    BrokerDiagnostics.RecordSend(startTimestamp, messagingSystem, BrokerDiagnostics.OperationTypes.Send, resolvedDestination, batchObservation.YieldedMessageCount, failure);
+                    sendScope.RecordResolvedMessageCount(batchObservation.YieldedMessageCount);
+                    sendScope.RecordResolvedDestination(resolvedDestination);
                 }
             }
         }
