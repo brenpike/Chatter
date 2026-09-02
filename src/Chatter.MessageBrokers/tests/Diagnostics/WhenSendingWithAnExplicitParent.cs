@@ -2,6 +2,8 @@ using Chatter.MessageBrokers.Diagnostics;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
 using System.Diagnostics;
+using System.Linq;
+using System.Reflection;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.Diagnostics
@@ -241,6 +243,30 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 stopped.TraceId.Should().Be(foreignInstrumentation.ForeignActivity.TraceId);
                 stopped.Links.Should().BeEmpty("the ambient IS the parent here, so linking it as well would double-count it");
             }
+        }
+
+        [Fact]
+        public void MustKeepTheParentedSendSpanBehindSendScopeRatherThanAPublicStartSendOverload()
+        {
+            // INVARIANT: no public Chatter surface hands back a send span whose start suppressed the ambient
+            // activity while leaving the restore to the caller. Stopping such a span sets Activity.Current to the
+            // null parent it recorded, so the host's ambient would be lost for the rest of that async flow.
+            var publicContextTakingStartSend = typeof(BrokerDiagnostics)
+                .GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Where(candidate => candidate.Name == "StartSend")
+                .Where(candidate => candidate.GetParameters().Any(parameter => parameter.ParameterType == typeof(ActivityContext)))
+                .ToArray();
+
+            publicContextTakingStartSend.Should().BeEmpty(
+                "a parented send span is reachable only through SendScope, which owns the ambient restore");
+
+            typeof(SendScope).GetMethod(
+                nameof(SendScope.Open),
+                BindingFlags.Public | BindingFlags.Static,
+                null,
+                new[] { typeof(string), typeof(string), typeof(string), typeof(int), typeof(ActivityContext) },
+                null)
+                .Should().NotBeNull("SendScope.Open is the public door to a parented send span, and its Dispose restores the ambient");
         }
     }
 }

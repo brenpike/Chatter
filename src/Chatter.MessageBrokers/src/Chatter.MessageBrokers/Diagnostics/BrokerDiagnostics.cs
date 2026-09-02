@@ -188,13 +188,15 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// and it is worse here because the correct parent demonstrably exists somewhere else.
         /// <see cref="Activity.Current"/> is therefore cleared across the start so the fallback cannot fire, and the
         /// ambient rides along as a LINK on both branches rather than as a parent.
-        /// OUTSTANDING RESTORE, on BOTH branches: a span started from a trace CONTEXT records no parent
-        /// <see cref="Activity"/>, so <see cref="Activity.Stop"/> restores <see cref="Activity.Current"/> to
-        /// <c>null</c> rather than to the ambient. A call site that needs the host's ambient activity to outlive the
-        /// span captures it before this call and restores it after the span stops — the obligation
-        /// <see cref="ReceiveSpan"/> discharges for the receive side.
+        /// WHY THIS IS INTERNAL. Clearing the ambient leaves a restore outstanding once a span is sampled in: a span
+        /// started from a trace CONTEXT records no parent <see cref="Activity"/>, so <see cref="Activity.Stop"/>
+        /// restores <see cref="Activity.Current"/> to <c>null</c> rather than to the ambient. The sole caller is
+        /// <see cref="SendScope.Open(string, string, string, int, ActivityContext)"/>, which captures the ambient
+        /// before this call and restores it in <see cref="SendScope.Dispose"/> after the span stops, so the
+        /// obligation is discharged inside Chatter and never reaches an application. That is the relationship
+        /// <see cref="StartHeaderlessReceive"/> has to <see cref="ReceiveSpan"/> on the receive side.
         /// </remarks>
-        public static Activity StartSend(string messagingSystem, string operationName, string destinationName, int messageCount, ActivityContext parent)
+        internal static Activity StartSend(string messagingSystem, string operationName, string destinationName, int messageCount, ActivityContext parent)
         {
             if (!_source.HasListeners())
             {
@@ -502,11 +504,11 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// </summary>
         /// <remarks>
         /// The ambient is restored HERE on the SAMPLED-OUT outcome only, because no span then exists for the
-        /// suppression to serve. On the sampled-in outcome the restore belongs to the call site, exactly as it does
-        /// on the explicitly parented branch — stopping a context-parented span clears
-        /// <see cref="Activity.Current"/> either way, so this branch adds no obligation the branch beside it does
-        /// not already carry (see the OUTSTANDING RESTORE note on
-        /// <see cref="StartSend(string, string, string, int, ActivityContext)"/>).
+        /// suppression to serve. On the sampled-in outcome the span has to stay current for the whole dispatch call,
+        /// so the restore happens in <see cref="SendScope.Dispose"/> once the span stops. That obligation cannot
+        /// escape to an application: this method is reachable only through the internal
+        /// <see cref="StartSend(string, string, string, int, ActivityContext)"/>, whose sole caller is
+        /// <see cref="SendScope.Open(string, string, string, int, ActivityContext)"/>.
         /// Reading and writing <see cref="Activity.Current"/> here is legitimate only because the caller already ran
         /// the <see cref="ActivitySource.HasListeners"/> guard (ADR-0010 R3), so an application that never opted in
         /// never reaches this method.

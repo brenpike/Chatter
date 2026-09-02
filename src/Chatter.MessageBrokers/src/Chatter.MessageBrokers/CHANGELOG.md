@@ -10,9 +10,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Added
 
-- `BrokerDiagnostics.StartSend(string, string, string, int, ActivityContext)` — an overload accepting an explicit parent trace context, so a deferred send (an outbox drain, minutes after the write) can be parented to the context persisted with the message rather than to whatever activity happens to be ambient at drain time (#407).
 - `TraceContextPropagator.TryExtractFromMessageContext(IDictionary<string, object>, out ActivityContext)` — reads a persisted trace context off a message-context dictionary (#407).
-- `SendScope` — a public readonly struct owning the send-side diagnostics ceremony (off-guard, span, propagation, failure recording, duration and count) in one place, so a module adding its own send instrumentation cannot get the disabled-path discipline wrong. `default(SendScope)` is the well-formed disabled value and allocates nothing (#407).
+- `SendScope` — a public readonly struct owning the send-side diagnostics ceremony (off-guard, span, propagation, failure recording, duration and count) in one place, so a module adding its own send instrumentation cannot get the disabled-path discipline wrong. `default(SendScope)` is the well-formed disabled value and allocates nothing. `SendScope.Open(string, string, string, int, ActivityContext)` accepts an explicit parent trace context, so a deferred send (an outbox drain, minutes after the write) can be parented to the context persisted with the message rather than to whatever activity happens to be ambient at drain time; the parented span start is not exposed as a bare primitive (#407).
 
 ### Changed
 

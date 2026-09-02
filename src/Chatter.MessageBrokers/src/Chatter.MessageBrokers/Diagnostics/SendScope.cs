@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 
 namespace Chatter.MessageBrokers.Diagnostics
 {
@@ -201,17 +202,21 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// <c>finally</c> sat inside its <c>using</c>. The ambient restore comes AFTER the stop, because stopping
         /// the span is itself what writes <see cref="Activity.Current"/> — to the deliberate <c>null</c> a fresh
         /// root was started over — so restoring first would simply be undone.
-        /// Disposal is IDEMPOTENT: a <c>readonly struct</c> is copyable, so "closed exactly once" cannot be left to
-        /// the discipline of every call site that copies one.
+        /// INVARIANT: the call is discharged exactly once. A <c>readonly struct</c> is freely copyable, so the
+        /// number of copies — and the number of THREADS holding them — is not something a call site can be asked to
+        /// control. <see cref="SendObservation.TryClose"/> therefore settles the whole question in ONE
+        /// <see cref="Interlocked.Exchange(ref int, int)"/> on the single heap cell every copy shares: exactly one
+        /// caller can ever observe the transition, so "closed exactly once" holds BY CONSTRUCTION rather than by a
+        /// check-then-set that two concurrent copies could both pass and double-count the send with.
+        /// The off-guard stays FIRST and the <c>||</c> short-circuits, so <c>default(SendScope)</c> still returns
+        /// without touching the atomic (ADR-0010 R1, R4).
         /// </remarks>
         public void Dispose()
         {
-            if (_observation is null || _observation.IsClosed)
+            if (_observation is null || !_observation.TryClose())
             {
                 return;
             }
-
-            _observation.IsClosed = true;
 
             BrokerDiagnostics.RecordSend(
                 _observation.StartTimestamp,
@@ -283,8 +288,17 @@ namespace Chatter.MessageBrokers.Diagnostics
             /// <summary>The exception that ended the call, or <c>null</c> when it succeeded.</summary>
             internal Exception Failure { get; set; }
 
-            /// <summary>Whether the call has already been closed, so a second disposal cannot double-count it.</summary>
-            internal bool IsClosed { get; set; }
+            /// <summary>Zero while the call is open, one once it is closed. A FIELD, not a property, because the
+            /// close has to be an interlocked operation on the cell itself.</summary>
+            private int _closed;
+
+            /// <summary>
+            /// Claims the close for the caller, returning <c>true</c> to exactly one caller ever.
+            /// </summary>
+            /// <remarks>One unconditional atomic swap: the PRIOR value is what decides the winner, so the check and
+            /// the set cannot be separated by another thread. Every copy of the owning scope reaches this same
+            /// instance, which is what makes copy count irrelevant to the guarantee.</remarks>
+            internal bool TryClose() => Interlocked.Exchange(ref _closed, 1) == 0;
         }
     }
 }

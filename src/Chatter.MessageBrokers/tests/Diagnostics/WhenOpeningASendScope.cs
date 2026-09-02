@@ -5,6 +5,7 @@ using FluentAssertions;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.Diagnostics
@@ -33,6 +34,11 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         private const string ResolvedDestination = "resolved-destination";
         private const int BatchSize = 3;
         private const int ResolvedMessageCount = 2;
+
+        // Enough concurrent releases to make the check-then-set interleaving likely, few enough to stay off the
+        // suite's critical path. The flakiness is one-directional: the race can only ever be MISSED, never
+        // fabricated, so an atomic discharge makes this test deterministic.
+        private const int ConcurrentDisposalAttempts = 200;
 
         [Fact]
         public void MustBeAWellFormedNoOpWhenDefaultConstructed()
@@ -428,6 +434,40 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 meterScope.MeasurementsFor(BrokerDiagnostics.SentMessagesInstrumentName).Should().ContainSingle();
                 meterScope.MeasurementsFor(BrokerDiagnostics.OperationDurationInstrumentName).Should().ContainSingle();
             }
+        }
+
+        [Fact]
+        public void MustRecordTheSendMeasurementOnceWhenTwoScopeCopiesAreDisposedConcurrently()
+        {
+            // The COPY COUNT of a `readonly struct` is not an input to "closed exactly once", and neither is the
+            // THREAD that closes it. A check-then-set on a plain field lets two copies released at the same instant
+            // both observe the call as open and both discharge it, silently double-counting the send - and no call
+            // site discipline can prevent that, because copying a struct is what the language does for free.
+            using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
+            using (var releaseBothCopies = new Barrier(2))
+            {
+                for (var attempt = 1; attempt <= ConcurrentDisposalAttempts; attempt++)
+                {
+                    var scope = SendScope.Open(DiagnosticsSendHarness.MessagingSystem, BrokerDiagnostics.OperationTypes.Send, DiagnosticsSendHarness.DestinationPath, BatchSize);
+                    var copy = scope;
+
+                    var disposingTheCopy = new Thread(() => DisposeOnRelease(releaseBothCopies, copy));
+                    disposingTheCopy.Start();
+                    DisposeOnRelease(releaseBothCopies, scope);
+                    disposingTheCopy.Join();
+
+                    meterScope.MeasurementsFor(BrokerDiagnostics.SentMessagesInstrumentName).Should().HaveCount(attempt, "attempt " + attempt + " may discharge the send only once");
+                    meterScope.MeasurementsFor(BrokerDiagnostics.OperationDurationInstrumentName).Should().HaveCount(attempt, "attempt " + attempt + " may discharge the duration only once");
+                }
+            }
+        }
+
+        // Both copies wait on the same barrier phase so they are released into Dispose together, which is what makes
+        // the interleaving likely enough to observe within the attempt count.
+        private static void DisposeOnRelease(Barrier releaseBothCopies, SendScope scope)
+        {
+            releaseBothCopies.SignalAndWait();
+            scope.Dispose();
         }
     }
 }

@@ -131,6 +131,14 @@ deliberately leaves that door open, so narrowing them would CLOSE AN EXTENSIBILI
 remove an accident. That is the line the review adjudicated: `Source` and `DispatchKinds.Query` were
 public by accident and cost an application nothing to withdraw; the entry points are public by intent.
 
+**AMENDED — one entry point is narrowed after all, and not for the `Source` reason.** The parented
+`StartSend(string, string, string, int, ActivityContext)` overload is made `internal`, PRE-SHIP. This
+is not `Source`-shaped: `Source` was public by accident and cost nothing to withdraw. This overload is
+public by intent and still gets narrowed, because a bare-primitive start that can orphan the ambient
+hands the caller a lifecycle obligation the return type does not enforce — the same defect D6 already
+adjudicated on the receive side, where the fix was to make the start call hand back the discharge
+rather than trust the caller to perform it.
+
 ### D3 — `ActivitySource` and `Meter` are named PER EMITTING ASSEMBLY
 
 The names are `"Chatter.CQRS"` and `"Chatter.MessageBrokers"` — the emitting assembly's own name —
@@ -321,6 +329,16 @@ at 0.15.0), taken for the same reason `Source` was narrowed under D2: fixing the
 package ships is not available. Pinned by
 `WhenReceivingWithTracingEnabled.MustRestoreTheAmbientActivityAfterTheHeaderlessReceiveSpanStops` and
 `...MustLeaveTheAmbientActivityCurrentWhenTheHeaderlessReceiveSpanIsSampledOut`.
+
+**The send side gets the same closed-by-construction rule, applied PRE-SHIP.** The parented `StartSend`
+overload has the identical hazard: clearing `Activity.Current` on the false-causality guard and not
+restoring it on the sampled-in path orphans the ambient for a public caller that disposes the bare
+`Activity` it receives. `SendScope` is the send side's `ReceiveSpan` — the sole public door to a send
+span whose start could orphan the ambient, and its `Dispose` restores it. The residual: making the
+parented `StartSend` overload `internal` keeps it reachable in-assembly and from the
+`InternalsVisibleTo` grantees in `Properties/AssemblyInfo.cs` (which include
+`Chatter.MessageBrokers.Reliability.Cosmos`), and for those grantees the sanctioned door is the public
+`SendScope`, not the internal primitive — `internal` does not itself close that door.
 
 ### D7 — Span granularity: per dispatch call on send, per delivery on receive
 
@@ -1021,6 +1039,14 @@ assumed.
   restores the suppressed ambient. There is no way to obtain the span WITHOUT the restore. The class
   is eliminated by changing what the start call hands back, not by adding a restore call to the one
   call site that exists today.
+- **"A send-span call site cleared the ambient activity for the false-causality guard, and never gave
+  it back."** Impossible from any public door: the parented `StartSend` overload is `internal`, and
+  `SendScope` is the only public way to obtain a send span, so the restore ships with the disposal in
+  the same way `ReceiveSpan` ships it on the receive side.
+- **"A send span was closed twice because two copies of the same struct each ran their own
+  disposal."** Impossible by construction: `SendScope` closes over a single shared cell and its close
+  is one atomic `Interlocked` operation, so the number of struct copies in play is no longer an input
+  to exactly-once — there is nothing left for a second copy's disposal to race against.
 - **"A settle path swallowed its fault into a `bool` and the receive metric still reported the
   delivery as a success."** Impossible by D11 as amended: there is exactly ONE place a settle-path
   fault is swallowed (`TrySettleWithRecoveryAsync`), and the retention is inside it, so a settle path
