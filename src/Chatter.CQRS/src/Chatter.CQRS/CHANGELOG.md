@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.11.1] - 2026-09-02
+
+### Fixed
+
+- `chatter.cqrs.dispatch.duration` records **seconds**, but shipped no bucket advice — a collector applied its own millisecond-sized default boundaries (`0, 5, 10, 25, ... 10000`), and every realistic dispatch landed in the first bucket, so P50, P90, and P99 all reported the same bucket bound forever. The instrument now publishes seconds-sized bucket advice — `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10` — but only on `net10.0`: the base class library type that carries instrument advice does not exist in the `net8.0` shared framework, and the package takes no package dependency to reach it. `net10.0` applications that already built dashboards against the previous millisecond-sized defaults will see the bucket bounds move — that is the fix, not a regression, but it is a visible change. On `net8.0`, configure the equivalent view in your own application; see the **Histogram bucket boundaries** subsection in `src/Chatter.CQRS/src/README.md` for the copy-pasteable `AddView` snippet (#399).
+
 ## [0.11.0] - 2026-09-01
 
 ### Added

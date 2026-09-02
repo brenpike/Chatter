@@ -87,7 +87,25 @@ namespace Chatter.MessageBrokers.Diagnostics
         private static readonly string _telemetryVersion = ResolveTelemetryVersion();
         private static readonly ActivitySource _source = new ActivitySource(ActivitySourceName, _telemetryVersion);
         private static readonly Meter _meter = new Meter(MeterName, _telemetryVersion);
+#if NET9_0_OR_GREATER
+        // INVARIANT: this field is declared AFTER _meter and BEFORE _operationDuration because C# runs static field
+        // initializers in TEXTUAL order; declared below the histogram it would still be null when the histogram is
+        // created, and the histogram would silently publish no advice.
+        // INVARIANT: the boundaries are strictly ascending and distinct. InstrumentAdvice<T> rejects any other
+        // ordering by throwing from this static initializer, which surfaces as a TypeInitializationException on the
+        // FIRST touch of the off-guard - including on the uninstrumented path, which pays for telemetry it never
+        // enabled (ADR-0010 R1).
+        // The boundaries are seconds-sized because the instrument's unit is seconds: a collector that receives no
+        // advice falls back to millisecond-sized defaults, so every realistic duration lands in the first bucket
+        // and every percentile reports the same number (issue #399).
+        private static readonly InstrumentAdvice<double> _operationDurationAdvice = new InstrumentAdvice<double>
+        {
+            HistogramBucketBoundaries = new double[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 }
+        };
+        private static readonly Histogram<double> _operationDuration = _meter.CreateHistogram<double>(OperationDurationInstrumentName, "s", "Duration of a Chatter broker client operation.", tags: null, advice: _operationDurationAdvice);
+#else
         private static readonly Histogram<double> _operationDuration = _meter.CreateHistogram<double>(OperationDurationInstrumentName, "s", "Duration of a Chatter broker client operation.");
+#endif
         private static readonly Counter<long> _sentMessages = _meter.CreateCounter<long>(SentMessagesInstrumentName, "{message}", "Number of messages Chatter handed to broker infrastructure for delivery.");
         private static readonly Counter<long> _consumedMessages = _meter.CreateCounter<long>(ConsumedMessagesInstrumentName, "{message}", "Number of messages broker infrastructure delivered to Chatter.");
 

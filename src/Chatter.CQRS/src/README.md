@@ -281,9 +281,9 @@ The `exception` event carries the same name on both target frameworks, but Chatt
 
 **Metrics.**
 
-| Instrument | Type | Unit | Records | Recorded when |
-| --- | --- | --- | --- | --- |
-| `chatter.cqrs.dispatch.duration` | `Histogram<double>` | `s` (seconds) | Elapsed time of one Command or Event dispatch, measured from before the span is started until the handler — or, for an Event, the last handler — returns or throws | Once per dispatch, on success and on failure alike, and only while the instrument itself is enabled on a .NET `MeterListener`; a dispatch that ran with diagnostics off records nothing |
+| Instrument | Type | Unit | Advised buckets | Records | Recorded when |
+| --- | --- | --- | --- | --- | --- |
+| `chatter.cqrs.dispatch.duration` | `Histogram<double>` | `s` (seconds) | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10` — published as instrument advice on `net10.0` only; on `net8.0` the instrument carries none. See **Histogram bucket boundaries** below. | Elapsed time of one Command or Event dispatch, measured from before the span is started until the handler — or, for an Event, the last handler — returns or throws | Once per dispatch, on success and on failure alike, and only while the instrument itself is enabled on a .NET `MeterListener`; a dispatch that ran with diagnostics off records nothing |
 
 | Attribute | Instruments | Value | Emitted |
 | --- | --- | --- | --- |
@@ -292,6 +292,30 @@ The `exception` event carries the same name on both target frameworks, but Chatt
 | `error.type` | `chatter.cqrs.dispatch.duration` | The fully qualified exception type name, resolved by the same code that sets the span's `error.type`, so the two signals cannot disagree | Failure only — when the dispatch threw |
 
 Query dispatch is not instrumented.
+
+### Histogram bucket boundaries
+
+`chatter.cqrs.dispatch.duration` records **seconds**. The OpenTelemetry .NET SDK's default explicit histogram boundaries are millisecond-sized (`0, 5, 10, 25, ... 10000`), so a collector that applies them puts every realistic measurement in the first bucket and P50, P90 and P99 all report the same number forever. `Chatter.CQRS` therefore publishes seconds-sized bucket boundaries on the instrument itself. The boundary set is the one the OpenTelemetry messaging semantic conventions specify for duration histograms — borrowed for its shape, since no semantic convention covers in-process CQRS dispatch itself — and is listed in the Metrics table above.
+
+**They are advice, not a setting.** The boundaries are published as instrument *advice* — a **default** that an application's own view **overrides**. An application that already registers a view for `chatter.cqrs.dispatch.duration` keeps winning exactly as it did before; nothing it configured changes. Advice is the right layer for this precisely because it cannot take that choice away from the application.
+
+**Advice is published on `net10.0` only.** The base class library type that carries instrument advice does not exist in the `net8.0` shared framework, and this package takes no package dependency to reach it. On `net8.0` the instrument therefore ships with no advice at all, and the collector falls back to its own millisecond-sized defaults.
+
+**On `net8.0`, configure the equivalent view in your own application.** `AddView` and `ExplicitBucketHistogramConfiguration` are `OpenTelemetry.Metrics` types that come from *your* application's OpenTelemetry packages — this package still takes **no dependency on any `OpenTelemetry.*` NuGet package**, and the snippet below adds none to it:
+
+```csharp
+using OpenTelemetry.Metrics;
+
+services.AddOpenTelemetry()
+        .WithMetrics(m => m
+            .AddMeter("Chatter.CQRS")
+            .AddView("chatter.cqrs.dispatch.duration", new ExplicitBucketHistogramConfiguration
+            {
+                Boundaries = new double[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 }
+            }));
+```
+
+The same view is harmless on `net10.0`: it overrides advice that already carries these boundaries. This `net8.0` caveat retires when `net8.0` is dropped and the package single-targets `net10.0` after .NET 8 reaches end of life on 2026-11-10 — tracked in [issue #395](https://github.com/brenpike/Chatter/issues/395).
 
 ### Off means off
 

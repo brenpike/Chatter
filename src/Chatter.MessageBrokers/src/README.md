@@ -257,11 +257,11 @@ An **unset** attribute below is an unconditional write of a null value, not a sk
 
 **Metrics**
 
-| Instrument | Type | Unit | Records | Recorded when |
-| --- | --- | --- | --- | --- |
-| `messaging.client.operation.duration` | `Histogram<double>` | `s` | The elapsed time of one dispatch call, or of one delivery. | Once per dispatch call that reaches the send path and once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing either; a reply whose `BuildReply` throws does record, so that one failure measurement carries no matching span. |
-| `messaging.client.sent.messages` | `Counter<long>` | `{message}` | The number of messages the dispatch call handed to broker infrastructure: the number a `Send` / `Publish` yielded, `1` for a forward, and for a reply `1` once the Router has been called or `0` when the call failed before that. | Once per dispatch call that reaches the send path, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing here either. |
-| `messaging.client.consumed.messages` | `Counter<long>` | `{message}` | One message per delivery. "Consumed" is the pinned specification's wire spelling for what this module calls receiving. | Once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. |
+| Instrument | Type | Unit | Advised buckets | Records | Recorded when |
+| --- | --- | --- | --- | --- | --- |
+| `messaging.client.operation.duration` | `Histogram<double>` | `s` | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10` — published as instrument advice on `net10.0` only; on `net8.0` the instrument carries none. See **Histogram bucket boundaries** below. | The elapsed time of one dispatch call, or of one delivery. | Once per dispatch call that reaches the send path and once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing either; a reply whose `BuildReply` throws does record, so that one failure measurement carries no matching span. |
+| `messaging.client.sent.messages` | `Counter<long>` | `{message}` | Not applicable — a `Counter<long>` has no buckets. | The number of messages the dispatch call handed to broker infrastructure: the number a `Send` / `Publish` yielded, `1` for a forward, and for a reply `1` once the Router has been called or `0` when the call failed before that. | Once per dispatch call that reaches the send path, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing here either. |
+| `messaging.client.consumed.messages` | `Counter<long>` | `{message}` | Not applicable — a `Counter<long>` has no buckets. | One message per delivery. "Consumed" is the pinned specification's wire spelling for what this module calls receiving. | Once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. |
 
 **Metric attributes**
 
@@ -276,6 +276,30 @@ An **unset** attribute below is an unconditional write of a null value, not a sk
 Where a span leaves an attribute **unset**, the instruments still carry that attribute as a key with a null value. Query the spans for a missing attribute; query the instruments for a null one.
 
 **Metric attribute names are a strict subset of the span attribute names.** A rate broken down by settlement outcome, by message id or by attempt count therefore cannot be built from these instruments — that breakdown has to come from the spans.
+
+### Histogram bucket boundaries
+
+`messaging.client.operation.duration` records **seconds**. The OpenTelemetry .NET SDK's default explicit histogram boundaries are millisecond-sized (`0, 5, 10, 25, ... 10000`), so a collector that applies them puts every realistic measurement in the first bucket and P50, P90 and P99 all report the same number forever. `Chatter.MessageBrokers` therefore publishes seconds-sized bucket boundaries on the duration histogram itself; the two counters alongside it have no buckets to advise. The boundaries match the OpenTelemetry messaging semantic conventions and are listed in the Metrics table above.
+
+**They are advice, not a setting.** The boundaries are published as instrument *advice* — a **default** that an application's own view **overrides**. An application that already registers a view for `messaging.client.operation.duration` keeps winning exactly as it did before; nothing it configured changes. Advice is the right layer for this precisely because it cannot take that choice away from the application.
+
+**Advice is published on `net10.0` only.** The base class library type that carries instrument advice does not exist in the `net8.0` shared framework, and this package takes no package dependency to reach it. On `net8.0` the instrument therefore ships with no advice at all, and the collector falls back to its own millisecond-sized defaults.
+
+**On `net8.0`, configure the equivalent view in your own application.** `AddView` and `ExplicitBucketHistogramConfiguration` are `OpenTelemetry.Metrics` types that come from *your* application's OpenTelemetry packages — this package still takes **no dependency on any `OpenTelemetry.*` NuGet package**, and the snippet below adds none to it:
+
+```csharp
+using OpenTelemetry.Metrics;
+
+services.AddOpenTelemetry()
+        .WithMetrics(m => m
+            .AddMeter("Chatter.MessageBrokers")
+            .AddView("messaging.client.operation.duration", new ExplicitBucketHistogramConfiguration
+            {
+                Boundaries = new double[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 }
+            }));
+```
+
+The same view is harmless on `net10.0`: it overrides advice that already carries these boundaries. This `net8.0` caveat retires when `net8.0` is dropped and the package single-targets `net10.0` after .NET 8 reaches end of life on 2026-11-10 — tracked in [issue #395](https://github.com/brenpike/Chatter/issues/395).
 
 ### Attribute names are data, not API
 

@@ -157,6 +157,8 @@ services.AddOpenTelemetry()
 
 For the exact span names, instrument names, units, and attributes, see the Diagnostics sections of the [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md#diagnostics-optional-opt-in) and [Chatter.MessageBrokers](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#diagnostics-and-trace-context-optional-opt-in) READMEs.
 
+On `net8.0` the two duration histograms carry **no bucket advice**, so register the seconds-sized histogram view in your own OpenTelemetry setup — see *Histogram bucket boundaries* in the [Chatter.CQRS](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/README.md#histogram-bucket-boundaries) and [Chatter.MessageBrokers](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#histogram-bucket-boundaries) READMEs.
+
 Design rationale, the propagation scope, and the off-guard rules are recorded in [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
 
 ## Domain language
