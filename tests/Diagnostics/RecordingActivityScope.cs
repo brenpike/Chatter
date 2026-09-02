@@ -150,6 +150,7 @@ namespace Chatter.Testing.Core.Diagnostics
         private readonly MeterListener _netMeterListener;
         private readonly List<RecordedMeasurement> _measurements = new List<RecordedMeasurement>();
         private readonly List<Instrument> _enabledInstruments = new List<Instrument>();
+        private readonly List<Instrument> _measuredInstruments = new List<Instrument>();
         private readonly object _sync = new object();
         private bool _disposed;
 
@@ -195,6 +196,26 @@ namespace Chatter.Testing.Core.Diagnostics
             {
                 return _measurements.FindAll(measurement => measurement.InstrumentName == instrumentName);
             }
+        }
+
+        /// <summary>
+        /// The <see cref="Instrument"/> this scope observed under <paramref name="instrumentName"/>, so a test can
+        /// assert on the published instrument itself rather than only on its measurements.
+        /// </summary>
+        /// <remarks>
+        /// An instrument published BEFORE this scope opened may never reach
+        /// <see cref="MeterListener.InstrumentPublished"/>, so an instrument handed to a measurement callback is
+        /// resolvable here too: drive one real operation, then look the instrument up by name.
+        /// </remarks>
+        public bool TryGetInstrument(string instrumentName, out Instrument instrument)
+        {
+            lock (_sync)
+            {
+                instrument = _enabledInstruments.Find(candidate => candidate.Name == instrumentName)
+                    ?? _measuredInstruments.Find(candidate => candidate.Name == instrumentName);
+            }
+
+            return instrument != null;
         }
 
         public void Dispose()
@@ -252,6 +273,11 @@ namespace Chatter.Testing.Core.Diagnostics
             lock (_sync)
             {
                 _measurements.Add(recorded);
+
+                if (!_measuredInstruments.Contains(instrument))
+                {
+                    _measuredInstruments.Add(instrument);
+                }
             }
         }
     }
