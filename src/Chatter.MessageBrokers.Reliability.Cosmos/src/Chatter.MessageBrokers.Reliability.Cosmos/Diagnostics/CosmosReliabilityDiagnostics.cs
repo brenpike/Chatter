@@ -1,3 +1,4 @@
+using Chatter.CQRS.Diagnostics;
 using System;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
@@ -27,7 +28,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
     /// Document is never reported by two send spans.
     /// The instrument and attribute names are Chatter-native under a <c>chatter.</c> prefix because OpenTelemetry
     /// messaging semantic conventions v1.30.0 covers no outbox drain concept; inventing a <c>messaging.*</c> spelling
-    /// for one would be a false claim of conformance (ADR-0010 D4).
+    /// for one would be a false claim of conformance (ADR-0010 D4). The one exception is
+    /// <see cref="ChatterTelemetryTags.ErrorType"/>: <c>error.type</c> is a general-purpose registry attribute
+    /// defined OUTSIDE messaging semconv, so it is emitted under its standard spelling, through the shared constant
+    /// every other Chatter emit site uses, rather than under a second Chatter-native name for one concept.
     /// </remarks>
     public static class CosmosReliabilityDiagnostics
     {
@@ -53,6 +57,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
 
         /// <summary>The number of change-feed batches the Outbox Relay handled, by <see cref="LeaseToken"/>.</summary>
         public const string DrainedBatchesInstrumentName = "chatter.messaging.outbox.drain.batches";
+
+        /// <summary>The number of drain attempts that faulted, by <see cref="LeaseToken"/> and error type.</summary>
+        public const string DrainFailuresInstrumentName = "chatter.messaging.outbox.drain.failures";
+
+        /// <summary>The number of documents abandoned as poisoned, by <see cref="LeaseToken"/>.</summary>
+        public const string PoisonedDocumentsInstrumentName = "chatter.messaging.outbox.drain.poisoned";
 
         /// <summary>How the Outbox Relay resolved one document; values come from <see cref="DrainOutcomes"/>.</summary>
         public const string DrainOutcome = "chatter.messaging.outbox.drain.outcome";
@@ -94,6 +104,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
 #endif
         private static readonly Counter<long> _drainedDocuments = _meter.CreateCounter<long>(DrainedDocumentsInstrumentName, "{document}", "Number of Outbox Documents the Outbox Relay resolved, by outcome.");
         private static readonly Counter<long> _drainedBatches = _meter.CreateCounter<long>(DrainedBatchesInstrumentName, "{batch}", "Number of change-feed batches the Outbox Relay handled, by lease.");
+        private static readonly Counter<long> _drainFailures = _meter.CreateCounter<long>(DrainFailuresInstrumentName, "{failure}", "Number of drain attempts that faulted, by lease and error type.");
+        private static readonly Counter<long> _poisonedDocuments = _meter.CreateCounter<long>(PoisonedDocumentsInstrumentName, "{document}", "Number of documents abandoned as poisoned, by lease.");
 
         // INVARIANT: the representable bounds are DERIVED from DateTimeOffset rather than hardcoded, so the range
         // guard in RecordDrainLag can never drift from the range the conversion itself accepts. Neither read can
@@ -110,7 +122,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// enabling only an instrument is enough to take the instrumented path with no .NET <c>ActivityListener</c>
         /// attached.
         /// </summary>
-        public static bool IsEnabled => _source.HasListeners() || _drainLag.Enabled || _drainedDocuments.Enabled || _drainBatchSize.Enabled || _drainedBatches.Enabled;
+        public static bool IsEnabled => _source.HasListeners() || _drainLag.Enabled || _drainedDocuments.Enabled || _drainBatchSize.Enabled || _drainedBatches.Enabled || _drainFailures.Enabled || _poisonedDocuments.Enabled;
 
         /// <summary>
         /// Counts one Outbox Document the Outbox Relay resolved.
@@ -200,6 +212,57 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
             {
                 _drainedBatches.Add(1, tags);
             }
+        }
+
+        /// <summary>
+        /// Counts one drain attempt that faulted.
+        /// </summary>
+        /// <param name="leaseToken">The change-feed lease the attempt was made under, carried as <see cref="LeaseToken"/>.</param>
+        /// <param name="exception">The failure that ended the attempt; its type is carried as <c>error.type</c>.</param>
+        /// <remarks>
+        /// INVARIANT: a faulted attempt is NOT a fourth <see cref="DrainOutcomes"/> value. The Outbox Relay records
+        /// the document's outcome before it publishes, so an attempt that faults afterwards would be counted twice
+        /// on one instrument; an attempt and an outcome are separate facts and are counted on separate instruments.
+        /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/>, never
+        /// <see cref="IsEnabled"/>, and the tags — including the resolved error type — are built INSIDE it, because
+        /// C# evaluates arguments before the callee's guard runs (ADR-0010 R1).
+        /// The error type is resolved through <see cref="ActivityOutcome.ResolveErrorType"/> so this module reports
+        /// the same <c>error.type</c> value the shared send path reports for the same exception.
+        /// </remarks>
+        internal static void RecordDrainFailure(string leaseToken, Exception exception)
+        {
+            if (!_drainFailures.Enabled)
+            {
+                return;
+            }
+
+            var tags = new TagList
+            {
+                { LeaseToken, leaseToken },
+                { ChatterTelemetryTags.ErrorType, ActivityOutcome.ResolveErrorType(exception) },
+            };
+
+            _drainFailures.Add(1, tags);
+        }
+
+        /// <summary>
+        /// Counts one document the Outbox Relay abandoned as poisoned.
+        /// </summary>
+        /// <param name="leaseToken">The change-feed lease the document kept faulting under, carried as <see cref="LeaseToken"/>.</param>
+        /// <remarks>
+        /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/>, never
+        /// <see cref="IsEnabled"/>, and the tag is built INSIDE it (ADR-0010 R1).
+        /// </remarks>
+        internal static void RecordPoisonedDocument(string leaseToken)
+        {
+            if (!_poisonedDocuments.Enabled)
+            {
+                return;
+            }
+
+            var tags = new TagList { { LeaseToken, leaseToken } };
+
+            _poisonedDocuments.Add(1, tags);
         }
 
         private static string ResolveTelemetryVersion()

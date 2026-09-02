@@ -34,8 +34,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <item>On publish success, STAMPS delivered + TTL: a SINGLE <see cref="Container.PatchItemAsync"/> with two ops —
     /// set <c>/status="delivered"</c> and set <c>/ttl=&lt;positive seconds&gt;</c> — keyed by the document id and the
     /// partition key recovered from the change-feed document at the container's declared partition-key path. Cosmos then
-    /// self-purges the delivered document once its TTL elapses (the container MUST have <c>defaultTtl</c> enabled — an
-    /// application prerequisite, not enforced here).</item>
+    /// self-purges the delivered document once its TTL elapses (the container MUST have <c>defaultTtl</c> enabled — a
+    /// startup prerequisite the host verifies through the <c>MonitoredContainerContract</c>, not a silent assumption).</item>
     /// </list>
     /// </summary>
     /// <remarks>
@@ -303,22 +303,62 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // delivered stamp is unrepresentable. Legacy reproduces the original /status="delivered" + /ttl=86400 stamp
         // byte-for-byte. PatchItem (not ReplaceItem) so only the two delivery fields are touched and the aggregate-shaped
         // wire body is left untouched.
-        private async Task StampDeliveredAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
+        private Task StampDeliveredAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
-            if (!CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string id) || string.IsNullOrEmpty(id))
-            {
-                throw new InvalidOperationException("A pending outbox document is missing its 'id'; cannot stamp it delivered.");
-            }
-
-            PartitionKey partitionKey = RecoverPartitionKey(document, partitionKeyPath);
-
             var patchOperations = new List<PatchOperation>
             {
                 PatchOperation.Set(_settings.StatusPatchPath, _settings.DeliveredStatusValue),
                 PatchOperation.Set("/" + CosmosOutboxDocument.TtlField, _settings.DeliveredTtlSeconds),
             };
 
-            await monitoredContainer.PatchItemAsync<JsonElement>(id, partitionKey, patchOperations, requestOptions: null, cancellationToken: cancellationToken);
+            return PatchStampAsync(document, monitoredContainer, partitionKeyPath, "delivered", patchOperations, cancellationToken);
+        }
+
+        /// <summary>
+        /// GIVES UP on a document the configured <see cref="OutboxPoisonPolicy"/> has seen fail consecutively often enough
+        /// (#361): a SINGLE <see cref="Container.PatchItemAsync"/> with exactly ONE op — set the status path to the poison
+        /// value — so <see cref="CosmosOutboxDocument.IsPendingOutbox"/> stops admitting it and the change feed can advance
+        /// past it instead of re-throwing on it forever.
+        /// </summary>
+        /// <remarks>
+        /// The document is NEVER deleted and carries NO ttl op: unlike a delivered document, a given-up one is the evidence
+        /// of the defect that stalled the relay, so it must stay in the container and stay inspectable indefinitely.
+        /// INVARIANT: the id and the partition key are resolved by the SAME reads the delivered stamp uses, so a
+        /// misconfigured partition-key path makes the poison patch fail exactly as the delivered patch would and PROPAGATES.
+        /// A configuration error must not be laundered into "give up on everything".
+        /// </remarks>
+        internal Task StampPoisonedAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken = default)
+        {
+            _ = monitoredContainer ?? throw new ArgumentNullException(nameof(monitoredContainer));
+            _ = partitionKeyPath ?? throw new ArgumentNullException(nameof(partitionKeyPath));
+
+            var patchOperations = new List<PatchOperation>
+            {
+                PatchOperation.Set(_settings.StatusPatchPath, _settings.PoisonPolicy.PoisonStatusValue),
+            };
+
+            return PatchStampAsync(document, monitoredContainer, partitionKeyPath, "poisoned", patchOperations, cancellationToken);
+        }
+
+        // Issues ONE PatchItemAsync for a status stamp, keyed by the document id read off the change-feed item and the
+        // partition key recovered from the SAME item at the container's declared partition-key path. Shared by the
+        // delivered stamp and the #361 poison stamp so both key on identical ground truth by construction; only the patch
+        // operations differ. <paramref name="stampKind"/> names the stamp in the missing-id failure.
+        private static Task PatchStampAsync(JsonElement document,
+                                            Container monitoredContainer,
+                                            IReadOnlyList<string> partitionKeyPath,
+                                            string stampKind,
+                                            IReadOnlyList<PatchOperation> patchOperations,
+                                            CancellationToken cancellationToken)
+        {
+            if (!CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string id) || string.IsNullOrEmpty(id))
+            {
+                throw new InvalidOperationException($"A pending outbox document is missing its 'id'; cannot stamp it {stampKind}.");
+            }
+
+            PartitionKey partitionKey = RecoverPartitionKey(document, partitionKeyPath);
+
+            return monitoredContainer.PatchItemAsync<JsonElement>(id, partitionKey, patchOperations, requestOptions: null, cancellationToken: cancellationToken);
         }
 
         // Recovers the document's partition key by reading the value(s) the document carries at the container's declared

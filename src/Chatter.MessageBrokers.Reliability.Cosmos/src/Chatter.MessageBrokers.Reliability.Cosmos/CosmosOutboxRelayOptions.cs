@@ -94,6 +94,29 @@ namespace Microsoft.Extensions.DependencyInjection
         public string DeliveredStatusValue { get; set; } = "delivered";
 
         /// <summary>
+        /// OPT-IN (#361). The number of CONSECUTIVE failed drains of the SAME document after which the relay gives up on
+        /// that document, stamping it <see cref="PoisonStatusValue"/> so the change feed can advance past it. Defaults to
+        /// <c>0</c> — OFF — which keeps the fail-closed behavior: every failure re-throws, nothing is checkpointed, and the
+        /// document stays pending. Must not be negative.
+        /// </summary>
+        /// <remarks>
+        /// Enable this only when head-of-line blocking is the greater risk. Throw-so-no-checkpoint is CORRECT for a
+        /// TRANSIENT publish failure — the gap it closes is that there is otherwise no escape from a DETERMINISTIC one,
+        /// where one undeliverable document stalls every later document in its partition range indefinitely. A given-up
+        /// document is NEVER deleted and carries NO TTL: it stays in the container, inspectable, at its poison status.
+        /// </remarks>
+        public int PoisonAfterConsecutiveFailures { get; set; }
+
+        /// <summary>
+        /// The status value a given-up document is stamped with once <see cref="PoisonAfterConsecutiveFailures"/> is
+        /// reached. Defaults to <c>poisoned</c>. Read only while the policy is enabled, and then it must be non-empty, must
+        /// differ from <c>pending</c> (which would re-surface the document forever), and must differ from
+        /// <see cref="DeliveredStatusValue"/> (which would make a give-up indistinguishable from a delivery) — all rejected
+        /// at construction.
+        /// </summary>
+        public string PoisonStatusValue { get; set; } = "poisoned";
+
+        /// <summary>
         /// Optional. An ADDITIONAL predicate that can only further NARROW which documents the relay admits. The relay
         /// ALWAYS applies the built-in <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard first; this predicate
         /// runs only on documents that already passed it (logical AND) and therefore cannot replace or weaken the #222

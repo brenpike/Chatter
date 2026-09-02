@@ -345,6 +345,56 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         [Fact]
+        public void MustThrowAtRegistrationWhenPoisonAfterConsecutiveFailuresIsNegative()
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.PoisonAfterConsecutiveFailures = -1));
+
+            act.Should().Throw<ArgumentException>(
+                "a negative consecutive-failure threshold is meaningless — 0 is the off switch — and is rejected at registration, before the provider is built");
+        }
+
+        [Fact]
+        public void MustThrowAtRegistrationWhenPoisonStatusValueEqualsPending()
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
+            {
+                options.PoisonAfterConsecutiveFailures = 3;
+                options.PoisonStatusValue = CosmosOutboxDocument.StatusPending;
+            }));
+
+            act.Should().Throw<ArgumentException>(
+                "a poison status equal to pending would leave the given-up document admitted forever — the very stall the policy exists to end");
+        }
+
+        [Fact]
+        public void MustThrowAtRegistrationWhenPoisonStatusValueEqualsTheDeliveredStatusValue()
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
+            {
+                options.PoisonAfterConsecutiveFailures = 3;
+                options.PoisonStatusValue = options.DeliveredStatusValue;
+            }));
+
+            act.Should().Throw<ArgumentException>(
+                "a give-up stamped with the delivered value would be indistinguishable from an actual delivery");
+        }
+
+        [Fact]
+        public void MustLeaveThePoisonPolicyOffByDefault()
+        {
+            var options = new CosmosOutboxRelayOptions();
+
+            options.PoisonAfterConsecutiveFailures.Should().Be(0,
+                "the poison policy is opt-in; an unconfigured relay keeps today's fail-closed behavior");
+        }
+
+        [Fact]
         public void TypedOverloadMustRegisterTheResolverAsScoped()
         {
             ServiceCollection services = ServicesWithBrokerDependencies();
