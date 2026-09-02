@@ -33,6 +33,24 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
                 cancellationToken).ConfigureAwait(false);
         }
 
+        // Idempotently creates dbo.[tableName] with the same columns as CreateTableAsync but NO PRIMARY KEY, so the
+        // install procedure's precondition gate can be exercised against a real table the trigger could not build a
+        // FULL OUTER JOIN for. Id carries a UNIQUE constraint deliberately: the gate must refuse on the absence of a
+        // PRIMARY KEY specifically, not on the absence of any key-shaped constraint.
+        public static async Task CreateTableWithoutPrimaryKeyAsync(string connectionString, string tableName, CancellationToken cancellationToken)
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            await ExecuteNonQueryAsync(connection,
+                $"IF OBJECT_ID('dbo.[{tableName}]', 'U') IS NULL " +
+                $"CREATE TABLE dbo.[{tableName}] (" +
+                "Id INT NOT NULL UNIQUE, " +
+                "Name NVARCHAR(200) NULL, " +
+                "Value NVARCHAR(200) NULL);",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         public static async Task DropTableAsync(string connectionString, string tableName, CancellationToken cancellationToken)
         {
             await using var connection = new SqlConnection(connectionString);
@@ -54,6 +72,58 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
                 ("@id", id),
                 ("@name", (object)name ?? DBNull.Value),
                 ("@value", (object)value ?? DBNull.Value)).ConfigureAwait(false);
+        }
+
+        // Inserts a row naming Id plus only the supplied columns, so a test can write to a watched table whose
+        // column set has DRIFTED away from the (Id, Name, Value) shape CreateTableAsync provisions. Column names
+        // are test constants, never caller input.
+        public static async Task InsertRowWithColumnsAsync(string connectionString, string tableName, int id, CancellationToken cancellationToken, params (string Column, object Value)[] columns)
+        {
+            var columnList = string.Empty;
+            var valueList = string.Empty;
+            var parameters = new (string Name, object Value)[columns.Length + 1];
+            parameters[0] = ("@id", id);
+
+            for (var i = 0; i < columns.Length; i++)
+            {
+                columnList += $", [{columns[i].Column}]";
+                valueList += $", @p{i}";
+                parameters[i + 1] = ($"@p{i}", columns[i].Value ?? DBNull.Value);
+            }
+
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            await ExecuteNonQueryAsync(connection,
+                $"INSERT INTO dbo.[{tableName}] (Id{columnList}) VALUES (@id{valueList});",
+                cancellationToken,
+                parameters).ConfigureAwait(false);
+        }
+
+        // Adds a nullable NVARCHAR column to the watched table, mimicking an ordinary consumer schema migration that
+        // widens a table the change feed is already installed on. Idempotent.
+        public static async Task AddColumnAsync(string connectionString, string tableName, string columnName, CancellationToken cancellationToken)
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            await ExecuteNonQueryAsync(connection,
+                $"IF COL_LENGTH('dbo.[{tableName}]', '{columnName}') IS NULL " +
+                $"ALTER TABLE dbo.[{tableName}] ADD [{columnName}] NVARCHAR(200) NULL;",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        // Drops a column from the watched table, mimicking the ordinary consumer schema migration that strands an
+        // already-installed change-feed trigger on a column that no longer exists. Idempotent.
+        public static async Task DropColumnAsync(string connectionString, string tableName, string columnName, CancellationToken cancellationToken)
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            await ExecuteNonQueryAsync(connection,
+                $"IF COL_LENGTH('dbo.[{tableName}]', '{columnName}') IS NOT NULL " +
+                $"ALTER TABLE dbo.[{tableName}] DROP COLUMN [{columnName}];",
+                cancellationToken).ConfigureAwait(false);
         }
 
         public static async Task UpdateRowAsync(string connectionString, string tableName, int id, string name, string value, CancellationToken cancellationToken)
@@ -86,6 +156,63 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
             => await ScalarExistsAsync(connectionString,
                 "SELECT OBJECT_ID('dbo.[' + @name + ']', 'TR');",
                 triggerName, cancellationToken).ConfigureAwait(false);
+
+        // The trigger's object_id, or null when no such trigger exists. A DROP + CREATE always yields a NEW
+        // object_id, so a caller comparing a before value to an after value can tell a refreshed trigger from an
+        // untouched one without depending on the 3ms resolution of sys.objects.modify_date.
+        public static async Task<int?> GetTriggerObjectIdAsync(string connectionString, string triggerName, CancellationToken cancellationToken)
+        {
+            var objectId = await ScalarAsync(connectionString,
+                "SELECT OBJECT_ID('dbo.[' + @name + ']', 'TR');",
+                triggerName, cancellationToken).ConfigureAwait(false);
+            return objectId is null ? (int?)null : (int)objectId;
+        }
+
+        // The trigger's sys.objects.modify_date, or null when no such trigger exists. Pins the steady-state no-op:
+        // a migration run that changed nothing must leave the installed trigger's modify_date alone.
+        public static async Task<DateTime?> GetTriggerModifiedDateAsync(string connectionString, string triggerName, CancellationToken cancellationToken)
+        {
+            var modifiedDate = await ScalarAsync(connectionString,
+                "SELECT modify_date FROM sys.objects WHERE object_id = OBJECT_ID('dbo.[' + @name + ']', 'TR');",
+                triggerName, cancellationToken).ConfigureAwait(false);
+            return modifiedDate is null ? (DateTime?)null : (DateTime)modifiedDate;
+        }
+
+        // The trigger's stored T-SQL text (sys.sql_modules.definition), or null when no such trigger exists. The
+        // drift proof reads it to assert the refreshed trigger names the CURRENT column set.
+        public static async Task<string> GetTriggerDefinitionAsync(string connectionString, string triggerName, CancellationToken cancellationToken)
+        {
+            var definition = await ScalarAsync(connectionString,
+                "SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID('dbo.[' + @name + ']', 'TR');",
+                triggerName, cancellationToken).ConfigureAwait(false);
+            return (string)definition;
+        }
+
+        // The stored procedure's stored T-SQL text (sys.sql_modules.definition), or null when no such procedure
+        // exists. The topology-divergence proof reads the uninstall Change Feed Stored Procedure's body before and
+        // after a REFUSED Change Feed Migration to assert the refusal left the consumer's only handle on the
+        // already-installed objects untouched.
+        public static async Task<string> GetStoredProcedureDefinitionAsync(string connectionString, string procedureName, CancellationToken cancellationToken)
+        {
+            var definition = await ScalarAsync(connectionString,
+                "SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID('dbo.[' + @name + ']', 'P');",
+                procedureName, cancellationToken).ConfigureAwait(false);
+            return (string)definition;
+        }
+
+        // The name of the queue the named Service Broker service is bound to, or null when no such service exists.
+        // A service carries its binding in sys.services.service_queue_id, which no name probe can see, so this
+        // resolves that id through sys.service_queues - the same join the install Stored Procedure's service-binding
+        // gate performs.
+        public static async Task<string> GetQueueBoundToServiceAsync(string connectionString, string serviceName, CancellationToken cancellationToken)
+        {
+            var queueName = await ScalarAsync(connectionString,
+                "SELECT q.name FROM sys.services svc " +
+                "INNER JOIN sys.service_queues q ON q.object_id = svc.service_queue_id " +
+                "WHERE svc.name = @name;",
+                serviceName, cancellationToken).ConfigureAwait(false);
+            return (string)queueName;
+        }
 
         // True when a Service Broker queue with the given name exists (sys.service_queues).
         public static async Task<bool> QueueExistsAsync(string connectionString, string queueName, CancellationToken cancellationToken)
@@ -159,6 +286,11 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
         }
 
         private static async Task<bool> ScalarExistsAsync(string connectionString, string commandText, string name, CancellationToken cancellationToken)
+            => await ScalarAsync(connectionString, commandText, name, cancellationToken).ConfigureAwait(false) != null;
+
+        // Runs a single-value query parameterized by @name and normalizes both "no row" and DBNull to null, so a
+        // caller sees a missing object as null rather than as an exception or a DBNull sentinel.
+        private static async Task<object> ScalarAsync(string connectionString, string commandText, string name, CancellationToken cancellationToken)
         {
             await using var connection = new SqlConnection(connectionString);
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -167,7 +299,7 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
             command.CommandText = commandText;
             command.Parameters.Add(new SqlParameter("@name", name));
             var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            return result != null && result != DBNull.Value;
+            return result == DBNull.Value ? null : result;
         }
 
         private static async Task ExecuteNonQueryAsync(SqlConnection connection, string commandText, CancellationToken cancellationToken, params (string Name, object Value)[] parameters)

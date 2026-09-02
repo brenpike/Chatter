@@ -19,11 +19,12 @@ _Avoid_: change stream.
 
 **Change Feed Item**: A single captured row change (`ChangeFeedItem<T>`); a batch is delivered as `ProcessChangeFeedCommand<T>` in manual mode (`ProcessTableChangesManually()`).
 
-**Change Feed Migration**: Opt-in, idempotent SQL provisioning (`UseChangeFeedSqlMigrations<T>`) that installs the Service Broker objects, table Trigger, and install/uninstall Stored Procedures. Not run automatically at registration.
+**Change Feed Migration**: Opt-in, re-runnable SQL provisioning (`UseChangeFeedSqlMigrations<T>`) that installs the Service Broker objects, table Trigger, and install/uninstall Stored Procedures. Not run automatically at registration. Re-running it reconciles rather than repeats: the Stored Procedures are replaced in place, and the Trigger is refreshed only when the watched table's column fingerprint differs from the one the installed Trigger carries. It refuses a run outright — before creating or altering any Service Broker object — when the installed Service Broker topology diverges from the configured names, that is, when a service is bound to a queue this configuration does not use. The refusal is non-destructive and repairs nothing: recovery is to run the installed uninstall Stored Procedure for that change feed, then re-run the Change Feed Migration.
 
 ## Relationships
 
 - A Change Feed Migration installs the Trigger and Stored Procedures on the watched table; provisioning is opt-in, not automatic.
+- Re-running a Change Feed Migration is the repair path for a watched table whose columns changed after install: the Trigger is refreshed from the current column set, and left untouched when the columns are unchanged.
 - The Trigger fires on row changes and pushes onto SQL Service Broker; the resulting notifications form the Change Feed.
 - By default the Change Feed fans out to Row Changed Events; manual mode delivers raw Change Feed Items instead.
 - Change-feed notifications are handled through Chatter.CQRS handlers and can be relayed via the Message Brokers context.

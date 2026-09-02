@@ -13,14 +13,12 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
     // enabled. It deliberately provisions NO broker objects, table, or trigger: the production change-feed
     // migration (UseChangeFeedSqlMigrations<TRow>) is the SYSTEM UNDER TEST and installs all of those itself.
     //
-    // Why the app database is created with ENABLE_BROKER WITH ROLLBACK IMMEDIATE here: the production install
-    // script's broker-enable branch is `ALTER DATABASE ... SET ENABLE_BROKER;` WITHOUT ROLLBACK IMMEDIATE,
-    // guarded by `is_broker_enabled = 0`. A non-rollback ENABLE_BROKER blocks until it is the only session on
-    // the database, which would deadlock the CRUD / re-arm / uninstall test classes that run the migration over
-    // a connection while the receiver pump also holds connections. Pre-enabling the broker here makes that
-    // production branch a no-op (the guard sees is_broker_enabled = 1 and skips it) for those classes. The
-    // dedicated test that proves the migration itself flips the broker bit (ChangeFeedBrokerEnableMigrationTests)
-    // creates its OWN fresh database without pre-enabling, so it exercises the real ENABLE_BROKER branch.
+    // Why the app database is created with the broker already enabled: it gives the shared CRUD / re-arm /
+    // uninstall test classes a known starting state in which the production install script's broker-enable branch
+    // is a no-op (its `is_broker_enabled = 0` guard skips it), so those classes exercise only the object-creation
+    // path. The dedicated tests that must exercise the ENABLE_BROKER branch itself
+    // (ChangeFeedBrokerEnableMigrationTests, ChangeFeedDatabaseOwnershipTests) create their OWN fresh databases
+    // with the broker explicitly disabled.
     //
     // When Docker is unavailable the fixture is a no-op: InitializeAsync starts nothing (the container stays
     // null) and the connection-string getters throw. RequiresDockerFact SKIPS the tests at discovery time in
@@ -35,7 +33,7 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
 
         // The dedicated application database the change-feed migration runs against for the CRUD / re-arm /
         // uninstall test classes. Kept distinct from any database the container ships with so teardown can drop
-        // it wholesale. The broker-enable migration test creates its own separate database and does not use this.
+        // it wholesale. The broker-enable and database-ownership tests create their own separate databases instead.
         public const string DatabaseName = "chatter_scf_it";
 
         // Bounds container start + database creation so a wedged Docker pull/start or a hung setup DDL fails fast
@@ -73,8 +71,8 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
             => RepointCatalog(GetMasterConnectionString(), DatabaseName);
 
         // The connection string pointed at an arbitrary database on the same container, preserving every other
-        // setting. The broker-enable migration test uses this to reach the fresh database it creates without
-        // pre-enabled broker. Throws if the container was not started.
+        // setting. The broker-enable and database-ownership tests use this to reach the fresh databases they
+        // create without a pre-enabled broker. Throws if the container was not started.
         public string GetConnectionStringForDatabase(string databaseName)
             => RepointCatalog(GetMasterConnectionString(), databaseName);
 
@@ -116,10 +114,10 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
             await _container.DisposeAsync().ConfigureAwait(false);
         }
 
-        // Connects to 'master', creates the dedicated app database if absent, and enables Service Broker on it
-        // with ROLLBACK IMMEDIATE so the broker is on before any test runs (making the production migration's
-        // non-rollback ENABLE_BROKER branch a no-op for the classes that use this database). Wrapped in a bounded
-        // retry so a not-yet-ready container surfaces as a retry rather than a hard failure.
+        // Connects to 'master', creates the dedicated app database if absent, and enables Service Broker on it so
+        // the broker is on before any test runs, making the production migration's ENABLE_BROKER branch a no-op for
+        // the classes that use this database. Wrapped in a bounded retry so a not-yet-ready container surfaces as a
+        // retry rather than a hard failure.
         private static async Task EnsureAppDatabaseWithBrokerEnabledAsync(string masterConnectionString, CancellationToken cancellationToken)
         {
             var attempt = 0;

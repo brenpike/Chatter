@@ -193,5 +193,100 @@ namespace Chatter.SqlChangeFeed.Tests.UsingChangeFeedReceiver
             context.Container.TryGet<IExternalDispatcher>(out var external).Should().BeTrue();
             external.Should().BeSameAs(_brokeredDispatcher.Object);
         }
+
+        // INVARIANT: a task returned from a non-async delegate that is completed from a background thread only after
+        // a genuine delay, never touching the ambient SynchronizationContext itself. The delay guarantees the
+        // returned task is still incomplete at the moment the receiver's `await` statement observes it, forcing a
+        // real asynchronous suspension rather than a synchronous completion the awaiter could skip scheduling for
+        // (a task already complete at await-time never registers a continuation, so it would prove nothing). This
+        // isolates the assertion to the receiver's OWN await behavior: any Post recorded below can only come from
+        // the receiver's per-change-item `await dispatcher.Dispatch(...)` capturing the ambient context, not from
+        // anything internal to the mock.
+        private static Task DeferredDispatchTask()
+        {
+            var completionSource = new TaskCompletionSource<object>();
+            Task.Run(() =>
+            {
+                Thread.Sleep(50);
+                completionSource.SetResult(null);
+            });
+            return completionSource.Task;
+        }
+
+        private sealed class RecordingSynchronizationContext : SynchronizationContext
+        {
+            private int _postCount;
+
+            public int PostCount => Volatile.Read(ref _postCount);
+
+            public override void Post(SendOrPostCallback d, object state)
+            {
+                Interlocked.Increment(ref _postCount);
+                base.Post(d, state);
+            }
+        }
+
+        // INVARIANT: runs a single command through the receiver under a recording SynchronizationContext and asserts
+        // no continuation was posted back to it. Each of the three call sites below drives exactly ONE
+        // per-change-item dispatch call (one item, one branch), so the assertion pins THAT SPECIFIC
+        // `await dispatcher.Dispatch(...)` call site independently of the other two. A single mixed-item batch
+        // would not do this reliably: once the first await's continuation resumes via Post, whether the ambient
+        // SynchronizationContext is still observably current for a LATER await in the same loop iteration is an
+        // artifact of the runtime's continuation-wrapping, not something this test should lean on. One item per
+        // test isolates each call site on its own merits.
+        private void AssertNoContinuationPosted(ProcessChangeFeedCommand<FakeRowData> command)
+        {
+            var recordingContext = new RecordingSynchronizationContext();
+            var originalContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(recordingContext);
+            try
+            {
+                // Blocking GetResult(), not await, so the test method itself never registers its own continuation
+                // against recordingContext; any Post recorded below is solely attributable to the receiver's
+                // internal per-change-item dispatch await.
+                CreateReceiver().DispatchReceivedMessageAsync(command, CreateContext(), CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(originalContext);
+            }
+
+            recordingContext.PostCount.Should().Be(0,
+                "the per-change-item dispatch await must use ConfigureAwait(false) so no continuation is posted back to a caller's SynchronizationContext");
+        }
+
+        [Fact]
+        public void MustNotPostContinuationToCapturedSynchronizationContextWhenDispatchingRowUpdatedEvent()
+        {
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<RowUpdatedEvent<FakeRowData>>(), It.IsAny<IMessageHandlerContext>()))
+                .Returns(DeferredDispatchTask);
+
+            var command = Command(new ChangeFeedItem<FakeRowData> { Inserted = new FakeRowData(), Deleted = new FakeRowData() });
+
+            AssertNoContinuationPosted(command);
+        }
+
+        [Fact]
+        public void MustNotPostContinuationToCapturedSynchronizationContextWhenDispatchingRowInsertedEvent()
+        {
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<RowInsertedEvent<FakeRowData>>(), It.IsAny<IMessageHandlerContext>()))
+                .Returns(DeferredDispatchTask);
+
+            var command = Command(new ChangeFeedItem<FakeRowData> { Inserted = new FakeRowData() });
+
+            AssertNoContinuationPosted(command);
+        }
+
+        [Fact]
+        public void MustNotPostContinuationToCapturedSynchronizationContextWhenDispatchingRowDeletedEvent()
+        {
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<RowDeletedEvent<FakeRowData>>(), It.IsAny<IMessageHandlerContext>()))
+                .Returns(DeferredDispatchTask);
+
+            var command = Command(new ChangeFeedItem<FakeRowData> { Deleted = new FakeRowData() });
+
+            AssertNoContinuationPosted(command);
+        }
     }
 }

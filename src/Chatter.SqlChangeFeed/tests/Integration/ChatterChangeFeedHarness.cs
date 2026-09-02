@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Chatter.CQRS;
+using Chatter.SqlChangeFeed.Configuration;
 using Chatter.SqlChangeFeed.DependencyInjection;
 using Chatter.SqlChangeFeed.Scripts;
 using Microsoft.Extensions.Configuration;
@@ -73,10 +74,16 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
         // RecordingChangeFeedHandler<RowXEvent<TRow>> is registered explicitly for each emitted change event so
         // Chatter's dispatcher resolves and invokes it on the real change-feed receive path (the assembly scan
         // excludes the open-generic handler).
+        //
+        // configureOptions is an optional hook onto the SAME production options builder AddSqlChangeFeed uses, so a
+        // test can install a change feed under one configuration and then re-run the migration under another against
+        // the same database. It runs AFTER the finite receiver timeout is applied, so a caller that never touches
+        // the receiver timeout keeps the WAITFOR-hang guard intact.
         public static ChatterChangeFeedHarness<TRow> Build(
             string connectionString,
             string databaseName,
-            string tableName)
+            string tableName,
+            Action<SqlChangeFeedOptionsBuilder> configureOptions = null)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
             {
@@ -113,7 +120,11 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
                     connectionString,
                     databaseName,
                     tableName,
-                    options => options.WithReceiverTimeoutInMilliseconds(FiniteReceiverTimeoutInMilliseconds));
+                    options =>
+                    {
+                        options.WithReceiverTimeoutInMilliseconds(FiniteReceiverTimeoutInMilliseconds);
+                        configureOptions?.Invoke(options);
+                    });
 
             // Register a closed RecordingChangeFeedHandler<TEvent> as the IMessageHandler<TEvent> Chatter's
             // dispatcher resolves for each emitted change-feed event type.

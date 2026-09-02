@@ -76,13 +76,18 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.UsingInstallChangeFeedScript
                 .Should().Throw<ArgumentException>();
 
         [Fact]
-        public void MustNotGuardDeadLetterNames()
+        public void MustNotGuardDeadLetterNamesAtConstruction()
             => FluentActions.Invoking(() => new InstallChangeFeedScript(Options(), InstallProcedure, Queue, Service, Trigger, null, null))
                 .Should().NotThrow();
 
         [Fact]
+        public void MustThrowWhenEmittingWithNullDeadLetterNames()
+            => FluentActions.Invoking(() => new InstallChangeFeedScript(Options(), InstallProcedure, Queue, Service, Trigger, null, null).ToString())
+                .Should().Throw<ArgumentException>();
+
+        [Fact]
         public void MustEmitCreateProcedureForInstallationProcedure()
-            => Create().ToString().Should().Contain($"CREATE PROCEDURE {Schema}.{InstallProcedure}");
+            => Create().ToString().Should().Contain($"CREATE OR ALTER PROCEDURE [{Schema}].[{InstallProcedure}]");
 
         [Fact]
         public void MustEmitUseDatabaseFromOptions()
@@ -90,10 +95,19 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.UsingInstallChangeFeedScript
 
         [Fact]
         public void MustEmitNestedServiceBrokerContentForConfiguredQueue()
-            => Create().ToString().Should().Contain($"CREATE QUEUE {Schema}.[{Queue}]".Replace("'", "''"));
+            => Create().ToString().Should().Contain($"CREATE QUEUE [{Schema}].[{Queue}]".Replace("'", "''"));
 
         [Fact]
         public void MustEmitNestedTriggerContentForConfiguredTable()
-            => Create().ToString().Should().Contain($"CREATE TRIGGER {Schema}.[{Trigger}]".Replace("'", "''''"));
+            => Create().ToString().Should().Contain($"CREATE TRIGGER [{Schema}].[{Trigger}]".Replace("'", "''''"));
+
+        [Fact]
+        public void MustEscapeHostileTableNameInNestedTableLiteral()
+        {
+            var options = new SqlChangeFeedOptions(ConnectionString, Database, "My]Table'; DROP TABLE Users;--", Schema,
+                ChangeTypes.Insert, true, Queue, DeadLetterQueue);
+            var script = new InstallChangeFeedScript(options, InstallProcedure, Queue, Service, Trigger, DeadLetterQueue, DeadLetterService).ToString();
+            script.Should().Contain("tab.TABLE_NAME = ''My]Table''''; DROP TABLE Users;--''");
+        }
     }
 }

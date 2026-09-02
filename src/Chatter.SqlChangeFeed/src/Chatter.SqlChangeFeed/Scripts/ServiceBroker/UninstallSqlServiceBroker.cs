@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Chatter.SqlChangeFeed.Scripts.Sql;
+using System;
 
 namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
 {
@@ -50,39 +51,52 @@ namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
             _deadLetterServiceName = deadLetterServiceName;
         }
 
-        private string Uninstall(string queueName, string serviceName, string schemaName)
+        // INVARIANT: a T-SQL local variable name cannot be delimited, so the SERVICE name can never be spliced
+        // into one. Each block gets a code-owned discriminator instead; the cursor is deallocated before the
+        // next block declares it, so both blocks can share a single cursor name.
+        private const string ConversationVariablePrefix = "Conversation";
+        private const string DeadLetterVariablePrefix = "DeadLetter";
+
+        private static string Uninstall(string queueName, string serviceName, string schemaName, string variablePrefix)
         {
+            var qualifiedQueueName = SqlIdentifier.EscapeQualified(schemaName, queueName);
+
             return string.Format(@"
-                DECLARE @{1}_Id INT
-                SELECT @{1}_Id = service_id FROM sys.services 
+                DECLARE @{0}_Id INT
+                SELECT @{0}_Id = service_id FROM sys.services
                 WHERE sys.services.name = '{1}'
 
-                DECLARE @{1}_CovHandle uniqueidentifier
+                DECLARE @{0}_CovHandle uniqueidentifier
                 DECLARE Conv CURSOR FOR
                 SELECT CEP.conversation_handle FROM sys.conversation_endpoints CEP
-                WHERE CEP.service_id = @{1}_Id AND ([state] != 'CD' OR [lifetime] > GETDATE() + 1)
+                WHERE CEP.service_id = @{0}_Id AND ([state] != 'CD' OR [lifetime] > GETDATE() + 1)
 
                 OPEN Conv;
-                FETCH NEXT FROM Conv INTO @{1}_CovHandle;
+                FETCH NEXT FROM Conv INTO @{0}_CovHandle;
                 WHILE (@@FETCH_STATUS = 0) BEGIN
-    	            END CONVERSATION @{1}_CovHandle WITH CLEANUP;
-                    FETCH NEXT FROM Conv INTO @{1}_CovHandle;
+    	            END CONVERSATION @{0}_CovHandle WITH CLEANUP;
+                    FETCH NEXT FROM Conv INTO @{0}_CovHandle;
                 END
                 CLOSE Conv;
                 DEALLOCATE Conv;
 
-                IF (@{1}_Id IS NOT NULL)
-                    DROP SERVICE [{1}];
-                IF OBJECT_ID ('{2}.{0}', 'SQ') IS NOT NULL
-	                DROP QUEUE {2}.[{0}];
-            ", queueName, serviceName, schemaName);
+                IF (@{0}_Id IS NOT NULL)
+                    DROP SERVICE {2};
+                IF OBJECT_ID ('{3}', 'SQ') IS NOT NULL
+	                DROP QUEUE {4};
+            ",
+             variablePrefix,
+             SqlIdentifier.QuoteLiteral(serviceName),
+             SqlIdentifier.Escape(serviceName),
+             SqlIdentifier.QuoteLiteral(qualifiedQueueName),
+             qualifiedQueueName);
         }
 
         public override string ToString()
         {
-            return $"{Uninstall(_conversationQueueName, _conversationServiceName, _schemaName)}" +
+            return $"{Uninstall(_conversationQueueName, _conversationServiceName, _schemaName, ConversationVariablePrefix)}" +
                    $"{Environment.NewLine}" +
-                   $"{Uninstall(_deadLetterQueueName, _deadLetterServiceName, _schemaName)}" +
+                   $"{Uninstall(_deadLetterQueueName, _deadLetterServiceName, _schemaName, DeadLetterVariablePrefix)}" +
                    $"{Environment.NewLine}";
         }
     }

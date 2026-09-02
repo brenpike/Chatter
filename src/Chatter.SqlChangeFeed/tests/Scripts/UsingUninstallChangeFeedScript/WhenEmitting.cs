@@ -85,8 +85,8 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.UsingUninstallChangeFeedScript
                 .Should().Throw<ArgumentException>();
 
         [Fact]
-        public void MustEmitCreateProcedureForUninstallProcedure()
-            => Create().ToString().Should().Contain($"CREATE PROCEDURE {Schema}.{UninstallProcedure}");
+        public void MustEmitCreateOrAlterProcedureForUninstallProcedure()
+            => Create().ToString().Should().Contain($"CREATE OR ALTER PROCEDURE [{Schema}].[{UninstallProcedure}]");
 
         [Fact]
         public void MustEmitUseDatabaseFromOptions()
@@ -94,10 +94,25 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.UsingUninstallChangeFeedScript
 
         [Fact]
         public void MustEmitNestedDropTriggerContent()
-            => Create().ToString().Should().Contain($"DROP TRIGGER {Schema}.[{Trigger}]".Replace("'", "''"));
+            => Create().ToString().Should().Contain($"DROP TRIGGER [{Schema}].[{Trigger}]".Replace("'", "''"));
 
         [Fact]
         public void MustEmitNestedUninstallBrokerContent()
-            => Create().ToString().Should().Contain($"DROP QUEUE {Schema}.[{Queue}]".Replace("'", "''"));
+            => Create().ToString().Should().Contain($"DROP QUEUE [{Schema}].[{Queue}]".Replace("'", "''"));
+
+        [Fact]
+        public void MustEscapeHostileTriggerNameThroughTheWholeNestedComposition()
+            => new UninstallChangeFeedScript(Options(), UninstallProcedure, Queue, Service, "My]Trig'ger;--", InstallProcedure, DeadLetterQueue, DeadLetterService)
+                .ToString().Should().Contain($"DROP TRIGGER [{Schema}].[My]]Trig''ger;--]");
+
+        [Fact]
+        public void MustEscapeHostileQueueNameThroughTheWholeNestedComposition()
+            => new UninstallChangeFeedScript(Options(), UninstallProcedure, "Ev]il'Q;--", Service, Trigger, InstallProcedure, DeadLetterQueue, DeadLetterService)
+                .ToString().Should().Contain($"DROP QUEUE [{Schema}].[Ev]]il''Q;--]");
+
+        [Fact]
+        public void MustNotLeaveHostileQueueNameAbleToCloseTheExecStringLiteral()
+            => new UninstallChangeFeedScript(Options(), UninstallProcedure, "Ev]il'Q;--", Service, Trigger, InstallProcedure, DeadLetterQueue, DeadLetterService)
+                .ToString().Should().NotContain($"DROP QUEUE [{Schema}].[Ev]]il'Q;--]");
     }
 }

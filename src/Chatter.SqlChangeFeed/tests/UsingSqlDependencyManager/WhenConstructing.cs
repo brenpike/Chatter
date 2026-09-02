@@ -26,6 +26,16 @@ namespace Chatter.SqlChangeFeed.Tests.UsingSqlDependencyManager
         }
 
         [Fact]
+        public void MustExposeSuppliedOptionsThroughNonGenericInterface()
+        {
+            var options = new SqlChangeFeedOptions("connection-string", "database", "table");
+
+            ISqlDependencyManager manager = new SqlDependencyManager<FakeRowData>(options);
+
+            manager.Options.Should().BeSameAs(options);
+        }
+
+        [Fact]
         public void MustNotThrowWhenConstructedWithNullOptions()
             => FluentActions.Invoking(() => new SqlDependencyManager<FakeRowData>(null))
                 .Should().NotThrow();

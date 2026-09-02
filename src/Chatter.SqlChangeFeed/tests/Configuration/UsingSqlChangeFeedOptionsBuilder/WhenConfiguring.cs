@@ -165,6 +165,15 @@ namespace Chatter.SqlChangeFeed.Tests.Configuration.UsingSqlChangeFeedOptionsBui
                 .ReceiverOptions.DeadLetterQueuePath.Should().Be("dlq-service");
 
         [Fact]
+        public void MustMapWithChangeFeedDeadLetterServiceNameToChangeFeedDeadLetterServiceName()
+            => CreateBuilder().WithChangeFeedDeadLetterServiceName("dlq-service").Build()
+                .ChangeFeedDeadLetterServiceName.Should().Be("dlq-service");
+
+        [Fact]
+        public void MustLeaveChangeFeedDeadLetterServiceNameNullWhenNotConfigured()
+            => CreateBuilder().Build().ChangeFeedDeadLetterServiceName.Should().BeNull();
+
+        [Fact]
         public void MustReturnSameBuilderInstanceFromWithSchema()
         {
             var builder = CreateBuilder();

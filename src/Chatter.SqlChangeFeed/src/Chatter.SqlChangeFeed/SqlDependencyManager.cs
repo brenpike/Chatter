@@ -49,8 +49,15 @@ namespace Chatter.SqlChangeFeed
                                                    deadLetterServiceName);
 
             await installChangeFeedScript.ExecuteAsync(token).ConfigureAwait(false);
-            await uninstallChangeFeedScript.ExecuteAsync(token).ConfigureAwait(false);
             await execInstallationProcedureScript.ExecuteAsync(token).ConfigureAwait(false);
+
+            // INVARIANT: the uninstall procedure is regenerated only after the installation procedure has
+            // executed successfully. Both procedures are emitted with CREATE OR ALTER, so regenerating it
+            // first would overwrite the already-installed uninstall procedure - the consumer's only handle
+            // on the objects installed by a previous run - before knowing whether this run succeeds. A
+            // failed or refused installation leaves that previously-installed procedure body intact
+            // because the exec above propagates its failure and short-circuits this statement.
+            await uninstallChangeFeedScript.ExecuteAsync(token).ConfigureAwait(false);
         }
 
         public async Task UninstallSqlDependencies(string uninstallationProcedureName = "", CancellationToken token = default)

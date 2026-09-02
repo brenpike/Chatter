@@ -160,6 +160,25 @@ assert_project_url() {
   [ -n "$project_url" ] || report_gap "$package_id" 'nuspec declares no <projectUrl> (PackageProjectUrl not set)'
 }
 
+# No packable project may ship an ASP.NET Core package dependency: Chatter modules are
+# technology-agnostic libraries, and a shipped AspNetCore reference is a coupling that has
+# already leaked in once (Chatter.SqlChangeFeed pulled in Microsoft.AspNetCore.Http.Abstractions).
+# A nuspec can declare its dependencies across several <group targetFramework="..."> blocks for a
+# multi-targeted project, so every <dependency> element in the whole nuspec is checked, not just
+# the first group.
+assert_no_aspnetcore_dependency() {
+  local package_id="$1" nuspec="$2"
+  local dependency_elements dependency_element dependency_id
+
+  dependency_elements="$(grep -o '<dependency [^>]*>' <<<"$nuspec" || true)"
+  while IFS= read -r dependency_element; do
+    [ -z "$dependency_element" ] && continue
+    dependency_id="$(read_attribute "$dependency_element" id)"
+    [[ "$dependency_id" =~ ^Microsoft\.AspNetCore(\.|$) ]] || continue
+    report_gap "$package_id" "nuspec declares a dependency on '$dependency_id' (ASP.NET Core packages must not ship inside a Chatter package)"
+  done <<<"$dependency_elements"
+}
+
 assert_package_provenance() {
   local project="$1"
   local package_id nupkg nuspec
@@ -183,6 +202,7 @@ assert_package_provenance() {
   assert_symbol_package "$package_id" "$nupkg"
   assert_readme "$package_id" "$nupkg" "$nuspec"
   assert_project_url "$package_id" "$nuspec"
+  assert_no_aspnetcore_dependency "$package_id" "$nuspec"
 }
 
 resolve_invocation_mode "$@"
