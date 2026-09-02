@@ -62,6 +62,12 @@ The module ships three independently registrable primitives — the **Document T
 
 **Outbox Drain Context**: The per-document context the Standalone Outbox Relay hands to its Outbox Body Resolver, carrying the verbatim message id, recovered partition key, declared partition-key path, and the raw document.
 
+**Drain Outcome**: How the Outbox Relay resolved one document the change feed handed it — *admitted* when it was a pending Outbox Document whose brokered message was published, *skipped* when it was not a pending Outbox Document and so was never drained, *dropped* when it was admitted but resolved to no brokered message and was marked delivered without a publish. It is the dimension the drained-document count carries, and the vocabulary is closed. _Avoid_: drain status, drain result.
+
+**Drain Lag**: The age of an Outbox Document at the moment the Outbox Relay admitted it, measured from the Cosmos server write stamp the document carries to the relay host's own clock. A negative age is not representable — a document cannot be admitted before it was written — so host clock skew is clamped to zero rather than recorded. _Avoid_: outbox latency, drain delay.
+
+**Lease Token**: The change-feed lease a batch was delivered for, and the Outbox Relay's partition-progress dimension: batch size and batch count are recorded once per batch against it, so an idle lease with nothing pending stays distinguishable from a stalled one that is not advancing. _Avoid_: partition id, processor name (the processor name keys a whole Change-Feed Source Identity, not one lease).
+
 ## Relationships
 
 - The Document Tier implements the Outbox reliability port and the Standalone Inbox Gate implements the Inbox reliability port defined in the Message Brokers context; the Standalone Outbox Relay implements neither port.

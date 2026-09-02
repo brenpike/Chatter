@@ -270,6 +270,117 @@ Unlike `WithCosmosDocumentReliability<TCommand>`, the standalone inbox is **leas
 - **`WithCosmosDocumentReliability` + `WithCosmosInbox` is UNSUPPORTED** in one pipeline (ADR-0009 D3). They dedup by different mechanisms; registering both makes `InboxBehavior<>` fire the standalone write-ahead claim **before** the handler for document-tier participant commands too, pre-empting the document tier's atomic in-batch dedup. This is **documented, not code-guarded** — no current consumer uses the document tier.
 - **`AddCosmosOutboxRelay` + `WithCosmosInbox` is fully SUPPORTED.** The standalone outbox relay and the standalone inbox are orthogonal lease-less primitives and compose cleanly (a consumer that drains its own outbox container and dedups inbound messages).
 
+## Diagnostics and Metrics (optional, opt-in)
+
+The Outbox Relay's drain is instrumented with OpenTelemetry-compatible metrics. They are **off until an application opts in**, and `Chatter.MessageBrokers.Reliability.Cosmos` takes **no dependency on any `OpenTelemetry.*` NuGet package** — the instrumentation is built on the .NET base class library only: `System.Diagnostics.Metrics.Meter` for the instruments, and `System.Diagnostics.ActivitySource` for the scope this module reserves for spans.
+
+### Turning it on
+
+The `ActivitySource` and the `Meter` are both named after the emitting assembly — **`Chatter.MessageBrokers.Reliability.Cosmos`** (ADR-0010 D3, per-assembly scope naming). That name **is** the consumer contract: an application subscribes to this module's telemetry by naming that scope, and nothing else in it is a supported subscription surface. Every sibling Chatter package emits under its own assembly-named scope, so the drain can be sampled and filtered independently of the broker boundary.
+
+```csharp
+services.AddOpenTelemetry()
+        .WithTracing(t => t.AddSource("Chatter.*"))    // or .AddSource("Chatter.MessageBrokers", "Chatter.MessageBrokers.Reliability.Cosmos")
+        .WithMetrics(m => m.AddMeter("Chatter.*"));    // or .AddMeter("Chatter.MessageBrokers", "Chatter.MessageBrokers.Reliability.Cosmos")
+```
+
+Any .NET `MeterListener` or `ActivityListener` works just as well — an OpenTelemetry provider merely subscribes to these base-class-library primitives, it is not a prerequisite for them.
+
+This module emits **metrics only today**. The span the drain publishes under belongs to the `Chatter.MessageBrokers` scope, so an application that wants the drain's spans as well as its metrics subscribes to both scopes — see [The drain publishes under the shared send span](#the-drain-publishes-under-the-shared-send-span) below. The `Chatter.MessageBrokers.Reliability.Cosmos` `ActivitySource` is declared and reserved anyway, so a later module-native span joins a scope applications already subscribe to, with no rename.
+
+### Off means off
+
+**When nothing subscribes to this module's meter, nothing is emitted and the drain does exactly the work it did before it was instrumented.** Every emit site checks whether this module's own instrument has a listener as its first statement, and returns before a timestamp is read, a tag is built, or a lease token is touched. The guard is always the module's own `ActivitySource.HasListeners()` or `Instrument.Enabled` — never the ambient `Activity.Current`, which is non-null in any host running unrelated instrumentation and therefore says nothing about whether Chatter's diagnostics are on. The guarantee is per-operation; constructing the `ActivitySource` and `Meter` themselves is a one-time static initialization per process, which is unavoidable for any `Meter`-based design.
+
+`CosmosReliabilityDiagnostics.IsEnabled` is the public outer guard, an OR across this module's tracing and metrics subscriptions. It is the guard a call site checks before doing instrumented work at all; each individual measurement is guarded again on the specific instrument it records, so an application that opted into tracing only never enters a metric path.
+
+### What is emitted
+
+Four instruments, all recorded by the Outbox Relay — both the Document-Tier variant and the Standalone variant, which share the same drain core and therefore the same instruments.
+
+**Instruments**
+
+| Instrument | Type | Unit | Advised buckets | Records | Recorded when |
+| --- | --- | --- | --- | --- | --- |
+| `chatter.messaging.outbox.drain.lag` | `Histogram<double>` | `s` | `0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600` — published as instrument advice on `net10.0` only; on `net8.0` the instrument carries none. See [Histogram bucket boundaries](#histogram-bucket-boundaries) below. | How long one Outbox Document had been pending when the Outbox Relay admitted it, in seconds. | Once per admitted document that carries a Cosmos `_ts`, recorded **at admission** — before the brokered message is reconstructed, resolved or published — so a document whose publish then throws still reports how long it had been pending, which is the case the measurement exists to expose. A document carrying no `_ts` (one that never went through Cosmos) records nothing here, though its outcome is still counted. Only while a .NET `MeterListener` has enabled this instrument. |
+| `chatter.messaging.outbox.drain.documents` | `Counter<long>` | `{document}` | Not applicable — a `Counter<long>` has no buckets. | One change-feed document the Outbox Relay resolved, carrying how it resolved it. | Once per change-feed document handed to the relay, including a document the relay never drains — that one is counted `skipped`. An admitted document whose publish throws records **nothing here at all**: the outcome is written only after the publish returns, so a failed drain shows up as a batch with no admitted document rather than as a fabricated outcome. Only while a .NET `MeterListener` has enabled this instrument. |
+| `chatter.messaging.outbox.drain.batch.size` | `Histogram<int>` | `{document}` | `1, 2, 5, 10, 25, 50, 100, 250, 500, 1000` — published as instrument advice on `net10.0` only; on `net8.0` the instrument carries none. See [Histogram bucket boundaries](#histogram-bucket-boundaries) below. | How many documents one change-feed batch carried. | Once per change-feed batch delivered to a relay host, after the batch payload has been parsed and before any document in it is processed. An **empty** batch is recorded too, as size `0`. A batch payload whose shape the relay cannot parse fails closed and records nothing. Only while a .NET `MeterListener` has enabled this instrument. |
+| `chatter.messaging.outbox.drain.batches` | `Counter<long>` | `{batch}` | Not applicable — a `Counter<long>` has no buckets. | One change-feed batch the Outbox Relay handled. | Exactly as `chatter.messaging.outbox.drain.batch.size` above — the two are recorded together, from one emit site, over one tag set, so a batch cannot be sized against one lease and counted against another. Only while a .NET `MeterListener` has enabled this instrument. |
+
+**Metric attributes**
+
+| Attribute | Instruments | Value | Emitted |
+| --- | --- | --- | --- |
+| `chatter.messaging.outbox.drain.outcome` | `chatter.messaging.outbox.drain.documents` | One of `admitted`, `skipped`, `dropped` — the vocabulary below. | Always, as a key. |
+| `chatter.messaging.outbox.lease_token` | `chatter.messaging.outbox.drain.batch.size` and `chatter.messaging.outbox.drain.batches` | The change-feed lease token the batch was delivered for — the partition-progress dimension. | Always, as a key. |
+
+The **outcome vocabulary** is closed, and each value names one way the relay resolves a document it was handed:
+
+- **`admitted`** — the document was a pending Outbox Document and its brokered message was published.
+- **`skipped`** — the document was not a pending Outbox Document, so the relay never drained it. Cosmos change feed delivers every container change, so this is the ordinary case for domain writes, `inbox:` markers, already-`delivered` outbox documents, and the relay's own delivery stamps.
+- **`dropped`** — the document was admitted and resolved to no brokered message, so it was marked `delivered` without a publish. Only a bound [`IOutboxBodyResolver`](#the-ioutboxbodyresolver-seam) can produce this outcome, by returning `null` for an intentional drop-and-acknowledge.
+
+### The names are Chatter-native, not semantic conventions
+
+All four instrument names and both attribute names sit under a `chatter.` prefix because the OpenTelemetry messaging semantic conventions pinned by this repository (**v1.30.0**) cover **no outbox-drain concept at all** — there is no standard spelling for a drain lag, a drain outcome, or a change-feed lease token (ADR-0010 D4). Inventing a `messaging.*` spelling for one would be a false claim of conformance to a convention that says nothing about it. Because telemetry attribute names are emitted data rather than a compile-time type surface, they may change in a minor release; dashboards and alert queries that hard-code them should expect to be revisited, and any such change is announced in this package's CHANGELOG.
+
+### Drain lag and the `_ts` clock-skew caveat
+
+The lag is the elapsed time between the document's Cosmos `_ts` and the relay host's own clock at admission. Two properties of `_ts` follow the measurement:
+
+- **`_ts` is the Cosmos server's write time, at SECOND granularity.** A drain that completes well inside a second therefore reports a lag quantized to whole seconds rather than a sub-second one, and the smallest advised bucket exists to keep those measurements distinguishable rather than to promise sub-second resolution.
+- **Clock skew can make the age negative, and it is CLAMPED AT ZERO.** The stamp comes from the Cosmos server and the comparison clock comes from the relay host; when the host's clock runs behind the account's, subtracting one from the other yields a negative number. A document cannot be admitted before it was written, so a negative age is not representable and the skew is clamped to zero rather than recorded. A cluster of exact-zero lag measurements is therefore the signal to check host clock skew, not evidence of an instantaneous drain.
+
+The clamp lives in one place — the module's own diagnostics surface derives the age from the raw `_ts` — so no call site can record a lag it computed for itself.
+
+### Batch metrics and lease progress
+
+Batch size and batch count are recorded **once per change-feed batch**, tagged by the lease token that batch was delivered for, so both are per-partition progress signals rather than per-document ones.
+
+An **empty batch is still recorded** (size `0`, count `1`). The batch count measures lease progress, so dropping the empty ones would make an **idle** partition — one whose lease is being served but has nothing pending — indistinguishable from a **stalled** one, whose lease is not advancing at all. That distinction is the reason the instrument exists.
+
+A batch whose payload the relay cannot parse **fails closed and records nothing**: the relay throws before it can know the batch size, so the SDK does not checkpoint and the batch re-surfaces on the next pass. Recording a fabricated size for a batch the relay could not read would report progress that did not happen.
+
+### <a name="the-drain-publishes-under-the-shared-send-span"></a> The drain publishes under the shared send span
+
+**This module declares no span of its own.** With tracing opted into, the relay publishes each drained document under the **`Chatter.MessageBrokers` send span** that every other Chatter send site opens, parented to the trace context persisted with that document at write time. A drained document is therefore never reported by two send spans, and this module never re-emits that span under its own scope. Its drain metrics are the module's whole contribution to the telemetry stream.
+
+**With tracing on, the drain REPARENTS.** The relay writes **that send span's** context over the `traceparent` on the **outgoing** message, so a downstream receive parents to the drain hop rather than directly to the write. This is intended and it matches the relational outbox drain: the drain is the hop that actually put the message on the broker, minutes after the write and in another process, and the trace still reads write → drain → receive because the drain span is itself a child of the context it replaced. A document that carries no persisted context — one written while diagnostics were off, or received over a path that propagates none — starts a fresh root instead, with the change feed's ambient activity attached as a **link** rather than promoted to parent, because the feed did not cause the message.
+
+The reparenting is written onto the outgoing message only. The **persisted** document is never rewritten, which gives the replay shape a name: because the relay is [at-least-once](#change-feed-relay), one message republished N times emits **N send spans with N distinct drain parents, all sharing the one write-time root** the document has carried since it was staged. Replays fan out under the original write rather than chaining off one another.
+
+As on the broker boundary, this happens **only when diagnostics are opted into**. With them off, on the metrics-only path, and when the drain span is sampled out, nothing is written and the persisted `traceparent` rides out unchanged.
+
+### Histogram bucket boundaries
+
+`chatter.messaging.outbox.drain.lag` records **seconds** and `chatter.messaging.outbox.drain.batch.size` records **documents**. The OpenTelemetry .NET SDK's default explicit histogram boundaries are millisecond-sized (`0, 5, 10, 25, ... 10000`), so a collector that applies them puts every realistic measurement of either instrument in the first bucket and P50, P90 and P99 all report the same number forever. This package therefore publishes boundaries sized for each instrument's own unit as instrument advice; the two counters alongside them have no buckets to advise. The lag boundaries reach further than the broker boundary's own duration histogram because a drain lag is not one client call — a restarted lease or a backlog leaves a document pending for minutes.
+
+**They are advice, not a setting.** The boundaries are published as instrument *advice* — a **default** that an application's own view **overrides**. An application that already registers a view for either instrument keeps winning exactly as it did before; nothing it configured changes.
+
+**Advice is published on `net10.0` only.** The base class library type that carries instrument advice does not exist in the `net8.0` shared framework, and this package takes no package dependency to reach it. On `net8.0` both histograms therefore ship with no advice at all, and the collector falls back to its own millisecond-sized defaults.
+
+**On `net8.0`, configure the equivalent views in your own application.** `AddView` and `ExplicitBucketHistogramConfiguration` are `OpenTelemetry.Metrics` types that come from *your* application's OpenTelemetry packages — this package still takes **no dependency on any `OpenTelemetry.*` NuGet package**, and the snippet below adds none to it:
+
+```csharp
+using OpenTelemetry.Metrics;
+
+services.AddOpenTelemetry()
+        .WithMetrics(m => m
+            .AddMeter("Chatter.MessageBrokers.Reliability.Cosmos")
+            .AddView("chatter.messaging.outbox.drain.lag", new ExplicitBucketHistogramConfiguration
+            {
+                Boundaries = new double[] { 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600 }
+            })
+            .AddView("chatter.messaging.outbox.drain.batch.size", new ExplicitBucketHistogramConfiguration
+            {
+                Boundaries = new double[] { 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000 }
+            }));
+```
+
+The same views are harmless on `net10.0`: they override advice that already carries these boundaries. This `net8.0` caveat retires when `net8.0` is dropped and the package single-targets `net10.0` after .NET 8 reaches end of life on 2026-11-10 — tracked in [issue #395](https://github.com/brenpike/Chatter/issues/395).
+
+Design rationale, the per-assembly scope naming, and the off-guard rules are recorded in [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+
 ## Domain Language
 
 See [CONTEXT.md](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/CONTEXT.md) for the domain glossary (Document Tier, Document-Tier Batch-Lifecycle Behavior, Atomic-Write Handle, Partition-Key Resolver, Co-Resident Outbox / Inbox Marker, Outbox Relay, Participation).

@@ -6,6 +6,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-02
+
+### Added
+
+- The module diagnostics scope — an `ActivitySource` and a `Meter`, both named `Chatter.MessageBrokers.Reliability.Cosmos` — and its drain instruments: `chatter.messaging.outbox.drain.lag` (seconds), `chatter.messaging.outbox.drain.documents` (by admitted/skipped/dropped outcome), `chatter.messaging.outbox.drain.batch.size`, and `chatter.messaging.outbox.drain.batches` (by lease token). Off by default.
+
+### Changed
+
+- The Cosmos outbox drain now publishes each document under its own send span, parented to the trace context persisted with that document, so a downstream receive parents to the drain hop.
+- Bundled dependency uplift to Chatter.MessageBrokers 0.18.1 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [0.5.0] - 2026-09-01
 
 ### Added
