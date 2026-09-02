@@ -86,11 +86,12 @@ If one of those is now a compile error, reach the surviving `IServiceProvider` f
 // before
 app.UseChangeFeedSqlMigrations<MyRow>();
 
-// after
-app.ApplicationServices.UseChangeFeedSqlMigrationsAsync<MyRow>();
+// after - the surviving form is asynchronous, so await it from an async startup
+// path; discarding the returned Task lets the app start before provisioning finishes
+await app.ApplicationServices.UseChangeFeedSqlMigrationsAsync<MyRow>();
 ```
 
-The synchronous `UseChangeFeedSqlMigrations<TRowChangedData>` overload still compiles for a caller who lands on it instead — it is deprecated (`[Obsolete]`, warning-level), not removed.
+A caller with nowhere to await — a synchronous `Configure(IApplicationBuilder app)` — can still reach `app.ApplicationServices.UseChangeFeedSqlMigrations<MyRow>()`, which blocks until the migration completes: it is deprecated (`[Obsolete]`, warning-level), not removed.
 
 ### 3. Handle the change notifications
 
