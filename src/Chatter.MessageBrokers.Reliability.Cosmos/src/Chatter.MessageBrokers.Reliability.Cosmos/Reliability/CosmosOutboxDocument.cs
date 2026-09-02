@@ -44,6 +44,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// </summary>
         public const string TtlField = "ttl";
 
+        /// <summary>
+        /// The Cosmos system timestamp field name, carrying the document's last-write time in Unix epoch SECONDS.
+        /// Cosmos stamps it server-side, so Chatter never writes it; the #222 relay READS it to report how long an
+        /// Outbox Document had been pending when it admitted it. It is deliberately absent from the reserved root
+        /// fields, which guard only the fields Chatter itself stamps.
+        /// </summary>
+        public const string TimestampField = "_ts";
+
         /// <summary>The document-id field name (Cosmos requires the item id under the reserved <c>id</c> property).</summary>
         public const string IdField = "id";
 
@@ -238,6 +246,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
 
             value = null;
+            return false;
+        }
+
+        // Reads an integral-number-valued property off a change-feed document, returning false (with a zero out value)
+        // when the property is absent, not a JSON number, or not representable as a 64-bit integer. Sibling to
+        // TryGetString so the wire shape stays interpreted in one place; the relay reads the Cosmos-stamped
+        // TimestampField through it, and a document that never went through Cosmos simply carries none.
+        internal static bool TryGetInt64(JsonElement document, string propertyName, out long value)
+        {
+            if (document.TryGetProperty(propertyName, out JsonElement element)
+                && element.ValueKind == JsonValueKind.Number
+                && element.TryGetInt64(out value))
+            {
+                return true;
+            }
+
+            value = 0;
             return false;
         }
     }

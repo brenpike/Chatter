@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-09-02
+
+### Changed
+
+- The propagation-scope documentation now describes the Cosmos change-feed relay alongside `OutboxProcessor`: both outbox drains reparent when diagnostics are opted into. Documentation only; no API or runtime change.
+
 ## [0.18.0] - 2026-09-02
 
 ### Added

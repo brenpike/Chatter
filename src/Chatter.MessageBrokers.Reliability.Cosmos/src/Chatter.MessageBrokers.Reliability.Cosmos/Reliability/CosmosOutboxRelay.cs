@@ -1,8 +1,11 @@
 using Chatter.MessageBrokers.Context;
+using Chatter.MessageBrokers.Diagnostics;
+using Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics;
 using Chatter.MessageBrokers.Sending;
 using Microsoft.Azure.Cosmos;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,6 +48,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// </remarks>
     internal sealed class CosmosOutboxRelay
     {
+        /// <summary>A drain publishes exactly one document, so the batch count on its send span is always one.</summary>
+        private const int DrainedMessageCount = 1;
+
         private readonly IMessagingInfrastructureProvider _infrastructureProvider;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly OutboxDeliverySettings _settings;
@@ -93,14 +99,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             if (!_settings.IsAdmitted(document))
             {
+                // INVARIANT: ADR-0010 R1 - the outcome value is resolved INSIDE this module's own off-guard. Passing
+                // it as an argument to a guarded emit method would build it unconditionally, because C# evaluates
+                // arguments before the callee's guard runs.
+                if (CosmosReliabilityDiagnostics.IsEnabled)
+                {
+                    CosmosReliabilityDiagnostics.RecordDrainedDocument(CosmosReliabilityDiagnostics.DrainOutcomes.Skipped);
+                }
+
                 return;
             }
 
+            // The lag is recorded ONCE, at ADMISSION, so a document whose reconstruction, resolution or publish then
+            // THROWS still reports how long it had been pending — the very case the measurement exists to expose.
+            if (CosmosReliabilityDiagnostics.IsEnabled)
+            {
+                RecordAdmissionLag(document);
+            }
+
+            bool messageDispatched;
             if (resolver is null)
             {
                 // No resolver supplied: the verbatim reconstruction path is unchanged — reconstruct the brokered message
                 // from the persisted outbox fields and publish it.
                 await DispatchAsync(Reconstruct(document));
+                messageDispatched = true;
             }
             else
             {
@@ -109,10 +132,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // an intentional drop-and-acknowledge). A THROW propagates below with no stamp issued.
                 OutboxDrainContext context = BuildDrainContext(document, partitionKeyPath);
                 OutboundBrokeredMessage resolved = await resolver.ResolveAsync(context, cancellationToken);
-                if (resolved is not null)
+                messageDispatched = resolved is not null;
+                if (messageDispatched)
                 {
                     await DispatchAsync(resolved);
                 }
+            }
+
+            if (CosmosReliabilityDiagnostics.IsEnabled)
+            {
+                CosmosReliabilityDiagnostics.RecordDrainedDocument(messageDispatched
+                    ? CosmosReliabilityDiagnostics.DrainOutcomes.Admitted
+                    : CosmosReliabilityDiagnostics.DrainOutcomes.Dropped);
             }
 
             await StampDeliveredAsync(document, monitoredContainer, partitionKeyPath, cancellationToken);
@@ -126,8 +157,98 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         {
             IDictionary<string, object> messageContext = message.MessageContext;
             messageContext.TryGetValue(MessageContext.InfrastructureType, out var infra);
-            IMessagingInfrastructureDispatcher dispatcher = _infrastructureProvider.GetDispatcher((string)infra);
-            await dispatcher.Dispatch(message, null);
+            var messagingSystem = (string)infra;
+            IMessagingInfrastructureDispatcher dispatcher = _infrastructureProvider.GetDispatcher(messagingSystem);
+
+            // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides, and it decides HERE rather than
+            // inside the scope. Argument evaluation precedes the guard INSIDE SendScope.Open, so a call site that
+            // reaches DispatchObserved has already resolved the persisted parent and has already entered a second
+            // async state machine. An application that never opted into broker diagnostics therefore takes the same
+            // bare dispatch it took before this hop was instrumented, matching the relational drain and the three
+            // sibling send sites.
+            if (!BrokerDiagnostics.IsEnabled)
+            {
+                await dispatcher.Dispatch(message, null);
+            }
+            else
+            {
+                await DispatchObserved(dispatcher, message, messagingSystem);
+            }
+        }
+
+        /// <summary>
+        /// Publishes ONE drained Outbox Document to broker infrastructure under its own send span (ADR-0010 D7), so
+        /// the hop that actually reaches the broker — long after the write, in another process, where it can fail
+        /// entirely on its own — is observable rather than silent.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: the dispatch stays BELOW the Router. The drain calls the messaging-infrastructure dispatcher
+        /// directly, deliberately, so replaying a document cannot re-enter the reliability pipeline and write it to
+        /// the outbox again; the scope only OBSERVES the call that was already being made and reroutes nothing.
+        /// The Messaging Infrastructure the persisted context names is the only messaging-system identity this drain
+        /// has; it is passed through AS-IS, and <see cref="BrokerDiagnostics"/> normalizes a blank identifier to an
+        /// unset span attribute rather than inventing one.
+        /// </remarks>
+        private static async Task DispatchObserved(IMessagingInfrastructureDispatcher dispatcher, OutboundBrokeredMessage message, string messagingSystem)
+        {
+            using (var scope = SendScope.Open(messagingSystem, BrokerDiagnostics.OperationTypes.Send, message.Destination, DrainedMessageCount, ResolvePersistedParent(message.MessageContext)))
+            {
+                // OVERWRITES the persisted write-time traceparent with this hop's, because the drain IS the send that
+                // put the message on the broker and is therefore what a downstream receive must parent to. The trace
+                // stays intact: the span whose context is written here is itself a child of the context it replaced.
+                // The overwrite happens ONLY when the scope has a trace context to travel - with diagnostics off and
+                // on a sampled-out DEFERRED send, Inject writes nothing and the persisted record rides out unchanged
+                // (ADR-0010 R2).
+                scope.Inject(message.MessageContext);
+
+                try
+                {
+                    await dispatcher.Dispatch(message, null);
+                }
+                catch (Exception e)
+                {
+                    scope.RecordFailure(e);
+                    throw;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Reads back the trace context the WRITER persisted with the Outbox Document, or <c>default</c> when the
+        /// document carries none — one written while diagnostics were off, or received over a path that propagates
+        /// no context.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: ADR-0010 R1 — the drain call site has ALREADY run Chatter's own off-guard, so an application
+        /// that never opted in never reaches this method. The guard is repeated as the FIRST statement here so the
+        /// helper stays safe to call from a site that has not, and so no extraction can precede it either way.
+        /// INVARIANT: <c>default</c> means ABSENCE, never "use the current activity". The deferred
+        /// <see cref="SendScope"/> overload starts a FRESH ROOT for it rather than adopting the change feed's ambient
+        /// activity, which would report that the feed caused the message when the write did (ADR-0010 D6).
+        /// </remarks>
+        private static ActivityContext ResolvePersistedParent(IDictionary<string, object> messageContext)
+        {
+            if (!BrokerDiagnostics.IsEnabled)
+            {
+                return default;
+            }
+
+            TraceContextPropagator.TryExtractFromMessageContext(messageContext, out var persistedParent);
+            return persistedParent;
+        }
+
+        // Reports how long the admitted document had been pending, from the RAW Cosmos _ts the document carries.
+        // INVARIANT: the raw Unix-epoch-seconds value is handed over verbatim — the age and its clock-skew clamp are
+        // derived by CosmosReliabilityDiagnostics, so this call site can never record a lag it computed itself. A
+        // document with no _ts (one that never went through Cosmos) records no lag; its outcome is still counted.
+        private static void RecordAdmissionLag(JsonElement document)
+        {
+            if (!CosmosOutboxDocument.TryGetInt64(document, CosmosOutboxDocument.TimestampField, out long enqueuedUnixSeconds))
+            {
+                return;
+            }
+
+            CosmosReliabilityDiagnostics.RecordDrainLag(enqueuedUnixSeconds);
         }
 
         // Builds the per-document context handed to an IOutboxBodyResolver: the verbatim MessageId (read via the shared

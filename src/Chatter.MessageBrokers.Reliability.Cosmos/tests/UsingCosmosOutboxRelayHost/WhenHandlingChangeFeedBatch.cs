@@ -42,7 +42,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         {
             CosmosOutboxRelayHostedService host = Host();
 
-            Func<Task> act = () => host.HandleChangesAsync(StreamOf(payload), Mock.Of<Container>(), PartitionKeyPath, CancellationToken.None);
+            Func<Task> act = () => host.HandleChangesAsync(StreamOf(payload), Mock.Of<Container>(), PartitionKeyPath, "lease-0", CancellationToken.None);
 
             await act.Should().ThrowAsync<InvalidOperationException>(
                 "a batch whose 'Documents' array cannot be read must fault so the SDK does not checkpoint the lease past unpublished documents");
@@ -55,7 +55,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             // nothing to publish). Only an UNPARSEABLE batch shape fails closed.
             CosmosOutboxRelayHostedService host = Host();
 
-            Func<Task> act = () => host.HandleChangesAsync(StreamOf("{\"Documents\":[]}"), Mock.Of<Container>(), PartitionKeyPath, CancellationToken.None);
+            Func<Task> act = () => host.HandleChangesAsync(StreamOf("{\"Documents\":[]}"), Mock.Of<Container>(), PartitionKeyPath, "lease-0", CancellationToken.None);
 
             await act.Should().NotThrowAsync("an empty but well-formed Documents array is a legitimate no-op batch");
         }
