@@ -33,7 +33,7 @@ namespace Chatter.SqlChangeFeed.Tests.UsingSqlChangeFeedExtensions
         [Fact]
         public void MustNotDeadlockWhenAmbientSynchronizationContextNeverPumpsContinuations()
         {
-            var manager = new RecordingSqlDependencyManager(installationGate: DeferredInstallationGate());
+            var manager = new RecordingSqlDependencyManager(suspendInstallation: true);
             var provider = CreateProvider(manager);
             Exception observedFailure = null;
 
@@ -214,20 +214,6 @@ namespace Chatter.SqlChangeFeed.Tests.UsingSqlChangeFeedExtensions
             return provider.Object;
         }
 
-        // INVARIANT: a task still incomplete when the fake's await observes it, completed later from a background
-        // thread that never touches the ambient SynchronizationContext. A task already complete at await time
-        // registers no continuation, so it would never exercise the context capture the deadlock depends on.
-        private static Task DeferredInstallationGate()
-        {
-            var completionSource = new TaskCompletionSource<object>();
-            Task.Run(() =>
-            {
-                Thread.Sleep(50);
-                completionSource.SetResult(null);
-            });
-            return completionSource.Task;
-        }
-
         // INVARIANT: models a single-threaded context whose only pump thread is the one blocked inside the
         // synchronous bridge - every posted continuation is queued and never executed.
         private sealed class NonPumpingSynchronizationContext : SynchronizationContext
@@ -239,16 +225,16 @@ namespace Chatter.SqlChangeFeed.Tests.UsingSqlChangeFeedExtensions
         }
 
         // INVARIANT: hand-written rather than a Moq setup because the context capture under test happens inside the
-        // awaiting method body - awaiting the gate WITHOUT ConfigureAwait(false) is what posts the continuation back
-        // to the ambient SynchronizationContext, and no mock configuration can express that.
+        // awaiting method body - the unconfigured suspension below is what posts the continuation back to the
+        // ambient SynchronizationContext, and no mock configuration can express that.
         private sealed class RecordingSqlDependencyManager : ISqlDependencyManager<FakeRowData>
         {
-            private readonly Task _installationGate;
+            private readonly bool _suspendInstallation;
             private readonly Exception _installationFailure;
 
-            public RecordingSqlDependencyManager(Task installationGate = null, Exception installationFailure = null)
+            public RecordingSqlDependencyManager(bool suspendInstallation = false, Exception installationFailure = null)
             {
-                _installationGate = installationGate ?? Task.CompletedTask;
+                _suspendInstallation = suspendInstallation;
                 _installationFailure = installationFailure;
             }
 
@@ -281,7 +267,15 @@ namespace Chatter.SqlChangeFeed.Tests.UsingSqlChangeFeedExtensions
                 };
                 ObservedToken = token;
 
-                await _installationGate;
+                if (_suspendInstallation)
+                {
+                    // INVARIANT: Task.Yield's awaiter reports IsCompleted false unconditionally, so the suspension
+                    // - and therefore the ambient SynchronizationContext capture the deadlock depends on - is
+                    // guaranteed rather than raced against a timer. A gate that can already be complete when the
+                    // await observes it registers no continuation, and the pre-fix synchronous bridge would then
+                    // return successfully and pass this regression test for the wrong reason.
+                    await Task.Yield();
+                }
 
                 if (_installationFailure != null)
                 {
