@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Reflection;
@@ -15,8 +16,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
     /// INVARIANT: the off-guard is this module's OWN <see cref="ActivitySource.HasListeners"/> or
     /// <see cref="Instrument.Enabled"/> — never <see cref="Activity.Current"/>, which is non-null in any host that
     /// runs unrelated instrumentation and therefore does not mean Chatter diagnostics are on (ADR-0010 R1, R2).
-    /// INVARIANT: <see cref="IsEnabled"/> is the FIRST statement of every emit site, so an application that never
-    /// opted in pays one boolean read; no tag value, timestamp or lease token is built before that guard passes.
+    /// INVARIANT: an off-guard is the FIRST statement of every emit method, so an application that never opted in
+    /// pays one boolean read; no tag value, timestamp or lease token is built before that guard passes. Each method
+    /// guards on the SPECIFIC instrument it records and never on <see cref="IsEnabled"/>, because the type-wide
+    /// property ORs in <see cref="ActivitySource.HasListeners"/> and would therefore enter the metric path for an
+    /// application that opted into TRACING only. <see cref="IsEnabled"/> is the guard for a CALL SITE deciding
+    /// whether to do instrumented work at all, not for an emit method deciding whether to publish a measurement.
     /// INVARIANT: this module declares NO send span, here or anywhere else. The shared send path owns the messaging
     /// semantic-convention send span and this module's drain metrics are recorded UNDER it, so a drained Outbox
     /// Document is never reported by two send spans.
@@ -99,6 +104,85 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// attached.
         /// </summary>
         public static bool IsEnabled => _source.HasListeners() || _drainLag.Enabled || _drainedDocuments.Enabled || _drainBatchSize.Enabled || _drainedBatches.Enabled;
+
+        /// <summary>
+        /// Counts one Outbox Document the Outbox Relay resolved.
+        /// </summary>
+        /// <param name="outcome">One of <see cref="DrainOutcomes"/>, carried as <see cref="DrainOutcome"/>.</param>
+        /// <remarks>
+        /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/>, never
+        /// <see cref="IsEnabled"/>. The type-wide property ORs in <see cref="ActivitySource.HasListeners"/>, so
+        /// guarding on it here would enter the metric path for an application that opted into TRACING only
+        /// (ADR-0010 R1).
+        /// INVARIANT: the tag is built INSIDE the guard. Passing it as an argument to a guarded call would build it
+        /// unconditionally, because C# evaluates arguments before the callee's guard runs.
+        /// </remarks>
+        internal static void RecordDrainedDocument(string outcome)
+        {
+            if (!_drainedDocuments.Enabled)
+            {
+                return;
+            }
+
+            var tags = new TagList { { DrainOutcome, outcome } };
+
+            _drainedDocuments.Add(1, tags);
+        }
+
+        /// <summary>
+        /// Records how long an Outbox Document had been pending when the Outbox Relay admitted it, in seconds.
+        /// </summary>
+        /// <param name="enqueuedUnixSeconds">The document's RAW Cosmos <c>_ts</c>, in Unix epoch seconds.</param>
+        /// <remarks>
+        /// INVARIANT: the age is derived HERE, from the raw <c>_ts</c>, so clock-skew handling has exactly one owner
+        /// and a call site can never record a lag this method did not compute. A document stamped by a node whose
+        /// clock runs ahead of this one dates into the future, and a negative lag is not representable — a document
+        /// cannot be admitted before it was written — so the skew is clamped to zero.
+        /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/> and it precedes the clock
+        /// read, so a tracing-only opt-in never reads a timestamp (ADR-0010 R1).
+        /// </remarks>
+        internal static void RecordDrainLag(long enqueuedUnixSeconds)
+        {
+            if (!_drainLag.Enabled)
+            {
+                return;
+            }
+
+            var lagSeconds = (DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(enqueuedUnixSeconds)).TotalSeconds;
+
+            _drainLag.Record(lagSeconds < 0 ? 0 : lagSeconds);
+        }
+
+        /// <summary>
+        /// Records the size of one change-feed batch handed to the Outbox Relay, and counts the batch.
+        /// </summary>
+        /// <param name="leaseToken">The change-feed lease the batch was delivered for, carried as <see cref="LeaseToken"/>.</param>
+        /// <param name="documentCount">How many documents the batch carried.</param>
+        /// <remarks>
+        /// INVARIANT: both instruments are emitted from ONE method over ONE <see cref="TagList"/>, so a batch cannot
+        /// be sized against one lease and counted against another, and the tag set is built once.
+        /// INVARIANT: the outer guard passes when EITHER instrument is enabled and each emit is guarded on its own
+        /// <see cref="Instrument.Enabled"/>, so enabling one instrument does not publish the other.
+        /// </remarks>
+        internal static void RecordDrainedBatch(string leaseToken, int documentCount)
+        {
+            if (!_drainBatchSize.Enabled && !_drainedBatches.Enabled)
+            {
+                return;
+            }
+
+            var tags = new TagList { { LeaseToken, leaseToken } };
+
+            if (_drainBatchSize.Enabled)
+            {
+                _drainBatchSize.Record(documentCount, tags);
+            }
+
+            if (_drainedBatches.Enabled)
+            {
+                _drainedBatches.Add(1, tags);
+            }
+        }
 
         private static string ResolveTelemetryVersion()
         {

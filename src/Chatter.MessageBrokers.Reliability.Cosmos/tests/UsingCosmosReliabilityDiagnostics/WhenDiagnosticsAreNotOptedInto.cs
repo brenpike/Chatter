@@ -1,4 +1,5 @@
 using Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics;
+using Chatter.MessageBrokers.Reliability.Cosmos.Tests.Diagnostics;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
 using System.Diagnostics;
@@ -14,16 +15,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
     /// (ADR-0010 R1, R2, R4).
     /// </summary>
     /// <remarks>
-    /// The subscribed cases live here too, and they are still off-state facts: the surface DECLARES its instruments
-    /// and emits nothing at all yet, so a scope attached to both names recording NOTHING is the stronger statement —
-    /// if nothing reaches a listener that IS attached, nothing reaches one that is not.
+    /// The subscribed cases live here too, and they are still off-state facts: this module's instruments emit only
+    /// when the Outbox Relay records a measurement, so a scope attached to both names observing NOTHING while no
+    /// document is drained is the stronger statement — if nothing reaches a listener that IS attached, nothing
+    /// reaches one that is not. What an opted-in application receives once the Outbox Relay does record is pinned by
+    /// <see cref="WhenRecordingDrainMeasurements"/>.
     /// </remarks>
-    // The collection name is the repository-wide literal every module's diagnostics tests are serialised onto, spelled
-    // out rather than taken from a DiagnosticsCollection constant because no such definition exists in THIS test
-    // assembly yet. xunit v2 discovers collection definitions only in the assembly under run, so the step that adds
-    // this module's first opted-in diagnostics tests has to declare one here; these absence facts join it by name the
-    // moment it does, and until then this attribute costs nothing.
-    [Collection("chatter-diagnostics")]
+    [Collection(DiagnosticsCollection.Name)]
     public class WhenDiagnosticsAreNotOptedInto : Testing.Core.Context
     {
         [Fact]
@@ -54,8 +52,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "the off-guard is a boolean read: " + measurement);
         }
 
+        /// <summary>
+        /// Merely subscribing emits nothing: an application that attached both a .NET <c>ActivityListener</c> and a
+        /// .NET <c>MeterListener</c> and then drained no document receives no span and no measurement.
+        /// </summary>
         [Fact]
-        public void MustEmitNothingWhileTheInstrumentsAreDeclaredOnly()
+        public void MustEmitNothingUntilTheOutboxRelayRecordsAMeasurement()
         {
             using (var activityScope = new RecordingActivityScope(CosmosReliabilityDiagnostics.ActivitySourceName))
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
