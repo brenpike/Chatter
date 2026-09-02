@@ -16,6 +16,9 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         private const string Schema = "dbo";
         private const string Trigger = "MyTrigger";
         private const string Service = "MyService";
+        private const string ConversationQueue = "MyQueue";
+        private const string DeadLetterQueue = "MyDeadLetterQueue";
+        private const string DeadLetterService = "MyDeadLetterService";
         private const string HostileDatabase = "My]Db'; DROP TABLE Users;--";
         private const string HostileSetupProcedure = "My]Proc'; DROP TABLE Users;--";
         private const string HostileTable = "My]Table'; DROP TABLE Users;--";
@@ -27,6 +30,14 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         private const string EngineEditionGate = "IF CONVERT(int, SERVERPROPERTY(''EngineEdition'')) = 5";
         private const string TableExistsGate = "IF OBJECT_ID (''[" + Schema + "].[" + Table + "]'', ''U'') IS NULL";
         private const string PrimaryKeyGate = "IF NOT EXISTS (SELECT 1 FROM @tbl_Columns WHERE PK_ORDINAL IS NOT NULL)";
+
+        // The service binding gate the Service Broker script emits pre-escaped for this nesting depth, spelled
+        // exactly as the emitted procedure body must carry it once spliced verbatim.
+        private const string ServiceBindingGate =
+            "DECLARE @ChatterExpectedConversationQueueId int = OBJECT_ID(''[" + Schema + "].[" + ConversationQueue + "]'', ''SQ'');";
+        private const string DeadLetterBindingGate =
+            "DECLARE @ChatterDeadLetterQueueId int = OBJECT_ID(''[" + Schema + "].[" + DeadLetterQueue + "]'', ''SQ'');";
+        private const string ServiceBrokerSection = "-- Service Broker configuration statement.";
 
         // The column-set fingerprint the emitted procedure derives, embeds in the trigger and compares against on
         // the next run, spelled exactly as the emitted procedure body carries them.
@@ -44,7 +55,7 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         private const string FingerprintMarkerEmbed = "@ColumnFingerprintMarker + @ColumnFingerprint + CHAR(13) + CHAR(10)";
 
         private static InstallAndConfigureSqlServiceBroker ServiceBrokerScript()
-            => new InstallAndConfigureSqlServiceBroker(ConnectionString, Database, "MyQueue", Service, Schema, "MyDeadLetterQueue", "MyDeadLetterService");
+            => new InstallAndConfigureSqlServiceBroker(ConnectionString, Database, ConversationQueue, Service, Schema, DeadLetterQueue, DeadLetterService);
 
         private static CreateChangeFeedTrigger TriggerScript()
             => new CreateChangeFeedTrigger(Table, Trigger, ChangeTypes.Insert, Service, Schema);
@@ -332,6 +343,52 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.StoredProcedures.UsingCreateInstal
         public void MustEscapeHostileSchemaAndTriggerNameInTheDropTriggerStatement()
             => CreateHostile().ToString()
                 .Should().Contain("DROP TRIGGER [My]]Schema''; DROP TABLE Users;--].[My]]Trigger''; DROP TABLE Users;--];");
+
+        [Fact]
+        public void MustGateOnTheConversationServiceBinding()
+            => Create().ToString().Should().Contain(ServiceBindingGate);
+
+        [Fact]
+        public void MustGateOnTheDeadLetterQueueBinding()
+            => Create().ToString().Should().Contain(DeadLetterBindingGate);
+
+        [Fact]
+        public void MustRunTheServiceBindingGateAfterEveryOtherPreconditionAndBeforeAnyServiceBrokerObjectIsCreated()
+        {
+            var script = Create().ToString();
+
+            var primaryKeyGate = IndexOfOrFail(script, PrimaryKeyGate);
+            var serviceBindingGate = IndexOfOrFail(script, ServiceBindingGate);
+            var deadLetterBindingGate = IndexOfOrFail(script, DeadLetterBindingGate);
+            var enableBroker = IndexOfOrFail(script, "SET ENABLE_BROKER");
+            var createQueue = IndexOfOrFail(script, "CREATE QUEUE");
+            var createService = IndexOfOrFail(script, "CREATE SERVICE");
+
+            serviceBindingGate.Should().BeGreaterThan(primaryKeyGate, "the binding gate runs after the cheaper preconditions");
+            deadLetterBindingGate.Should().BeGreaterThan(serviceBindingGate);
+            enableBroker.Should().BeGreaterThan(deadLetterBindingGate, "a refusal must not leave the broker half enabled");
+            createQueue.Should().BeGreaterThan(deadLetterBindingGate, "a refusal must not leave a partially created queue behind");
+            createService.Should().BeGreaterThan(deadLetterBindingGate, "a refusal must not leave a partially created service behind");
+        }
+
+        [Fact]
+        public void MustSpliceTheServiceBindingGateVerbatimWithoutReQuotingIt()
+        {
+            var gate = ServiceBindingGateBlock(Create().ToString());
+
+            gate.Should().Contain($"WHERE svc.name = ''{Service}'';");
+            gate.Should().Contain($"AND svc.name <> ''{DeadLetterService}''");
+            gate.Should().Contain($"RAISERROR(''Chatter change feed cannot be installed: SERVICE [{Service}] is bound to QUEUE %s");
+            gate.Should().NotContain("''''", "the gate arrives pre-escaped for this nesting depth, so quoting it again would quadruple its quotes");
+        }
+
+        private static string ServiceBindingGateBlock(string script)
+        {
+            var start = IndexOfOrFail(script, ServiceBindingGate);
+            var end = IndexOfOrFail(script, ServiceBrokerSection);
+            end.Should().BeGreaterThan(start, "the service binding gate must run before the Service Broker section");
+            return script.Substring(start, end - start);
+        }
 
         private static int IndexOfOrFail(string script, string fragment)
         {

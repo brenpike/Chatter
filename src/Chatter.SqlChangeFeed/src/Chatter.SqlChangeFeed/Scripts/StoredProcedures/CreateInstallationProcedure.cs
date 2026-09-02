@@ -82,6 +82,10 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
             // current procedure body instead of silently keeping a stale one. Requires SQL Server 2016 SP1.
             // INVARIANT: every precondition is checked before the Service Broker section, so a refusal cannot leave
             // a partially created queue, service, or trigger behind.
+            // INVARIANT: the service binding gate is spliced VERBATIM. It is emitted pre-escaped at depth 2 by
+            // InstallAndConfigureSqlServiceBroker.ToServiceBindingPreconditions, unlike the Service Broker
+            // statement itself, which arrives raw and is quoted here. Quoting it again quadruples its literals
+            // and the created procedure body no longer compiles.
             // INVARIANT: the trigger's column list is re-derived from INFORMATION_SCHEMA on every run and compared
             // against the fingerprint the installed trigger carries, so a watched table whose columns drifted gets a
             // refreshed trigger instead of one referencing a column that no longer exists.
@@ -138,7 +142,7 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                             RAISERROR(''Chatter change feed cannot be installed: the watched table {8} has no PRIMARY KEY. The change feed trigger joins INSERTED to DELETED on the primary key columns.'', 16, 1);
                             RETURN;
                         END
-
+{10}
                         -- Service Broker configuration statement.
                         {2}
 
@@ -232,7 +236,8 @@ namespace Chatter.SqlChangeFeed.Scripts.StoredProcedures
                SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _triggerName), 2),
                SqlIdentifier.QuoteLiteral(_databaseName, 2),
                watchedTableAsNestedLiteral,
-               SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _triggerName)));
+               SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _triggerName)),
+               _serviceBrokerConfigScript.ToServiceBindingPreconditions());
         }
     }
 }

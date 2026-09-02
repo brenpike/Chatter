@@ -124,5 +124,40 @@ namespace Chatter.SqlChangeFeed.Tests.UsingChangeFeedObjectNames
         public void MustNotThrowWhenConfiguredQueueNameEqualsConfiguredDeadLetterServiceName()
             => FluentActions.Invoking(() => DeriveNames(changeFeedQueueName: "SharedName", changeFeedDeadLetterServiceName: "SharedName"))
                 .Should().NotThrow();
+
+        [Fact]
+        public void MustNotThrowWhenConfiguredQueueNameEqualsDerivedConversationServiceName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedQueueName: "Chatter_Service_FakeRowData"))
+                .Should().NotThrow();
+
+        [Fact]
+        public void MustThrowChangeFeedObjectNameCollisionExceptionWhenConfiguredDeadLetterServiceNameCaseInsensitivelyEqualsDerivedConversationServiceName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedDeadLetterServiceName: "chatter_service_fakerowdata"))
+                .Should().Throw<ChangeFeedObjectNameCollisionException>()
+                .WithMessage("*ConversationServiceName*ConversationDeadLetterServiceName*chatter_service_fakerowdata*");
+
+        [Fact]
+        public void MustThrowChangeFeedObjectNameCollisionExceptionWhenConfiguredQueueNameCaseInsensitivelyEqualsDerivedConversationDeadLetterQueueName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedQueueName: "chatter_deadletterqueue_fakerowdata"))
+                .Should().Throw<ChangeFeedObjectNameCollisionException>()
+                .WithMessage("*ConversationQueueName*ConversationDeadLetterQueueName*chatter_deadletterqueue_fakerowdata*");
+
+        [Fact]
+        public void MustThrowChangeFeedObjectNameCollisionExceptionWhenConfiguredQueueNameEqualsDerivedConversationTriggerName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedQueueName: "Chatter_ChangeFeedTrigger_FakeRowData"))
+                .Should().Throw<ChangeFeedObjectNameCollisionException>()
+                .WithMessage("*ConversationQueueName*ConversationTriggerName*Chatter_ChangeFeedTrigger_FakeRowData*");
+
+        [Fact]
+        public void MustThrowChangeFeedObjectNameCollisionExceptionWhenConfiguredQueueNameEqualsDerivedInstallChangeFeedStoredProcName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedQueueName: "Chatter_InstallChangeFeed_FakeRowData"))
+                .Should().Throw<ChangeFeedObjectNameCollisionException>()
+                .WithMessage("*ConversationQueueName*InstallChangeFeedStoredProcName*Chatter_InstallChangeFeed_FakeRowData*");
+
+        [Fact]
+        public void MustThrowChangeFeedObjectNameCollisionExceptionWhenConfiguredQueueNameEqualsDerivedUninstallChangeFeedStoredProcName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedQueueName: "Chatter_UninstallChangeFeed_FakeRowData"))
+                .Should().Throw<ChangeFeedObjectNameCollisionException>()
+                .WithMessage("*ConversationQueueName*UninstallChangeFeedStoredProcName*Chatter_UninstallChangeFeed_FakeRowData*");
     }
 }
