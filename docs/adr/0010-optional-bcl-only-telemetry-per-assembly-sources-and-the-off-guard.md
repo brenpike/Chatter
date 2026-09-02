@@ -1059,9 +1059,11 @@ Explicitly out of scope for this decision and the work it governs:
   This is a real behavior/performance defect but it is a **separate** fix with its own risk surface;
   fixing it inside a telemetry change would conflate two concerns. **Recommended as a follow-up
   issue.**
-- **Adapter-native spans** for the individual broker modules (RabbitMQ, Azure Service Bus, SQL
-  Service Broker, Cosmos). D3's per-assembly naming leaves the door open; this decision does not
-  walk through it.
+- **Adapter-native diagnostics** for the individual broker modules (RabbitMQ, Azure Service Bus, SQL
+  Service Broker, Cosmos) were not in THIS PASS. D3's per-assembly naming leaves the door open and
+  module-specific diagnostics are an intended layer, so the split of ownership is fixed here: the
+  shared send path owns trace propagation and the messaging-semconv send span; a module owns its own
+  metrics and events, parented under that span; a module NEVER re-emits a duplicate send span.
 - **Anything in the `samples/` tree.**
 
 ## Consequences
