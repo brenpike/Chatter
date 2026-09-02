@@ -1,3 +1,4 @@
+using Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -191,6 +192,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         {
             if (!CosmosOutboxDocument.IsPendingOutbox(document))
             {
+                // Counted HERE and only here: a document the pre-gate rejects never reaches the relay's own admission
+                // gate, and one that clears the pre-gate is counted there instead — so each drained document is
+                // counted exactly once across the two layers.
+                // INVARIANT: ADR-0010 R1 - the outcome value is resolved INSIDE this module's own off-guard, because
+                // C# evaluates arguments before the callee's guard runs.
+                if (CosmosReliabilityDiagnostics.IsEnabled)
+                {
+                    CosmosReliabilityDiagnostics.RecordDrainedDocument(CosmosReliabilityDiagnostics.DrainOutcomes.Skipped);
+                }
+
                 return;
             }
 
