@@ -9,7 +9,7 @@ using Xunit;
 namespace Chatter.SqlChangeFeed.Tests.Integration
 {
     // Canonical end-to-end proof for the SqlChangeFeed integration suite (STEP-C5). The SYSTEM UNDER TEST is the
-    // REAL production change-feed path: UseChangeFeedSqlMigrations<TRow> installs the trigger + Service Broker
+    // REAL production change-feed path: UseChangeFeedSqlMigrationsAsync<TRow> installs the trigger + Service Broker
     // objects on a live SQL Server, then INSERT / UPDATE / DELETE statements against the watched table fire the
     // trigger, the ChangeFeedReceiver decomposes the change message, and Chatter dispatches RowInsertedEvent /
     // RowUpdatedEvent / RowDeletedEvent to DI-resolved handlers — every assertion reads the payload the production

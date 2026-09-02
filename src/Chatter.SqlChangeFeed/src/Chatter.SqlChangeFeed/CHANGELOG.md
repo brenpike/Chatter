@@ -6,6 +6,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-02
+
+### Deprecated
+
+- Both synchronous `UseChangeFeedSqlMigrations` overloads (the generic `UseChangeFeedSqlMigrations<TRowChangedData>(this IServiceProvider, CancellationToken)` and the `UseChangeFeedSqlMigrations(this IServiceProvider, Type, CancellationToken)` form) are now marked `[Obsolete]` at warning level. They still compile and still work — this is not a breaking change. Callers should move to `UseChangeFeedSqlMigrationsAsync`. The 0.13.0 migration guidance for #389, which pointed callers at `app.ApplicationServices.UseChangeFeedSqlMigrations<T>()`, remains valid: the synchronous form is deprecated, not removed. (#354)
+
+### Fixed
+
+- The synchronous migration overload no longer risks a startup deadlock on a host that carries a `SynchronizationContext`: the installation now runs on the thread pool, so the blocking wait cannot deadlock against a single-threaded context whose only pump thread is the caller's. Exceptions still propagate unwrapped (never a bare `AggregateException`), and the supplied `CancellationToken` is still observed by the installation itself. A consumer-supplied `ISqlDependencyManager<T>` that genuinely depended on the caller's `SynchronizationContext` during install now runs without it — vanishingly unlikely for database DDL, but a real observable difference. (#354)
+
 ## [0.13.0] - 2026-09-01
 
 ### Changed

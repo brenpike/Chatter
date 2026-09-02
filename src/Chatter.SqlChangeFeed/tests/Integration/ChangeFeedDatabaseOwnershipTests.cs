@@ -11,7 +11,7 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
     // Privilege-posture proof for the SqlChangeFeed integration suite (#348, #351). The production install script's
     // broker-enable branch used to transfer ownership of the consumer's database to [sa], and used to enable the
     // broker WITHOUT ROLLBACK IMMEDIATE. Both are gone; these tests hold that line against a live SQL Server:
-    //   - UseChangeFeedSqlMigrations leaves sys.databases.owner_sid alone (read back through SUSER_SNAME) on a
+    //   - UseChangeFeedSqlMigrationsAsync leaves sys.databases.owner_sid alone (read back through SUSER_SNAME) on a
     //     database deliberately owned by a NON-'sa' login, and the change feed still delivers notifications from a
     //     trigger running WITH EXECUTE AS OWNER under that owner.
     //   - The broker-enable branch COMPLETES instead of waiting indefinitely while a second session holds an open

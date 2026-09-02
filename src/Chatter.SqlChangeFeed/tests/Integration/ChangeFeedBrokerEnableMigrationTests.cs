@@ -11,7 +11,7 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
     // Broker-enable proof for the SqlChangeFeed integration suite (STEP-C8). The collection fixture's shared app
     // database is created with Service Broker ALREADY enabled, so it cannot prove the production migration's
     // ENABLE_BROKER branch fires. This test creates its OWN fresh database WITHOUT pre-enabling the broker, runs
-    // the REAL UseChangeFeedSqlMigrations, and asserts: (1) sys.databases.is_broker_enabled flips 0 -> 1, (2) the
+    // the REAL UseChangeFeedSqlMigrationsAsync, and asserts: (1) sys.databases.is_broker_enabled flips 0 -> 1, (2) the
     // install otherwise succeeds, and (3) one INSERT notification is delivered through the change-feed path on the
     // newly-broker-enabled database.
     //

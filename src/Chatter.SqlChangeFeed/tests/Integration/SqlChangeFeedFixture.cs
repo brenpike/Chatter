@@ -11,7 +11,7 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
     // Collection fixture that brings up a SQL Server container once per test collection for the SqlChangeFeed
     // end-to-end integration suite, and creates ONE dedicated application database with Service Broker ALREADY
     // enabled. It deliberately provisions NO broker objects, table, or trigger: the production change-feed
-    // migration (UseChangeFeedSqlMigrations<TRow>) is the SYSTEM UNDER TEST and installs all of those itself.
+    // migration (UseChangeFeedSqlMigrationsAsync<TRow>) is the SYSTEM UNDER TEST and installs all of those itself.
     //
     // Why the app database is created with the broker already enabled: it gives the shared CRUD / re-arm /
     // uninstall test classes a known starting state in which the production install script's broker-enable branch

@@ -7,7 +7,7 @@ namespace Chatter.SqlChangeFeed.Tests.Integration
 {
     // ADO.NET helper that creates and mutates the watched table for a SqlChangeFeed integration test class. The
     // production change-feed migration installs the trigger ON this table, so the table must exist (with a PRIMARY
-    // KEY) before UseChangeFeedSqlMigrations runs. The PK is REQUIRED: the generated trigger builds its message
+    // KEY) before UseChangeFeedSqlMigrationsAsync runs. The PK is REQUIRED: the generated trigger builds its message
     // by a FULL OUTER JOIN of INSERTED to DELETED on the table's primary-key columns, so a table without a PK
     // would produce a malformed join and no usable change message.
     //
