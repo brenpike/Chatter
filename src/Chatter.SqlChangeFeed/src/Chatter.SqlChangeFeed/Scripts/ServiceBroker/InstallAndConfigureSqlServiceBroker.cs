@@ -10,6 +10,10 @@ namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
     /// </summary>
     public class InstallAndConfigureSqlServiceBroker : ExecutableSqlScript
     {
+        // The uninstall Stored Procedure is named for the row changed data type, which this script never receives,
+        // so the refusal messages below prescribe the remedy by its naming convention rather than by an exact name.
+        private const string UninstallProcedureDescription = ChatterServiceBrokerConstants.ChatterUninstallChangeFeedPrefix + "<row changed data type>";
+
         private readonly string _databaseName;
         private readonly string _conversationQueueName;
         private readonly string _conversationServiceName;
@@ -71,6 +75,74 @@ namespace Chatter.SqlChangeFeed.Scripts.ServiceBroker
             _schemaName = schemaName;
             _deadLetterQueueName = deadLetterQueueName;
             _deadLetterServiceName = deadLetterServiceName;
+        }
+
+        /// <summary>
+        /// Emits the precondition block that refuses the Change Feed Migration when the catalog shows a SERVICE
+        /// bound to a queue this configuration does not use. Emitted separately from <see cref="ToString"/> so the
+        /// install Stored Procedure can run it strictly before any mutation.
+        /// </summary>
+        /// <returns>The precondition block, already escaped for verbatim splicing into the install Stored Procedure body.</returns>
+        public string ToServiceBindingPreconditions()
+        {
+            // INVARIANT: the returned block is spliced VERBATIM into the install Stored Procedure's EXEC(' ... ')
+            // body, so it is emitted pre-escaped at nesting depth 2 - statement literals carry doubled quotes and
+            // every value inside them is quoted at depth 2. A caller must not quote it again.
+            // INVARIANT: this gate is NON-DESTRUCTIVE. It refuses and returns; it never alters, drops or rebinds a
+            // superseded object, because dropping an orphaned queue destroys undelivered notifications.
+            // INVARIANT: services are the only binding-bearing objects this script creates. Message types and
+            // contracts carry code-owned names, and a queue's identity IS its (schema, name) - none of them carry a
+            // binding a name probe cannot see, so none of them belong in this block.
+            return string.Format(@"
+                        -- Precondition: a SERVICE carries its binding in sys.services.service_queue_id, a column no
+                        -- name probe can see. Without this gate the name guards in the Service Broker section skip a
+                        -- service that already exists bound to a queue this configuration no longer uses, and the
+                        -- Change Feed Trigger keeps delivering to a queue nothing reads.
+                        DECLARE @ChatterExpectedConversationQueueId int = OBJECT_ID(''{0}'', ''SQ'');
+                        DECLARE @ChatterInstalledConversationQueueId int;
+                        DECLARE @ChatterInstalledConversationQueue nvarchar(517);
+                        SELECT @ChatterInstalledConversationQueueId = q.object_id,
+                               @ChatterInstalledConversationQueue = QUOTENAME(SCHEMA_NAME(q.schema_id)) + ''.'' + QUOTENAME(q.name)
+                          FROM sys.services svc
+                          INNER JOIN sys.service_queues q ON q.object_id = svc.service_queue_id
+                         WHERE svc.name = ''{1}'';
+
+                        -- A configured queue that does not exist yet has a NULL OBJECT_ID, and a bare <> against NULL
+                        -- evaluates to UNKNOWN - which is precisely the renamed-queue upgrade this gate exists for.
+                        IF @ChatterInstalledConversationQueueId IS NOT NULL
+                           AND (@ChatterExpectedConversationQueueId IS NULL
+                                OR @ChatterInstalledConversationQueueId <> @ChatterExpectedConversationQueueId)
+                        BEGIN
+                            RAISERROR(''Chatter change feed cannot be installed: SERVICE {2} is bound to QUEUE %s, but this change feed is configured to use QUEUE {0}. Run the {3} Stored Procedure for this change feed, then re-run the Change Feed Migration.'', 16, 1, @ChatterInstalledConversationQueue);
+                            RETURN;
+                        END
+
+                        -- Precondition: a superseded dead letter service left bound to this change feed''s dead letter
+                        -- queue makes the regenerated uninstall Stored Procedure fail when it removes that queue,
+                        -- because that procedure knows only the configured service name. The probe is scoped to the OWN
+                        -- queue of this change feed so a consumer-owned service that merely shares the database is
+                        -- left alone.
+                        DECLARE @ChatterDeadLetterQueueId int = OBJECT_ID(''{4}'', ''SQ'');
+                        DECLARE @ChatterConflictingDeadLetterService sysname =
+                            (SELECT TOP 1 svc.name
+                               FROM sys.services svc
+                               INNER JOIN sys.service_queues q ON q.object_id = svc.service_queue_id
+                              WHERE q.object_id = @ChatterDeadLetterQueueId
+                                AND svc.name <> ''{5}''
+                              ORDER BY svc.name);
+
+                        IF @ChatterConflictingDeadLetterService IS NOT NULL
+                        BEGIN
+                            RAISERROR(''Chatter change feed cannot be installed: SERVICE %s is bound to QUEUE {4}, the dead letter queue of this change feed, but this change feed is configured to use SERVICE {6} on that queue. Run the {3} Stored Procedure for this change feed, then re-run the Change Feed Migration.'', 16, 1, @ChatterConflictingDeadLetterService);
+                            RETURN;
+                        END
+", SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _conversationQueueName), 2),
+   SqlIdentifier.QuoteLiteral(_conversationServiceName, 2),
+   SqlIdentifier.QuoteLiteral(SqlIdentifier.Escape(_conversationServiceName), 2),
+   SqlIdentifier.QuoteLiteral(UninstallProcedureDescription, 2),
+   SqlIdentifier.QuoteLiteral(SqlIdentifier.EscapeQualified(_schemaName, _deadLetterQueueName), 2),
+   SqlIdentifier.QuoteLiteral(_deadLetterServiceName, 2),
+   SqlIdentifier.QuoteLiteral(SqlIdentifier.Escape(_deadLetterServiceName), 2));
         }
 
         public override string ToString()

@@ -107,5 +107,22 @@ namespace Chatter.SqlChangeFeed.Tests.UsingChangeFeedObjectNames
         public void MustDeriveDefaultConversationDeadLetterServiceNameWhenOptionsIsNull()
             => ChangeFeedObjectNames.DeriveFrom(typeof(FakeRowData), null)
                 .ConversationDeadLetterServiceName.Should().Be("Chatter_DeadLetterService_FakeRowData");
+
+        [Fact]
+        public void MustThrowChangeFeedObjectNameCollisionExceptionWhenConfiguredDeadLetterServiceNameEqualsDerivedConversationServiceName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedDeadLetterServiceName: "Chatter_Service_FakeRowData"))
+                .Should().Throw<ChangeFeedObjectNameCollisionException>()
+                .WithMessage("*ConversationServiceName*ConversationDeadLetterServiceName*Chatter_Service_FakeRowData*");
+
+        [Fact]
+        public void MustThrowChangeFeedObjectNameCollisionExceptionWhenConfiguredQueueNameEqualsDerivedConversationDeadLetterQueueName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedQueueName: "Chatter_DeadLetterQueue_FakeRowData"))
+                .Should().Throw<ChangeFeedObjectNameCollisionException>()
+                .WithMessage("*ConversationQueueName*ConversationDeadLetterQueueName*Chatter_DeadLetterQueue_FakeRowData*");
+
+        [Fact]
+        public void MustNotThrowWhenConfiguredQueueNameEqualsConfiguredDeadLetterServiceName()
+            => FluentActions.Invoking(() => DeriveNames(changeFeedQueueName: "SharedName", changeFeedDeadLetterServiceName: "SharedName"))
+                .Should().NotThrow();
     }
 }

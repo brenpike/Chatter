@@ -172,5 +172,124 @@ namespace Chatter.SqlChangeFeed.Tests.Scripts.ServiceBroker.UsingInstallAndConfi
         [Fact]
         public void MustBracketEscapeHostileDeadLetterServiceNameInCreateService()
             => CreateHostile().ToString().Should().Contain("CREATE SERVICE [My]]DlService'; DROP TABLE Users;--] ON QUEUE");
+
+        // A SERVICE carries its binding in sys.services.service_queue_id, a column no name probe can see. The
+        // precondition block must read identity from the catalog join, never from the name alone.
+        [Fact]
+        public void MustKeyTheConversationServiceBindingOnTheServiceQueueIdJoin()
+        {
+            var preconditions = Create().ToServiceBindingPreconditions();
+
+            preconditions.Should().Contain("INNER JOIN sys.service_queues q ON q.object_id = svc.service_queue_id");
+            preconditions.Should().Contain("WHERE svc.name = ''MyService''");
+        }
+
+        [Fact]
+        public void MustRefuseWhenTheConversationServiceIsBoundToAnotherQueue()
+            => Create().ToServiceBindingPreconditions()
+                .Should().Contain("IF @ChatterInstalledConversationQueueId IS NOT NULL")
+                .And.Contain("OR @ChatterInstalledConversationQueueId <> @ChatterExpectedConversationQueueId");
+
+        // On an upgrade that renamed the queue, the newly configured queue does not exist yet, so its OBJECT_ID
+        // is NULL and a bare <> comparison evaluates to UNKNOWN and lets the diverged binding through.
+        [Fact]
+        public void MustTreatAMissingConfiguredConversationQueueAsADivergedBinding()
+            => Create().ToServiceBindingPreconditions()
+                .Should().Contain("@ChatterExpectedConversationQueueId IS NULL");
+
+        [Fact]
+        public void MustNameTheDivergedServiceTheInstalledBindingTheExpectedBindingAndTheRemedyWhenRefusingTheConversationService()
+        {
+            var preconditions = Create().ToServiceBindingPreconditions();
+
+            preconditions.Should().Contain("SERVICE [MyService] is bound to QUEUE %s");
+            preconditions.Should().Contain("configured to use QUEUE [dbo].[MyQueue]");
+            preconditions.Should().Contain("Run the Chatter_UninstallChangeFeed_<row changed data type> Stored Procedure");
+            preconditions.Should().Contain("re-run the Change Feed Migration");
+            preconditions.Should().Contain(", 16, 1, @ChatterInstalledConversationQueue);");
+        }
+
+        // The block is spliced verbatim into the install Stored Procedure's EXEC(' ... ') body, so every literal
+        // it carries sits two single-quoted layers deep.
+        [Fact]
+        public void MustQuoteEscapeHostileSchemaAndQueueAtNestingDepthTwoInTheConversationQueueProbe()
+            => CreateHostile().ToServiceBindingPreconditions()
+                .Should().Contain("OBJECT_ID(''[My]]Schema''''; DROP TABLE Users;--].[My]]Queue''''; DROP TABLE Users;--]'', ''SQ'')");
+
+        [Fact]
+        public void MustQuoteEscapeHostileConversationServiceNameAtNestingDepthTwoInTheCatalogLookup()
+            => CreateHostile().ToServiceBindingPreconditions()
+                .Should().Contain("WHERE svc.name = ''My]Service''''; DROP TABLE Users;--''");
+
+        [Fact]
+        public void MustQuoteEscapeHostileConversationServiceNameAtNestingDepthTwoInTheRefusalMessage()
+            => CreateHostile().ToServiceBindingPreconditions()
+                .Should().Contain("SERVICE [My]]Service''''; DROP TABLE Users;--] is bound to QUEUE %s");
+
+        [Fact]
+        public void MustRefuseWhenAServiceOtherThanTheConfiguredDeadLetterServiceIsBoundToTheDeadLetterQueue()
+            => Create().ToServiceBindingPreconditions()
+                .Should().Contain("AND svc.name <> ''MyDeadLetterService''")
+                .And.Contain("IF @ChatterConflictingDeadLetterService IS NOT NULL");
+
+        // An unscoped probe would refuse a legitimate consumer-owned service that merely shares the database, so
+        // the dead-letter arm keys on this change feed's own dead-letter queue object id.
+        [Fact]
+        public void MustScopeTheDeadLetterProbeToTheDeadLetterQueueOfThisChangeFeed()
+            => Create().ToServiceBindingPreconditions()
+                .Should().Contain("DECLARE @ChatterDeadLetterQueueId int = OBJECT_ID(''[dbo].[MyDeadLetterQueue]'', ''SQ'');")
+                .And.Contain("WHERE q.object_id = @ChatterDeadLetterQueueId");
+
+        [Fact]
+        public void MustNameTheDivergedServiceTheInstalledBindingTheExpectedBindingAndTheRemedyWhenRefusingTheDeadLetterQueue()
+        {
+            var preconditions = Create().ToServiceBindingPreconditions();
+
+            preconditions.Should().Contain("SERVICE %s is bound to QUEUE [dbo].[MyDeadLetterQueue]");
+            preconditions.Should().Contain("configured to use SERVICE [MyDeadLetterService] on that queue");
+            preconditions.Should().Contain("Run the Chatter_UninstallChangeFeed_<row changed data type> Stored Procedure");
+            preconditions.Should().Contain(", 16, 1, @ChatterConflictingDeadLetterService);");
+        }
+
+        [Fact]
+        public void MustQuoteEscapeHostileSchemaAndDeadLetterQueueAtNestingDepthTwoInTheDeadLetterQueueProbe()
+            => CreateHostile().ToServiceBindingPreconditions()
+                .Should().Contain("OBJECT_ID(''[My]]Schema''''; DROP TABLE Users;--].[My]]DlQueue''''; DROP TABLE Users;--]'', ''SQ'')");
+
+        [Fact]
+        public void MustQuoteEscapeHostileDeadLetterServiceNameAtNestingDepthTwoInTheCatalogLookup()
+            => CreateHostile().ToServiceBindingPreconditions()
+                .Should().Contain("AND svc.name <> ''My]DlService''''; DROP TABLE Users;--''");
+
+        [Fact]
+        public void MustQuoteEscapeHostileDeadLetterServiceNameAtNestingDepthTwoInTheRefusalMessage()
+            => CreateHostile().ToServiceBindingPreconditions()
+                .Should().Contain("configured to use SERVICE [My]]DlService''''; DROP TABLE Users;--] on that queue");
+
+        // The gate refuses; it never reconciles. Rebinding or dropping a superseded object destroys undelivered
+        // notifications, so no mutation belongs in the precondition block.
+        [Fact]
+        public void MustNotEmitAnyMutationInTheServiceBindingPreconditions()
+        {
+            var preconditions = Create().ToServiceBindingPreconditions();
+
+            preconditions.Should().NotContain("ALTER ");
+            preconditions.Should().NotContain("DROP ");
+            preconditions.Should().NotContain("CREATE ");
+        }
+
+        // The gate must be separable from the mutation script so the install Stored Procedure can run it strictly
+        // before anything is created.
+        [Fact]
+        public void MustKeepTheServiceBindingPreconditionsOutOfTheMutationScript()
+            => Create().ToString().Should().NotContain("service_queue_id");
+
+        [Fact]
+        public void MustLeaveTheConversationServiceNameGuardInTheMutationScript()
+            => Create().ToString().Should().Contain($"IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{Service}')");
+
+        [Fact]
+        public void MustLeaveTheDeadLetterServiceNameGuardInTheMutationScript()
+            => Create().ToString().Should().Contain($"IF NOT EXISTS(SELECT * FROM sys.services WHERE name = '{DeadLetterService}')");
     }
 }
