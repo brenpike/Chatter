@@ -370,7 +370,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
             string batchJson = $"{{\"Documents\":[{{\"id\":\"a\"}},{admitted.GetRawText()},{{\"id\":\"inbox:x\",\"_chatterType\":\"inbox\",\"MessageId\":\"m\"}}]}}";
             using Stream batch = StreamOf(batchJson);
-            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
             capturedProviders.Should().ContainSingle("the body-resolver factory is consulted exactly once — only for the admitted pending outbox document, not per raw drained document");
             capturedProviders.Should().NotContain(root, "the resolver is resolved from a per-document scope, never the root provider");
@@ -412,7 +412,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             // doc with no status. None is a pending outbox document, so none may open a scope or invoke the factory.
             using Stream batch = StreamOf("{\"Documents\":[{\"id\":\"a\"},{\"id\":\"inbox:x\",\"_chatterType\":\"inbox\",\"MessageId\":\"m\"},{\"id\":\"outbox:y\",\"_chatterType\":\"outbox\"}]}");
 
-            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
             await act.Should().NotThrowAsync("a batch of only non-admitted documents must not run user DI nor wedge the change feed");
             factoryInvocations.Should().Be(0, "the body-resolver factory is never invoked for a non-admitted document");
@@ -448,7 +448,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
             using Stream batch = StreamOf($"{{\"Documents\":[{admitted.GetRawText()}]}}");
 
-            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
             (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(resolveFailure,
                 "an admitted document's resolver failure propagates so the SDK does not checkpoint and the document re-surfaces");
@@ -491,7 +491,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             string batchJson = $"{{\"Documents\":[{{\"id\":\"a\"}},{admitted.GetRawText()},{{\"id\":\"inbox:x\",\"_chatterType\":\"inbox\",\"MessageId\":\"m\"}}]}}";
             using Stream batch = StreamOf(batchJson);
 
-            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
             filterInvocations.Should().Be(1,
                 "the caller-supplied AdditionalPendingFilter is composed at exactly one admission site (the relay), so an admitted document evaluates it once — not twice");
@@ -528,7 +528,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
             using Stream batch = StreamOf($"{{\"Documents\":[{admitted.GetRawText()}]}}");
 
-            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
             filterInvocations.Should().Be(1, "the filter is evaluated exactly once per admitted document");
             monitored.Verify(c => c.PatchItemAsync<JsonElement>(
@@ -572,7 +572,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             JsonElement admitted = PendingOutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
             using Stream batch = StreamOf($"{{\"Documents\":[{admitted.GetRawText()}]}}");
 
-            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, CancellationToken.None);
+            Func<Task> act = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
             await act.Should().NotThrowAsync("the filter is evaluated exactly once, so its throw-on-second-call path is never reached and the feed is not wedged");
             filterInvocations.Should().Be(1, "the filter is evaluated exactly once per admitted document");

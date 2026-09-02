@@ -469,7 +469,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             using (Stream batch = BatchOf(NonOutboxDocument()))
             {
-                await StandaloneHost(provider).HandleChangesAsync(batch, container.Object, PartitionKeyPath, CancellationToken.None);
+                await StandaloneHost(provider).HandleChangesAsync(batch, container.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
                 published.Should().BeEmpty();
                 patches.Should().BeEmpty();
@@ -492,7 +492,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             using (Stream batch = BatchOf(PendingOutboxDocument(timestampUnixSeconds: SecondsAgo(PendingAgeSeconds))))
             {
-                await StandaloneHost(provider).HandleChangesAsync(batch, container.Object, PartitionKeyPath, CancellationToken.None);
+                await StandaloneHost(provider).HandleChangesAsync(batch, container.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
                 published.Should().ContainSingle();
                 patches.Should().ContainSingle();

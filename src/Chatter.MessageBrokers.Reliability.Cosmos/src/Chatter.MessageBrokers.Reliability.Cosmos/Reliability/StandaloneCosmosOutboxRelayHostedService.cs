@@ -82,7 +82,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             ChangeFeedProcessor processor = monitoredContainer
                 .GetChangeFeedProcessorBuilder(descriptor.ProcessorName, (ChangeFeedProcessorContext context, Stream changes, CancellationToken changeCancellationToken)
-                    => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, changeCancellationToken))
+                    => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, context.LeaseToken, changeCancellationToken))
                 .WithInstanceName(instanceName)
                 .WithLeaseContainer(leaseContainer)
                 // Start from the BEGINNING of the change feed (see CosmosOutboxRelayHostedService): the SDK default start
@@ -150,7 +150,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // CosmosOutboxRelayHostedService.HandleChangesAsync: FAIL CLOSED on an unexpected batch shape (throw so the SDK
         // does not checkpoint the batch) and let a publish failure propagate so the document re-surfaces next pass.
         // internal so the fail-closed behavior is unit-testable without the live SDK change-feed plumbing.
-        internal async Task HandleChangesAsync(Stream changes, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
+        internal async Task HandleChangesAsync(Stream changes, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, string leaseToken, CancellationToken cancellationToken)
         {
             using JsonDocument payload = await JsonDocument.ParseAsync(changes, cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -158,6 +158,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             {
                 throw new InvalidOperationException(
                     "The Cosmos change-feed batch payload did not contain a 'Documents' array. The relay cannot determine which documents to drain from this batch, so it fails closed (the batch is not checkpointed and re-surfaces) rather than silently advancing the lease past potentially-unpublished outbox documents.");
+            }
+
+            // Recorded ONCE per batch, mirroring CosmosOutboxRelayHostedService.HandleChangesAsync: BELOW the
+            // fail-closed throw (a payload whose size is unknown records nothing rather than a fabricated one) and
+            // ABOVE the per-document loop (a mid-batch publish failure still reports the batch that was attempted).
+            // An EMPTY batch is recorded too: the count measures LEASE PROGRESS, so dropping it would make an idle
+            // partition indistinguishable from a stalled one.
+            // INVARIANT: ADR-0010 R1 - the document count is read INSIDE this module's own off-guard, because C#
+            // evaluates arguments before the callee's guard runs.
+            if (CosmosReliabilityDiagnostics.IsEnabled)
+            {
+                CosmosReliabilityDiagnostics.RecordDrainedBatch(leaseToken, documents.GetArrayLength());
             }
 
             foreach (JsonElement document in documents.EnumerateArray())
