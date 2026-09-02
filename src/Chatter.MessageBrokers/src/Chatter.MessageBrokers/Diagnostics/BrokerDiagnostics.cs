@@ -161,6 +161,63 @@ namespace Chatter.MessageBrokers.Diagnostics
         }
 
         /// <summary>
+        /// Starts a span covering one dispatch call to broker infrastructure, parented to an EXPLICITLY SUPPLIED
+        /// trace context rather than to whatever <see cref="Activity"/> happens to be current, or returns
+        /// <c>null</c> when no .NET <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/>
+        /// scope or the listener declined to sample.
+        /// </summary>
+        /// <param name="messagingSystem">The value for <see cref="MessagingSystem"/>.</param>
+        /// <param name="operationName">The value for <see cref="OperationName"/>; also the first word of the span name.</param>
+        /// <param name="destinationName">The value for <see cref="DestinationName"/>; also the second word of the span name.</param>
+        /// <param name="messageCount">The value for <see cref="BatchMessageCount"/>: one dispatch call carries N messages that share one context (ADR-0010 D7).</param>
+        /// <param name="parent">The trace context the span is parented to, or <c>default</c> when the caller found
+        /// none. <c>default</c> means ABSENCE, never "use the current activity".</param>
+        /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
+        /// <remarks>
+        /// WHY AN EXPLICIT PARENT AT ALL. Deferred dispatch — an outbox drained minutes after, and in another process
+        /// from, the transaction that wrote the row — has a causal parent that no longer exists as a running
+        /// <see cref="Activity"/>. It survives only as trace context the writer persisted, so a caller that has read
+        /// that context back has to be able to hand it in.
+        /// INVARIANT: a <c>default</c> <paramref name="parent"/> NEVER falls back to <see cref="Activity.Current"/>.
+        /// Neither <c>StartActivity(name, kind)</c> nor <c>StartActivity(name, kind, default(ActivityContext))</c>
+        /// produces a root — <see cref="Activity.Start"/> falls back to <see cref="Activity.Current"/> whenever the
+        /// created activity was given neither a parent id nor a parent span id, and a default
+        /// <see cref="ActivityContext"/> supplies neither — so a drain hop that found no persisted context would
+        /// become a CHILD of the drain loop, reporting that the poll caused the message when the write did. That is
+        /// the same false causality <see cref="StartHeaderlessReceive"/> rejects on the receive side (ADR-0010 D6),
+        /// and it is worse here because the correct parent demonstrably exists somewhere else.
+        /// <see cref="Activity.Current"/> is therefore cleared across the start so the fallback cannot fire, and the
+        /// ambient rides along as a LINK on both branches rather than as a parent.
+        /// OUTSTANDING RESTORE, on BOTH branches: a span started from a trace CONTEXT records no parent
+        /// <see cref="Activity"/>, so <see cref="Activity.Stop"/> restores <see cref="Activity.Current"/> to
+        /// <c>null</c> rather than to the ambient. A call site that needs the host's ambient activity to outlive the
+        /// span captures it before this call and restores it after the span stops — the obligation
+        /// <see cref="ReceiveSpan"/> discharges for the receive side.
+        /// </remarks>
+        public static Activity StartSend(string messagingSystem, string operationName, string destinationName, int messageCount, ActivityContext parent)
+        {
+            if (!_source.HasListeners())
+            {
+                return null;
+            }
+
+            var spanName = BuildSpanName(operationName, destinationName);
+            var ambientLinks = BuildAmbientLinks(parent);
+            var activity = parent == default(ActivityContext)
+                ? StartParentlessSend(spanName, ambientLinks)
+                : _source.StartActivity(spanName, ActivityKind.Producer, parent, links: ambientLinks);
+
+            if (activity is null)
+            {
+                return null;
+            }
+
+            SetOperationTags(activity, messagingSystem, operationName, OperationTypes.Send, destinationName);
+            activity.SetTag(BatchMessageCount, messageCount);
+            return activity;
+        }
+
+        /// <summary>
         /// Starts a span covering one delivery from broker infrastructure, parented to the trace context the
         /// producer wrote onto <paramref name="messageContext"/>, or returns <c>null</c> when no .NET
         /// <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/> scope or the listener
@@ -437,6 +494,51 @@ namespace Chatter.MessageBrokers.Diagnostics
             }
 
             return tags;
+        }
+
+        /// <summary>
+        /// Starts the send span for a dispatch call whose caller found NO persisted parent, as a FRESH ROOT with the
+        /// ambient activity attached as a LINK rather than promoted to parent (ADR-0010 D6).
+        /// </summary>
+        /// <remarks>
+        /// The ambient is restored HERE on the SAMPLED-OUT outcome only, because no span then exists for the
+        /// suppression to serve. On the sampled-in outcome the restore belongs to the call site, exactly as it does
+        /// on the explicitly parented branch — stopping a context-parented span clears
+        /// <see cref="Activity.Current"/> either way, so this branch adds no obligation the branch beside it does
+        /// not already carry (see the OUTSTANDING RESTORE note on
+        /// <see cref="StartSend(string, string, string, int, ActivityContext)"/>).
+        /// Reading and writing <see cref="Activity.Current"/> here is legitimate only because the caller already ran
+        /// the <see cref="ActivitySource.HasListeners"/> guard (ADR-0010 R3), so an application that never opted in
+        /// never reaches this method.
+        /// </remarks>
+        /// <param name="spanName">The span name, already built by the caller.</param>
+        /// <param name="ambientLinks">The ambient activity as a link, built by the caller BEFORE the ambient was cleared.</param>
+        private static Activity StartParentlessSend(string spanName, ActivityLink[] ambientLinks)
+        {
+            var ambient = Activity.Current;
+
+            if (ambient is null)
+            {
+                return _source.StartActivity(spanName, ActivityKind.Producer);
+            }
+
+            Activity activity = null;
+
+            Activity.Current = null;
+
+            try
+            {
+                activity = _source.StartActivity(spanName, ActivityKind.Producer, default(ActivityContext), links: ambientLinks);
+            }
+            finally
+            {
+                if (activity is null)
+                {
+                    Activity.Current = ambient;
+                }
+            }
+
+            return activity;
         }
 
         /// <summary>

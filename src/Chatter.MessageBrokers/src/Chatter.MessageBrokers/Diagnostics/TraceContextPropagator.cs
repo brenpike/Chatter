@@ -72,7 +72,41 @@ namespace Chatter.MessageBrokers.Diagnostics
                 return false;
             }
 
-            DistributedContextPropagator.Current.ExtractTraceIdAndState(messageContext, _getTraceContextValue, out var traceParent, out var traceState);
+            return TryExtractFromCarrier(messageContext, out context);
+        }
+
+        /// <summary>
+        /// Reads the trace context a WRITER persisted onto <paramref name="messageContext"/>.
+        /// </summary>
+        /// <param name="messageContext">The message's context dictionary. Its values are external, untrusted content
+        /// and are never logged by this type.</param>
+        /// <param name="context">The extracted remote context, or <c>default</c> when none could be read.</param>
+        /// <returns><c>true</c> when a well-formed remote trace context was read; otherwise <c>false</c>.</returns>
+        /// <remarks>
+        /// Identical in behaviour to <see cref="TryExtract"/>; it differs ONLY in the carrier type it accepts.
+        /// <c>OutboundBrokeredMessage.MessageContext</c> and a relay's materialised context are declared
+        /// <see cref="IDictionary{TKey, TValue}"/>, which is unrelated to <see cref="IReadOnlyDictionary{TKey, TValue}"/>,
+        /// so this member trades a runtime cast for a compile-time guarantee on the deferred-send path. It is
+        /// deliberately NOT an overload of <see cref="TryExtract"/>: a same-named overload would make every existing
+        /// call site passing a concrete <c>Dictionary&lt;string, object&gt;</c> ambiguous (CS0121).
+        /// </remarks>
+        public static bool TryExtractFromMessageContext(IDictionary<string, object> messageContext, out ActivityContext context)
+        {
+            context = default;
+
+            if (messageContext is null || messageContext.Count == 0)
+            {
+                return false;
+            }
+
+            return TryExtractFromCarrier(messageContext, out context);
+        }
+
+        private static bool TryExtractFromCarrier(object carrier, out ActivityContext context)
+        {
+            context = default;
+
+            DistributedContextPropagator.Current.ExtractTraceIdAndState(carrier, _getTraceContextValue, out var traceParent, out var traceState);
 
             if (string.IsNullOrEmpty(traceParent))
             {
@@ -117,10 +151,30 @@ namespace Chatter.MessageBrokers.Diagnostics
             fieldValue = null;
             fieldValues = null;
 
-            if (carrier is IReadOnlyDictionary<string, object> messageContext && messageContext.TryGetValue(fieldName, out var rawValue))
+            if (TryGetCarrierValue(carrier, fieldName, out var rawValue))
             {
                 fieldValue = CoerceTraceContextValue(rawValue);
             }
+        }
+
+        /// <summary>
+        /// Reads one raw carrier entry, accepting the two unrelated dictionary interfaces the public extraction
+        /// members are declared against.
+        /// </summary>
+        private static bool TryGetCarrierValue(object carrier, string fieldName, out object rawValue)
+        {
+            if (carrier is IReadOnlyDictionary<string, object> readOnlyMessageContext)
+            {
+                return readOnlyMessageContext.TryGetValue(fieldName, out rawValue);
+            }
+
+            if (carrier is IDictionary<string, object> messageContext)
+            {
+                return messageContext.TryGetValue(fieldName, out rawValue);
+            }
+
+            rawValue = null;
+            return false;
         }
 
         /// <summary>
