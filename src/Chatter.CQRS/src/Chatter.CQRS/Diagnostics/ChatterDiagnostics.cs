@@ -37,7 +37,22 @@ namespace Chatter.CQRS.Diagnostics
         private static readonly string _telemetryVersion = ResolveTelemetryVersion();
         private static readonly ActivitySource _source = new ActivitySource(ActivitySourceName, _telemetryVersion);
         private static readonly Meter _meter = new Meter(MeterName, _telemetryVersion);
+#if NET9_0_OR_GREATER
+        // INVARIANT: static field initializers run in TEXTUAL order, so this field must stay between _meter and
+        // _dispatchDuration — declared after it, the histogram would be created with a null advice.
+        // INVARIANT: the boundaries must stay strictly ascending and distinct. InstrumentAdvice<T> throws on any
+        // other set, and because this is a static field of a static class whose type initializer runs on the
+        // first read of the off-guard, such a throw would surface as a TypeInitializationException on the
+        // un-instrumented dispatch path too.
+        private static readonly InstrumentAdvice<double> _dispatchDurationAdvice = new InstrumentAdvice<double>
+        {
+            HistogramBucketBoundaries = new double[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 }
+        };
+
+        private static readonly Histogram<double> _dispatchDuration = _meter.CreateHistogram<double>(DispatchDurationInstrumentName, "s", "Duration of a Chatter CQRS dispatch.", tags: null, advice: _dispatchDurationAdvice);
+#else
         private static readonly Histogram<double> _dispatchDuration = _meter.CreateHistogram<double>(DispatchDurationInstrumentName, "s", "Duration of a Chatter CQRS dispatch.");
+#endif
 
         /// <summary>
         /// The <see cref="ActivitySource"/> Chatter emits dispatch spans from. Exposed so a call site can run the
