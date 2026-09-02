@@ -32,6 +32,15 @@ namespace Chatter.MessageBrokers.Diagnostics
     /// on how the base class library happens to restore <see cref="Activity.Current"/> today. This is the same
     /// obligation <c>BrokerDiagnostics.ReceiveSpan</c> discharges on the receive side, and it is discharged here so
     /// that "a send site forgot to restore the ambient" is not a representable defect.
+    /// CONTRACT: a scope is opened and disposed on ONE asynchronous flow — the <c>using</c> block or the
+    /// <c>try</c>/<c>finally</c> that opened it. Restoring the ambient means assigning
+    /// <see cref="Activity.Current"/>, which is an <see cref="System.Threading.AsyncLocal{T}"/> keyed on the
+    /// execution context, so the restore lands in the context that DISPOSES. Continuing the opening flow across an
+    /// <c>await</c> — including one that resumes on a different thread — stays that same execution context and is
+    /// exactly what every call site does; FORKING a copy of the scope into an independent execution context and
+    /// disposing it there is NOT supported, because the restore would land only in the fork. The exactly-once close
+    /// below is defence against an ACCIDENTAL copy being discharged twice, not a licence to discharge a copy from a
+    /// context other than the one that opened it.
     /// </remarks>
     public readonly struct SendScope : IDisposable
     {
@@ -202,9 +211,15 @@ namespace Chatter.MessageBrokers.Diagnostics
         /// <c>finally</c> sat inside its <c>using</c>. The ambient restore comes AFTER the stop, because stopping
         /// the span is itself what writes <see cref="Activity.Current"/> — to the deliberate <c>null</c> a fresh
         /// root was started over — so restoring first would simply be undone.
+        /// The ambient restore is an <see cref="Activity.Current"/> assignment, so it lands in the execution
+        /// context that runs this method — which the type's disposal CONTRACT (see the type remarks) fixes as the
+        /// context that opened the scope. Disposing a copy from a FORKED execution context would restore the
+        /// ambient only in the fork and leave the opening flow with the send span current; that is outside the
+        /// contract and no call site does it.
         /// INVARIANT: the call is discharged exactly once. A <c>readonly struct</c> is freely copyable, so the
-        /// number of copies — and the number of THREADS holding them — is not something a call site can be asked to
-        /// control. <see cref="SendObservation.TryClose"/> therefore settles the whole question in ONE
+        /// number of copies is not something a call site can be asked to control, and a copy may be discharged on a
+        /// different THREAD of the opening flow whenever an <c>await</c> resumes elsewhere.
+        /// <see cref="SendObservation.TryClose"/> therefore settles the whole question in ONE
         /// <see cref="Interlocked.Exchange(ref int, int)"/> on the single heap cell every copy shares: exactly one
         /// caller can ever observe the transition, so "closed exactly once" holds BY CONSTRUCTION rather than by a
         /// check-then-set that two concurrent copies could both pass and double-count the send with.
