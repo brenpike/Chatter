@@ -40,6 +40,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly StandaloneRelayProcessorRegistry _processorRegistry;
         private readonly RelayFailureNotifier _failureNotifier;
         private readonly GuardedRelayLog _log;
+        private readonly OutboxDrainGate _drainGate;
         private ChangeFeedProcessor _processor;
 
         // processorRegistry is OPTIONAL (defaults null) so every existing direct-construction call site (and the legacy
@@ -64,6 +65,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _log = new GuardedRelayLog(logger);
             _failureNotifier = new RelayFailureNotifier(logger);
 
+            // ONE gate per host, keyed by Lease Token, on the system clock. It is consulted by the HOST rather than the
+            // relay because the Lease Token a batch arrived on is something only the host knows (#416). Its bounds are
+            // NON-CONFIGURABLE, so this host's options object deliberately carries no knob for them: they are a safety
+            // bound rather than a tuning parameter, and they are IDENTICAL on both hosts.
+            _drainGate = new OutboxDrainGate(_log);
+
             // Build the relay with the options' validated drain knobs (OutboxDeliverySettings.FromOptions enforces the F2
             // invariants), including the caller's optional AdditionalPendingFilter, which the relay's ProcessChangeAsync
             // self-guard composes EXACTLY ONCE (the host pre-gate uses only the pure IsPendingOutbox identity guard — see
@@ -74,7 +81,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _relay = new CosmosOutboxRelay(
                 infrastructureProvider,
                 bodyConverterFactory,
-                OutboxDeliverySettings.FromOptions(options));
+                OutboxDeliverySettings.FromOptions(options),
+                _log);
 
             ProcessorFactory = BuildChangeFeedProcessor;
         }
@@ -240,7 +248,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         // Parses the change-feed stream payload and feeds each document through the relay core, mirroring
         // CosmosOutboxRelayHostedService.HandleChangesAsync: FAIL CLOSED on an unexpected batch shape (throw so the SDK
-        // does not checkpoint the batch) and let a publish failure propagate so the document re-surfaces next pass.
+        // does not checkpoint the batch) and let a publish failure propagate so the document re-surfaces next pass. A
+        // lease under a Drain Suspension is refused outright (#416), which is the SAME fail-closed exit one batch earlier.
         // internal so the fail-closed behavior is unit-testable without the live SDK change-feed plumbing.
         internal async Task HandleChangesAsync(Stream changes, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, string leaseToken, CancellationToken cancellationToken)
         {
@@ -264,9 +273,34 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 CosmosReliabilityDiagnostics.RecordDrainedBatch(leaseToken, documents.GetArrayLength());
             }
 
-            foreach (JsonElement document in documents.EnumerateArray())
+            // The Drain Suspension is consulted ONCE PER BATCH, and HERE — ABOVE the per-document pending-outbox
+            // pre-gate, so a suspended lease opens NO DI scope and invokes NO body-resolver factory. A refused batch
+            // throws, taking the module's EXISTING fail-closed exit: the SDK does not checkpoint and the batch
+            // re-surfaces, exactly as a publish failure already does.
+            // INVARIANT: this HALTS NOTHING. No change-feed processor is stopped and this hosted service is not
+            // stopped; the host simply declines to drain the lease for the window.
+            if (!_drainGate.PermitDrain(leaseToken))
             {
-                await ProcessDocumentAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                throw new InvalidOperationException(
+                    $"The Cosmos Outbox Relay is not draining lease '{leaseToken}': its documents published but could not be marked delivered, so every redrain republished them. The batch is not checkpointed and re-surfaces once a confirmation succeeds.");
+            }
+
+            try
+            {
+                foreach (JsonElement document in documents.EnumerateArray())
+                {
+                    await ProcessDocumentAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                }
+
+                _drainGate.RecordConfirmationSuccess(leaseToken);
+            }
+            catch (OutboxConfirmationFailedException confirmationFailure)
+            {
+                // INVARIANT: the carrier NEVER escapes the module. The INNER fault is rethrown through
+                // ExceptionDispatchInfo so the caller observes the original exception with its original stack and the
+                // error type on the shipped drain-failure count stays byte-identical.
+                _drainGate.RecordConfirmationFailure(leaseToken, confirmationFailure.InnerException);
+                ExceptionDispatchInfo.Capture(confirmationFailure.InnerException).Throw();
             }
         }
 

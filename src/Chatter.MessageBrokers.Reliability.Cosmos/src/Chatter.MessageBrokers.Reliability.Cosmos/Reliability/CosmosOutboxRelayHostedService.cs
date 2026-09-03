@@ -83,6 +83,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly CosmosOutboxRelay _relay;
         private readonly RelayFailureNotifier _failureNotifier;
         private readonly GuardedRelayLog _log;
+        // ONE gate per host, shared across every processor this host owns, because a Drain Suspension is per LEASE
+        // TOKEN and the host is the only component that knows the lease a Confirmation Failure happened under (#416).
+        private readonly OutboxDrainGate _drainGate;
         private readonly List<ChangeFeedProcessor> _processors = new List<ChangeFeedProcessor>();
 
         // logger is OPTIONAL (defaults null) so every existing direct-construction call site keeps compiling: a null
@@ -102,9 +105,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _containerFactory = containerFactory ?? throw new ArgumentNullException(nameof(containerFactory));
             _ = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
-            _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory);
-            _failureNotifier = new RelayFailureNotifier(logger);
             _log = new GuardedRelayLog(logger);
+            _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory, _log);
+            _failureNotifier = new RelayFailureNotifier(logger);
+            _drainGate = new OutboxDrainGate(_log);
             ProcessorFactory = BuildChangeFeedProcessor;
         }
 
@@ -289,10 +293,38 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 CosmosReliabilityDiagnostics.RecordDrainedBatch(leaseToken, documents.GetArrayLength());
             }
 
+            // THE DRAIN SUSPENSION CONSULT (#416), ONCE PER BATCH and ABOVE the document loop, so a suspended lease
+            // publishes NOTHING rather than being decided per document. A refusal takes the module's EXISTING
+            // fail-closed exit — throw, the SDK does not checkpoint, the batch re-surfaces — which is the identical
+            // exit a publish failure already takes, so the suspension introduces no new checkpointing decision.
+            // It HALTS NOTHING: no processor and no hosted service is stopped, so the co-resident pipeline host is
+            // untouched by a suspension on one lease.
+            if (!_drainGate.PermitDrain(leaseToken))
+            {
+                throw new InvalidOperationException(
+                    $"The Cosmos Outbox Relay has suspended draining lease '{leaseToken}': its documents published but could not be marked delivered, so every redrain republished them. The batch is not checkpointed and re-surfaces once draining resumes.");
+            }
+
             foreach (JsonElement document in documents.EnumerateArray())
             {
-                await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OutboxConfirmationFailedException carrier)
+                {
+                    _drainGate.RecordConfirmationFailure(leaseToken, carrier.InnerException);
+
+                    // INVARIANT: the carrier NEVER escapes this module. The ORIGINAL fault is rethrown with its
+                    // original stack trace, so error.type on the shipped drain-failure count stays what it was before
+                    // the carrier existed.
+                    ExceptionDispatchInfo.Capture(carrier.InnerException).Throw();
+                }
             }
+
+            // The drain completed with no Confirmation Failure, which is what lifts a suspension. The relay is
+            // fail-closed, so a wedged lease never gets here at all: it throws on the same document every pass.
+            _drainGate.RecordConfirmationSuccess(leaseToken);
         }
 
         // One descriptor per distinct change-feed SOURCE-IDENTITY key (ADR-0008). The key is a TYPED, COMPONENT-WISE
