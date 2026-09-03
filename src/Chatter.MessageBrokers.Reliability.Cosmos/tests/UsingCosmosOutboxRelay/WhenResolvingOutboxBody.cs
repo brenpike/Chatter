@@ -63,6 +63,37 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             return Parse(node.ToJsonString());
         }
 
+        // An ADMITTED outbox document the verbatim reconstruction could never publish: it carries no Destination, no
+        // MessageBody, no MessageContentType and no MessageContext — the thin-trigger shape a resolver exists for.
+        private static JsonElement UnreconstructableOutboxDocument(string messageId, string tenantId)
+        {
+            var node = new JsonObject
+            {
+                [CosmosOutboxDocument.IdField] = CosmosItemId.ForOutbox(messageId),
+                [CosmosOutboxDocument.DiscriminatorField] = CosmosItemId.OutboxKind,
+                [CosmosOutboxDocument.StatusField] = CosmosOutboxDocument.StatusPending,
+                [CosmosOutboxDocument.MessageIdField] = messageId,
+                ["tenantId"] = tenantId,
+            };
+            return Parse(node.ToJsonString());
+        }
+
+        // An ADMITTED outbox document whose persisted context names a NON-STRING messaging system — a violation the
+        // Outbox Document Contract would prove on the verbatim path, and one a resolver-owned message never faces.
+        private static JsonElement OutboxDocumentWithNonStringMessagingSystem(string messageId, string tenantId)
+        {
+            var node = new JsonObject
+            {
+                [CosmosOutboxDocument.IdField] = CosmosItemId.ForOutbox(messageId),
+                [CosmosOutboxDocument.DiscriminatorField] = CosmosItemId.OutboxKind,
+                [CosmosOutboxDocument.StatusField] = CosmosOutboxDocument.StatusPending,
+                [CosmosOutboxDocument.MessageIdField] = messageId,
+                [CosmosOutboxDocument.MessageContextField] = new JsonObject { [MessageContext.InfrastructureType] = 7 }.ToJsonString(),
+                ["tenantId"] = tenantId,
+            };
+            return Parse(node.ToJsonString());
+        }
+
         private static JsonElement JsonValue(string raw) => Parse(JsonSerializer.Serialize(raw));
 
         private static JsonElement Parse(string json)
@@ -78,8 +109,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             return factory.Object;
         }
 
-        // A provider whose dispatcher records every dispatched message; the recorded list is the publish ledger.
-        private static (IMessagingInfrastructureProvider provider, List<OutboundBrokeredMessage> published) RecordingProvider()
+        // A provider whose dispatcher records every dispatched message and which records every messaging system it was
+        // asked to resolve a dispatcher for; the recorded lists are the publish ledger and the dispatch-resolution ledger.
+        private static (IMessagingInfrastructureProvider provider, List<OutboundBrokeredMessage> published, List<string> requestedMessagingSystems) RecordingProvider()
         {
             var published = new List<OutboundBrokeredMessage>();
             var dispatcher = new Mock<IMessagingInfrastructureDispatcher>();
@@ -87,9 +119,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                       .Callback<OutboundBrokeredMessage, TransactionContext>((m, _) => published.Add(m))
                       .Returns(Task.CompletedTask);
 
+            var requestedMessagingSystems = new List<string>();
             var provider = new Mock<IMessagingInfrastructureProvider>();
-            provider.Setup(p => p.GetDispatcher(It.IsAny<string>())).Returns(dispatcher.Object);
-            return (provider.Object, published);
+            provider.Setup(p => p.GetDispatcher(It.IsAny<string>()))
+                    .Callback<string>(requestedMessagingSystems.Add)
+                    .Returns(dispatcher.Object);
+            return (provider.Object, published, requestedMessagingSystems);
         }
 
         // A container that records each PatchItemAsync call (id, partition key, ops) and returns a benign response.
@@ -141,7 +176,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustInvokeResolverOncePerPendingDocument()
         {
-            var (provider, _) = RecordingProvider();
+            var (provider, _, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var (resolver, contexts) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
@@ -155,7 +190,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustDispatchResolverReturnedMessageNotTheVerbatimReconstruction()
         {
-            var (provider, published) = RecordingProvider();
+            var (provider, published, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var (resolver, _) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
@@ -171,9 +206,30 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         [Fact]
+        public async Task MustPublishAResolvedMessageForADocumentTheReconstructionCouldNotBuild()
+        {
+            // THE OUTBOX DOCUMENT CONTRACT IS EVALUATED ONLY ON THE NO-RESOLVER VERBATIM PATH. A supplied resolver OWNS
+            // the message, so the document's persisted fields need not be publishable at all — evaluating the contract
+            // here would mark documents undeliverable that the resolver publishes perfectly well.
+            var (provider, published, _) = RecordingProvider();
+            var (container, patches) = RecordingContainer();
+            var (resolver, _) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
+
+            JsonElement document = UnreconstructableOutboxDocument("msg-1", "tenant-1");
+            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver);
+
+            published.Should().ContainSingle("the resolver owns the message, so the document's own fields are never verified")
+                     .Which.MessageId.Should().Be("resolved-msg");
+            IReadOnlyList<PatchOperation> ops = patches.Should().ContainSingle().Subject.ops;
+            ops.Should().HaveCount(2, "a resolved publish is stamped delivered+ttl, never undeliverable");
+            ops[0].As<PatchOperation<string>>().Value.Should().Be(CosmosOutboxDocument.StatusDelivered);
+        }
+
+        [Fact]
         public async Task MustStampDeliveredAndDispatchNothingWhenResolverReturnsNull()
         {
-            var (provider, published) = RecordingProvider();
+            var (provider, published, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var (resolver, _) = RecordingResolver(toReturn: null);
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
@@ -188,7 +244,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustUseVerbatimReconstructionWhenNoResolverBound()
         {
-            var (provider, published) = RecordingProvider();
+            var (provider, published, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
 
@@ -204,7 +260,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustStampConfiguredStatusValueAndAlwaysTtlPathWhenSafeSettingsSupplied()
         {
-            var (provider, _) = RecordingProvider();
+            var (provider, _, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             // Non-default but SAFE configuration: the delivered status value and ttl seconds diverge from the legacy
             // defaults; the status patch path stays anchored to "/status" (the only value the F2 invariants admit). The
@@ -232,7 +288,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustStampLegacyStatusPathValueAndTtlWhenSettingsUnset()
         {
-            var (provider, _) = RecordingProvider();
+            var (provider, _, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
 
@@ -248,7 +304,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustSkipDocumentNarrowedOutByAdditionalPendingFilter()
         {
-            var (provider, published) = RecordingProvider();
+            var (provider, published, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var (resolver, contexts) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
             // An additional pending filter that rejects everything narrows even a genuinely-pending document out of
@@ -271,7 +327,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustNotRedispatchAnAlreadyDeliveredDocument()
         {
-            var (provider, published) = RecordingProvider();
+            var (provider, published, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var (resolver, contexts) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
@@ -286,9 +342,30 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         [Fact]
+        public async Task MustReadTheMessagingSystemFromTheResolvedMessageAndNeverVerifyTheDocument()
+        {
+            // The DOCUMENT's persisted context names a non-string messaging system — a contract violation on the
+            // verbatim path. A resolver OWNS the message, so its context is host-owned and is never verified: the
+            // same single reader supplies the messaging system, without classification.
+            var (provider, published, requestedMessagingSystems) = RecordingProvider();
+            var (container, patches) = RecordingContainer();
+            var (resolver, _) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
+
+            JsonElement document = OutboxDocumentWithNonStringMessagingSystem("msg-1", "tenant-1");
+            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver);
+
+            published.Should().ContainSingle("a resolver-owned message is published whatever the document's own fields prove")
+                     .Which.MessageId.Should().Be("resolved-msg");
+            requestedMessagingSystems.Should().ContainSingle()
+                                     .Which.Should().Be(InfrastructureType, "the messaging system comes from the resolved message's own context");
+            patches.Should().ContainSingle().Which.ops.Should().HaveCount(2, "the document is stamped delivered, never undeliverable");
+        }
+
+        [Fact]
         public async Task MustHandResolverThePartitionKeyAndMessageIdFromTheDrainedDocument()
         {
-            var (provider, _) = RecordingProvider();
+            var (provider, _, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var (resolver, contexts) = RecordingResolver(ResolvedMessage("resolved-msg", "resolved-dest"));
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), OutboxDeliverySettings.Legacy);
@@ -306,7 +383,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustNotStampAndMustPropagateWhenResolverThrows()
         {
-            var (provider, published) = RecordingProvider();
+            var (provider, published, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var resolveFailure = new InvalidOperationException("resolver unavailable");
             IOutboxBodyResolver resolver = ThrowingResolver(resolveFailure);

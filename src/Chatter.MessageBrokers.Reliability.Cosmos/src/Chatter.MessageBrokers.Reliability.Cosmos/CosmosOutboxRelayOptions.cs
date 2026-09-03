@@ -54,15 +54,22 @@ namespace Microsoft.Extensions.DependencyInjection
         /// document instead of the relay's verbatim field reconstruction.
         /// </summary>
         /// <remarks>
-        /// LIFETIME CONTRACT (per-admitted-document scope). The host opens a fresh <see cref="IServiceScope"/> and invokes
-        /// this factory with THAT scope's <see cref="IServiceProvider"/> ONLY for an ADMITTED pending outbox document — NOT
-        /// per raw drained document. The monitored container is co-resident (domain aggregates, inbox markers, and the
-        /// relay's own delivered-stamp event also surface on its change feed); a non-admitted document is skipped with NO
-        /// scope opened and this factory NOT invoked, so a non-outbox write never constructs a resolver. The scope is
-        /// disposed after the admitted document is processed. The factory MUST resolve a FRESH resolver from the supplied
-        /// provider on every call and MUST NOT cache or capture the resolver (or its scoped dependencies) across documents —
-        /// a captured resolver would outlive the per-document scope it was bound to. Because resolution happens inside the
-        /// per-document scope, a resolver MAY depend on / capture scoped services in its constructor.
+        /// LIFETIME CONTRACT (per-pending-document scope). The host's pre-scope gate is the pure
+        /// <see cref="CosmosOutboxDocument.IsPendingOutbox"/> identity guard ONLY (it runs NO caller code and never throws);
+        /// the host opens a fresh <see cref="IServiceScope"/> and invokes this factory with THAT scope's
+        /// <see cref="IServiceProvider"/> for any document that passes that gate — NOT per raw drained document. The
+        /// monitored container is co-resident (domain aggregates, inbox markers, and the relay's own delivered-stamp event
+        /// also surface on its change feed); a document that fails the <see cref="CosmosOutboxDocument.IsPendingOutbox"/>
+        /// gate is skipped with NO scope opened and this factory NOT invoked, so a non-outbox write never constructs a
+        /// resolver. The optional <see cref="AdditionalPendingFilter"/> is NOT part of this pre-scope gate — it is composed
+        /// at a single admission site inside the relay, evaluated exactly once, so a document that passes
+        /// <see cref="CosmosOutboxDocument.IsPendingOutbox"/> but is then narrowed out by that filter still opens a scope
+        /// and invokes this factory before the relay rejects it on the filter (one wasted scope; the resolver is never
+        /// asked to resolve; nothing is published or stamped). The scope is disposed after the document is processed. The
+        /// factory MUST resolve a FRESH resolver from the supplied provider on every call and MUST NOT cache or capture the
+        /// resolver (or its scoped dependencies) across documents — a captured resolver would outlive the per-document
+        /// scope it was bound to. Because resolution happens inside the per-document scope, a resolver MAY depend on /
+        /// capture scoped services in its constructor.
         /// <para>
         /// SAFE-BY-DEFAULT PATH: prefer the typed
         /// <see cref="CosmosOutboxRelayServiceCollectionExtensions.AddCosmosOutboxRelay{TResolver}(IServiceCollection, System.Action{CosmosOutboxRelayOptions})"/>
@@ -88,8 +95,10 @@ namespace Microsoft.Extensions.DependencyInjection
         public string StatusPatchPath { get; set; } = "/status";
 
         /// <summary>
-        /// The status value a delivered document is advanced to. Defaults to <c>delivered</c>. Must be non-empty and must
-        /// differ from <c>pending</c> (an equal-to-pending value is rejected at construction).
+        /// The status value a delivered document is advanced to. Defaults to <c>delivered</c>. Must be non-empty, must
+        /// differ from <c>pending</c>, and must differ from the terminal <c>undeliverable</c> status of an Undeliverable
+        /// Outbox Document — a delivered document stamped with it would be indistinguishable from one the relay gave up
+        /// on (an equal-to-pending or equal-to-undeliverable value is rejected at construction).
         /// </summary>
         public string DeliveredStatusValue { get; set; } = "delivered";
 

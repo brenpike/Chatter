@@ -39,6 +39,28 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingGuardedRelayLog
             reporting.Should().NotThrow("a faulty optional sink may never replace the failure the caller must observe");
         }
 
+        /// <summary>The same guarantee on the two-argument structured overload.</summary>
+        [Fact]
+        public void MustSwallowASinkThrowOnTheTwoArgumentTemplateOverload()
+        {
+            var log = new GuardedRelayLog(new ThrowingLogger());
+
+            Action reporting = () => log.Error(_fault, "the outbox document {MessageId} violates the outbox document contract: {Violation}", "outbox:m-1", "status is not pending");
+
+            reporting.Should().NotThrow("a faulty optional sink may never replace the failure the caller must observe");
+        }
+
+        /// <summary>The same guarantee on the one-argument informational overload.</summary>
+        [Fact]
+        public void MustSwallowASinkThrowOnTheOneArgumentInformationOverload()
+        {
+            var log = new GuardedRelayLog(new ThrowingLogger());
+
+            Action reporting = () => log.Information("the outbox relay suspended draining lease {LeaseToken}", "lease-7");
+
+            reporting.Should().NotThrow("a faulty optional sink may never break the delivery path it reports on");
+        }
+
         /// <summary>What is logged is UNCHANGED: same level, same rendered template, same exception.</summary>
         [Fact]
         public void MustReportThroughTheStructuredTemplateAtError()
@@ -54,6 +76,39 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingGuardedRelayLog
             entry.Exception.Should().BeSameAs(_fault);
         }
 
+        /// <summary>Both structured arguments reach the sink, and the reported exception is still the original one.</summary>
+        [Fact]
+        public void MustReportBothStructuredArgumentsAtError()
+        {
+            var logger = new RecordingLogger();
+            var log = new GuardedRelayLog(logger);
+
+            log.Error(_fault, "the outbox document {MessageId} violates the outbox document contract: {Violation}", "outbox:m-1", "status is not pending");
+
+            var entry = logger.Entries.Should().ContainSingle().Subject;
+            entry.Level.Should().Be(LogLevel.Error);
+            entry.Message.Should().Contain("outbox:m-1").And.Contain("status is not pending");
+            entry.Exception.Should().BeSameAs(_fault);
+        }
+
+        /// <summary>
+        /// A suspension is not a fault of the reporting path, so it is reported at
+        /// <see cref="LogLevel.Information"/> and carries no exception.
+        /// </summary>
+        [Fact]
+        public void MustReportThroughTheStructuredTemplateAtInformation()
+        {
+            var logger = new RecordingLogger();
+            var log = new GuardedRelayLog(logger);
+
+            log.Information("the outbox relay suspended draining lease {LeaseToken}", "lease-7");
+
+            var entry = logger.Entries.Should().ContainSingle().Subject;
+            entry.Level.Should().Be(LogLevel.Information);
+            entry.Message.Should().Contain("lease-7");
+            entry.Exception.Should().BeNull();
+        }
+
         /// <summary>The sink is OPTIONAL: a host that resolved no logger gets a silent no-op, not a null dereference.</summary>
         [Fact]
         public void MustBeASilentNoOpWhenNoLoggerWasSupplied()
@@ -64,6 +119,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingGuardedRelayLog
             {
                 log.Error(_fault, "the relay could not stop a change-feed processor");
                 log.Error(_fault, "the change feed faulted on lease {LeaseToken}", "lease-7");
+                log.Error(_fault, "the outbox document {MessageId} violates the outbox document contract: {Violation}", "outbox:m-1", "status is not pending");
+                log.Information("the outbox relay suspended draining lease {LeaseToken}", "lease-7");
             };
 
             reporting.Should().NotThrow("observability may never be a prerequisite of the path it reports on");

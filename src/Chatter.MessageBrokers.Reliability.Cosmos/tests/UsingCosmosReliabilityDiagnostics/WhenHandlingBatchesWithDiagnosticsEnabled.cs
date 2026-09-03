@@ -35,6 +35,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         /// <summary>The change-feed lease the batch under test was delivered for.</summary>
         private const string LeaseToken = "lease-3";
 
+        /// <summary>
+        /// The Change-Feed Source Identity the processor under test drains, standing in for the processor name a host
+        /// builds its gate with. It is what disambiguates <see cref="LeaseToken"/> across two co-resident sources.
+        /// </summary>
+        private const string SourceIdentity = "chatter-cosmos-outbox-relay:source-under-test";
+
         private const string TenantId = "tenant-1";
 
         /// <summary>A meter name no Chatter instrument belongs to, standing in for another library's opt-in.</summary>
@@ -46,7 +52,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             using (Stream batch = BatchOf(CoResidentDocument("a"), CoResidentDocument("b"), CoResidentDocument("c")))
             {
-                await RegistryHost().HandleChangesAsync(batch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
+                await RegistryHost().HandleChangesAsync(batch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
 
                 AssertOneBatchRecorded(meterScope, expectedSize: 3);
             }
@@ -58,7 +64,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             using (Stream batch = BatchOf(CoResidentDocument("a"), CoResidentDocument("b"), CoResidentDocument("c")))
             {
-                await StandaloneHost().HandleChangesAsync(batch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
+                await StandaloneHost().HandleChangesAsync(batch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
 
                 AssertOneBatchRecorded(meterScope, expectedSize: 3);
             }
@@ -75,7 +81,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             using (Stream batch = BatchOf())
             {
-                await RegistryHost().HandleChangesAsync(batch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
+                await RegistryHost().HandleChangesAsync(batch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
 
                 AssertOneBatchRecorded(meterScope, expectedSize: 0);
             }
@@ -87,7 +93,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             using (Stream batch = BatchOf())
             {
-                await StandaloneHost().HandleChangesAsync(batch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
+                await StandaloneHost().HandleChangesAsync(batch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
 
                 AssertOneBatchRecorded(meterScope, expectedSize: 0);
             }
@@ -110,7 +116,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 CosmosOutboxRelayHostedService host = RegistryHost();
 
-                Func<Task> act = () => host.HandleChangesAsync(StreamOf(payload), Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
+                Func<Task> act = () => host.HandleChangesAsync(StreamOf(payload), Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
 
                 await act.Should().ThrowAsync<InvalidOperationException>(
                     "an unparseable batch must fault so the SDK does not checkpoint the lease past unpublished documents");
@@ -130,7 +136,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 StandaloneCosmosOutboxRelayHostedService host = StandaloneHost();
 
-                Func<Task> act = () => host.HandleChangesAsync(StreamOf(payload), Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
+                Func<Task> act = () => host.HandleChangesAsync(StreamOf(payload), Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
 
                 await act.Should().ThrowAsync<InvalidOperationException>(
                     "an unparseable batch must fault so the SDK does not checkpoint the lease past unpublished documents");
@@ -156,8 +162,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (Stream registryBatch = BatchOf(CoResidentDocument("a")))
             using (Stream standaloneBatch = BatchOf(CoResidentDocument("a")))
             {
-                await RegistryHost().HandleChangesAsync(registryBatch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
-                await StandaloneHost().HandleChangesAsync(standaloneBatch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
+                await RegistryHost().HandleChangesAsync(registryBatch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
+                await StandaloneHost().HandleChangesAsync(standaloneBatch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
 
                 meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainedBatchesInstrumentName).Should().HaveCount(2,
                     "both hosts drained a batch, so the no-span assertion below is about a hop that ran");
@@ -185,15 +191,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 CosmosReliabilityDiagnostics.IsEnabled.Should().BeFalse();
 
-                await RegistryHost().HandleChangesAsync(registryBatch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
-                await StandaloneHost().HandleChangesAsync(standaloneBatch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, CancellationToken.None);
+                await RegistryHost().HandleChangesAsync(registryBatch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
+                await StandaloneHost().HandleChangesAsync(standaloneBatch, Mock.Of<Container>(), PartitionKeyPath, LeaseToken, ProcessorGate(), CancellationToken.None);
 
                 meterScope.Measurements.Should().BeEmpty("no instrument may publish to an application that never opted in");
             }
         }
 
         // One batch handed to one host records exactly one size and exactly one count, both carrying the lease the
-        // batch was delivered for.
+        // batch was delivered for AND the Change-Feed Source Identity that lease belongs to — a lease token alone is a
+        // partition-key-range id, which two co-resident sources report identically.
         private static void AssertOneBatchRecorded(RecordingMeterScope meterScope, int expectedSize)
         {
             var size = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainBatchSizeInstrumentName).Should().ContainSingle().Subject;
@@ -206,6 +213,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 measurement.TryGetTag(CosmosReliabilityDiagnostics.LeaseToken, out var leaseToken).Should().BeTrue();
                 leaseToken.Should().Be(LeaseToken);
+                measurement.TryGetTag(CosmosReliabilityDiagnostics.SourceIdentity, out var sourceIdentity).Should().BeTrue();
+                sourceIdentity.Should().Be(SourceIdentity, "the host reports the batch under the identity of the gate it was handed");
             }
         }
 
@@ -224,6 +233,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         // A co-resident document neither host admits: no Chatter discriminator, no pending status. The batch size is
         // the BATCH's document count, not the admitted count, so a batch of these still sizes as three.
         private static string CoResidentDocument(string id) => "{\"id\":\"" + id + "\",\"tenantId\":\"" + TenantId + "\"}";
+
+        // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
+        // descriptor. No host owns a gate any more, so the handler is handed one, and the gate is what carries the
+        // Change-Feed Source Identity the batch measurements are reported under.
+        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null));
 
         private static CosmosOutboxRelayHostedService RegistryHost()
             => new CosmosOutboxRelayHostedService(

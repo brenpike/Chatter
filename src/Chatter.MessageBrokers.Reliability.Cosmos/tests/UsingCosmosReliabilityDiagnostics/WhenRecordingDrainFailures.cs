@@ -25,18 +25,26 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         /// value: the drained-document count already resolved the document, so the failure is a separate
         /// instrument and never a fourth outcome that would count the same document twice.
         /// </summary>
+        /// <remarks>
+        /// The Change-Feed Source Identity is a REQUIRED parameter and no lease-token-only overload exists: a Lease
+        /// Token is a partition-key-range id of its own monitored container, so two co-resident sources routinely
+        /// fault on identically-named tokens and a lease-only count could not tell them apart.
+        /// </remarks>
         [Fact]
-        public void MustCountOneFailedDrainAttemptAgainstItsLeaseAndErrorType()
+        public void MustCountOneFailedDrainAttemptAgainstItsSourceIdentityLeaseAndErrorType()
         {
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             {
-                CosmosReliabilityDiagnostics.RecordDrainFailure("lease-7", _drainProbeFailure);
+                CosmosReliabilityDiagnostics.RecordDrainFailure("source-a", "lease-7", _drainProbeFailure);
 
                 var measurement = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainFailuresInstrumentName).Should().ContainSingle().Subject;
 
                 measurement.Value.Should().Be(1);
                 measurement.TryGetTag(CosmosReliabilityDiagnostics.LeaseToken, out var leaseToken).Should().BeTrue();
                 leaseToken.Should().Be("lease-7");
+                measurement.TryGetTag(CosmosReliabilityDiagnostics.SourceIdentity, out var sourceIdentity).Should().BeTrue(
+                    "a lease token alone is ambiguous across two sources on one host");
+                sourceIdentity.Should().Be("source-a");
                 measurement.TryGetTag(ChatterTelemetryTags.ErrorType, out var errorType).Should().BeTrue();
                 errorType.Should().Be(typeof(DrainFailureProbeException).FullName);
             }
@@ -112,7 +120,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
 
         /// <summary>Drives the record method once, as the change-feed error notification does for a faulted lease.</summary>
         private static void RecordOneFailedDrain()
-            => CosmosReliabilityDiagnostics.RecordDrainFailure("lease-0", _drainProbeFailure);
+            => CosmosReliabilityDiagnostics.RecordDrainFailure("source-a", "lease-0", _drainProbeFailure);
 
         /// <summary>
         /// Reads the off-guard so the static surface initialises, and with it publishes its instruments, BEFORE a

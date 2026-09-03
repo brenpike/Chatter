@@ -71,6 +71,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxDocum
                 "an already-delivered outbox document is not pending");
         }
 
+        [Fact]
+        public void MustReturnFalseWhenStatusIsUndeliverable()
+        {
+            CosmosOutboxDocument.IsPendingOutbox(Document(status: CosmosOutboxDocument.StatusUndeliverable)).Should().BeFalse(
+                "an Undeliverable Outbox Document is terminal, so the give-up stamp's own change-feed event must not republish it");
+        }
+
         [Theory]
         [InlineData(null)] // missing status
         [InlineData("")]   // empty status

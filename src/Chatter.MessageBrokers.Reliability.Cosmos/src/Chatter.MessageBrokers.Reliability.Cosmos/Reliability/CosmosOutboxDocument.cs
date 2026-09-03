@@ -38,6 +38,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public const string StatusDelivered = "delivered";
 
         /// <summary>
+        /// TERMINAL delivery state of an Undeliverable Outbox Document: the relay gave up on a document that cannot be
+        /// reconstructed into a brokered message, so the lease advances instead of wedging on it forever. A document at
+        /// this status is NEVER given a TTL and is NEVER deleted — it is the evidence of the defect and stays
+        /// inspectable indefinitely. Like <see cref="StatusDelivered"/> it is not <see cref="StatusPending"/>, so the
+        /// relay's in-code change-feed filter skips it — this is what makes the give-up stamp's OWN change-feed event a
+        /// non-republish (publish-once by construction).
+        /// </summary>
+        public const string StatusUndeliverable = "undeliverable";
+
+        /// <summary>
         /// The Cosmos system TTL field name. The #222 relay stamps a positive per-document TTL here on delivery so Cosmos
         /// self-purges the delivered document — this is the ONLY field Cosmos honors for self-purge, so the delivered
         /// stamp's ttl path is hard-wired here rather than configurable.

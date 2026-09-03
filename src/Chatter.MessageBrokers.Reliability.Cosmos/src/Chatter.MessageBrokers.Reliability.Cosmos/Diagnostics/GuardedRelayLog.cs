@@ -71,5 +71,46 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
                 // Swallowed, and deliberately not re-reported: the sink that just faulted is the only one there is.
             }
         }
+
+        /// <summary>Reports <paramref name="exception"/> at <see cref="LogLevel.Error"/> under a two-argument template.</summary>
+        internal void Error<T0, T1>(Exception exception, string messageTemplate, T0 arg0, T1 arg1)
+        {
+            ILogger logger = _logger;
+            if (logger is null)
+            {
+                return;
+            }
+
+            try
+            {
+                logger.LogError(exception, messageTemplate, arg0, arg1);
+            }
+            catch (Exception)
+            {
+                // Swallowed, and deliberately not re-reported: the sink that just faulted is the only one there is.
+            }
+        }
+
+        /// <summary>
+        /// Reports at <see cref="LogLevel.Information"/> under a one-argument template, for a deliberate decision the
+        /// relay took rather than a fault it suffered.
+        /// </summary>
+        internal void Information<T0>(string messageTemplate, T0 arg0)
+        {
+            ILogger logger = _logger;
+            if (logger is null)
+            {
+                return;
+            }
+
+            try
+            {
+                logger.LogInformation(messageTemplate, arg0);
+            }
+            catch (Exception)
+            {
+                // Swallowed, and deliberately not re-reported: the sink that just faulted is the only one there is.
+            }
+        }
     }
 }

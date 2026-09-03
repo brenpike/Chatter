@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Reliability.Cosmos;
+using Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics;
 using FluentAssertions;
 using Microsoft.Azure.Cosmos;
 using Moq;
@@ -33,6 +34,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
 
         private static Stream StreamOf(string json) => new MemoryStream(Encoding.UTF8.GetBytes(json));
 
+        // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
+        // descriptor. No host owns a gate any more, so the handler is handed one, and the gate carries the Change-Feed
+        // Source Identity the processor's measurements are reported under.
+        private static OutboxDrainGate ProcessorGate()
+            => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new GuardedRelayLog(logger: null));
+
         [Theory]
         [InlineData("{}")]                                  // no Documents property at all
         [InlineData("{\"Documents\":\"not-an-array\"}")]   // Documents present but not an array
@@ -42,7 +49,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         {
             CosmosOutboxRelayHostedService host = Host();
 
-            Func<Task> act = () => host.HandleChangesAsync(StreamOf(payload), Mock.Of<Container>(), PartitionKeyPath, "lease-0", CancellationToken.None);
+            Func<Task> act = () => host.HandleChangesAsync(StreamOf(payload), Mock.Of<Container>(), PartitionKeyPath, "lease-0", ProcessorGate(), CancellationToken.None);
 
             await act.Should().ThrowAsync<InvalidOperationException>(
                 "a batch whose 'Documents' array cannot be read must fault so the SDK does not checkpoint the lease past unpublished documents");
@@ -55,7 +62,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             // nothing to publish). Only an UNPARSEABLE batch shape fails closed.
             CosmosOutboxRelayHostedService host = Host();
 
-            Func<Task> act = () => host.HandleChangesAsync(StreamOf("{\"Documents\":[]}"), Mock.Of<Container>(), PartitionKeyPath, "lease-0", CancellationToken.None);
+            Func<Task> act = () => host.HandleChangesAsync(StreamOf("{\"Documents\":[]}"), Mock.Of<Container>(), PartitionKeyPath, "lease-0", ProcessorGate(), CancellationToken.None);
 
             await act.Should().NotThrowAsync("an empty but well-formed Documents array is a legitimate no-op batch");
         }
