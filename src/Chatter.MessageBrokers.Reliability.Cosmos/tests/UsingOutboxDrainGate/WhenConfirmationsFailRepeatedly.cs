@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
@@ -282,6 +284,57 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
             Action constructing = () => new OutboxDrainGate(sourceIdentity: null, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             constructing.Should().Throw<ArgumentNullException>();
+        }
+
+        /// <summary>
+        /// The per-lease state is IMMUTABLE — sealed, with EVERY instance field readonly — which is what makes a
+        /// Drain Suspension transition a compare-and-swap rather than a read-modify-write.
+        /// </summary>
+        /// <remarks>
+        /// A mutable entry lets a transition be COMPUTED from one observation of gate state and APPLIED to a
+        /// different one, and three sub-classes follow from that: a lost or torn multi-field update; a write applied
+        /// to an entry a concurrent confirmation success already evicted; and a suspension side effect emitted
+        /// without its justifying transition having landed. None of the three is representable once the state is a
+        /// value, under ANY interleaving — which is why this is asserted STRUCTURALLY rather than by racing threads.
+        /// </remarks>
+        [Fact]
+        public void MustKeepThePerLeaseStateImmutable()
+        {
+            Type leaseDrainState = typeof(OutboxDrainGate).GetNestedType("LeaseDrainState", BindingFlags.NonPublic);
+
+            leaseDrainState.Should().NotBeNull("the gate's per-lease state is the value a drain-suspension transition swaps");
+            leaseDrainState.IsSealed.Should().BeTrue("a derived state could reintroduce mutable content");
+            leaseDrainState.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                           .Where(field => !field.IsInitOnly)
+                           .Select(field => field.Name)
+                           .Should().BeEmpty("a writable field is a read-modify-write the swap cannot bound");
+        }
+
+        /// <summary>
+        /// Two DISTINCT per-lease states carrying identical content are NOT equal to each other.
+        /// </summary>
+        /// <remarks>
+        /// <c>ConcurrentDictionary.TryUpdate</c> matches the expected value through
+        /// <see cref="EqualityComparer{T}.Default"/>, so REFERENCE IDENTITY is the precondition that makes the swap a
+        /// true compare-and-swap. Were this state ever made a <c>record</c>, a struct, or given an <c>Equals</c>
+        /// override, a caller's stale snapshot would compare equal to a DIFFERENT instance holding the same content
+        /// and the swap would succeed against a transition that caller never observed. Instances are built
+        /// uninitialized so this guard states the equality semantics alone and does not couple to the state's
+        /// constructor.
+        /// </remarks>
+        [Fact]
+        public void MustCompareThePerLeaseStateByReferenceIdentity()
+        {
+            Type leaseDrainState = typeof(OutboxDrainGate).GetNestedType("LeaseDrainState", BindingFlags.NonPublic);
+            object snapshot = RuntimeHelpers.GetUninitializedObject(leaseDrainState);
+            object identicalButDistinct = RuntimeHelpers.GetUninitializedObject(leaseDrainState);
+
+            Type comparerType = typeof(EqualityComparer<>).MakeGenericType(leaseDrainState);
+            object defaultComparer = comparerType.GetProperty("Default", BindingFlags.Public | BindingFlags.Static).GetValue(obj: null);
+            MethodInfo equals = comparerType.GetMethod("Equals", new[] { leaseDrainState, leaseDrainState });
+
+            equals.Invoke(defaultComparer, new[] { snapshot, identicalButDistinct })
+                  .Should().Be(false, "TryUpdate must match the snapshot the transition was computed from, not merely one that looks like it");
         }
 
         private static void FailConfirmations(OutboxDrainGate gate, string leaseToken, int failureCount)

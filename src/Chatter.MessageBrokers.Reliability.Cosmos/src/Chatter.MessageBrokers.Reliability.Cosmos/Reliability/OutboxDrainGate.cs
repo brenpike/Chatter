@@ -38,10 +38,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// as an internal key precisely BECAUSE the gate is per-processor, but a measurement LEAVING this process has no
     /// such scoping, so the identity that was implicit here is stated explicitly on every suspension it reports.
     /// It is a construction-time requirement, so a gate that could report an ambiguous suspension is not constructible.
-    /// CONCURRENCY: the SDK delivers ONE lease's batches SERIALLY to the processor that owns it, so per-entry state
-    /// needs no locking. The dictionary is nonetheless concurrent because this processor's DISTINCT leases are
-    /// delivered concurrently. Both statements hold under the per-processor scoping invariant above, and only under it:
-    /// a gate shared across processors has no serial delivery guarantee per entry.
+    /// CONCURRENCY: a state transition is CLOSED BY CONSTRUCTION rather than by an external ordering guarantee. Every
+    /// entry is an IMMUTABLE <c>LeaseDrainState</c> swapped by compare-and-swap against the exact snapshot the
+    /// transition was computed from, so a transition computed from ONE observation of gate state can never be applied
+    /// to a DIFFERENT one. Three sub-classes are thereby unrepresentable: a lost or torn multi-field update; a write
+    /// applied to an entry a concurrent confirmation success already evicted; and a side effect emitted without its
+    /// justifying transition having landed. The bound holds under ANY interleaving, so it does not rest on a claim
+    /// about how the SDK schedules delivery — a claim Chatter neither owns nor enforces, and which a future SDK
+    /// change, a retry wrapper, or a host that ever fanned one lease out could otherwise silently void.
+    /// The swap loop is LOCK-FREE rather than wait-free: a caller that loses a swap re-reads and recomputes. Under
+    /// real delivery it sees no contention, because the concurrency the dictionary exists for is this processor's
+    /// DISTINCT leases arriving at DIFFERENT keys.
     /// The window is measured on the <see cref="TimeProvider"/>'s MONOTONIC timestamp rather than a wall clock, so a
     /// clock step can neither collapse a suspension nor extend one indefinitely.
     /// </remarks>
@@ -101,21 +108,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// </summary>
         internal bool PermitDrain(string leaseToken)
         {
-            if (!_statesByLeaseToken.TryGetValue(leaseToken, out LeaseDrainState state) || !state.IsSuspended)
+            while (true)
             {
-                return true;
-            }
+                if (!_statesByLeaseToken.TryGetValue(leaseToken, out LeaseDrainState state) || !state.IsSuspended)
+                {
+                    return true;
+                }
 
-            if (_timeProvider.GetElapsedTime(state.SuspendedAtTimestamp) < SuspensionWindow)
-            {
-                return false;
-            }
+                if (_timeProvider.GetElapsedTime(state.SuspendedAtTimestamp) < SuspensionWindow)
+                {
+                    return false;
+                }
 
-            // The window elapsed, so EXACTLY THIS batch is let through as the probe that discovers whether the
-            // confirmation path came back. Re-arming here is what makes it exactly this one: the next consult is
-            // refused again unless a confirmation has meanwhile succeeded and evicted the lease outright.
-            state.SuspendedAtTimestamp = _timeProvider.GetTimestamp();
-            return true;
+                // The window elapsed, so EXACTLY THIS batch is let through as the probe that discovers whether the
+                // confirmation path came back. Re-arming here is what makes it exactly this one: the next consult is
+                // refused again unless a confirmation has meanwhile succeeded and evicted the lease outright.
+                if (_statesByLeaseToken.TryUpdate(leaseToken, state.Rearmed(_timeProvider.GetTimestamp()), state))
+                {
+                    return true;
+                }
+
+                // INVARIANT: the re-arming swap is what OWNS the probe, so losing it means another caller took the
+                // probe or a confirmation evicted the lease. Re-decide against a fresh snapshot rather than permit:
+                // an evicted lease permits on the next pass, a probe already taken is refused, and either way exactly
+                // one batch per window is let through.
+            }
         }
 
         /// <summary>
@@ -125,26 +142,47 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// </summary>
         internal void RecordConfirmationFailure(string leaseToken, Exception confirmationFailure)
         {
-            LeaseDrainState state = _statesByLeaseToken.GetOrAdd(leaseToken, _ => new LeaseDrainState());
-            state.ConsecutiveConfirmationFailures++;
+            LeaseDrainState priorState;
+            LeaseDrainState nextState;
 
-            if (state.ConsecutiveConfirmationFailures < Threshold)
+            while (true)
+            {
+                long timestamp = _timeProvider.GetTimestamp();
+
+                if (!_statesByLeaseToken.TryGetValue(leaseToken, out priorState))
+                {
+                    nextState = BuildFailureTransition(priorState: null, timestamp);
+
+                    if (_statesByLeaseToken.TryAdd(leaseToken, nextState))
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                nextState = BuildFailureTransition(priorState, timestamp);
+
+                if (_statesByLeaseToken.TryUpdate(leaseToken, nextState, priorState))
+                {
+                    break;
+                }
+
+                // INVARIANT: a lost swap means the snapshot this transition was computed from is stale — another
+                // failure landed, or a confirmation success evicted the lease outright. Re-read and RECOMPUTE, so the
+                // count that lands is always exactly one more than the state it was derived from and the side effects
+                // below fire against a transition that provably landed.
+            }
+
+            // The suspension OPENED on this call only if the snapshot the winning swap consumed was not already
+            // suspended. Reported once per opening: a suspension that never lifted is not a new suspension, so a
+            // failure against an already-open one re-arms the window and counts, and reports nothing.
+            bool suspensionOpened = !(priorState?.IsSuspended ?? false) && nextState.IsSuspended;
+
+            if (!suspensionOpened)
             {
                 return;
             }
-
-            // Re-arm FIRST, so a probe whose confirmation failed again waits another full window. It happens on both
-            // arms: opening a suspension and re-arming an open one both start the window from now.
-            state.SuspendedAtTimestamp = _timeProvider.GetTimestamp();
-
-            if (state.IsSuspended)
-            {
-                // Already open. The window is re-armed above and the failure is counted, but the suspension is not
-                // raised a second time: it never lifted, so there is no new suspension to report.
-                return;
-            }
-
-            state.IsSuspended = true;
 
             // INVARIANT: no outer ADR-0010 R1 off-guard is needed here, and adding one would be noise: both arguments
             // are strings this gate already holds - the lease token the caller passed and the source identity fixed at
@@ -158,7 +196,32 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _log.Error(confirmationFailure,
                        "The Cosmos Outbox Relay suspended draining lease {LeaseToken} after {ConfirmationFailureCount} consecutive confirmation failures. Its messages published but could not be marked delivered, so every redrain republished them; draining resumes once a confirmation succeeds.",
                        leaseToken,
-                       state.ConsecutiveConfirmationFailures);
+                       nextState.ConsecutiveConfirmationFailures);
+        }
+
+        /// <summary>
+        /// The ONE Drain Suspension transition rule, applied by BOTH arms of <see cref="RecordConfirmationFailure"/> —
+        /// the first failure on a lease and every failure after it — so a suspension is computed identically however
+        /// the entry got there. A <see langword="null"/> <paramref name="priorState"/> is the absent entry.
+        /// </summary>
+        /// <remarks>
+        /// Re-arming happens on BOTH arms: opening a suspension and re-arming an open one both start the window from
+        /// now, so a probe whose confirmation failed again waits another full window.
+        /// INVARIANT: the below-threshold arm is never suspended, and that is total rather than assumed — a suspension
+        /// lifts ONLY by eviction, so a present entry that is suspended already carries at least
+        /// <see cref="Threshold"/> failures and can only transition to more. <c>SuspendedAtTimestamp</c> is meaningless
+        /// on that arm, which is why every reader guards on <c>IsSuspended</c> first.
+        /// </remarks>
+        private static LeaseDrainState BuildFailureTransition(LeaseDrainState priorState, long timestamp)
+        {
+            int consecutiveConfirmationFailures = (priorState?.ConsecutiveConfirmationFailures ?? 0) + 1;
+
+            if (consecutiveConfirmationFailures < Threshold)
+            {
+                return new LeaseDrainState(consecutiveConfirmationFailures, isSuspended: false, suspendedAtTimestamp: 0);
+            }
+
+            return new LeaseDrainState(consecutiveConfirmationFailures, isSuspended: true, suspendedAtTimestamp: timestamp);
         }
 
         /// <summary>
@@ -183,11 +246,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         }
 
         // The per-lease state. Entries exist only for leases CURRENTLY failing.
+        // INVARIANT: IMMUTABLE, and deliberately a plain sealed CLASS - NOT a record, NOT a struct, and with no
+        // Equals, GetHashCode or == of its own. EqualityComparer<LeaseDrainState>.Default is therefore REFERENCE
+        // IDENTITY, which is what makes ConcurrentDictionary.TryUpdate a TRUE compare-and-swap: the swap matches the
+        // exact instance a transition was computed from, not merely one that carries the same content. Structural
+        // equality here would let a stale snapshot match a different instance and land a transition never observed.
         private sealed class LeaseDrainState
         {
-            internal int ConsecutiveConfirmationFailures;
-            internal bool IsSuspended;
-            internal long SuspendedAtTimestamp;
+            internal readonly int ConsecutiveConfirmationFailures;
+            internal readonly bool IsSuspended;
+            internal readonly long SuspendedAtTimestamp;
+
+            internal LeaseDrainState(int consecutiveConfirmationFailures, bool isSuspended, long suspendedAtTimestamp)
+            {
+                ConsecutiveConfirmationFailures = consecutiveConfirmationFailures;
+                IsSuspended = isSuspended;
+                SuspendedAtTimestamp = suspendedAtTimestamp;
+            }
+
+            // The half-open probe's re-arm: the same count and suspension, windowed from a new timestamp.
+            internal LeaseDrainState Rearmed(long suspendedAtTimestamp)
+                => new LeaseDrainState(ConsecutiveConfirmationFailures, IsSuspended, suspendedAtTimestamp);
         }
     }
 }
