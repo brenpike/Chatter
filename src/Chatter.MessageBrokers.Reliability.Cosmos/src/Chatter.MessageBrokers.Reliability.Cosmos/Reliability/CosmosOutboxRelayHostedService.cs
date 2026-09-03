@@ -81,13 +81,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly DocumentReliabilityRegistry _registry;
         private readonly CosmosContainerFactory _containerFactory;
         private readonly CosmosOutboxRelay _relay;
-        private readonly RelayFailureNotifier _failureNotifier;
         private readonly GuardedRelayLog _log;
         private readonly List<ChangeFeedProcessor> _processors = new List<ChangeFeedProcessor>();
 
         // logger is OPTIONAL (defaults null) so every existing direct-construction call site keeps compiling: a null
-        // logger leaves the failure notifier's opt-in metric intact and its always-on log a silent no-op, and makes the
-        // start-failure cleanup's stop-failure log a silent no-op too. It is wrapped in a GuardedRelayLog at
+        // logger leaves each processor's failure-notifier metric intact and its always-on log a silent no-op, and makes
+        // the start-failure cleanup's stop-failure log a silent no-op too. It is wrapped in a GuardedRelayLog at
         // construction and this host keeps NO raw ILogger field, so no log call here can throw into control flow. The
         // DI registration
         // (AddSingleton<IHostedService, CosmosOutboxRelayHostedService>) is on the CONCRETE type, so a host with logging
@@ -104,7 +103,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _log = new GuardedRelayLog(logger);
             _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory, _log);
-            _failureNotifier = new RelayFailureNotifier(logger);
             ProcessorFactory = BuildChangeFeedProcessor;
         }
 
@@ -184,7 +182,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         {
             Container monitoredContainer = descriptor.MonitoredContainer;
             IReadOnlyList<string> partitionKeyPath = descriptor.PartitionKeyPath;
-            var drainGate = new OutboxDrainGate(_log);
+            var drainGate = new OutboxDrainGate(descriptor.ProcessorName, _log);
 
             return (ChangeFeedProcessorContext context, Stream changes, CancellationToken changeCancellationToken)
                 => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, context.LeaseToken, drainGate, changeCancellationToken);
@@ -192,10 +190,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         // The real SDK builder chain, and the ONLY implementation production uses. The configuration is exactly what it
         // was before the seam existed: instance name, lease container, start time, error notification.
+        // The failure notifier is built HERE, per descriptor, because this is where the SDK's error-notification seam
+        // consumes it and because a host-shared notifier would report two co-resident sources' faults under one
+        // indistinguishable Lease Token - the same ambiguity the per-descriptor drain gate closes.
         private ChangeFeedProcessor BuildChangeFeedProcessor(RelayProcessorDescriptor descriptor,
                                                              string instanceName,
                                                              Container.ChangeFeedStreamHandler onChanges)
-            => descriptor.MonitoredContainer
+        {
+            var failureNotifier = new RelayFailureNotifier(descriptor.ProcessorName, _log);
+
+            return descriptor.MonitoredContainer
                 .GetChangeFeedProcessorBuilder(descriptor.ProcessorName, onChanges)
                 .WithInstanceName(instanceName)
                 .WithLeaseContainer(descriptor.LeaseContainer)
@@ -211,8 +215,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // The SDK's error-notification seam is the ONLY channel carrying a lease/processor fault TOGETHER
                 // with the lease token it faulted under; the relay core never sees the lease token, so without this
                 // a wedged lease (a document that re-throws on every pass) is completely silent (#361).
-                .WithErrorNotification(_failureNotifier.OnChangeFeedErrorAsync)
+                .WithErrorNotification(failureNotifier.OnChangeFeedErrorAsync)
                 .Build();
+        }
 
         // Pass 1 of the two-pass start: reconcile EVERY monitored container's declared configuration against its ground
         // truth before any processor is built. internal (not private) so the verify-all-before-start ordering stays
@@ -298,9 +303,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // PROGRESS, so dropping it would make an idle partition indistinguishable from a stalled one.
             // INVARIANT: ADR-0010 R1 - the document count is read INSIDE this module's own off-guard, because C#
             // evaluates arguments before the callee's guard runs.
+            // The Change-Feed Source Identity is read OFF THE GATE this handler was handed rather than passed as a
+            // second parameter: the gate is already the per-processor object, so reading it here reinforces that one
+            // scoping invariant instead of introducing a second carrier of the same fact that could disagree with it.
             if (CosmosReliabilityDiagnostics.IsEnabled)
             {
-                CosmosReliabilityDiagnostics.RecordDrainedBatch(leaseToken, documents.GetArrayLength());
+                CosmosReliabilityDiagnostics.RecordDrainedBatch(drainGate.SourceIdentity, leaseToken, documents.GetArrayLength());
             }
 
             // THE DRAIN SUSPENSION CONSULT (#416), ONCE PER BATCH and ABOVE the document loop, so a suspended lease

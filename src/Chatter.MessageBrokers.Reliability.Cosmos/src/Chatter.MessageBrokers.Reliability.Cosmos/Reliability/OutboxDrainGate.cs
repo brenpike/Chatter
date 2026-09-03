@@ -34,6 +34,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// id of the container the batch came from ("0", "1", ...), so two sources on one host routinely report the SAME
     /// token: a host-shared gate would collapse them onto one entry, letting one source's confirmation success evict
     /// another source's failure count and one source's suspension refuse another source's batch.
+    /// The gate carries its <see cref="SourceIdentity"/> for the SAME reason, one layer out: the Lease Token suffices
+    /// as an internal key precisely BECAUSE the gate is per-processor, but a measurement LEAVING this process has no
+    /// such scoping, so the identity that was implicit here is stated explicitly on every suspension it reports.
+    /// It is a construction-time requirement, so a gate that could report an ambiguous suspension is not constructible.
     /// CONCURRENCY: the SDK delivers ONE lease's batches SERIALLY to the processor that owns it, so per-entry state
     /// needs no locking. The dictionary is nonetheless concurrent because this processor's DISTINCT leases are
     /// delivered concurrently. Both statements hold under the per-processor scoping invariant above, and only under it:
@@ -59,9 +63,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly GuardedRelayLog _log;
         private readonly TimeProvider _timeProvider;
 
-        /// <summary>Builds a gate on the system clock, which is what a host uses.</summary>
-        internal OutboxDrainGate(GuardedRelayLog log)
-            : this(log, TimeProvider.System)
+        /// <summary>
+        /// Builds a gate for ONE Change-Feed Source Identity on the system clock, which is what a host uses.
+        /// </summary>
+        internal OutboxDrainGate(string sourceIdentity, GuardedRelayLog log)
+            : this(sourceIdentity, log, TimeProvider.System)
         {
         }
 
@@ -69,11 +75,24 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// Builds a gate on a supplied <paramref name="timeProvider"/>, the seam a test drives the suspension window
         /// through without a wall-clock wait.
         /// </summary>
-        internal OutboxDrainGate(GuardedRelayLog log, TimeProvider timeProvider)
+        internal OutboxDrainGate(string sourceIdentity, GuardedRelayLog log, TimeProvider timeProvider)
         {
+            SourceIdentity = sourceIdentity ?? throw new ArgumentNullException(nameof(sourceIdentity));
             _log = log;
             _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         }
+
+        /// <summary>
+        /// The Change-Feed Source Identity this gate belongs to — the processor name — reported alongside every Lease
+        /// Token this gate's processor measures, so a token named "0" stays attributable to the source that drained it.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: it is a CONSTRUCTION-TIME requirement with no identity-less overload, so a gate whose suspensions
+        /// report under a fabricated or absent identity is not constructible. The change-feed handler reads the
+        /// identity OFF THE GATE it was handed rather than being passed a second copy, which is what keeps the
+        /// one-gate-per-processor invariant the single carrier of this fact.
+        /// </remarks>
+        internal string SourceIdentity { get; }
 
         /// <summary>
         /// Consults the gate for ONE change-feed batch on <paramref name="leaseToken"/>, returning whether that batch
@@ -127,10 +146,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             state.IsSuspended = true;
 
-            // INVARIANT: no outer ADR-0010 R1 off-guard is needed here, and adding one would be noise: the only
-            // argument is the lease token the caller already holds, so nothing is BUILT before the emit method's own
-            // instrument guard runs, and the tag is built inside that guard.
-            CosmosReliabilityDiagnostics.RecordDrainSuspension(leaseToken);
+            // INVARIANT: no outer ADR-0010 R1 off-guard is needed here, and adding one would be noise: both arguments
+            // are strings this gate already holds - the lease token the caller passed and the source identity fixed at
+            // construction - so nothing is BUILT before the emit method's own instrument guard runs, and the tags are
+            // built inside that guard.
+            CosmosReliabilityDiagnostics.RecordDrainSuspension(SourceIdentity, leaseToken);
 
             // ALWAYS-ON, at Error, through the guarded sink: a meter-less application has no other channel, and a
             // relay that silently stopped publishing a lease would be indistinguishable from one with nothing to

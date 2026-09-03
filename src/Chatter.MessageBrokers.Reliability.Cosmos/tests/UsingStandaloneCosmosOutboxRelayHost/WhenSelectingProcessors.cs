@@ -335,8 +335,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         }
 
         // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
-        // descriptor. No host owns a gate any more, so the handler is handed one.
-        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(new Cosmos.Diagnostics.GuardedRelayLog(logger: null));
+        // descriptor. No host owns a gate any more, so the handler is handed one, and the gate carries the Change-Feed
+        // Source Identity the processor's measurements are reported under.
+        private static OutboxDrainGate ProcessorGate()
+            => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new Cosmos.Diagnostics.GuardedRelayLog(logger: null));
 
         // R3-STEP-001: the host opens a DI scope + invokes the body-resolver factory ONLY for an ADMITTED (pending outbox)
         // document — NOT per raw change-feed document. Over a mixed batch (one genuinely-admitted pending outbox doc plus

@@ -19,13 +19,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
     [Collection(DiagnosticsCollection.Name)]
     public class WhenConfirmationsFailRepeatedly
     {
+        /// <summary>
+        /// The Change-Feed Source Identity the gate under test belongs to — the processor name a host constructs it
+        /// with, and the identity its suspensions are reported under.
+        /// </summary>
+        private const string SourceIdentity = "chatter-cosmos-outbox-relay:source-under-test";
+
         private static readonly Exception _confirmationFault = new InvalidOperationException("the delivered stamp failed");
 
         /// <summary>A lease the gate has never seen drains, which is every lease on a healthy host.</summary>
         [Fact]
         public void MustPermitDrainingALeaseItHasNeverSeen()
         {
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             gate.PermitDrain("lease-7").Should().BeTrue();
         }
@@ -38,7 +44,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         [Fact]
         public void MustPermitDrainingBelowTheThreshold()
         {
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold - 1);
 
@@ -53,7 +59,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         [Fact]
         public void MustRefuseDrainingOnceTheThresholdIsReached()
         {
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
 
@@ -67,7 +73,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         [Fact]
         public void MustCountTheDrainSuspensionAgainstItsLease()
         {
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             {
@@ -90,7 +96,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         public void MustReportTheDrainSuspensionAtErrorWithTheConfirmationFault()
         {
             var logger = new RecordingLogger();
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
 
@@ -108,7 +114,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         public void MustPermitExactlyOneProbeBatchOnceTheWindowElapses()
         {
             var timeProvider = new AdvanceableTimeProvider();
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), timeProvider);
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), timeProvider);
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
             timeProvider.Advance(OutboxDrainGate.SuspensionWindow);
@@ -125,7 +131,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         public void MustRearmTheWindowWhenAConfirmationFailsWhileAlreadySuspended()
         {
             var timeProvider = new AdvanceableTimeProvider();
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), timeProvider);
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), timeProvider);
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
             timeProvider.Advance(OutboxDrainGate.SuspensionWindow);
@@ -140,7 +146,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         [Fact]
         public void MustResumeDrainingWhenAConfirmationSucceeds()
         {
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
             gate.RecordConfirmationSuccess("lease-7");
@@ -157,7 +163,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         public void MustReportTheResumedDrainAtInformation()
         {
             var logger = new RecordingLogger();
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
             gate.RecordConfirmationSuccess("lease-7");
@@ -176,7 +182,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         public void MustReportNothingWhenALeaseThatWasNeverSuspendedConfirms()
         {
             var logger = new RecordingLogger();
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold - 1);
             gate.RecordConfirmationSuccess("lease-7");
@@ -193,7 +199,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         [Fact]
         public void MustCountFromZeroAgainAfterASuccessfulConfirmation()
         {
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold - 1);
             gate.RecordConfirmationSuccess("lease-7");
@@ -210,7 +216,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         [Fact]
         public void MustSuspendOnlyTheLeaseWhoseConfirmationsFailed()
         {
-            var gate = new OutboxDrainGate(new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
 
@@ -238,6 +244,42 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         public void MustRejectACarrierWithNoConfirmationFault()
         {
             Action constructing = () => new OutboxConfirmationFailedException(confirmationFailure: null);
+
+            constructing.Should().Throw<ArgumentNullException>();
+        }
+
+        /// <summary>
+        /// The suspension the gate raises is reported under the Change-Feed Source Identity the gate was CONSTRUCTED
+        /// with, so a Lease Token named "0" — a partition-key-range id every monitored container has — stays
+        /// attributable to the source that suspended it.
+        /// </summary>
+        [Fact]
+        public void MustReportTheSuspensionUnderTheSourceIdentityItWasBuiltWith()
+        {
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+
+            using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
+            {
+                FailConfirmations(gate, "0", OutboxDrainGate.Threshold);
+
+                var measurement = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainSuspensionsInstrumentName).Should().ContainSingle().Subject;
+
+                measurement.TryGetTag(CosmosReliabilityDiagnostics.SourceIdentity, out var sourceIdentity).Should().BeTrue();
+                sourceIdentity.Should().Be(SourceIdentity);
+                measurement.TryGetTag(CosmosReliabilityDiagnostics.LeaseToken, out var leaseToken).Should().BeTrue();
+                leaseToken.Should().Be("0");
+            }
+        }
+
+        /// <summary>
+        /// A gate with no Change-Feed Source Identity is UNCONSTRUCTIBLE. There is no identity-less overload, and a
+        /// null one is refused, because such a gate could still reach <c>RecordDrainSuspension</c> — publishing a
+        /// suspension an operator could not attribute to any source, which is the whole defect this closes.
+        /// </summary>
+        [Fact]
+        public void MustRefuseAGateWithNoSourceIdentity()
+        {
+            Action constructing = () => new OutboxDrainGate(sourceIdentity: null, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             constructing.Should().Throw<ArgumentNullException>();
         }

@@ -38,7 +38,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly CosmosOutboxRelayOptions _options;
         private readonly CosmosOutboxRelay _relay;
         private readonly StandaloneRelayProcessorRegistry _processorRegistry;
-        private readonly RelayFailureNotifier _failureNotifier;
         private readonly GuardedRelayLog _log;
         private ChangeFeedProcessor _processor;
 
@@ -62,7 +61,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _processorRegistry = processorRegistry;
             _log = new GuardedRelayLog(logger);
-            _failureNotifier = new RelayFailureNotifier(logger);
 
             // Build the relay with the options' validated drain knobs (OutboxDeliverySettings.FromOptions enforces the F2
             // invariants), including the caller's optional AdditionalPendingFilter, which the relay's ProcessChangeAsync
@@ -138,20 +136,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         // The real SDK builder chain, and the ONLY implementation production uses. The configuration is exactly what it
         // was before the seam existed, in the SAME order: instance name, lease container, error notification, start time.
+        // The failure notifier is built HERE, from the descriptor StartAsync resolved, so its faults are reported under
+        // the Change-Feed Source Identity this host drains rather than under a Lease Token alone - which a co-resident
+        // second source would report identically. Mirrors CosmosOutboxRelayHostedService.BuildChangeFeedProcessor.
         private ChangeFeedProcessor BuildChangeFeedProcessor(CosmosOutboxRelayHostedService.RelayProcessorDescriptor descriptor,
                                                              string instanceName,
                                                              Container.ChangeFeedStreamHandler onChanges)
-            => descriptor.MonitoredContainer
+        {
+            var failureNotifier = new RelayFailureNotifier(descriptor.ProcessorName, _log);
+
+            return descriptor.MonitoredContainer
                 .GetChangeFeedProcessorBuilder(descriptor.ProcessorName, onChanges)
                 .WithInstanceName(instanceName)
                 .WithLeaseContainer(descriptor.LeaseContainer)
                 // The SDK's error-notification seam is the ONLY channel carrying a lease/processor fault TOGETHER with the
                 // lease token it faulted under, so a stalled lease is reported rather than silent (#361).
-                .WithErrorNotification(_failureNotifier.OnChangeFeedErrorAsync)
+                .WithErrorNotification(failureNotifier.OnChangeFeedErrorAsync)
                 // Start from the BEGINNING of the change feed (see CosmosOutboxRelayHostedService): the SDK default start
                 // point is "now", which would skip any pending outbox documents written before the lease initializes.
                 .WithStartTime(DateTime.MinValue.ToUniversalTime())
                 .Build();
+        }
 
         // Shutdown goes through the SAME best-effort cleanup the start-failure path uses. The difference is what happens
         // to a collected stop failure: here it is SURFACED type-preserving (a shutdown that could not stop the processor
@@ -248,7 +253,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         {
             Container monitoredContainer = descriptor.MonitoredContainer;
             IReadOnlyList<string> partitionKeyPath = descriptor.PartitionKeyPath;
-            var drainGate = new OutboxDrainGate(_log);
+            var drainGate = new OutboxDrainGate(descriptor.ProcessorName, _log);
 
             return (ChangeFeedProcessorContext context, Stream changes, CancellationToken changeCancellationToken)
                 => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, context.LeaseToken, drainGate, changeCancellationToken);
@@ -278,9 +283,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // partition indistinguishable from a stalled one.
             // INVARIANT: ADR-0010 R1 - the document count is read INSIDE this module's own off-guard, because C#
             // evaluates arguments before the callee's guard runs.
+            // The Change-Feed Source Identity is read OFF THE GATE this handler was handed, mirroring
+            // CosmosOutboxRelayHostedService: the gate is already the per-processor object, so it stays the single
+            // carrier of that fact rather than a second one that could disagree with it.
             if (CosmosReliabilityDiagnostics.IsEnabled)
             {
-                CosmosReliabilityDiagnostics.RecordDrainedBatch(leaseToken, documents.GetArrayLength());
+                CosmosReliabilityDiagnostics.RecordDrainedBatch(drainGate.SourceIdentity, leaseToken, documents.GetArrayLength());
             }
 
             // The Drain Suspension is consulted ONCE PER BATCH, and HERE — ABOVE the per-document pending-outbox

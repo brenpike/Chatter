@@ -91,14 +91,20 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
 
         /// <summary>
         /// One handed-over change-feed batch is TWO measurements — how many documents it carried and that it
-        /// happened — and BOTH carry the lease token, so partition progress is readable off either instrument.
+        /// happened — and BOTH carry the Change-Feed Source Identity together with the lease token, so partition
+        /// progress is readable off either instrument.
         /// </summary>
+        /// <remarks>
+        /// A Lease Token is a partition-key-range id of ITS OWN monitored container ("0", "1", ...), so two sources
+        /// on one host routinely report the SAME token. The source identity is what disambiguates them, which is why
+        /// it is a REQUIRED parameter and no lease-token-only overload exists: an ambiguous emit is not callable.
+        /// </remarks>
         [Fact]
-        public void MustSizeAndCountOneBatchAgainstTheLeaseItWasDeliveredFor()
+        public void MustSizeAndCountOneBatchAgainstItsSourceIdentityAndLease()
         {
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             {
-                CosmosReliabilityDiagnostics.RecordDrainedBatch("lease-7", documentCount: 12);
+                CosmosReliabilityDiagnostics.RecordDrainedBatch("source-a", "lease-7", documentCount: 12);
 
                 var batchSize = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainBatchSizeInstrumentName).Should().ContainSingle().Subject;
                 var drainedBatches = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainedBatchesInstrumentName).Should().ContainSingle().Subject;
@@ -110,6 +116,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
                 {
                     measurement.TryGetTag(CosmosReliabilityDiagnostics.LeaseToken, out var leaseToken).Should().BeTrue();
                     leaseToken.Should().Be("lease-7");
+                    measurement.TryGetTag(CosmosReliabilityDiagnostics.SourceIdentity, out var sourceIdentity).Should().BeTrue(
+                        "a lease token alone is ambiguous across two sources on one host");
+                    sourceIdentity.Should().Be("source-a");
                 }
             }
         }
@@ -164,7 +173,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         /// <summary>Drives every emit method once, as the Outbox Relay does for a single-document batch.</summary>
         private static void RecordOneDrainedBatchOfOneAdmittedDocument()
         {
-            CosmosReliabilityDiagnostics.RecordDrainedBatch("lease-0", documentCount: 1);
+            CosmosReliabilityDiagnostics.RecordDrainedBatch("source-a", "lease-0", documentCount: 1);
             CosmosReliabilityDiagnostics.RecordDrainedDocument(CosmosReliabilityDiagnostics.DrainOutcomes.Admitted);
             CosmosReliabilityDiagnostics.RecordDrainLag(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         }

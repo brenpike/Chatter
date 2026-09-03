@@ -32,13 +32,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// own catch here; the log's guard is the <see cref="GuardedRelayLog"/> the notifier holds INSTEAD of a raw
     /// <see cref="ILogger"/>, so the unguarded form is not reachable from this type at all rather than merely absent
     /// from the call sites written so far.
-    /// The logger is OPTIONAL: a null logger is a silent no-op, so a host that resolved none still gets the metric.
+    /// The logging sink is OPTIONAL: a <see cref="GuardedRelayLog"/> over a null logger is a silent no-op, so a host
+    /// that resolved none still gets the metric.
     /// </remarks>
     internal sealed class RelayFailureNotifier
     {
+        private readonly string _sourceIdentity;
         private readonly GuardedRelayLog _log;
 
-        public RelayFailureNotifier(ILogger logger) => _log = new GuardedRelayLog(logger);
+        /// <summary>
+        /// Builds the notifier for ONE Change-Feed Source Identity, which is the processor name the host built this
+        /// notifier's processor under.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: PER PROCESSOR, never one per host, for the same reason the drain gate is. The Lease Token the
+        /// SDK hands the delegate is a partition-key-range id of ITS OWN monitored container, so a host-shared
+        /// notifier would report two co-resident sources' faults on one indistinguishable series. The identity is a
+        /// construction-time requirement, so a notifier that could report an ambiguous fault is not constructible.
+        /// INVARIANT: the log sink is taken as an already-built <see cref="GuardedRelayLog"/> rather than a raw
+        /// <see cref="ILogger"/>: this type owns NO raw logger field, so the unguarded form is not reachable from it.
+        /// </remarks>
+        internal RelayFailureNotifier(string sourceIdentity, GuardedRelayLog log)
+        {
+            _sourceIdentity = sourceIdentity ?? throw new ArgumentNullException(nameof(sourceIdentity));
+            _log = log;
+        }
 
         /// <summary>
         /// Reports one change-feed fault, matching the shape of the Cosmos SDK's
@@ -54,7 +72,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // logging change at all. The optional sink may not decide the fate of the mandatory one.
             try
             {
-                CosmosReliabilityDiagnostics.RecordDrainFailure(leaseToken, exception);
+                CosmosReliabilityDiagnostics.RecordDrainFailure(_sourceIdentity, leaseToken, exception);
             }
             catch (Exception)
             {

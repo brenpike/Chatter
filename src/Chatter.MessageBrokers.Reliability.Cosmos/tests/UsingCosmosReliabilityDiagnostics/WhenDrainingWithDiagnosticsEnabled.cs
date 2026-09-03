@@ -554,8 +554,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             => new MemoryStream(Encoding.UTF8.GetBytes("{\"Documents\":[" + string.Join(",", documents.Select(d => d.GetRawText())) + "]}"));
 
         // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
-        // descriptor. No host owns a gate any more, so the handler is handed one.
-        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(new GuardedRelayLog(logger: null));
+        // descriptor. No host owns a gate any more, so the handler is handed one, and the gate carries the Change-Feed
+        // Source Identity every lease-tagged measurement is reported under.
+        private static OutboxDrainGate ProcessorGate()
+            => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new GuardedRelayLog(logger: null));
 
         private static StandaloneCosmosOutboxRelayHostedService StandaloneHost(IMessagingInfrastructureProvider provider)
             => new StandaloneCosmosOutboxRelayHostedService(

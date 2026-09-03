@@ -201,6 +201,39 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 "a suspension is scoped to the processor that raised it, so another source's lease keeps draining");
         }
 
+        /// <summary>
+        /// The dashboard question the Lease Token alone cannot answer. TWO Change-Feed Source Identities on ONE host
+        /// both drain a lease named "0", so every lease-tagged measurement they emit lands on the same series unless
+        /// it also carries the source. An operator reading a suspended or stalled "0" could not tell WHICH source
+        /// stopped — which is the same ambiguity the per-processor gate closes in the relay's control flow, closed
+        /// here on the telemetry.
+        /// </summary>
+        [Fact]
+        public async Task MustReportEachSourcesBatchesUnderItsOwnSourceIdentity()
+        {
+            var stampFailure = new TimeoutException("the container is not accepting the delivered stamp");
+            (IReadOnlyList<Container.ChangeFeedStreamHandler> handlers, List<OutboundBrokeredMessage> _) =
+                await StartTwoSourceHostAsync(stampFailure);
+
+            using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
+            {
+                Func<Task> failingSource = () => DrainThroughHandlerAsync(handlers[0], SharedLeaseToken);
+                await failingSource.Should().ThrowAsync<TimeoutException>();
+                await DrainThroughHandlerAsync(handlers[1], SharedLeaseToken);
+
+                var batches = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainedBatchesInstrumentName).Should().HaveCount(2).And.Subject;
+
+                batches.Should().OnlyContain(measurement => TagOf(measurement, CosmosReliabilityDiagnostics.LeaseToken) == SharedLeaseToken,
+                    "both sources drained a partition-key range named \"0\", which is why the lease token alone cannot separate them");
+                batches.Select(measurement => TagOf(measurement, CosmosReliabilityDiagnostics.SourceIdentity))
+                       .Should().OnlyHaveUniqueItems("each processor reports under the Change-Feed Source Identity it drains")
+                       .And.NotContainNulls();
+            }
+        }
+
+        private static string TagOf(RecordedMeasurement measurement, string tagName)
+            => measurement.TryGetTag(tagName, out var value) ? value?.ToString() : null;
+
         // Starts a host owning TWO processors over two distinct declared Change-Feed Source Identities and returns each
         // processor's OWN change-feed handler, captured through the factory seam. The first source's monitored
         // container refuses the delivered stamp; the second's accepts it.
@@ -288,8 +321,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
-        // descriptor. It is deliberately NOT reachable from the host: no host owns a gate any more.
-        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(new GuardedRelayLog(logger: null));
+        // descriptor. It is deliberately NOT reachable from the host: no host owns a gate any more. The gate is also
+        // what carries the Change-Feed Source Identity its suspensions and batches are reported under.
+        private static OutboxDrainGate ProcessorGate()
+            => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new GuardedRelayLog(logger: null));
 
         private static (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) HostRecordingPublishes()
         {

@@ -35,6 +35,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         /// <summary>The change-feed lease the batch under test was delivered for.</summary>
         private const string LeaseToken = "lease-3";
 
+        /// <summary>
+        /// The Change-Feed Source Identity the processor under test drains, standing in for the processor name a host
+        /// builds its gate with. It is what disambiguates <see cref="LeaseToken"/> across two co-resident sources.
+        /// </summary>
+        private const string SourceIdentity = "chatter-cosmos-outbox-relay:source-under-test";
+
         private const string TenantId = "tenant-1";
 
         /// <summary>A meter name no Chatter instrument belongs to, standing in for another library's opt-in.</summary>
@@ -193,7 +199,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         }
 
         // One batch handed to one host records exactly one size and exactly one count, both carrying the lease the
-        // batch was delivered for.
+        // batch was delivered for AND the Change-Feed Source Identity that lease belongs to — a lease token alone is a
+        // partition-key-range id, which two co-resident sources report identically.
         private static void AssertOneBatchRecorded(RecordingMeterScope meterScope, int expectedSize)
         {
             var size = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainBatchSizeInstrumentName).Should().ContainSingle().Subject;
@@ -206,6 +213,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 measurement.TryGetTag(CosmosReliabilityDiagnostics.LeaseToken, out var leaseToken).Should().BeTrue();
                 leaseToken.Should().Be(LeaseToken);
+                measurement.TryGetTag(CosmosReliabilityDiagnostics.SourceIdentity, out var sourceIdentity).Should().BeTrue();
+                sourceIdentity.Should().Be(SourceIdentity, "the host reports the batch under the identity of the gate it was handed");
             }
         }
 
@@ -226,8 +235,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         private static string CoResidentDocument(string id) => "{\"id\":\"" + id + "\",\"tenantId\":\"" + TenantId + "\"}";
 
         // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
-        // descriptor. No host owns a gate any more, so the handler is handed one.
-        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(new GuardedRelayLog(logger: null));
+        // descriptor. No host owns a gate any more, so the handler is handed one, and the gate is what carries the
+        // Change-Feed Source Identity the batch measurements are reported under.
+        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null));
 
         private static CosmosOutboxRelayHostedService RegistryHost()
             => new CosmosOutboxRelayHostedService(

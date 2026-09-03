@@ -55,16 +55,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// <summary>The number of documents in one change-feed batch handed to the Outbox Relay.</summary>
         public const string DrainBatchSizeInstrumentName = "chatter.messaging.outbox.drain.batch.size";
 
-        /// <summary>The number of change-feed batches the Outbox Relay handled, by <see cref="LeaseToken"/>.</summary>
+        /// <summary>The number of change-feed batches the Outbox Relay handled, by <see cref="SourceIdentity"/> and <see cref="LeaseToken"/>.</summary>
         public const string DrainedBatchesInstrumentName = "chatter.messaging.outbox.drain.batches";
 
-        /// <summary>The number of drain attempts that faulted, by <see cref="LeaseToken"/> and error type.</summary>
+        /// <summary>The number of drain attempts that faulted, by <see cref="SourceIdentity"/>, <see cref="LeaseToken"/> and error type.</summary>
         public const string DrainFailuresInstrumentName = "chatter.messaging.outbox.drain.failures";
 
         /// <summary>The number of Outbox Documents the Outbox Relay marked undeliverable, carried with NO attribute.</summary>
         public const string DrainUndeliverableInstrumentName = "chatter.messaging.outbox.drain.undeliverable";
 
-        /// <summary>The number of times the Outbox Relay suspended draining, by <see cref="LeaseToken"/>.</summary>
+        /// <summary>The number of times the Outbox Relay suspended draining, by <see cref="SourceIdentity"/> and <see cref="LeaseToken"/>.</summary>
         public const string DrainSuspensionsInstrumentName = "chatter.messaging.outbox.drain.suspensions";
 
         /// <summary>How the Outbox Relay resolved one document; values come from <see cref="DrainOutcomes"/>.</summary>
@@ -72,6 +72,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
 
         /// <summary>The change-feed lease the batch was delivered for; the partition-progress dimension.</summary>
         public const string LeaseToken = "chatter.messaging.outbox.lease_token";
+
+        /// <summary>
+        /// WHICH Change-Feed Source Identity the lease belongs to; the attribute that makes a <see cref="LeaseToken"/>
+        /// unambiguous. Its value is the relay's PROCESSOR NAME — deterministic across runs, injective over the typed
+        /// source-identity key, and the identity an operator already sees in the lease container.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: every LEASE-TAGGED instrument carries this attribute, and its emit method takes it as a REQUIRED
+        /// parameter with NO lease-token-only overload. A Lease Token is a partition-key-range id of ITS OWN monitored
+        /// container ("0", "1", ...), so two Change-Feed Source Identities co-resident on one host routinely report the
+        /// SAME token: without this attribute their measurements collapse onto one series and an operator cannot tell
+        /// which source stalled or suspended. Requiring the argument is what makes an ambiguous lease-tagged
+        /// measurement UNREPRESENTABLE rather than merely absent from the call sites written so far.
+        /// The one instrument that does NOT carry it is <see cref="DrainUndeliverableInstrumentName"/>, which carries
+        /// no attribute at all by ADR-0010 D7 — see <see cref="RecordUndeliverableDocument"/>.
+        /// </remarks>
+        public const string SourceIdentity = "chatter.messaging.outbox.source_identity";
 
         private static readonly string _telemetryVersion = ResolveTelemetryVersion();
         private static readonly ActivitySource _source = new ActivitySource(ActivitySourceName, _telemetryVersion);
@@ -190,6 +207,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// <summary>
         /// Records the size of one change-feed batch handed to the Outbox Relay, and counts the batch.
         /// </summary>
+        /// <param name="sourceIdentity">The Change-Feed Source Identity the lease belongs to, carried as <see cref="SourceIdentity"/>.</param>
         /// <param name="leaseToken">The change-feed lease the batch was delivered for, carried as <see cref="LeaseToken"/>.</param>
         /// <param name="documentCount">How many documents the batch carried.</param>
         /// <remarks>
@@ -197,15 +215,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// be sized against one lease and counted against another, and the tag set is built once.
         /// INVARIANT: the outer guard passes when EITHER instrument is enabled and each emit is guarded on its own
         /// <see cref="Instrument.Enabled"/>, so enabling one instrument does not publish the other.
+        /// INVARIANT: <paramref name="sourceIdentity"/> is REQUIRED and there is no lease-token-only overload, so a
+        /// batch measurement that cannot be attributed to a source is not callable — see <see cref="SourceIdentity"/>.
         /// </remarks>
-        internal static void RecordDrainedBatch(string leaseToken, int documentCount)
+        internal static void RecordDrainedBatch(string sourceIdentity, string leaseToken, int documentCount)
         {
             if (!_drainBatchSize.Enabled && !_drainedBatches.Enabled)
             {
                 return;
             }
 
-            var tags = new TagList { { LeaseToken, leaseToken } };
+            var tags = new TagList
+            {
+                { SourceIdentity, sourceIdentity },
+                { LeaseToken, leaseToken },
+            };
 
             if (_drainBatchSize.Enabled)
             {
@@ -221,6 +245,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// <summary>
         /// Counts one drain attempt that faulted.
         /// </summary>
+        /// <param name="sourceIdentity">The Change-Feed Source Identity the lease belongs to, carried as <see cref="SourceIdentity"/>.</param>
         /// <param name="leaseToken">The change-feed lease the attempt was made under, carried as <see cref="LeaseToken"/>.</param>
         /// <param name="exception">The failure that ended the attempt; its type is carried as <c>error.type</c>.</param>
         /// <remarks>
@@ -230,10 +255,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/>, never
         /// <see cref="IsEnabled"/>, and the tags — including the resolved error type — are built INSIDE it, because
         /// C# evaluates arguments before the callee's guard runs (ADR-0010 R1).
+        /// INVARIANT: <paramref name="sourceIdentity"/> is REQUIRED and there is no lease-token-only overload, so a
+        /// failure count that cannot be attributed to a source is not callable — see <see cref="SourceIdentity"/>.
         /// The error type is resolved through <see cref="ActivityOutcome.ResolveErrorType"/> so this module reports
         /// the same <c>error.type</c> value the shared send path reports for the same exception.
         /// </remarks>
-        internal static void RecordDrainFailure(string leaseToken, Exception exception)
+        internal static void RecordDrainFailure(string sourceIdentity, string leaseToken, Exception exception)
         {
             if (!_drainFailures.Enabled)
             {
@@ -242,6 +269,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
 
             var tags = new TagList
             {
+                { SourceIdentity, sourceIdentity },
                 { LeaseToken, leaseToken },
                 { ChatterTelemetryTags.ErrorType, ActivityOutcome.ResolveErrorType(exception) },
             };
@@ -275,22 +303,30 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// <summary>
         /// Counts one suspension of the Outbox Relay's drain.
         /// </summary>
+        /// <param name="sourceIdentity">The Change-Feed Source Identity the lease belongs to, carried as <see cref="SourceIdentity"/>.</param>
         /// <param name="leaseToken">The change-feed lease draining was suspended for, carried as <see cref="LeaseToken"/>.</param>
         /// <remarks>
         /// INVARIANT: a suspension is reported against its lease, which is what keeps a suspended lease
-        /// distinguishable from an idle one that simply has nothing pending.
+        /// distinguishable from an idle one that simply has nothing pending, and against the Change-Feed Source
+        /// Identity that says WHOSE lease it was. <paramref name="sourceIdentity"/> is REQUIRED and there is no
+        /// lease-token-only overload — see <see cref="SourceIdentity"/>.
         /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/>, never
-        /// <see cref="IsEnabled"/>, and the tag is built INSIDE it, because C# evaluates arguments before the
-        /// callee's guard runs (ADR-0010 R1).
+        /// <see cref="IsEnabled"/>, and the tags are built INSIDE it, because C# evaluates arguments before the
+        /// callee's guard runs (ADR-0010 R1). BOTH arguments are already-materialized strings the caller holds, which
+        /// is why the gate's call site needs no outer off-guard of its own.
         /// </remarks>
-        internal static void RecordDrainSuspension(string leaseToken)
+        internal static void RecordDrainSuspension(string sourceIdentity, string leaseToken)
         {
             if (!_drainSuspensions.Enabled)
             {
                 return;
             }
 
-            var tags = new TagList { { LeaseToken, leaseToken } };
+            var tags = new TagList
+            {
+                { SourceIdentity, sourceIdentity },
+                { LeaseToken, leaseToken },
+            };
 
             _drainSuspensions.Add(1, tags);
         }

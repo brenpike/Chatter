@@ -2,6 +2,7 @@ using Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics;
 using Chatter.MessageBrokers.Reliability.Cosmos.Tests.Diagnostics;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
+using System;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Xunit;
@@ -24,6 +25,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
     [Collection(DiagnosticsCollection.Name)]
     public class WhenDiagnosticsAreNotOptedInto : Testing.Core.Context
     {
+        /// <summary>The Change-Feed Source Identity the lease-tagged probes emit under, standing in for a processor name.</summary>
+        private const string SourceIdentity = "chatter-cosmos-outbox-relay:source-a";
+
+        // Built ONCE, at class-initialisation time, so the off-state probe measures the record methods and not the
+        // allocation of the failure handed to one of them.
+        private static readonly Exception _offGuardProbeFailure = new InvalidOperationException("the drain faulted");
+
         [Fact]
         public void MustReportDiagnosticsDisabledInAnEmptyProcess()
         {
@@ -135,7 +143,57 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         private static void RecordOneRelayStopSignalOfEachKind()
         {
             CosmosReliabilityDiagnostics.RecordUndeliverableDocument();
-            CosmosReliabilityDiagnostics.RecordDrainSuspension("lease-0");
+            CosmosReliabilityDiagnostics.RecordDrainSuspension(SourceIdentity, "lease-0");
+        }
+
+        /// <summary>
+        /// The three LEASE-TAGGED emit methods each carry a SECOND tag now — the Change-Feed Source Identity that
+        /// disambiguates a Lease Token across two co-resident sources — and off must still cost nothing at all three
+        /// sites. Both arguments are already-materialized strings, so nothing is BUILT before each instrument's own
+        /// guard runs and no <c>TagList</c> is constructed for a meter nobody enabled (ADR-0010 R1).
+        /// </summary>
+        /// <remarks>
+        /// This is also what keeps the suspension site's documented NO-OUTER-GUARD call safe: the gate calls
+        /// <see cref="CosmosReliabilityDiagnostics.RecordDrainSuspension"/> without first reading
+        /// <see cref="CosmosReliabilityDiagnostics.IsEnabled"/>, which is correct precisely because the arguments are
+        /// values the caller already holds. Adding a second STRING argument does not change that; adding one that had
+        /// to be COMPUTED would, and this probe is what would catch it.
+        /// </remarks>
+        [Fact]
+        public void MustBuildNoTagForALeaseTaggedMeasurementWhileNothingIsOptedInto()
+        {
+            CosmosReliabilityDiagnostics.IsEnabled.Should().BeFalse();
+
+            var measurement = GuardCostProbe.Measure(RecordOneLeaseTaggedMeasurementOfEachKind);
+
+            measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no attribute may be built while off: " + measurement);
+        }
+
+        /// <summary>
+        /// The tracing-only mirror at the same three sites: <see cref="CosmosReliabilityDiagnostics.IsEnabled"/> is
+        /// TRUE, which is exactly why no emit method may guard on it — each guards on its OWN instrument, so a
+        /// metrics-less application builds neither tag (ADR-0010 R1, R2).
+        /// </summary>
+        [Fact]
+        public void MustRecordNoLeaseTaggedMeasurementForATracingOnlyOptIn()
+        {
+            using (var activityScope = new RecordingActivityScope(CosmosReliabilityDiagnostics.ActivitySourceName))
+            {
+                CosmosReliabilityDiagnostics.IsEnabled.Should().BeTrue();
+
+                var measurement = GuardCostProbe.Measure(RecordOneLeaseTaggedMeasurementOfEachKind);
+
+                measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no attribute may be built for an instrument nobody enabled: " + measurement);
+                activityScope.StartedActivities.Should().BeEmpty();
+            }
+        }
+
+        /// <summary>Drives every lease-tagged emit method once, as one drained, faulted and suspended lease does.</summary>
+        private static void RecordOneLeaseTaggedMeasurementOfEachKind()
+        {
+            CosmosReliabilityDiagnostics.RecordDrainedBatch(SourceIdentity, "lease-0", documentCount: 1);
+            CosmosReliabilityDiagnostics.RecordDrainFailure(SourceIdentity, "lease-0", _offGuardProbeFailure);
+            CosmosReliabilityDiagnostics.RecordDrainSuspension(SourceIdentity, "lease-0");
         }
 
         /// <summary>

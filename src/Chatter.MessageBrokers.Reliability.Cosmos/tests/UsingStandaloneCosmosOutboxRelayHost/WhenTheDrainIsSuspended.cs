@@ -213,8 +213,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         }
 
         // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
-        // descriptor. No host owns a gate any more, so the handler is handed one.
-        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(new GuardedRelayLog(logger: null));
+        // descriptor. No host owns a gate any more, so the handler is handed one, and the gate carries the Change-Feed
+        // Source Identity its suspensions and batches are reported under.
+        private static OutboxDrainGate ProcessorGate()
+            => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new GuardedRelayLog(logger: null));
 
         private static Task Drain(StandaloneCosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken, params JsonObject[] documents)
             => host.HandleChangesAsync(BatchOf(documents), container, PartitionKeyPath, leaseToken, drainGate, CancellationToken.None);

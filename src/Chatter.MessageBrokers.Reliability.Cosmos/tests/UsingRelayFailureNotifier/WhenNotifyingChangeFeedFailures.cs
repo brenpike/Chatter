@@ -20,21 +20,29 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingRelayFailureNotif
     [Collection(DiagnosticsCollection.Name)]
     public class WhenNotifyingChangeFeedFailures
     {
+        /// <summary>
+        /// The Change-Feed Source Identity the notifier under test belongs to — the processor name the host built its
+        /// processor under, and the identity its faults are reported against.
+        /// </summary>
+        private const string SourceIdentity = "chatter-cosmos-outbox-relay:source-under-test";
+
         // Built ONCE, at class-initialisation time, so the off-state allocation probe below measures the notifier and
         // not the allocation of the fault handed to it.
         private static readonly ChangeFeedProbeException _changeFeedFault = new ChangeFeedProbeException("the change feed faulted");
 
         // The notifier of an application that wired no logger, built ONCE for the same reason.
-        private static readonly RelayFailureNotifier _loggerlessNotifier = new RelayFailureNotifier(logger: null);
+        private static readonly RelayFailureNotifier _loggerlessNotifier = new RelayFailureNotifier(SourceIdentity, new GuardedRelayLog(logger: null));
 
         /// <summary>
-        /// A faulted change feed is counted against the Lease Token it faulted under, so an operator reading the drain
-        /// failures by lease can see WHICH partition range stopped advancing.
+        /// A faulted change feed is counted against the Lease Token it faulted under AND the Change-Feed Source
+        /// Identity that lease belongs to, so an operator reading the drain failures can see WHICH source's partition
+        /// range stopped advancing — a Lease Token alone is a partition-key-range id two co-resident sources report
+        /// identically.
         /// </summary>
         [Fact]
-        public async Task MustCountTheFaultAgainstItsLeaseWhileTheInstrumentIsEnabled()
+        public async Task MustCountTheFaultAgainstItsSourceIdentityAndLeaseWhileTheInstrumentIsEnabled()
         {
-            var notifier = new RelayFailureNotifier(logger: null);
+            var notifier = new RelayFailureNotifier(SourceIdentity, new GuardedRelayLog(logger: null));
 
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             {
@@ -45,9 +53,23 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingRelayFailureNotif
                 measurement.Value.Should().Be(1);
                 measurement.TryGetTag(CosmosReliabilityDiagnostics.LeaseToken, out var leaseToken).Should().BeTrue();
                 leaseToken.Should().Be("lease-7");
+                measurement.TryGetTag(CosmosReliabilityDiagnostics.SourceIdentity, out var sourceIdentity).Should().BeTrue();
+                sourceIdentity.Should().Be(SourceIdentity, "the notifier is built PER PROCESSOR, so it reports its own source");
                 measurement.TryGetTag(ChatterTelemetryTags.ErrorType, out var errorType).Should().BeTrue();
                 errorType.Should().Be(typeof(ChangeFeedProbeException).FullName);
             }
+        }
+
+        /// <summary>
+        /// A notifier with no Change-Feed Source Identity is UNCONSTRUCTIBLE: it could otherwise report a fault under
+        /// a Lease Token an operator cannot attribute to any source, which is exactly the ambiguity this closes.
+        /// </summary>
+        [Fact]
+        public void MustRefuseANotifierWithNoSourceIdentity()
+        {
+            Action constructing = () => new RelayFailureNotifier(sourceIdentity: null, new GuardedRelayLog(logger: null));
+
+            constructing.Should().Throw<ArgumentNullException>();
         }
 
         /// <summary>
@@ -58,7 +80,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingRelayFailureNotif
         public async Task MustLogTheFaultOnceAtErrorCarryingTheLeaseToken()
         {
             var logger = new RecordingLogger();
-            var notifier = new RelayFailureNotifier(logger);
+            var notifier = new RelayFailureNotifier(SourceIdentity, new GuardedRelayLog(logger));
 
             await notifier.OnChangeFeedErrorAsync("lease-7", _changeFeedFault);
 
@@ -99,7 +121,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingRelayFailureNotif
         [Fact]
         public async Task MustNotThrowWhenTheSuppliedLoggerItselfThrows()
         {
-            var notifier = new RelayFailureNotifier(new ThrowingLogger());
+            var notifier = new RelayFailureNotifier(SourceIdentity, new GuardedRelayLog(new ThrowingLogger()));
 
             Func<Task> notifying = () => notifier.OnChangeFeedErrorAsync("lease-7", _changeFeedFault);
 
@@ -116,7 +138,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingRelayFailureNotif
         public async Task MustStillLogTheFaultWhenTheMetricSinkThrows()
         {
             var logger = new RecordingLogger();
-            var notifier = new RelayFailureNotifier(logger);
+            var notifier = new RelayFailureNotifier(SourceIdentity, new GuardedRelayLog(logger));
 
             using (new ThrowingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             {

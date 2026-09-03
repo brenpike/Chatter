@@ -37,20 +37,28 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
 
         /// <summary>
         /// A suspension is reported against the Lease Token it was raised for, which is what keeps a suspended lease
-        /// distinguishable from an idle one.
+        /// distinguishable from an idle one, and against the Change-Feed Source Identity that says WHICH source's
+        /// lease it was.
         /// </summary>
+        /// <remarks>
+        /// The source identity is a REQUIRED parameter and no lease-token-only overload exists: two co-resident
+        /// sources both suspend a lease named "0", and a lease-only count would collapse them onto one series.
+        /// </remarks>
         [Fact]
-        public void MustCountOneDrainSuspensionAgainstItsLease()
+        public void MustCountOneDrainSuspensionAgainstItsSourceIdentityAndLease()
         {
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             {
-                CosmosReliabilityDiagnostics.RecordDrainSuspension("lease-7");
+                CosmosReliabilityDiagnostics.RecordDrainSuspension("source-a", "lease-7");
 
                 var measurement = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainSuspensionsInstrumentName).Should().ContainSingle().Subject;
 
                 measurement.Value.Should().Be(1);
                 measurement.TryGetTag(CosmosReliabilityDiagnostics.LeaseToken, out var leaseToken).Should().BeTrue();
                 leaseToken.Should().Be("lease-7");
+                measurement.TryGetTag(CosmosReliabilityDiagnostics.SourceIdentity, out var sourceIdentity).Should().BeTrue(
+                    "a lease token alone is ambiguous across two sources on one host");
+                sourceIdentity.Should().Be("source-a");
             }
         }
 
