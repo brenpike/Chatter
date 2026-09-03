@@ -105,6 +105,82 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         /// <summary>
+        /// An EMPTY batch confirms nothing, so it must not clear the lease. Absence of a Confirmation Failure is not
+        /// presence of a confirmation: the loop reaches its end having performed no status write at all.
+        /// </summary>
+        /// <remarks>
+        /// Clearing the lease here would reset the consecutive count as well, so the lease would need a full fresh
+        /// threshold of failures to suspend again — the #416 bound degraded from one republish per window to five.
+        /// </remarks>
+        [Fact]
+        public async Task MustNotClearTheLeaseForAnEmptyBatch()
+        {
+            var stampFailure = new InvalidOperationException("the container is not accepting the delivered stamp");
+            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) = HostRecordingPublishes();
+            Container container = ThrowingContainer(stampFailure);
+
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold - 1);
+            await DrainDocumentsAsync(host, container, drainGate, LeaseToken);
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, 1);
+            published.Clear();
+
+            Func<Task> act = () => DrainAsync(host, container, drainGate, LeaseToken);
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+            published.Should().BeEmpty(
+                "a batch that wrote nothing is evidence of nothing, so the failures before it still count toward the threshold");
+        }
+
+        /// <summary>
+        /// A batch whose documents the relay never admitted confirms nothing either. The monitored container is
+        /// CO-RESIDENT by design — domain writes, inbox markers and already-delivered documents all surface on this
+        /// feed — so this is the ORDINARY batch, not an exotic one.
+        /// </summary>
+        [Fact]
+        public async Task MustNotClearTheLeaseForABatchOfDocumentsItNeverAdmitted()
+        {
+            var stampFailure = new InvalidOperationException("the container is not accepting the delivered stamp");
+            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) = HostRecordingPublishes();
+            Container container = ThrowingContainer(stampFailure);
+
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold - 1);
+            await DrainDocumentsAsync(host, container, drainGate, LeaseToken, DomainDocument());
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, 1);
+            published.Clear();
+
+            Func<Task> act = () => DrainAsync(host, container, drainGate, LeaseToken);
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+            published.Should().BeEmpty(
+                "a co-resident domain write is skipped without a status write, so it confirms nothing about the confirmation path");
+        }
+
+        /// <summary>
+        /// The half-open probe: the window elapsed, exactly one batch was let through, and it confirmed nothing. The
+        /// lease stays suspended for a fresh window, and the probe is spent.
+        /// </summary>
+        [Fact]
+        public async Task MustLeaveTheLeaseSuspendedWhenTheProbeBatchConfirmsNothing()
+        {
+            var stampFailure = new InvalidOperationException("the container is not accepting the delivered stamp");
+            var timeProvider = new AdvanceableTimeProvider();
+            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate _) = HostRecordingPublishes();
+            OutboxDrainGate drainGate = ProcessorGate(timeProvider);
+            Container container = ThrowingContainer(stampFailure);
+
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
+            timeProvider.Advance(OutboxDrainGate.SuspensionWindow);
+            await DrainDocumentsAsync(host, container, drainGate, LeaseToken);
+            published.Clear();
+
+            Func<Task> act = () => DrainAsync(host, container, drainGate, LeaseToken);
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+            published.Should().BeEmpty(
+                "the probe discovered nothing about the confirmation path, so it lifts no suspension and is consumed");
+        }
+
+        /// <summary>
         /// A suspended batch is still SIZED and COUNTED against its lease. The batch measurements are what keep a
         /// stalled lease distinguishable from an idle one, so the suspension is consulted BELOW them.
         /// </summary>
@@ -303,9 +379,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
 
         // Drives ONE change-feed batch carrying ONE pending Outbox Document through the host's stream handler, on the
         // gate that ONE processor drains through — which is what BuildChangeFeedHandler hands the handler in production.
-        private static async Task DrainAsync(CosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken)
+        private static Task DrainAsync(CosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken)
+            => DrainDocumentsAsync(host, container, drainGate, leaseToken, OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1"));
+
+        // Drives ONE change-feed batch carrying exactly the supplied documents — none of them, for the empty batch the
+        // change feed delivers whenever a lease has nothing pending.
+        private static async Task DrainDocumentsAsync(CosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken, params JsonElement[] documents)
         {
-            using Stream batch = BatchOf(OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1"));
+            using Stream batch = BatchOf(documents);
             await host.HandleChangesAsync(batch, container, PartitionKeyPath, leaseToken, drainGate, CancellationToken.None);
         }
 
@@ -325,6 +406,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         // what carries the Change-Feed Source Identity its suspensions and batches are reported under.
         private static OutboxDrainGate ProcessorGate()
             => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new GuardedRelayLog(logger: null));
+
+        // The same gate on a clock a test moves, which is how the half-open probe is reached with no wall-clock wait.
+        private static OutboxDrainGate ProcessorGate(TimeProvider timeProvider)
+            => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new GuardedRelayLog(logger: null), timeProvider);
 
         private static (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) HostRecordingPublishes()
         {
@@ -469,10 +554,33 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             return Parse(rendered.ToJsonString());
         }
 
+        // A co-resident domain write: no Chatter discriminator, so the relay never admits it and writes nothing for it.
+        private static JsonElement DomainDocument()
+            => Parse(new JsonObject
+            {
+                ["id"] = "order-1",
+                ["tenantId"] = "tenant-1",
+            }.ToJsonString());
+
         private static JsonElement Parse(string json)
         {
             using var document = JsonDocument.Parse(json);
             return document.RootElement.Clone();
+        }
+
+        /// <summary>
+        /// A <see cref="TimeProvider"/> whose monotonic timestamp only moves when a test moves it, so the suspension
+        /// window is exercised with no wall-clock sleep.
+        /// </summary>
+        private sealed class AdvanceableTimeProvider : TimeProvider
+        {
+            private long _timestamp;
+
+            public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+            public override long GetTimestamp() => _timestamp;
+
+            public void Advance(TimeSpan elapsed) => _timestamp += elapsed.Ticks;
         }
     }
 }

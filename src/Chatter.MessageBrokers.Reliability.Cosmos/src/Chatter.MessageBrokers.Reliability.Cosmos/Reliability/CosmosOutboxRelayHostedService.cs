@@ -323,11 +323,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     $"The Cosmos Outbox Relay has suspended draining lease '{leaseToken}': its documents published but could not be marked delivered, so every redrain republished them. The batch is not checkpointed and re-surfaces once draining resumes.");
             }
 
+            // The batch's Confirmation Receipt is the DISJUNCTION over its documents: one landed status write anywhere
+            // in the batch is evidence the confirmation path is up. Accumulated at BATCH level and never applied per
+            // document — a per-document lift would let a healthy document ordered BEFORE a wedging one reset the
+            // consecutive count on every pass, so the suspension would never open and the #416 bound would be gone.
+            ConfirmationReceipt batchReceipt = default;
+
             foreach (JsonElement document in documents.EnumerateArray())
             {
                 try
                 {
-                    await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                    ConfirmationReceipt documentReceipt = await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                    batchReceipt = batchReceipt.Or(documentReceipt);
                 }
                 catch (OutboxConfirmationFailedException carrier)
                 {
@@ -340,9 +347,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 }
             }
 
-            // The drain completed with no Confirmation Failure, which is what lifts a suspension. The relay is
-            // fail-closed, so a wedged lease never gets here at all: it throws on the same document every pass.
-            drainGate.RecordConfirmationSuccess(leaseToken);
+            // A suspension lifts on the batch's EVIDENCE, never on the loop having reached this line. Absence of a
+            // Confirmation Failure is not presence of a confirmation: an EMPTY batch and a batch every document's
+            // pending-outbox pre-gate rejected both arrive here having written nothing, and on a CO-RESIDENT monitored
+            // container the second is the ordinary batch. A receipt-less call is a no-op inside the gate.
+            drainGate.RecordConfirmationSuccess(leaseToken, batchReceipt);
         }
 
         // One descriptor per distinct change-feed SOURCE-IDENTITY key (ADR-0008). The key is a TYPED, COMPONENT-WISE

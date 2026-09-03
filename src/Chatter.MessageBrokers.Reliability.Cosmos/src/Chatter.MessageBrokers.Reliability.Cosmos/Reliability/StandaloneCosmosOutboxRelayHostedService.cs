@@ -303,14 +303,27 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     $"The Cosmos Outbox Relay is not draining lease '{leaseToken}': its documents published but could not be marked delivered, so every redrain republished them. The batch is not checkpointed and re-surfaces once a confirmation succeeds.");
             }
 
+            // The batch's Confirmation Receipt is the DISJUNCTION over its documents, mirroring
+            // CosmosOutboxRelayHostedService: one landed status write anywhere in the batch is evidence the
+            // confirmation path is up. It is declared OUTSIDE the try because that is the only scope both the loop and
+            // the gate call share. Accumulated at BATCH level and never applied per document — a per-document lift
+            // would let a healthy document ordered BEFORE a wedging one reset the consecutive count on every pass, so
+            // the suspension would never open.
+            ConfirmationReceipt batchReceipt = default;
+
             try
             {
                 foreach (JsonElement document in documents.EnumerateArray())
                 {
-                    await ProcessDocumentAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                    ConfirmationReceipt documentReceipt = await ProcessDocumentAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                    batchReceipt = batchReceipt.Or(documentReceipt);
                 }
 
-                drainGate.RecordConfirmationSuccess(leaseToken);
+                // A suspension lifts on the batch's EVIDENCE, never on the loop having reached this line. Absence of a
+                // Confirmation Failure is not presence of a confirmation: an EMPTY batch and a batch every document's
+                // pending-outbox pre-gate rejected both arrive here having written nothing, and on a CO-RESIDENT
+                // monitored container the second is the ordinary batch. A receipt-less call is a no-op inside the gate.
+                drainGate.RecordConfirmationSuccess(leaseToken, batchReceipt);
             }
             catch (OutboxConfirmationFailedException confirmationFailure)
             {
@@ -344,7 +357,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // publish/resolver failure (at-least-once: the SDK does not checkpoint and the document re-surfaces) still disposes
         // the scope while the exception unwinds. With no factory configured the relay's no-resolver verbatim reconstruction
         // path is used UNCHANGED and no scope is opened.
-        private async Task ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
+        private async Task<ConfirmationReceipt> ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
             if (!CosmosOutboxDocument.IsPendingOutbox(document))
             {
@@ -358,13 +371,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     CosmosReliabilityDiagnostics.RecordDrainedDocument(CosmosReliabilityDiagnostics.DrainOutcomes.Skipped);
                 }
 
-                return;
+                // The pre-gate wrote nothing, so this document is evidence of nothing. It is also the ORDINARY
+                // document on a co-resident container, which is why the batch's evidence has to be carried rather
+                // than inferred from the loop completing.
+                return default;
             }
 
             if (_options.BodyResolverFactory is null)
             {
-                await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
-                return;
+                return await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
             }
 
             await using AsyncServiceScope scope = _serviceProvider.CreateAsyncScope();
@@ -375,7 +390,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             IOutboxBodyResolver resolver = _options.BodyResolverFactory(scope.ServiceProvider)
                 ?? throw new InvalidOperationException(
                     "The configured CosmosOutboxRelayOptions.BodyResolverFactory returned null. A configured factory must resolve a non-null IOutboxBodyResolver — null would silently select the verbatim no-resolver reconstruction path. Resolve the resolver with GetRequiredService/GetRequiredKeyedService (which throw on a missing registration) rather than GetService.");
-            await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver, cancellationToken).ConfigureAwait(false);
+            return await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver, cancellationToken).ConfigureAwait(false);
         }
 
         // Builds the source-identity dedup/name key the SAME way CosmosOutboxRelayHostedService does, but sourced from the

@@ -106,16 +106,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// a no-op. An admitted document is verified against <see cref="OutboxDocumentContract"/>, reconstructed from
         /// that verification, published, then patched delivered+TTL; one the contract rejects is stamped undeliverable
         /// instead and never published. A publish failure performs no patch and propagates so the host does not
-        /// checkpoint the change-feed batch.
+        /// checkpoint the change-feed batch. Returns the <see cref="ConfirmationReceipt"/> the document's status write
+        /// produced, which is <see langword="default"/> — no receipt — for a document that performed no such write.
         /// </summary>
-        public Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken = default)
+        public Task<ConfirmationReceipt> ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken = default)
             => ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver: null, cancellationToken);
 
         /// <summary>
         /// Processes a single change-feed document, with an optional per-call <paramref name="resolver"/> owning the
         /// brokered message to publish for an admitted document. When <paramref name="resolver"/> is null the verbatim
         /// reconstruction path is used. A non-admitted document is a no-op. A publish (or resolver) failure performs no
-        /// patch and propagates so the host does not checkpoint the change-feed batch.
+        /// patch and propagates so the host does not checkpoint the change-feed batch. Returns the
+        /// <see cref="ConfirmationReceipt"/> the document's status write produced.
         /// </summary>
         /// <remarks>
         /// INVARIANT: the Outbox Document Contract is evaluated ONLY on the no-resolver verbatim path. A supplied
@@ -123,7 +125,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// them here would give up on documents the resolver publishes perfectly well (the thin-trigger shape carries
         /// no body, content type or context by design).
         /// </remarks>
-        internal async Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, IOutboxBodyResolver resolver, CancellationToken cancellationToken = default)
+        internal async Task<ConfirmationReceipt> ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, IOutboxBodyResolver resolver, CancellationToken cancellationToken = default)
         {
             _ = monitoredContainer ?? throw new ArgumentNullException(nameof(monitoredContainer));
             _ = partitionKeyPath ?? throw new ArgumentNullException(nameof(partitionKeyPath));
@@ -138,7 +140,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     CosmosReliabilityDiagnostics.RecordDrainedDocument(CosmosReliabilityDiagnostics.DrainOutcomes.Skipped);
                 }
 
-                return;
+                // No status write was attempted, so there is nothing to confirm and NO receipt. This is the ordinary
+                // document on a CO-RESIDENT monitored container, which is exactly why loop-end cannot stand in for a
+                // confirmation.
+                return default;
             }
 
             // The lag is recorded ONCE, at ADMISSION, so a document whose reconstruction, resolution or publish then
@@ -159,8 +164,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     // An undeliverable stamp happens INSTEAD of a publish, never after one, and records NO drain
                     // outcome: the document never resolved to a publish decision, the same reason a failed publish
                     // records none. The admitted/skipped/dropped vocabulary is CLOSED.
-                    await MarkUndeliverableAsync(document, verification, monitoredContainer, partitionKeyPath, cancellationToken);
-                    return;
+                    return await MarkUndeliverableAsync(document, verification, monitoredContainer, partitionKeyPath, cancellationToken);
                 }
 
                 await DispatchAsync(Reconstruct(verification), verification.MessagingSystem);
@@ -189,7 +193,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     : CosmosReliabilityDiagnostics.DrainOutcomes.Dropped);
             }
 
-            await StampDeliveredAsync(document, monitoredContainer, partitionKeyPath, messageDispatched, cancellationToken);
+            return await StampDeliveredAsync(document, monitoredContainer, partitionKeyPath, messageDispatched, cancellationToken);
         }
 
         // PUBLISH via IMessagingInfrastructureProvider.GetDispatcher(infra).Dispatch(message, null) — the SAME
@@ -330,13 +334,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// through a total, pure verification — to the identical verdict. A give-up blocked by an unavailable container
         /// therefore SELF-HEALS rather than being lost.
         /// </remarks>
-        private async Task MarkUndeliverableAsync(JsonElement document,
-                                                  OutboxDocumentVerification verification,
-                                                  Container monitoredContainer,
-                                                  IReadOnlyList<string> partitionKeyPath,
-                                                  CancellationToken cancellationToken)
+        private async Task<ConfirmationReceipt> MarkUndeliverableAsync(JsonElement document,
+                                                                       OutboxDocumentVerification verification,
+                                                                       Container monitoredContainer,
+                                                                       IReadOnlyList<string> partitionKeyPath,
+                                                                       CancellationToken cancellationToken)
         {
-            await StampUndeliverableAsync(document, monitoredContainer, partitionKeyPath, cancellationToken);
+            ConfirmationReceipt receipt = await StampUndeliverableAsync(document, monitoredContainer, partitionKeyPath, cancellationToken);
 
             // INVARIANT: no outer ADR-0010 R1 off-guard is needed here, and adding one would be noise: this emit takes
             // no argument, so nothing is BUILT before the emit method's own instrument guard runs.
@@ -349,19 +353,25 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _log.Error(exception: null,
                        "The Cosmos Outbox Relay marked an Outbox Document undeliverable and stopped republishing it. {Violation}",
                        verification.ViolationMessage);
+
+            // The give-up stamp IS evidence the confirmation path is up: the same single write, at the same status
+            // path, under the same recovered partition key, that a delivered stamp performs. It cannot lift a
+            // suspension the batch did not earn, because the relay is fail-closed — a Confirmation Failure anywhere in
+            // the batch throws before any receipt reaches the gate.
+            return receipt;
         }
 
         // THE GIVE-UP STAMP: a SINGLE-OP patch setting the status path to the fixed terminal undeliverable status. It
         // deliberately carries NO ttl op — an Undeliverable Outbox Document is the evidence of the defect that produced
         // it, so it is never scheduled for self-purge and never deleted.
-        private async Task StampUndeliverableAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
+        private async Task<ConfirmationReceipt> StampUndeliverableAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
             var patchOperations = new List<PatchOperation>
             {
                 PatchOperation.Set(_settings.StatusPatchPath, CosmosOutboxDocument.StatusUndeliverable),
             };
 
-            await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken);
+            return await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken);
         }
 
         // POST-PUBLISH: a SINGLE PatchItemAsync with two ops (set the status path to the delivered value, set the
@@ -380,7 +390,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // from whether the dispatch returned — never from what the stamp threw. The dropped path (nothing published)
         // takes the exception filter's false arm, so its fault propagates untouched: no publish, no amplification, and
         // nothing for a host to brake on.
-        private async Task StampDeliveredAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, bool messageDispatched, CancellationToken cancellationToken)
+        private async Task<ConfirmationReceipt> StampDeliveredAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, bool messageDispatched, CancellationToken cancellationToken)
         {
             var patchOperations = new List<PatchOperation>
             {
@@ -390,7 +400,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             try
             {
-                await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken);
+                return await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken);
             }
             catch (Exception confirmationFailure) when (messageDispatched)
             {
@@ -401,11 +411,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // The one write both stamps go through: keyed by the document id read off the change-feed item and the
         // partition key recovered from the same item at the container's declared partition-key path, so a stamp always
         // lands on the document it was decided for.
-        private static async Task PatchAsync(JsonElement document,
-                                             Container monitoredContainer,
-                                             IReadOnlyList<string> partitionKeyPath,
-                                             IReadOnlyList<PatchOperation> patchOperations,
-                                             CancellationToken cancellationToken)
+        private static async Task<ConfirmationReceipt> PatchAsync(JsonElement document,
+                                                                  Container monitoredContainer,
+                                                                  IReadOnlyList<string> partitionKeyPath,
+                                                                  IReadOnlyList<PatchOperation> patchOperations,
+                                                                  CancellationToken cancellationToken)
         {
             if (!CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string id) || string.IsNullOrEmpty(id))
             {
@@ -414,7 +424,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             PartitionKey partitionKey = RecoverPartitionKey(document, partitionKeyPath);
 
-            await monitoredContainer.PatchItemAsync<JsonElement>(id, partitionKey, patchOperations, requestOptions: null, cancellationToken: cancellationToken);
+            ItemResponse<JsonElement> stampResponse =
+                await monitoredContainer.PatchItemAsync<JsonElement>(id, partitionKey, patchOperations, requestOptions: null, cancellationToken: cancellationToken);
+
+            // Minted HERE, at the one write both stamps share, rather than at the two stamp call sites: a call site
+            // would have to re-decide WHICH arrival counts as a confirmation, which is the inference this replaces.
+            // Every present ConfirmationReceipt in the module therefore comes from a response a status write returned.
+            return ConfirmationReceipt.ForStamp(stampResponse);
         }
 
         // Recovers the document's partition key by reading the value(s) the document carries at the container's declared

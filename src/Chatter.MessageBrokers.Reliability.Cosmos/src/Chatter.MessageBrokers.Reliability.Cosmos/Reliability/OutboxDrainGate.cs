@@ -226,10 +226,28 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>
         /// Records that a confirmation SUCCEEDED on <paramref name="leaseToken"/>, lifting any Drain Suspension on it
-        /// and EVICTING its entry.
+        /// and EVICTING its entry. It requires the <paramref name="receipt"/> the drain's status write produced: with
+        /// no receipt present this returns having done NOTHING.
         /// </summary>
-        internal void RecordConfirmationSuccess(string leaseToken)
+        /// <remarks>
+        /// INVARIANT: the receipt is a REQUIREMENT rather than a hint, and it is what makes a gate transition inferred
+        /// from control-flow ARRIVAL unrepresentable. A drain that merely reached its end proves only that nothing
+        /// threw, and absence of failure is not presence of success: an EMPTY batch and a batch every document's
+        /// pending-outbox pre-gate rejected both complete having performed no confirming write, and the monitored
+        /// container is CO-RESIDENT by design, so the second is the ORDINARY batch. A <see cref="ConfirmationReceipt"/>
+        /// is derivable only from an object a status write returned, so no caller can express a lift it did not earn.
+        /// The undeliverable give-up stamp counts as evidence: it is the same write, at the same status path, whose
+        /// failure is what opens a suspension. It cannot lift one falsely because the relay is fail-closed — a
+        /// Confirmation Failure anywhere in the batch throws before any receipt reaches this method.
+        /// EVICTION on a present receipt is UNCHANGED, and remains what bounds the key space.
+        /// </remarks>
+        internal void RecordConfirmationSuccess(string leaseToken, ConfirmationReceipt receipt)
         {
+            if (!receipt.IsPresent)
+            {
+                return;
+            }
+
             // EVICTION is what closes the prior art's unbounded-key-space property BY CONSTRUCTION. An entry exists
             // only while its lease is CURRENTLY failing, so the key space is bounded by the leases this host
             // concurrently owns AND that are failing - not by a configured capacity that could fill up, silently stop

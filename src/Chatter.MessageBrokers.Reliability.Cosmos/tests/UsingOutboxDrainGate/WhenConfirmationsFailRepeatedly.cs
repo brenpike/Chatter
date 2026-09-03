@@ -2,12 +2,15 @@ using Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics;
 using Chatter.MessageBrokers.Reliability.Cosmos.Tests.Diagnostics;
 using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
+using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging;
+using Moq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
@@ -28,6 +31,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
         private const string SourceIdentity = "chatter-cosmos-outbox-relay:source-under-test";
 
         private static readonly Exception _confirmationFault = new InvalidOperationException("the delivered stamp failed");
+
+        /// <summary>
+        /// The evidence a landed status write produces. A gate transition can be reached only with one of these, so
+        /// every test that lifts a suspension has to hand the gate the same thing the relay's stamp would.
+        /// </summary>
+        private static readonly ConfirmationReceipt _landedStamp = ConfirmationReceipt.ForStamp(Mock.Of<ItemResponse<JsonElement>>());
 
         /// <summary>A lease the gate has never seen drains, which is every lease on a healthy host.</summary>
         [Fact]
@@ -151,7 +160,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
             var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
-            gate.RecordConfirmationSuccess("lease-7");
+            gate.RecordConfirmationSuccess("lease-7", _landedStamp);
 
             gate.PermitDrain("lease-7").Should().BeTrue();
         }
@@ -168,12 +177,61 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
             var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
-            gate.RecordConfirmationSuccess("lease-7");
+            gate.RecordConfirmationSuccess("lease-7", _landedStamp);
 
             var entry = logger.Entries.Should().HaveCount(2).And.Subject.Last();
             entry.Level.Should().Be(LogLevel.Information);
             entry.Message.Should().Contain("lease-7");
             entry.Exception.Should().BeNull();
+        }
+
+        /// <summary>
+        /// A drain that presents NO Confirmation Receipt lifts nothing. Absence of a Confirmation Failure is not
+        /// presence of a confirmation: an empty batch and a batch of documents that were never admitted both complete
+        /// having performed no status write, and on a co-resident monitored container the second is the ordinary batch.
+        /// </summary>
+        [Fact]
+        public void MustNotResumeDrainingWithoutAConfirmationReceipt()
+        {
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+
+            FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
+            gate.RecordConfirmationSuccess("lease-7", receipt: default);
+
+            gate.PermitDrain("lease-7").Should().BeFalse();
+        }
+
+        /// <summary>
+        /// A receipt-less drain reports nothing either. The always-on resumption report would otherwise claim a
+        /// confirmation succeeded on a batch that never wrote anything, so the log would state something untrue.
+        /// </summary>
+        [Fact]
+        public void MustReportNothingWhenNoConfirmationReceiptIsPresented()
+        {
+            var logger = new RecordingLogger();
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger), new AdvanceableTimeProvider());
+
+            FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold);
+            gate.RecordConfirmationSuccess("lease-7", receipt: default);
+
+            logger.Entries.Should().ContainSingle("only the suspension was reported; nothing resumed").Which.Level.Should().Be(LogLevel.Error);
+        }
+
+        /// <summary>
+        /// A receipt-less drain does not evict the lease, so the failures already counted against it still stand.
+        /// Eviction resets the consecutive count as well, so a phantom one would cost a full fresh threshold of
+        /// republished batches before the suspension could be raised again.
+        /// </summary>
+        [Fact]
+        public void MustNotResetTheFailureCountWithoutAConfirmationReceipt()
+        {
+            var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
+
+            FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold - 1);
+            gate.RecordConfirmationSuccess("lease-7", receipt: default);
+            FailConfirmations(gate, "lease-7", 1);
+
+            gate.PermitDrain("lease-7").Should().BeFalse("the count kept accumulating, so this failure is the threshold one");
         }
 
         /// <summary>
@@ -187,8 +245,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
             var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold - 1);
-            gate.RecordConfirmationSuccess("lease-7");
-            gate.RecordConfirmationSuccess("lease-7");
+            gate.RecordConfirmationSuccess("lease-7", _landedStamp);
+            gate.RecordConfirmationSuccess("lease-7", _landedStamp);
 
             logger.Entries.Should().BeEmpty();
         }
@@ -204,7 +262,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDrainGate
             var gate = new OutboxDrainGate(SourceIdentity, new GuardedRelayLog(logger: null), new AdvanceableTimeProvider());
 
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold - 1);
-            gate.RecordConfirmationSuccess("lease-7");
+            gate.RecordConfirmationSuccess("lease-7", _landedStamp);
             FailConfirmations(gate, "lease-7", OutboxDrainGate.Threshold - 1);
 
             gate.PermitDrain("lease-7").Should().BeTrue();

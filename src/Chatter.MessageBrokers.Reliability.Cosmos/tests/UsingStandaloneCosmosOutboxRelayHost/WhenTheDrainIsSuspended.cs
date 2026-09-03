@@ -176,6 +176,84 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         }
 
         /// <summary>
+        /// An EMPTY batch confirms nothing, so it must not clear the lease. Absence of a Confirmation Failure is not
+        /// presence of a confirmation: the loop reaches its end having performed no status write at all.
+        /// </summary>
+        /// <remarks>
+        /// Clearing the lease here would reset the consecutive count as well, so the lease would need a full fresh
+        /// threshold of failures to suspend again — the #416 bound degraded from one republish per window to five.
+        /// </remarks>
+        [Fact]
+        public async Task MustNotClearTheLeaseForAnEmptyBatch()
+        {
+            var (provider, published) = RecordingProvider();
+            StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            OutboxDrainGate drainGate = ProcessorGate();
+            Container container = FailingContainer();
+
+            await FailConfirmations(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold - 1);
+            await Drain(host, container, drainGate, LeaseToken);
+            await FailConfirmations(host, container, drainGate, LeaseToken, 1);
+            published.Clear();
+
+            Func<Task> act = () => Drain(host, container, drainGate, LeaseToken, PendingOutboxDocument("msg-1"));
+
+            await act.Should().ThrowAsync<InvalidOperationException>(
+                "a batch that wrote nothing is evidence of nothing, so the failures before it still count toward the threshold");
+            published.Should().BeEmpty("the suspended batch republished nothing");
+        }
+
+        /// <summary>
+        /// A batch whose documents the pending-outbox pre-gate rejected confirms nothing either. The monitored
+        /// container is CO-RESIDENT by design — domain writes, inbox markers and already-delivered documents all
+        /// surface on this feed — so this is the ORDINARY batch, not an exotic one.
+        /// </summary>
+        [Fact]
+        public async Task MustNotClearTheLeaseForABatchOfOnlyNonPendingDocuments()
+        {
+            var (provider, published) = RecordingProvider();
+            StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            OutboxDrainGate drainGate = ProcessorGate();
+            Container container = FailingContainer();
+
+            await FailConfirmations(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold - 1);
+            await Drain(host, container, drainGate, LeaseToken, DomainDocument());
+            await FailConfirmations(host, container, drainGate, LeaseToken, 1);
+            published.Clear();
+
+            Func<Task> act = () => Drain(host, container, drainGate, LeaseToken, PendingOutboxDocument("msg-1"));
+
+            await act.Should().ThrowAsync<InvalidOperationException>(
+                "a document the pre-gate skipped costs no status write, so it confirms nothing about the confirmation path");
+            published.Should().BeEmpty("the suspended batch republished nothing");
+        }
+
+        /// <summary>
+        /// The half-open probe: the window elapsed, exactly one batch was let through, and it confirmed nothing. The
+        /// lease stays suspended for a fresh window, and the probe is spent.
+        /// </summary>
+        [Fact]
+        public async Task MustLeaveTheLeaseSuspendedWhenTheProbeBatchConfirmsNothing()
+        {
+            var (provider, published) = RecordingProvider();
+            StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            var timeProvider = new AdvanceableTimeProvider();
+            OutboxDrainGate drainGate = ProcessorGate(timeProvider);
+            Container container = FailingContainer();
+
+            await FailConfirmations(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
+            timeProvider.Advance(OutboxDrainGate.SuspensionWindow);
+            await Drain(host, container, drainGate, LeaseToken);
+            published.Clear();
+
+            Func<Task> act = () => Drain(host, container, drainGate, LeaseToken, PendingOutboxDocument("msg-1"));
+
+            await act.Should().ThrowAsync<InvalidOperationException>(
+                "the probe discovered nothing about the confirmation path, so it lifts no suspension and is consumed");
+            published.Should().BeEmpty("the still-suspended lease republished nothing");
+        }
+
+        /// <summary>
         /// A suspended batch is still counted against its lease. The batch count measures LEASE PROGRESS, so dropping
         /// it would make a stalled lease indistinguishable from an idle one — exactly the confusion the suspension
         /// exists to resolve.
@@ -217,6 +295,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         // Source Identity its suspensions and batches are reported under.
         private static OutboxDrainGate ProcessorGate()
             => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new GuardedRelayLog(logger: null));
+
+        // The same gate on a clock a test moves, which is how the half-open probe is reached with no wall-clock wait.
+        private static OutboxDrainGate ProcessorGate(TimeProvider timeProvider)
+            => new OutboxDrainGate("chatter-cosmos-outbox-relay:source-under-test", new GuardedRelayLog(logger: null), timeProvider);
 
         private static Task Drain(StandaloneCosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken, params JsonObject[] documents)
             => host.HandleChangesAsync(BatchOf(documents), container, PartitionKeyPath, leaseToken, drainGate, CancellationToken.None);
@@ -324,6 +406,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             resolver.Setup(r => r.ResolveAsync(It.IsAny<OutboxDrainContext>(), It.IsAny<CancellationToken>()))
                     .ReturnsAsync(resolved);
             return resolver.Object;
+        }
+
+        /// <summary>
+        /// A <see cref="TimeProvider"/> whose monotonic timestamp only moves when a test moves it, so the suspension
+        /// window is exercised with no wall-clock sleep.
+        /// </summary>
+        private sealed class AdvanceableTimeProvider : TimeProvider
+        {
+            private long _timestamp;
+
+            public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+            public override long GetTimestamp() => _timestamp;
+
+            public void Advance(TimeSpan elapsed) => _timestamp += elapsed.Ticks;
         }
     }
 }
