@@ -366,7 +366,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // (string/number/bool/null), so the delivered/TTL patch lands in the SAME logical partition the document lives
         // in. A path segment may be nested (e.g. "/tenant/id"), navigated object-by-object; a missing/array-valued
         // intermediate yields a JSON-null component, mirroring how the document was stamped on write.
-        private static PartitionKey RecoverPartitionKey(JsonElement document, IReadOnlyList<string> partitionKeyPath)
+        // internal (not private) so the standalone relay host keys its #361 poison counter on the SAME recovery the
+        // stamp targets rather than re-implementing it — one derivation, so the counter and the patch cannot diverge.
+        // The assembly exposes internals to the host (same assembly) and the test project. No behavior change.
+        internal static PartitionKey RecoverPartitionKey(JsonElement document, IReadOnlyList<string> partitionKeyPath)
         {
             var builder = new PartitionKeyBuilder();
             foreach (string path in partitionKeyPath)

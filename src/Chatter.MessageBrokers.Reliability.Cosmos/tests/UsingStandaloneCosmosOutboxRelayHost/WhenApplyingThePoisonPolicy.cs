@@ -32,6 +32,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         private const string PoisonStatusValue = "poisoned";
         private const string Destination = "orders";
         private const string TenantId = "tenant-1";
+        private const string FirstTenantId = "tenant-a";
+        private const string SecondTenantId = "tenant-b";
 
         private static readonly IReadOnlyList<string> PartitionKeyPath = Array.AsReadOnly(new[] { "/tenantId" });
 
@@ -57,21 +59,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         // An Outbox Document that clears EVERY admission gate yet is UNDELIVERABLE: it carries no content type in the
         // document nor in its persisted message context, so reconstruction throws on every pass. IsPendingOutbox proves
         // ADMISSION, not publishability — which is the whole premise of the poison policy.
-        private static JsonElement UndeliverablePendingOutboxDocument(string messageId)
+        private static JsonElement UndeliverablePendingOutboxDocument(string messageId, string tenantId = TenantId)
             => Render(new CosmosOutboxDocument(
                 id: CosmosItemId.ForOutbox(messageId),
                 messageId: messageId,
                 destination: Destination,
                 messageBody: "{}",
                 messageContentType: null,
-                serializedMessageContext: JsonSerializer.Serialize(MessageContextWithInfrastructure(), ChatterJson.Options)));
+                serializedMessageContext: JsonSerializer.Serialize(MessageContextWithInfrastructure(), ChatterJson.Options)), tenantId);
 
         private static Dictionary<string, object> MessageContextWithInfrastructure()
             => new Dictionary<string, object> { [MessageContext.InfrastructureType] = InfrastructureType };
 
-        private static JsonElement Render(CosmosOutboxDocument document)
+        private static JsonElement Render(CosmosOutboxDocument document, string tenantId = TenantId)
         {
-            JsonObject rendered = document.ToJsonObject(PartitionKeyPath, new List<JsonElement> { JsonValue(TenantId) });
+            JsonObject rendered = document.ToJsonObject(PartitionKeyPath, new List<JsonElement> { JsonValue(tenantId) });
             return Parse(rendered.ToJsonString());
         }
 
@@ -79,9 +81,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
 
         // A container recording each PatchItemAsync call, optionally faulting it — the poison stamp's OWN failure must
         // propagate rather than be laundered into "gave up on everything".
-        private static (Mock<Container> container, List<(string id, IReadOnlyList<PatchOperation> ops)> patches) RecordingContainer(Exception patchFailure = null)
+        private static (Mock<Container> container, List<(string id, PartitionKey partitionKey, IReadOnlyList<PatchOperation> ops)> patches) RecordingContainer(Exception patchFailure = null)
         {
-            var patches = new List<(string, IReadOnlyList<PatchOperation>)>();
+            var patches = new List<(string, PartitionKey, IReadOnlyList<PatchOperation>)>();
             var container = new Mock<Container>();
 
             if (patchFailure is null)
@@ -90,7 +92,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
                             It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
                             It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()))
                          .Callback<string, PartitionKey, IReadOnlyList<PatchOperation>, PatchItemRequestOptions, CancellationToken>(
-                            (id, _, ops, __, ___) => patches.Add((id, ops)))
+                            (id, partitionKey, ops, _, __) => patches.Add((id, partitionKey, ops)))
                          .ReturnsAsync(Mock.Of<ItemResponse<JsonElement>>());
             }
             else
@@ -99,7 +101,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
                             It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
                             It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()))
                          .Callback<string, PartitionKey, IReadOnlyList<PatchOperation>, PatchItemRequestOptions, CancellationToken>(
-                            (id, _, ops, __, ___) => patches.Add((id, ops)))
+                            (id, partitionKey, ops, _, __) => patches.Add((id, partitionKey, ops)))
                          .ThrowsAsync(patchFailure);
             }
 
@@ -181,7 +183,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             await drain.Should().NotThrowAsync("the given-up document no longer blocks the batch, so the lease can advance");
 
             patches.Should().HaveCount(2);
-            (string poisonedId, IReadOnlyList<PatchOperation> poisonOps) = patches[0];
+            (string poisonedId, PartitionKey _, IReadOnlyList<PatchOperation> poisonOps) = patches[0];
             poisonedId.Should().Be(OutboxIdOf(undeliverable), "the poison stamp is keyed on the failing document's own id");
             poisonOps.Should().ContainSingle("giving up on a document is exactly one status advance — a given-up document is evidence and stays inspectable").Which
                      .Path.Should().Be("/" + CosmosOutboxDocument.StatusField);
@@ -189,7 +191,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             poisonOps.Should().NotContain(operation => operation.Path == "/" + CosmosOutboxDocument.TtlField,
                 "a given-up document is never scheduled for self-purge");
 
-            (string deliveredId, IReadOnlyList<PatchOperation> deliveredOps) = patches[1];
+            (string deliveredId, PartitionKey __, IReadOnlyList<PatchOperation> deliveredOps) = patches[1];
             deliveredId.Should().Be(OutboxIdOf(deliverable), "the document behind the given-up one drains normally");
             deliveredOps.Should().HaveCount(2, "a delivered document is stamped status + ttl");
             published.Should().ContainSingle().Which.Should().Be("msg-2", "only the deliverable document is published");
@@ -322,6 +324,63 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
 
             published.Should().BeEmpty("a poisoned document is never re-published");
             patches.Should().BeEmpty("a poisoned document is never re-stamped");
+        }
+
+        // The counter keys on the FULL item identity, never the id alone: two Outbox Documents that share a MessageId
+        // (hence share an id) in DIFFERENT logical partitions are DIFFERENT items, and the patch that gives one up is
+        // keyed on id AND partition key. One failure each must therefore give up on NEITHER — counting them in one slot
+        // would poison a document after FEWER failures than the configured threshold.
+        [Fact]
+        public async Task MustCountFailuresPerPartitionForDocumentsSharingAnId()
+        {
+            var published = new List<string>();
+            var (monitored, patches) = RecordingContainer();
+            StandaloneCosmosOutboxRelayHostedService host = StandaloneHost(monitored.Object, ProviderRecording(published), poisonAfterConsecutiveFailures: 2);
+
+            JsonElement firstPartitionDocument = UndeliverablePendingOutboxDocument("msg-1", FirstTenantId);
+            JsonElement secondPartitionDocument = UndeliverablePendingOutboxDocument("msg-1", SecondTenantId);
+            OutboxIdOf(secondPartitionDocument).Should().Be(OutboxIdOf(firstPartitionDocument),
+                "the two documents share a MessageId, so they share an id and differ ONLY in the partition they live in");
+
+            await DrainOneFailingPassAsync(host, monitored.Object, firstPartitionDocument);
+            await DrainOneFailingPassAsync(host, monitored.Object, secondPartitionDocument);
+
+            patches.Should().BeEmpty("each identity has failed exactly ONCE, which is below the threshold for both");
+        }
+
+        // At the threshold the give-up targets the failing document's OWN logical partition, because the counter key and
+        // the patch target come from one shared derivation and cannot diverge.
+        [Fact]
+        public async Task MustStampOnlyTheIdentityThatReachedTheThreshold()
+        {
+            var published = new List<string>();
+            var (monitored, patches) = RecordingContainer();
+            StandaloneCosmosOutboxRelayHostedService host = StandaloneHost(monitored.Object, ProviderRecording(published), poisonAfterConsecutiveFailures: 2);
+
+            JsonElement firstPartitionDocument = UndeliverablePendingOutboxDocument("msg-1", FirstTenantId);
+            JsonElement secondPartitionDocument = UndeliverablePendingOutboxDocument("msg-1", SecondTenantId);
+
+            await DrainOneFailingPassAsync(host, monitored.Object, firstPartitionDocument);
+            await DrainOneFailingPassAsync(host, monitored.Object, secondPartitionDocument);
+
+            using Stream thirdPass = StreamOf(firstPartitionDocument);
+            await host.HandleChangesAsync(thirdPass, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
+
+            (string poisonedId, PartitionKey poisonedPartitionKey, IReadOnlyList<PatchOperation> poisonOps) =
+                patches.Should().ContainSingle("only the identity that failed twice is given up on").Subject;
+            poisonedId.Should().Be(OutboxIdOf(firstPartitionDocument), "the poison stamp is keyed on the failing document's own id");
+            poisonedPartitionKey.Should().Be(new PartitionKeyBuilder().Add(FirstTenantId).Build(),
+                "the poison stamp targets the failing document's OWN logical partition, not the one that shares its id");
+            poisonOps.Should().ContainSingle("giving up on a document is exactly one status advance").Which
+                     .Path.Should().Be("/" + CosmosOutboxDocument.StatusField);
+        }
+
+        // Drains ONE change-feed batch carrying a single undeliverable document and asserts the drain still fails closed.
+        private static async Task DrainOneFailingPassAsync(StandaloneCosmosOutboxRelayHostedService host, Container monitored, JsonElement document)
+        {
+            using Stream pass = StreamOf(document);
+            Func<Task> drain = () => host.HandleChangesAsync(pass, monitored, PartitionKeyPath, "lease-0", CancellationToken.None);
+            await drain.Should().ThrowAsync<InvalidOperationException>("an undeliverable document fails every drain");
         }
     }
 }

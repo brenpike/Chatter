@@ -220,11 +220,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // publish/resolver failure (at-least-once: the SDK does not checkpoint and the document re-surfaces) still disposes
         // the scope while the exception unwinds. With no factory configured the relay's no-resolver verbatim reconstruction
         // path is used UNCHANGED and no scope is opened.
-        // A drain failure is handled by the configured OutboxPoisonPolicy (#361, OFF unless the caller opted in). BELOW the
-        // threshold the failure PROPAGATES unchanged — fail-closed is the correct answer to a TRANSIENT failure, and the
-        // document re-surfaces next pass. AT the threshold the document has failed consecutively often enough to be given
-        // up on: it is stamped with the non-pending poison status, counted, logged at Error, and the loop CONTINUES to the
-        // next document so the batch checkpoints and the head-of-line block on that lease clears. The poison stamp's OWN
+        // A drain failure is handled by the configured OutboxPoisonPolicy (#361, OFF unless the caller opted in), which
+        // counts per document IDENTITY — the id AND the partition the document lives in — so two documents sharing a
+        // MessageId in different partitions never share a counter slot. BELOW the threshold the failure PROPAGATES
+        // unchanged — fail-closed is the correct answer to a TRANSIENT failure, and the document re-surfaces next pass. AT
+        // the threshold the document has failed consecutively often enough to be given up on: it is stamped with the
+        // non-pending poison status, counted, logged at Error, and the loop CONTINUES to the next document so the batch
+        // checkpoints and the head-of-line block on that lease clears. The poison stamp's OWN
         // failure is never swallowed — a misconfigured partition-key path (#362) makes it fail exactly as the delivered
         // stamp would, and that must surface rather than be laundered into "give up on everything".
         private async Task ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, string leaseToken, CancellationToken cancellationToken)
@@ -244,7 +246,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 return;
             }
 
-            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string documentId);
             OutboxPoisonPolicy poisonPolicy = _deliverySettings.PoisonPolicy;
 
             try
@@ -255,18 +256,44 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // a perfectly deliverable document — so it propagates without advancing the policy.
             catch (Exception drainFailure) when (drainFailure is not OperationCanceledException)
             {
-                if (!poisonPolicy.RecordFailure(documentId))
+                // The IsEnabled gate is what keeps a DISABLED policy — the default — a total no-op: it pays no id read
+                // and no partition-key recovery, exactly as it did before the policy existed. RecordFailure guards on
+                // IsEnabled itself too, so the policy stays total for any other caller.
+                if (!poisonPolicy.IsEnabled)
                 {
                     throw;
                 }
 
-                await GiveUpOnDocumentAsync(document, monitoredContainer, partitionKeyPath, documentId, leaseToken, drainFailure, cancellationToken).ConfigureAwait(false);
+                OutboxPoisonPolicy.OutboxDocumentIdentity identity = BuildDocumentIdentity(document, partitionKeyPath);
+                if (!poisonPolicy.RecordFailure(identity))
+                {
+                    throw;
+                }
+
+                await GiveUpOnDocumentAsync(document, monitoredContainer, partitionKeyPath, identity.DocumentId, leaseToken, drainFailure, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
             // Clears the document's consecutive-failure count so an INTERMITTENT failure can never accumulate across
-            // successful drains into a give-up.
-            poisonPolicy.RecordSuccess(documentId);
+            // successful drains into a give-up. The identity must be rebuilt here because the reset targets THIS
+            // document's own slot; an off policy tracks nothing, so it builds nothing.
+            if (poisonPolicy.IsEnabled)
+            {
+                poisonPolicy.RecordSuccess(BuildDocumentIdentity(document, partitionKeyPath));
+            }
+        }
+
+        // Builds the poison counter's key for one document.
+        // INVARIANT: the key is the document's own id plus the partition key recovered by CosmosOutboxRelay's OWN
+        // RecoverPartitionKey over the container's declared partition-key path — the SAME pair the poison and delivered
+        // stamps patch — so the counter and the patch come from ONE derivation and cannot diverge. When a partition-key
+        // path segment is ABSENT from the document, that recovery yields a null component, so two such documents collapse
+        // to ONE identity; that is CONSISTENT with the patch target by construction (both are this one derivation), so it
+        // is correct rather than a new collapse.
+        private static OutboxPoisonPolicy.OutboxDocumentIdentity BuildDocumentIdentity(JsonElement document, IReadOnlyList<string> partitionKeyPath)
+        {
+            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string documentId);
+            return new OutboxPoisonPolicy.OutboxDocumentIdentity(documentId, CosmosOutboxRelay.RecoverPartitionKey(document, partitionKeyPath));
         }
 
         // The drain itself, unchanged: the no-resolver verbatim reconstruction path when no body-resolver factory is
