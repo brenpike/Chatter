@@ -469,7 +469,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             using (Stream batch = BatchOf(NonOutboxDocument()))
             {
-                await StandaloneHost(provider).HandleChangesAsync(batch, container.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
+                await StandaloneHost(provider).HandleChangesAsync(batch, container.Object, PartitionKeyPath, "lease-0", ProcessorGate(), CancellationToken.None);
 
                 published.Should().BeEmpty();
                 patches.Should().BeEmpty();
@@ -492,7 +492,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             using (Stream batch = BatchOf(PendingOutboxDocument(timestampUnixSeconds: SecondsAgo(PendingAgeSeconds))))
             {
-                await StandaloneHost(provider).HandleChangesAsync(batch, container.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
+                await StandaloneHost(provider).HandleChangesAsync(batch, container.Object, PartitionKeyPath, "lease-0", ProcessorGate(), CancellationToken.None);
 
                 published.Should().ContainSingle();
                 patches.Should().ContainSingle();
@@ -552,6 +552,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         // A change-feed batch payload in the wire shape the SDK hands the host.
         private static Stream BatchOf(params JsonElement[] documents)
             => new MemoryStream(Encoding.UTF8.GetBytes("{\"Documents\":[" + string.Join(",", documents.Select(d => d.GetRawText())) + "]}"));
+
+        // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
+        // descriptor. No host owns a gate any more, so the handler is handed one.
+        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(new GuardedRelayLog(logger: null));
 
         private static StandaloneCosmosOutboxRelayHostedService StandaloneHost(IMessagingInfrastructureProvider provider)
             => new StandaloneCosmosOutboxRelayHostedService(

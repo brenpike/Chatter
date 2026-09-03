@@ -78,6 +78,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDocumentCon
         }
 
         [Fact]
+        public void MustCarryTheMessageIdOnTheVerifiedDescriptor()
+        {
+            OutboxDocumentVerification verification = OutboxDocumentContract.Verify(Document());
+
+            verification.MessageId.Should().Be(MessageId,
+                "the descriptor carries every document-derived value the reconstruction consumes, so nothing is re-read off the document");
+        }
+
+        [Fact]
         public void MustCarryTheMaterializedMessageContextOnTheVerifiedDescriptor()
         {
             JsonElement document = Document(messageContext: SerializedContext("tenant", "acme"));
@@ -226,6 +235,92 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingOutboxDocumentCon
 
             verification.Violations.Should().ContainSingle("the document's own content type resolves without the context")
                         .Which.Should().Contain(CosmosOutboxDocument.MessageContextField);
+        }
+
+        [Theory]
+        [InlineData("7")]                        // a JSON number materializes to a long
+        [InlineData("1.5")]                      // ...or to a double
+        [InlineData("true")]                     // a JSON bool materializes to a bool
+        [InlineData("{\"name\":\"asb\"}")]       // a JSON object materializes to a Dictionary
+        [InlineData("[\"asb\"]")]                // a JSON array materializes to a List
+        [InlineData("\"2026-09-03T12:00:00Z\"")] // a strict ISO-8601 string materializes to a DateTime, not to a string
+        public void MustNameANonStringPersistedMessagingSystem(string persistedMessagingSystem)
+        {
+            JsonElement document = Document(
+                messageContext: SerializedContext(MessageContext.InfrastructureType, JsonNode.Parse(persistedMessagingSystem)));
+
+            OutboxDocumentVerification verification = OutboxDocumentContract.Verify(document);
+
+            verification.IsSatisfied.Should().BeFalse("a non-string persisted kind can never name a messaging infrastructure, and the dispatch reads it as a string");
+            verification.Violations.Should().ContainSingle()
+                        .Which.Should().Contain(MessageContext.InfrastructureType);
+        }
+
+        [Fact]
+        public void MustAcceptADocumentNamingNoMessagingSystem()
+        {
+            OutboxDocumentVerification verification = OutboxDocumentContract.Verify(Document());
+
+            verification.IsSatisfied.Should().BeTrue("an absent messaging system is a HOST concern the positive rule excludes, never a document defect");
+            verification.MessagingSystem.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustAcceptAPersistedMessagingSystemThatIsJsonNull()
+        {
+            JsonElement document = Document(messageContext: SerializedContext(MessageContext.InfrastructureType, null));
+
+            OutboxDocumentVerification verification = OutboxDocumentContract.Verify(document);
+
+            verification.IsSatisfied.Should().BeTrue("a JSON-null messaging system resolves to nothing, exactly as an absent one does");
+            verification.MessagingSystem.Should().BeNull();
+        }
+
+        [Theory]
+        [InlineData("")]    // empty
+        [InlineData("   ")] // whitespace
+        public void MustAcceptABlankPersistedMessagingSystem(string persistedMessagingSystem)
+        {
+            JsonElement document = Document(messageContext: SerializedContext(MessageContext.InfrastructureType, persistedMessagingSystem));
+
+            OutboxDocumentVerification verification = OutboxDocumentContract.Verify(document);
+
+            verification.IsSatisfied.Should().BeTrue("only a non-string KIND is provable from the document's own bytes; a blank one is not");
+            verification.MessagingSystem.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustCarryThePersistedMessagingSystemOnTheVerifiedDescriptor()
+        {
+            JsonElement document = Document(messageContext: SerializedContext(MessageContext.InfrastructureType, "asb"));
+
+            OutboxDocumentVerification verification = OutboxDocumentContract.Verify(document);
+
+            verification.IsSatisfied.Should().BeTrue();
+            verification.MessagingSystem.Should().Be("asb");
+        }
+
+        [Fact]
+        public void MustNameAMessagingSystemViolationAlongsideTheOthersItProves()
+        {
+            // A message-context violation and a messaging-system violation are MUTUALLY EXCLUSIVE — a context that
+            // does not materialize carries no messaging system to read — so this is the aggregate that names the
+            // messaging system, and MustNameEveryViolationInOneFailure is the one that names the context.
+            string messageContext = new JsonObject
+            {
+                [MessageContext.ContentType] = 7,
+                [MessageContext.InfrastructureType] = 7,
+            }.ToJsonString();
+
+            OutboxDocumentVerification verification = OutboxDocumentContract.Verify(
+                Document(destination: null, messageContentType: null, messageContext: messageContext));
+
+            verification.IsSatisfied.Should().BeFalse();
+            verification.Violations.Should().HaveCount(3, "one evaluation names every violation so a fix-restart-rediscover loop is impossible");
+            verification.ViolationMessage.Should()
+                        .Contain(CosmosOutboxDocument.DestinationField)
+                        .And.Contain(CosmosOutboxDocument.MessageContentTypeField)
+                        .And.Contain(MessageContext.InfrastructureType);
         }
 
         [Fact]

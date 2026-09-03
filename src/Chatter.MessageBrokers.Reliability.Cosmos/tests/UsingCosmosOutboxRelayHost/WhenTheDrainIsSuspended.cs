@@ -34,18 +34,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
     {
         private const string InfrastructureType = "test-infra";
         private const string LeaseToken = "lease-0";
+        // A Lease Token is a partition-key-range id of the monitored container it came from, so two distinct sources
+        // on one host routinely report the SAME token.
+        private const string SharedLeaseToken = "0";
         private static readonly IReadOnlyList<string> PartitionKeyPath = Array.AsReadOnly(new[] { "/tenantId" });
 
         [Fact]
         public async Task MustRefuseToPublishOnceConfirmationsKeepFailing()
         {
             var stampFailure = new InvalidOperationException("the container is not accepting the delivered stamp");
-            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published) = HostRecordingPublishes();
+            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) = HostRecordingPublishes();
             Container container = ThrowingContainer(stampFailure);
 
-            await FailConfirmationsAsync(host, container, LeaseToken, OutboxDrainGate.Threshold);
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
 
-            Func<Task> act = () => DrainAsync(host, container, LeaseToken);
+            Func<Task> act = () => DrainAsync(host, container, drainGate, LeaseToken);
 
             await act.Should().ThrowAsync<InvalidOperationException>(
                 "a suspended lease takes the same fail-closed exit a publish failure takes, so the SDK does not checkpoint the batch");
@@ -57,9 +60,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         public async Task MustRethrowTheOriginalConfirmationFaultRatherThanTheCarrier()
         {
             var stampFailure = new InvalidOperationException("the container is not accepting the delivered stamp");
-            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published) = HostRecordingPublishes();
+            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) = HostRecordingPublishes();
 
-            Func<Task> act = () => DrainAsync(host, ThrowingContainer(stampFailure), LeaseToken);
+            Func<Task> act = () => DrainAsync(host, ThrowingContainer(stampFailure), drainGate, LeaseToken);
 
             Exception thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
             thrown.Should().BeSameAs(stampFailure,
@@ -71,13 +74,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         public async Task MustKeepDrainingEveryOtherLease()
         {
             var stampFailure = new InvalidOperationException("the container is not accepting the delivered stamp");
-            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published) = HostRecordingPublishes();
+            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) = HostRecordingPublishes();
             Container container = ThrowingContainer(stampFailure);
 
-            await FailConfirmationsAsync(host, container, LeaseToken, OutboxDrainGate.Threshold);
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
             published.Clear();
 
-            Func<Task> act = () => DrainAsync(host, container, "lease-1");
+            Func<Task> act = () => DrainAsync(host, container, drainGate, "lease-1");
 
             await act.Should().ThrowAsync<InvalidOperationException>("this lease's own confirmation failed too");
             published.Should().ContainSingle("a suspension is raised against ONE lease and never against the host");
@@ -87,14 +90,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         public async Task MustKeepDrainingOnceAConfirmationSucceeds()
         {
             var stampFailure = new InvalidOperationException("the container is not accepting the delivered stamp");
-            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published) = HostRecordingPublishes();
+            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) = HostRecordingPublishes();
 
-            await FailConfirmationsAsync(host, ThrowingContainer(stampFailure), LeaseToken, OutboxDrainGate.Threshold - 1);
-            await DrainAsync(host, StampingContainer(), LeaseToken);
-            await FailConfirmationsAsync(host, ThrowingContainer(stampFailure), LeaseToken, OutboxDrainGate.Threshold - 1);
+            await FailConfirmationsAsync(host, ThrowingContainer(stampFailure), drainGate, LeaseToken, OutboxDrainGate.Threshold - 1);
+            await DrainAsync(host, StampingContainer(), drainGate, LeaseToken);
+            await FailConfirmationsAsync(host, ThrowingContainer(stampFailure), drainGate, LeaseToken, OutboxDrainGate.Threshold - 1);
             published.Clear();
 
-            Func<Task> act = () => DrainAsync(host, ThrowingContainer(stampFailure), LeaseToken);
+            Func<Task> act = () => DrainAsync(host, ThrowingContainer(stampFailure), drainGate, LeaseToken);
 
             await act.Should().ThrowAsync<InvalidOperationException>();
             published.Should().ContainSingle(
@@ -109,14 +112,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         public async Task MustStillCountASuspendedBatchAgainstItsLease()
         {
             var stampFailure = new InvalidOperationException("the container is not accepting the delivered stamp");
-            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> _) = HostRecordingPublishes();
+            (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> _, OutboxDrainGate drainGate) = HostRecordingPublishes();
             Container container = ThrowingContainer(stampFailure);
 
-            await FailConfirmationsAsync(host, container, LeaseToken, OutboxDrainGate.Threshold);
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
 
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             {
-                Func<Task> act = () => DrainAsync(host, container, LeaseToken);
+                Func<Task> act = () => DrainAsync(host, container, drainGate, LeaseToken);
                 await act.Should().ThrowAsync<InvalidOperationException>();
 
                 meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainedBatchesInstrumentName).Should().ContainSingle(
@@ -137,9 +140,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             CosmosOutboxRelayHostedService host = HostWithProcessor(processor);
             await host.StartAsync(CancellationToken.None);
             Container container = ThrowingContainer(stampFailure);
+            OutboxDrainGate drainGate = ProcessorGate();
 
-            await FailConfirmationsAsync(host, container, LeaseToken, OutboxDrainGate.Threshold);
-            Func<Task> act = () => DrainAsync(host, container, LeaseToken);
+            await FailConfirmationsAsync(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
+            Func<Task> act = () => DrainAsync(host, container, drainGate, LeaseToken);
             await act.Should().ThrowAsync<InvalidOperationException>();
 
             processor.Verify(p => p.StopAsync(), Times.Never,
@@ -147,25 +151,147 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             host.TrackedProcessors.Should().ContainSingle("the host still owns every processor it started");
         }
 
-        // Drives ONE change-feed batch carrying ONE pending Outbox Document through the host's stream handler.
-        private static async Task DrainAsync(CosmosOutboxRelayHostedService host, Container container, string leaseToken)
+        /// <summary>
+        /// TWO distinct Change-Feed Source Identities on ONE host — the multi-container shape ADR-0008 supports — both
+        /// draining a Lease Token named "0", because a Lease Token is a partition-key-range id of its OWN monitored
+        /// container and every container has a range "0". The healthy source's confirmations must not touch the
+        /// failing source's consecutive count: if they did, the failing source would never reach the threshold and its
+        /// documents would republish forever, which is the defect the suspension exists to close.
+        /// </summary>
+        [Fact]
+        public async Task MustNotLetOneSourcesConfirmationSuccessResetAnothersFailureCount()
+        {
+            var stampFailure = new TimeoutException("the container is not accepting the delivered stamp");
+            (IReadOnlyList<Container.ChangeFeedStreamHandler> handlers, List<OutboundBrokeredMessage> published) =
+                await StartTwoSourceHostAsync(stampFailure);
+
+            foreach (int _ in Enumerable.Range(0, OutboxDrainGate.Threshold))
+            {
+                Func<Task> failingSource = () => DrainThroughHandlerAsync(handlers[0], SharedLeaseToken);
+                await failingSource.Should().ThrowAsync<TimeoutException>();
+                await DrainThroughHandlerAsync(handlers[1], SharedLeaseToken);
+            }
+
+            published.Clear();
+            Func<Task> act = () => DrainThroughHandlerAsync(handlers[0], SharedLeaseToken);
+
+            await act.Should().ThrowAsync<InvalidOperationException>(
+                "the healthy source drains its OWN lease, so its confirmations cannot evict the failing source's count");
+            published.Should().BeEmpty("a suspended source republishes nothing");
+        }
+
+        /// <summary>
+        /// A Drain Suspension raised by one Change-Feed Source Identity must not refuse another source's batch that
+        /// happens to arrive on an identically-named Lease Token. The healthy source is a different monitored
+        /// container whose confirmation path is up; refusing it would stop delivery that was about to complete.
+        /// </summary>
+        [Fact]
+        public async Task MustKeepDrainingASecondSourceOnAnIdenticallyNamedLeaseToken()
+        {
+            var stampFailure = new TimeoutException("the container is not accepting the delivered stamp");
+            (IReadOnlyList<Container.ChangeFeedStreamHandler> handlers, List<OutboundBrokeredMessage> published) =
+                await StartTwoSourceHostAsync(stampFailure);
+
+            await FailConfirmationsThroughHandlerAsync(handlers[0], SharedLeaseToken, OutboxDrainGate.Threshold);
+            published.Clear();
+
+            await DrainThroughHandlerAsync(handlers[1], SharedLeaseToken);
+
+            published.Should().ContainSingle(
+                "a suspension is scoped to the processor that raised it, so another source's lease keeps draining");
+        }
+
+        // Starts a host owning TWO processors over two distinct declared Change-Feed Source Identities and returns each
+        // processor's OWN change-feed handler, captured through the factory seam. The first source's monitored
+        // container refuses the delivered stamp; the second's accepts it.
+        private static async Task<(IReadOnlyList<Container.ChangeFeedStreamHandler> handlers, List<OutboundBrokeredMessage> published)> StartTwoSourceHostAsync(Exception stampFailure)
+        {
+            var registry = new DocumentReliabilityRegistry();
+            registry.Add(RegistrationFor(typeof(DrainedCommand), "source-a", VerifiablyConfiguredContainer(ThrowingContainerMock(stampFailure))));
+            registry.Add(RegistrationFor(typeof(SecondDrainedCommand), "source-b", VerifiablyConfiguredContainer(StampingContainerMock())));
+
+            (IMessagingInfrastructureProvider provider, List<OutboundBrokeredMessage> published) = RecordingProvider();
+            var host = new CosmosOutboxRelayHostedService(
+                registry,
+                new CosmosContainerFactory(Mock.Of<IServiceProvider>()),
+                provider,
+                BodyConverterFactory());
+
+            var handlers = new List<Container.ChangeFeedStreamHandler>();
+            host.ProcessorFactory = (_, __, onChanges) => CaptureHandler(handlers, onChanges);
+
+            await host.StartAsync(CancellationToken.None);
+            return (handlers, published);
+        }
+
+        private static ChangeFeedProcessor CaptureHandler(List<Container.ChangeFeedStreamHandler> handlers, Container.ChangeFeedStreamHandler onChanges)
+        {
+            handlers.Add(onChanges);
+            return StartableProcessor().Object;
+        }
+
+        // A registration on the ADVANCED (declared source identity) path, so the two registrations are two distinct
+        // Change-Feed Source Identities and the host builds one processor for each.
+        private static DocumentReliabilityRegistration RegistrationFor(Type commandType, string sourceIdentity, Container monitoredContainer)
+            => new DocumentReliabilityRegistration(
+                commandType,
+                "shop",
+                sourceIdentity + ":documents",
+                sourceIdentity + ":leases",
+                _ => new PartitionKey("tenant-1"),
+                PartitionKeyPath,
+                documentContainerFactory: _ => monitoredContainer,
+                leaseContainerFactory: _ => Mock.Of<Container>(),
+                declaredSourceIdentity: new CosmosSourceIdentity(sourceIdentity, sourceIdentity + "-lease"));
+
+        // Drives ONE change-feed batch through ONE processor's OWN handler, which is the only way production reaches a
+        // gate: the SDK hands the handler the Lease Token the batch arrived on.
+        private static async Task DrainThroughHandlerAsync(Container.ChangeFeedStreamHandler handler, string leaseToken)
         {
             using Stream batch = BatchOf(OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1"));
-            await host.HandleChangesAsync(batch, container, PartitionKeyPath, leaseToken, CancellationToken.None);
+            await handler(LeaseContext(leaseToken), batch, CancellationToken.None);
+        }
+
+        private static async Task FailConfirmationsThroughHandlerAsync(Container.ChangeFeedStreamHandler handler, string leaseToken, int count)
+        {
+            foreach (int _ in Enumerable.Range(0, count))
+            {
+                Func<Task> act = () => DrainThroughHandlerAsync(handler, leaseToken);
+                await act.Should().ThrowAsync<TimeoutException>();
+            }
+        }
+
+        private static ChangeFeedProcessorContext LeaseContext(string leaseToken)
+        {
+            var context = new Mock<ChangeFeedProcessorContext>();
+            context.SetupGet(c => c.LeaseToken).Returns(leaseToken);
+            return context.Object;
+        }
+
+        // Drives ONE change-feed batch carrying ONE pending Outbox Document through the host's stream handler, on the
+        // gate that ONE processor drains through — which is what BuildChangeFeedHandler hands the handler in production.
+        private static async Task DrainAsync(CosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken)
+        {
+            using Stream batch = BatchOf(OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1"));
+            await host.HandleChangesAsync(batch, container, PartitionKeyPath, leaseToken, drainGate, CancellationToken.None);
         }
 
         // Drains <paramref name="count"/> batches whose documents publish and whose confirmations all fail, which is
         // the wedged lease the suspension exists for: the batch is never checkpointed and re-surfaces unchanged.
-        private static async Task FailConfirmationsAsync(CosmosOutboxRelayHostedService host, Container container, string leaseToken, int count)
+        private static async Task FailConfirmationsAsync(CosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken, int count)
         {
             foreach (int _ in Enumerable.Range(0, count))
             {
-                Func<Task> act = () => DrainAsync(host, container, leaseToken);
+                Func<Task> act = () => DrainAsync(host, container, drainGate, leaseToken);
                 await act.Should().ThrowAsync<InvalidOperationException>();
             }
         }
 
-        private static (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published) HostRecordingPublishes()
+        // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
+        // descriptor. It is deliberately NOT reachable from the host: no host owns a gate any more.
+        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(new GuardedRelayLog(logger: null));
+
+        private static (CosmosOutboxRelayHostedService host, List<OutboundBrokeredMessage> published, OutboxDrainGate drainGate) HostRecordingPublishes()
         {
             (IMessagingInfrastructureProvider provider, List<OutboundBrokeredMessage> published) = RecordingProvider();
             var host = new CosmosOutboxRelayHostedService(
@@ -173,7 +299,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 new CosmosContainerFactory(Mock.Of<IServiceProvider>()),
                 provider,
                 BodyConverterFactory());
-            return (host, published);
+            return (host, published, ProcessorGate());
         }
 
         // A host owning exactly one started Change-Feed Processor, so a suspension's effect on the processors the host
@@ -189,7 +315,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 "leases",
                 _ => new PartitionKey("tenant-1"),
                 PartitionKeyPath,
-                documentContainerFactory: _ => VerifiablyConfiguredContainer(),
+                documentContainerFactory: _ => VerifiablyConfiguredContainer(new Mock<Container>()),
                 leaseContainerFactory: _ => Mock.Of<Container>(),
                 declaredSourceIdentity: new CosmosSourceIdentity("documents", "leases")));
 
@@ -205,6 +331,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
 
         private sealed class DrainedCommand : CQRS.Commands.ICommand { }
 
+        private sealed class SecondDrainedCommand : CQRS.Commands.ICommand { }
+
         private static Mock<ChangeFeedProcessor> StartableProcessor()
         {
             var processor = new Mock<ChangeFeedProcessor>();
@@ -213,9 +341,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             return processor;
         }
 
-        // A monitored container whose ground truth MATCHES its declared configuration, so the host's start-time
+        // Gives a monitored container ground truth that MATCHES its declared configuration, so the host's start-time
         // verification pass passes and the processors are built.
-        private static Container VerifiablyConfiguredContainer()
+        private static Container VerifiablyConfiguredContainer(Mock<Container> container)
         {
             var properties = new ContainerProperties("documents", PartitionKeyPath)
             {
@@ -228,7 +356,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             var database = new Mock<Database>();
             database.SetupGet(d => d.Id).Returns("shop");
 
-            var container = new Mock<Container>();
             container.SetupGet(c => c.Id).Returns("documents");
             container.SetupGet(c => c.Database).Returns(database.Object);
             container.Setup(c => c.ReadContainerAsync(It.IsAny<ContainerRequestOptions>(), It.IsAny<CancellationToken>()))
@@ -237,25 +364,29 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         }
 
         // A container whose every patch fails, standing in for one that is not accepting the delivered stamp.
-        private static Container ThrowingContainer(Exception toThrow)
+        private static Container ThrowingContainer(Exception toThrow) => ThrowingContainerMock(toThrow).Object;
+
+        private static Mock<Container> ThrowingContainerMock(Exception toThrow)
         {
             var container = new Mock<Container>();
             container.Setup(c => c.PatchItemAsync<JsonElement>(
                         It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
                         It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()))
                      .ThrowsAsync(toThrow);
-            return container.Object;
+            return container;
         }
 
         // A container that accepts the delivered stamp, which is the confirmation path having come back.
-        private static Container StampingContainer()
+        private static Container StampingContainer() => StampingContainerMock().Object;
+
+        private static Mock<Container> StampingContainerMock()
         {
             var container = new Mock<Container>();
             container.Setup(c => c.PatchItemAsync<JsonElement>(
                         It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
                         It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()))
                      .ReturnsAsync(Mock.Of<ItemResponse<JsonElement>>());
-            return container.Object;
+            return container;
         }
 
         private static (IMessagingInfrastructureProvider provider, List<OutboundBrokeredMessage> published) RecordingProvider()

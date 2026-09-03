@@ -29,7 +29,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <c>OutboxProcessor.Process</c> exactly (MessageId verbatim, Destination, MessageBody, MessageContentType,
     /// MessageContext materialized through <c>ChatterJson.Options</c> via <see cref="MessageContext.MaterializePersistedContext"/>,
     /// content-type fallback to the persisted MessageContext, infrastructure type read from the MessageContext). The
-    /// contract is the SOLE classifier here — the reconstruction has no throwing classification path of its own.</item>
+    /// contract is the SOLE classifier here — the reconstruction has no throwing classification path of its own, and
+    /// the descriptor is its WHOLE input: after verification the reconstruct-and-publish path holds no
+    /// <see cref="JsonElement"/>, so no document-derived value can reach it unverified.</item>
     /// <item>On a VIOLATION, stamps the document an Undeliverable Outbox Document instead of publishing it (#361): a
     /// single-op <see cref="Container.PatchItemAsync"/> setting <c>/status="undeliverable"</c> and deliberately NO
     /// <c>/ttl</c> op, then the undeliverable count, then the full violation text at <c>Error</c>. A document whose own
@@ -161,7 +163,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     return;
                 }
 
-                await DispatchAsync(Reconstruct(document, verification));
+                await DispatchAsync(Reconstruct(verification), verification.MessagingSystem);
                 messageDispatched = true;
             }
             else
@@ -174,7 +176,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 messageDispatched = resolved is not null;
                 if (messageDispatched)
                 {
-                    await DispatchAsync(resolved);
+                    // The resolved message's context is HOST-owned and is never verified, so its messaging system comes
+                    // from the module's SINGLE reader, without classification.
+                    await DispatchAsync(resolved, OutboxDocumentContract.ReadMessagingSystem(resolved.MessageContext));
                 }
             }
 
@@ -190,13 +194,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         // PUBLISH via IMessagingInfrastructureProvider.GetDispatcher(infra).Dispatch(message, null) — the SAME
         // no-reliability-re-entry path the EF relational relay uses (NOT IBrokeredMessageDispatcher, which can route
-        // back through the outbox and recurse). The infrastructure type is read from the message's MessageContext. A
-        // throw propagates to the caller with no delivered/TTL patch issued, leaving the document pending (at-least-once).
-        private async Task DispatchAsync(OutboundBrokeredMessage message)
+        // back through the outbox and recurse). A throw propagates to the caller with no delivered/TTL patch issued,
+        // leaving the document pending (at-least-once).
+        // INVARIANT: the messaging system arrives as a PARAMETER, already read as a string by
+        // OutboxDocumentContract.ReadMessagingSystem — on the verbatim path via the verified descriptor, on the resolver
+        // path from the resolved message's own context. Nothing is read off a message context here, so no cast of a
+        // context value can fault this publish.
+        private async Task DispatchAsync(OutboundBrokeredMessage message, string messagingSystem)
         {
-            IDictionary<string, object> messageContext = message.MessageContext;
-            messageContext.TryGetValue(MessageContext.InfrastructureType, out var infra);
-            var messagingSystem = (string)infra;
             IMessagingInfrastructureDispatcher dispatcher = _infrastructureProvider.GetDispatcher(messagingSystem);
 
             // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides, and it decides HERE rather than
@@ -301,18 +306,18 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         }
 
         // RECONSTRUCT the OutboundBrokeredMessage from the VERIFIED descriptor the Outbox Document Contract produced:
-        // the resolved content type, the destination, the persisted body string and the materialized message context.
-        // INVARIANT: none of those four is re-read from the document here. The contract already resolved them, reading
-        // the context's content type AS a string rather than casting to one, so re-resolving would reintroduce the
-        // InvalidCastException a non-string persisted content type used to fault the drain with. Only the MessageId —
-        // which the contract does not describe — is read off the document, verbatim, as OutboxProcessor.Process does.
-        private OutboundBrokeredMessage Reconstruct(JsonElement document, OutboxDocumentVerification verification)
+        // the verbatim message id, the resolved content type, the destination, the persisted body string and the
+        // materialized message context.
+        // INVARIANT: the descriptor is the ONLY input — this method takes NO JsonElement, deliberately. Every value the
+        // reconstruction and the publish consume has passed the contract, which reads each context value AS its type
+        // rather than casting to it; re-reading one off the document here would reintroduce exactly the
+        // InvalidCastException a non-string persisted value used to fault the whole drain with. There is no further
+        // field to find because there is no document in scope to read one from.
+        private OutboundBrokeredMessage Reconstruct(OutboxDocumentVerification verification)
         {
-            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageIdField, out string messageId);
-
             IBrokeredMessageBodyConverter converter = _bodyConverterFactory.CreateBodyConverter(verification.ContentType);
 
-            return new OutboundBrokeredMessage(messageId, converter.GetBytes(verification.MessageBody), verification.MessageContext, verification.Destination, converter);
+            return new OutboundBrokeredMessage(verification.MessageId, converter.GetBytes(verification.MessageBody), verification.MessageContext, verification.Destination, converter);
         }
 
         /// <summary>

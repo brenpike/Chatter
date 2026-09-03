@@ -31,9 +31,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     // the failure must be permanent.
     internal static class OutboxDocumentContract
     {
-        // Verifies one change-feed document against the fields the reconstruction reads, returning EITHER a verified
-        // descriptor carrying the resolved content type, destination, body string and materialized message context, OR
-        // every violation the document's own bytes prove.
+        // Verifies one change-feed document against the fields the reconstruction and the publish read, returning EITHER
+        // a verified descriptor carrying EVERY document-derived value that path consumes — message id, resolved content
+        // type, destination, body string, materialized message context and messaging system — OR every violation the
+        // document's own bytes prove. The descriptor is the path's whole input, so no read of the document survives past
+        // this verification.
         internal static OutboxDocumentVerification Verify(JsonElement document)
         {
             TryReadString(document, CosmosOutboxDocument.MessageIdField, out string messageId);
@@ -52,13 +54,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             string contentType = ResolveContentType(documentContentType, messageContext);
             AddWhenPresent(violations, DescribeContentTypeViolation(contentType));
+            AddWhenPresent(violations, DescribeMessagingSystemViolation(messageContext));
 
             if (violations.Count > 0)
             {
                 return OutboxDocumentVerification.Violated(BuildViolationMessage(messageId, violations), violations);
             }
 
-            return OutboxDocumentVerification.Satisfied(contentType, destination, messageBody, messageContext);
+            return OutboxDocumentVerification.Satisfied(messageId, contentType, destination, messageBody, messageContext, ReadMessagingSystem(messageContext));
         }
 
         private static void AddWhenPresent(ICollection<string> violations, string violation)
@@ -147,6 +150,58 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return $"a content type is resolvable from neither its '{CosmosOutboxDocument.MessageContentTypeField}' nor its message context, so its body can never be serialized for publish";
         }
 
+        // THE SINGLE READER of the Messaging Infrastructure identity a message context names: the one place in this
+        // module that turns a persisted context value into the string the publish resolves a dispatcher with. The value
+        // is read AS a string and NEVER cast to one, mirroring ResolveContentType above, so a non-string persisted kind
+        // resolves nothing instead of faulting the drain with an InvalidCastException.
+        // ONE READER, TWO POLICIES: on the DOCUMENT path Verify ALSO classifies a non-string kind as a violation, below;
+        // on the resolver path the resolved message's context is HOST-owned and is never verified, so it is read here
+        // WITHOUT classification.
+        internal static string ReadMessagingSystem(IDictionary<string, object> messageContext)
+        {
+            if (!TryReadPersistedMessagingSystem(messageContext, out object persistedMessagingSystem))
+            {
+                return null;
+            }
+
+            string messagingSystem = persistedMessagingSystem as string;
+            return string.IsNullOrWhiteSpace(messagingSystem) ? null : messagingSystem;
+        }
+
+        // The publish reads the messaging system AS a string, so a NON-STRING persisted KIND — a number, a bool, an
+        // object, an array, or a strict ISO-8601 string, which the materializer turns into a DateTime — names no
+        // messaging infrastructure and never will: the document's own bytes prove it.
+        // ABSENT, JSON-null and BLANK are deliberately NOT violations. Each resolves to null, which the provider answers
+        // from its OWN registrations — a HOST concern the positive rule excludes, because a redeploy fixes it and
+        // giving up on the document would discard a perfectly good message.
+        private static string DescribeMessagingSystemViolation(IDictionary<string, object> messageContext)
+        {
+            if (!TryReadPersistedMessagingSystem(messageContext, out object persistedMessagingSystem))
+            {
+                return null;
+            }
+
+            if (persistedMessagingSystem is null or string)
+            {
+                return null;
+            }
+
+            return $"its message context's '{MessageContext.InfrastructureType}' is persisted as a non-string value, so the messaging infrastructure it names can never be read";
+        }
+
+        // The one read of the messaging-system key, shared by the reader and the classification so the two can never
+        // disagree about what the context carries. A context that did not materialize carries nothing at all.
+        private static bool TryReadPersistedMessagingSystem(IDictionary<string, object> messageContext, out object persistedMessagingSystem)
+        {
+            if (messageContext is null)
+            {
+                persistedMessagingSystem = null;
+                return false;
+            }
+
+            return messageContext.TryGetValue(MessageContext.InfrastructureType, out persistedMessagingSystem);
+        }
+
         // Reads a string-valued property through the shared wire-shape reader, guarding the object-ness JsonElement's own
         // property reads demand: TryGetProperty THROWS on a non-object element, and totality admits every input,
         // including the undefined element. A document that is not an object simply carries none of the fields.
@@ -165,9 +220,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             => $"The Cosmos outbox relay cannot reconstruct outbox document '{messageId}' into a brokered message: {string.Join("; and ", violations)}. The document's own persisted fields prove this, so redraining it would fail identically; correct the writer that produced it.";
     }
 
-    // The verdict of one Outbox Document Contract verification: EITHER the verified descriptor the reconstruction needs,
-    // OR the named violations. A satisfied verification carries no violations and a violated one carries no descriptor,
-    // so a caller cannot publish a document the contract rejected.
+    // The verdict of one Outbox Document Contract verification: EITHER the verified descriptor the reconstruction and the
+    // publish need, OR the named violations. A satisfied verification carries no violations and a violated one carries
+    // no descriptor, so a caller cannot publish a document the contract rejected.
+    //
+    // INVARIANT: this descriptor is the CLOSED set of document-derived values the verbatim path consumes. The path takes
+    // this and no JsonElement, so a value reaching reconstruction or publish without having passed the contract is
+    // UNREPRESENTABLE — there is no document in scope to read a further field from.
     internal sealed class OutboxDocumentVerification
     {
         private static readonly IReadOnlyList<string> _noViolations = Array.Empty<string>();
@@ -175,28 +234,34 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private OutboxDocumentVerification(bool isSatisfied,
                                            string violationMessage,
                                            IReadOnlyList<string> violations,
+                                           string messageId,
                                            string contentType,
                                            string destination,
                                            string messageBody,
-                                           IDictionary<string, object> messageContext)
+                                           IDictionary<string, object> messageContext,
+                                           string messagingSystem)
         {
             IsSatisfied = isSatisfied;
             ViolationMessage = violationMessage;
             Violations = violations;
+            MessageId = messageId;
             ContentType = contentType;
             Destination = destination;
             MessageBody = messageBody;
             MessageContext = messageContext;
+            MessagingSystem = messagingSystem;
         }
 
-        internal static OutboxDocumentVerification Satisfied(string contentType,
+        internal static OutboxDocumentVerification Satisfied(string messageId,
+                                                            string contentType,
                                                             string destination,
                                                             string messageBody,
-                                                            IDictionary<string, object> messageContext)
-            => new OutboxDocumentVerification(true, null, _noViolations, contentType, destination, messageBody, messageContext);
+                                                            IDictionary<string, object> messageContext,
+                                                            string messagingSystem)
+            => new OutboxDocumentVerification(true, null, _noViolations, messageId, contentType, destination, messageBody, messageContext, messagingSystem);
 
         internal static OutboxDocumentVerification Violated(string violationMessage, IReadOnlyList<string> violations)
-            => new OutboxDocumentVerification(false, violationMessage, violations, null, null, null, null);
+            => new OutboxDocumentVerification(false, violationMessage, violations, null, null, null, null, null, null);
 
         /// <summary>Whether the document carries everything the reconstruction reads, in the shape it reads it.</summary>
         internal bool IsSatisfied { get; }
@@ -206,6 +271,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>The single failure naming every violation; null when the verification is satisfied.</summary>
         internal string ViolationMessage { get; }
+
+        /// <summary>The verbatim persisted message id the brokered message is reconstructed with; null when violated.</summary>
+        internal string MessageId { get; }
 
         /// <summary>The content type resolved from the document or its message context; null when violated.</summary>
         internal string ContentType { get; }
@@ -218,5 +286,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>The materialized message context; null when violated.</summary>
         internal IDictionary<string, object> MessageContext { get; }
+
+        /// <summary>
+        /// The Messaging Infrastructure the message context names, read as a string; null when the context names none,
+        /// names a blank one, or when violated.
+        /// </summary>
+        internal string MessagingSystem { get; }
     }
 }

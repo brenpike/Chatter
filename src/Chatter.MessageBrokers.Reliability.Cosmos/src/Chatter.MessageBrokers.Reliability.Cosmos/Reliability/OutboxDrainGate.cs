@@ -5,7 +5,7 @@ using System.Collections.Concurrent;
 namespace Chatter.MessageBrokers.Reliability.Cosmos
 {
     /// <summary>
-    /// The per-host Drain Suspension gate: the Outbox Relay consults it before draining a change-feed batch and
+    /// The per-PROCESSOR Drain Suspension gate: the Outbox Relay consults it before draining a change-feed batch and
     /// declines to publish a Lease Token whose confirmations keep failing (#416). The publish succeeds, the delivered
     /// stamp does not, the batch is never checkpointed, and the same document republishes on every pass — real broker
     /// traffic, real receiver work and real request units, indefinitely.
@@ -28,9 +28,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// host carries no options object at all, so a knob would also be asymmetric across the two hosts. And
     /// non-configurability is itself closed-by-construction: a bound that cannot be configured cannot be
     /// misconfigured into uselessness.
-    /// CONCURRENCY: the SDK delivers one lease's batches SERIALLY to the owning host, so per-entry state needs no
-    /// locking. The dictionary is nonetheless concurrent because DISTINCT leases are delivered concurrently on one
-    /// host.
+    /// INVARIANT: ONE gate per PROCESSOR, never one per host. A gate instance is reachable ONLY from its own
+    /// processor's change-feed handler, so it never sees a Lease Token belonging to another Change-Feed Source
+    /// Identity — and THAT is what makes the Lease Token a SUFFICIENT key here. A Lease Token is a partition-key-range
+    /// id of the container the batch came from ("0", "1", ...), so two sources on one host routinely report the SAME
+    /// token: a host-shared gate would collapse them onto one entry, letting one source's confirmation success evict
+    /// another source's failure count and one source's suspension refuse another source's batch.
+    /// CONCURRENCY: the SDK delivers ONE lease's batches SERIALLY to the processor that owns it, so per-entry state
+    /// needs no locking. The dictionary is nonetheless concurrent because this processor's DISTINCT leases are
+    /// delivered concurrently. Both statements hold under the per-processor scoping invariant above, and only under it:
+    /// a gate shared across processors has no serial delivery guarantee per entry.
     /// The window is measured on the <see cref="TimeProvider"/>'s MONOTONIC timestamp rather than a wall clock, so a
     /// clock step can neither collapse a suspension nor extend one indefinitely.
     /// </remarks>

@@ -83,9 +83,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly CosmosOutboxRelay _relay;
         private readonly RelayFailureNotifier _failureNotifier;
         private readonly GuardedRelayLog _log;
-        // ONE gate per host, shared across every processor this host owns, because a Drain Suspension is per LEASE
-        // TOKEN and the host is the only component that knows the lease a Confirmation Failure happened under (#416).
-        private readonly OutboxDrainGate _drainGate;
         private readonly List<ChangeFeedProcessor> _processors = new List<ChangeFeedProcessor>();
 
         // logger is OPTIONAL (defaults null) so every existing direct-construction call site keeps compiling: a null
@@ -108,7 +105,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _log = new GuardedRelayLog(logger);
             _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory, _log);
             _failureNotifier = new RelayFailureNotifier(logger);
-            _drainGate = new OutboxDrainGate(_log);
             ProcessorFactory = BuildChangeFeedProcessor;
         }
 
@@ -156,14 +152,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             {
                 foreach (RelayProcessorDescriptor descriptor in descriptors)
                 {
-                    Container monitoredContainer = descriptor.MonitoredContainer;
-                    IReadOnlyList<string> partitionKeyPath = descriptor.PartitionKeyPath;
-
-                    ChangeFeedProcessor processor = ProcessorFactory(
-                        descriptor,
-                        instanceName,
-                        (ChangeFeedProcessorContext context, Stream changes, CancellationToken changeCancellationToken)
-                            => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, context.LeaseToken, changeCancellationToken));
+                    ChangeFeedProcessor processor = ProcessorFactory(descriptor, instanceName, BuildChangeFeedHandler(descriptor));
 
                     // INVARIANT: the host OWNS the processor BEFORE it awaits the start, so a start that throws still
                     // leaves the in-flight processor tracked for cleanup rather than unreferenced.
@@ -180,6 +169,25 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
                 ExceptionDispatchInfo.Capture(startFailure).Throw();
             }
+        }
+
+        // Builds ONE processor's change-feed handler, and with it the ONE OutboxDrainGate that processor drains through.
+        // INVARIANT: a gate is constructed HERE, per descriptor, and is reachable ONLY from the closure this returns, so
+        // "one gate shared across processors" is not expressible on this host. That scoping is what makes the Lease Token
+        // a sufficient gate key: a Lease Token is a partition-key-range id of ITS OWN monitored container ("0", "1", ...),
+        // so two distinct Change-Feed Source Identities on one host routinely report the same token. A host-wide gate
+        // would collapse them onto one entry — the healthy source's confirmations would evict the failing source's
+        // consecutive count so it never reached the threshold, and a suspension raised by one source would refuse the
+        // other's batches. internal (not private) so a test can drive TWO processors' handlers without a live Cosmos
+        // account; the assembly exposes internals to the test project.
+        internal Container.ChangeFeedStreamHandler BuildChangeFeedHandler(RelayProcessorDescriptor descriptor)
+        {
+            Container monitoredContainer = descriptor.MonitoredContainer;
+            IReadOnlyList<string> partitionKeyPath = descriptor.PartitionKeyPath;
+            var drainGate = new OutboxDrainGate(_log);
+
+            return (ChangeFeedProcessorContext context, Stream changes, CancellationToken changeCancellationToken)
+                => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, context.LeaseToken, drainGate, changeCancellationToken);
         }
 
         // The real SDK builder chain, and the ONLY implementation production uses. The configuration is exactly what it
@@ -267,7 +275,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // propagates out of this handler so the SDK does NOT checkpoint the batch and the document re-surfaces next pass.
         // internal (not private) so the fail-closed malformed-payload behavior is unit-testable without the live SDK
         // change-feed plumbing; the assembly exposes internals to the test project.
-        internal async Task HandleChangesAsync(Stream changes, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, string leaseToken, CancellationToken cancellationToken)
+        // drainGate is a PARAMETER rather than host state so a handler cannot reach a gate it was not handed — see
+        // BuildChangeFeedHandler for why a gate is scoped to exactly one processor.
+        internal async Task HandleChangesAsync(Stream changes, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, string leaseToken, OutboxDrainGate drainGate, CancellationToken cancellationToken)
         {
             using JsonDocument payload = await JsonDocument.ParseAsync(changes, cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -299,7 +309,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // exit a publish failure already takes, so the suspension introduces no new checkpointing decision.
             // It HALTS NOTHING: no processor and no hosted service is stopped, so the co-resident pipeline host is
             // untouched by a suspension on one lease.
-            if (!_drainGate.PermitDrain(leaseToken))
+            if (!drainGate.PermitDrain(leaseToken))
             {
                 throw new InvalidOperationException(
                     $"The Cosmos Outbox Relay has suspended draining lease '{leaseToken}': its documents published but could not be marked delivered, so every redrain republished them. The batch is not checkpointed and re-surfaces once draining resumes.");
@@ -313,7 +323,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 }
                 catch (OutboxConfirmationFailedException carrier)
                 {
-                    _drainGate.RecordConfirmationFailure(leaseToken, carrier.InnerException);
+                    drainGate.RecordConfirmationFailure(leaseToken, carrier.InnerException);
 
                     // INVARIANT: the carrier NEVER escapes this module. The ORIGINAL fault is rethrown with its
                     // original stack trace, so error.type on the shipped drain-failure count stays what it was before
@@ -324,7 +334,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             // The drain completed with no Confirmation Failure, which is what lifts a suspension. The relay is
             // fail-closed, so a wedged lease never gets here at all: it throws on the same document every pass.
-            _drainGate.RecordConfirmationSuccess(leaseToken);
+            drainGate.RecordConfirmationSuccess(leaseToken);
         }
 
         // One descriptor per distinct change-feed SOURCE-IDENTITY key (ADR-0008). The key is a TYPED, COMPONENT-WISE

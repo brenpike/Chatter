@@ -83,8 +83,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             return factory.Object;
         }
 
-        // A provider whose dispatcher records every dispatched message; the recorded list is the publish ledger.
-        private static (IMessagingInfrastructureProvider provider, List<OutboundBrokeredMessage> published) RecordingProvider()
+        // A provider whose dispatcher records every dispatched message and which records every messaging system it was
+        // asked to resolve a dispatcher for; the recorded lists are the publish ledger and the dispatch-resolution ledger.
+        private static (IMessagingInfrastructureProvider provider, List<OutboundBrokeredMessage> published, List<string> requestedMessagingSystems) RecordingProvider()
         {
             var published = new List<OutboundBrokeredMessage>();
             var dispatcher = new Mock<IMessagingInfrastructureDispatcher>();
@@ -92,9 +93,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                       .Callback<OutboundBrokeredMessage, TransactionContext>((m, _) => published.Add(m))
                       .Returns(Task.CompletedTask);
 
+            var requestedMessagingSystems = new List<string>();
             var provider = new Mock<IMessagingInfrastructureProvider>();
-            provider.Setup(p => p.GetDispatcher(It.IsAny<string>())).Returns(dispatcher.Object);
-            return (provider.Object, published);
+            provider.Setup(p => p.GetDispatcher(It.IsAny<string>()))
+                    .Callback<string>(requestedMessagingSystems.Add)
+                    .Returns(dispatcher.Object);
+            return (provider.Object, published, requestedMessagingSystems);
         }
 
         // A container that records each PatchItemAsync call (id, partition key, ops) and returns a benign response.
@@ -114,7 +118,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustNotPublishADocumentThatViolatesTheOutboxDocumentContract()
         {
-            var (provider, published) = RecordingProvider();
+            var (provider, published, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
 
@@ -128,7 +132,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustStampUndeliverableInASingleOpPatchThatCarriesNoTtl()
         {
-            var (provider, _) = RecordingProvider();
+            var (provider, _, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
 
@@ -145,7 +149,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustCountTheUndeliverableDocumentAndRecordNoDrainOutcome()
         {
-            var (provider, _) = RecordingProvider();
+            var (provider, _, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
 
@@ -164,7 +168,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         [Fact]
         public async Task MustReportTheFullViolationTextAtError()
         {
-            var (provider, _) = RecordingProvider();
+            var (provider, _, _) = RecordingProvider();
             var (container, _) = RecordingContainer();
             var logger = new RecordingLogger();
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), new GuardedRelayLog(logger));
@@ -185,7 +189,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             // failing one propagates BEFORE anything reports it: the batch is not checkpointed, the identical immutable
             // document re-surfaces, and the next pass re-evaluates it to the identical verdict — the give-up self-heals
             // rather than being lost.
-            var (provider, _) = RecordingProvider();
+            var (provider, _, _) = RecordingProvider();
             var stampFailure = new InvalidOperationException("the container is unavailable");
             Mock<Container> container = ThrowingContainer(stampFailure);
             var logger = new RecordingLogger();
@@ -208,7 +212,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             // The document carries no content type of its own and its persisted context carries a NON-STRING one. The
             // contract reads that value AS a string rather than casting to one, so this resolves no content type and is
             // a named violation instead of the InvalidCastException the drain used to fault the whole batch with.
-            var (provider, published) = RecordingProvider();
+            var (provider, published, _) = RecordingProvider();
             var (container, patches) = RecordingContainer();
             var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
 
@@ -221,6 +225,54 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             patches.Should().ContainSingle("a document whose content type resolves to nothing is undeliverable, not a batch fault")
                    .Which.ops.Should().ContainSingle()
                    .Which.As<PatchOperation<string>>().Value.Should().Be(CosmosOutboxDocument.StatusUndeliverable);
+        }
+
+        [Fact]
+        public async Task MustGiveUpRatherThanFaultOnANonStringPersistedMessagingSystem()
+        {
+            // The persisted context names a NON-STRING messaging system. The dispatch reads that value AS a string
+            // rather than casting to one, and the contract classifies the non-string kind, so this is a named
+            // violation instead of the InvalidCastException that used to wedge the lease on this document forever.
+            var (provider, published, _) = RecordingProvider();
+            var (container, patches) = RecordingContainer();
+            var logger = new RecordingLogger();
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory(), new GuardedRelayLog(logger));
+
+            JsonElement document = OutboxDocument(messageContext: SerializedContext(MessageContext.InfrastructureType, 7));
+
+            using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
+            {
+                await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
+
+                meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.DrainUndeliverableInstrumentName)
+                          .Should().ContainSingle("the give-up is reported once for the document it was taken on")
+                          .Which.Value.Should().Be(1);
+            }
+
+            published.Should().BeEmpty("an undeliverable document is never published");
+            patches.Should().ContainSingle().Which.ops.Should().ContainSingle()
+                   .Which.As<PatchOperation<string>>().Value.Should().Be(CosmosOutboxDocument.StatusUndeliverable);
+            (LogLevel Level, string Message) entry = logger.Entries.Should().ContainSingle().Subject;
+            entry.Level.Should().Be(LogLevel.Error);
+            entry.Message.Should().Contain(MessageContext.InfrastructureType);
+        }
+
+        [Fact]
+        public async Task MustPublishADocumentWhoseContextNamesNoMessagingSystem()
+        {
+            // An ABSENT messaging system is a HOST concern, never a document defect: the provider answers a null with
+            // its default infrastructure or a KeyNotFoundException a redeploy fixes. The document must reach the
+            // dispatcher exactly as it always has.
+            var (provider, published, requestedMessagingSystems) = RecordingProvider();
+            var (container, patches) = RecordingContainer();
+            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
+
+            await relay.ProcessChangeAsync(OutboxDocument(), container.Object, PartitionKeyPath);
+
+            published.Should().ContainSingle("naming no messaging system is not a violation the document's own bytes prove");
+            requestedMessagingSystems.Should().ContainSingle()
+                                     .Which.Should().BeNull("the dispatcher is resolved with exactly what the context named — nothing");
+            patches.Should().ContainSingle().Which.ops.Should().HaveCount(2, "a published document is stamped delivered, never undeliverable");
         }
 
         // A container whose every patch fails, standing in for one that is not accepting writes.

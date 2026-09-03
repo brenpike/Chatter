@@ -50,8 +50,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         {
             var (provider, published) = RecordingProvider();
             StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            OutboxDrainGate drainGate = ProcessorGate();
 
-            Func<Task> act = () => Drain(host, FailingContainer(), LeaseToken, PendingOutboxDocument("msg-1"));
+            Func<Task> act = () => Drain(host, FailingContainer(), drainGate, LeaseToken, PendingOutboxDocument("msg-1"));
 
             (await act.Should().ThrowAsync<TimeoutException>(
                 "the host unwraps the Confirmation Failure carrier and rethrows the original fault with its original stack"))
@@ -69,11 +70,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         {
             var (provider, published) = RecordingProvider();
             StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            OutboxDrainGate drainGate = ProcessorGate();
             Container container = FailingContainer();
 
-            await FailConfirmations(host, container, LeaseToken, OutboxDrainGate.Threshold);
+            await FailConfirmations(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
 
-            Func<Task> act = () => Drain(host, container, LeaseToken, PendingOutboxDocument("msg-1"));
+            Func<Task> act = () => Drain(host, container, drainGate, LeaseToken, PendingOutboxDocument("msg-1"));
 
             await act.Should().ThrowAsync<InvalidOperationException>(
                 "a suspended lease takes the module's fail-closed exit so the batch is not checkpointed");
@@ -90,11 +92,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         {
             var (provider, _) = RecordingProvider();
             StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            OutboxDrainGate drainGate = ProcessorGate();
             Container container = FailingContainer();
 
-            await FailConfirmations(host, container, LeaseToken, OutboxDrainGate.Threshold);
+            await FailConfirmations(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
 
-            Func<Task> act = () => Drain(host, container, LeaseToken, DomainDocument());
+            Func<Task> act = () => Drain(host, container, drainGate, LeaseToken, DomainDocument());
 
             await act.Should().ThrowAsync<InvalidOperationException>(
                 "the batch is refused for its lease, not for what its documents turned out to be");
@@ -114,12 +117,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
                 factoryInvocations++;
                 return ResolverPublishing();
             });
+            OutboxDrainGate drainGate = ProcessorGate();
             Container container = FailingContainer();
 
-            await FailConfirmations(host, container, LeaseToken, OutboxDrainGate.Threshold);
+            await FailConfirmations(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
             int invocationsBeforeSuspension = factoryInvocations;
 
-            Func<Task> act = () => Drain(host, container, LeaseToken, PendingOutboxDocument("msg-1"));
+            Func<Task> act = () => Drain(host, container, drainGate, LeaseToken, PendingOutboxDocument("msg-1"));
 
             await act.Should().ThrowAsync<InvalidOperationException>();
             factoryInvocations.Should().Be(invocationsBeforeSuspension,
@@ -135,11 +139,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         {
             var (provider, published) = RecordingProvider();
             StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            OutboxDrainGate drainGate = ProcessorGate();
             Container container = FailingContainer();
 
-            await FailConfirmations(host, container, LeaseToken, OutboxDrainGate.Threshold);
+            await FailConfirmations(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
 
-            Func<Task> act = () => Drain(host, container, "lease-b", PendingOutboxDocument("msg-1"));
+            Func<Task> act = () => Drain(host, container, drainGate, "lease-b", PendingOutboxDocument("msg-1"));
 
             (await act.Should().ThrowAsync<TimeoutException>(
                 "a lease that has not reached the threshold still drains and still reports its own stamp fault"))
@@ -156,13 +161,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         {
             var (provider, published) = RecordingProvider();
             StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            OutboxDrainGate drainGate = ProcessorGate();
             Container failingContainer = FailingContainer();
 
-            await FailConfirmations(host, failingContainer, LeaseToken, OutboxDrainGate.Threshold - 1);
-            await Drain(host, ConfirmingContainer(), LeaseToken, PendingOutboxDocument("msg-confirmed"));
-            await FailConfirmations(host, failingContainer, LeaseToken, OutboxDrainGate.Threshold - 1);
+            await FailConfirmations(host, failingContainer, drainGate, LeaseToken, OutboxDrainGate.Threshold - 1);
+            await Drain(host, ConfirmingContainer(), drainGate, LeaseToken, PendingOutboxDocument("msg-confirmed"));
+            await FailConfirmations(host, failingContainer, drainGate, LeaseToken, OutboxDrainGate.Threshold - 1);
 
-            Func<Task> act = () => Drain(host, failingContainer, LeaseToken, PendingOutboxDocument("msg-1"));
+            Func<Task> act = () => Drain(host, failingContainer, drainGate, LeaseToken, PendingOutboxDocument("msg-1"));
 
             await act.Should().ThrowAsync<TimeoutException>(
                 "the successful confirmation reset the consecutive count, so the lease is not suspended");
@@ -179,13 +185,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
         {
             var (provider, _) = RecordingProvider();
             StandaloneCosmosOutboxRelayHostedService host = Host(provider);
+            OutboxDrainGate drainGate = ProcessorGate();
             Container container = FailingContainer();
 
-            await FailConfirmations(host, container, LeaseToken, OutboxDrainGate.Threshold);
+            await FailConfirmations(host, container, drainGate, LeaseToken, OutboxDrainGate.Threshold);
 
             using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
             {
-                Func<Task> act = () => Drain(host, container, LeaseToken, PendingOutboxDocument("msg-1"));
+                Func<Task> act = () => Drain(host, container, drainGate, LeaseToken, PendingOutboxDocument("msg-1"));
 
                 await act.Should().ThrowAsync<InvalidOperationException>();
 
@@ -196,17 +203,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
 
         // Drives the supplied number of consecutive Confirmation Failures through the host, each its own batch, which
         // is how a lease reaches the threshold in production: the same document re-surfaces on every pass.
-        private static async Task FailConfirmations(StandaloneCosmosOutboxRelayHostedService host, Container container, string leaseToken, int count)
+        private static async Task FailConfirmations(StandaloneCosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken, int count)
         {
             for (int failure = 0; failure < count; failure++)
             {
-                Func<Task> act = () => Drain(host, container, leaseToken, PendingOutboxDocument("msg-1"));
+                Func<Task> act = () => Drain(host, container, drainGate, leaseToken, PendingOutboxDocument("msg-1"));
                 await act.Should().ThrowAsync<TimeoutException>();
             }
         }
 
-        private static Task Drain(StandaloneCosmosOutboxRelayHostedService host, Container container, string leaseToken, params JsonObject[] documents)
-            => host.HandleChangesAsync(BatchOf(documents), container, PartitionKeyPath, leaseToken, CancellationToken.None);
+        // The gate ONE processor drains through, standing in for the one BuildChangeFeedHandler constructs per
+        // descriptor. No host owns a gate any more, so the handler is handed one.
+        private static OutboxDrainGate ProcessorGate() => new OutboxDrainGate(new GuardedRelayLog(logger: null));
+
+        private static Task Drain(StandaloneCosmosOutboxRelayHostedService host, Container container, OutboxDrainGate drainGate, string leaseToken, params JsonObject[] documents)
+            => host.HandleChangesAsync(BatchOf(documents), container, PartitionKeyPath, leaseToken, drainGate, CancellationToken.None);
 
         private static Stream BatchOf(params JsonObject[] documents)
         {
