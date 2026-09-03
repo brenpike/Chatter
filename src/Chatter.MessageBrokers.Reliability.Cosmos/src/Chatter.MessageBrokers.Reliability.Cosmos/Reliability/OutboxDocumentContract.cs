@@ -21,8 +21,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     // Anything arising from host configuration or application-supplied code is NEVER a violation here, because a
     // redeploy or a registration fix makes it succeed on the very next pass — so treating it as one would give up on a
     // perfectly good document. Deliberately EXCLUDED: IBodyConverterFactory.CreateBodyConverter, the broker dispatcher,
-    // IOutboxBodyResolver, and IMessagingInfrastructureProvider.GetDispatcher (it throws KeyNotFoundException for an
-    // infrastructure type nobody registered — that is a HOST defect, not a document defect).
+    // IOutboxBodyResolver, and IMessagingInfrastructureProvider.GetDispatcher (it resolves purely from what the HOST
+    // registered: a blank or absent type silently falls back to the host's default infrastructure, and only a named
+    // type the host never registered throws KeyNotFoundException — either way that is a HOST defect, not a document
+    // defect).
     //
     // INVARIANT: N=1 is correct BY CONSTRUCTION, not by threshold. The input is an immutable JsonElement and this
     // function is total and pure, so a second evaluation is provably identical to the first. There is deliberately no
