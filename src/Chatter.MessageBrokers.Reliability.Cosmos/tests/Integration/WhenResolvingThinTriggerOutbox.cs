@@ -23,8 +23,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
     // StandaloneCosmosOutboxRelayHostedService (registered via AddCosmosOutboxRelay) against the emulator:
     //   - a THIN trigger doc (status=pending, _chatterType=outbox, id == ForOutbox(MessageId), a /pk value, and NO
     //     MessageBody / MessageContentType / MessageContext) is staged directly into the monitored container. The relay's
-    //     verbatim Reconstruct path would THROW "no content type" on this doc — it carries no body/content-type/context —
-    //     so the only way it can be published is through a bound resolver that RESOLVES the body at drain.
+    //     verbatim path would stamp this doc UNDELIVERABLE — it carries no body/content-type/context, which the Outbox
+    //     Document Contract proves from its own bytes — so the only way it can be published is through a bound resolver
+    //     that RESOLVES the body at drain (the contract is evaluated ONLY on the no-resolver path).
     //   - an IOutboxBodyResolver bound on the standalone relay reads the MessageId + the /pk partition value off the
     //     OutboxDrainContext and returns a real OutboundBrokeredMessage (content type + body + destination) built at drain.
     //   - the resolver is bound through a SCOPED service registration: BodyResolverFactory resolves the resolver from the
@@ -32,10 +33,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
     //     standalone host opens a FRESH DI scope PER DRAINED DOCUMENT and hands that scope's provider to BodyResolverFactory,
     //     the scoped dependency resolves and is then DISPOSED when the host disposes the per-document scope. This proves the
     //     F3 closed-by-construction guarantee: a resolver MAY depend on scoped services without opening its own scope.
-    //   - ASSERT: the resolver-produced message reaches the capturing broker sink (where verbatim Reconstruct would have
-    //     thrown), the resolver observed the staged MessageId + partition (proving the body was resolved from the context,
-    //     not the doc), the thin doc is then stamped status=delivered + a positive ttl so it self-purges, AND the resolver's
-    //     scoped dependency was both CONSTRUCTED from the per-document scope and DISPOSED when the host disposed that scope
+    //   - ASSERT: the resolver-produced message reaches the capturing broker sink (where the verbatim path would have
+    //     stamped the doc undeliverable), the resolver observed the staged MessageId + partition (proving the body was
+    //     resolved from the context, not the doc), the thin doc is then stamped status=delivered + a positive ttl so it
+    //     self-purges, AND the resolver's scoped dependency was both CONSTRUCTED from the per-document scope and
+    //     DISPOSED when the host disposed that scope
     //     (a scoped dependency resolved from the root provider would not be disposed until harness teardown).
     [Trait("Category", "Integration")]
     [Collection(CosmosEmulatorCollection.Name)]
@@ -101,13 +103,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
 
             // Stage the THIN trigger directly into the monitored container BEFORE start; the processor's begin-of-feed
             // start drains the backlog. The doc passes IsPendingOutbox (outbox + pending + id == ForOutbox(MessageId)) yet
-            // carries NO MessageBody / MessageContentType / MessageContext — verbatim Reconstruct would throw "no content type".
+            // carries NO MessageBody / MessageContentType / MessageContext — the verbatim path would stamp it undeliverable.
             await StageThinTriggerAsync(container, messageId, partition);
 
             await harness.StartAsync();
 
             // The resolver-produced message reaches the capturing broker sink — proof the relay published via the resolver
-            // on a doc the verbatim reconstruction path could not (it would have thrown "no content type").
+            // on a doc the verbatim reconstruction path could not (it would have stamped it undeliverable).
             await WaitForPublishedToDestinationAsync(harness.Capture, destination, PublishTimeout);
             harness.Capture.Published.Count(m => m.Destination == destination)
                 .Should().Be(1, "the standalone relay must publish the resolver-produced message exactly once for the thin trigger");
