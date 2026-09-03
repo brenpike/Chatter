@@ -94,16 +94,32 @@ namespace Microsoft.Extensions.DependencyInjection
         public string DeliveredStatusValue { get; set; } = "delivered";
 
         /// <summary>
-        /// OPT-IN (#361). The number of CONSECUTIVE failed drains of the SAME document after which the relay gives up on
-        /// that document, stamping it <see cref="PoisonStatusValue"/> so the change feed can advance past it. Defaults to
-        /// <c>0</c> — OFF — which keeps the fail-closed behavior: every failure re-throws, nothing is checkpointed, and the
-        /// document stays pending. Must not be negative.
+        /// OPT-IN (#361). The number of CONSECUTIVE failed drains of the SAME document IDENTITY — the (id, recovered
+        /// partition key) pair the poison stamp itself patches, so two documents sharing a message id in different logical
+        /// partitions never share a count — after which the relay gives up on that document, stamping it
+        /// <see cref="PoisonStatusValue"/> so the change feed can advance past it. Defaults to <c>0</c> — OFF — which keeps
+        /// the fail-closed behavior: every failure re-throws, nothing is checkpointed, and the document stays pending. Must
+        /// not be negative.
         /// </summary>
         /// <remarks>
         /// Enable this only when head-of-line blocking is the greater risk. Throw-so-no-checkpoint is CORRECT for a
         /// TRANSIENT publish failure — the gap it closes is that there is otherwise no escape from a DETERMINISTIC one,
-        /// where one undeliverable document stalls every later document in its partition range indefinitely. A given-up
-        /// document is NEVER deleted and carries NO TTL: it stays in the container, inspectable, at its poison status.
+        /// where one undeliverable document stalls every later document in its partition range indefinitely.
+        /// <para>
+        /// THE RELAY DOES NOT CLASSIFY THE FAILURE. It counts THAT a drain failed, not WHAT KIND of failure it was: every
+        /// failure other than a drain cancelled by host shutdown advances the count, INCLUDING a downstream broker, auth, or
+        /// throttling outage. An enabled policy riding out a sustained outage therefore gives up on a lease's backlog
+        /// SERIALLY — the head document fails once per change-feed pass, so it is given up on after this many passes and the
+        /// next document becomes the head.
+        /// </para>
+        /// <para>
+        /// THE COUNT IS PROCESS-LOCAL. It lives in memory in the relay instance that observed the failures, so it resets on
+        /// restart and fragments across lease rebalancing and across hosts sharing one change-feed source identity; a give-up
+        /// takes this many consecutive failures within ONE host's lifetime.
+        /// </para>
+        /// A given-up document is NEVER deleted and carries NO TTL: it stays in the container, inspectable, at its poison
+        /// status, until an operator re-drives it (see <see cref="PoisonStatusValue"/>). So an over-eager give-up costs
+        /// delivery until that intervention, never the document.
         /// </remarks>
         public int PoisonAfterConsecutiveFailures { get; set; }
 
@@ -114,6 +130,12 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <see cref="DeliveredStatusValue"/> (which would make a give-up indistinguishable from a delivery) — all rejected
         /// at construction.
         /// </summary>
+        /// <remarks>
+        /// A document carrying this status is NEVER deleted and carries NO TTL — nothing re-publishes it, and re-driving it
+        /// by patching its status back to pending, so the change feed surfaces it again, is an OPERATOR action. That matters
+        /// because <see cref="PoisonAfterConsecutiveFailures"/> elects on an unclassified, process-local failure count, so a
+        /// document may be stamped with this status for an outage rather than for a defect of its own.
+        /// </remarks>
         public string PoisonStatusValue { get; set; } = "poisoned";
 
         /// <summary>
