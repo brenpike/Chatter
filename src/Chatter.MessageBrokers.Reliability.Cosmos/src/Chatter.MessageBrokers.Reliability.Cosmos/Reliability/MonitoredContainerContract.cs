@@ -95,8 +95,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // The relay's delivered stamp patches BOTH the status path and "/ttl" on every drained document, and Cosmos
         // REJECTS a patch of the partition key. The paths are read off CosmosOutboxDocument.RelayStampedPaths — derived
         // from the very field constants the patch ops are built from — so this check can never drift from the ops it
-        // guards. Comparison is the same discipline the partition-key match uses: normalized to leading-slash form,
-        // ordinal, case-sensitive.
+        // guards. Comparison is the same discipline the partition-key match uses: canonicalized the way the relay itself
+        // reads a path, ordinal, case-sensitive.
         private static string DescribeStampedPathCollision(IReadOnlyList<string> actualPartitionKeyPaths)
         {
             if (actualPartitionKeyPaths is null)
@@ -118,10 +118,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         private static string FindStampedPath(string actualPath)
         {
-            string normalizedPath = NormalizeToLeadingSlash(actualPath);
+            string canonicalPath = CanonicalizePath(actualPath);
             foreach (string stampedPath in CosmosOutboxDocument.RelayStampedPaths)
             {
-                if (string.Equals(normalizedPath, stampedPath, StringComparison.Ordinal))
+                if (string.Equals(canonicalPath, stampedPath, StringComparison.Ordinal))
                 {
                     return stampedPath;
                 }
@@ -139,7 +139,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             for (var i = 0; i < declaredPartitionKeyPath.Count; i++)
             {
-                if (!string.Equals(NormalizeToLeadingSlash(declaredPartitionKeyPath[i]), NormalizeToLeadingSlash(actualPartitionKeyPaths[i]), StringComparison.Ordinal))
+                if (!string.Equals(CanonicalizePath(declaredPartitionKeyPath[i]), CanonicalizePath(actualPartitionKeyPaths[i]), StringComparison.Ordinal))
                 {
                     return false;
                 }
@@ -148,17 +148,28 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return true;
         }
 
-        // Both sides are normalized to leading-'/' form before comparison because `tenantId` and `/tenantId` are the SAME
-        // path to Chatter: PartitionKeyPathValidator accepts a slash-less segment and CosmosOutboxRelay.NavigateToPathValue
-        // splits on '/' with RemoveEmptyEntries. Case is NOT folded — Cosmos partition-key paths are case-sensitive.
-        private static string NormalizeToLeadingSlash(string segment)
+        // Both sides are canonicalized to the relay's OWN notion of a path before comparison, so the check accepts exactly
+        // what the runtime already treats as the same path: every site that reads a partition-key path splits it on '/'
+        // with RemoveEmptyEntries (CosmosOutboxRelay.NavigateToPathValue, CosmosPartitionKeyStamping.ExtractRootSegment
+        // and StampPartitionKeySegment), so `tenantId`, `tenantId/` and `//tenantId` navigate, stamp and recover exactly
+        // as `/tenantId` does. A path that yields NO segments (empty, or nothing but slashes) is returned UNCHANGED
+        // rather than collapsed to a common empty form, so one such spelling can never compare equal to another and be
+        // silently accepted; PartitionKeyPathValidator already rejects a whitespace declaration at registration, and the
+        // stamping split throws on a path with no property name. Case is NOT folded — Cosmos paths are case-sensitive.
+        private static string CanonicalizePath(string path)
         {
-            if (string.IsNullOrEmpty(segment) || segment[0] == '/')
+            if (string.IsNullOrEmpty(path))
             {
-                return segment;
+                return path;
             }
 
-            return "/" + segment;
+            string[] segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 0)
+            {
+                return path;
+            }
+
+            return "/" + string.Join("/", segments);
         }
 
         private static string DescribePath(IReadOnlyList<string> partitionKeyPath)

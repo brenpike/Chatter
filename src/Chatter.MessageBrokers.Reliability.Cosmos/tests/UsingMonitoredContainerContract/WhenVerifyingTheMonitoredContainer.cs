@@ -89,6 +89,36 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingMonitoredContaine
         }
 
         [Fact]
+        public async Task MustAcceptADeclaredPathWrittenWithATrailingSlash()
+        {
+            Mock<Container> container = MonitoredContainer(Path("/tenantId"), defaultTimeToLive: -1);
+
+            Func<Task> verify = () => MonitoredContainerContract.VerifyAsync(container.Object, Path("tenantId/"), CancellationToken.None);
+
+            await verify.Should().NotThrowAsync("the relay splits a path on '/' discarding empty entries, so 'tenantId/' navigates and stamps exactly as '/tenantId' does");
+        }
+
+        [Fact]
+        public async Task MustAcceptADeclaredPathWrittenWithRepeatedSlashes()
+        {
+            Mock<Container> container = MonitoredContainer(Path("/tenantId"), defaultTimeToLive: -1);
+
+            Func<Task> verify = () => MonitoredContainerContract.VerifyAsync(container.Object, Path("//tenantId"), CancellationToken.None);
+
+            await verify.Should().NotThrowAsync("empty entries between slashes are discarded by the relay, so '//tenantId' is the same single-segment path as '/tenantId'");
+        }
+
+        [Fact]
+        public async Task MustAcceptAHierarchicalPathDeclaredWithNonCanonicalSpellings()
+        {
+            Mock<Container> container = MonitoredContainer(Path("/tenantId", "/region/code"), defaultTimeToLive: -1);
+
+            Func<Task> verify = () => MonitoredContainerContract.VerifyAsync(container.Object, Path("tenantId/", "//region//code/"), CancellationToken.None);
+
+            await verify.Should().NotThrowAsync("every declared segment normalises through the same split the relay navigates and stamps with");
+        }
+
+        [Fact]
         public async Task MustRejectAHierarchicalPathDeclaredInTheWrongOrder()
         {
             Mock<Container> container = MonitoredContainer(Path("/tenantId", "/region"), defaultTimeToLive: -1);
