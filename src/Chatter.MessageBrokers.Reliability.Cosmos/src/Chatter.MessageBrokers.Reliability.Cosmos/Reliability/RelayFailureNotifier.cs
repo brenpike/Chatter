@@ -26,16 +26,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// INVARIANT: this method NEVER throws. The Cosmos SDK invokes the notification delegate ON the change-feed pump,
     /// so a throw out of it would be a brand-new wedge of exactly the class this notifier exists to close — including
     /// when the application's own logging sink is what faulted. Observability may never break delivery.
-    /// INVARIANT: the two sinks are ISOLATED from one another — one guarded block each — so a fault in either is
-    /// swallowed WITHOUT suppressing the other. Sharing one guard would let the opt-in metric take the always-on log
-    /// down with it, inverting the very guarantee this notifier exists to provide.
+    /// INVARIANT: the two sinks are ISOLATED from one another — one guard each — so a fault in either is swallowed
+    /// WITHOUT suppressing the other. Sharing one guard would let the opt-in metric take the always-on log down with
+    /// it, inverting the very guarantee this notifier exists to provide. The metric keeps its OWN off-guard and its
+    /// own catch here; the log's guard is the <see cref="GuardedRelayLog"/> the notifier holds INSTEAD of a raw
+    /// <see cref="ILogger"/>, so the unguarded form is not reachable from this type at all rather than merely absent
+    /// from the call sites written so far.
     /// The logger is OPTIONAL: a null logger is a silent no-op, so a host that resolved none still gets the metric.
     /// </remarks>
     internal sealed class RelayFailureNotifier
     {
-        private readonly ILogger _logger;
+        private readonly GuardedRelayLog _log;
 
-        public RelayFailureNotifier(ILogger logger) => _logger = logger;
+        public RelayFailureNotifier(ILogger logger) => _log = new GuardedRelayLog(logger);
 
         /// <summary>
         /// Reports one change-feed fault, matching the shape of the Cosmos SDK's
@@ -45,9 +48,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// <param name="exception">The fault the SDK observed.</param>
         internal Task OnChangeFeedErrorAsync(string leaseToken, Exception exception)
         {
-            // INVARIANT: one guarded block PER SINK. A shared guard would make the ALWAYS-ON log conditional on the
-            // OPT-IN metric: a MeterListener callback runs inline on this thread, so a broken collector's throw would
-            // jump past the log and leave the stalled lease unreported in exactly the application that opted into no
+            // INVARIANT: one guard PER SINK. A shared guard would make the ALWAYS-ON log conditional on the OPT-IN
+            // metric: a MeterListener callback runs inline on this thread, so a broken collector's throw would jump
+            // past the log and leave the stalled lease unreported in exactly the application that opted into no
             // logging change at all. The optional sink may not decide the fate of the mandatory one.
             try
             {
@@ -60,14 +63,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // delivery.
             }
 
-            try
-            {
-                _logger?.LogError(exception, "The Cosmos Outbox Relay change feed faulted on lease {LeaseToken}; that lease does not advance until the fault clears, so every later pending Outbox Document in its partition range stays undrained.", leaseToken);
-            }
-            catch (Exception)
-            {
-                // The same swallow, for the same reason: a broken logging sink may not wedge the change-feed pump.
-            }
+            // The log's own guard lives INSIDE GuardedRelayLog — the same swallow, for the same reason (a broken
+            // logging sink may not wedge the change-feed pump), applied by construction at every log site in this
+            // module rather than re-written per call site.
+            _log.Error(exception, "The Cosmos Outbox Relay change feed faulted on lease {LeaseToken}; that lease does not advance until the fault clears, so every later pending Outbox Document in its partition range stays undrained.", leaseToken);
 
             return Task.CompletedTask;
         }

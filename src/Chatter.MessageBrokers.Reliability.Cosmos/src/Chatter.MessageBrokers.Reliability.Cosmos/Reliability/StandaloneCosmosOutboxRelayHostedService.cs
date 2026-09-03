@@ -39,7 +39,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly CosmosOutboxRelay _relay;
         private readonly StandaloneRelayProcessorRegistry _processorRegistry;
         private readonly RelayFailureNotifier _failureNotifier;
-        private readonly ILogger _logger;
+        private readonly GuardedRelayLog _log;
         private ChangeFeedProcessor _processor;
 
         // processorRegistry is OPTIONAL (defaults null) so every existing direct-construction call site (and the legacy
@@ -47,7 +47,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // registration path (AddCosmosOutboxRelay) always passes the shared registry so the guard is active in production.
         // logger is OPTIONAL for the same reason and because a null logger is a documented silent no-op for both sinks that
         // take it (the failure notifier's #361 change-feed-fault log and the start-failure cleanup's stop-failure log):
-        // observability may never be a construction prerequisite.
+        // observability may never be a construction prerequisite. It is wrapped in a GuardedRelayLog at construction and
+        // this host keeps NO raw ILogger field, so no log call here can throw into control flow.
         internal StandaloneCosmosOutboxRelayHostedService(IServiceProvider serviceProvider,
                                                           IMessagingInfrastructureProvider infrastructureProvider,
                                                           IBodyConverterFactory bodyConverterFactory,
@@ -60,7 +61,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _processorRegistry = processorRegistry;
-            _logger = logger;
+            _log = new GuardedRelayLog(logger);
             _failureNotifier = new RelayFailureNotifier(logger);
 
             // Build the relay with the options' validated drain knobs (OutboxDeliverySettings.FromOptions enforces the F2
@@ -125,12 +126,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             {
                 // WHAT IS NOT GUARANTEED: stopping is BEST-EFFORT. The SDK throws when stopping a processor that never
                 // finished starting, and that stop failure is logged at Error and swallowed so it can never mask the
-                // start failure. A start that failed partway may also have acquired change-feed leases; a best-effort
+                // start failure. The report goes through GuardedRelayLog, so a broken application logging provider
+                // cannot escape this catch either and replace the start failure the caller must observe. A start that failed partway may also have acquired change-feed leases; a best-effort
                 // stop NARROWS that window but cannot close it, so leases may remain partially acquired until they expire.
                 Exception stopFailure = await StopTrackedProcessorAsync().ConfigureAwait(false);
                 if (stopFailure is not null)
                 {
-                    _logger?.LogError(stopFailure, "The Standalone Cosmos Outbox Relay host could not stop its change-feed processor while cleaning up after a failed start; the cleanup failure is swallowed so the start failure stays the one the host reports.");
+                    _log.Error(stopFailure, "The Standalone Cosmos Outbox Relay host could not stop its change-feed processor while cleaning up after a failed start; the cleanup failure is swallowed so the start failure stays the one the host reports.");
                 }
 
                 ExceptionDispatchInfo.Capture(startFailure).Throw();

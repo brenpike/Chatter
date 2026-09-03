@@ -245,6 +245,44 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             await stop.Should().NotThrowAsync("stopping a host that owns no processor collects no failure to surface");
         }
 
+        /// <summary>
+        /// The cleanup log is an OPTIONAL, application-supplied sink standing on a path whose whole purpose is to
+        /// PRESERVE the start failure, so a logging provider that throws may never escape into the cleanup's control
+        /// flow: the exception the caller observes is still the ORIGINAL start failure, the same instance.
+        /// </summary>
+        [Fact]
+        public async Task MustSurfaceTheStartFailureWhenTheCleanupLogItselfThrows()
+        {
+            var startFailure = new InvalidOperationException("the second change-feed processor could not start");
+            var stopFailure = new InvalidOperationException("a processor that never finished starting cannot be stopped");
+            Mock<ChangeFeedProcessor> running = StartableProcessor();
+            running.Setup(p => p.StopAsync()).ThrowsAsync(stopFailure);
+            Mock<ChangeFeedProcessor> inFlight = StartableProcessor();
+            inFlight.Setup(p => p.StartAsync()).ThrowsAsync(startFailure);
+
+            CosmosOutboxRelayHostedService host = HostWith(new ThrowingLogger(), running, inFlight);
+
+            Func<Task> start = () => host.StartAsync(CancellationToken.None);
+
+            (await start.Should().ThrowAsync<InvalidOperationException>(
+                "a broken logging provider may never replace the failure the cleanup exists to preserve"))
+                .Which.Should().BeSameAs(startFailure, "an optional observability sink may not decide which exception the caller observes");
+
+            ShouldHaveBeenStoppedOnce(inFlight, "cleanup still stops every tracked processor even when its own log is broken");
+            host.TrackedProcessors.Should().BeEmpty("the host owns no processor once the start-failure cleanup has run");
+        }
+
+        /// <summary>An <see cref="ILogger{TCategoryName}"/> whose sink is broken, as a misconfigured application's can be.</summary>
+        private sealed class ThrowingLogger : ILogger<CosmosOutboxRelayHostedService>
+        {
+            public IDisposable BeginScope<TState>(TState state) => throw new InvalidOperationException("the logging sink is broken");
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+                => throw new InvalidOperationException("the logging sink is broken");
+        }
+
         /// <summary>An <see cref="ILogger{TCategoryName}"/> recorder that captures each log call the host makes.</summary>
         private sealed class RecordingLogger : ILogger<CosmosOutboxRelayHostedService>
         {

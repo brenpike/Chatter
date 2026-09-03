@@ -82,12 +82,14 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly CosmosContainerFactory _containerFactory;
         private readonly CosmosOutboxRelay _relay;
         private readonly RelayFailureNotifier _failureNotifier;
-        private readonly ILogger _logger;
+        private readonly GuardedRelayLog _log;
         private readonly List<ChangeFeedProcessor> _processors = new List<ChangeFeedProcessor>();
 
         // logger is OPTIONAL (defaults null) so every existing direct-construction call site keeps compiling: a null
         // logger leaves the failure notifier's opt-in metric intact and its always-on log a silent no-op, and makes the
-        // start-failure cleanup's stop-failure log a silent no-op too. The DI registration
+        // start-failure cleanup's stop-failure log a silent no-op too. It is wrapped in a GuardedRelayLog at
+        // construction and this host keeps NO raw ILogger field, so no log call here can throw into control flow. The
+        // DI registration
         // (AddSingleton<IHostedService, CosmosOutboxRelayHostedService>) is on the CONCRETE type, so a host with logging
         // configured gets the logger injected and one without still constructs.
         public CosmosOutboxRelayHostedService(DocumentReliabilityRegistry registry,
@@ -102,7 +104,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory);
             _failureNotifier = new RelayFailureNotifier(logger);
-            _logger = logger;
+            _log = new GuardedRelayLog(logger);
             ProcessorFactory = BuildChangeFeedProcessor;
         }
 
@@ -134,6 +136,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // already-started processors would otherwise run for the lifetime of the process with nothing holding them.
         // WHAT IS NOT GUARANTEED: stopping is BEST-EFFORT. The SDK throws when stopping a processor that never finished
         // starting, and those stop failures are logged at Error and swallowed so they can never mask the start failure.
+        // The report itself goes through GuardedRelayLog, so a broken application logging provider cannot escape this
+        // catch either: the ORIGINAL start failure stays the exception the caller observes.
         // A start that failed partway may also have acquired change-feed leases; a best-effort stop NARROWS that window
         // but cannot close it, so leases may remain partially acquired until they expire.
         public async Task StartAsync(CancellationToken cancellationToken)
@@ -167,7 +171,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             {
                 foreach (Exception stopFailure in await StopTrackedProcessorsAsync().ConfigureAwait(false))
                 {
-                    _logger?.LogError(stopFailure, "The Cosmos Outbox Relay host could not stop a change-feed processor while cleaning up after a failed start; the cleanup failure is swallowed so the start failure stays the one the host reports.");
+                    _log.Error(stopFailure, "The Cosmos Outbox Relay host could not stop a change-feed processor while cleaning up after a failed start; the cleanup failure is swallowed so the start failure stays the one the host reports.");
                 }
 
                 ExceptionDispatchInfo.Capture(startFailure).Throw();
