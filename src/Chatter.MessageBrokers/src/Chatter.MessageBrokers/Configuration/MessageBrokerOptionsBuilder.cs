@@ -64,26 +64,29 @@ namespace Chatter.MessageBrokers.Configuration
         internal MessageBrokerOptions Build()
         {
             var messageBrokerOptions = new MessageBrokerOptions();
+            messageBrokerOptions.TransactionMode = _transactionMode;
+            // INVARIANT: the nested Reliability and Recovery options are seeded BEFORE the parent bind so the binder
+            // mutates the instances their sub-builders already registered as singletons instead of replacing them with
+            // unregistered ones. InMemoryBrokeredMessageOutbox, BrokeredMessageOutboxProcessor, RetryStrategy,
+            // RetryWithCircuitBreakerStrategy and CircuitBreaker all inject the concrete options types, so an orphaned
+            // instance would surface as a resolution failure.
+            messageBrokerOptions.Reliability = _reliabilityOptions ?? ReliabilityOptionsBuilder.Create(Services).Build();
+            messageBrokerOptions.Recovery = _recoveryOptions ?? RecoveryOptionsBuilder.Create(Services).Build();
+
             if (_messageBrokerOptionsSection != null && _messageBrokerOptionsSection.Exists())
             {
-                messageBrokerOptions = _messageBrokerOptionsSection.Get<MessageBrokerOptions>();
-            }
-            else
-            {
-                messageBrokerOptions.Reliability = _reliabilityOptions;
-                messageBrokerOptions.Recovery = _recoveryOptions;
-                messageBrokerOptions.TransactionMode = _transactionMode;
+                // INVARIANT: bind INTO the fluent-defaulted instance and never replace it. Every property on
+                // MessageBrokerOptions is internal set, so the binder skips all of them unless BindNonPublicProperties
+                // is on; replacing the instance would additionally discard the defaults assigned above - which is how
+                // TransactionMode degraded from ReceiveOnly to None. Keys the section omits keep their fluent default.
+                _messageBrokerOptionsSection.Bind(messageBrokerOptions, o => o.BindNonPublicProperties = true);
             }
 
-            if (messageBrokerOptions.Reliability is null)
-            {
-                messageBrokerOptions.Reliability = ReliabilityOptionsBuilder.Create(Services).Build();
-            }
-
-            if (messageBrokerOptions.Recovery is null)
-            {
-                messageBrokerOptions.Recovery = RecoveryOptionsBuilder.Create(Services).Build();
-            }
+            // INVARIANT: circuit breaker options reached through the MessageBrokers parent section never pass through
+            // CircuitBreakerOptionsBuilder.Build() or RecoveryOptionsBuilder.Build(), both of which run before the bind
+            // above mutates them, so validating the finalized instance here is what makes build-time validation
+            // reachable from this entry point too.
+            messageBrokerOptions.Recovery.CircuitBreakerOptions.Validate();
 
             Services.AddSingleton(messageBrokerOptions);
 
