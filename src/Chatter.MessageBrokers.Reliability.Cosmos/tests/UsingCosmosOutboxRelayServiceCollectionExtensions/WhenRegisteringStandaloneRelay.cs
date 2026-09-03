@@ -449,6 +449,84 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 "the poison policy is opt-in; an unconfigured relay keeps today's fail-closed behavior");
         }
 
+        [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        public void MustThrowAtRegistrationWhenGiveUpAfterUnconfirmedPublishesIsNonPositive(int giveUpAfterUnconfirmedPublishes)
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
+                options.GiveUpAfterUnconfirmedPublishes = giveUpAfterUnconfirmedPublishes));
+
+            act.Should().Throw<ArgumentException>(
+                "the always-on post-publish give-up cap has no off switch — a non-positive threshold would make an unbounded republish storm a representable configuration — and is rejected at registration, before the provider is built");
+        }
+
+        [Fact]
+        public void MustThrowAtRegistrationWhenUnconfirmedStatusValueIsEmpty()
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.UnconfirmedStatusValue = ""));
+
+            act.Should().Throw<ArgumentException>(
+                "the published-but-unconfirmed status value is always reachable — the brake has no off switch — so an empty value is rejected at registration");
+        }
+
+        [Fact]
+        public void MustThrowAtRegistrationWhenUnconfirmedStatusValueEqualsPending()
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
+                options.UnconfirmedStatusValue = CosmosOutboxDocument.StatusPending));
+
+            act.Should().Throw<ArgumentException>(
+                "a published-but-unconfirmed status equal to pending would leave the document admitted forever — the very stall the brake exists to end");
+        }
+
+        [Fact]
+        public void MustThrowAtRegistrationWhenUnconfirmedStatusValueEqualsTheDeliveredStatusValue()
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
+                options.UnconfirmedStatusValue = options.DeliveredStatusValue));
+
+            act.Should().Throw<ArgumentException>(
+                "a delivery nobody could confirm must stay distinguishable from one the relay watched land");
+        }
+
+        [Fact]
+        public void MustThrowAtRegistrationWhenUnconfirmedStatusValueEqualsThePoisonStatusValue()
+        {
+            var services = new ServiceCollection();
+
+            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
+            {
+                options.PoisonAfterConsecutiveFailures = 3;
+                options.UnconfirmedStatusValue = options.PoisonStatusValue;
+            }));
+
+            act.Should().Throw<ArgumentException>(
+                "a message that WAS published must never be recorded as one that was never delivered — the two give-up statuses colliding would make the two give-up kinds indistinguishable in the container");
+        }
+
+        [Fact]
+        public void MustDefaultTheGiveUpAfterUnconfirmedPublishesKnobsWhenNeitherIsConfigured()
+        {
+            var services = new ServiceCollection();
+            CosmosOutboxRelayOptions captured = null;
+
+            services.AddCosmosOutboxRelay(ValidConfigure(options => captured = options));
+
+            captured.GiveUpAfterUnconfirmedPublishes.Should().Be(5,
+                "the always-on post-publish give-up cap defaults to 5 when left unconfigured");
+            captured.UnconfirmedStatusValue.Should().Be("published-unconfirmed",
+                "the published-but-unconfirmed status value defaults to CosmosOutboxDocument.StatusUnconfirmed when left unconfigured");
+        }
+
         [Fact]
         public void TypedOverloadMustRegisterTheResolverAsScoped()
         {

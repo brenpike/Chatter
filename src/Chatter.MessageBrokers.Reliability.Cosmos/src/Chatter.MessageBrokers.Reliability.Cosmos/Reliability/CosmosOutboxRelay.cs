@@ -331,7 +331,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         }
 
         /// <summary>
-        /// GIVES UP on a document the configured <see cref="OutboxPoisonPolicy"/> has seen fail consecutively often enough
+        /// GIVES UP on a document the configured <see cref="OutboxGiveUpPolicy"/> has seen fail consecutively often enough
         /// (#361): a SINGLE <see cref="Container.PatchItemAsync"/> with exactly ONE op — set the status path to the poison
         /// value — so <see cref="CosmosOutboxDocument.IsPendingOutbox"/> stops admitting it and the change feed can advance
         /// past it instead of re-throwing on it forever.
