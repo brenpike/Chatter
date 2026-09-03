@@ -84,6 +84,30 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             return Parse(node.ToJsonString());
         }
 
+        // An admitted outbox document whose own MessageContentType is EMPTY, carrying the content type in its persisted
+        // MessageContext instead — the fallback the reconstruction has always resolved through.
+        private static JsonElement DocumentWithContentTypeOnlyInTheMessageContext(string messageId, string destination, string tenantId)
+        {
+            var messageContext = new JsonObject
+            {
+                [MessageContext.ContentType] = "application/json",
+                [MessageContext.InfrastructureType] = InfrastructureType,
+            };
+            var node = new JsonObject
+            {
+                [CosmosOutboxDocument.IdField] = CosmosItemId.ForOutbox(messageId),
+                [CosmosOutboxDocument.DiscriminatorField] = CosmosItemId.OutboxKind,
+                [CosmosOutboxDocument.StatusField] = CosmosOutboxDocument.StatusPending,
+                [CosmosOutboxDocument.MessageIdField] = messageId,
+                [CosmosOutboxDocument.DestinationField] = destination,
+                [CosmosOutboxDocument.MessageBodyField] = "{}",
+                [CosmosOutboxDocument.MessageContentTypeField] = string.Empty,
+                [CosmosOutboxDocument.MessageContextField] = messageContext.ToJsonString(),
+                ["tenantId"] = tenantId,
+            };
+            return Parse(node.ToJsonString());
+        }
+
         private static JsonElement JsonValue(string raw) => Parse(JsonSerializer.Serialize(raw));
 
         private static JsonElement Parse(string json)
@@ -229,6 +253,29 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             // The body bytes round-trip to the same JSON the original message stringified.
             var converter = new JsonBodyConverter();
             converter.Stringify(dispatched.Body).Should().Be(converter.Stringify(body));
+        }
+
+        [Fact]
+        public async Task MustSerializeWithTheContentTypeResolvedFromThePersistedMessageContext()
+        {
+            // The document carries no content type of its own, so the one the persisted message context carries is what
+            // the body converter is asked for. The reconstruction takes it from the Outbox Document Contract's verified
+            // descriptor rather than re-reading the context, which is what keeps a non-string persisted content type a
+            // named violation instead of a cast that faults the whole batch.
+            var (provider, published) = RecordingProvider();
+            var (container, _) = RecordingContainer();
+            var requestedContentTypes = new List<string>();
+            var factory = new Mock<IBodyConverterFactory>();
+            factory.Setup(f => f.CreateBodyConverter(It.IsAny<string>()))
+                   .Callback<string>(contentType => requestedContentTypes.Add(contentType))
+                   .Returns(new JsonBodyConverter());
+            var relay = new CosmosOutboxRelay(provider, factory.Object);
+
+            JsonElement document = DocumentWithContentTypeOnlyInTheMessageContext("msg-1", "orders", "tenant-1");
+            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath);
+
+            requestedContentTypes.Should().ContainSingle().Which.Should().Be("application/json");
+            published.Should().ContainSingle().Which.Destination.Should().Be("orders");
         }
 
         [Fact]

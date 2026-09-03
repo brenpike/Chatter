@@ -24,10 +24,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// A domain document, an inbox marker (<c>_chatterType="inbox"</c>), an already-delivered outbox document, or a
     /// malformed outbox document with a missing/empty status is NOT pending and is skipped — including the relay's OWN
     /// delivered/TTL update event (publish-once by construction).</item>
-    /// <item>RECONSTRUCTS the <see cref="OutboundBrokeredMessage"/> from the persisted fields, mirroring
+    /// <item>VERIFIES the document against <see cref="OutboxDocumentContract"/> and RECONSTRUCTS the
+    /// <see cref="OutboundBrokeredMessage"/> from the descriptor that verification returns, mirroring
     /// <c>OutboxProcessor.Process</c> exactly (MessageId verbatim, Destination, MessageBody, MessageContentType,
     /// MessageContext materialized through <c>ChatterJson.Options</c> via <see cref="MessageContext.MaterializePersistedContext"/>,
-    /// content-type fallback to the persisted MessageContext, infrastructure type read from the MessageContext).</item>
+    /// content-type fallback to the persisted MessageContext, infrastructure type read from the MessageContext). The
+    /// contract is the SOLE classifier here — the reconstruction has no throwing classification path of its own.</item>
+    /// <item>On a VIOLATION, stamps the document an Undeliverable Outbox Document instead of publishing it (#361): a
+    /// single-op <see cref="Container.PatchItemAsync"/> setting <c>/status="undeliverable"</c> and deliberately NO
+    /// <c>/ttl</c> op, then the undeliverable count, then the full violation text at <c>Error</c>. A document whose own
+    /// persisted bytes prove it can never be reconstructed would otherwise wedge its lease forever: the drain throws,
+    /// the batch is never checkpointed, and the identical document re-fails on every pass.</item>
     /// <item>PUBLISHES via <c>IMessagingInfrastructureProvider.GetDispatcher(infra).Dispatch(message, null)</c> — the
     /// SAME no-reliability-re-entry path the EF relational relay uses (NOT <c>IBrokeredMessageDispatcher</c>, which can
     /// route back through the outbox and recurse).</item>
@@ -47,6 +54,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// NO patch and PROPAGATES the exception out of <see cref="ProcessChangeAsync"/>; the host lets it escape the
     /// change-feed handler so the SDK does NOT checkpoint the batch (the document re-surfaces next pass) rather than
     /// advancing the lease past an unpublished document.
+    /// A delivered stamp that fails AFTER a publish is raised as <see cref="OutboxConfirmationFailedException"/> (#416)
+    /// so the fault survives the unwind to the host, which is the one component that knows the Lease Token it happened
+    /// under. The phase is derived from this relay's OWN control flow — whether the dispatch returned — never from what
+    /// the stamp threw; the drop path (a resolver that published nothing) raises no carrier, because with no publish
+    /// there is no republication to brake on. The relay itself consults NO gate: it reports the Confirmation Failure
+    /// and the host decides.
     /// </remarks>
     internal sealed class CosmosOutboxRelay
     {
@@ -56,25 +69,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly IMessagingInfrastructureProvider _infrastructureProvider;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly OutboxDeliverySettings _settings;
+        private readonly GuardedRelayLog _log;
 
         // The pre-seam constructor. Maps to the no-resolver verbatim-reconstruction path with the original hard-coded
         // drain behavior (OutboxDeliverySettings.Legacy) so CosmosOutboxRelayHostedService — which constructs the relay
         // this way — stays byte-identical.
-        public CosmosOutboxRelay(IMessagingInfrastructureProvider infrastructureProvider, IBodyConverterFactory bodyConverterFactory)
-            : this(infrastructureProvider, bodyConverterFactory, OutboxDeliverySettings.Legacy)
+        public CosmosOutboxRelay(IMessagingInfrastructureProvider infrastructureProvider, IBodyConverterFactory bodyConverterFactory, GuardedRelayLog log = default)
+            : this(infrastructureProvider, bodyConverterFactory, OutboxDeliverySettings.Legacy, log)
         {
         }
 
         // The seam constructor. OutboxDeliverySettings carries the admission gate (the always-applied id-guard plus any
         // narrowing filter) and the delivered/TTL stamp knobs. The IOutboxBodyResolver is NOT held here — it is supplied
         // per-call to ProcessChangeAsync so the relay never carries a resolver it might silently drop.
+        // The log is OPTIONAL and defaults to an omitted sink. GuardedRelayLog is a readonly struct holding a nullable
+        // ILogger, so an omitted logger is a silent no-op BY CONSTRUCTION rather than by a null check at each use, and
+        // the relay holds THIS instead of a raw ILogger so an unguarded optional-sink log call is unreachable from it.
         internal CosmosOutboxRelay(IMessagingInfrastructureProvider infrastructureProvider,
                                    IBodyConverterFactory bodyConverterFactory,
-                                   OutboxDeliverySettings settings)
+                                   OutboxDeliverySettings settings,
+                                   GuardedRelayLog log = default)
         {
             _infrastructureProvider = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+            _log = log;
         }
 
         /// <summary>
@@ -82,8 +101,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// document lives in, used for the delivered/TTL patch). <paramref name="partitionKeyPath"/> is the container's
         /// declared partition-key path (single or hierarchical) — the document carries its partition-key value(s) at
         /// these segments, and the delivered/TTL patch must target the SAME logical partition. A non-admitted document is
-        /// a no-op. An admitted document is reconstructed verbatim, published, then patched delivered+TTL. A publish
-        /// failure performs no patch and propagates so the host does not checkpoint the change-feed batch.
+        /// a no-op. An admitted document is verified against <see cref="OutboxDocumentContract"/>, reconstructed from
+        /// that verification, published, then patched delivered+TTL; one the contract rejects is stamped undeliverable
+        /// instead and never published. A publish failure performs no patch and propagates so the host does not
+        /// checkpoint the change-feed batch.
         /// </summary>
         public Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken = default)
             => ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver: null, cancellationToken);
@@ -94,6 +115,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// reconstruction path is used. A non-admitted document is a no-op. A publish (or resolver) failure performs no
         /// patch and propagates so the host does not checkpoint the change-feed batch.
         /// </summary>
+        /// <remarks>
+        /// INVARIANT: the Outbox Document Contract is evaluated ONLY on the no-resolver verbatim path. A supplied
+        /// resolver OWNS the message, so the document's persisted fields need not be publishable at all — verifying
+        /// them here would give up on documents the resolver publishes perfectly well (the thin-trigger shape carries
+        /// no body, content type or context by design).
+        /// </remarks>
         internal async Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, IOutboxBodyResolver resolver, CancellationToken cancellationToken = default)
         {
             _ = monitoredContainer ?? throw new ArgumentNullException(nameof(monitoredContainer));
@@ -122,9 +149,19 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             bool messageDispatched;
             if (resolver is null)
             {
-                // No resolver supplied: the verbatim reconstruction path is unchanged — reconstruct the brokered message
-                // from the persisted outbox fields and publish it.
-                await DispatchAsync(Reconstruct(document));
+                // No resolver supplied: the verbatim reconstruction path runs through the Outbox Document Contract,
+                // which is the SOLE classifier of whether the persisted fields can become a brokered message.
+                OutboxDocumentVerification verification = OutboxDocumentContract.Verify(document);
+                if (!verification.IsSatisfied)
+                {
+                    // An undeliverable stamp happens INSTEAD of a publish, never after one, and records NO drain
+                    // outcome: the document never resolved to a publish decision, the same reason a failed publish
+                    // records none. The admitted/skipped/dropped vocabulary is CLOSED.
+                    await MarkUndeliverableAsync(document, verification, monitoredContainer, partitionKeyPath, cancellationToken);
+                    return;
+                }
+
+                await DispatchAsync(Reconstruct(document, verification));
                 messageDispatched = true;
             }
             else
@@ -148,7 +185,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     : CosmosReliabilityDiagnostics.DrainOutcomes.Dropped);
             }
 
-            await StampDeliveredAsync(document, monitoredContainer, partitionKeyPath, cancellationToken);
+            await StampDeliveredAsync(document, monitoredContainer, partitionKeyPath, messageDispatched, cancellationToken);
         }
 
         // PUBLISH via IMessagingInfrastructureProvider.GetDispatcher(infra).Dispatch(message, null) — the SAME
@@ -263,38 +300,63 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return new OutboxDrainContext(messageId, partitionKey, partitionKeyPath, document);
         }
 
-        // RECONSTRUCT the OutboundBrokeredMessage from the persisted outbox fields, mirroring OutboxProcessor.Process:
-        // MessageId verbatim, Destination, MessageBody, MessageContentType, MessageContext materialized through
-        // ChatterJson.Options; content-type falls back to the persisted MessageContext when the doc content-type is
-        // empty; the body bytes come from an IBodyConverterFactory converter for the resolved content type.
-        private OutboundBrokeredMessage Reconstruct(JsonElement document)
+        // RECONSTRUCT the OutboundBrokeredMessage from the VERIFIED descriptor the Outbox Document Contract produced:
+        // the resolved content type, the destination, the persisted body string and the materialized message context.
+        // INVARIANT: none of those four is re-read from the document here. The contract already resolved them, reading
+        // the context's content type AS a string rather than casting to one, so re-resolving would reintroduce the
+        // InvalidCastException a non-string persisted content type used to fault the drain with. Only the MessageId —
+        // which the contract does not describe — is read off the document, verbatim, as OutboxProcessor.Process does.
+        private OutboundBrokeredMessage Reconstruct(JsonElement document, OutboxDocumentVerification verification)
         {
             CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageIdField, out string messageId);
-            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.DestinationField, out string destination);
-            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageBodyField, out string messageBody);
-            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageContentTypeField, out string messageContentType);
-            CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.MessageContextField, out string serializedMessageContext);
 
-            // MaterializePersistedContext deserializes the persisted MessageContext JSON string through
-            // ChatterJson.Options, restoring the CLR types the typed (string)/(DateTime?)/integer reads downstream
-            // depend on (parity with OutboxProcessor.Process).
-            IDictionary<string, object> messageContext = MessageContext.MaterializePersistedContext(serializedMessageContext);
+            IBrokeredMessageBodyConverter converter = _bodyConverterFactory.CreateBodyConverter(verification.ContentType);
 
-            string contentType = messageContentType;
-            if (string.IsNullOrWhiteSpace(contentType))
+            return new OutboundBrokeredMessage(messageId, converter.GetBytes(verification.MessageBody), verification.MessageContext, verification.Destination, converter);
+        }
+
+        /// <summary>
+        /// Gives up on one Outbox Document the contract proved unpublishable: STAMP, then EMIT, then LOG.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: the ORDER is load-bearing. A give-up cannot be recorded in a container that is not accepting
+        /// writes, so a failing stamp must propagate BEFORE anything reports a give-up that did not happen. The batch
+        /// is then not checkpointed, the identical IMMUTABLE document re-surfaces, and the next pass re-evaluates it —
+        /// through a total, pure verification — to the identical verdict. A give-up blocked by an unavailable container
+        /// therefore SELF-HEALS rather than being lost.
+        /// </remarks>
+        private async Task MarkUndeliverableAsync(JsonElement document,
+                                                  OutboxDocumentVerification verification,
+                                                  Container monitoredContainer,
+                                                  IReadOnlyList<string> partitionKeyPath,
+                                                  CancellationToken cancellationToken)
+        {
+            await StampUndeliverableAsync(document, monitoredContainer, partitionKeyPath, cancellationToken);
+
+            // INVARIANT: no outer ADR-0010 R1 off-guard is needed here, and adding one would be noise: this emit takes
+            // no argument, so nothing is BUILT before the emit method's own instrument guard runs.
+            CosmosReliabilityDiagnostics.RecordUndeliverableDocument();
+
+            // ALWAYS-ON, at Error, through the guarded sink. The undeliverable count deliberately carries no violation
+            // attribute — one document can violate several contract facts at once — so this is the only channel
+            // carrying WHICH facts it violated, and the only channel of any kind for a meter-less application. It
+            // carries no exception because nothing threw: the verdict came from the document's own bytes.
+            _log.Error(exception: null,
+                       "The Cosmos Outbox Relay marked an Outbox Document undeliverable and stopped republishing it. {Violation}",
+                       verification.ViolationMessage);
+        }
+
+        // THE GIVE-UP STAMP: a SINGLE-OP patch setting the status path to the fixed terminal undeliverable status. It
+        // deliberately carries NO ttl op — an Undeliverable Outbox Document is the evidence of the defect that produced
+        // it, so it is never scheduled for self-purge and never deleted.
+        private async Task StampUndeliverableAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
+        {
+            var patchOperations = new List<PatchOperation>
             {
-                contentType = messageContext.TryGetValue(MessageContext.ContentType, out var ct) ? (string)ct : null;
-            }
+                PatchOperation.Set(_settings.StatusPatchPath, CosmosOutboxDocument.StatusUndeliverable),
+            };
 
-            if (string.IsNullOrWhiteSpace(contentType))
-            {
-                throw new InvalidOperationException(
-                    $"Outbox document '{messageId}' has no content type in the document or its message context; a content type is required to serialize and publish the brokered message.");
-            }
-
-            IBrokeredMessageBodyConverter converter = _bodyConverterFactory.CreateBodyConverter(contentType);
-
-            return new OutboundBrokeredMessage(messageId, converter.GetBytes(messageBody), messageContext, destination, converter);
+            await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken);
         }
 
         // POST-PUBLISH: a SINGLE PatchItemAsync with two ops (set the status path to the delivered value, set the
@@ -305,20 +367,47 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // delivered stamp is unrepresentable. Legacy reproduces the original /status="delivered" + /ttl=86400 stamp
         // byte-for-byte. PatchItem (not ReplaceItem) so only the two delivery fields are touched and the aggregate-shaped
         // wire body is left untouched.
-        private async Task StampDeliveredAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
+        // A stamp that fails AFTER a publish is a Confirmation Failure (#416): the message is on the broker, the batch
+        // is not checkpointed, and the same document republishes on every pass. It is raised as
+        // OutboxConfirmationFailedException so it survives the unwind to the host, which is the one component that
+        // knows the Lease Token it happened under.
+        // INVARIANT: the phase comes from this method's OWN control flow — the messageDispatched the caller derived
+        // from whether the dispatch returned — never from what the stamp threw. The dropped path (nothing published)
+        // takes the exception filter's false arm, so its fault propagates untouched: no publish, no amplification, and
+        // nothing for a host to brake on.
+        private async Task StampDeliveredAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, bool messageDispatched, CancellationToken cancellationToken)
         {
-            if (!CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string id) || string.IsNullOrEmpty(id))
-            {
-                throw new InvalidOperationException("A pending outbox document is missing its 'id'; cannot stamp it delivered.");
-            }
-
-            PartitionKey partitionKey = RecoverPartitionKey(document, partitionKeyPath);
-
             var patchOperations = new List<PatchOperation>
             {
                 PatchOperation.Set(_settings.StatusPatchPath, _settings.DeliveredStatusValue),
                 PatchOperation.Set("/" + CosmosOutboxDocument.TtlField, _settings.DeliveredTtlSeconds),
             };
+
+            try
+            {
+                await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken);
+            }
+            catch (Exception confirmationFailure) when (messageDispatched)
+            {
+                throw new OutboxConfirmationFailedException(confirmationFailure);
+            }
+        }
+
+        // The one write both stamps go through: keyed by the document id read off the change-feed item and the
+        // partition key recovered from the same item at the container's declared partition-key path, so a stamp always
+        // lands on the document it was decided for.
+        private static async Task PatchAsync(JsonElement document,
+                                             Container monitoredContainer,
+                                             IReadOnlyList<string> partitionKeyPath,
+                                             IReadOnlyList<PatchOperation> patchOperations,
+                                             CancellationToken cancellationToken)
+        {
+            if (!CosmosOutboxDocument.TryGetString(document, CosmosOutboxDocument.IdField, out string id) || string.IsNullOrEmpty(id))
+            {
+                throw new InvalidOperationException("A pending outbox document is missing its 'id'; cannot stamp it.");
+            }
+
+            PartitionKey partitionKey = RecoverPartitionKey(document, partitionKeyPath);
 
             await monitoredContainer.PatchItemAsync<JsonElement>(id, partitionKey, patchOperations, requestOptions: null, cancellationToken: cancellationToken);
         }
