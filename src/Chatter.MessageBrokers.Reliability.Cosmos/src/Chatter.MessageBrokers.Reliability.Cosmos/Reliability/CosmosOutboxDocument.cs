@@ -38,15 +38,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public const string StatusDelivered = "delivered";
 
         /// <summary>
-        /// Non-pending delivery state for a document whose publish SUCCEEDED but whose delivered stamp could not be
-        /// confirmed. It is deliberately distinct from <see cref="StatusDelivered"/> — a delivery Chatter watched land
-        /// and a delivery it merely believes landed must stay tellable apart when an operator inspects the container —
-        /// and, like <see cref="StatusDelivered"/>, it is not <see cref="StatusPending"/>, so the relay's admission gate
-        /// stops admitting the document and cannot publish it again.
-        /// </summary>
-        public const string StatusUnconfirmed = "published-unconfirmed";
-
-        /// <summary>
         /// The Cosmos system TTL field name. The #222 relay stamps a positive per-document TTL here on delivery so Cosmos
         /// self-purges the delivered document — this is the ONLY field Cosmos honors for self-purge, so the delivered
         /// stamp's ttl path is hard-wired here rather than configurable.

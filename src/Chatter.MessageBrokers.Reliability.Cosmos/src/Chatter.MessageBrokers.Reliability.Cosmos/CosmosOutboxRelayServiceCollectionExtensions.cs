@@ -57,8 +57,8 @@ namespace Microsoft.Extensions.DependencyInjection
             // calls yield two relays. The host resolves IMessagingInfrastructureProvider + IBodyConverterFactory from DI and
             // captures the validated options. The logger is resolved with GetService, NOT GetRequiredService: an
             // application that configured no logging must still get a working relay (the host treats a null logger as a
-            // silent no-op), but one that DID configure logging must get the always-on give-up / change-feed-fault log
-            // channel — a factory-built host is injected nothing it does not ask for.
+            // silent no-op), but one that DID configure logging must get the always-on change-feed-fault log channel —
+            // a factory-built host is injected nothing it does not ask for.
             services.AddSingleton<IHostedService>(serviceProvider => new StandaloneCosmosOutboxRelayHostedService(
                 serviceProvider,
                 serviceProvider.GetRequiredService<IMessagingInfrastructureProvider>(),
@@ -230,11 +230,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             // Eagerly map the options into the relay's delivery settings so the F2 construction invariants (delivered status
             // non-empty and != pending, delivered TTL > 0 including the -1 "retain indefinitely" rejection, status patch path
-            // anchored to the status field, ttl patch path a valid JSON pointer, — for an enabled poison policy — a
-            // non-negative threshold plus a poison status that is non-empty and differs from both pending and the delivered
-            // status, and — ALWAYS, because the post-publish brake has no off switch — a POSITIVE published-unconfirmed
-            // threshold plus an unconfirmed status that is non-empty and differs from pending, the delivered status and the
-            // poison status) throw a clear ArgumentException AT
+            // anchored to the status field, ttl patch path a valid JSON pointer) throw a clear ArgumentException AT
             // REGISTRATION — before the service provider is built — instead of deferring the failure to host construction.
             // This reuses the SAME validating builder the host uses, so the checks are not duplicated here.
             _ = OutboxDeliverySettings.FromOptions(options);

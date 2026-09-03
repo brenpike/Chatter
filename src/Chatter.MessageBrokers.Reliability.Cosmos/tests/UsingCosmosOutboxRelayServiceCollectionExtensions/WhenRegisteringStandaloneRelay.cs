@@ -120,11 +120,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
 
         /// <summary>
         /// The always-on observability channel of #361. The standalone host is built by an explicit FACTORY, so nothing
-        /// injects its logger for it: without the factory resolving one, the give-up Error log and the change-feed fault
-        /// log are silent in every production application while the meters still record — which is exactly the silence
-        /// #361 exists to close.
+        /// injects its logger for it: without the factory resolving one, the change-feed fault log is silent in every
+        /// production application while the meters still record — which is exactly the silence #361 exists to close.
         /// </summary>
-        // The wired logger is private to the host and both sinks that take it fire only on a live change-feed fault, so
+        // The wired logger is private to the host and the sink that takes it fires only on a live change-feed fault, so
         // the category the application's ILoggerFactory was asked for is the observable evidence available here.
         [Fact]
         public void MustResolveTheApplicationsLoggerForTheStandaloneHost()
@@ -397,134 +396,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             // so a non-purging delivered stamp is unrepresentable. The ttl path is hard-wired, not a configurable knob.
             typeof(CosmosOutboxRelayOptions).GetProperty("TtlPatchPath").Should().BeNull(
                 "the ttl patch path is not configurable; the delivered stamp is hard-wired to the reserved /ttl path");
-        }
-
-        [Fact]
-        public void MustThrowAtRegistrationWhenPoisonAfterConsecutiveFailuresIsNegative()
-        {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.PoisonAfterConsecutiveFailures = -1));
-
-            act.Should().Throw<ArgumentException>(
-                "a negative consecutive-failure threshold is meaningless — 0 is the off switch — and is rejected at registration, before the provider is built");
-        }
-
-        [Fact]
-        public void MustThrowAtRegistrationWhenPoisonStatusValueEqualsPending()
-        {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
-            {
-                options.PoisonAfterConsecutiveFailures = 3;
-                options.PoisonStatusValue = CosmosOutboxDocument.StatusPending;
-            }));
-
-            act.Should().Throw<ArgumentException>(
-                "a poison status equal to pending would leave the given-up document admitted forever — the very stall the policy exists to end");
-        }
-
-        [Fact]
-        public void MustThrowAtRegistrationWhenPoisonStatusValueEqualsTheDeliveredStatusValue()
-        {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
-            {
-                options.PoisonAfterConsecutiveFailures = 3;
-                options.PoisonStatusValue = options.DeliveredStatusValue;
-            }));
-
-            act.Should().Throw<ArgumentException>(
-                "a give-up stamped with the delivered value would be indistinguishable from an actual delivery");
-        }
-
-        [Fact]
-        public void MustLeaveThePoisonPolicyOffByDefault()
-        {
-            var options = new CosmosOutboxRelayOptions();
-
-            options.PoisonAfterConsecutiveFailures.Should().Be(0,
-                "the poison policy is opt-in; an unconfigured relay keeps today's fail-closed behavior");
-        }
-
-        [Theory]
-        [InlineData(0)]
-        [InlineData(-1)]
-        public void MustThrowAtRegistrationWhenGiveUpAfterUnconfirmedPublishesIsNonPositive(int giveUpAfterUnconfirmedPublishes)
-        {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
-                options.GiveUpAfterUnconfirmedPublishes = giveUpAfterUnconfirmedPublishes));
-
-            act.Should().Throw<ArgumentException>(
-                "the always-on post-publish give-up cap has no off switch — a non-positive threshold would make an unbounded republish storm a representable configuration — and is rejected at registration, before the provider is built");
-        }
-
-        [Fact]
-        public void MustThrowAtRegistrationWhenUnconfirmedStatusValueIsEmpty()
-        {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options => options.UnconfirmedStatusValue = ""));
-
-            act.Should().Throw<ArgumentException>(
-                "the published-but-unconfirmed status value is always reachable — the brake has no off switch — so an empty value is rejected at registration");
-        }
-
-        [Fact]
-        public void MustThrowAtRegistrationWhenUnconfirmedStatusValueEqualsPending()
-        {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
-                options.UnconfirmedStatusValue = CosmosOutboxDocument.StatusPending));
-
-            act.Should().Throw<ArgumentException>(
-                "a published-but-unconfirmed status equal to pending would leave the document admitted forever — the very stall the brake exists to end");
-        }
-
-        [Fact]
-        public void MustThrowAtRegistrationWhenUnconfirmedStatusValueEqualsTheDeliveredStatusValue()
-        {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
-                options.UnconfirmedStatusValue = options.DeliveredStatusValue));
-
-            act.Should().Throw<ArgumentException>(
-                "a delivery nobody could confirm must stay distinguishable from one the relay watched land");
-        }
-
-        [Fact]
-        public void MustThrowAtRegistrationWhenUnconfirmedStatusValueEqualsThePoisonStatusValue()
-        {
-            var services = new ServiceCollection();
-
-            Action act = () => services.AddCosmosOutboxRelay(ValidConfigure(options =>
-            {
-                options.PoisonAfterConsecutiveFailures = 3;
-                options.UnconfirmedStatusValue = options.PoisonStatusValue;
-            }));
-
-            act.Should().Throw<ArgumentException>(
-                "a message that WAS published must never be recorded as one that was never delivered — the two give-up statuses colliding would make the two give-up kinds indistinguishable in the container");
-        }
-
-        [Fact]
-        public void MustDefaultTheGiveUpAfterUnconfirmedPublishesKnobsWhenNeitherIsConfigured()
-        {
-            var services = new ServiceCollection();
-            CosmosOutboxRelayOptions captured = null;
-
-            services.AddCosmosOutboxRelay(ValidConfigure(options => captured = options));
-
-            captured.GiveUpAfterUnconfirmedPublishes.Should().Be(5,
-                "the always-on post-publish give-up cap defaults to 5 when left unconfigured");
-            captured.UnconfirmedStatusValue.Should().Be("published-unconfirmed",
-                "the published-but-unconfirmed status value defaults to CosmosOutboxDocument.StatusUnconfirmed when left unconfigured");
         }
 
         [Fact]

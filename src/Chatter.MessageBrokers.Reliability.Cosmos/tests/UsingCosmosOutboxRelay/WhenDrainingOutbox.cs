@@ -139,26 +139,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             return (container, patches);
         }
 
-        // A container whose patch always faults — the POST-PUBLISH failure path, where the dispatch already returned.
-        private static Mock<Container> FailingContainer(Exception toThrow)
-        {
-            var container = new Mock<Container>();
-            container.Setup(c => c.PatchItemAsync<JsonElement>(
-                        It.IsAny<string>(), It.IsAny<PartitionKey>(), It.IsAny<IReadOnlyList<PatchOperation>>(),
-                        It.IsAny<PatchItemRequestOptions>(), It.IsAny<CancellationToken>()))
-                     .ThrowsAsync(toThrow);
-            return container;
-        }
-
-        // A resolver that resolves NO brokered message for the document — the intentional drop-and-acknowledge path.
-        private static IOutboxBodyResolver NullResolvingResolver()
-        {
-            var resolver = new Mock<IOutboxBodyResolver>();
-            resolver.Setup(r => r.ResolveAsync(It.IsAny<OutboxDrainContext>(), It.IsAny<CancellationToken>()))
-                    .ReturnsAsync((OutboundBrokeredMessage)null);
-            return resolver.Object;
-        }
-
         [Fact]
         public async Task MustPublishOutboxPendingDocument()
         {
@@ -304,74 +284,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
 
             (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(publishFailure);
             patches.Should().BeEmpty("a publish failure must leave the document pending — no delivered/ttl patch");
-        }
-
-        [Fact]
-        public async Task MustLeaveTheAttemptUnpublishedWhenTheDispatchThrows()
-        {
-            // The PRE-PUBLISH phase: the dispatch never returned, so nothing went out. A give-up that calls this document
-            // never-delivered is honest.
-            var publishFailure = new InvalidOperationException("broker unavailable");
-            var (container, _) = RecordingContainer();
-            var relay = new CosmosOutboxRelay(ThrowingProvider(publishFailure), BodyConverterFactory());
-            var attempt = new OutboxDrainAttempt();
-
-            JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            Func<Task> act = () => relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver: null, attempt: attempt);
-
-            await act.Should().ThrowAsync<InvalidOperationException>();
-            attempt.MessagePublished.Should().BeFalse("the dispatch threw, so the drain never left the pre-publish phase");
-        }
-
-        [Fact]
-        public async Task MustMarkTheAttemptPublishedWhenTheDeliveredStampThrowsAfterTheDispatchReturns()
-        {
-            // THE case the phase split exists for: the message IS on the broker and only the post-publish stamp failed.
-            // Stamping this document "never delivered" would be a lie, so the phase must survive the throw.
-            var stampFailure = new InvalidOperationException("the delivered patch failed");
-            var (provider, published) = RecordingProvider();
-            Mock<Container> container = FailingContainer(stampFailure);
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
-            var attempt = new OutboxDrainAttempt();
-
-            JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            Func<Task> act = () => relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver: null, attempt: attempt);
-
-            (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(stampFailure);
-            published.Should().ContainSingle("the dispatch returned before the stamp was ever attempted");
-            attempt.MessagePublished.Should().BeTrue("the phase comes from the relay's own control flow — the dispatch returned, so the message went out");
-        }
-
-        [Fact]
-        public async Task MustLeaveTheAttemptUnpublishedOnTheDropPath()
-        {
-            var (provider, published) = RecordingProvider();
-            var (container, patches) = RecordingContainer();
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
-            var attempt = new OutboxDrainAttempt();
-
-            JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, NullResolvingResolver(), attempt);
-
-            published.Should().BeEmpty("a null resolution publishes nothing");
-            patches.Should().ContainSingle("a drop is still an intentional drop-and-acknowledge");
-            attempt.MessagePublished.Should().BeFalse("nothing went out, so the drop path stays in the pre-publish phase");
-        }
-
-        [Fact]
-        public async Task MustMarkTheAttemptPublishedOnTheOrdinarySuccessPath()
-        {
-            var (provider, published) = RecordingProvider();
-            var (container, patches) = RecordingContainer();
-            var relay = new CosmosOutboxRelay(provider, BodyConverterFactory());
-            var attempt = new OutboxDrainAttempt();
-
-            JsonElement document = OutboxDocument("msg-1", "orders", new { OrderId = 7 }, "tenant-1");
-            await relay.ProcessChangeAsync(document, container.Object, PartitionKeyPath, resolver: null, attempt: attempt);
-
-            published.Should().ContainSingle();
-            patches.Should().ContainSingle();
-            attempt.MessagePublished.Should().BeTrue("an ordinary drain published its message");
         }
     }
 }

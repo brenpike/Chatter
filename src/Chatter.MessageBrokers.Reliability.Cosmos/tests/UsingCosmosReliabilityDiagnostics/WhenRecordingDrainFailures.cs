@@ -10,15 +10,14 @@ using Xunit;
 namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliabilityDiagnostics
 {
     /// <summary>
-    /// The on state of this module's drain-durability instruments: what an application that opted into the
-    /// <see cref="CosmosReliabilityDiagnostics.MeterName"/> scope receives when a drain attempt faults and when a
-    /// document is stamped poisoned.
+    /// The on state of this module's drain-failure instrument: what an application that opted into the
+    /// <see cref="CosmosReliabilityDiagnostics.MeterName"/> scope receives when a drain attempt faults.
     /// </summary>
     [Collection(DiagnosticsCollection.Name)]
     public class WhenRecordingDrainFailures : Testing.Core.Context
     {
-        // Built ONCE, at class-initialisation time, so the guard-cost probe below measures the record methods and
-        // not the allocation of the failure handed to them.
+        // Built ONCE, at class-initialisation time, so the guard-cost probe below measures the record method and
+        // not the allocation of the failure handed to it.
         private static readonly DrainFailureProbeException _drainProbeFailure = new DrainFailureProbeException("the publish faulted");
 
         /// <summary>
@@ -44,33 +43,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         }
 
         /// <summary>
-        /// A poisoned document is counted against the lease it kept faulting under, so a partition whose progress
-        /// is being bought by abandoning documents is readable against the same dimension as its batch progress.
-        /// </summary>
-        [Fact]
-        public void MustCountOnePoisonedDocumentAgainstItsLease()
-        {
-            using (var meterScope = new RecordingMeterScope(CosmosReliabilityDiagnostics.MeterName))
-            {
-                CosmosReliabilityDiagnostics.RecordPoisonedDocument("lease-7");
-
-                var measurement = meterScope.MeasurementsFor(CosmosReliabilityDiagnostics.PoisonedDocumentsInstrumentName).Should().ContainSingle().Subject;
-
-                measurement.Value.Should().Be(1);
-                measurement.TryGetTag(CosmosReliabilityDiagnostics.LeaseToken, out var leaseToken).Should().BeTrue();
-                leaseToken.Should().Be("lease-7");
-            }
-        }
-
-        /// <summary>
         /// Enabling ONE of the new instruments is a full opt-in: <see cref="CosmosReliabilityDiagnostics.IsEnabled"/>
         /// is the OR across this module's whole surface, so a call site that checks it before doing instrumented
         /// work still takes the instrumented path for an application that subscribed to nothing else.
         /// </summary>
         [Theory]
         [InlineData(CosmosReliabilityDiagnostics.DrainFailuresInstrumentName)]
-        [InlineData(CosmosReliabilityDiagnostics.PoisonedDocumentsInstrumentName)]
-        [InlineData(CosmosReliabilityDiagnostics.UnconfirmedGiveUpsInstrumentName)]
         public void MustReportDiagnosticsEnabledForASingleInstrumentOptIn(string instrumentName)
         {
             DeclareInstruments();
@@ -82,11 +60,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         }
 
         /// <summary>
-        /// The units the two instruments report in: a faulted attempt is counted in failures, an abandoned document
-        /// in documents, so neither is aggregated as if it were the other.
+        /// The unit the instrument reports in: a faulted attempt is counted in failures, so it is never aggregated
+        /// as if it were a document count.
         /// </summary>
         [Fact]
-        public void MustDeclareTheDrainDurabilityInstrumentsOnTheModuleMeter()
+        public void MustDeclareTheDrainFailureInstrumentOnTheModuleMeter()
         {
             DeclareInstruments();
 
@@ -94,14 +72,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 meterScope.TryGetInstrument(CosmosReliabilityDiagnostics.DrainFailuresInstrumentName, out var drainFailures).Should().BeTrue();
                 drainFailures.Unit.Should().Be("{failure}");
-
-                meterScope.TryGetInstrument(CosmosReliabilityDiagnostics.PoisonedDocumentsInstrumentName, out var poisonedDocuments).Should().BeTrue();
-                poisonedDocuments.Unit.Should().Be("{document}");
             }
         }
 
         /// <summary>
-        /// The off state: an application that subscribed to nothing pays one boolean read per record method and
+        /// The off state: an application that subscribed to nothing pays one boolean read in the record method and
         /// builds no lease token, no error type and no <c>TagList</c> (ADR-0010 R1).
         /// </summary>
         [Fact]
@@ -109,15 +84,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         {
             CosmosReliabilityDiagnostics.IsEnabled.Should().BeFalse();
 
-            var measurement = GuardCostProbe.Measure(RecordOneFailedDrainAndOnePoisonedDocument);
+            var measurement = GuardCostProbe.Measure(RecordOneFailedDrain);
 
             measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no attribute may be built while off: " + measurement);
         }
 
         /// <summary>
         /// A .NET <c>ActivityListener</c> on this module's scope and NO .NET <c>MeterListener</c> makes
-        /// <see cref="CosmosReliabilityDiagnostics.IsEnabled"/> TRUE, which is precisely why neither record method
-        /// may guard on it: each guards on its OWN instrument, so this application pays a boolean read and nothing
+        /// <see cref="CosmosReliabilityDiagnostics.IsEnabled"/> TRUE, which is precisely why the record method may
+        /// not guard on it: it guards on its OWN instrument, so this application pays a boolean read and nothing
         /// else — no error type is resolved and no attribute is built for a metric nobody subscribed to
         /// (ADR-0010 R1, R2).
         /// </summary>
@@ -128,19 +103,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 CosmosReliabilityDiagnostics.IsEnabled.Should().BeTrue();
 
-                var measurement = GuardCostProbe.Measure(RecordOneFailedDrainAndOnePoisonedDocument);
+                var measurement = GuardCostProbe.Measure(RecordOneFailedDrain);
 
                 measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no attribute may be built for an instrument nobody enabled: " + measurement);
                 activityScope.StartedActivities.Should().BeEmpty();
             }
         }
 
-        /// <summary>Drives both record methods once, as the Outbox Relay does for a document it gives up on.</summary>
-        private static void RecordOneFailedDrainAndOnePoisonedDocument()
-        {
-            CosmosReliabilityDiagnostics.RecordDrainFailure("lease-0", _drainProbeFailure);
-            CosmosReliabilityDiagnostics.RecordPoisonedDocument("lease-0");
-        }
+        /// <summary>Drives the record method once, as the change-feed error notification does for a faulted lease.</summary>
+        private static void RecordOneFailedDrain()
+            => CosmosReliabilityDiagnostics.RecordDrainFailure("lease-0", _drainProbeFailure);
 
         /// <summary>
         /// Reads the off-guard so the static surface initialises, and with it publishes its instruments, BEFORE a

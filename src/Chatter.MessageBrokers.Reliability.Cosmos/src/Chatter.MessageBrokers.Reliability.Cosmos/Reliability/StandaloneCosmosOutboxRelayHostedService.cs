@@ -39,7 +39,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly CosmosOutboxRelay _relay;
         private readonly StandaloneRelayProcessorRegistry _processorRegistry;
         private readonly RelayFailureNotifier _failureNotifier;
-        private readonly OutboxGiveUpHandler _giveUpHandler;
         private readonly ILogger _logger;
         private ChangeFeedProcessor _processor;
 
@@ -47,7 +46,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // 4-arg registration) keeps compiling: a null registry disables the start-time backstop (it becomes a no-op). The DI
         // registration path (AddCosmosOutboxRelay) always passes the shared registry so the guard is active in production.
         // logger is OPTIONAL for the same reason and because a null logger is a documented silent no-op for both sinks that
-        // take it (RelayFailureNotifier and the #361 give-up log): observability may never be a construction prerequisite.
+        // take it (the failure notifier's #361 change-feed-fault log and the start-failure cleanup's stop-failure log):
+        // observability may never be a construction prerequisite.
         internal StandaloneCosmosOutboxRelayHostedService(IServiceProvider serviceProvider,
                                                           IMessagingInfrastructureProvider infrastructureProvider,
                                                           IBodyConverterFactory bodyConverterFactory,
@@ -70,14 +70,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // resolved here: it is created PER PENDING (IsPendingOutbox) document from a fresh DI scope in HandleChangesAsync
             // (see ProcessDocumentAsync), so a scoped resolver never outlives the document it drains and the relay never
             // carries a resolver it might silently reuse across documents.
-            // The settings instance is held only long enough to build the two things that read it, so the relay's stamps
-            // and the give-up handler's election come from ONE give-up policy rather than two equal-valued copies.
-            OutboxDeliverySettings deliverySettings = OutboxDeliverySettings.FromOptions(options);
             _relay = new CosmosOutboxRelay(
                 infrastructureProvider,
                 bodyConverterFactory,
-                deliverySettings);
-            _giveUpHandler = new OutboxGiveUpHandler(deliverySettings.GiveUpPolicy, _relay, logger);
+                OutboxDeliverySettings.FromOptions(options));
 
             ProcessorFactory = BuildChangeFeedProcessor;
         }
@@ -268,7 +264,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             foreach (JsonElement document in documents.EnumerateArray())
             {
-                await ProcessDocumentAsync(document, monitoredContainer, partitionKeyPath, leaseToken, cancellationToken).ConfigureAwait(false);
+                await ProcessDocumentAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -294,15 +290,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // publish/resolver failure (at-least-once: the SDK does not checkpoint and the document re-surfaces) still disposes
         // the scope while the exception unwinds. With no factory configured the relay's no-resolver verbatim reconstruction
         // path is used UNCHANGED and no scope is opened.
-        // A drain failure is handed to the shared OutboxGiveUpHandler, which counts per document IDENTITY — the id AND
-        // the partition the document lives in — so two documents sharing a MessageId in different partitions never share
-        // a counter slot. BELOW the cap governing the streak the failure PROPAGATES unchanged — fail-closed is the correct
-        // answer to a TRANSIENT failure, and the document re-surfaces next pass. AT the cap the document is stamped with
-        // the matching non-pending status, counted, logged at Error, and the loop CONTINUES to the next document so the
-        // batch checkpoints and the head-of-line block on that lease clears. The give-up stamp's OWN failure is never
-        // swallowed — a misconfigured partition-key path (#362) makes it fail exactly as the delivered stamp would, and
-        // that must surface rather than be laundered into "give up on everything".
-        private async Task ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, string leaseToken, CancellationToken cancellationToken)
+        private async Task ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken)
         {
             if (!CosmosOutboxDocument.IsPendingOutbox(document))
             {
@@ -319,44 +307,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 return;
             }
 
-            // The attempt is owned HERE, OUTSIDE the drain's own DI scope, so the PHASE survives both a relay that THROWS
-            // and a scope disposal that throws: a scope-disposal failure AFTER a publish that returned is still a
-            // POST-publish failure.
-            var attempt = new OutboxDrainAttempt();
-
-            try
-            {
-                await DrainDocumentAsync(document, monitoredContainer, partitionKeyPath, attempt, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception drainFailure)
-            {
-                // CANCELLATION IS DECIDED FROM THE TOKEN, never from the exception's type: a host stop wrapped in an
-                // AggregateException is still a host stop, and a resolver's spurious OperationCanceledException raised
-                // while nothing was cancelled is still a deterministic defect. Counting a host stop would give up on a
-                // perfectly deliverable document, so it propagates without advancing the policy.
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-
-                if (!await _giveUpHandler.TryGiveUpAsync(document, monitoredContainer, partitionKeyPath, leaseToken, attempt.MessagePublished, drainFailure, cancellationToken).ConfigureAwait(false))
-                {
-                    throw;
-                }
-
-                return;
-            }
-
-            _giveUpHandler.RecordSuccessfulDrain(document, partitionKeyPath);
-        }
-
-        // The drain itself, unchanged: the no-resolver verbatim reconstruction path when no body-resolver factory is
-        // configured, else a FRESH per-document async DI scope the resolver is resolved from.
-        private async Task DrainDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, OutboxDrainAttempt attempt, CancellationToken cancellationToken)
-        {
             if (_options.BodyResolverFactory is null)
             {
-                await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver: null, attempt, cancellationToken).ConfigureAwait(false);
+                await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -368,7 +321,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             IOutboxBodyResolver resolver = _options.BodyResolverFactory(scope.ServiceProvider)
                 ?? throw new InvalidOperationException(
                     "The configured CosmosOutboxRelayOptions.BodyResolverFactory returned null. A configured factory must resolve a non-null IOutboxBodyResolver — null would silently select the verbatim no-resolver reconstruction path. Resolve the resolver with GetRequiredService/GetRequiredKeyedService (which throw on a missing registration) rather than GetService.");
-            await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver, attempt, cancellationToken).ConfigureAwait(false);
+            await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver, cancellationToken).ConfigureAwait(false);
         }
 
         // Builds the source-identity dedup/name key the SAME way CosmosOutboxRelayHostedService does, but sourced from the
