@@ -139,6 +139,45 @@ namespace Microsoft.Extensions.DependencyInjection
         public string PoisonStatusValue { get; set; } = "poisoned";
 
         /// <summary>
+        /// ALWAYS ON, with NO off switch (a value that is not positive is rejected at construction). The number of
+        /// CONSECUTIVE failed drains of the SAME document IDENTITY, at least one of which already PUBLISHED its brokered
+        /// message, after which the relay stops re-publishing that document and stamps it
+        /// <see cref="UnconfirmedStatusValue"/>. Defaults to <c>5</c>.
+        /// </summary>
+        /// <remarks>
+        /// Sending is TWO steps — publish the brokered message, then stamp the document delivered. When the publish
+        /// succeeds and the STAMP fails, the document stays pending, so the next change-feed pass publishes it AGAIN. A
+        /// permanently-failing stamp therefore repeats that forever: a broker publish plus request units plus downstream
+        /// consumer work on EVERY pass, without limit. That is why this brake cannot be turned off — leaving it off would
+        /// make an unbounded republish storm a representable configuration.
+        /// <para>
+        /// IT IS NOT THE <see cref="PoisonAfterConsecutiveFailures"/> KNOB. The poison arm is opt-in and off by default
+        /// because a never-published document costs only a stalled lease. This one bounds a cost that is already being
+        /// paid, so a consumer who opted into nothing still gets it — and a consumer who set a LOWER poison threshold
+        /// still sees a published streak give up at THIS number, because one number governs the post-publish branch for
+        /// everyone.
+        /// </para>
+        /// Like a poisoned document, a published-but-unconfirmed one is NEVER deleted and carries NO TTL: it stays in the
+        /// container, inspectable, as the evidence of a delivery nobody could confirm.
+        /// </remarks>
+        public int GiveUpAfterUnconfirmedPublishes { get; set; } = OutboxGiveUpPolicy.DefaultGiveUpAfterUnconfirmedPublishes;
+
+        /// <summary>
+        /// The status value a document is stamped with once <see cref="GiveUpAfterUnconfirmedPublishes"/> is reached.
+        /// Defaults to <c>published-unconfirmed</c>. ALWAYS read, because the brake is always on, and then it must be
+        /// non-empty, must differ from <c>pending</c> (which would re-surface the document forever), must differ from
+        /// <see cref="DeliveredStatusValue"/> (which would claim a confirmation nobody got), and must differ from
+        /// <see cref="PoisonStatusValue"/> (which would claim the message never went out) — all rejected at construction.
+        /// </summary>
+        /// <remarks>
+        /// A document carrying this status is NOT a lost message: its brokered message reached the broker at least once,
+        /// and possibly several times. RE-DRIVING IT WILL PUBLISH A DUPLICATE. What failed is the delivered confirmation
+        /// stamp, so the thing to investigate is the patch path, the container's partition-key definition, or throttling —
+        /// not the message.
+        /// </remarks>
+        public string UnconfirmedStatusValue { get; set; } = CosmosOutboxDocument.StatusUnconfirmed;
+
+        /// <summary>
         /// Optional. An ADDITIONAL predicate that can only further NARROW which documents the relay admits. The relay
         /// ALWAYS applies the built-in <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard first; this predicate
         /// runs only on documents that already passed it (logical AND) and therefore cannot replace or weaken the #222

@@ -230,9 +230,11 @@ namespace Microsoft.Extensions.DependencyInjection
 
             // Eagerly map the options into the relay's delivery settings so the F2 construction invariants (delivered status
             // non-empty and != pending, delivered TTL > 0 including the -1 "retain indefinitely" rejection, status patch path
-            // anchored to the status field, ttl patch path a valid JSON pointer, and — for an enabled poison policy — a
+            // anchored to the status field, ttl patch path a valid JSON pointer, — for an enabled poison policy — a
             // non-negative threshold plus a poison status that is non-empty and differs from both pending and the delivered
-            // status) throw a clear ArgumentException AT
+            // status, and — ALWAYS, because the post-publish brake has no off switch — a POSITIVE published-unconfirmed
+            // threshold plus an unconfirmed status that is non-empty and differs from pending, the delivered status and the
+            // poison status) throw a clear ArgumentException AT
             // REGISTRATION — before the service provider is built — instead of deferring the failure to host construction.
             // This reuses the SAME validating builder the host uses, so the checks are not duplicated here.
             _ = OutboxDeliverySettings.FromOptions(options);

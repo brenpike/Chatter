@@ -82,6 +82,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly CosmosContainerFactory _containerFactory;
         private readonly CosmosOutboxRelay _relay;
         private readonly RelayFailureNotifier _failureNotifier;
+        private readonly OutboxGiveUpHandler _giveUpHandler;
         private readonly ILogger _logger;
         private readonly List<ChangeFeedProcessor> _processors = new List<ChangeFeedProcessor>();
 
@@ -100,7 +101,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _containerFactory = containerFactory ?? throw new ArgumentNullException(nameof(containerFactory));
             _ = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
-            _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory);
+            // This host carries no options object, so it drains on OutboxDeliverySettings.Legacy's knobs — which now carry
+            // the ALWAYS-ON published-but-unconfirmed brake. The settings instance is held so the relay's stamps and the
+            // give-up handler's election read ONE give-up policy rather than two equal-valued copies.
+            OutboxDeliverySettings deliverySettings = OutboxDeliverySettings.Legacy;
+            _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory, deliverySettings);
+            _giveUpHandler = new OutboxGiveUpHandler(deliverySettings.PoisonPolicy, _relay, logger);
             _failureNotifier = new RelayFailureNotifier(logger);
             _logger = logger;
             ProcessorFactory = BuildChangeFeedProcessor;
@@ -287,8 +293,45 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             foreach (JsonElement document in documents.EnumerateArray())
             {
-                await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+                await ProcessDocumentAsync(document, monitoredContainer, partitionKeyPath, leaseToken, cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        // Drains a single change-feed document through the relay and bounds the cost of one that fails on every pass. The
+        // POISON arm is unavailable here — this host carries no options object, so its threshold is Legacy's zero — which
+        // means a PRE-publish failure propagates forever, exactly as it always has. The POST-publish arm has no off
+        // switch, so a document whose message reached the broker but whose delivered stamp keeps failing stops being
+        // re-published after Legacy's cap: it is stamped published-unconfirmed, counted, logged at Error, and the loop
+        // CONTINUES. Without that brake this host would publish, pay request units, and re-run downstream consumers on
+        // every pass, forever.
+        private async Task ProcessDocumentAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, string leaseToken, CancellationToken cancellationToken)
+        {
+            // The attempt is owned HERE, outside the relay, so the PHASE survives a relay that THROWS.
+            var attempt = new OutboxDrainAttempt();
+
+            try
+            {
+                await _relay.ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver: null, attempt, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception drainFailure)
+            {
+                // CANCELLATION IS DECIDED FROM THE TOKEN, never from the exception's type: a host stop wrapped in an
+                // AggregateException is still a host stop, and a spurious OperationCanceledException raised while nothing
+                // was cancelled is still a deterministic defect.
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                if (!await _giveUpHandler.TryGiveUpAsync(document, monitoredContainer, partitionKeyPath, leaseToken, attempt.MessagePublished, drainFailure, cancellationToken).ConfigureAwait(false))
+                {
+                    throw;
+                }
+
+                return;
+            }
+
+            _giveUpHandler.RecordSuccessfulDrain(document, partitionKeyPath);
         }
 
         // One descriptor per distinct change-feed SOURCE-IDENTITY key (ADR-0008). The key is a TYPED, COMPONENT-WISE

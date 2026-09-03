@@ -24,7 +24,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
     /// on EVERY pass and therefore wedges its Lease Token forever. Below the configured threshold a drain failure still
     /// PROPAGATES (fail-closed, unchanged — the correct response to a transient failure); at the threshold the document
     /// is stamped with the poison status, counted, logged, and the batch CONTINUES so head-of-line blocking clears. With
-    /// the policy off — the default — the host behaves exactly as it did before the policy existed.
+    /// the policy off — the default — the host's PRE-publish behavior is exactly what it was before the policy existed.
+    /// Every document here fails BEFORE its publish; the always-on POST-publish arm is characterized in
+    /// <see cref="WhenGivingUpAfterPublishing"/>.
     /// </summary>
     public class WhenApplyingThePoisonPolicy
     {
@@ -280,10 +282,44 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
                    .Which.ops.Should().HaveCount(2, "that stamp is the delivered status + ttl, never a poison stamp");
         }
 
-        // A cancelled drain is NOT a deterministic defect: counting a shutdown cancellation toward the threshold would
-        // let a host stop give up on a perfectly deliverable document.
+        // A drain cancelled by HOST SHUTDOWN is NOT a deterministic defect: counting it toward the threshold would let a
+        // host stop give up on a perfectly deliverable document. Cancellation is decided from the TOKEN, so the failure
+        // this drain raises is an ORDINARY one — proving the guard reads the token rather than the exception's type.
         [Fact]
-        public async Task MustNotCountACancelledDrainTowardTheThreshold()
+        public async Task MustNotCountADrainUnderACancelledTokenTowardTheThreshold()
+        {
+            var published = new List<string>();
+            var (monitored, patches) = RecordingContainer();
+            // The token is cancelled DURING the drain rather than before it, because a token that is already cancelled
+            // when the batch arrives never reaches a document at all — the batch parse observes it first.
+            using var hostStopping = new CancellationTokenSource();
+
+            var resolver = new Mock<IOutboxBodyResolver>();
+            resolver.Setup(r => r.ResolveAsync(It.IsAny<OutboxDrainContext>(), It.IsAny<CancellationToken>()))
+                    .Returns<OutboxDrainContext, CancellationToken>((_, __) =>
+                    {
+                        hostStopping.Cancel();
+                        return Task.FromException<OutboundBrokeredMessage>(new InvalidOperationException("the drain faulted while the host was stopping"));
+                    });
+
+            StandaloneCosmosOutboxRelayHostedService host = StandaloneHost(
+                monitored.Object, ProviderRecording(published), poisonAfterConsecutiveFailures: 1, bodyResolverFactory: _ => resolver.Object);
+
+            using Stream batch = StreamOf(PendingOutboxDocument("msg-1"));
+
+            Func<Task> drain = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", hostStopping.Token);
+
+            await drain.Should().ThrowAsync<InvalidOperationException>("a drain under a cancelled token propagates unchanged");
+            resolver.Verify(r => r.ResolveAsync(It.IsAny<OutboxDrainContext>(), It.IsAny<CancellationToken>()), Times.Once,
+                "the drain must actually have been attempted, or this proves nothing about the give-up guard");
+            patches.Should().BeEmpty("a drain that faulted while the token was cancelled never gives up on the document");
+        }
+
+        // The other half of the same rule: an OperationCanceledException raised while NOTHING was cancelled is a
+        // deterministic defect wearing a cancellation's clothes, and it DOES count. Classifying by exception type would
+        // hand any resolver an unlimited free pass out of the give-up policy.
+        [Fact]
+        public async Task MustCountACancellationExceptionRaisedWithNoCancellationRequested()
         {
             var published = new List<string>();
             var (monitored, patches) = RecordingContainer();
@@ -295,12 +331,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingStandaloneCosmosO
             StandaloneCosmosOutboxRelayHostedService host = StandaloneHost(
                 monitored.Object, ProviderRecording(published), poisonAfterConsecutiveFailures: 1, bodyResolverFactory: _ => resolver.Object);
 
-            using Stream batch = StreamOf(PendingOutboxDocument("msg-1"));
+            JsonElement document = PendingOutboxDocument("msg-1");
+            using Stream batch = StreamOf(document);
 
-            Func<Task> drain = () => host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
+            await host.HandleChangesAsync(batch, monitored.Object, PartitionKeyPath, "lease-0", CancellationToken.None);
 
-            await drain.Should().ThrowAsync<OperationCanceledException>("a cancellation propagates unchanged");
-            patches.Should().BeEmpty("a cancelled drain never gives up on the document");
+            (string poisonedId, PartitionKey _, IReadOnlyList<PatchOperation> poisonOps) =
+                patches.Should().ContainSingle("nothing was cancelled, so this failure counts and the threshold of one elects the document").Subject;
+            poisonedId.Should().Be(OutboxIdOf(document));
+            poisonOps.Should().ContainSingle().Which.As<PatchOperation<string>>().Value.Should().Be(PoisonStatusValue,
+                "the drain failed BEFORE any publish, so the honest record is the poison status");
         }
 
         // The give-up is what lets the feed advance: a poisoned document is no longer admitted, so neither the host

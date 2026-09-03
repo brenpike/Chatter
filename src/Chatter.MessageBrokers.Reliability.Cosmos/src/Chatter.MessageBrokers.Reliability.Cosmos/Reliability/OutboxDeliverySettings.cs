@@ -8,13 +8,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <summary>
     /// The configurable carrier for the #222 change-feed outbox relay's drain knobs: an OPTIONAL predicate that can only
     /// further NARROW which pending documents the relay admits, the field paths/values it stamps on a delivered
-    /// document, and the opt-in #361 <see cref="OutboxPoisonPolicy"/> deciding when a deterministically-failing document is
-    /// given up on. The unsafe representations the seam could previously construct are now UNCONSTRUCTABLE: the #222
-    /// id-guard (<see cref="CosmosOutboxDocument.IsPendingOutbox"/>) is composed INSIDE <see cref="IsAdmitted"/> so no
+    /// document, and the <see cref="OutboxGiveUpPolicy"/> deciding when a document that fails on every pass is given up
+    /// on — its opt-in #361 pre-publish arm and its always-on post-publish arm. The unsafe representations the seam could
+    /// previously construct are now UNCONSTRUCTABLE: the #222 id-guard
+    /// (<see cref="CosmosOutboxDocument.IsPendingOutbox"/>) is composed INSIDE <see cref="IsAdmitted"/> so no
     /// construction path can replace or weaken it (F1, closed-by-construction), and the constructor REJECTS every
-    /// delivered-stamp configuration that would fail to move a document out of <c>pending</c> (F2). <see cref="Legacy"/>
-    /// reproduces the relay's original hard-coded behavior byte-for-byte, so a relay constructed without explicit settings
-    /// is indistinguishable from the pre-seam relay.
+    /// delivered-stamp configuration that would fail to move a document out of <c>pending</c> (F2).
     /// </summary>
     internal sealed class OutboxDeliverySettings
     {
@@ -26,6 +25,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                                       Func<JsonElement, bool>? additionalPendingFilter = null,
                                       int poisonAfterConsecutiveFailures = 0,
                                       string? poisonStatusValue = null,
+                                      int giveUpAfterUnconfirmedPublishes = OutboxGiveUpPolicy.DefaultGiveUpAfterUnconfirmedPublishes,
                                       string? unconfirmedStatusValue = null)
         {
             // F2 (a): a delivered document MUST advance out of pending, so its status value cannot be empty nor equal the
@@ -72,15 +72,39 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     nameof(statusPatchPath));
             }
 
-            // F2 (d): the #361 poison policy. OutboxPoisonPolicy's own constructor rejects a negative threshold and — while
+            // F2 (d): the #361 poison arm. OutboxGiveUpPolicy's own constructor rejects a negative threshold and — while
             // enabled — an empty or equal-to-pending poison status; the ONE invariant only this type can see is checked
             // here, because a give-up stamped with the DELIVERED value would be indistinguishable from an actual delivery.
-            var poisonPolicy = new OutboxPoisonPolicy(poisonAfterConsecutiveFailures, poisonStatusValue);
-            if (poisonPolicy.IsEnabled && string.Equals(poisonPolicy.PoisonStatusValue, deliveredStatusValue, StringComparison.Ordinal))
+            var giveUpPolicy = new OutboxGiveUpPolicy(
+                poisonAfterConsecutiveFailures,
+                poisonStatusValue,
+                giveUpAfterUnconfirmedPublishes,
+                unconfirmedStatusValue ?? CosmosOutboxDocument.StatusUnconfirmed);
+
+            if (giveUpPolicy.IsPoisonEnabled && string.Equals(giveUpPolicy.PoisonStatusValue, deliveredStatusValue, StringComparison.Ordinal))
             {
                 throw new ArgumentException(
                     $"The poison status value cannot equal the delivered status value '{deliveredStatusValue}'; a document the relay gave up on must stay distinguishable from one it actually delivered.",
                     nameof(poisonStatusValue));
+            }
+
+            // F2 (e): the always-on post-publish arm, mirroring F2 (d) but UNCONDITIONAL — the brake has no off switch, so
+            // its status value is always reachable and is therefore always validated. The policy's own constructor rejects
+            // a non-positive threshold plus an empty or equal-to-pending status; the two invariants only this type can see
+            // are checked here, because a published-but-unconfirmed stamp carrying the DELIVERED value would claim a
+            // confirmation nobody got, and one carrying the POISON value would claim the message never went out.
+            if (string.Equals(giveUpPolicy.UnconfirmedStatusValue, deliveredStatusValue, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"The published-but-unconfirmed status value cannot equal the delivered status value '{deliveredStatusValue}'; a delivery nobody could confirm must stay distinguishable from one the relay watched land.",
+                    nameof(unconfirmedStatusValue));
+            }
+
+            if (giveUpPolicy.IsPoisonEnabled && string.Equals(giveUpPolicy.UnconfirmedStatusValue, giveUpPolicy.PoisonStatusValue, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"The published-but-unconfirmed status value cannot equal the poison status value '{giveUpPolicy.PoisonStatusValue}'; a message that WAS published must never be recorded as one that was never delivered.",
+                    nameof(unconfirmedStatusValue));
             }
 
             // The delivered TTL is NOT configurable here: it is always stamped at the Cosmos-reserved "/ttl" path
@@ -89,8 +113,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             DeliveredTtlSeconds = deliveredTtlSeconds;
             StatusPatchPath = statusPatchPath;
             DeliveredStatusValue = deliveredStatusValue;
-            UnconfirmedStatusValue = unconfirmedStatusValue ?? CosmosOutboxDocument.StatusUnconfirmed;
-            PoisonPolicy = poisonPolicy;
+            UnconfirmedStatusValue = giveUpPolicy.UnconfirmedStatusValue;
+            PoisonPolicy = giveUpPolicy;
             _additionalPendingFilter = additionalPendingFilter;
         }
 
@@ -105,17 +129,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>
         /// The status value a PUBLISHED-BUT-UNCONFIRMED document is advanced to — one whose brokered message reached the
-        /// broker but whose delivered stamp then failed. Unlike the opt-in poison status this outcome is ALWAYS-ON, so it
-        /// defaults to <see cref="CosmosOutboxDocument.StatusUnconfirmed"/> rather than being left unset.
+        /// broker but whose delivered stamp then failed. Read off <see cref="PoisonPolicy"/>, so the value the relay
+        /// STAMPS and the value the give-up log NAMES come from one derivation and cannot diverge.
         /// </summary>
         public string UnconfirmedStatusValue { get; }
 
         /// <summary>
-        /// The VALIDATED #361 poison policy: the consecutive-failure threshold at which the relay gives up on a
-        /// deterministically-failing document, the non-pending status it is then stamped with, and the bounded
-        /// per-document-id failure counting behind it. Disabled unless the caller opted in.
+        /// The VALIDATED give-up policy: both bounded outcomes (the opt-in pre-publish poison threshold and the always-on
+        /// post-publish cap), the non-pending status each is stamped with, and the bounded per-document-identity failure
+        /// counting that elects between them.
         /// </summary>
-        public OutboxPoisonPolicy PoisonPolicy { get; }
+        public OutboxGiveUpPolicy PoisonPolicy { get; }
 
         /// <summary>
         /// Admits a change-feed document as a pending outbox document to drain. The built-in #222 id-guard
@@ -128,21 +152,26 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                && (_additionalPendingFilter is null || _additionalPendingFilter(document));
 
         /// <summary>
-        /// The settings reproducing the relay's original hard-coded behavior: a one-day delivered TTL, the
+        /// The settings reproducing the relay's original hard-coded drain knobs: a one-day delivered TTL, the
         /// <c>/status</c> -&gt; <c>delivered</c> stamp (the delivered TTL is always stamped at the hard-wired
         /// <c>/ttl</c> path), no additional pending filter (the always-applied
         /// <see cref="CosmosOutboxDocument.IsPendingOutbox"/> id-guard is the sole admission gate), and a DISABLED poison
-        /// policy — a legacy relay keeps the fail-closed behavior and can never give up on a document.
+        /// arm. It is NO LONGER byte-identical to the pre-seam relay in the POST-publish branch: it carries the always-on
+        /// published-but-unconfirmed brake with its defaults, because that brake has no off switch, so a relay built from
+        /// these settings stops re-publishing a document whose message went out but whose delivered stamp never landed.
         /// </summary>
-        public static OutboxDeliverySettings Legacy { get; } = new OutboxDeliverySettings(
+        // INVARIANT: a NEW instance per access, never a shared singleton. The give-up policy it carries holds MUTABLE
+        // per-identity failure streaks, so two relays sharing one instance would count each other's failures against
+        // documents whose ids happened to collide.
+        public static OutboxDeliverySettings Legacy => new OutboxDeliverySettings(
             deliveredTtlSeconds: 86400,
             statusPatchPath: "/" + CosmosOutboxDocument.StatusField,
             deliveredStatusValue: CosmosOutboxDocument.StatusDelivered,
             additionalPendingFilter: null);
 
         /// <summary>
-        /// Maps a <see cref="CosmosOutboxRelayOptions"/>' three stamp knobs, its optional additional pending filter, and its
-        /// opt-in poison policy into the validating constructor. The single builder reused by the standalone host and
+        /// Maps a <see cref="CosmosOutboxRelayOptions"/>' three stamp knobs, its optional additional pending filter, and
+        /// both give-up arms into the validating constructor. The single builder reused by the standalone host and
         /// registration-time validation, so every construction path goes through the same F2 invariant enforcement.
         /// </summary>
         internal static OutboxDeliverySettings FromOptions(CosmosOutboxRelayOptions options)
@@ -154,7 +183,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 options.DeliveredStatusValue,
                 options.AdditionalPendingFilter,
                 options.PoisonAfterConsecutiveFailures,
-                options.PoisonStatusValue);
+                options.PoisonStatusValue,
+                options.GiveUpAfterUnconfirmedPublishes,
+                options.UnconfirmedStatusValue);
         }
 
         // A valid JSON pointer for the relay's status patch path: starts with '/' and has at least one non-empty segment (so a
