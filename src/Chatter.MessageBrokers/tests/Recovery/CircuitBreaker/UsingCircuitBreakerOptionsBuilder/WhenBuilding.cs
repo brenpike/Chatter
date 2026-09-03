@@ -118,11 +118,8 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         }
 
         [Fact]
-        public void MustTakeConfigBranchAndSkipFluentDefaultsWhenFromConfigSectionPopulated()
+        public void MustHonourConfiguredValueAndRetainFluentDefaultsWhenFromConfigSectionPopulated()
         {
-            // INVARIANT: production binds the populated section via IConfigurationSection.Get<CircuitBreakerOptions>(),
-            // whose internal-set scalar properties stay at their type default; the fluent else-branch (which would
-            // otherwise apply the default of 5) is skipped, so a populated section yields 0, not 5.
             var services = new ServiceCollection();
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string>
@@ -134,7 +131,74 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             var options = CircuitBreakerOptionsBuilder.FromConfig(services, configuration);
 
             options.Should().NotBeNull();
-            options.NumberOfFailuresBeforeOpen.Should().Be(0);
+            options.NumberOfFailuresBeforeOpen.Should().Be(42);
+            options.OpenToHalfOpenWaitTimeInSeconds.Should().Be(15);
+            options.ConcurrentHalfOpenAttempts.Should().Be(1);
+            options.NumberOfHalfOpenSuccessesToClose.Should().Be(3);
+            options.SecondsOpenBeforeCriticalFailureNotification.Should().Be(1800);
+        }
+
+        [Fact]
+        public void MustRetainEveryFluentDefaultWhenFromConfigSectionPresentWithoutChildKeys()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName] = string.Empty
+                })
+                .Build();
+            configuration.GetSection(CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName).Exists().Should().BeTrue();
+
+            var options = CircuitBreakerOptionsBuilder.FromConfig(services, configuration);
+
+            options.OpenToHalfOpenWaitTimeInSeconds.Should().Be(15);
+            options.ConcurrentHalfOpenAttempts.Should().Be(1);
+            options.NumberOfFailuresBeforeOpen.Should().Be(5);
+            options.NumberOfHalfOpenSuccessesToClose.Should().Be(3);
+            options.SecondsOpenBeforeCriticalFailureNotification.Should().Be(1800);
+        }
+
+        [Fact]
+        public void MustThrowNamingConcurrentHalfOpenAttemptsWhenConfiguredBelowOne()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:ConcurrentHalfOpenAttempts"] = "0"
+                })
+                .Build();
+
+            var fromConfig = () => CircuitBreakerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>()
+                .WithMessage($"*{nameof(CircuitBreakerOptions.ConcurrentHalfOpenAttempts)}*");
+        }
+
+        [Fact]
+        public void MustNameEveryInvalidValueInOneFailureWhenSeveralConfiguredValuesAreInvalid()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:ConcurrentHalfOpenAttempts"] = "0",
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:NumberOfFailuresBeforeOpen"] = "0",
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:NumberOfHalfOpenSuccessesToClose"] = "-1",
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:OpenToHalfOpenWaitTimeInSeconds"] = "-1",
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:SecondsOpenBeforeCriticalFailureNotification"] = "-1"
+                })
+                .Build();
+
+            var fromConfig = () => CircuitBreakerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>()
+                .WithMessage($"*{nameof(CircuitBreakerOptions.ConcurrentHalfOpenAttempts)}*")
+                .WithMessage($"*{nameof(CircuitBreakerOptions.NumberOfFailuresBeforeOpen)}*")
+                .WithMessage($"*{nameof(CircuitBreakerOptions.NumberOfHalfOpenSuccessesToClose)}*")
+                .WithMessage($"*{nameof(CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds)}*")
+                .WithMessage($"*{nameof(CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification)}*");
         }
     }
 }

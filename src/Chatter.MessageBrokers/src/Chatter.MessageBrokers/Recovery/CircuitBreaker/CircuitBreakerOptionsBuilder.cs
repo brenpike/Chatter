@@ -118,19 +118,23 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         public CircuitBreakerOptions Build()
         {
             var circuitBreakerOptions = new CircuitBreakerOptions();
+            circuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds = _openToHalfOpenWaitTimeInSeconds;
+            circuitBreakerOptions.ConcurrentHalfOpenAttempts = _concurrentHalfOpenAttempts;
+            circuitBreakerOptions.NumberOfFailuresBeforeOpen = _numberOfFailuresBeforeOpen;
+            circuitBreakerOptions.NumberOfHalfOpenSuccessesToClose = _numberOfHalfOpenSuccessesToClose;
+            circuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification = _secondsOpenBeforeCriticalFailureNotification;
+
             if (_circuitBreakerOptionsSection != null && _circuitBreakerOptionsSection.Exists())
             {
-                circuitBreakerOptions = _circuitBreakerOptionsSection.Get<CircuitBreakerOptions>();
-                _services.Configure<CircuitBreakerOptions>(_circuitBreakerOptionsSection);
+                // INVARIANT: bind INTO the fluent-defaulted instance and never replace it. Every property on
+                // CircuitBreakerOptions is internal set, so the binder skips all of them unless
+                // BindNonPublicProperties is on; replacing the instance would additionally discard the defaults
+                // assigned above. Keys the section omits therefore keep their fluent default.
+                _circuitBreakerOptionsSection.Bind(circuitBreakerOptions, o => o.BindNonPublicProperties = true);
+                _services.Configure<CircuitBreakerOptions>(_circuitBreakerOptionsSection, o => o.BindNonPublicProperties = true);
             }
-            else
-            {
-                circuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds = _openToHalfOpenWaitTimeInSeconds;
-                circuitBreakerOptions.ConcurrentHalfOpenAttempts = _concurrentHalfOpenAttempts;
-                circuitBreakerOptions.NumberOfFailuresBeforeOpen = _numberOfFailuresBeforeOpen;
-                circuitBreakerOptions.NumberOfHalfOpenSuccessesToClose = _numberOfHalfOpenSuccessesToClose;
-                circuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification = _secondsOpenBeforeCriticalFailureNotification;
-            }
+
+            circuitBreakerOptions.Validate();
 
             if (_exceptionPredicates.Count > 0)
             {
