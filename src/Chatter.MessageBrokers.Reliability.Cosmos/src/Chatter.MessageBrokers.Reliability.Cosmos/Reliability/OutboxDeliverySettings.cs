@@ -114,7 +114,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             StatusPatchPath = statusPatchPath;
             DeliveredStatusValue = deliveredStatusValue;
             UnconfirmedStatusValue = giveUpPolicy.UnconfirmedStatusValue;
-            PoisonPolicy = giveUpPolicy;
+            GiveUpPolicy = giveUpPolicy;
             _additionalPendingFilter = additionalPendingFilter;
         }
 
@@ -129,7 +129,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>
         /// The status value a PUBLISHED-BUT-UNCONFIRMED document is advanced to — one whose brokered message reached the
-        /// broker but whose delivered stamp then failed. Read off <see cref="PoisonPolicy"/>, so the value the relay
+        /// broker but whose delivered stamp then failed. Read off <see cref="GiveUpPolicy"/>, so the value the relay
         /// STAMPS and the value the give-up log NAMES come from one derivation and cannot diverge.
         /// </summary>
         public string UnconfirmedStatusValue { get; }
@@ -139,7 +139,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// post-publish cap), the non-pending status each is stamped with, and the bounded per-document-identity failure
         /// counting that elects between them.
         /// </summary>
-        public OutboxGiveUpPolicy PoisonPolicy { get; }
+        public OutboxGiveUpPolicy GiveUpPolicy { get; }
 
         /// <summary>
         /// Admits a change-feed document as a pending outbox document to drain. The built-in #222 id-guard

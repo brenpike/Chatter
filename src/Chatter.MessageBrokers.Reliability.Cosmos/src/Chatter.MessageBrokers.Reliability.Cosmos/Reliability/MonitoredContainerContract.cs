@@ -14,7 +14,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     //   - a POSITIVE container defaultTtl deletes a still-pending outbox document (written with no ttl field) before the
     //     relay ever drains it, converting at-least-once into zero-times (#363);
     //   - a container partitioned on a path the relay itself patches ("/status" or "/ttl") can never be stamped, because
-    //     Cosmos rejects a patch of the partition key, so every document publishes and stays pending and re-publishes.
+    //     the stamp could never land on the partition key, so every document publishes and stays pending and re-publishes.
     internal static class MonitoredContainerContract
     {
         internal static async Task VerifyAsync(Container monitoredContainer,
@@ -109,7 +109,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 string collidingPath = FindStampedPath(actualPath);
                 if (collidingPath is not null)
                 {
-                    return $"its actual partition-key path includes '{collidingPath}', which the relay patches on every drain — Cosmos rejects a patch of a document's partition key, so the stamp could never land and every published document would stay pending and publish again on the next pass, forever (this container's relay is already failing that way today; the check surfaces that defect rather than introducing it)";
+                    return $"its actual partition-key path includes '{collidingPath}', which the relay patches on every drain — the stamp could never land on a document's partition-key path, so every published document would stay pending and publish again on the next pass, forever (this container's relay is already failing that way today; the check surfaces that defect rather than introducing it)";
                 }
             }
 

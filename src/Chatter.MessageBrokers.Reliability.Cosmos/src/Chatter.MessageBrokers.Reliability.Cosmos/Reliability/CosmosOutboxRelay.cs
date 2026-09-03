@@ -350,7 +350,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             var patchOperations = new List<PatchOperation>
             {
-                PatchOperation.Set(_settings.StatusPatchPath, _settings.PoisonPolicy.PoisonStatusValue),
+                PatchOperation.Set(_settings.StatusPatchPath, _settings.GiveUpPolicy.PoisonStatusValue),
             };
 
             return PatchStampAsync(document, monitoredContainer, partitionKeyPath, "poisoned", patchOperations, cancellationToken);

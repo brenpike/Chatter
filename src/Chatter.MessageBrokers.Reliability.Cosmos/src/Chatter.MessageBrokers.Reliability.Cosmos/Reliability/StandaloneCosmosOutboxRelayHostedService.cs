@@ -77,7 +77,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 infrastructureProvider,
                 bodyConverterFactory,
                 deliverySettings);
-            _giveUpHandler = new OutboxGiveUpHandler(deliverySettings.PoisonPolicy, _relay, logger);
+            _giveUpHandler = new OutboxGiveUpHandler(deliverySettings.GiveUpPolicy, _relay, logger);
 
             ProcessorFactory = BuildChangeFeedProcessor;
         }

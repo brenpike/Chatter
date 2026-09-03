@@ -106,7 +106,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // give-up handler's election read ONE give-up policy rather than two equal-valued copies.
             OutboxDeliverySettings deliverySettings = OutboxDeliverySettings.Legacy;
             _relay = new CosmosOutboxRelay(infrastructureProvider, bodyConverterFactory, deliverySettings);
-            _giveUpHandler = new OutboxGiveUpHandler(deliverySettings.PoisonPolicy, _relay, logger);
+            _giveUpHandler = new OutboxGiveUpHandler(deliverySettings.GiveUpPolicy, _relay, logger);
             _failureNotifier = new RelayFailureNotifier(logger);
             _logger = logger;
             ProcessorFactory = BuildChangeFeedProcessor;
