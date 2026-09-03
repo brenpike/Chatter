@@ -174,25 +174,31 @@ namespace Chatter.MessageBrokers.Recovery.Options
         public RecoveryOptions Build()
         {
             var recoveryOptions = new RecoveryOptions();
+            recoveryOptions.MaxRetryAttempts = _maxRetryAttempts;
+            // INVARIANT: the nested CircuitBreakerOptions is seeded BEFORE the parent bind so the binder mutates the
+            // instance CircuitBreakerOptionsBuilder already registered as a singleton instead of replacing it with an
+            // unregistered one. CircuitBreaker, RetryStrategy and RetryWithCircuitBreakerStrategy all inject the
+            // concrete type, so an orphaned instance would surface as a resolution failure.
+            recoveryOptions.CircuitBreakerOptions = _circuitBreakerOptions ?? CircuitBreakerOptionsBuilder.Create(_services).Build();
+
             if (_recoveryOptionsSection != null && _recoveryOptionsSection.Exists())
             {
-                recoveryOptions = _recoveryOptionsSection.Get<RecoveryOptions>();
-                _services.Configure<RecoveryOptions>(_recoveryOptionsSection);
+                // INVARIANT: bind INTO the fluent-defaulted instance and never replace it. Every property on
+                // RecoveryOptions is internal set, so the binder skips all of them unless BindNonPublicProperties is
+                // on; replacing the instance would additionally discard the defaults assigned above. Keys the section
+                // omits therefore keep their fluent default.
+                _recoveryOptionsSection.Bind(recoveryOptions, o => o.BindNonPublicProperties = true);
+                _services.Configure<RecoveryOptions>(_recoveryOptionsSection, o => o.BindNonPublicProperties = true);
             }
-            else
-            {
-                recoveryOptions.MaxRetryAttempts = _maxRetryAttempts;
-                recoveryOptions.CircuitBreakerOptions = _circuitBreakerOptions;
-            }
+
+            // INVARIANT: circuit breaker options reached through the Recovery parent section never pass through
+            // CircuitBreakerOptionsBuilder.Build(), so validating the finalized instance here is what makes build-time
+            // validation reachable from this entry point and not only from the standalone one.
+            recoveryOptions.CircuitBreakerOptions.Validate();
 
             if (_exceptionPredicates.Count > 0)
             {
                 _services.AddSingleton<IRetryExceptionPredicatesProvider>(new ConfigRetryExceptionPredicatesProvider(_exceptionPredicates));
-            }
-
-            if (recoveryOptions.CircuitBreakerOptions is null)
-            {
-                recoveryOptions.CircuitBreakerOptions = CircuitBreakerOptionsBuilder.Create(_services).Build();
             }
 
             _services.AddSingleton(recoveryOptions);
