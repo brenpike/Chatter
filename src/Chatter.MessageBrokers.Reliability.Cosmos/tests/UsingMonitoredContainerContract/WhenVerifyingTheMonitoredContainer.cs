@@ -165,5 +165,71 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingMonitoredContaine
             thrown.InnerException.Should().BeSameAs(readFailure);
             thrown.Message.Should().Contain(ContainerId).And.Contain(DatabaseId);
         }
+
+        [Fact]
+        public async Task MustRejectAContainerPartitionedOnTheTimeToLivePathTheDeliveredStampPatches()
+        {
+            Mock<Container> container = MonitoredContainer(Path("/ttl"), defaultTimeToLive: -1);
+
+            Func<Task> verify = () => MonitoredContainerContract.VerifyAsync(container.Object, Path("/ttl"), CancellationToken.None);
+
+            (await verify.Should().ThrowAsync<InvalidOperationException>(
+                "the delivered stamp patches /ttl on every drain and Cosmos rejects a patch of the partition key, so no document could ever be stamped delivered"))
+                .Which.Message.Should().Contain("/ttl");
+        }
+
+        [Fact]
+        public async Task MustRejectAContainerPartitionedOnTheStatusPathTheStampPatches()
+        {
+            Mock<Container> container = MonitoredContainer(Path("/status"), defaultTimeToLive: -1);
+
+            Func<Task> verify = () => MonitoredContainerContract.VerifyAsync(container.Object, Path("/status"), CancellationToken.None);
+
+            (await verify.Should().ThrowAsync<InvalidOperationException>(
+                "the status stamp patches /status on every drain, so a container partitioned on it can never advance a document out of pending"))
+                .Which.Message.Should().Contain("/status");
+        }
+
+        [Fact]
+        public async Task MustRejectAHierarchicalPartitionKeyCarryingAStampedPathInAnyPosition()
+        {
+            Mock<Container> container = MonitoredContainer(Path("/tenantId", "/ttl"), defaultTimeToLive: -1);
+
+            Func<Task> verify = () => MonitoredContainerContract.VerifyAsync(container.Object, Path("/tenantId", "/ttl"), CancellationToken.None);
+
+            (await verify.Should().ThrowAsync<InvalidOperationException>(
+                "a stamped path anywhere in a hierarchical partition key is still part of the partition key Cosmos refuses to patch"))
+                .Which.Message.Should().Contain("/ttl");
+        }
+
+        [Fact]
+        public async Task MustAcceptAPartitionKeyPathThatOnlyResemblesAStampedPathInCase()
+        {
+            Mock<Container> container = MonitoredContainer(Path("/Ttl"), defaultTimeToLive: -1);
+
+            Func<Task> verify = () => MonitoredContainerContract.VerifyAsync(container.Object, Path("/Ttl"), CancellationToken.None);
+
+            await verify.Should().NotThrowAsync("Cosmos partition-key paths are case-sensitive, so /Ttl is a different field from the /ttl the relay patches");
+        }
+
+        [Fact]
+        public async Task MustReportBothViolationsInOneThrowWhenThePathIsMismatchedAndAlsoCollidesWithAStampedPath()
+        {
+            Mock<Container> container = MonitoredContainer(Path("/ttl"), defaultTimeToLive: -1);
+
+            Func<Task> verify = () => MonitoredContainerContract.VerifyAsync(container.Object, Path("/tenantId"), CancellationToken.None);
+
+            (await verify.Should().ThrowExactlyAsync<InvalidOperationException>())
+                .Which.Message.Should().Contain("/tenantId").And.Contain("/ttl");
+        }
+
+        // DRIFT PIN: the contract rejects the paths the relay's own patch ops target, and the F2 (c) anchor forces the
+        // configured status patch path to that same field. If either side moved, a container partitioned on the status
+        // field would silently become acceptable again while the stamp still failed on it.
+        [Fact]
+        public void MustRejectTheVerySameStatusPathTheDeliverySettingsAnchorTheStatusPatchTo()
+        {
+            CosmosOutboxDocument.RelayStampedPaths.Should().Contain(OutboxDeliverySettings.Legacy.StatusPatchPath);
+        }
     }
 }

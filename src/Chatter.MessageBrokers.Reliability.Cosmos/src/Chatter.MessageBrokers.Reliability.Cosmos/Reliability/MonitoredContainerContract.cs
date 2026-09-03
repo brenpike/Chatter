@@ -8,11 +8,13 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.Reliability.Cosmos
 {
     // The single start-time reconciliation of the monitored container's DECLARED configuration against its GROUND TRUTH,
-    // shared by both relay hosts. It closes two silent runtime failure modes that a startup throw makes loud:
+    // shared by both relay hosts. It closes three silent runtime failure modes that a startup throw makes loud:
     //   - a mistyped/reordered partition-key path recovers a null-component PartitionKey, so the delivered-stamp patch
     //     404s after the publish already succeeded and the same message re-publishes on every change-feed pass (#362);
     //   - a POSITIVE container defaultTtl deletes a still-pending outbox document (written with no ttl field) before the
-    //     relay ever drains it, converting at-least-once into zero-times (#363).
+    //     relay ever drains it, converting at-least-once into zero-times (#363);
+    //   - a container partitioned on a path the relay itself patches ("/status" or "/ttl") can never be stamped, because
+    //     Cosmos rejects a patch of the partition key, so every document publishes and stays pending and re-publishes.
     internal static class MonitoredContainerContract
     {
         internal static async Task VerifyAsync(Container monitoredContainer,
@@ -22,15 +24,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             _ = monitoredContainer ?? throw new ArgumentNullException(nameof(monitoredContainer));
             _ = declaredPartitionKeyPath ?? throw new ArgumentNullException(nameof(declaredPartitionKeyPath));
 
-            // INVARIANT: the container properties are read EXACTLY ONCE per verification and BOTH checks read that same
-            // response, so adding a third ground-truth check never costs another metadata round-trip at start.
+            // INVARIANT: the container properties are read EXACTLY ONCE per verification and ALL checks read that same
+            // response, so adding a further ground-truth check never costs another metadata round-trip at start.
             ContainerProperties properties = await ReadPropertiesAsync(monitoredContainer, cancellationToken).ConfigureAwait(false);
 
-            // BOTH checks always run and a single throw names every violation: an operator who fixed one, restarted, and
-            // only then discovered the other would pay two failed starts for one misconfigured container.
+            // EVERY check always runs and a single throw names every violation: an operator who fixed one, restarted, and
+            // only then discovered another would pay a failed start per violation on one misconfigured container.
             var violations = new List<string>();
             AddWhenPresent(violations, DescribePartitionKeyViolation(declaredPartitionKeyPath, properties.PartitionKeyPaths));
             AddWhenPresent(violations, DescribeTimeToLiveViolation(properties.DefaultTimeToLive));
+            AddWhenPresent(violations, DescribeStampedPathCollision(properties.PartitionKeyPaths));
 
             if (violations.Count == 0)
             {
@@ -87,6 +90,44 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             }
 
             return $"its default time-to-live is {defaultTimeToLive.Value.ToString(CultureInfo.InvariantCulture)}, and a pending outbox document carries no ttl field, so Cosmos would delete it before the relay ever published it — the only accepted values are -1 (on, items without a ttl field never expire) and unset";
+        }
+
+        // The relay's delivered stamp patches BOTH the status path and "/ttl" on every drained document, and Cosmos
+        // REJECTS a patch of the partition key. The paths are read off CosmosOutboxDocument.RelayStampedPaths — derived
+        // from the very field constants the patch ops are built from — so this check can never drift from the ops it
+        // guards. Comparison is the same discipline the partition-key match uses: normalized to leading-slash form,
+        // ordinal, case-sensitive.
+        private static string DescribeStampedPathCollision(IReadOnlyList<string> actualPartitionKeyPaths)
+        {
+            if (actualPartitionKeyPaths is null)
+            {
+                return null;
+            }
+
+            foreach (string actualPath in actualPartitionKeyPaths)
+            {
+                string collidingPath = FindStampedPath(actualPath);
+                if (collidingPath is not null)
+                {
+                    return $"its actual partition-key path includes '{collidingPath}', which the relay patches on every drain — Cosmos rejects a patch of a document's partition key, so the stamp could never land and every published document would stay pending and publish again on the next pass, forever (this container's relay is already failing that way today; the check surfaces that defect rather than introducing it)";
+                }
+            }
+
+            return null;
+        }
+
+        private static string FindStampedPath(string actualPath)
+        {
+            string normalizedPath = NormalizeToLeadingSlash(actualPath);
+            foreach (string stampedPath in CosmosOutboxDocument.RelayStampedPaths)
+            {
+                if (string.Equals(normalizedPath, stampedPath, StringComparison.Ordinal))
+                {
+                    return stampedPath;
+                }
+            }
+
+            return null;
         }
 
         private static bool PathsMatch(IReadOnlyList<string> declaredPartitionKeyPath, IReadOnlyList<string> actualPartitionKeyPaths)

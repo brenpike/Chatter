@@ -25,7 +25,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                                       string deliveredStatusValue,
                                       Func<JsonElement, bool>? additionalPendingFilter = null,
                                       int poisonAfterConsecutiveFailures = 0,
-                                      string? poisonStatusValue = null)
+                                      string? poisonStatusValue = null,
+                                      string? unconfirmedStatusValue = null)
         {
             // F2 (a): a delivered document MUST advance out of pending, so its status value cannot be empty nor equal the
             // pending status — otherwise it would re-surface on the change feed forever.
@@ -88,6 +89,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             DeliveredTtlSeconds = deliveredTtlSeconds;
             StatusPatchPath = statusPatchPath;
             DeliveredStatusValue = deliveredStatusValue;
+            UnconfirmedStatusValue = unconfirmedStatusValue ?? CosmosOutboxDocument.StatusUnconfirmed;
             PoisonPolicy = poisonPolicy;
             _additionalPendingFilter = additionalPendingFilter;
         }
@@ -100,6 +102,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>The status value a delivered document is advanced to.</summary>
         public string DeliveredStatusValue { get; }
+
+        /// <summary>
+        /// The status value a PUBLISHED-BUT-UNCONFIRMED document is advanced to — one whose brokered message reached the
+        /// broker but whose delivered stamp then failed. Unlike the opt-in poison status this outcome is ALWAYS-ON, so it
+        /// defaults to <see cref="CosmosOutboxDocument.StatusUnconfirmed"/> rather than being left unset.
+        /// </summary>
+        public string UnconfirmedStatusValue { get; }
 
         /// <summary>
         /// The VALIDATED #361 poison policy: the consecutive-failure threshold at which the relay gives up on a

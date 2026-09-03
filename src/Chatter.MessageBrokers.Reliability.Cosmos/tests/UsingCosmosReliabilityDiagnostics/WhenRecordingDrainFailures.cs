@@ -70,6 +70,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
         [Theory]
         [InlineData(CosmosReliabilityDiagnostics.DrainFailuresInstrumentName)]
         [InlineData(CosmosReliabilityDiagnostics.PoisonedDocumentsInstrumentName)]
+        [InlineData(CosmosReliabilityDiagnostics.UnconfirmedGiveUpsInstrumentName)]
         public void MustReportDiagnosticsEnabledForASingleInstrumentOptIn(string instrumentName)
         {
             DeclareInstruments();

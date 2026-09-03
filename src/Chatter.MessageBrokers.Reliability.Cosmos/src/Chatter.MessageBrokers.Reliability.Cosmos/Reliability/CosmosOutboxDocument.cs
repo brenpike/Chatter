@@ -38,6 +38,15 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         public const string StatusDelivered = "delivered";
 
         /// <summary>
+        /// Non-pending delivery state for a document whose publish SUCCEEDED but whose delivered stamp could not be
+        /// confirmed. It is deliberately distinct from <see cref="StatusDelivered"/> — a delivery Chatter watched land
+        /// and a delivery it merely believes landed must stay tellable apart when an operator inspects the container —
+        /// and, like <see cref="StatusDelivered"/>, it is not <see cref="StatusPending"/>, so the relay's admission gate
+        /// stops admitting the document and cannot publish it again.
+        /// </summary>
+        public const string StatusUnconfirmed = "published-unconfirmed";
+
+        /// <summary>
         /// The Cosmos system TTL field name. The #222 relay stamps a positive per-document TTL here on delivery so Cosmos
         /// self-purges the delivered document — this is the ONLY field Cosmos honors for self-purge, so the delivered
         /// stamp's ttl path is hard-wired here rather than configurable.
@@ -91,6 +100,22 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
         /// <summary>The Chatter-reserved root field names (read-only view of the collision-guard set).</summary>
         public static IReadOnlyCollection<string> ReservedRootFields => _reservedRootFields;
+
+        /// <summary>
+        /// The document paths the #222 relay's OWN patch operations target when it stamps a drained document. Cosmos
+        /// REJECTS a patch of the partition key, so a container partitioned on any of these can never be stamped: every
+        /// document would publish, fail its stamp, stay pending, and re-publish on the next change-feed pass forever.
+        /// <see cref="MonitoredContainerContract"/> rejects such a container at host start. The collection is DERIVED
+        /// from the same field constants the patch ops are built from so the check can never drift from the ops.
+        /// </summary>
+        private static readonly IReadOnlyCollection<string> _relayStampedPaths = Array.AsReadOnly(new[]
+        {
+            "/" + StatusField,
+            "/" + TtlField,
+        });
+
+        /// <summary>The paths the relay patches on every drained document (read-only view of the stamped-path set).</summary>
+        public static IReadOnlyCollection<string> RelayStampedPaths => _relayStampedPaths;
 
         public CosmosOutboxDocument(string id, string messageId, string destination, string messageBody, string messageContentType, string serializedMessageContext)
         {

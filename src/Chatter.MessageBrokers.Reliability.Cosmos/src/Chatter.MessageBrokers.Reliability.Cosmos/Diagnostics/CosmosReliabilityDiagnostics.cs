@@ -64,6 +64,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// <summary>The number of documents abandoned as poisoned, by <see cref="LeaseToken"/>.</summary>
         public const string PoisonedDocumentsInstrumentName = "chatter.messaging.outbox.drain.poisoned";
 
+        /// <summary>The number of documents left published-unconfirmed, by <see cref="LeaseToken"/>.</summary>
+        public const string UnconfirmedGiveUpsInstrumentName = "chatter.messaging.outbox.drain.unconfirmed";
+
         /// <summary>How the Outbox Relay resolved one document; values come from <see cref="DrainOutcomes"/>.</summary>
         public const string DrainOutcome = "chatter.messaging.outbox.drain.outcome";
 
@@ -106,6 +109,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         private static readonly Counter<long> _drainedBatches = _meter.CreateCounter<long>(DrainedBatchesInstrumentName, "{batch}", "Number of change-feed batches the Outbox Relay handled, by lease.");
         private static readonly Counter<long> _drainFailures = _meter.CreateCounter<long>(DrainFailuresInstrumentName, "{failure}", "Number of drain attempts that faulted, by lease and error type.");
         private static readonly Counter<long> _poisonedDocuments = _meter.CreateCounter<long>(PoisonedDocumentsInstrumentName, "{document}", "Number of documents abandoned as poisoned, by lease.");
+        private static readonly Counter<long> _unconfirmedGiveUps = _meter.CreateCounter<long>(UnconfirmedGiveUpsInstrumentName, "{document}", "Number of documents the Outbox Relay stopped re-publishing after their message was published but never confirmed, by lease.");
 
         // INVARIANT: the representable bounds are DERIVED from DateTimeOffset rather than hardcoded, so the range
         // guard in RecordDrainLag can never drift from the range the conversion itself accepts. Neither read can
@@ -122,7 +126,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// enabling only an instrument is enough to take the instrumented path with no .NET <c>ActivityListener</c>
         /// attached.
         /// </summary>
-        public static bool IsEnabled => _source.HasListeners() || _drainLag.Enabled || _drainedDocuments.Enabled || _drainBatchSize.Enabled || _drainedBatches.Enabled || _drainFailures.Enabled || _poisonedDocuments.Enabled;
+        public static bool IsEnabled => _source.HasListeners() || _drainLag.Enabled || _drainedDocuments.Enabled || _drainBatchSize.Enabled || _drainedBatches.Enabled || _drainFailures.Enabled || _poisonedDocuments.Enabled || _unconfirmedGiveUps.Enabled;
 
         /// <summary>
         /// Counts one Outbox Document the Outbox Relay resolved.
@@ -263,6 +267,35 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
             var tags = new TagList { { LeaseToken, leaseToken } };
 
             _poisonedDocuments.Add(1, tags);
+        }
+
+        /// <summary>
+        /// Counts one document the Outbox Relay stopped re-publishing after its brokered message was published but
+        /// never confirmed delivered.
+        /// </summary>
+        /// <param name="leaseToken">The change-feed lease the document kept failing to confirm under, carried as <see cref="LeaseToken"/>.</param>
+        /// <remarks>
+        /// INVARIANT: this is its OWN instrument and never a second value on the poisoned count. That instrument's
+        /// NAME asserts the document was never delivered, which is FALSE here — the message went out — so carrying
+        /// both on one name would be one spelling covering two concepts (ADR-0010 D4). The two also differ in when
+        /// they emit: the Poison Policy is opt-in and off by default, while this bound is always on and applies to
+        /// both Outbox Relay variants, so folding this in would start publishing on the poisoned count for an
+        /// application that opted into nothing.
+        /// INVARIANT: this is not a fourth <see cref="DrainOutcomes"/> value either. That vocabulary is closed, and
+        /// a document whose message was published is already <see cref="DrainOutcomes.Admitted"/> there, correctly.
+        /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/>, never
+        /// <see cref="IsEnabled"/>, and the tag is built INSIDE it (ADR-0010 R1).
+        /// </remarks>
+        internal static void RecordUnconfirmedGiveUp(string leaseToken)
+        {
+            if (!_unconfirmedGiveUps.Enabled)
+            {
+                return;
+            }
+
+            var tags = new TagList { { LeaseToken, leaseToken } };
+
+            _unconfirmedGiveUps.Add(1, tags);
         }
 
         private static string ResolveTelemetryVersion()

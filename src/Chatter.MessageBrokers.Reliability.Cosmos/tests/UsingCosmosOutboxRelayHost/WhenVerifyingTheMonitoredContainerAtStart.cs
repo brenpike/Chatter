@@ -58,7 +58,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
         // The declared-source-identity (advanced) registration path keeps the host off the resolved handle's account
         // endpoint, so the lease handle needs no identity setup at all.
         private static DocumentReliabilityRegistration RegistrationFor<TCommand>(string declaredSourceIdentity,
-                                                                                 Container monitoredContainer)
+                                                                                 Container monitoredContainer,
+                                                                                 IReadOnlyList<string> declaredPartitionKeyPath = null)
             where TCommand : ICommand
         {
             Container leaseContainer = Mock.Of<Container>();
@@ -68,7 +69,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
                 declaredSourceIdentity + ":document",
                 declaredSourceIdentity + ":lease",
                 _ => new PartitionKey("pk"),
-                DeclaredPartitionKeyPath,
+                declaredPartitionKeyPath ?? DeclaredPartitionKeyPath,
                 documentContainerFactory: _ => monitoredContainer,
                 leaseContainerFactory: _ => leaseContainer,
                 declaredSourceIdentity: new CosmosSourceIdentity(declaredSourceIdentity, declaredSourceIdentity + "-lease"));
@@ -142,6 +143,21 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             await start.Should().ThrowAsync<InvalidOperationException>(
                 "one misconfigured monitored container must take the whole host down at start");
             ShouldHaveStartedNoProcessor(valid, "every descriptor is verified before any processor is built, so a later failure cannot leave an earlier processor running with no StopAsync to stop it");
+        }
+
+        [Fact]
+        public async Task MustFailStartOnAPartitionKeyThatCollidesWithARelayStampedPathBeforeBuildingAnyProcessor()
+        {
+            IReadOnlyList<string> stampedPath = Array.AsReadOnly(new[] { "/ttl" });
+            Mock<Container> monitored = MonitoredContainer("orders", stampedPath, defaultTimeToLive: -1);
+            CosmosOutboxRelayHostedService host = Host(RegistrationFor<CreateOrder>("orders-source", monitored.Object, stampedPath));
+
+            Func<Task> start = () => host.StartAsync(CancellationToken.None);
+
+            (await start.Should().ThrowAsync<InvalidOperationException>(
+                "the relay patches /ttl on every delivered stamp and Cosmos rejects a patch of the partition key, so every document would publish, fail its stamp, stay pending and re-publish forever"))
+                .Which.Message.Should().Contain("/ttl");
+            ShouldHaveStartedNoProcessor(monitored, "a container that failed verification must never have a change-feed processor built for it");
         }
 
         [Fact]

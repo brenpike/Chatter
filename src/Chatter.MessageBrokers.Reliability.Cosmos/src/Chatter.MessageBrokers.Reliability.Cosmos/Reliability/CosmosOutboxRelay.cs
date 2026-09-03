@@ -92,10 +92,24 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// reconstruction path is used. A non-admitted document is a no-op. A publish (or resolver) failure performs no
         /// patch and propagates so the host does not checkpoint the change-feed batch.
         /// </summary>
-        internal async Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, IOutboxBodyResolver resolver, CancellationToken cancellationToken = default)
+        internal Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, IOutboxBodyResolver resolver, CancellationToken cancellationToken = default)
+            => ProcessChangeAsync(document, monitoredContainer, partitionKeyPath, resolver, new OutboxDrainAttempt(), cancellationToken);
+
+        /// <summary>
+        /// Processes a single change-feed document, reporting into <paramref name="attempt"/> the PHASE the drain
+        /// reached: <see cref="OutboxDrainAttempt.MarkPublished"/> is called the instant the publish RETURNS, and
+        /// nowhere else. A caller holding the attempt can therefore tell a PRE-publish failure (nothing went out) from
+        /// a POST-publish one (the message is already on the broker) without classifying the exception.
+        /// </summary>
+        /// <remarks>
+        /// The attempt is supplied by the CALLER, not owned here, precisely so it outlives a drain that THROWS. The
+        /// overloads above pass a throwaway attempt, so a caller that does not care about the phase is unaffected.
+        /// </remarks>
+        internal async Task ProcessChangeAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, IOutboxBodyResolver resolver, OutboxDrainAttempt attempt, CancellationToken cancellationToken = default)
         {
             _ = monitoredContainer ?? throw new ArgumentNullException(nameof(monitoredContainer));
             _ = partitionKeyPath ?? throw new ArgumentNullException(nameof(partitionKeyPath));
+            _ = attempt ?? throw new ArgumentNullException(nameof(attempt));
 
             if (!_settings.IsAdmitted(document))
             {
@@ -123,6 +137,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // No resolver supplied: the verbatim reconstruction path is unchanged — reconstruct the brokered message
                 // from the persisted outbox fields and publish it.
                 await DispatchAsync(Reconstruct(document));
+                attempt.MarkPublished();
                 messageDispatched = true;
             }
             else
@@ -136,6 +151,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 if (messageDispatched)
                 {
                     await DispatchAsync(resolved);
+                    attempt.MarkPublished();
                 }
             }
 
@@ -338,6 +354,33 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             };
 
             return PatchStampAsync(document, monitoredContainer, partitionKeyPath, "poisoned", patchOperations, cancellationToken);
+        }
+
+        /// <summary>
+        /// Bounds a POST-PUBLISH failure: a SINGLE <see cref="Container.PatchItemAsync"/> with exactly ONE op — set the
+        /// status path to the configured unconfirmed value — for a document whose brokered message ALREADY reached the
+        /// broker but whose delivered stamp could not be confirmed. <see cref="CosmosOutboxDocument.IsPendingOutbox"/>
+        /// stops admitting it, so the change feed advances past it instead of re-publishing it forever.
+        /// </summary>
+        /// <remarks>
+        /// The document is NEVER deleted and carries NO ttl op: like a given-up document, a published-unconfirmed one is
+        /// the evidence of a delivery nobody could confirm, so it must stay in the container and stay inspectable
+        /// indefinitely.
+        /// INVARIANT: the id and the partition key are resolved by the SAME reads the delivered and poison stamps use, so
+        /// a misconfigured partition-key path makes this patch fail exactly as those would and PROPAGATES. A
+        /// configuration error must not be laundered into "give up on everything".
+        /// </remarks>
+        internal Task StampUnconfirmedAsync(JsonElement document, Container monitoredContainer, IReadOnlyList<string> partitionKeyPath, CancellationToken cancellationToken = default)
+        {
+            _ = monitoredContainer ?? throw new ArgumentNullException(nameof(monitoredContainer));
+            _ = partitionKeyPath ?? throw new ArgumentNullException(nameof(partitionKeyPath));
+
+            var patchOperations = new List<PatchOperation>
+            {
+                PatchOperation.Set(_settings.StatusPatchPath, _settings.UnconfirmedStatusValue),
+            };
+
+            return PatchStampAsync(document, monitoredContainer, partitionKeyPath, "unconfirmed", patchOperations, cancellationToken);
         }
 
         // Issues ONE PatchItemAsync for a status stamp, keyed by the document id read off the change-feed item and the
