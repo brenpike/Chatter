@@ -38,14 +38,20 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// as an internal key precisely BECAUSE the gate is per-processor, but a measurement LEAVING this process has no
     /// such scoping, so the identity that was implicit here is stated explicitly on every suspension it reports.
     /// It is a construction-time requirement, so a gate that could report an ambiguous suspension is not constructible.
-    /// CONCURRENCY: a state transition is CLOSED BY CONSTRUCTION rather than by an external ordering guarantee. Every
-    /// entry is an IMMUTABLE <c>LeaseDrainState</c> swapped by compare-and-swap against the exact snapshot the
-    /// transition was computed from, so a transition computed from ONE observation of gate state can never be applied
-    /// to a DIFFERENT one. Three sub-classes are thereby unrepresentable: a lost or torn multi-field update; a write
-    /// applied to an entry a concurrent confirmation success already evicted; and a side effect emitted without its
-    /// justifying transition having landed. The bound holds under ANY interleaving, so it does not rest on a claim
-    /// about how the SDK schedules delivery — a claim Chatter neither owns nor enforces, and which a future SDK
-    /// change, a retry wrapper, or a host that ever fanned one lease out could otherwise silently void.
+    /// CONCURRENCY: a state TRANSITION is CLOSED BY CONSTRUCTION rather than by an external ordering guarantee. A
+    /// <c>LeaseDrainState</c> is IMMUTABLE, and each of the THREE transition writes — the probe re-arm in
+    /// <see cref="PermitDrain"/> and both arms of <see cref="RecordConfirmationFailure"/> — is a compare-and-swap
+    /// against the exact snapshot the transition was computed from, so a transition computed from ONE observation of
+    /// gate state can never be applied to a DIFFERENT one. The FOURTH write is NOT one of them: the eviction in
+    /// <see cref="RecordConfirmationSuccess"/> is an atomic remove-and-return rather than a swap against a snapshot,
+    /// and the residual that leaves is named on that method.
+    /// Three sub-classes are thereby unrepresentable: a lost or torn multi-field update; a write applied to an entry a
+    /// concurrent confirmation success already evicted; and a side effect emitted without its justifying transition
+    /// having landed. THOSE THREE hold under any interleaving, so they do not rest on a claim about how the SDK
+    /// schedules delivery — a claim Chatter neither owns nor enforces, and which a future SDK change, a retry wrapper,
+    /// or a host that ever fanned one lease out could otherwise silently void. That is the scope of the claim and not
+    /// a global one: the ENTITLEMENT of a suspension lift remains order-sensitive, as
+    /// <see cref="RecordConfirmationSuccess"/> states.
     /// The swap loop is LOCK-FREE rather than wait-free: a caller that loses a swap re-reads and recomputes. Under
     /// real delivery it sees no contention, because the concurrency the dictionary exists for is this processor's
     /// DISTINCT leases arriving at DIFFERENT keys.
@@ -240,6 +246,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         /// failure is what opens a suspension. It cannot lift one falsely because the relay is fail-closed — a
         /// Confirmation Failure anywhere in the batch throws before any receipt reaches this method.
         /// EVICTION on a present receipt is UNCHANGED, and remains what bounds the key space.
+        /// RESIDUAL, stated plainly: a confirmation success may clear failure state recorded AFTER its own confirming
+        /// write landed. It is reachable ONLY when two change-feed delegate invocations for the SAME lease overlap
+        /// across a lease rebalance. It CANNOT fire within a single batch: the relay is fail-closed, so a Confirmation
+        /// Failure throws before this method is reached, on BOTH hosts. The cost is one counter reset — at most
+        /// <see cref="Threshold"/> republishes, then the suspension re-opens — and the reset-path arithmetic already
+        /// bounds it: ADR-0007 names host restart, lease rebalance and entry eviction on a successful confirmation as
+        /// reset paths each costing at most <see cref="Threshold"/> republishes before re-opening. This residual is
+        /// INSIDE that shipped bound, so it is a documented characteristic rather than an unbounded hole.
+        /// It is an ENTITLEMENT property and NOT a torn write: <c>TryRemove(key, out value)</c> is ATOMIC and returns
+        /// exactly the entry it removed, so the <c>IsSuspended</c> check decides against exactly what it cleared and
+        /// there is no observe-then-act window here to close.
         /// </remarks>
         internal void RecordConfirmationSuccess(string leaseToken, ConfirmationReceipt receipt)
         {
@@ -253,6 +270,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // concurrently owns AND that are failing - not by a configured capacity that could fill up, silently stop
             // counting, and disengage the very brake it was added to arm. There is deliberately no capacity, no
             // eviction policy and no entry time-to-live here; success is the whole lifetime rule.
+            //
+            // TryRemove is ATOMIC and hands back exactly the entry it cleared, so the IsSuspended check below decides
+            // against precisely that entry - there is no observe-then-act window. What it does NOT order is
+            // ENTITLEMENT: this success may clear failure state recorded AFTER its own confirming write landed,
+            // reachable only when two same-lease delegate invocations overlap across a lease rebalance. It cannot fire
+            // within a batch - the relay is fail-closed and throws first. Cost is one counter reset: at most Threshold
+            // republishes before the suspension re-opens, which is inside the reset-path bound ADR-0007 already names.
             if (!_statesByLeaseToken.TryRemove(leaseToken, out LeaseDrainState state) || !state.IsSuspended)
             {
                 return;
