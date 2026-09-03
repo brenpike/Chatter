@@ -34,8 +34,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <item>On publish success, STAMPS delivered + TTL: a SINGLE <see cref="Container.PatchItemAsync"/> with two ops —
     /// set <c>/status="delivered"</c> and set <c>/ttl=&lt;positive seconds&gt;</c> — keyed by the document id and the
     /// partition key recovered from the change-feed document at the container's declared partition-key path. Cosmos then
-    /// self-purges the delivered document once its TTL elapses (the container MUST have <c>defaultTtl</c> enabled — a
-    /// startup prerequisite the host verifies through the <c>MonitoredContainerContract</c>, not a silent assumption).</item>
+    /// self-purges the delivered document once its TTL elapses, but ONLY when the container has <c>defaultTtl</c> enabled
+    /// (<c>-1</c>). <c>MonitoredContainerContract</c> verifies at start that the container's <c>defaultTtl</c> cannot PURGE
+    /// a still-pending document; it does NOT require purge to be on, because it also accepts <c>defaultTtl</c> UNSET — and
+    /// under unset this stamp is written but Cosmos expires nothing, so delivered documents are never purged.</item>
     /// </list>
     /// </summary>
     /// <remarks>
