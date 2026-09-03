@@ -6,6 +6,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Metrics;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -103,6 +104,79 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingRelayFailureNotif
             Func<Task> notifying = () => notifier.OnChangeFeedErrorAsync("lease-7", _changeFeedFault);
 
             await notifying.Should().NotThrowAsync();
+        }
+
+        /// <summary>
+        /// The mirror of the broken-logger guarantee, on the OTHER sink. The counter is OPT-IN and the log is
+        /// ALWAYS-ON, so an application whose meter callback faults must not thereby lose the log channel it never
+        /// opted into and cannot opt out of: that would leave the stalled lease exactly as unreported as the defect
+        /// #361 describes, with the optional sink deciding the fate of the mandatory one.
+        /// </summary>
+        [Fact]
+        public async Task MustStillLogTheFaultWhenTheMetricSinkThrows()
+        {
+            var logger = new RecordingLogger();
+            var notifier = new RelayFailureNotifier(logger);
+
+            using (new ThrowingMeterScope(CosmosReliabilityDiagnostics.MeterName))
+            {
+                Func<Task> notifying = () => notifier.OnChangeFeedErrorAsync("lease-7", _changeFeedFault);
+
+                await notifying.Should().NotThrowAsync();
+            }
+
+            var entry = logger.Entries.Should().ContainSingle().Subject;
+
+            entry.Level.Should().Be(LogLevel.Error);
+            entry.Message.Should().Contain("lease-7");
+            entry.Exception.Should().BeSameAs(_changeFeedFault);
+        }
+
+        /// <summary>
+        /// A <see cref="MeterListener"/> whose measurement callback is broken, as a misconfigured application's
+        /// collector can be. A .NET measurement callback runs INLINE on the recording thread, so its throw surfaces
+        /// out of the counter's own <c>Add</c> and into the notifier.
+        /// </summary>
+        private sealed class ThrowingMeterScope : IDisposable
+        {
+            private readonly MeterListener _listener;
+            private readonly List<Instrument> _enabledInstruments = new List<Instrument>();
+
+            public ThrowingMeterScope(string meterName)
+            {
+                // The meter name is a CONST, so reading it does not run the diagnostics type's static initializer and
+                // the instruments may not exist yet; this touch forces them to be published before the listener starts.
+                _ = CosmosReliabilityDiagnostics.IsEnabled;
+
+                _listener = new MeterListener
+                {
+                    InstrumentPublished = (instrument, listener) =>
+                    {
+                        if (instrument.Meter.Name == meterName)
+                        {
+                            listener.EnableMeasurementEvents(instrument);
+                            _enabledInstruments.Add(instrument);
+                        }
+                    },
+                };
+
+                _listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, state) => throw new InvalidOperationException("the metric collector is broken"));
+                _listener.Start();
+            }
+
+            // Each instrument is disabled EXPLICITLY before the listener is disposed, as RecordingMeterScope does:
+            // the off-state probe in this same collection asserts nothing is opted into, so a leaked enablement would
+            // report as that test's failure rather than this one's.
+            public void Dispose()
+            {
+                foreach (var instrument in _enabledInstruments)
+                {
+                    _listener.DisableMeasurementEvents(instrument);
+                }
+
+                _enabledInstruments.Clear();
+                _listener.Dispose();
+            }
         }
 
         /// <summary>An <see cref="ILogger"/> whose sink is broken, as a misconfigured application's can be.</summary>
