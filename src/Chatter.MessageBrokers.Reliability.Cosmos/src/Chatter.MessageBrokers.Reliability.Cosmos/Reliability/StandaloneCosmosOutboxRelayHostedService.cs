@@ -2,9 +2,11 @@ using Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,22 +38,31 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         private readonly CosmosOutboxRelayOptions _options;
         private readonly CosmosOutboxRelay _relay;
         private readonly StandaloneRelayProcessorRegistry _processorRegistry;
+        private readonly RelayFailureNotifier _failureNotifier;
+        private readonly GuardedRelayLog _log;
         private ChangeFeedProcessor _processor;
 
         // processorRegistry is OPTIONAL (defaults null) so every existing direct-construction call site (and the legacy
         // 4-arg registration) keeps compiling: a null registry disables the start-time backstop (it becomes a no-op). The DI
         // registration path (AddCosmosOutboxRelay) always passes the shared registry so the guard is active in production.
+        // logger is OPTIONAL for the same reason and because a null logger is a documented silent no-op for both sinks that
+        // take it (the failure notifier's #361 change-feed-fault log and the start-failure cleanup's stop-failure log):
+        // observability may never be a construction prerequisite. It is wrapped in a GuardedRelayLog at construction and
+        // this host keeps NO raw ILogger field, so no log call here can throw into control flow.
         internal StandaloneCosmosOutboxRelayHostedService(IServiceProvider serviceProvider,
                                                           IMessagingInfrastructureProvider infrastructureProvider,
                                                           IBodyConverterFactory bodyConverterFactory,
                                                           CosmosOutboxRelayOptions options,
-                                                          StandaloneRelayProcessorRegistry processorRegistry = null)
+                                                          StandaloneRelayProcessorRegistry processorRegistry = null,
+                                                          ILogger<StandaloneCosmosOutboxRelayHostedService> logger = null)
         {
             _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
             _ = infrastructureProvider ?? throw new ArgumentNullException(nameof(infrastructureProvider));
             _ = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _processorRegistry = processorRegistry;
+            _log = new GuardedRelayLog(logger);
+            _failureNotifier = new RelayFailureNotifier(logger);
 
             // Build the relay with the options' validated drain knobs (OutboxDeliverySettings.FromOptions enforces the F2
             // invariants), including the caller's optional AdditionalPendingFilter, which the relay's ProcessChangeAsync
@@ -64,7 +75,17 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 infrastructureProvider,
                 bodyConverterFactory,
                 OutboxDeliverySettings.FromOptions(options));
+
+            ProcessorFactory = BuildChangeFeedProcessor;
         }
+
+        // Test seam over the processor build, reusing the registry host's delegate type. The SDK's
+        // ChangeFeedProcessorBuilder is SEALED (and its fluent methods are non-virtual), so the build chain itself is
+        // unmockable, while the ChangeFeedProcessor it yields is public abstract with a public parameterless constructor
+        // and IS mockable. The default is this host's OWN BuildChangeFeedProcessor - the real builder chain in its
+        // original order - so the built processor's configuration is identical whether or not the seam is substituted;
+        // nothing about the seam alters what production builds.
+        internal CosmosOutboxRelayHostedService.RelayProcessorFactory ProcessorFactory { get; set; }
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
@@ -77,29 +98,100 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             RegisterStartTimeProcessorIdentity(descriptor);
 
             Container monitoredContainer = descriptor.MonitoredContainer;
-            Container leaseContainer = descriptor.LeaseContainer;
             IReadOnlyList<string> partitionKeyPath = descriptor.PartitionKeyPath;
 
-            ChangeFeedProcessor processor = monitoredContainer
-                .GetChangeFeedProcessorBuilder(descriptor.ProcessorName, (ChangeFeedProcessorContext context, Stream changes, CancellationToken changeCancellationToken)
-                    => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, context.LeaseToken, changeCancellationToken))
+            // Start-time reconciliation of the monitored container's DECLARED configuration against its GROUND TRUTH: a
+            // partition-key path that does not match makes every delivered stamp 404 AFTER a successful publish (#362) and a
+            // purging default time-to-live deletes a still-pending document before the relay drains it (#363). Both are
+            // silent at runtime, so they are rejected HERE — after the cheap in-memory collision backstop, so a collision
+            // never pays for this metadata round-trip, and before any processor is built.
+            await MonitoredContainerContract.VerifyAsync(monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
+
+            ChangeFeedProcessor processor = ProcessorFactory(
+                descriptor,
+                instanceName,
+                (ChangeFeedProcessorContext context, Stream changes, CancellationToken changeCancellationToken)
+                    => HandleChangesAsync(changes, monitoredContainer, partitionKeyPath, context.LeaseToken, changeCancellationToken));
+
+            // INVARIANT: the host OWNS the processor BEFORE it awaits the start, so a start that throws still leaves the
+            // in-flight processor referenced for cleanup rather than unreferenced with nothing able to stop it - the
+            // generic host never calls StopAsync on a hosted service whose StartAsync threw.
+            _processor = processor;
+
+            try
+            {
+                await processor.StartAsync().ConfigureAwait(false);
+            }
+            catch (Exception startFailure)
+            {
+                // WHAT IS NOT GUARANTEED: stopping is BEST-EFFORT. The SDK throws when stopping a processor that never
+                // finished starting, and that stop failure is logged at Error and swallowed so it can never mask the
+                // start failure. The report goes through GuardedRelayLog, so a broken application logging provider
+                // cannot escape this catch either and replace the start failure the caller must observe. A start that failed partway may also have acquired change-feed leases; a best-effort
+                // stop NARROWS that window but cannot close it, so leases may remain partially acquired until they expire.
+                Exception stopFailure = await StopTrackedProcessorAsync().ConfigureAwait(false);
+                if (stopFailure is not null)
+                {
+                    _log.Error(stopFailure, "The Standalone Cosmos Outbox Relay host could not stop its change-feed processor while cleaning up after a failed start; the cleanup failure is swallowed so the start failure stays the one the host reports.");
+                }
+
+                ExceptionDispatchInfo.Capture(startFailure).Throw();
+            }
+        }
+
+        // The real SDK builder chain, and the ONLY implementation production uses. The configuration is exactly what it
+        // was before the seam existed, in the SAME order: instance name, lease container, error notification, start time.
+        private ChangeFeedProcessor BuildChangeFeedProcessor(CosmosOutboxRelayHostedService.RelayProcessorDescriptor descriptor,
+                                                             string instanceName,
+                                                             Container.ChangeFeedStreamHandler onChanges)
+            => descriptor.MonitoredContainer
+                .GetChangeFeedProcessorBuilder(descriptor.ProcessorName, onChanges)
                 .WithInstanceName(instanceName)
-                .WithLeaseContainer(leaseContainer)
+                .WithLeaseContainer(descriptor.LeaseContainer)
+                // The SDK's error-notification seam is the ONLY channel carrying a lease/processor fault TOGETHER with the
+                // lease token it faulted under, so a stalled lease is reported rather than silent (#361).
+                .WithErrorNotification(_failureNotifier.OnChangeFeedErrorAsync)
                 // Start from the BEGINNING of the change feed (see CosmosOutboxRelayHostedService): the SDK default start
                 // point is "now", which would skip any pending outbox documents written before the lease initializes.
                 .WithStartTime(DateTime.MinValue.ToUniversalTime())
                 .Build();
 
-            await processor.StartAsync().ConfigureAwait(false);
-            _processor = processor;
-        }
-
+        // Shutdown goes through the SAME best-effort cleanup the start-failure path uses. The difference is what happens
+        // to a collected stop failure: here it is SURFACED type-preserving (a shutdown that could not stop the processor
+        // is the caller's business), whereas the start-failure path logs and swallows it so it cannot mask the start
+        // failure. Either way the host then owns no processor, so a second shutdown is a no-op.
         public async Task StopAsync(CancellationToken cancellationToken)
         {
-            if (_processor is not null)
+            Exception stopFailure = await StopTrackedProcessorAsync().ConfigureAwait(false);
+
+            if (stopFailure is not null)
             {
-                await _processor.StopAsync().ConfigureAwait(false);
-                _processor = null;
+                ExceptionDispatchInfo.Capture(stopFailure).Throw();
+            }
+        }
+
+        // Best-effort cleanup shared by the start-failure path and StopAsync: the tracked processor is stopped, the host
+        // then owns none, and a stop failure is RETURNED (null when there was none) for the caller to surface or swallow.
+        // It never throws itself - the SDK throws when stopping a processor that never finished starting, and that must
+        // never become the failure the host reports.
+        private async Task<Exception> StopTrackedProcessorAsync()
+        {
+            ChangeFeedProcessor processor = _processor;
+            _processor = null;
+
+            if (processor is null)
+            {
+                return null;
+            }
+
+            try
+            {
+                await processor.StopAsync().ConfigureAwait(false);
+                return null;
+            }
+            catch (Exception stopFailure)
+            {
+                return stopFailure;
             }
         }
 

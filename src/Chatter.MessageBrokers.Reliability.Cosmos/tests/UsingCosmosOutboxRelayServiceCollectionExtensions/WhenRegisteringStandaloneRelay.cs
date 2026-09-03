@@ -5,6 +5,8 @@ using FluentAssertions;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System;
 using System.Collections.Generic;
@@ -114,6 +116,58 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosOutboxRelay
             provider.GetServices<IHostedService>()
                 .OfType<StandaloneCosmosOutboxRelayHostedService>()
                 .Should().HaveCount(1, "AddCosmosOutboxRelay registers the standalone relay host");
+        }
+
+        /// <summary>
+        /// The always-on observability channel of #361. The standalone host is built by an explicit FACTORY, so nothing
+        /// injects its logger for it: without the factory resolving one, the change-feed fault log is silent in every
+        /// production application while the meters still record — which is exactly the silence #361 exists to close.
+        /// </summary>
+        // The wired logger is private to the host and the sink that takes it fires only on a live change-feed fault, so
+        // the category the application's ILoggerFactory was asked for is the observable evidence available here.
+        [Fact]
+        public void MustResolveTheApplicationsLoggerForTheStandaloneHost()
+        {
+            var loggerProvider = new CategoryRecordingLoggerProvider();
+            ServiceCollection services = ServicesWithBrokerDependencies();
+            services.AddLogging(logging => logging.AddProvider(loggerProvider));
+            services.AddCosmosOutboxRelay(ValidConfigure());
+
+            using ServiceProvider provider = services.BuildServiceProvider();
+            provider.GetServices<IHostedService>().OfType<StandaloneCosmosOutboxRelayHostedService>().Should().ContainSingle();
+
+            loggerProvider.Categories.Should().Contain(typeof(StandaloneCosmosOutboxRelayHostedService).FullName,
+                "the registration must hand the host a logger from the application's logging, or #361's always-on log channel is dead in production");
+        }
+
+        /// <summary>
+        /// Logging stays OPTIONAL: an application that configured none must still get a working relay, so the logger is
+        /// resolved with <c>GetService</c> (null when absent) rather than demanded.
+        /// </summary>
+        [Fact]
+        public void MustConstructTheStandaloneHostWhenNoLoggingIsConfigured()
+        {
+            using ServiceProvider provider = BuildProviderWith(ValidConfigure());
+
+            Action act = () => provider.GetServices<IHostedService>().ToList();
+
+            act.Should().NotThrow("observability is never a construction prerequisite for the relay");
+        }
+
+        // An ILoggerProvider recording the categories the application's ILoggerFactory was asked to create a logger for.
+        private sealed class CategoryRecordingLoggerProvider : ILoggerProvider
+        {
+            public List<string> Categories { get; } = new List<string>();
+
+            public ILogger CreateLogger(string categoryName)
+            {
+                Categories.Add(categoryName);
+                return NullLogger.Instance;
+            }
+
+            public void Dispose()
+            {
+            }
         }
 
         [Fact]

@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers;
 using Chatter.MessageBrokers.Reliability.Cosmos;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Linq;
 
@@ -54,13 +55,17 @@ namespace Microsoft.Extensions.DependencyInjection
 
             // Register a distinct singleton IHostedService per call (factory-built, so the registration never dedupes): two
             // calls yield two relays. The host resolves IMessagingInfrastructureProvider + IBodyConverterFactory from DI and
-            // captures the validated options.
+            // captures the validated options. The logger is resolved with GetService, NOT GetRequiredService: an
+            // application that configured no logging must still get a working relay (the host treats a null logger as a
+            // silent no-op), but one that DID configure logging must get the always-on change-feed-fault log channel —
+            // a factory-built host is injected nothing it does not ask for.
             services.AddSingleton<IHostedService>(serviceProvider => new StandaloneCosmosOutboxRelayHostedService(
                 serviceProvider,
                 serviceProvider.GetRequiredService<IMessagingInfrastructureProvider>(),
                 serviceProvider.GetRequiredService<IBodyConverterFactory>(),
                 options,
-                processorRegistry));
+                processorRegistry,
+                serviceProvider.GetService<ILogger<StandaloneCosmosOutboxRelayHostedService>>()));
 
             return services;
         }

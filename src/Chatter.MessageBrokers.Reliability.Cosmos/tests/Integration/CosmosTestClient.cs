@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.Azure.Cosmos;
@@ -82,13 +83,33 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.Integration
         // stamps on a delivered outbox doc (criterion 4). Without DefaultTimeToLive enabled the per-document ttl is
         // ignored by Cosmos.
         private static Task CreateDocumentContainerAsync(Database database, string containerName)
-        {
-            var properties = new ContainerProperties(containerName, PartitionKeyPath)
+            => ProvisionContainerAsync(database, new ContainerProperties(containerName, PartitionKeyPath)
             {
                 DefaultTimeToLive = -1,
-            };
+            });
 
-            return database.CreateContainerIfNotExistsAsync(properties);
+        // Creates a document container at the suite's single-segment PK path with the CALLER'S DefaultTimeToLive, on
+        // demand rather than as part of CreateAsync, so a test needing a container whose ttl the relay's start-time
+        // contract rejects (#363) pays for it alone and every other test's provisioning cost is unchanged.
+        public Task<Container> CreateContainerWithDefaultTimeToLiveAsync(string containerName, int defaultTimeToLive)
+            => ProvisionContainerAsync(Client.GetDatabase(DatabaseName), new ContainerProperties(containerName, PartitionKeyPath)
+            {
+                DefaultTimeToLive = defaultTimeToLive,
+            });
+
+        // Creates a container with a HIERARCHICAL (multi-segment) partition key, non-purging, on demand. Only a REAL
+        // container can say what the SDK reports back as a hierarchical container's PartitionKeyPaths, which is the
+        // ground truth the relay's start-time contract compares the declared path against.
+        public Task<Container> CreateHierarchicalContainerAsync(string containerName, IReadOnlyList<string> partitionKeyPaths)
+            => ProvisionContainerAsync(Client.GetDatabase(DatabaseName), new ContainerProperties(containerName, partitionKeyPaths)
+            {
+                DefaultTimeToLive = -1,
+            });
+
+        private static async Task<Container> ProvisionContainerAsync(Database database, ContainerProperties properties)
+        {
+            ContainerResponse response = await database.CreateContainerIfNotExistsAsync(properties).ConfigureAwait(false);
+            return response.Container;
         }
 
         public ValueTask DisposeAsync()
