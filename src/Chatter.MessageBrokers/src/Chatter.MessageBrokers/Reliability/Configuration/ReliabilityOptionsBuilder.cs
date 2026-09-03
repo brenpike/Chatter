@@ -75,17 +75,19 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         public ReliabilityOptions Build()
         {
             var reliabilityOptions = new ReliabilityOptions();
+            reliabilityOptions.RouteMessagesToOutbox = _routeMessagesToOutbox;
+            reliabilityOptions.MinutesToLiveInMemory = _minutesToLiveInMemory;
+            reliabilityOptions.EnableOutboxPollingProcessor = _enableOutboxPollingProcessor;
+            reliabilityOptions.OutboxProcessingIntervalInMilliseconds = _outboxProcessingIntervalInMilliseconds;
+
             if (_reliabilityOptionsSection != null && _reliabilityOptionsSection.Exists())
             {
-                reliabilityOptions = _reliabilityOptionsSection.Get<ReliabilityOptions>();
-                _services.Configure<ReliabilityOptions>(_reliabilityOptionsSection);
-            }
-            else
-            {
-                reliabilityOptions.RouteMessagesToOutbox = _routeMessagesToOutbox;
-                reliabilityOptions.MinutesToLiveInMemory = _minutesToLiveInMemory;
-                reliabilityOptions.EnableOutboxPollingProcessor = _enableOutboxPollingProcessor;
-                reliabilityOptions.OutboxProcessingIntervalInMilliseconds = _outboxProcessingIntervalInMilliseconds;
+                // INVARIANT: bind INTO the fluent-defaulted instance and never replace it. Every property on
+                // ReliabilityOptions is internal set, so the binder skips all of them unless BindNonPublicProperties is
+                // on; replacing the instance would additionally discard the defaults assigned above. Keys the section
+                // omits therefore keep their fluent default.
+                _reliabilityOptionsSection.Bind(reliabilityOptions, o => o.BindNonPublicProperties = true);
+                _services.Configure<ReliabilityOptions>(_reliabilityOptionsSection, o => o.BindNonPublicProperties = true);
             }
 
             _services.AddSingleton(reliabilityOptions);

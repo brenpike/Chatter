@@ -74,12 +74,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         }
 
         [Fact]
-        public void MustTakeConfigBranchAndSkipFluentDefaultsWhenFromConfigSectionPopulated()
+        public void MustHonourConfiguredValuesAndRetainOmittedFluentDefaultsWhenFromConfigSectionPopulated()
         {
-            // INVARIANT: production binds the populated section via IConfigurationSection.Get<ReliabilityOptions>(),
-            // whose internal-set scalar properties stay at their type default; the fluent else-branch (which would
-            // otherwise apply MinutesToLiveInMemory of 10 and an interval of 5000) is skipped, so a populated
-            // section yields the type defaults (0), not the fluent defaults.
             var services = new ServiceCollection();
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string>
@@ -92,8 +88,30 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
 
             options.Should().NotBeNull();
-            options.MinutesToLiveInMemory.Should().Be(0);
-            options.OutboxProcessingIntervalInMilliseconds.Should().Be(0);
+            options.RouteMessagesToOutbox.Should().BeTrue();
+            options.OutboxProcessingIntervalInMilliseconds.Should().Be(1234);
+            options.MinutesToLiveInMemory.Should().Be(10);
+            options.EnableOutboxPollingProcessor.Should().BeFalse();
+        }
+
+        [Fact]
+        public void MustRetainEveryFluentDefaultWhenFromConfigSectionPresentWithoutChildKeys()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [ReliabilityOptionsBuilder.ReliabilityOptionsSectionName] = string.Empty
+                })
+                .Build();
+            configuration.GetSection(ReliabilityOptionsBuilder.ReliabilityOptionsSectionName).Exists().Should().BeTrue();
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
+            options.RouteMessagesToOutbox.Should().BeFalse();
+            options.MinutesToLiveInMemory.Should().Be(10);
+            options.EnableOutboxPollingProcessor.Should().BeFalse();
+            options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
         }
     }
 }
