@@ -88,8 +88,10 @@ namespace Microsoft.Extensions.DependencyInjection
         public string StatusPatchPath { get; set; } = "/status";
 
         /// <summary>
-        /// The status value a delivered document is advanced to. Defaults to <c>delivered</c>. Must be non-empty and must
-        /// differ from <c>pending</c> (an equal-to-pending value is rejected at construction).
+        /// The status value a delivered document is advanced to. Defaults to <c>delivered</c>. Must be non-empty, must
+        /// differ from <c>pending</c>, and must differ from the terminal <c>undeliverable</c> status of an Undeliverable
+        /// Outbox Document — a delivered document stamped with it would be indistinguishable from one the relay gave up
+        /// on (an equal-to-pending or equal-to-undeliverable value is rejected at construction).
         /// </summary>
         public string DeliveredStatusValue { get; set; } = "delivered";
 

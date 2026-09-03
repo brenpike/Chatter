@@ -61,6 +61,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// <summary>The number of drain attempts that faulted, by <see cref="LeaseToken"/> and error type.</summary>
         public const string DrainFailuresInstrumentName = "chatter.messaging.outbox.drain.failures";
 
+        /// <summary>The number of Outbox Documents the Outbox Relay marked undeliverable, carried with NO attribute.</summary>
+        public const string DrainUndeliverableInstrumentName = "chatter.messaging.outbox.drain.undeliverable";
+
+        /// <summary>The number of times the Outbox Relay suspended draining, by <see cref="LeaseToken"/>.</summary>
+        public const string DrainSuspensionsInstrumentName = "chatter.messaging.outbox.drain.suspensions";
+
         /// <summary>How the Outbox Relay resolved one document; values come from <see cref="DrainOutcomes"/>.</summary>
         public const string DrainOutcome = "chatter.messaging.outbox.drain.outcome";
 
@@ -102,6 +108,8 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         private static readonly Counter<long> _drainedDocuments = _meter.CreateCounter<long>(DrainedDocumentsInstrumentName, "{document}", "Number of Outbox Documents the Outbox Relay resolved, by outcome.");
         private static readonly Counter<long> _drainedBatches = _meter.CreateCounter<long>(DrainedBatchesInstrumentName, "{batch}", "Number of change-feed batches the Outbox Relay handled, by lease.");
         private static readonly Counter<long> _drainFailures = _meter.CreateCounter<long>(DrainFailuresInstrumentName, "{failure}", "Number of drain attempts that faulted, by lease and error type.");
+        private static readonly Counter<long> _drainUndeliverable = _meter.CreateCounter<long>(DrainUndeliverableInstrumentName, "{document}", "Number of Outbox Documents the Outbox Relay marked undeliverable.");
+        private static readonly Counter<long> _drainSuspensions = _meter.CreateCounter<long>(DrainSuspensionsInstrumentName, "{suspension}", "Number of times the Outbox Relay suspended draining, by lease.");
 
         // INVARIANT: the representable bounds are DERIVED from DateTimeOffset rather than hardcoded, so the range
         // guard in RecordDrainLag can never drift from the range the conversion itself accepts. Neither read can
@@ -118,7 +126,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         /// enabling only an instrument is enough to take the instrumented path with no .NET <c>ActivityListener</c>
         /// attached.
         /// </summary>
-        public static bool IsEnabled => _source.HasListeners() || _drainLag.Enabled || _drainedDocuments.Enabled || _drainBatchSize.Enabled || _drainedBatches.Enabled || _drainFailures.Enabled;
+        public static bool IsEnabled => _source.HasListeners() || _drainLag.Enabled || _drainedDocuments.Enabled || _drainBatchSize.Enabled || _drainedBatches.Enabled || _drainFailures.Enabled || _drainUndeliverable.Enabled || _drainSuspensions.Enabled;
 
         /// <summary>
         /// Counts one Outbox Document the Outbox Relay resolved.
@@ -239,6 +247,52 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
             };
 
             _drainFailures.Add(1, tags);
+        }
+
+        /// <summary>
+        /// Counts one Outbox Document the Outbox Relay marked undeliverable because it violates the Outbox Document
+        /// Contract.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: this count carries NO attribute, deliberately. One document can violate several contract facts
+        /// at once, and a single-valued attribute may not claim one value for a heterogeneous set (ADR-0010 D7) —
+        /// naming the first violation would be a false claim about the rest. The full violation text rides the
+        /// always-on log instead, which is also the only channel a meter-less application has.
+        /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/>, never
+        /// <see cref="IsEnabled"/>, which ORs in <see cref="ActivitySource.HasListeners"/> and would therefore enter
+        /// the metric path for an application that opted into TRACING only (ADR-0010 R1).
+        /// </remarks>
+        internal static void RecordUndeliverableDocument()
+        {
+            if (!_drainUndeliverable.Enabled)
+            {
+                return;
+            }
+
+            _drainUndeliverable.Add(1);
+        }
+
+        /// <summary>
+        /// Counts one suspension of the Outbox Relay's drain.
+        /// </summary>
+        /// <param name="leaseToken">The change-feed lease draining was suspended for, carried as <see cref="LeaseToken"/>.</param>
+        /// <remarks>
+        /// INVARIANT: a suspension is reported against its lease, which is what keeps a suspended lease
+        /// distinguishable from an idle one that simply has nothing pending.
+        /// INVARIANT: the guard is this instrument's OWN <see cref="Instrument.Enabled"/>, never
+        /// <see cref="IsEnabled"/>, and the tag is built INSIDE it, because C# evaluates arguments before the
+        /// callee's guard runs (ADR-0010 R1).
+        /// </remarks>
+        internal static void RecordDrainSuspension(string leaseToken)
+        {
+            if (!_drainSuspensions.Enabled)
+            {
+                return;
+            }
+
+            var tags = new TagList { { LeaseToken, leaseToken } };
+
+            _drainSuspensions.Add(1, tags);
         }
 
         private static string ResolveTelemetryVersion()

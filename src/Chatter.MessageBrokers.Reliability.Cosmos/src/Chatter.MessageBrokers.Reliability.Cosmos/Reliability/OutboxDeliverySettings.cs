@@ -39,6 +39,16 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     nameof(deliveredStatusValue));
             }
 
+            // F2 (d): a delivered document MUST stay distinguishable from an Undeliverable Outbox Document, so its status
+            // value cannot equal the fixed terminal undeliverable status — otherwise the give-up stamp an operator
+            // inspects as evidence of a defect would be indistinguishable from a successful delivery.
+            if (string.Equals(deliveredStatusValue, CosmosOutboxDocument.StatusUndeliverable, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"The delivered status value cannot equal the undeliverable status '{CosmosOutboxDocument.StatusUndeliverable}'; it is the terminal state of an Undeliverable Outbox Document, so a delivered document stamped with it would be indistinguishable from one the relay gave up on.",
+                    nameof(deliveredStatusValue));
+            }
+
             // F2 (b): the delivered TTL must be a positive number of seconds. 0 and all negatives (including -1, Cosmos'
             // "retain indefinitely") are rejected — "delivered but retained" is out of scope; a delivered document must be
             // scheduled for self-purge.

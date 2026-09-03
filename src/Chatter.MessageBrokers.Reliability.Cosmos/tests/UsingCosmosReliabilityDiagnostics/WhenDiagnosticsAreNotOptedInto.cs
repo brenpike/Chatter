@@ -87,7 +87,55 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
 
                 meterScope.TryGetInstrument(CosmosReliabilityDiagnostics.DrainedBatchesInstrumentName, out var drainedBatches).Should().BeTrue();
                 drainedBatches.Unit.Should().Be("{batch}");
+
+                meterScope.TryGetInstrument(CosmosReliabilityDiagnostics.DrainUndeliverableInstrumentName, out var drainUndeliverable).Should().BeTrue();
+                drainUndeliverable.Unit.Should().Be("{document}");
+
+                meterScope.TryGetInstrument(CosmosReliabilityDiagnostics.DrainSuspensionsInstrumentName, out var drainSuspensions).Should().BeTrue();
+                drainSuspensions.Unit.Should().Be("{suspension}");
             }
+        }
+
+        /// <summary>
+        /// Off must mean off for the two instruments that report the Outbox Relay declining to keep republishing: an
+        /// application that subscribed to nothing pays one boolean read per record method and builds no lease token
+        /// and no <c>TagList</c> (ADR-0010 R1).
+        /// </summary>
+        [Fact]
+        public void MustBuildNoTagForARelayStopSignalWhileNothingIsOptedInto()
+        {
+            CosmosReliabilityDiagnostics.IsEnabled.Should().BeFalse();
+
+            var measurement = GuardCostProbe.Measure(RecordOneRelayStopSignalOfEachKind);
+
+            measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no attribute may be built while off: " + measurement);
+        }
+
+        /// <summary>
+        /// A .NET <c>ActivityListener</c> on this module's scope and NO .NET <c>MeterListener</c> makes
+        /// <see cref="CosmosReliabilityDiagnostics.IsEnabled"/> TRUE, which is precisely why each record method
+        /// guards on its OWN instrument: a tracing-only application publishes no measurement, builds no attribute
+        /// and starts no span (ADR-0010 R1, R2).
+        /// </summary>
+        [Fact]
+        public void MustRecordNoRelayStopSignalForATracingOnlyOptIn()
+        {
+            using (var activityScope = new RecordingActivityScope(CosmosReliabilityDiagnostics.ActivitySourceName))
+            {
+                CosmosReliabilityDiagnostics.IsEnabled.Should().BeTrue();
+
+                var measurement = GuardCostProbe.Measure(RecordOneRelayStopSignalOfEachKind);
+
+                measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no attribute may be built for an instrument nobody enabled: " + measurement);
+                activityScope.StartedActivities.Should().BeEmpty();
+            }
+        }
+
+        /// <summary>Drives both record methods once, as an undeliverable document and a suspended lease each do.</summary>
+        private static void RecordOneRelayStopSignalOfEachKind()
+        {
+            CosmosReliabilityDiagnostics.RecordUndeliverableDocument();
+            CosmosReliabilityDiagnostics.RecordDrainSuspension("lease-0");
         }
 
         /// <summary>
