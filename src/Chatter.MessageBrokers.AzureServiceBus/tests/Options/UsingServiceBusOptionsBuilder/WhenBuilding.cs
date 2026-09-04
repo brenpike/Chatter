@@ -433,6 +433,105 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(5));
         }
 
+        [Theory]
+        [InlineData("7776000")]
+        [InlineData("4294968")]
+        public void MustThrowNamingMaximumBackoffInSecondsWhenConfiguredAboveTheRuntimeDelayCeiling(string configuredBackoff)
+        {
+            // MaxDelay's own setter accepts any non-negative TimeSpan, so 90 days is representable, settable
+            // and well inside TimeSpan's range. Every retry wait the SDK computes is CLAMPED to MaxDelay and
+            // then waited out on a delay timer, which rejects anything above uint.MaxValue - 1 milliseconds —
+            // so without this bound the configuration passes the build and throws ArgumentOutOfRangeException
+            // from the retry path instead of returning the transient Service Bus failure it was retrying.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = configuredBackoff,
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds)}*")
+                .WithMessage($"*{configuredBackoff}*");
+        }
+
+        [Theory]
+        [InlineData("301")]
+        [InlineData("7776000")]
+        public void MustThrowNamingMinimumBackoffInSecondsWhenTheSdkRejectsTheResultingDelay(string configuredBackoff)
+        {
+            // ServiceBusRetryOptions.Delay validates its OWN accepted range inside its setter — today an
+            // upper bound of five minutes — and raises a bare ArgumentOutOfRangeException naming only
+            // 'Delay', a member no operator supplied. The guard offers each backoff to that setter before
+            // building, so the rejection is reported against the configured knob in the aggregated failure.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = configuredBackoff,
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds)}*")
+                .WithMessage($"*{configuredBackoff}*");
+        }
+
+        [Fact]
+        public void MustAcceptConfiguredMaximumBackoffAtTheRuntimeDelayCeiling()
+        {
+            // 4294967 seconds is the highest whole second a delay timer can wait out, so the boundary belongs
+            // to the valid side and the guard must let it through.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = "4294967",
+            });
+
+            var options = Create(new ServiceCollection(), config).Build();
+
+            options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(4294967));
+        }
+
+        // The ceiling this guard enforces is only worth anything while it matches what the runtime accepts.
+        // Timer.Change shares its limit with the Task.Delay the SDK waits each retry out on, so pin the
+        // boundary against it: the accepted maximum must still be accepted there, and one second more must be
+        // what the runtime itself rejects. This test fails if a future runtime moves the limit, rather than
+        // letting the constant drift away from the sink.
+        [Fact]
+        public void MustEnforceTheSameBackoffCeilingTheRuntimeAccepts()
+        {
+            using var timer = new Timer(_ => { });
+
+            Action atTheCeiling = () => timer.Change(TimeSpan.FromSeconds(4294967), TimeSpan.FromMilliseconds(-1));
+            Action aboveTheCeiling = () => timer.Change(TimeSpan.FromSeconds(4294968), TimeSpan.FromMilliseconds(-1));
+
+            atTheCeiling.Should().NotThrow();
+            aboveTheCeiling.Should().Throw<ArgumentOutOfRangeException>();
+        }
+
+        [Fact]
+        public void MustNameBothBackoffsInOneFailureWhenNeitherCanBeWaitedOut()
+        {
+            // ONE failure naming every offending knob, exactly as the existing aggregation guarantees: the
+            // minimum is rejected by the SDK's own Delay range and the maximum by the delay-timer ceiling, and
+            // an operator must see both before redeploying.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "7776000",
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = "7776000",
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds)}*")
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds)}*")
+                .Which.Violations.Should().HaveCount(2);
+        }
+
         [Fact]
         public void MustPreferFluentNoRetryOverConfiguredRetryPolicy()
         {

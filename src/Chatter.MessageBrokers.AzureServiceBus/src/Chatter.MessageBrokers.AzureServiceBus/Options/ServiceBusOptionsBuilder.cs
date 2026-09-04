@@ -51,6 +51,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // The inclusive range ServiceBusRetryOptions.MaxRetries accepts inside its own setter.
         private const int _minimumSdkRetryCount = 0;
         private const int _maximumSdkRetryCount = 100;
+        // The longest delay a .NET timer can wait out is uint.MaxValue - 1 milliseconds, roughly 49.7 days.
+        // Derived from that limit rather than written down, exactly as CircuitBreakerOptions derives its own.
+        private const double _maximumDelayInSeconds = (uint.MaxValue - 1) / 1000d;
         private static readonly TimeSpan _defaultSessionIdleTimeout = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan _defaultMaxSessionLockRenewalDuration = TimeSpan.FromMinutes(5);
 
@@ -170,6 +173,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
             AddViolationWhenBackoffCannotBecomeATimeSpan(violations, nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds), maximumBackoffInSeconds);
             AddViolationWhenBackoffCannotBecomeATimeSpan(violations, nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds), minimumBackoffInSeconds);
+            AddViolationWhenTheSdkRejectsBackoff(violations, nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds), maximumBackoffInSeconds, static (options, backoff) => options.MaxDelay = backoff);
+            AddViolationWhenTheSdkRejectsBackoff(violations, nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds), minimumBackoffInSeconds, static (options, backoff) => options.Delay = backoff);
+            AddViolationWhenBackoffCannotBeWaitedOut(violations, nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds), maximumBackoffInSeconds);
 
             if (violations.Count > 0)
             {
@@ -193,18 +199,77 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // ceiling is derived from TimeSpan itself rather than written as a literal.
         private static void AddViolationWhenBackoffCannotBecomeATimeSpan(ICollection<string> violations, string knobName, double? backoffInSeconds)
         {
-            if (!backoffInSeconds.HasValue)
+            if (!backoffInSeconds.HasValue || TryConvertBackoffToTimeSpan(backoffInSeconds, out _))
             {
                 return;
+            }
+
+            violations.Add($"'{knobName}' is {backoffInSeconds.Value}, but a backoff must be a number of seconds from 0 through {TimeSpan.MaxValue.TotalSeconds}");
+        }
+
+        // The ONE place the convertible range is expressed, so the checks that follow cannot disagree with it
+        // about which values are worth carrying further. A false return means the number is not convertible
+        // and AddViolationWhenBackoffCannotBecomeATimeSpan has already reported it, or there is no value at
+        // all — in both cases the later checks have nothing to say.
+        private static bool TryConvertBackoffToTimeSpan(double? backoffInSeconds, out TimeSpan backoff)
+        {
+            backoff = default;
+            if (!backoffInSeconds.HasValue)
+            {
+                return false;
             }
 
             var seconds = backoffInSeconds.Value;
-            if (seconds >= 0 && seconds <= TimeSpan.MaxValue.TotalSeconds)
+            if (!(seconds >= 0 && seconds <= TimeSpan.MaxValue.TotalSeconds))
+            {
+                return false;
+            }
+
+            backoff = TimeSpan.FromSeconds(seconds);
+            return true;
+        }
+
+        // INVARIANT: the SDK setter ITSELF is the oracle for each backoff's accepted range — that range is
+        // never written down here. ServiceBusRetryOptions.Delay and MaxDelay validate inside their own
+        // setters, so the value is offered to a throwaway instance first and a rejection becomes a violation
+        // naming the knob the operator supplied and carrying the SDK's own reason. A bound this module never
+        // enumerated therefore cannot slip past and surface later as a bare ArgumentOutOfRangeException
+        // naming only an SDK member: the current Delay ceiling of five minutes and its non-zero floor are
+        // caught without being restated, and so is any bound a future SDK version adds or moves.
+        private static void AddViolationWhenTheSdkRejectsBackoff(ICollection<string> violations, string knobName, double? backoffInSeconds, Action<ServiceBusRetryOptions, TimeSpan> offerToSdk)
+        {
+            if (!TryConvertBackoffToTimeSpan(backoffInSeconds, out var backoff))
             {
                 return;
             }
 
-            violations.Add($"'{knobName}' is {seconds}, but a backoff must be a number of seconds from 0 through {TimeSpan.MaxValue.TotalSeconds}");
+            try
+            {
+                offerToSdk(new ServiceBusRetryOptions(), backoff);
+            }
+            catch (ArgumentException rejectedBySdk)
+            {
+                violations.Add($"'{knobName}' is {backoffInSeconds.Value}, but the Azure Service Bus SDK rejected the resulting retry delay: {rejectedBySdk.Message}");
+            }
+        }
+
+        // INVARIANT: MaxDelay is the ONE value that needs this ceiling, and that is a property of the sink
+        // rather than an omission. The SDK clamps every computed retry wait to MaxDelay — min(exponential
+        // backoff, MaxDelay) — and then waits it out on a delay timer, which rejects anything above
+        // uint.MaxValue - 1 milliseconds. Bounding MaxDelay bounds EVERY wait the retry path can produce, so
+        // the minimum backoff needs no ceiling of its own: it only feeds the exponential calculation whose
+        // result that clamp caps, and its own setter keeps it far below this limit anyway.
+        // MaxDelay's setter accepts any non-negative TimeSpan, so without this check a configured 90 days is
+        // representable, settable and passes the build, then throws ArgumentOutOfRangeException from the
+        // retry path in place of the transient Service Bus failure it was retrying.
+        private static void AddViolationWhenBackoffCannotBeWaitedOut(ICollection<string> violations, string knobName, double? backoffInSeconds)
+        {
+            if (!TryConvertBackoffToTimeSpan(backoffInSeconds, out _) || backoffInSeconds.Value <= _maximumDelayInSeconds)
+            {
+                return;
+            }
+
+            violations.Add($"'{knobName}' is {backoffInSeconds.Value}, but the longest delay a timer can wait out is {_maximumDelayInSeconds} seconds");
         }
 
         private void BindRetryPolicy(ServiceBusOptions serviceBusConfig)
