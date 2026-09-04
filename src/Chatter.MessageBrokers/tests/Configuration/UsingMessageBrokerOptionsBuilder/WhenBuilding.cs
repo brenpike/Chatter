@@ -265,6 +265,63 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             services.Count(d => d.ServiceType == typeof(MessageBrokerOptions)).Should().Be(1);
         }
 
+        [Fact]
+        public void MustRetainFluentTransactionModeWhenInstanceFromConfigSectionOmitsIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{RecoveryOptionsBuilder.RecoveryOptionsSectionName}:MaxRetryAttempts"] = "42"
+                })
+                .Build();
+            var builder = new MessageBrokerOptionsBuilder(services, configuration);
+
+            var options = builder.WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure).FromConfig();
+
+            options.TransactionMode.Should().Be(TransactionMode.FullAtomicityViaInfrastructure);
+            options.Recovery.MaxRetryAttempts.Should().Be(42);
+        }
+
+        [Fact]
+        public void MustRegisterExactlyOneSingletonPerOptionsTypeWhenInstanceFromConfigFollowsFluentNestedOptions()
+        {
+            var services = new ServiceCollection();
+            var configuration = BuildConfiguration();
+            var builder = new MessageBrokerOptionsBuilder(services, configuration);
+            builder.AddReliabilityOptions(r => r.WithOutboxRouting());
+            builder.AddRecoveryOptions(r => r.WithMaxRetryAttempts(9));
+
+            var options = builder.FromConfig();
+
+            options.Reliability.RouteMessagesToOutbox.Should().BeTrue();
+            options.Recovery.MaxRetryAttempts.Should().Be(9);
+            services.Count(d => d.ServiceType == typeof(MessageBrokerOptions)).Should().Be(1);
+            services.Count(d => d.ServiceType == typeof(ReliabilityOptions)).Should().Be(1);
+            services.Count(d => d.ServiceType == typeof(RecoveryOptions)).Should().Be(1);
+            services.Count(d => d.ServiceType == typeof(CircuitBreakerOptions)).Should().Be(1);
+        }
+
+        [Fact]
+        public void MustPreferExplicitSectionOverDefaultSectionWhenBothAreAvailable()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{MessageBrokerOptionsBuilder.MessageBrokerSectionName}:TransactionMode"] = nameof(TransactionMode.None),
+                    [$"{ExplicitSectionName}:TransactionMode"] = nameof(TransactionMode.FullAtomicityViaInfrastructure)
+                })
+                .Build();
+            var builder = new MessageBrokerOptionsBuilder(services, configuration, configuration.GetSection(ExplicitSectionName));
+
+            var options = builder.Build();
+
+            options.TransactionMode.Should().Be(TransactionMode.FullAtomicityViaInfrastructure);
+        }
+
+        private const string ExplicitSectionName = "Custom:MessageBrokers";
+
         private static void AssertConfiguredTransactionModeHonoured(MessageBrokerOptions options)
         {
             options.Should().NotBeNull();
