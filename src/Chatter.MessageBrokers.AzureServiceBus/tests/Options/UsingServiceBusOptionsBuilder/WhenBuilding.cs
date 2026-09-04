@@ -16,10 +16,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
     // and ConfigurationBuilder().AddInMemoryCollection(...) drive both section-absent and
     // section-present branches.
     //
-    // The section is bound INTO the default-initialized ServiceBusOptions with
-    // BindNonPublicProperties enabled, so the internal RetryPolicy configuration property binds and a
-    // populated Chatter:Infrastructure:AzureServiceBus:RetryPolicy section yields matching
-    // ServiceBusRetryOptions. Configuration can disable retry ONLY through the explicit
+    // The section is bound INTO the default-initialized ServiceBusOptions over a NARROW surface — plain
+    // Bind(), no BindNonPublicProperties — and the internal RetryPolicy configuration property is bound
+    // EXPLICITLY from its own subsection, so a populated Chatter:Infrastructure:AzureServiceBus:RetryPolicy
+    // section yields matching ServiceBusRetryOptions while the internal-set RetryOptions and
+    // TokenCredential properties stay UNREACHABLE from configuration. Configuration can disable retry ONLY
+    // through the explicit
     // RetryPolicy:NoRetry opt-in: an empty or all-zero RetryPolicy section under a present service-bus
     // section falls back to the SDK default ServiceBusRetryOptions by design, and when the whole
     // service-bus section is absent nothing binds so RetryOptions stays null. The fluent WithNoRetry()
@@ -191,9 +193,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustFallBackToSdkDefaultRetryOptionsWhenRetryPolicySectionEmpty()
         {
-            // BY DESIGN: an empty-but-present RetryPolicy section has no children to bind, so the
-            // RetryPolicy configuration property stays null and the SDK default ServiceBusRetryOptions
-            // applies — the same designed fall-through as the all-zero section, never a disabled retry.
+            // BY DESIGN: an empty-but-present RetryPolicy section has no children to bind, so every
+            // parameter on the bound RetryPolicyConfiguration keeps its zero default, no NoRetry opt-in is
+            // present, and the SDK default ServiceBusRetryOptions applies — the same designed fall-through
+            // as the all-zero section, never a disabled retry.
             var defaultOptions = new ServiceBusRetryOptions();
 
             var config = ConfigWith(new Dictionary<string, string>
@@ -211,10 +214,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustIgnoreConfiguredRetryOptionsWhenRetryPolicyConfigured()
         {
-            // BindNonPublicProperties widens the bindable surface to every internal-set property,
-            // including RetryOptions itself ([JsonIgnore] does NOT gate the configuration binder). The
-            // PostConfiguration-derived RetryOptions is assigned AFTER the bind, so a stray RetryOptions
-            // key cannot clobber the RetryPolicy-derived value.
+            // A stray RetryOptions key cannot clobber the RetryPolicy-derived value: the narrow bind
+            // surface never hands the internal-set RetryOptions property to the binder, so the key is
+            // inert. ([JsonIgnore] would NOT have gated the configuration binder — the narrowness does.)
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -226,6 +228,54 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             options.RetryOptions.Should().NotBeNull();
             options.RetryOptions.MaxRetries.Should().Be(5);
             options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(1));
+        }
+
+        [Fact]
+        public void MustApplyEveryConfiguredRetryPolicyKeyWhenSectionFullyPopulated()
+        {
+            // Every documented RetryPolicy key binds through the EXPLICIT RetryPolicy bind:
+            // MaximumRetryCount maps to MaxRetries, MinimumBackoffInSeconds to Delay and
+            // MaximumBackoffInSeconds to MaxDelay. DeltaBackoffInSeconds binds but is IGNORED — the SDK
+            // has no per-attempt delta-backoff knob.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "7",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "2",
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = "45",
+                [$"{_sectionName}:RetryPolicy:DeltaBackoffInSeconds"] = "3",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
+            options.RetryOptions.MaxRetries.Should().Be(7);
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(2));
+            options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(45));
+        }
+
+        [Fact]
+        public void MustNotReachRetryOptionsWithAConfiguredValueTheSdkRejects()
+        {
+            // INVARIANT: RetryOptions is UNREACHABLE from configuration by construction — the narrow bind
+            // surface never hands the property to the binder. This is the test that distinguishes
+            // unreachable from overwritten-afterwards: ServiceBusRetryOptions.MaxRetries validates 0..100
+            // in its SETTER, so a widened bind surface raises ArgumentOutOfRangeException from INSIDE the
+            // bind, BEFORE any later assignment can overwrite the property. Reaching a normal value and
+            // overwriting it afterwards is indistinguishable by final value; reaching an SDK-rejected
+            // value is not.
+            var defaultOptions = new ServiceBusRetryOptions();
+
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryOptions:MaxRetries"] = "500",
+            });
+            Action build = () => Create(new ServiceCollection(), config).Build();
+            build.Should().NotThrow();
+
+            var options = Create(new ServiceCollection(), config).Build();
+            options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
         }
 
         [Fact]
@@ -374,6 +424,44 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             options.PrefetchCount.Should().Be(10);
         }
 
+        // -------------------------------------------------- every public configuration property still binds
+
+        [Fact]
+        public void MustBindConfiguredEnableCrossEntityTransactions()
+        {
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:EnableCrossEntityTransactions"] = "true",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.EnableCrossEntityTransactions.Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustBindConfiguredSessionIdleTimeout()
+        {
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:SessionIdleTimeout"] = "00:02:00",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.SessionIdleTimeout.Should().Be(TimeSpan.FromMinutes(2));
+        }
+
+        [Fact]
+        public void MustBindConfiguredMaxSessionLockRenewalDuration()
+        {
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:MaxSessionLockRenewalDuration"] = "00:10:00",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.MaxSessionLockRenewalDuration.Should().Be(TimeSpan.FromMinutes(10));
+        }
+
         [Fact]
         public void MustNotApplyTokenCredentialWhenConnectionStringHasSas()
         {
@@ -425,16 +513,36 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustIgnoreConfiguredTokenCredentialValue()
         {
-            // BindNonPublicProperties also exposes the internal-set TokenCredential property to the
-            // binder, but a credential is a runtime object and cannot be expressed as a configuration
-            // value: TokenCredential is abstract, so the binder converts nothing and the property stays
-            // null. Configuration therefore cannot supply or forge a credential — AddTokenProvider is the
-            // only way in.
+            // INVARIANT: the internal-set TokenCredential property is UNREACHABLE from configuration
+            // because the narrow bind surface never hands it to the binder. The abstract type alone does
+            // NOT make the property safe: it only makes this SCALAR shape a no-op (no converter exists for
+            // an abstract type). The NESTED shape is the dangerous one and is covered by
+            // MustIgnoreNestedConfiguredTokenCredentialObject. AddTokenProvider is the only way in.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _noSasConnectionString,
                 [$"{_sectionName}:TokenCredential"] = "some-credential",
             });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.TokenCredential.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustIgnoreNestedConfiguredTokenCredentialObject()
+        {
+            // The second, dangerous TokenCredential shape: a NESTED configuration object gives the binder
+            // children to bind, so a widened bind surface drives it into ACTIVATING the abstract
+            // TokenCredential type and raises a raw InvalidOperationException at host start. The narrow
+            // bind surface never offers the property to the binder at all, so the nested keys are inert
+            // and the credential stays null.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _noSasConnectionString,
+                [$"{_sectionName}:TokenCredential:ClientId"] = "some-client-id",
+            });
+            Action build = () => Create(new ServiceCollection(), config).Build();
+            build.Should().NotThrow();
+
             var options = Create(new ServiceCollection(), config).Build();
             options.TokenCredential.Should().BeNull();
         }

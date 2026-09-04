@@ -11,6 +11,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public IServiceCollection Services { get; private set; }
         private TokenCredential _tokenCredential;
         private const string _defaultAzureServiceBusSectionName = "Chatter:Infrastructure:AzureServiceBus";
+        private const string _retryPolicySectionName = "RetryPolicy";
         private string _connectionString = null;
         private string _azureServiceBusSectionName = null;
         private IConfiguration _configuration;
@@ -151,6 +152,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             return this;
         }
 
+        private void BindRetryPolicy(ServiceBusOptions serviceBusConfig)
+        {
+            var retryPolicySection = _serviceBusOptionsSection.GetSection(_retryPolicySectionName);
+            if (!retryPolicySection.Exists())
+            {
+                return;
+            }
+
+            var retryPolicy = new RetryPolicyConfiguration();
+            retryPolicySection.Bind(retryPolicy);
+            serviceBusConfig.RetryPolicy = retryPolicy;
+        }
+
         private void PostConfiguration(ServiceBusOptions serviceBusConfig)
         {
             if (serviceBusConfig == null)
@@ -226,13 +240,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             var options = new ServiceBusOptions();
             if (_azureServiceBusSectionName != null && _serviceBusOptionsSection.Exists())
             {
-                // INVARIANT: bind INTO the default-initialized instance and never replace it. The
-                // RetryPolicy configuration property is internal, so the binder skips it unless
-                // BindNonPublicProperties is on; keys the section omits keep their default. PostConfiguration
-                // runs AFTER the bind because BindNonPublicProperties also exposes the internal-set
-                // RetryOptions property to the binder ([JsonIgnore] does not gate the configuration binder),
-                // and the RetryPolicy-derived options must win over a stray RetryOptions key.
-                _serviceBusOptionsSection.Bind(options, o => o.BindNonPublicProperties = true);
+                // INVARIANT: bind INTO the default-initialized instance and never replace it; keys the
+                // section omits keep their default. The bind surface is deliberately NARROW — plain Bind()
+                // with BindNonPublicProperties OFF — and that narrowness is what closes the internal-set
+                // RetryOptions and TokenCredential properties to configuration: the binder is never handed
+                // them, so they are UNREACHABLE by construction rather than overwritten afterwards.
+                // Widening the surface would let a stray RetryOptions key run the SDK's VALIDATING setters
+                // during the bind (MaxRetries rejects anything outside 0..100) and let a nested
+                // TokenCredential object drive the binder into activating an abstract type — both raise raw
+                // binder exceptions at host start, before any later assignment could correct them.
+                // RetryPolicy is the ONE internal configuration property that must bind, so it is bound
+                // EXPLICITLY below into a locally constructed instance whose own setters are public.
+                _serviceBusOptionsSection.Bind(options);
+                BindRetryPolicy(options);
                 PostConfiguration(options);
             }
 
