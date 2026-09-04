@@ -21,14 +21,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
     // Bind(), no BindNonPublicProperties — and the internal RetryPolicy configuration property is bound
     // EXPLICITLY from its own subsection, so a populated Chatter:Infrastructure:AzureServiceBus:RetryPolicy
     // section yields matching ServiceBusRetryOptions while the internal-set RetryOptions and
-    // TokenCredential properties stay UNREACHABLE from configuration. Configuration can disable retry ONLY
-    // through the explicit RetryPolicy:NoRetry opt-in: an ABSENT numeric parameter falls back to the SDK
-    // default, a STATED one the SDK cannot run with is a named violation, and when the whole service-bus
-    // section is absent nothing binds so RetryOptions stays null. The fluent WithNoRetry() /
-    // WithExponentialDelay() setters WIN over a configured RetryPolicy — this module's nullable-sentinel
-    // backing fields make an explicit fluent call beat configuration, the opposite of the core
-    // Chatter.MessageBrokers builders — and because the effective retry options are RESOLVED once, after
-    // the fluent override is applied, a configured section the fluent call discards is never validated.
+    // TokenCredential properties stay UNREACHABLE from configuration. TWO configuration paths switch retry
+    // off: the intention-revealing RetryPolicy:NoRetry opt-in, and a stated MaximumRetryCount of 0, which
+    // binds faithfully to MaxRetries 0. An ABSENT numeric parameter falls back to the SDK default for that
+    // parameter; a STATED one is carried to the SDK's own setter, which raises its OWN
+    // ArgumentOutOfRangeException naming the SDK member rather than the configuration key — nothing on this
+    // path inspects a configured value first, and issue #423 owns named build-time validation. When the
+    // whole service-bus section is absent nothing binds, so RetryOptions stays null. The fluent
+    // WithNoRetry() / WithExponentialDelay() setters WIN over a configured RetryPolicy — this module's
+    // nullable-sentinel backing fields make an explicit fluent call beat configuration, the opposite of the
+    // core Chatter.MessageBrokers builders — and because ResolveRetryOptions checks the FLUENT source before
+    // it looks at the bound section, a configured section the fluent call discards is never CONSTRUCTED, so
+    // none of its values ever reach the SDK's setters.
     public class WhenBuilding : Testing.Core.Context
     {
         private const string _sasConnectionString =
@@ -153,8 +157,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustDisableRetryWhenRetryPolicyNoRetryOptInConfigured()
         {
-            // The explicit NoRetry opt-in is the ONLY way configuration can disable retry. Mirrors the
-            // fluent WithNoRetry().
+            // The explicit NoRetry opt-in is the INTENTION-REVEALING way configuration switches retry off,
+            // and it mirrors the fluent WithNoRetry(). It is NOT the only way: a stated MaximumRetryCount of
+            // 0 binds faithfully to MaxRetries 0 as well — see
+            // MustBindAConfiguredMaximumRetryCountOfZeroToZeroMaxRetries.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -172,8 +178,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             // numeric parameter on the bound RetryPolicyConfiguration stays NULL, no NoRetry opt-in is
             // present, and the SDK default ServiceBusRetryOptions applies. This is the proof that ABSENT
             // and STATED are distinguished: the section is present, so the bound RetryPolicyConfiguration
-            // is non-null, yet no parameter was stated, so nothing is validated and nothing throws — an
-            // all-zero section, which states every parameter, is rejected instead.
+            // is non-null, yet no parameter was stated, so every one of them falls back to the SDK default
+            // for that parameter. Nothing on this path inspects a configured value; only a STATED parameter
+            // reaches the SDK's own setter.
             var defaultOptions = new ServiceBusRetryOptions();
 
             var config = ConfigWith(new Dictionary<string, string>
@@ -262,7 +269,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         public void MustAcceptConfiguredMaximumRetryCountAtTheSdkCeiling()
         {
             // 100 is the ceiling ServiceBusRetryOptions.MaxRetries accepts in its own setter, so the boundary
-            // belongs to the valid side and the guard must let it through.
+            // belongs to the valid side: the stated value is carried straight through and the setter accepts
+            // it. 101 is the first value that same setter rejects.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -393,13 +401,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustStartWithFluentNoRetryWhenTheConfiguredRetryPolicyIsOneTheSdkCannotRunWith()
         {
-            // REGRESSION GUARD for the resolution ORDER: retry options are resolved once, at the END of
-            // Build(), after the fluent override is in hand. The fluent call WINS, so the configured
-            // section is DISCARDED before anything reads it — and a MinimumBackoffInSeconds of 7776000 is
-            // a value ServiceBusRetryOptions.Delay rejects from its own setter. Move resolution back inside
-            // the bind branch and that setter throws before WithNoRetry() can discard the section, blocking
-            // host start on a retry policy the host was never going to use. This test passing is the
-            // mechanical proof the order still holds.
+            // REGRESSION GUARD for FLUENT-FIRST RESOLUTION: ResolveRetryOptions checks the fluent source
+            // before it ever looks at the bound section, so a configured section the fluent call discards is
+            // never CONSTRUCTED — and a MinimumBackoffInSeconds of 7776000 is a value
+            // ServiceBusRetryOptions.Delay rejects from its own setter, so constructing it would block host
+            // start on a retry policy the host was never going to use.
+            // SCOPE OF THIS GUARD, stated precisely because it is easy to overclaim: it fails if that
+            // fluent-first check is removed or reordered BELOW the section branch. It does NOT fail merely
+            // because the ResolveRetryOptions CALL moves earlier in Build() — every fluent setter has
+            // already run by the time Build() starts, so the early return still fires and this test still
+            // passes. The CALL POSITION is pinned by a different set: MustApplyNoRetryOptionsViaFluentSetter,
+            // MustApplyExponentialDelayOptionsViaFluentSetter and
+            // MustHonourAFluentRetryCountOfZeroWithoutTheNoRetryOptIn, which run with no bound section at all
+            // and so fail the moment resolution is moved inside the bind branch.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -418,9 +432,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustStartWithFluentExponentialDelayWhenTheConfiguredRetryPolicyIsOneTheSdkCannotRunWith()
         {
-            // The same REGRESSION GUARD on the resolution ORDER, through the other fluent setter: a VALID
-            // fluent exponential policy stands and the configured section it overrides is discarded before
-            // its 7776000-second minimum backoff can reach the SDK's Delay setter.
+            // The same FLUENT-FIRST RESOLUTION guard through the other fluent setter: a VALID fluent
+            // exponential policy stands and the configured section it overrides is never constructed, so its
+            // 7776000-second minimum backoff never reaches the SDK's Delay setter. The scope note on the
+            // test above applies here too — this pins the fluent-first check, not the position of the
+            // ResolveRetryOptions call.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,

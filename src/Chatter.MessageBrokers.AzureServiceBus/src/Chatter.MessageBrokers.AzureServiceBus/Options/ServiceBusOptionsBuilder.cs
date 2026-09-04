@@ -177,13 +177,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             serviceBusConfig.RetryPolicy = retryPolicy;
         }
 
-        // INVARIANT: the effective retry options are RESOLVED ONCE, from the first source that stated one —
-        // the fluent setter, then the bound RetryPolicy section, then the Azure SDK default — and the
-        // resolution happens AFTER the fluent override is in hand. A configured section the fluent call
-        // overrides is therefore NEVER CONSTRUCTED, which is the point: constructing it would carry its
-        // values into the SDK's own validating setters, and one the SDK rejects would block host start on
-        // a retry policy the host was never going to use, contradicting this module's fluent-wins
-        // precedence. Only the source that actually wins ever reaches those setters.
+        // INVARIANT: the effective retry options are RESOLVED ONCE, from the FIRST source that stated one —
+        // the fluent setter, then the bound RetryPolicy section, then the Azure SDK default. The FLUENT-FIRST
+        // ORDER OF THE CHECKS BELOW is what makes a configured section the fluent call overrides NEVER
+        // CONSTRUCTED, which is the point: constructing it would carry its values into the SDK's own
+        // validating setters, and one the SDK rejects would block host start on a retry policy the host was
+        // never going to use, contradicting this module's fluent-wins precedence. Only the source that
+        // actually wins ever reaches those setters. Note what is and is not load-bearing here: this
+        // check order is; the position of the CALL to this method in Build() is not, since every fluent
+        // setter has already run before Build() begins. That call position carries a SEPARATE, weaker
+        // guarantee, stated at the call site.
         // A null return means retry options were never sourced at all — no fluent call and no bound
         // service-bus section — leaving ServiceBusOptions.RetryOptions unset.
         private ServiceBusRetryOptions ResolveRetryOptions(bool serviceBusSectionWasBound, RetryPolicyConfiguration retryPolicy)
@@ -343,8 +346,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             }
 
             // Resolve the effective retry options LAST among the option values, once every source is in
-            // hand, so only the source that actually wins is constructed and only its values reach the
-            // SDK's own setters — never those of a configured section the fluent override discarded.
+            // hand. What THIS position guarantees is narrow but real: resolution runs even when no
+            // service-bus section was bound, which is what lets the fluent-only path produce retry options
+            // at all. WHICH source wins — and therefore which is the only one ever constructed and the only
+            // one whose values reach the SDK's own setters — is decided by the fluent-first check order
+            // inside ResolveRetryOptions, not by this position.
             options.RetryOptions = ResolveRetryOptions(serviceBusSectionWasBound, options.RetryPolicy);
 
             // INVARIANT: every single-instance resolution of ServiceBusOptions returns the instance built here -

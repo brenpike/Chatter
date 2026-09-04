@@ -137,8 +137,8 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
         private static readonly Assembly NoBrokeredMessageAssembly = typeof(IMessage).Assembly;
 
         // INVARIANT: one options instance, everywhere. Every accessor of every options type in the graph has to hand
-        // back the very instance Build() produced; a second instance anywhere is a set of values nothing validated and
-        // nothing seeded with the fluent defaults.
+        // back the very instance Build() produced; a second instance anywhere is a set of values nothing
+        // seeded with the fluent defaults.
         private static void AssertEveryFacetOfEveryOptionsTypeResolvesTheBuiltOptions(IServiceCollection services, MessageBrokerOptions builtOptions)
         {
             using var provider = services.BuildServiceProvider();
