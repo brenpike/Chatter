@@ -118,9 +118,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustLeaveRetryOptionsUnsetWhenSectionAbsent()
         {
-            // BY DESIGN: section absent and no fluent setter, so there is nothing to bind,
-            // PostConfiguration never runs and no fluent RetryOptions is applied — RetryOptions stays
-            // null on the freshly-built options.
+            // BY DESIGN: section absent and no fluent setter, so ResolveRetryOptions — run once at the
+            // end of Build(), after every other source is in hand — has no source to select from and
+            // returns null, leaving RetryOptions null on the freshly-built options.
             var options = Create(new ServiceCollection(), EmptyConfig())
                 .WithConnectionString(_sasConnectionString)
                 .Build();
