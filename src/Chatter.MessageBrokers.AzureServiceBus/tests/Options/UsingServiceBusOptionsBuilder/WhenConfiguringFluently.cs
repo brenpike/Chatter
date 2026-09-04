@@ -57,6 +57,51 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             sut.WithExponentialDelay(5, 30, 1, 3).Should().BeSameAs(sut);
         }
 
+        [Theory]
+        [InlineData(101)]
+        [InlineData(500)]
+        [InlineData(-1)]
+        public void MustThrowNamingMaximumRetryCountWhenFluentRetryCountOutsideTheSdkRange(int maximumRetryCount)
+        {
+            // The fluent path shares ONE guarded construction site with the configuration path, so a retry
+            // count the SDK cannot run with is reported the same way here instead of raising a bare
+            // ArgumentOutOfRangeException from the MaxRetries setter. There is deliberately no "greater than
+            // zero means configured" fall-through on this path: a caller who passes -1 stated a value.
+            var sut = CreateSut();
+
+            Action withExponentialDelay = () => sut.WithExponentialDelay(maximumRetryCount, 30, 1, 3);
+
+            withExponentialDelay.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumRetryCount)}*")
+                .WithMessage($"*{maximumRetryCount}*");
+        }
+
+        [Fact]
+        public void MustThrowNamingMinimumBackoffInSecondsWhenFluentBackoffIsNegative()
+        {
+            // TimeSpan.FromSeconds accepts a negative, so the builder itself never gated this: the rejection
+            // came from the SDK's own Delay setter as a bare ArgumentOutOfRangeException naming 'Delay', a
+            // member no operator supplied. The shared guard names the knob that was passed instead.
+            var sut = CreateSut();
+
+            Action withExponentialDelay = () => sut.WithExponentialDelay(5, 30, -1, 3);
+
+            withExponentialDelay.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds)}*");
+        }
+
+        [Fact]
+        public void MustNotTreatFluentMinimumBackoffGreaterThanMaximumBackoffAsAViolation()
+        {
+            // The SDK CLAMPS a Delay above MaxDelay while computing each retry delay. That is not a crash, so
+            // the shared guard must not turn it into a violation on this path either.
+            var sut = CreateSut();
+
+            Action withExponentialDelay = () => sut.WithExponentialDelay(5, 5, 60, 3);
+
+            withExponentialDelay.Should().NotThrow();
+        }
+
         [Fact]
         public void MustReturnSameBuilderFromAddTokenProviderInstance()
         {

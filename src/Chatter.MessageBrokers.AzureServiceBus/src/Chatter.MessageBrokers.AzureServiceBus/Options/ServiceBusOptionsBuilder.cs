@@ -3,6 +3,7 @@ using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Options
 {
@@ -46,6 +47,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         private const int _defaultMaxConcurrentCalls = 1;
         private const int _defaultPrefetchCount = 0;
+        // The inclusive range ServiceBusRetryOptions.MaxRetries accepts inside its own setter.
+        private const int _minimumSdkRetryCount = 0;
+        private const int _maximumSdkRetryCount = 100;
         private static readonly TimeSpan _defaultSessionIdleTimeout = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan _defaultMaxSessionLockRenewalDuration = TimeSpan.FromMinutes(5);
 
@@ -142,14 +146,64 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             // deltaBackoffInSeconds is retained on the signature for source compatibility but has no
             // equivalent in the new SDK retry model.
             _ = deltaBackoffInSeconds;
-            _retryOptions = new ServiceBusRetryOptions
+            _retryOptions = CreateExponentialRetryOptions(maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds);
+            return this;
+        }
+
+        // INVARIANT: this is the ONE construction site for exponential retry options — the fluent
+        // WithExponentialDelay setter and the configuration-derived PostConfiguration both route through it,
+        // so neither can hand a raw value to a validating SDK setter. ServiceBusRetryOptions.MaxRetries
+        // validates its 0..100 range inside the setter and TimeSpan.FromSeconds overflows on a non-finite or
+        // out-of-range number; both raise a bare exception naming only the SDK member, never the knob the
+        // operator supplied. Every value is therefore checked BEFORE any SDK setter runs and every offending
+        // knob is named in ONE failure, so an operator who corrected one value and redeployed does not then
+        // discover the next.
+        // A null backoff means "not configured", leaving the SDK default for that parameter in place.
+        private static ServiceBusRetryOptions CreateExponentialRetryOptions(int maximumRetryCount, double? maximumBackoffInSeconds, double? minimumBackoffInSeconds)
+        {
+            var violations = new List<string>();
+            if (maximumRetryCount < _minimumSdkRetryCount || maximumRetryCount > _maximumSdkRetryCount)
+            {
+                violations.Add($"'{nameof(RetryPolicyConfiguration.MaximumRetryCount)}' is {maximumRetryCount}, but the Azure Service Bus SDK accepts only {_minimumSdkRetryCount} through {_maximumSdkRetryCount}");
+            }
+
+            AddViolationWhenBackoffCannotBecomeATimeSpan(violations, nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds), maximumBackoffInSeconds);
+            AddViolationWhenBackoffCannotBecomeATimeSpan(violations, nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds), minimumBackoffInSeconds);
+
+            if (violations.Count > 0)
+            {
+                throw new ServiceBusRetryOptionsValidationException(violations);
+            }
+
+            var sdkDefaults = new ServiceBusRetryOptions();
+            return new ServiceBusRetryOptions
             {
                 Mode = ServiceBusRetryMode.Exponential,
                 MaxRetries = maximumRetryCount,
-                Delay = TimeSpan.FromSeconds(minimumBackoffInSeconds),
-                MaxDelay = TimeSpan.FromSeconds(maximumBackoffInSeconds)
+                Delay = minimumBackoffInSeconds.HasValue ? TimeSpan.FromSeconds(minimumBackoffInSeconds.Value) : sdkDefaults.Delay,
+                MaxDelay = maximumBackoffInSeconds.HasValue ? TimeSpan.FromSeconds(maximumBackoffInSeconds.Value) : sdkDefaults.MaxDelay
             };
-            return this;
+        }
+
+        // INVARIANT: a POSITIVE range check, not an enumeration of the bad values. Every number
+        // TimeSpan.FromSeconds cannot convert — NaN, either infinity, a negative, and anything beyond
+        // TimeSpan's own range — falls outside [0, TimeSpan.MaxValue.TotalSeconds] because no comparison
+        // against NaN succeeds, so a new unconvertible value cannot slip past by not being listed. The
+        // ceiling is derived from TimeSpan itself rather than written as a literal.
+        private static void AddViolationWhenBackoffCannotBecomeATimeSpan(ICollection<string> violations, string knobName, double? backoffInSeconds)
+        {
+            if (!backoffInSeconds.HasValue)
+            {
+                return;
+            }
+
+            var seconds = backoffInSeconds.Value;
+            if (seconds >= 0 && seconds <= TimeSpan.MaxValue.TotalSeconds)
+            {
+                return;
+            }
+
+            violations.Add($"'{knobName}' is {seconds}, but a backoff must be a number of seconds from 0 through {TimeSpan.MaxValue.TotalSeconds}");
         }
 
         private void BindRetryPolicy(ServiceBusOptions serviceBusConfig)
@@ -189,18 +243,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             // handled above. Each parameter falls back to the SDK default unless a value greater than zero
             // was configured, so no combination of configured values can derive MaxRetries = 0 — an
             // all-zero section yields the SDK default retry options rather than silently disabling retry.
+            // That same fall-through is why a NaN or negative CONFIGURED number never reaches validation: it
+            // is not greater than zero, so it reads as "not configured" and the SDK default stands. The
+            // fluent path is deliberately asymmetric — a caller who states a negative outright stated a
+            // value, and CreateExponentialRetryOptions reports it as a violation.
             var sdkDefaults = new ServiceBusRetryOptions();
-            serviceBusConfig.RetryOptions = new ServiceBusRetryOptions
-            {
-                Mode = ServiceBusRetryMode.Exponential,
-                MaxRetries = retryPolicy.MaximumRetryCount > 0 ? retryPolicy.MaximumRetryCount : sdkDefaults.MaxRetries,
-                Delay = retryPolicy.MinimumBackoffInSeconds > 0
-                    ? TimeSpan.FromSeconds(retryPolicy.MinimumBackoffInSeconds)
-                    : sdkDefaults.Delay,
-                MaxDelay = retryPolicy.MaximumBackoffInSeconds > 0
-                    ? TimeSpan.FromSeconds(retryPolicy.MaximumBackoffInSeconds)
-                    : sdkDefaults.MaxDelay
-            };
+            serviceBusConfig.RetryOptions = CreateExponentialRetryOptions(
+                retryPolicy.MaximumRetryCount > 0 ? retryPolicy.MaximumRetryCount : sdkDefaults.MaxRetries,
+                retryPolicy.MaximumBackoffInSeconds > 0 ? retryPolicy.MaximumBackoffInSeconds : (double?)null,
+                retryPolicy.MinimumBackoffInSeconds > 0 ? retryPolicy.MinimumBackoffInSeconds : (double?)null);
         }
 
         // INVARIANT: connection-string SAS auth is present when the connection string carries either a

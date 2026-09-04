@@ -196,7 +196,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             // BY DESIGN: an empty-but-present RetryPolicy section has no children to bind, so every
             // parameter on the bound RetryPolicyConfiguration keeps its zero default, no NoRetry opt-in is
             // present, and the SDK default ServiceBusRetryOptions applies — the same designed fall-through
-            // as the all-zero section, never a disabled retry.
+            // as the all-zero section, never a disabled retry. This outcome DEPENDS on that "greater than
+            // zero means configured" fall-through: the section is present, so the bound
+            // RetryPolicyConfiguration is non-null and every parameter must fall back individually.
             var defaultOptions = new ServiceBusRetryOptions();
 
             var config = ConfigWith(new Dictionary<string, string>
@@ -207,8 +209,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             var options = Create(new ServiceCollection(), config).Build();
             options.RetryOptions.Should().NotBeNull();
             options.RetryOptions.Mode.Should().Be(defaultOptions.Mode);
+            options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
             options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
             options.RetryOptions.MaxRetries.Should().NotBe(0);
+            options.RetryOptions.Delay.Should().Be(defaultOptions.Delay);
+            options.RetryOptions.MaxDelay.Should().Be(defaultOptions.MaxDelay);
         }
 
         [Fact]
@@ -276,6 +281,155 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
 
             var options = Create(new ServiceCollection(), config).Build();
             options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
+        }
+
+        [Theory]
+        [InlineData("101")]
+        [InlineData("500")]
+        public void MustThrowNamingMaximumRetryCountWhenConfiguredAboveTheSdkCeiling(string configuredRetryCount)
+        {
+            // The RetryPolicy-derived retry count reaches ServiceBusRetryOptions.MaxRetries, whose SETTER
+            // validates 0..100 and raises a bare ArgumentOutOfRangeException naming only the SDK property.
+            // The guarded construction validates BEFORE the setter and names the configured knob instead.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = configuredRetryCount,
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumRetryCount)}*")
+                .WithMessage($"*{configuredRetryCount}*");
+        }
+
+        [Theory]
+        [InlineData("1e300")]
+        [InlineData("Infinity")]
+        public void MustThrowNamingMinimumBackoffInSecondsWhenConfiguredOutsideTimeSpanRange(string configuredBackoff)
+        {
+            // A configured backoff greater than zero reaches TimeSpan.FromSeconds, which raises a bare
+            // OverflowException for a number beyond TimeSpan's range and for positive infinity. The guarded
+            // construction validates the number first and names the configured knob.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = configuredBackoff,
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds)}*");
+        }
+
+        [Fact]
+        public void MustNameEveryInvalidRetryValueInOneFailureWhenSeveralConfiguredValuesAreInvalid()
+        {
+            // ONE failure naming every offending knob. An operator who corrected one value, redeployed and
+            // only then discovered the next would pay a deployment per invalid value.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "500",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "1e300",
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = "Infinity",
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumRetryCount)}*")
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds)}*")
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds)}*")
+                .Which.Violations.Should().HaveCount(3);
+        }
+
+        [Fact]
+        public void MustAcceptConfiguredMaximumRetryCountAtTheSdkCeiling()
+        {
+            // 100 is the ceiling ServiceBusRetryOptions.MaxRetries accepts in its own setter, so the boundary
+            // belongs to the valid side and the guard must let it through.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "100",
+            });
+
+            var options = Create(new ServiceCollection(), config).Build();
+
+            options.RetryOptions.MaxRetries.Should().Be(100);
+        }
+
+        [Theory]
+        [InlineData("NaN")]
+        [InlineData("-1")]
+        [InlineData("-Infinity")]
+        public void MustFallBackToTheSdkDefaultBackoffWhenConfiguredValueIsNotGreaterThanZero(string configuredBackoff)
+        {
+            // DELIBERATE ASYMMETRY with the fluent path, do not harmonise it: configuration honours a
+            // parameter only when it is greater than zero, so a NaN or negative number reads as "not
+            // configured" and the SDK default stands rather than becoming a violation. The fluent path throws
+            // on the same negative because a caller who passes it stated a value outright.
+            var defaultOptions = new ServiceBusRetryOptions();
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = configuredBackoff,
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+            build.Should().NotThrow();
+
+            var options = Create(new ServiceCollection(), config).Build();
+            options.RetryOptions.Delay.Should().Be(defaultOptions.Delay);
+        }
+
+        [Theory]
+        [InlineData("0")]
+        [InlineData("-1")]
+        public void MustNotDeriveZeroMaxRetriesFromConfigurationWithoutTheNoRetryOptIn(string configuredRetryCount)
+        {
+            // MaxRetries = 0 stays reachable ONLY through the NoRetry / WithNoRetry opt-in. A configured
+            // count that is not greater than zero reads as "not configured", so the SDK default stands even
+            // when the rest of the section IS populated — retry can never be switched off by inference.
+            var defaultOptions = new ServiceBusRetryOptions();
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = configuredRetryCount,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "2",
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = "45",
+            });
+
+            var options = Create(new ServiceCollection(), config).Build();
+
+            options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
+            options.RetryOptions.MaxRetries.Should().NotBe(0);
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(2));
+            options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(45));
+        }
+
+        [Fact]
+        public void MustNotTreatMinimumBackoffGreaterThanMaximumBackoffAsAViolation()
+        {
+            // The SDK CLAMPS a Delay above MaxDelay while computing each retry delay. That is not a crash, so
+            // it must never become a violation — the built options carry the configured values verbatim.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "5",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "60",
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = "5",
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+            build.Should().NotThrow();
+
+            var options = Create(new ServiceCollection(), config).Build();
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(60));
+            options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(5));
         }
 
         [Fact]
