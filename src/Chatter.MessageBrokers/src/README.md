@@ -169,6 +169,111 @@ Receiving is wrapped by an `IRecoveryStrategy` — the default `RetryWithCircuit
 - **Max Receives Exceeded** — when a message's delivery count reaches `MaxReceiveAttempts`, the receiver deadletters it and runs the `IMaxReceivesExceededAction` (default `ErrorQueueDispatcher`). `MaxReceiveAttemptsExceededException` / `MaxRetryAttemptsExceededException` signal the condition.
 - **Critical Failure / Error Queue** — an unrecoverable receive error (`CriticalReceiverException`) stops the receiver loop and raises a Critical Failure via `ICriticalFailureNotifier` (default `CriticalFailureEventDispatcher`, which dispatches a `CriticalFailureEvent`). Failed messages are routed to the **Error Queue** (`ErrorQueueDispatcher`). Poison messages (`PoisonedMessageException`, e.g. a body that won't deserialize) are deadlettered.
 
+## Configuration (appsettings)
+
+Everything configured fluently above can also come from configuration. `AddMessageBrokers` reads the `Chatter:MessageBrokers` section **automatically**: it resolves the section from the `IConfiguration` the Chatter builder already holds, so no extra call is required. Earlier versions never resolved the section on this entry point, so every key underneath it was discarded — which is why configuration appeared to be ignored.
+
+Four sections are bindable. Each section name is a constant on its builder, so it can be referenced instead of retyped:
+
+| Section | Constant |
+| --- | --- |
+| `Chatter:MessageBrokers` | `MessageBrokerOptionsBuilder.MessageBrokerSectionName` |
+| `Chatter:MessageBrokers:Reliability` | `ReliabilityOptionsBuilder.ReliabilityOptionsSectionName` |
+| `Chatter:MessageBrokers:Recovery` | `RecoveryOptionsBuilder.RecoveryOptionsSectionName` |
+| `Chatter:MessageBrokers:Recovery:CircuitBreaker` | `CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName` |
+
+The last three are children of the first, so the key paths are identical whether the options are built through `AddMessageBrokers` or through a standalone `FromConfig(services, configuration)` on one of the sub-builders. Note that the circuit breaker key is spelled `CircuitBreaker` even though the property it binds onto is named `CircuitBreakerOptions`: `RecoveryOptions.CircuitBreakerOptions` is annotated `[ConfigurationKeyName("CircuitBreaker")]` precisely so that the one documented key works from both entry points.
+
+### Bindable keys and their defaults
+
+The default in each row is the value the fluent builder seeds before configuration is bound, so it is also the value a key keeps when configuration omits it.
+
+`Chatter:MessageBrokers`
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `TransactionMode` | `None` / `ReceiveOnly` / `FullAtomicityViaInfrastructure` | `ReceiveOnly` |
+
+`Chatter:MessageBrokers:Reliability`
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `RouteMessagesToOutbox` | `bool` | `false` |
+| `MinutesToLiveInMemory` | `double` | `10` |
+| `EnableOutboxPollingProcessor` | `bool` | `false` |
+| `OutboxProcessingIntervalInMilliseconds` | `int` | `5000` |
+
+`Chatter:MessageBrokers:Recovery`
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `MaxRetryAttempts` | `int` | `5` |
+
+`Chatter:MessageBrokers:Recovery:CircuitBreaker`
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `OpenToHalfOpenWaitTimeInSeconds` | `int` | `15` |
+| `ConcurrentHalfOpenAttempts` | `int` | `1` |
+| `NumberOfFailuresBeforeOpen` | `int` | `5` |
+| `NumberOfHalfOpenSuccessesToClose` | `int` | `3` |
+| `SecondsOpenBeforeCriticalFailureNotification` | `int` | `1800` |
+
+A worked `appsettings.json`, showing every bindable key at its default:
+
+```json
+{
+  "Chatter": {
+    "MessageBrokers": {
+      "TransactionMode": "ReceiveOnly",
+      "Reliability": {
+        "RouteMessagesToOutbox": false,
+        "MinutesToLiveInMemory": 10,
+        "EnableOutboxPollingProcessor": false,
+        "OutboxProcessingIntervalInMilliseconds": 5000
+      },
+      "Recovery": {
+        "MaxRetryAttempts": 5,
+        "CircuitBreaker": {
+          "OpenToHalfOpenWaitTimeInSeconds": 15,
+          "ConcurrentHalfOpenAttempts": 1,
+          "NumberOfFailuresBeforeOpen": 5,
+          "NumberOfHalfOpenSuccessesToClose": 3,
+          "SecondsOpenBeforeCriticalFailureNotification": 1800
+        }
+      }
+    }
+  }
+}
+```
+
+The table above is the whole configurable surface. The remaining fluent calls — the retry delay strategy (`UseNoDelayRecovery`, `UseConstantDelayRecovery`, `UseExponentialDelayRecovery`), the retry and circuit-breaker exception predicates (`RetryWhen`, `IsTrippedBy`), and the max-receives-exceeded action (`UseRouteToErrorQueueRecoveryAction`) — register services rather than set option values and have no configuration equivalent.
+
+### Precedence: configuration wins
+
+Builder defaults are applied first and configuration is bound over them last, so a key present in configuration wins — over the builder default and over an explicit fluent call alike — while a key absent from configuration keeps the builder default. Configuration is bound into the options instance the builder already created, with non-public binding enabled, and never replaces that instance.
+
+The honest reason an explicit fluent call loses is that these builders carry no nullable sentinel: they cannot distinguish an option that was never set fluently from one that was set to the same value as the default, so there is nothing for the bind to skip over.
+
+`Chatter.MessageBrokers.AzureServiceBus` applies the opposite rule: its builder holds each fluent value in a nullable sentinel (`int?`, `bool?`, `TimeSpan?`), can therefore tell "never called" from "called with the default value", and lets an explicit fluent call win over configuration. The divergence is deliberate, and an application that configures both modules needs to know that the same-looking fluent call is authoritative in one module and overridable in the other.
+
+In practice this means a `TransactionMode` in configuration overrides `WithTransactionMode(...)`, and an `OutboxProcessingIntervalInMilliseconds` in configuration overrides `WithOutboxPollingProcessor(2000)`:
+
+```csharp
+// Chatter:MessageBrokers:TransactionMode = "FullAtomicityViaInfrastructure" in appsettings
+// wins over the fluent call below; remove the key to let the fluent value stand.
+.AddMessageBrokers(options =>
+{
+    options.WithTransactionMode(TransactionMode.ReceiveOnly);
+});
+```
+
+### Invalid circuit breaker options fail at build time
+
+An out-of-range circuit breaker value is rejected while the options are being built, by `CircuitBreakerOptionsValidationException` (namespace `Chatter.MessageBrokers.Recovery.CircuitBreaker`). The exception's message, and its `Violations` list, name **every** invalid option in one go, so an operator does not pay a deployment per invalid value. The minimums are what `CircuitBreaker` itself can run with: `ConcurrentHalfOpenAttempts`, `NumberOfFailuresBeforeOpen` and `NumberOfHalfOpenSuccessesToClose` must be at least `1`; `OpenToHalfOpenWaitTimeInSeconds` and `SecondsOpenBeforeCriticalFailureNotification` must be at least `0`.
+
+Validation runs on the finalized options — after configuration has been bound over the fluent defaults — and from every entry point, so a bad value reaches it whether it arrived through `WithCircuitBreaker(...)`, through `Chatter:MessageBrokers:Recovery:CircuitBreaker`, or through the parent `Chatter:MessageBrokers` section. Previously an invalid value survived the build and surfaced much later as a bare `ArgumentOutOfRangeException` from the `new SemaphoreSlim(0, 0)` in the `CircuitBreaker` constructor, when the breaker was first resolved.
+
 ## Routing Slips
 
 A **Routing Slip** is a message that carries its own itinerary — an ordered list of destinations to visit. The receiver advances the slip to the next step as each handler completes, enabling itinerary-style choreography without a central orchestrator.

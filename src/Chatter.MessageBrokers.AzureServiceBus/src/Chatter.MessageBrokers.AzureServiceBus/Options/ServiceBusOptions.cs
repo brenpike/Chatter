@@ -32,7 +32,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         /// Applies only to session-enabled receivers.
         /// </summary>
         public TimeSpan MaxSessionLockRenewalDuration { get; set; } = TimeSpan.FromMinutes(5);
-        internal RetryPolicyConfiguation RetryPolicy { get; set; }
+        internal RetryPolicyConfiguration RetryPolicy { get; set; }
         [JsonIgnore]
         public ServiceBusRetryOptions RetryOptions { get; internal set; }
         // INVARIANT: a null TokenCredential means "authenticate using the connection string's SAS".
@@ -40,11 +40,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public TokenCredential TokenCredential { get; internal set; } = null;
     }
 
-    internal class RetryPolicyConfiguation
+    internal class RetryPolicyConfiguration
     {
+        // INVARIANT: disabling retry is an EXPLICIT opt-in and is never inferred from all-zero values.
+        // A section that leaves every parameter at zero reads as "not configured" and falls back to the
+        // SDK default retry options, so retry cannot be switched off by accident.
+        public bool NoRetry { get; set; } = false;
         public double MinimumBackoffInSeconds { get; set; } = 0;
         public double MaximumBackoffInSeconds { get; set; } = 0;
         public int MaximumRetryCount { get; set; } = 0;
+        // INVARIANT: DeltaBackoffInSeconds is retained for configuration compatibility and IGNORED —
+        // Azure.Messaging.ServiceBus has no per-attempt delta-backoff knob, exactly as
+        // ServiceBusOptionsBuilder.WithExponentialDelay ignores its deltaBackoffInSeconds argument.
         public double DeltaBackoffInSeconds { get; set; } = 0;
     }
 }

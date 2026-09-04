@@ -16,13 +16,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
     // and ConfigurationBuilder().AddInMemoryCollection(...) drive both section-absent and
     // section-present branches.
     //
-    // The internal ServiceBusOptions.RetryPolicy config property never binds via
-    // section.Get<ServiceBusOptions>() (the binder skips internal setters), so PostConfiguration
-    // ALWAYS hits its first branch and RetryOptions is a fresh default ServiceBusRetryOptions. The
-    // all-zero->MaxRetries=0 and populated->Exponential-mapping branches are therefore dead via
-    // config; see the characterization-findings doc. The MaxRetries=0 / mapped Exponential options
-    // are only reachable through the WithNoRetry() / WithExponentialDelay() fluent setters, which is
-    // what the policy tests below pin.
+    // The section is bound INTO the default-initialized ServiceBusOptions with
+    // BindNonPublicProperties enabled, so the internal RetryPolicy configuration property binds and a
+    // populated Chatter:Infrastructure:AzureServiceBus:RetryPolicy section yields matching
+    // ServiceBusRetryOptions. Configuration can disable retry ONLY through the explicit
+    // RetryPolicy:NoRetry opt-in: an empty or all-zero RetryPolicy section under a present service-bus
+    // section falls back to the SDK default ServiceBusRetryOptions by design, and when the whole
+    // service-bus section is absent nothing binds so RetryOptions stays null. The fluent WithNoRetry()
+    // / WithExponentialDelay() setters still WIN over a configured RetryPolicy — this module's
+    // nullable-sentinel backing fields make an explicit fluent call beat configuration, the opposite
+    // of the core Chatter.MessageBrokers builders.
     public class WhenBuilding : Testing.Core.Context
     {
         private const string _sasConnectionString =
@@ -112,8 +115,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustLeaveRetryOptionsUnsetWhenSectionAbsent()
         {
-            // Section absent and no fluent setter: PostConfiguration never runs and no fluent
-            // RetryOptions is applied, so RetryOptions stays null on the freshly-built options.
+            // BY DESIGN: section absent and no fluent setter, so there is nothing to bind,
+            // PostConfiguration never runs and no fluent RetryOptions is applied — RetryOptions stays
+            // null on the freshly-built options.
             var options = Create(new ServiceCollection(), EmptyConfig())
                 .WithConnectionString(_sasConnectionString)
                 .Build();
@@ -121,12 +125,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
-        public void MustLeaveRetryOptionsAtDefaultExponentialWhenRetryPolicySectionAllZero()
+        public void MustFallBackToSdkDefaultRetryOptionsWhenRetryPolicyAllZeroWithoutNoRetryOptIn()
         {
-            // Pins the dead-branch behavior: even an all-zero RetryPolicy config section does NOT
-            // produce a MaxRetries=0 options, because the internal RetryPolicy property never binds,
-            // so PostConfiguration takes its first branch and RetryOptions is a fresh default
-            // ServiceBusRetryOptions (Exponential mode, the SDK default MaxRetries of 3).
+            // BY DESIGN: the all-zero RetryPolicy section binds, but every zero reads as "not
+            // configured" and the section carries no NoRetry opt-in, so each parameter falls back to the
+            // SDK default ServiceBusRetryOptions. No branch infers no-retry from all-zero values, so
+            // retry CANNOT be disabled this way — only the explicit NoRetry opt-in disables it.
+            var defaultOptions = new ServiceBusRetryOptions();
+
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -138,18 +144,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             var options = Create(new ServiceCollection(), config).Build();
             options.RetryOptions.Should().NotBeNull();
             options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
-            options.RetryOptions.MaxRetries.Should().Be(new ServiceBusRetryOptions().MaxRetries);
+            options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
+            options.RetryOptions.MaxRetries.Should().NotBe(0);
+            options.RetryOptions.Delay.Should().Be(defaultOptions.Delay);
+            options.RetryOptions.MaxDelay.Should().Be(defaultOptions.MaxDelay);
         }
 
         [Fact]
-        public void MustLeaveRetryOptionsAtDefaultWhenRetryPolicySectionPopulated()
+        public void MustApplyConfiguredRetryPolicyWhenSectionPopulated()
         {
-            // Pins finding #2: a populated RetryPolicy section is SILENTLY IGNORED because the
-            // internal RetryPolicy property never binds, so PostConfiguration takes its first branch
-            // and RetryOptions is the default ServiceBusRetryOptions — NOT options built from the
-            // supplied MaximumRetryCount=5 / MinimumBackoffInSeconds=1. The supplied values are pinned
-            // as ignored by comparing the resulting options' observable parameters against a fresh
-            // default ServiceBusRetryOptions and confirming they do NOT reflect the config.
+            // A populated RetryPolicy section is HONOURED: MaximumRetryCount maps to MaxRetries and
+            // MinimumBackoffInSeconds to Delay. MaximumBackoffInSeconds is left unconfigured, so MaxDelay
+            // keeps the SDK default rather than collapsing to zero.
             var defaultOptions = new ServiceBusRetryOptions();
 
             var config = ConfigWith(new Dictionary<string, string>
@@ -161,15 +167,84 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             var options = Create(new ServiceCollection(), config).Build();
 
             options.RetryOptions.Should().NotBeNull();
-            // The supplied MinimumBackoffInSeconds=1 is IGNORED: the resulting options' Delay stays at
-            // the SDK default, never the requested 1s.
-            options.RetryOptions.Delay.Should().Be(defaultOptions.Delay);
-            options.RetryOptions.Delay.Should().NotBe(TimeSpan.FromSeconds(1));
-            // Every observable parameter matches a fresh default ServiceBusRetryOptions: the populated
-            // config produced exactly the default options, confirming it was silently ignored.
+            options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
+            options.RetryOptions.MaxRetries.Should().Be(5);
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(1));
+            options.RetryOptions.MaxDelay.Should().Be(defaultOptions.MaxDelay);
+        }
+
+        [Fact]
+        public void MustDisableRetryWhenRetryPolicyNoRetryOptInConfigured()
+        {
+            // The explicit NoRetry opt-in is the ONLY way configuration can disable retry. Mirrors the
+            // fluent WithNoRetry().
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:NoRetry"] = "true",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.MaxRetries.Should().Be(0);
+        }
+
+        [Fact]
+        public void MustFallBackToSdkDefaultRetryOptionsWhenRetryPolicySectionEmpty()
+        {
+            // BY DESIGN: an empty-but-present RetryPolicy section has no children to bind, so the
+            // RetryPolicy configuration property stays null and the SDK default ServiceBusRetryOptions
+            // applies — the same designed fall-through as the all-zero section, never a disabled retry.
+            var defaultOptions = new ServiceBusRetryOptions();
+
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy"] = string.Empty,
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.RetryOptions.Should().NotBeNull();
             options.RetryOptions.Mode.Should().Be(defaultOptions.Mode);
             options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
-            options.RetryOptions.MaxDelay.Should().Be(defaultOptions.MaxDelay);
+            options.RetryOptions.MaxRetries.Should().NotBe(0);
+        }
+
+        [Fact]
+        public void MustIgnoreConfiguredRetryOptionsWhenRetryPolicyConfigured()
+        {
+            // BindNonPublicProperties widens the bindable surface to every internal-set property,
+            // including RetryOptions itself ([JsonIgnore] does NOT gate the configuration binder). The
+            // PostConfiguration-derived RetryOptions is assigned AFTER the bind, so a stray RetryOptions
+            // key cannot clobber the RetryPolicy-derived value.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryOptions:MaxRetries"] = "9",
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "5",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "1",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.MaxRetries.Should().Be(5);
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(1));
+        }
+
+        [Fact]
+        public void MustPreferFluentNoRetryOverConfiguredRetryPolicy()
+        {
+            // This module's precedence rule, the OPPOSITE of the core Chatter.MessageBrokers builders:
+            // the nullable-sentinel backing fields distinguish "fluent never called" from "called with
+            // the default value", so an explicit fluent call WINS over a populated config section.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "5",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "1",
+            });
+            var options = Create(new ServiceCollection(), config)
+                .WithNoRetry()
+                .Build();
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.MaxRetries.Should().Be(0);
         }
 
         [Fact]
@@ -345,6 +420,23 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
                 .AddTokenProvider(marker)
                 .Build();
             options.TokenCredential.Should().BeSameAs(marker);
+        }
+
+        [Fact]
+        public void MustIgnoreConfiguredTokenCredentialValue()
+        {
+            // BindNonPublicProperties also exposes the internal-set TokenCredential property to the
+            // binder, but a credential is a runtime object and cannot be expressed as a configuration
+            // value: TokenCredential is abstract, so the binder converts nothing and the property stays
+            // null. Configuration therefore cannot supply or forge a credential — AddTokenProvider is the
+            // only way in.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _noSasConnectionString,
+                [$"{_sectionName}:TokenCredential"] = "some-credential",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.TokenCredential.Should().BeNull();
         }
 
         private sealed class MarkerTokenCredential : TokenCredential

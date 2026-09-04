@@ -158,27 +158,35 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 return;
             }
 
-            if (serviceBusConfig.RetryPolicy == null)
+            var retryPolicy = serviceBusConfig.RetryPolicy;
+            if (retryPolicy == null)
             {
                 serviceBusConfig.RetryOptions = new ServiceBusRetryOptions();
+                return;
             }
-            else if (serviceBusConfig.RetryPolicy.MaximumRetryCount == 0
-                && serviceBusConfig.RetryPolicy.MaximumBackoffInSeconds == 0
-                && serviceBusConfig.RetryPolicy.MinimumBackoffInSeconds == 0
-                && serviceBusConfig.RetryPolicy.DeltaBackoffInSeconds == 0)
+
+            if (retryPolicy.NoRetry)
             {
                 serviceBusConfig.RetryOptions = new ServiceBusRetryOptions { MaxRetries = 0 };
+                return;
             }
-            else
+
+            // INVARIANT: disabling retry from configuration is UNREPRESENTABLE without the NoRetry opt-in
+            // handled above. Each parameter falls back to the SDK default unless a value greater than zero
+            // was configured, so no combination of configured values can derive MaxRetries = 0 — an
+            // all-zero section yields the SDK default retry options rather than silently disabling retry.
+            var sdkDefaults = new ServiceBusRetryOptions();
+            serviceBusConfig.RetryOptions = new ServiceBusRetryOptions
             {
-                serviceBusConfig.RetryOptions = new ServiceBusRetryOptions
-                {
-                    Mode = ServiceBusRetryMode.Exponential,
-                    MaxRetries = serviceBusConfig.RetryPolicy.MaximumRetryCount,
-                    Delay = TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.MinimumBackoffInSeconds),
-                    MaxDelay = TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.MaximumBackoffInSeconds)
-                };
-            }
+                Mode = ServiceBusRetryMode.Exponential,
+                MaxRetries = retryPolicy.MaximumRetryCount > 0 ? retryPolicy.MaximumRetryCount : sdkDefaults.MaxRetries,
+                Delay = retryPolicy.MinimumBackoffInSeconds > 0
+                    ? TimeSpan.FromSeconds(retryPolicy.MinimumBackoffInSeconds)
+                    : sdkDefaults.Delay,
+                MaxDelay = retryPolicy.MaximumBackoffInSeconds > 0
+                    ? TimeSpan.FromSeconds(retryPolicy.MaximumBackoffInSeconds)
+                    : sdkDefaults.MaxDelay
+            };
         }
 
         // INVARIANT: connection-string SAS auth is present when the connection string carries either a
@@ -218,7 +226,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             var options = new ServiceBusOptions();
             if (_azureServiceBusSectionName != null && _serviceBusOptionsSection.Exists())
             {
-                options = _serviceBusOptionsSection.Get<ServiceBusOptions>();
+                // INVARIANT: bind INTO the default-initialized instance and never replace it. The
+                // RetryPolicy configuration property is internal, so the binder skips it unless
+                // BindNonPublicProperties is on; keys the section omits keep their default. PostConfiguration
+                // runs AFTER the bind because BindNonPublicProperties also exposes the internal-set
+                // RetryOptions property to the binder ([JsonIgnore] does not gate the configuration binder),
+                // and the RetryPolicy-derived options must win over a stray RetryOptions key.
+                _serviceBusOptionsSection.Bind(options, o => o.BindNonPublicProperties = true);
                 PostConfiguration(options);
             }
 
