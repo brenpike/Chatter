@@ -76,6 +76,41 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
+        public void MustRegisterNothingWhenTheConnectionStringGuardThrows()
+        {
+            // INVARIANT: AddBuiltOptions runs LAST in Build(), after the connection-string guard, so a
+            // failed guard leaves the service collection untouched and no facet can resolve a half-built
+            // ServiceBusOptions. Asserted here because the analogous guards were pinned only by the
+            // build-time validation tests this branch removed, which would otherwise leave the invariant
+            // claimed in the README, CONTEXT and CHANGELOG but tested nowhere.
+            var services = new ServiceCollection();
+
+            Action build = () => Create(services, EmptyConfig()).Build();
+
+            build.Should().Throw<Exception>();
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustFailInTheBinderNamingTheKeyWhenAConfiguredRetryValueIsNotConvertible()
+        {
+            // A key of the wrong TYPE never reaches the Azure SDK's setters: ConfigurationBinder cannot
+            // convert it, so Build() throws its InvalidOperationException first. The message is asserted
+            // only for the KEY PATH — the framework words the rest of it differently on net8.0 and
+            // net10.0, and that wording is not this module's contract.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "oops",
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<InvalidOperationException>()
+                 .Which.Message.Should().Contain($"{_sectionName}:RetryPolicy:MaximumRetryCount");
+        }
+
+        [Fact]
         public void MustUseInlineConnectionString()
         {
             var options = Create(new ServiceCollection(), EmptyConfig())

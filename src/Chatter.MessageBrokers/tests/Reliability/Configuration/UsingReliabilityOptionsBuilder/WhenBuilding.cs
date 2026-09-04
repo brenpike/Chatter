@@ -24,6 +24,31 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
         }
 
+        /// <summary>
+        /// A configured value of the wrong TYPE is the one configuration failure that still happens while
+        /// the options are being built, and the one that names the key: <c>ConfigurationBinder</c> cannot
+        /// convert it, so it throws out of <c>Build()</c> before any runtime sink sees the value. Recorded
+        /// here so the distinction between a conversion failure and the absent semantic validation issue
+        /// #423 tracks is pinned rather than only described in prose. The message is asserted only for the
+        /// KEY PATH — the framework words the rest differently on net8.0 and net10.0.
+        /// </summary>
+        [Fact]
+        public void MustFailInTheBinderNamingTheKeyWhenAConfiguredValueIsNotConvertible()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:MinutesToLiveInMemory"] = "abc"
+                })
+                .Build();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<InvalidOperationException>()
+                      .Which.Message.Should().Contain($"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:MinutesToLiveInMemory");
+        }
+
         [Fact]
         public void MustThrowArgumentNullExceptionWhenServicesIsNull()
         {

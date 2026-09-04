@@ -36,6 +36,8 @@ The remedy depends on what you meant:
 - **You wanted the SDK default.** Remove the key. An omitted key falls back to the SDK default for that parameter and never reaches the SDK's setter; only a stated one does.
 - **You meant a real value.** Correct it. The SDK names one offending member at a time, so a section carrying several may take more than one pass to clear.
 
+A key that is not merely out of range but of the wrong TYPE — `MaximumRetryCount: "oops"`, a non-boolean `NoRetry` — fails earlier and differently: the configuration binder cannot convert it, so `Build()` throws an `InvalidOperationException` naming the full key path and the target type before any SDK setter runs. That failure does name the key you wrote, so it is the easier of the two to act on.
+
 Named build-time validation over these keys — one aggregated failure naming every offending value in the operator's own vocabulary — is deferred to issue #423.
 
 Blast radius is bounded, and this is stated as a fact rather than as a reason to skim the above: the `RetryPolicy` section did not bind at all in any released version (see the binding fix in this same release), so no released consumer's retry behaviour changes underneath them. What changes is that a section which has been inert all along starts being read — and, if it is invalid, starts being refused.
