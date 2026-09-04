@@ -149,8 +149,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         // INVARIANT: this is the ONE construction site for exponential retry options — the fluent
         // WithExponentialDelay setter and the configuration-derived CreateConfiguredRetryOptions both route
-        // through it, so both paths bind the same way and the SDK's own setters stay the single authority on
-        // which values it can run with.
+        // through it, so both paths build the options the same way and neither adds a check of its own.
         // A null backoff means "not configured", leaving the SDK default for that parameter in place.
         private static ServiceBusRetryOptions CreateExponentialRetryOptions(int maximumRetryCount, double? maximumBackoffInSeconds, double? minimumBackoffInSeconds)
         {
@@ -180,10 +179,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // INVARIANT: the effective retry options are RESOLVED ONCE, from the FIRST source that stated one —
         // the fluent setter, then the bound RetryPolicy section, then the Azure SDK default. The FLUENT-FIRST
         // ORDER OF THE CHECKS BELOW is what makes a configured section the fluent call overrides NEVER
-        // CONSTRUCTED, which is the point: constructing it would carry its values into the SDK's own
-        // validating setters, and one the SDK rejects would block host start on a retry policy the host was
-        // never going to use, contradicting this module's fluent-wins precedence. Only the source that
-        // actually wins ever reaches those setters. Note what is and is not load-bearing here: this
+        // CONSTRUCTED, which is the point: constructing it would carry its values to the Azure SDK, which
+        // may reject one and so block host start on a retry policy the host was never going to use,
+        // contradicting this module's fluent-wins precedence. Only the source that actually wins is ever
+        // handed to the SDK. Note what is and is not load-bearing here: this
         // check order is; the position of the CALL to this method in Build() is not, since every fluent
         // setter has already run before Build() begins. That call position carries a SEPARATE, weaker
         // guarantee, stated at the call site.
@@ -215,9 +214,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         }
 
         // INVARIANT: every configured parameter binds FAITHFULLY. An ABSENT parameter is null and leaves the
-        // SDK default for that parameter in place; a STATED one is carried through to the SDK's own setter,
-        // which raises its own failure for a value it cannot run with rather than having that value silently
-        // replaced by the same default. A stated MaximumRetryCount of 0 therefore yields MaxRetries 0 — the
+        // SDK default for that parameter in place; a STATED one is carried through to the Azure SDK
+        // unchanged rather than being silently replaced by that same default, and the SDK may reject a value
+        // it cannot run with. A stated MaximumRetryCount of 0 therefore yields MaxRetries 0 — the
         // faithful binding of one explicitly written key. That differs from the earlier behaviour, which
         // inferred "off" only from an ALL-ZERO section. NoRetry, handled by ResolveRetryOptions, remains the
         // intention-revealing way to switch retry off, and issue #423 owns the final call on whether a stated
@@ -273,15 +272,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 // section omits keep their default. The bind surface is deliberately NARROW — plain Bind()
                 // with BindNonPublicProperties OFF — and closure of the internal-set RetryOptions and
                 // TokenCredential properties to configuration rests on BOTH that narrowness AND their NULL
-                // default: the binder passes over a setter it cannot reach only while the value it reads
-                // through the PUBLIC getter is null. Give either property a non-null initializer — say
-                // = new ServiceBusRetryOptions() — and the binder would bind INTO that object instead,
-                // driving its own PUBLIC setters, so a stray RetryOptions key would reach the SDK's
-                // VALIDATING setter (MaxRetries rejects anything outside 0..100). The null default is
-                // therefore LOAD-BEARING rather than incidental. Widening the surface would additionally let
-                // a nested TokenCredential object drive the binder into activating an abstract type. Both
-                // failures raise raw binder exceptions at host start, before any later assignment could
-                // correct them. RetryPolicy is the ONE internal configuration property that must bind, so it
+                // default. Both are left null-defaulted deliberately: do not give either a non-null
+                // initializer, and do not widen the bind surface, without re-checking that configuration
+                // still cannot reach them. The pins are MustNotReachRetryOptionsWithAConfiguredValueTheSdkRejects,
+                // MustIgnoreConfiguredTokenCredentialValue and MustIgnoreNestedConfiguredTokenCredentialObject.
+                // RetryPolicy is the ONE internal configuration property that must bind, so it
                 // is bound EXPLICITLY below into a locally constructed instance whose own setters are public.
                 // Binding is all that happens here: the configured RetryPolicy is carried forward as DATA
                 // and only turned into retry options once, in the resolve step at the end of this method,
@@ -349,8 +344,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             // hand. What THIS position guarantees is narrow but real: resolution runs even when no
             // service-bus section was bound, which is what lets the fluent-only path produce retry options
             // at all. WHICH source wins — and therefore which is the only one ever constructed and the only
-            // one whose values reach the SDK's own setters — is decided by the fluent-first check order
-            // inside ResolveRetryOptions, not by this position.
+            // one ever handed to the SDK — is decided by the fluent-first check order inside
+            // ResolveRetryOptions, not by this position.
             options.RetryOptions = ResolveRetryOptions(serviceBusSectionWasBound, options.RetryPolicy);
 
             // INVARIANT: every single-instance resolution of ServiceBusOptions returns the instance built here -

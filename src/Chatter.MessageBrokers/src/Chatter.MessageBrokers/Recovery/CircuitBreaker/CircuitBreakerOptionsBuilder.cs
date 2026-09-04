@@ -137,11 +137,10 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 // and IOptionsMonitor over that same instance. The container's options factory is deliberately
                 // NOT used: a Configure<CircuitBreakerOptions>(section) registration would build a second
                 // instance that never saw the fluent defaults above, so a section that omits
-                // ConcurrentHalfOpenAttempts would resolve it as 0 and constructing CircuitBreaker would
-                // THROW: new SemaphoreSlim(0, 0) is rejected by SemaphoreSlim's own constructor, whose
-                // maxCount must be greater than 0. The concrete registration is APPENDED rather than
-                // replaced, so a second Build() on the same IServiceCollection takes over single-instance
-                // resolution and leaves the earlier instances reachable through
+                // ConcurrentHalfOpenAttempts would resolve it as 0 and CircuitBreaker would be constructed
+                // from that 0 rather than from the default assigned here. The concrete registration is
+                // APPENDED rather than replaced, so a second Build() on the same IServiceCollection takes
+                // over single-instance resolution and leaves the earlier instances reachable through
                 // IEnumerable<CircuitBreakerOptions> - each seeded by its own Build(), so no enumeration can
                 // surface an unseeded object.
                 _circuitBreakerOptionsSection.Bind(circuitBreakerOptions, o => o.BindNonPublicProperties = true);
