@@ -92,6 +92,13 @@ namespace Chatter.MessageBrokers.Configuration
                 _messageBrokerOptionsSection.Bind(messageBrokerOptions, o => o.BindNonPublicProperties = true);
             }
 
+            // INVARIANT: reliability options reached through the MessageBrokers parent section never pass through
+            // ReliabilityOptionsBuilder.Build(), which runs before the bind above mutates the very instance it already
+            // registered, so validating the finalized instance here is what makes build-time validation reachable from
+            // this entry point too. Both call sites are required: this one is the only path AddMessageBrokers takes,
+            // and the sub-builder's is the only one ReliabilityOptionsBuilder.FromConfig takes.
+            messageBrokerOptions.Reliability.Validate();
+
             // INVARIANT: circuit breaker options reached through the MessageBrokers parent section never pass through
             // CircuitBreakerOptionsBuilder.Build() or RecoveryOptionsBuilder.Build(), both of which run before the bind
             // above mutates them, so validating the finalized instance here is what makes build-time validation

@@ -103,6 +103,12 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
                 _reliabilityOptionsSection.Bind(reliabilityOptions, o => o.BindNonPublicProperties = true);
             }
 
+            // INVARIANT: the FINALIZED instance is validated, unconditionally - never a reachability test. Guarding
+            // this on EnableOutboxPollingProcessor would validate a value the bind above is still free to change and
+            // would let an invalid interval through whenever the poller happens to be off, which is precisely how an
+            // invalid value survives to the deployment that later turns the poller on.
+            reliabilityOptions.Validate();
+
             _services.AddBuiltOptions(reliabilityOptions);
 
             return reliabilityOptions;

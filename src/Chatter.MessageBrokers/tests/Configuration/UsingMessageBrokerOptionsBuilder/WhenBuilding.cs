@@ -234,6 +234,29 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
                 .WithMessage($"*{nameof(CircuitBreakerOptions.ConcurrentHalfOpenAttempts)}*");
         }
 
+        /// <summary>
+        /// The nesting guard. <see cref="ReliabilityOptionsBuilder"/> registers its instance and validates it BEFORE
+        /// the parent bind runs, and the parent bind then MUTATES that same instance - so a Reliability value supplied
+        /// through the parent section never passes through the sub-builder's validation and escapes entirely unless
+        /// the finalized instance is validated here too.
+        /// </summary>
+        [Fact]
+        public void MustThrowNamingInvalidReliabilityOptionWhenNestedSectionCarriesInvalidValue()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = "-2"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ReliabilityOptionsValidationException>()
+                .WithMessage($"*{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}*-2*");
+        }
+
         [Fact]
         public void MustLeaveNestedOptionsResolvableWhenFromConfigNestedSectionsPopulated()
         {
@@ -428,6 +451,27 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
 
             fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>();
+            services.Any(DescribesMessageBrokerOptions).Should().BeFalse();
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetService<IOptions<MessageBrokerOptions>>().Should().BeNull();
+        }
+
+        [Fact]
+        public void MustRegisterNoOptionsFacetWhenNestedReliabilityValueIsInvalid()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = "-2"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ReliabilityOptionsValidationException>();
             services.Any(DescribesMessageBrokerOptions).Should().BeFalse();
 
             using var provider = services.BuildServiceProvider();
