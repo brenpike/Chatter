@@ -16,7 +16,7 @@ Azure Service Bus implementation of the Chatter.MessageBrokers interfaces for se
 
 **Service Bus Options**: Configuration (connection, paths, retry, circuit breaker, session knobs) for the Azure Service Bus connection.
 
-**Service Bus Retry**: ASB-specific Retry recovery policy applied during receiving.
+**Service Bus Retry**: ASB-specific Retry recovery policy applied during receiving. Distinct from the retry the Azure SDK client performs on the wire, which is configured either fluently (`WithNoRetry` / `WithExponentialDelay`) or through the `RetryPolicy` section of Service Bus Options (`NoRetry`, `MaximumRetryCount`, `MinimumBackoffInSeconds`, `MaximumBackoffInSeconds`) and is carried onto the single shared client. A configured parameter is honored only when greater than zero; otherwise the Azure SDK default for that parameter stands, so an omitted or zero value means "SDK default" and never "off". `DeltaBackoffInSeconds` is accepted for configuration compatibility and ignored — the SDK has no per-attempt delta-backoff knob. Fluent call wins over configuration.
 
 **Service Bus Circuit Breaker**: ASB-specific Circuit Breaker recovery policy applied during receiving.
 
@@ -35,11 +35,14 @@ _Avoid_: a dedicated settlement exception (the adapter no longer defines or rais
 
 **Max Session Lock Renewal Duration**: Operator knob (`MaxSessionLockRenewalDuration` / `WithMaxSessionLockRenewalDuration`) setting the ceiling on how long a held session's lock is renewed for long-running processing. Once reached, renewal stops and the session is allowed to expire or roll naturally. Default: 5 minutes. Fluent call wins over configuration.
 
+**No Retry Opt-In**: Operator knob (`RetryPolicy:NoRetry` / `WithNoRetry`) that switches the Azure SDK client's retry off outright by setting its maximum retry count to zero. It is the only way retry can be switched off from configuration: a `RetryPolicy` section whose numeric parameters are all zero or omitted reads as "not configured" and falls back to the Azure SDK defaults, so retry is never disabled by inference. Default: off, meaning retry stays enabled. Fluent call wins over configuration.
+
 ## Relationships
 
 - Implements the receiver/sender/path interfaces defined in the Message Brokers context.
 - Commands map to a Queue Receiver (or Session Queue Receiver in session mode); Events map to a Topic Subscription (or Session Topic Subscription in session mode).
 - Service Bus Options configure recovery (Retry, Circuit Breaker) and session behavior (Session Idle Timeout, Max Session Lock Renewal Duration) for receiving.
+- Service Bus Options are configurable from appsettings: the `Chatter:Infrastructure:AzureServiceBus` section is bound over the builder's defaults whenever it exists, including its nested `RetryPolicy` section and the No Retry Opt-In within it. An explicit fluent call wins over a configured key here, whereas the Message Brokers context lets configuration win over the fluent call; the divergence is deliberate, and an application configuring both contexts needs to know which way each one resolves.
 - Authentication is supplied by the Azure Service Bus Auth context.
 - PeekLock Settlement realizes the Settlement Outcome contract defined in the Message Brokers context; a `ReceiveAndDelete` receiver owes no settlement at all, and a PeekLock settlement with no received message to settle reports Failed instead of raising.
 - Session State and inbound Group Id (SessionId) surfacing are entirely within this adapter; no core Message Brokers or CQRS concept is changed.

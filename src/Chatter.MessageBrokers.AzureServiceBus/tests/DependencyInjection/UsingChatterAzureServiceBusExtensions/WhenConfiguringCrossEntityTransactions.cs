@@ -33,8 +33,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
 
         // Builds a configuration whose Chatter:Infrastructure:AzureServiceBus section carries the connection
         // string plus the supplied EnableCrossEntityTransactions value, so the opt-in is exercised purely via
-        // config binding (ServiceBusOptionsBuilder.UseConfig -> section.Get<ServiceBusOptions>()), with NO
-        // fluent WithCrossEntityTransactions() call.
+        // config binding (ServiceBusOptionsBuilder.UseConfig -> section.Bind(options, BindNonPublicProperties)
+        // into the default-initialized ServiceBusOptions), with NO fluent WithCrossEntityTransactions() call.
         private static IConfiguration CrossEntityConfig(bool enableCrossEntityTransactions)
             => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
             {
