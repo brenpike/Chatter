@@ -14,17 +14,29 @@ namespace Chatter.MessageBrokers.Receiving
     class BrokeredMessageReceiverBackgroundService<TMessage> : BackgroundService where TMessage : class, IMessage
     {
         private readonly ReceiverOptions _options;
+        private readonly AsyncServiceScope _scope;
         private readonly IBrokeredMessageReceiver<TMessage> _receiver;
 
         /// <summary>
         /// Creates a brokered message receiver that receives messages of <typeparamref name="TMessage"/>
         /// </summary>
-        /// <param name="receiverFactory">Factory that creates <see cref="IBrokeredMessageReceiver"/> for messages of type <typeparamref name="TMessage"/>.</param>
+        /// <param name="options">The <see cref="ReceiverOptions"/> the brokered message receiver is started with.</param>
+        /// <param name="serviceScopeFactory">Creates the DI scope this background service OWNS and resolves its <see cref="IBrokeredMessageReceiver{TMessage}"/> from.</param>
         public BrokeredMessageReceiverBackgroundService(ReceiverOptions options,
-                                                        IServiceProvider serviceScopeFactory)
+                                                        IServiceScopeFactory serviceScopeFactory)
         {
+            if (serviceScopeFactory is null)
+            {
+                throw new ArgumentNullException(nameof(serviceScopeFactory));
+            }
+
             _options = options ?? throw new ArgumentNullException(nameof(options));
-            _receiver = serviceScopeFactory.GetRequiredService<IBrokeredMessageReceiver<TMessage>>();
+
+            // INVARIANT: the scope is created HERE and disposed at the end of THIS service's own lifetime, so every
+            // scoped member of the receiver's graph stays alive for exactly as long as the receiver uses it. A throw
+            // from the resolve below is startup-fatal — the host aborts and the scope goes unobserved.
+            _scope = serviceScopeFactory.CreateAsyncScope();
+            _receiver = _scope.ServiceProvider.GetRequiredService<IBrokeredMessageReceiver<TMessage>>();
         }
 
         ///<inheritdoc/>
@@ -91,6 +103,25 @@ namespace Chatter.MessageBrokers.Receiving
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             await using var _ = await _receiver.StartReceiver(_options, stoppingToken).ConfigureAwait(false);
+        }
+
+        ///<inheritdoc/>
+        public override async Task StopAsync(CancellationToken cancellationToken)
+        {
+            // Unwind the receive loop FIRST, then dispose the scope: the loop still reads the scoped graph while it
+            // tears the messaging infrastructure down, so disposing the scope any earlier would recreate the
+            // use-after-dispose defect inside shutdown. The disposal is ASYNCHRONOUS because a scoped dependency may
+            // implement only IAsyncDisposable, which a synchronous scope disposal refuses. Scope disposal is
+            // idempotent, so a later Dispose() is a no-op.
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+            await _scope.DisposeAsync().ConfigureAwait(false);
+        }
+
+        ///<inheritdoc/>
+        public override void Dispose()
+        {
+            base.Dispose();
+            _scope.Dispose();
         }
     }
 }

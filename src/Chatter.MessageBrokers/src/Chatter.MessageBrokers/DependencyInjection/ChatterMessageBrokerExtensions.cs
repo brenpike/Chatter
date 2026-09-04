@@ -263,11 +263,13 @@ namespace Microsoft.Extensions.DependencyInjection
             GetOrAddDiscoveredReceiverRegistry(services).Register(options);
 
             services.AddScoped(closedBrokeredMessageReceiverInterface, closedConcreteBrokeredMessageReceiver);
+            // INVARIANT: this delegate opens NO scope. A registration factory must never open a DI scope whose resolved
+            // graph escapes the factory delegate — the scope, and every scoped member of the graph, would be disposed
+            // as the factory returns while the singleton it built keeps the already-disposed graph for the process
+            // lifetime. The scope belongs to the component whose lifetime bounds that graph, so the hosted background
+            // service is handed the scope FACTORY and creates and disposes its own scope.
             services.AddSingleton(typeof(IHostedService), sp =>
-            {
-                using var scope = sp.CreateScope();
-                return Activator.CreateInstance(closedConcreteReceiverBackgroundService, options, scope.ServiceProvider);
-            });
+                Activator.CreateInstance(closedConcreteReceiverBackgroundService, options, sp.GetRequiredService<IServiceScopeFactory>()));
         }
 
         // Resolves the single DiscoveredReceiverRegistry instance shared across all receiver registrations,
