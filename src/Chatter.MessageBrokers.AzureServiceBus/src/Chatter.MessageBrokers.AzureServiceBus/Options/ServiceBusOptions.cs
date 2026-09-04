@@ -42,16 +42,23 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
     internal class RetryPolicyConfiguration
     {
-        // INVARIANT: disabling retry is an EXPLICIT opt-in and is never inferred from all-zero values.
-        // A section that leaves every parameter at zero reads as "not configured" and falls back to the
-        // SDK default retry options, so retry cannot be switched off by accident.
+        // INVARIANT: disabling retry is an EXPLICIT opt-in and is never inferred from a numeric value.
+        // A stated MaximumRetryCount of zero is reported as a violation pointing at this opt-in rather
+        // than being honoured, so retry cannot be switched off by accident.
         public bool NoRetry { get; set; } = false;
-        public double MinimumBackoffInSeconds { get; set; } = 0;
-        public double MaximumBackoffInSeconds { get; set; } = 0;
-        public int MaximumRetryCount { get; set; } = 0;
+        // INVARIANT: every numeric parameter is NULLABLE so that ABSENT and STATED are distinguishable.
+        // Null means the key was never written, which falls back to the Azure SDK default for that
+        // parameter and is never validated; any other value was STATED by an operator and is validated,
+        // so a value the SDK cannot run with is named in the failure instead of being silently replaced
+        // by that same default. A non-nullable numeric could not tell a stated zero from an absent key,
+        // which is why the two outcomes were previously fused into one "greater than zero means
+        // configured" test.
+        public double? MinimumBackoffInSeconds { get; set; }
+        public double? MaximumBackoffInSeconds { get; set; }
+        public int? MaximumRetryCount { get; set; }
         // INVARIANT: DeltaBackoffInSeconds is retained for configuration compatibility and IGNORED —
         // Azure.Messaging.ServiceBus has no per-attempt delta-backoff knob, exactly as
         // ServiceBusOptionsBuilder.WithExponentialDelay ignores its deltaBackoffInSeconds argument.
-        public double DeltaBackoffInSeconds { get; set; } = 0;
+        public double? DeltaBackoffInSeconds { get; set; }
     }
 }

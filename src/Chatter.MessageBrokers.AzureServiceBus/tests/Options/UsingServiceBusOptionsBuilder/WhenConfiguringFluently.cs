@@ -65,8 +65,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         {
             // The fluent path shares ONE guarded construction site with the configuration path, so a retry
             // count the SDK cannot run with is reported the same way here instead of raising a bare
-            // ArgumentOutOfRangeException from the MaxRetries setter. There is deliberately no "greater than
-            // zero means configured" fall-through on this path: a caller who passes -1 stated a value.
+            // ArgumentOutOfRangeException from the MaxRetries setter. A caller who passes -1 stated a value,
+            // exactly as a configured -1 does; neither path has a "greater than zero means configured"
+            // fall-through that would replace it with the SDK default.
             var sut = CreateSut();
 
             Action withExponentialDelay = () => sut.WithExponentialDelay(maximumRetryCount, 30, 1, 3);

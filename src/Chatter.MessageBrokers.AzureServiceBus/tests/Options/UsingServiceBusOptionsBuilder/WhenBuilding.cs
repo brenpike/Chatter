@@ -22,13 +22,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
     // EXPLICITLY from its own subsection, so a populated Chatter:Infrastructure:AzureServiceBus:RetryPolicy
     // section yields matching ServiceBusRetryOptions while the internal-set RetryOptions and
     // TokenCredential properties stay UNREACHABLE from configuration. Configuration can disable retry ONLY
-    // through the explicit
-    // RetryPolicy:NoRetry opt-in: an empty or all-zero RetryPolicy section under a present service-bus
-    // section falls back to the SDK default ServiceBusRetryOptions by design, and when the whole
-    // service-bus section is absent nothing binds so RetryOptions stays null. The fluent WithNoRetry()
-    // / WithExponentialDelay() setters still WIN over a configured RetryPolicy — this module's
-    // nullable-sentinel backing fields make an explicit fluent call beat configuration, the opposite
-    // of the core Chatter.MessageBrokers builders.
+    // through the explicit RetryPolicy:NoRetry opt-in: an ABSENT numeric parameter falls back to the SDK
+    // default, a STATED one the SDK cannot run with is a named violation, and when the whole service-bus
+    // section is absent nothing binds so RetryOptions stays null. The fluent WithNoRetry() /
+    // WithExponentialDelay() setters WIN over a configured RetryPolicy — this module's nullable-sentinel
+    // backing fields make an explicit fluent call beat configuration, the opposite of the core
+    // Chatter.MessageBrokers builders — and because the effective retry options are RESOLVED once, after
+    // the fluent override is applied, a configured section the fluent call discards is never validated.
     public class WhenBuilding : Testing.Core.Context
     {
         private const string _sasConnectionString =
@@ -128,14 +128,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
-        public void MustFallBackToSdkDefaultRetryOptionsWhenRetryPolicyAllZeroWithoutNoRetryOptIn()
+        public void MustDirectToTheNoRetryOptInWhenEveryRetryPolicyParameterIsStatedAsZero()
         {
-            // BY DESIGN: the all-zero RetryPolicy section binds, but every zero reads as "not
-            // configured" and the section carries no NoRetry opt-in, so each parameter falls back to the
-            // SDK default ServiceBusRetryOptions. No branch infers no-retry from all-zero values, so
-            // retry CANNOT be disabled this way — only the explicit NoRetry opt-in disables it.
-            var defaultOptions = new ServiceBusRetryOptions();
-
+            // An all-zero section STATED every parameter, so nothing here is "not configured": the zero
+            // retry count is reported against the knob the operator wrote and the failure names the
+            // NoRetry opt-in as the way to switch retry off. Retry still cannot be disabled by
+            // inference — the difference is that the operator is now told so instead of silently
+            // receiving the SDK defaults. Both offending knobs are named in the ONE failure: the zero
+            // minimum backoff is rejected by the SDK's own Delay floor, while a zero MAXIMUM backoff is a
+            // value MaxDelay accepts and so is not a violation at all.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -144,13 +145,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
                 [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = "0",
                 [$"{_sectionName}:RetryPolicy:DeltaBackoffInSeconds"] = "0",
             });
-            var options = Create(new ServiceCollection(), config).Build();
-            options.RetryOptions.Should().NotBeNull();
-            options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
-            options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
-            options.RetryOptions.MaxRetries.Should().NotBe(0);
-            options.RetryOptions.Delay.Should().Be(defaultOptions.Delay);
-            options.RetryOptions.MaxDelay.Should().Be(defaultOptions.MaxDelay);
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumRetryCount)}*")
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.NoRetry)}*")
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds)}*")
+                .Which.Violations.Should().HaveCount(2);
         }
 
         [Fact]
@@ -195,11 +197,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         public void MustFallBackToSdkDefaultRetryOptionsWhenRetryPolicySectionEmpty()
         {
             // BY DESIGN: an empty-but-present RetryPolicy section has no children to bind, so every
-            // parameter on the bound RetryPolicyConfiguration keeps its zero default, no NoRetry opt-in is
-            // present, and the SDK default ServiceBusRetryOptions applies — the same designed fall-through
-            // as the all-zero section, never a disabled retry. This outcome DEPENDS on that "greater than
-            // zero means configured" fall-through: the section is present, so the bound
-            // RetryPolicyConfiguration is non-null and every parameter must fall back individually.
+            // numeric parameter on the bound RetryPolicyConfiguration stays NULL, no NoRetry opt-in is
+            // present, and the SDK default ServiceBusRetryOptions applies. This is the proof that ABSENT
+            // and STATED are distinguished: the section is present, so the bound RetryPolicyConfiguration
+            // is non-null, yet no parameter was stated, so nothing is validated and nothing throws — an
+            // all-zero section, which states every parameter, is rejected instead.
             var defaultOptions = new ServiceBusRetryOptions();
 
             var config = ConfigWith(new Dictionary<string, string>
@@ -367,13 +369,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [InlineData("NaN")]
         [InlineData("-1")]
         [InlineData("-Infinity")]
-        public void MustFallBackToTheSdkDefaultBackoffWhenConfiguredValueIsNotGreaterThanZero(string configuredBackoff)
+        public void MustThrowNamingMinimumBackoffInSecondsWhenConfiguredValueIsNotANumberOfSeconds(string configuredBackoff)
         {
-            // DELIBERATE ASYMMETRY with the fluent path, do not harmonise it: configuration honours a
-            // parameter only when it is greater than zero, so a NaN or negative number reads as "not
-            // configured" and the SDK default stands rather than becoming a violation. The fluent path throws
-            // on the same negative because a caller who passes it stated a value outright.
-            var defaultOptions = new ServiceBusRetryOptions();
+            // A STATED backoff is validated on both paths alike. It was previously read as "not
+            // configured" purely because it was not greater than zero, so an operator's typo was replaced
+            // by the SDK default and the host started with a retry policy nobody asked for.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -381,21 +381,60 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             });
 
             Action build = () => Create(new ServiceCollection(), config).Build();
-            build.Should().NotThrow();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds)}*");
+        }
+
+        [Fact]
+        public void MustFallBackToTheSdkDefaultBackoffWhenNeitherBackoffIsConfigured()
+        {
+            // The nullable-semantics proof for the backoffs: the section is populated and bound, but
+            // neither backoff key is present, so neither is validated and both SDK defaults stand.
+            var defaultOptions = new ServiceBusRetryOptions();
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "5",
+            });
 
             var options = Create(new ServiceCollection(), config).Build();
+
+            options.RetryOptions.MaxRetries.Should().Be(5);
             options.RetryOptions.Delay.Should().Be(defaultOptions.Delay);
+            options.RetryOptions.MaxDelay.Should().Be(defaultOptions.MaxDelay);
+        }
+
+        [Fact]
+        public void MustFallBackToTheSdkDefaultRetryCountWhenMaximumRetryCountIsNotConfigured()
+        {
+            // The nullable-semantics proof for the retry count: the section is populated and bound, but
+            // MaximumRetryCount is absent, so it is not validated, not reported against NoRetry, and the
+            // SDK default stands.
+            var defaultOptions = new ServiceBusRetryOptions();
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "2",
+            });
+
+            var options = Create(new ServiceCollection(), config).Build();
+
+            options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
+            options.RetryOptions.MaxRetries.Should().NotBe(0);
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(2));
         }
 
         [Theory]
         [InlineData("0")]
         [InlineData("-1")]
+        [InlineData("-5")]
         public void MustNotDeriveZeroMaxRetriesFromConfigurationWithoutTheNoRetryOptIn(string configuredRetryCount)
         {
-            // MaxRetries = 0 stays reachable ONLY through the NoRetry / WithNoRetry opt-in. A configured
-            // count that is not greater than zero reads as "not configured", so the SDK default stands even
-            // when the rest of the section IS populated — retry can never be switched off by inference.
-            var defaultOptions = new ServiceBusRetryOptions();
+            // MaxRetries = 0 stays reachable ONLY through the NoRetry / WithNoRetry opt-in. A STATED count
+            // the SDK cannot run with is now reported against the knob the operator wrote instead of being
+            // replaced by the SDK default, so retry is still never switched off by inference and the
+            // operator is no longer left with a count nobody chose.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -404,12 +443,30 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
                 [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = "45",
             });
 
-            var options = Create(new ServiceCollection(), config).Build();
+            Action build = () => Create(new ServiceCollection(), config).Build();
 
-            options.RetryOptions.MaxRetries.Should().Be(defaultOptions.MaxRetries);
-            options.RetryOptions.MaxRetries.Should().NotBe(0);
-            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(2));
-            options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(45));
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumRetryCount)}*")
+                .WithMessage($"*{configuredRetryCount}*");
+        }
+
+        [Fact]
+        public void MustDirectToTheNoRetryOptInWhenConfiguredRetryCountIsZero()
+        {
+            // A stated zero is the one invalid count with an intended alternative, so the failure names it:
+            // an operator who wanted retry off is pointed at RetryPolicy:NoRetry rather than left to guess
+            // why zero was refused.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "0",
+            });
+
+            Action build = () => Create(new ServiceCollection(), config).Build();
+
+            build.Should().Throw<ServiceBusRetryOptionsValidationException>()
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumRetryCount)}*")
+                .WithMessage($"*{nameof(RetryPolicyConfiguration.NoRetry)}*");
         }
 
         [Fact]
@@ -552,6 +609,50 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
+        public void MustStartWithFluentNoRetryWhenTheConfiguredRetryPolicyIsOneTheSdkCannotRunWith()
+        {
+            // The fluent call WINS, so the configured section is DISCARDED — and a discarded section is
+            // never validated. Validating a value that is about to be thrown away blocked host start on a
+            // retry policy the host was never going to use.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "101",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "7776000",
+            });
+
+            var options = Create(new ServiceCollection(), config)
+                .WithNoRetry()
+                .Build();
+
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.MaxRetries.Should().Be(0);
+        }
+
+        [Fact]
+        public void MustStartWithFluentExponentialDelayWhenTheConfiguredRetryPolicyIsOneTheSdkCannotRunWith()
+        {
+            // Same precedence, same discard: a VALID fluent exponential policy stands and the invalid
+            // configured section it overrides is never validated.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "101",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "7776000",
+            });
+
+            var options = Create(new ServiceCollection(), config)
+                .WithExponentialDelay(5, 30, 1, 3)
+                .Build();
+
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
+            options.RetryOptions.MaxRetries.Should().Be(5);
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(1));
+            options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(30));
+        }
+
+        [Fact]
         public void MustApplyNoRetryOptionsViaFluentSetter()
         {
             var options = Create(new ServiceCollection(), EmptyConfig())
@@ -574,6 +675,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             options.RetryOptions.MaxRetries.Should().Be(5);
             options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(1));
             options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(30));
+        }
+
+        [Fact]
+        public void MustHonourAFluentRetryCountOfZeroWithoutTheNoRetryOptIn()
+        {
+            // The ONE remaining asymmetry between the two paths, and it is deliberate: the no-disable-by-
+            // inference rule is scoped to CONFIGURATION, where a zero is as likely a leftover key as an
+            // intention. A caller writing WithExponentialDelay(0, ...) in code stated the count outright,
+            // so it is honoured here while the same zero in the RetryPolicy section is refused.
+            var options = Create(new ServiceCollection(), EmptyConfig())
+                .WithConnectionString(_sasConnectionString)
+                .WithExponentialDelay(0, 30, 1, 3)
+                .Build();
+
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.MaxRetries.Should().Be(0);
         }
 
         [Fact]
