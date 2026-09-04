@@ -6,6 +6,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-03
+
+### Added
+
+- `CircuitBreakerOptionsValidationException` (namespace `Chatter.MessageBrokers.Recovery.CircuitBreaker`) — thrown by `CircuitBreakerOptionsBuilder.Build()` when the built `CircuitBreakerOptions` carry values the circuit breaker can never run with, naming every invalid knob in one aggregated message. Previously an invalid circuit-breaker configuration surfaced later as a bare `ArgumentOutOfRangeException` from `new SemaphoreSlim(0, 0)`, thrown the first time the breaker was resolved rather than at build time (#296, #311, #312).
+
+### Changed
+
+- **`MessageBrokerOptions`, `ReliabilityOptions`, `RecoveryOptions`, and `CircuitBreakerOptions` now bind their configuration section INTO the fluent-defaulted instance (`BindNonPublicProperties = true`) instead of REPLACING it via `Get<T>()`.** Every bindable property on these types is `internal set`, and `ConfigurationBinder.Get<T>()` defaults to `BindNonPublicProperties = false`, so a populated configuration section previously bound nothing and every configured value was silently discarded. Replacing the instance also skipped the fluent defaults applied elsewhere in the builder, so the result was worse than not configuring anything at all. Unspecified keys now keep their builder defaults; specified keys are honoured (#296, #311, #312).
+- **`TransactionMode` no longer degrades from the documented `ReceiveOnly` default to `None` when a configuration section is present.** This was the most severe consequence of the binding defect above: `TransactionMode.None`'s own doc comment warns that a message is lost if an error occurs after receipt, so a consumer with any populated `Chatter:MessageBrokers` section was silently running with no at-least-once delivery guarantee, regardless of what it had configured. **Upgrader risk:** a consumer whose configuration held a stale or incorrect `TransactionMode` value has been protected from it by this bug and will see that value take effect for the first time on upgrade — review your configured `TransactionMode` before upgrading (#296, #311, #312).
+- `AddMessageBrokers` now actually reads the `Chatter:MessageBrokers` configuration section. Previously the documented DI entry point never passed a section to the builder, so `appsettings` configuration was inert no matter how it was written (#296, #311, #312).
+- `RecoveryOptions.CircuitBreakerOptions` is now aliased to the documented `CircuitBreaker` configuration key via `[ConfigurationKeyName]`, so the same documented key is honoured regardless of entry point (#296, #312).
+- The instance `MessageBrokerOptionsBuilder.FromConfig(string)` no longer discards accumulated fluent state or registers a shadow second set of options singletons (#296, #311).
+
+Upgrader note: any consumer that already had a populated `Chatter:MessageBrokers` section (including its `CircuitBreaker`, `Reliability`, and `Recovery` subsections) has been running on type defaults regardless of what was configured. On upgrade, that configuration starts taking effect — review `MaxRetryAttempts`, the circuit-breaker thresholds, and especially `TransactionMode` before upgrading (#296, #311, #312, #313).
+
 ## [0.18.1] - 2026-09-02
 
 ### Changed

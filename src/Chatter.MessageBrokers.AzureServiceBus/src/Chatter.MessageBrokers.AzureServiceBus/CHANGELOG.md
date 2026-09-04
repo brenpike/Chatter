@@ -12,6 +12,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [2.2.0] - 2026-09-03
+
+### Added
+
+- `ServiceBusOptions.NoRetry` — an explicit opt-in that replaces the previous all-zero-`RetryPolicy`-section-infers-disable-retry behaviour. Configuration that leaves `RetryPolicy` absent, or sets its numeric knobs to zero without setting `NoRetry`, now falls back to the SDK's own retry defaults rather than being silently interpreted as "disable retry" (#296, #313).
+
+### Changed
+
+- **The `RetryPolicy` configuration section now binds and takes effect.** `ServiceBusOptions` binds its section the same way `Chatter.MessageBrokers` 0.19.0 now binds its own — into the fluent-defaulted instance rather than replacing it — so a populated `RetryPolicy` block, which previously did nothing, now configures the shared client's retry behaviour. **Upgrader risk:** a consumer who set `RetryPolicy` values expecting retry to already be disabled, relying on the old all-zero-section inference, must now set `RetryPolicy:NoRetry` explicitly — otherwise those zero values will bind and take effect instead of disabling retry (#296, #313).
+- `DeltaBackoffInSeconds` is retained on `ServiceBusOptions` for configuration compatibility and is ignored — the `Azure.Messaging.ServiceBus` retry model has no equivalent knob (#313).
+- Bundled dependency uplift to Chatter.MessageBrokers 0.19.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [2.1.1] - 2026-09-02
 
 ### Changed
