@@ -201,7 +201,7 @@ The default in each row is the value the fluent builder seeds before configurati
 | `RouteMessagesToOutbox` | `bool` | `false` |
 | `MinutesToLiveInMemory` | `double` | `10` |
 | `EnableOutboxPollingProcessor` | `bool` | `false` |
-| `OutboxProcessingIntervalInMilliseconds` | `int` | `5000` |
+| `OutboxProcessingIntervalInMilliseconds` | `int` | `5000` (must be `0` or greater — see [Invalid reliability options fail at build time](#invalid-reliability-options-fail-at-build-time)) |
 
 `Chatter:MessageBrokers:Recovery`
 
@@ -277,6 +277,22 @@ An out-of-range circuit breaker value is rejected while the options are being bu
 Validation runs on the finalized options — after configuration has been bound over the fluent defaults — and from every entry point, so a bad value reaches it whether it arrived through `WithCircuitBreaker(...)`, through `Chatter:MessageBrokers:Recovery:CircuitBreaker`, or through the parent `Chatter:MessageBrokers` section. Previously an invalid value survived the build and surfaced much later as a bare `ArgumentOutOfRangeException` from the `new SemaphoreSlim(0, 0)` in the `CircuitBreaker` constructor, when the breaker was first resolved.
 
 Validation is also unavoidable, because every single-instance resolution — the concrete `CircuitBreakerOptions`, `IOptions<CircuitBreakerOptions>`, `IOptionsSnapshot<CircuitBreakerOptions>` and `IOptionsMonitor<CircuitBreakerOptions>` — returns the validated instance. There is no longer a second, unvalidated instance sitting behind `IOptions<CircuitBreakerOptions>` for a bad value to survive in. The concrete registration is appended rather than replaced, so a second builder pass on the same `IServiceCollection` leaves the earlier instances reachable through `IEnumerable<CircuitBreakerOptions>` — but each of those was seeded and validated by its own `Build()`, so an enumeration cannot surface an unseeded or unvalidated object either.
+
+### Invalid reliability options fail at build time
+
+An `OutboxProcessingIntervalInMilliseconds` below zero is rejected while the options are being built, by `ReliabilityOptionsValidationException` (namespace `Chatter.MessageBrokers.Reliability.Configuration`). Its message, and its `Violations` list, name every invalid option in one go, on the same pattern as `CircuitBreakerOptionsValidationException` above.
+
+The floor is what `BrokeredMessageOutboxProcessor` can actually poll with. It awaits `Task.Delay(OutboxProcessingIntervalInMilliseconds, token)` outside the `try`/`catch` that guards a poll pass, so a value `Task.Delay` rejects faults the whole background service rather than costing one pass. `0` is allowed — polling that aggressively is the operator's call to make. `-1` is rejected even though `Task.Delay` accepts it as `Timeout.Infinite`: an enabled processor that waits forever after its first pass is a disable by inference, and disabling the processor is expressible only through `EnableOutboxPollingProcessor`.
+
+Validation is source-agnostic and runs on the finalized options, so a bad value reaches it whether it arrived through `WithOutboxPollingProcessor(-1)`, through `Chatter:MessageBrokers:Reliability`, or through the parent `Chatter:MessageBrokers` section. It also runs when `EnableOutboxPollingProcessor` is `false`: what is validated is the instance that was built, not whether anything currently reads it. Guarding validation on the processor being enabled is precisely how an invalid value survives to the deployment that later turns the processor on.
+
+**Where each newly-bound key is checked.** The configuration in this section only started taking effect in `0.19.0` — before that the `Chatter:MessageBrokers` section did not bind (see the changelog). Every key it newly binds that can carry a value this module cannot run with ends in exactly one of three places, and you can check any key against the list:
+
+1. **Rejected while the options are built.** The five `Recovery:CircuitBreaker` thresholds, and `Reliability:OutboxProcessingIntervalInMilliseconds`. The host does not start.
+2. **Known, deferred, and tracked in issue #298.** Four values are accepted today that arguably should not be: a `Recovery:MaxRetryAttempts` of `0`, which disables retry by inference rather than through an opt-in; a `TransactionMode` string that names no member of the enum, which surfaces as a raw configuration-binder exception rather than a named one; a `MinutesToLiveInMemory` of `0`, which switches the in-memory outbox's purge off and lets it grow without bound; and a `MinutesToLiveInMemory` of `NaN`, which passes the purge's `ttl <= 0` guard (no comparison against `NaN` succeeds), then throws from `DateTime.AddMinutes(NaN)` inside the outbox processor's own `catch`, costing one logged poll pass each time rather than faulting the host.
+3. **Checked where the value is used, not where it is bound.** `ReceiverOptions.MaxConcurrentCalls` is checked when a receiver initializes and raises an `InvalidOperationException` naming the receiver and the offending value when it is below `1`. The Azure Service Bus package's non-retry knobs are the same shape — see [that package's README](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md).
+
+The list is a claim about where each key is checked, not a claim that nothing can go wrong. Category 2 exists precisely because four known values are still accepted.
 
 ### Every injection style resolves the same options instance
 
