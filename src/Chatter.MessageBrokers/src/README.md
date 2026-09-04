@@ -247,7 +247,9 @@ A worked `appsettings.json`, showing every bindable key at its default:
 }
 ```
 
-The table above is the whole configurable surface. The remaining fluent calls — the retry delay strategy (`UseNoDelayRecovery`, `UseConstantDelayRecovery`, `UseExponentialDelayRecovery`), the retry and circuit-breaker exception predicates (`RetryWhen`, `IsTrippedBy`), and the max-receives-exceeded action (`UseRouteToErrorQueueRecoveryAction`) — register services rather than set option values and have no configuration equivalent.
+The table above is the whole configurable surface. The remaining fluent calls — the retry delay strategy (`UseNoDelayRecovery`, `UseConstantDelayRecovery`, `UseExponentialDelayRecovery`), the retry and circuit-breaker exception predicates (`RetryWhen`, `IsTrippedBy`), and the max-receives-exceeded action (`UseRouteToErrorQueueRecoveryAction`) — register services and have no configuration key of their own.
+
+`UseExponentialDelayRecovery(int)` is the exception to the second half of that: as well as registering the delay strategy it also sets `MaxRetryAttempts`, clamped to 15. `MaxRetryAttempts` is in the table above, so a configured value binds over whatever that call set it to. How the registered delay strategy relates to a configured `MaxRetryAttempts` is not settled here — it is tracked in issue #423.
 
 ### Precedence: configuration wins
 
