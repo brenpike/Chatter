@@ -4,6 +4,7 @@ using FluentAssertions;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -699,6 +700,105 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
 
             var options = Create(new ServiceCollection(), config).Build();
             options.TokenCredential.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromEveryOptionsFacet()
+        {
+            // ADDED CAPABILITY, not a defect fix: this builder never registered a Configure<ServiceBusOptions>, so
+            // there was no second, half-configured instance to remove. What the facets resolved instead was a
+            // framework-created all-default ServiceBusOptions with a null ConnectionString. Registering the facets
+            // extends the built-options invariant to Service Bus so it reads "one options instance, everywhere"
+            // rather than "everywhere except Service Bus".
+            var services = new ServiceCollection();
+
+            var options = Create(services, EmptyConfig())
+                .WithConnectionString(_sasConnectionString)
+                .Build();
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<ServiceBusOptions>().Should().BeSameAs(options);
+            provider.GetRequiredService<IOptions<ServiceBusOptions>>().Value.Should().BeSameAs(options);
+            provider.GetRequiredService<IOptionsSnapshot<ServiceBusOptions>>().Value.Should().BeSameAs(options);
+            provider.GetRequiredService<IOptionsMonitor<ServiceBusOptions>>().CurrentValue.Should().BeSameAs(options);
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromEveryOptionsFacetWhenAddOptionsRanBeforeTheBuilder()
+        {
+            // AddOptions() stands in for the host, which registers the OPEN generic options descriptors. The built
+            // options are registered against the CLOSED generics, which win regardless of registration order — proven
+            // here ACROSS the assembly boundary, since the facet type lives in Chatter.MessageBrokers.
+            var services = new ServiceCollection();
+            services.AddOptions();
+
+            var options = Create(services, EmptyConfig())
+                .WithConnectionString(_sasConnectionString)
+                .Build();
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<ServiceBusOptions>().Should().BeSameAs(options);
+            provider.GetRequiredService<IOptions<ServiceBusOptions>>().Value.Should().BeSameAs(options);
+            provider.GetRequiredService<IOptionsSnapshot<ServiceBusOptions>>().Value.Should().BeSameAs(options);
+            provider.GetRequiredService<IOptionsMonitor<ServiceBusOptions>>().CurrentValue.Should().BeSameAs(options);
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromEveryOptionsFacetWhenAddOptionsRanAfterTheBuilder()
+        {
+            // The other order: a host that calls AddOptions() after the Chatter registration must not push the
+            // open generic descriptors back in front of the built options.
+            var services = new ServiceCollection();
+
+            var options = Create(services, EmptyConfig())
+                .WithConnectionString(_sasConnectionString)
+                .Build();
+
+            services.AddOptions();
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<ServiceBusOptions>().Should().BeSameAs(options);
+            provider.GetRequiredService<IOptions<ServiceBusOptions>>().Value.Should().BeSameAs(options);
+            provider.GetRequiredService<IOptionsSnapshot<ServiceBusOptions>>().Value.Should().BeSameAs(options);
+            provider.GetRequiredService<IOptionsMonitor<ServiceBusOptions>>().CurrentValue.Should().BeSameAs(options);
+        }
+
+        [Fact]
+        public void MustCarryTheFullyBuiltStateOnEveryOptionsFacet()
+        {
+            // The facets must hand out the FULLY built instance, not a half-built one: the configured connection
+            // string, a fluent-sentinel override that beat configuration, and the guarded RetryPolicy-derived retry
+            // options all have to be visible through them. This is what proves the facet registration sits after
+            // everything that shapes the instance.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:MaxConcurrentCalls"] = "5",
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "7",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "2",
+            });
+            var services = new ServiceCollection();
+
+            Create(services, config).WithMaxConcurrentCalls(1).Build();
+
+            using var provider = services.BuildServiceProvider();
+
+            AssertCarriesTheFullyBuiltState(provider.GetRequiredService<IOptions<ServiceBusOptions>>().Value);
+            AssertCarriesTheFullyBuiltState(provider.GetRequiredService<IOptionsSnapshot<ServiceBusOptions>>().Value);
+            AssertCarriesTheFullyBuiltState(provider.GetRequiredService<IOptionsMonitor<ServiceBusOptions>>().CurrentValue);
+        }
+
+        private static void AssertCarriesTheFullyBuiltState(ServiceBusOptions options)
+        {
+            options.ConnectionString.Should().Be(_sasConnectionString);
+            options.MaxConcurrentCalls.Should().Be(1);
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.Mode.Should().Be(ServiceBusRetryMode.Exponential);
+            options.RetryOptions.MaxRetries.Should().Be(7);
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(2));
         }
 
         private sealed class MarkerTokenCredential : TokenCredential

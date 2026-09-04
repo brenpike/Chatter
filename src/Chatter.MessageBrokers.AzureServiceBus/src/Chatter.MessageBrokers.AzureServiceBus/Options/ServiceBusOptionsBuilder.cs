@@ -1,5 +1,6 @@
 using Azure.Core;
 using Azure.Messaging.ServiceBus;
+using Chatter.MessageBrokers.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
@@ -367,7 +368,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 options.MaxSessionLockRenewalDuration = _maxSessionLockRenewalDuration.Value;
             }
 
-            Services.AddSingleton(options);
+            // INVARIANT: the instance built here is the only ServiceBusOptions dependency injection can hand out -
+            // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and IOptionsMonitor
+            // over that same instance - and it runs LAST, after the connection-string guard, the fluent-sentinel
+            // overrides and the guarded retry construction, so no facet can observe a half-built instance. This
+            // builder never registered a Configure<ServiceBusOptions>, so there is no second instance here to remove:
+            // what the facets resolved instead was a framework-created all-default ServiceBusOptions whose
+            // ConnectionString is null. Registering the facets COMPLETES the one-instance-everywhere invariant across
+            // the options graph rather than repairing a divergence this builder introduced.
+            Services.AddBuiltOptions(options);
 
             return options;
         }
