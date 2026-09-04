@@ -2,6 +2,7 @@ using Chatter.MessageBrokers.Reliability.Configuration;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using Xunit;
@@ -113,5 +114,67 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             options.EnableOutboxPollingProcessor.Should().BeFalse();
             options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
         }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithRouteMessagesToOutbox());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptions<ReliabilityOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<ReliabilityOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsSnapshotWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithRouteMessagesToOutbox());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsSnapshot<ReliabilityOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<ReliabilityOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsMonitorWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithRouteMessagesToOutbox());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsMonitor<ReliabilityOptions>>().CurrentValue
+                .Should().BeSameAs(provider.GetRequiredService<ReliabilityOptions>());
+        }
+
+        [Fact]
+        public void MustRetainOmittedFluentDefaultsOnTheBuiltOptionsWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithRouteMessagesToOutbox());
+
+            using var provider = services.BuildServiceProvider();
+            var builtOptions = provider.GetRequiredService<IOptions<ReliabilityOptions>>().Value;
+
+            builtOptions.RouteMessagesToOutbox.Should().BeTrue();
+            builtOptions.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
+            builtOptions.MinutesToLiveInMemory.Should().Be(10);
+        }
+
+        private static IConfiguration BuildConfigurationWithRouteMessagesToOutbox()
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:RouteMessagesToOutbox"] = "true"
+                })
+                .Build();
     }
 }

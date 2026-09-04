@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Reliability.Outbox;
 
 namespace Chatter.MessageBrokers.Reliability.Configuration
@@ -86,11 +87,17 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
                 // ReliabilityOptions is internal set, so the binder skips all of them unless BindNonPublicProperties is
                 // on; replacing the instance would additionally discard the defaults assigned above. Keys the section
                 // omits therefore keep their fluent default.
+                //
+                // INVARIANT: the instance built here is the only ReliabilityOptions dependency injection can hand out -
+                // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
+                // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
+                // a Configure<ReliabilityOptions>(section) registration would build a second instance that never saw
+                // the fluent defaults above, so a section that omits OutboxProcessingIntervalInMilliseconds would
+                // resolve it as 0 and the BrokeredMessageOutboxProcessor would poll the outbox in a tight loop.
                 _reliabilityOptionsSection.Bind(reliabilityOptions, o => o.BindNonPublicProperties = true);
-                _services.Configure<ReliabilityOptions>(_reliabilityOptionsSection, o => o.BindNonPublicProperties = true);
             }
 
-            _services.AddSingleton(reliabilityOptions);
+            _services.AddBuiltOptions(reliabilityOptions);
 
             return reliabilityOptions;
         }
