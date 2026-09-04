@@ -14,7 +14,7 @@ namespace Chatter.MessageBrokers.Configuration
         private TransactionMode _transactionMode = TransactionMode.ReceiveOnly;
         private ReliabilityOptions _reliabilityOptions = null;
         private RecoveryOptions _recoveryOptions = null;
-        private readonly IConfigurationSection _messageBrokerOptionsSection = null;
+        private IConfigurationSection _messageBrokerOptionsSection = null;
 
         public const string MessageBrokerSectionName = "Chatter:MessageBrokers";
 
@@ -26,7 +26,11 @@ namespace Chatter.MessageBrokers.Configuration
         {
             Services = services;
             _configuration = configuration;
-            _messageBrokerOptionsSection = section;
+            // INVARIANT: an explicitly supplied section wins; otherwise the documented default section is resolved
+            // here. AddMessageBrokerOptions hands over an IConfiguration but no section, so without this resolution
+            // Build() would have nothing to bind and every Chatter:MessageBrokers key would be discarded on the one
+            // entry point consumers actually use.
+            _messageBrokerOptionsSection = section ?? configuration?.GetSection(MessageBrokerSectionName);
         }
 
         public MessageBrokerOptionsBuilder WithTransactionMode(TransactionMode transactionMode)
@@ -36,7 +40,13 @@ namespace Chatter.MessageBrokers.Configuration
         }
 
         public MessageBrokerOptions FromConfig(string messageBrokerSectionName = MessageBrokerSectionName)
-            => FromConfig(Services, _configuration, messageBrokerSectionName);
+        {
+            // INVARIANT: retarget THIS builder rather than delegating to the static overload. A throwaway builder
+            // would discard the fluent state already accumulated here and would register a second, shadow set of
+            // MessageBrokerOptions, ReliabilityOptions, RecoveryOptions and CircuitBreakerOptions singletons.
+            _messageBrokerOptionsSection = _configuration?.GetSection(messageBrokerSectionName);
+            return Build();
+        }
 
         public static MessageBrokerOptions FromConfig(IServiceCollection services, IConfiguration configuration, string messageBrokerSectionName = MessageBrokerSectionName)
         {
@@ -64,28 +74,36 @@ namespace Chatter.MessageBrokers.Configuration
         internal MessageBrokerOptions Build()
         {
             var messageBrokerOptions = new MessageBrokerOptions();
+            messageBrokerOptions.TransactionMode = _transactionMode;
+            // INVARIANT: the nested Reliability and Recovery options are seeded BEFORE the parent bind so the binder
+            // mutates the instances their sub-builders already registered as singletons instead of replacing them with
+            // unregistered ones. InMemoryBrokeredMessageOutbox, BrokeredMessageOutboxProcessor, RetryStrategy,
+            // RetryWithCircuitBreakerStrategy and CircuitBreaker all inject the concrete options types, so an orphaned
+            // instance would surface as a resolution failure.
+            messageBrokerOptions.Reliability = _reliabilityOptions ?? ReliabilityOptionsBuilder.Create(Services).Build();
+            messageBrokerOptions.Recovery = _recoveryOptions ?? RecoveryOptionsBuilder.Create(Services).Build();
+
             if (_messageBrokerOptionsSection != null && _messageBrokerOptionsSection.Exists())
             {
-                messageBrokerOptions = _messageBrokerOptionsSection.Get<MessageBrokerOptions>();
-            }
-            else
-            {
-                messageBrokerOptions.Reliability = _reliabilityOptions;
-                messageBrokerOptions.Recovery = _recoveryOptions;
-                messageBrokerOptions.TransactionMode = _transactionMode;
+                // INVARIANT: bind INTO the fluent-defaulted instance and never replace it. Every property on
+                // MessageBrokerOptions is internal set, so the binder skips all of them unless BindNonPublicProperties
+                // is on; replacing the instance would additionally discard the defaults assigned above - which is how
+                // TransactionMode degraded from ReceiveOnly to None. Keys the section omits keep their fluent default.
+                _messageBrokerOptionsSection.Bind(messageBrokerOptions, o => o.BindNonPublicProperties = true);
             }
 
-            if (messageBrokerOptions.Reliability is null)
-            {
-                messageBrokerOptions.Reliability = ReliabilityOptionsBuilder.Create(Services).Build();
-            }
-
-            if (messageBrokerOptions.Recovery is null)
-            {
-                messageBrokerOptions.Recovery = RecoveryOptionsBuilder.Create(Services).Build();
-            }
-
-            Services.AddSingleton(messageBrokerOptions);
+            // INVARIANT: every single-instance resolution of MessageBrokerOptions returns the instance built here -
+            // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and IOptionsMonitor
+            // over that same instance. Unlike the nested builders this one never registered a
+            // Configure<MessageBrokerOptions>, so there is no second instance here to remove: what the facets resolved
+            // instead was a framework-created all-default MessageBrokerOptions, whose TransactionMode is None and
+            // whose Reliability and Recovery are null. Registering the facets completes the one-instance-everywhere
+            // invariant across the whole options graph rather than repairing a divergence this builder introduced. The
+            // concrete registration is APPENDED rather than replaced, so a second Build() on the same
+            // IServiceCollection takes over single-instance resolution and leaves the earlier instances reachable
+            // through IEnumerable<MessageBrokerOptions> - each seeded by its own Build(), so no enumeration can
+            // surface an unseeded object.
+            Services.AddBuiltOptions(messageBrokerOptions);
 
             return messageBrokerOptions;
         }

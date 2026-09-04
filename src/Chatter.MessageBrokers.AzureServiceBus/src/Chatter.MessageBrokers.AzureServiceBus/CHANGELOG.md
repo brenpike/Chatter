@@ -12,6 +12,36 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [2.2.0] - 2026-09-03
+
+### Added
+
+- `RetryPolicy:NoRetry` — an explicit opt-in that replaces the previous all-zero-`RetryPolicy`-section-infers-disable-retry behaviour. Every numeric knob of the section is now nullable, so an OMITTED key and a STATED one are no longer the same thing: an omitted key falls back to the SDK's own retry default for that parameter, while a stated value is carried through to the SDK unchanged. A stated `MaximumRetryCount` of `0` is consequently bound faithfully and yields `MaxRetries = 0` — no client retry — instead of being silently replaced by that same SDK default. `NoRetry` remains the intention-revealing way to say the same thing, and issue #423 owns the question of whether a stated zero should keep binding this way (#296, #313).
+- `IOptions<ServiceBusOptions>`, `IOptionsSnapshot<ServiceBusOptions>` and `IOptionsMonitor<ServiceBusOptions>` now resolve the instance `ServiceBusOptionsBuilder.Build()` finished. This is an ADDED capability, not a defect fix: this builder never registered a `Configure<ServiceBusOptions>`, so there was no second instance to remove — what the facets resolved instead was a framework-created, all-default `ServiceBusOptions` whose `ConnectionString` was `null`, reachable only by an application that resolved a facet itself. Registration runs last, after the connection-string guard and the fluent overrides, so no facet can observe a half-built instance. The monitor facet is for resolution only: the section is bound once at build time, so the options never reload, the change registration is inert, and — there being no named options in this package — every name, including none, resolves the same built instance (#296).
+
+### Changed
+
+- **The `RetryPolicy` configuration section now binds and takes effect.** `ServiceBusOptions` binds its section into the fluent-defaulted instance rather than replacing it, which is what it shares with how `Chatter.MessageBrokers` 0.19.0 now binds its own — so a populated `RetryPolicy` block, which previously did nothing, now configures the shared client's retry behaviour. **Upgrader risk:** a consumer who set `RetryPolicy` values expecting retry to already be disabled, relying on the old all-zero-section inference, still gets no retry — a stated `MaximumRetryCount` of `0` binds faithfully to `MaxRetries = 0` — but the section's other zero-valued keys now reach the SDK instead of being inferred away, so state `RetryPolicy:NoRetry` explicitly rather than relying on zeros. See the breaking-change note below (#296, #313).
+- `DeltaBackoffInSeconds` is retained on `ServiceBusOptions` for configuration compatibility and is ignored — the `Azure.Messaging.ServiceBus` retry model has no equivalent knob (#313).
+- **The `ServiceBusOptions` configuration bind surface is narrowed to the type's public properties.** The section was previously bound with non-public binding enabled, which also handed the binder the internal-set `RetryOptions` and `TokenCredential` properties; `RetryPolicy` — the one non-public configuration property that has to bind — is now bound explicitly from its own `RetryPolicy` subsection instead. Neither a stray `RetryOptions` key nor a nested `TokenCredential` object is reachable from configuration any more; both previously failed the host at startup. No documented key changes meaning (#296).
+- **The retry options are now resolved AFTER the fluent override rather than during the bind.** `ServiceBusOptionsBuilder.Build()` binds the section, carries the configured `RetryPolicy` forward as data, and only at the end — once every fluent override is in hand — resolves the effective `ServiceBusRetryOptions` from the first source that stated any: the fluent call, then the bound section, then the SDK default. A configured section that a fluent `WithNoRetry()` or `WithExponentialDelay(...)` overrides is therefore never constructed at all, so none of its values is ever handed to the Azure SDK. The ordering is load-bearing: construct any earlier and a configured value the SDK rejects — say a `MaximumRetryCount` of `101` under an explicit `WithNoRetry()` — would reach the SDK before the fluent call could discard it, blocking the host from starting on a retry policy it was never going to use and contradicting this package's documented fluent-wins precedence (#296).
+- **A consumer's own `services.Configure<ServiceBusOptions>(...)` is no longer consulted.** The options facets are bound directly to the built instance and never go through the container's options factory. No known consumer does this, but it is a public behaviour change: configure the options fluently or through the `Chatter:Infrastructure:AzureServiceBus` section instead (#296).
+- Bundled dependency uplift to Chatter.MessageBrokers 0.19.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
+BREAKING — an invalid `RetryPolicy` section now stops the host from starting: **if your `Chatter:Infrastructure:AzureServiceBus:RetryPolicy` section states a value the Azure Service Bus SDK cannot run with — a typo'd negative, or a retry count outside the `0` through `100` the SDK accepts — the host will now refuse to start**. A stated value is carried to the Azure SDK, which may reject it and so prevent the host from starting; that failure comes from the SDK and does not name the configuration key you wrote. It previously started, silently, on SDK-default retry.
+
+The remedy depends on what you meant:
+
+- **You wanted retry off.** Zeros now mean off: a stated `MaximumRetryCount` of `0` binds faithfully to `MaxRetries = 0`. Prefer `RetryPolicy:NoRetry` set to `true`, which says so outright.
+- **You wanted the SDK default.** Remove the key. An omitted key falls back to the SDK default for that parameter and is never handed to the SDK; only a stated one is.
+- **You meant a real value.** Correct it. A section carrying several bad values may take more than one pass to clear.
+
+A key that is not merely out of range but of the wrong TYPE — `MaximumRetryCount: "oops"`, a non-boolean `NoRetry` — fails earlier and differently: the configuration binder cannot convert it, so `Build()` throws an `InvalidOperationException` naming the full key path before the value reaches the SDK at all. That failure does name the key you wrote, so it is the easier of the two to act on.
+
+Named build-time validation over these keys — one aggregated failure naming every offending value in the operator's own vocabulary — is deferred to issue #423.
+
+Blast radius is bounded, and this is stated as a fact rather than as a reason to skim the above: the `RetryPolicy` section did not bind at all in any released version (see the binding fix in this same release), so no released consumer's retry behaviour changes underneath them. What changes is that a section which has been inert all along starts being read — and, if it is invalid, starts being refused.
+
 ## [2.1.1] - 2026-09-02
 
 ### Changed

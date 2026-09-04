@@ -99,7 +99,7 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 
 ## Configuration
 
-`ServiceBusOptions` is bound from configuration when a connection string is not supplied in code. The default configuration section is `Chatter:Infrastructure:AzureServiceBus` (override with `UseConfig("Your:Section")`).
+`ServiceBusOptions` is bound from configuration whenever the section exists — not only when a connection string is missing from code. The default configuration section is `Chatter:Infrastructure:AzureServiceBus` (override with `UseConfig("Your:Section")`). Keys the section omits keep their default, and an explicit fluent call still wins over a configured key (see [Precedence](#precedence-an-explicit-fluent-call-wins)).
 
 ```json
 {
@@ -108,7 +108,14 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
       "AzureServiceBus": {
         "ConnectionString": "Endpoint=sb://your-namespace.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...",
         "MaxConcurrentCalls": 1,
-        "PrefetchCount": 0
+        "PrefetchCount": 0,
+        "RetryPolicy": {
+          "NoRetry": false,
+          "MaximumRetryCount": 5,
+          "MinimumBackoffInSeconds": 1,
+          "MaximumBackoffInSeconds": 30,
+          "DeltaBackoffInSeconds": 0
+        }
       }
     }
   }
@@ -125,6 +132,11 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 | `TokenCredential` | `null` | AAD `Azure.Core.TokenCredential` (see [Authentication](#authentication)). |
 | `SessionIdleTimeout` | `00:01:00` (60 s) | How long a held session may yield no message before it is released and the receiver rolls. Applies only to session-enabled receivers. |
 | `MaxSessionLockRenewalDuration` | `00:05:00` (5 min) | Ceiling on how long a held session's lock is renewed for long-running processing. Applies only to session-enabled receivers. |
+| `RetryPolicy:NoRetry` | `false` | Set to `true` to disable Azure SDK client retry outright (`MaxRetries = 0`). This is the intention-revealing way to switch retry off — see [Client retry](#client-retry-retrypolicy). |
+| `RetryPolicy:MaximumRetryCount` | SDK default | Maximum retry attempts. Omit the key to keep the SDK default; a stated value is carried to `ServiceBusRetryOptions.MaxRetries`, which accepts `0` through `100`. A stated `0` is carried faithfully and disables client retry; `NoRetry` says the same thing in an intention-revealing way. |
+| `RetryPolicy:MinimumBackoffInSeconds` | SDK default | Base backoff the exponential delay is calculated from (`ServiceBusRetryOptions.Delay`). Omit the key to keep the SDK default; a stated value is carried to the Azure SDK unchanged. |
+| `RetryPolicy:MaximumBackoffInSeconds` | SDK default | Ceiling on the delay between attempts (`ServiceBusRetryOptions.MaxDelay`). Omit the key to keep the SDK default; a stated value is carried to the Azure SDK unchanged. |
+| `RetryPolicy:DeltaBackoffInSeconds` | `0` | Accepted for configuration compatibility and **ignored** — `Azure.Messaging.ServiceBus` has no per-attempt delta-backoff knob. |
 
 ### `ServiceBusOptionsBuilder` methods
 
@@ -146,6 +158,26 @@ The `AddAzureServiceBus(asb => ...)` delegate exposes a `ServiceBusOptionsBuilde
 | `AddTopicSubscription<TMessage>(...)` | Registers a topic subscription receiver for an `IEvent`. |
 | `AddSessionTopicSubscription<TMessage>(...)` | Registers a session-enabled topic subscription receiver for an `IEvent`. See [Sessions](#sessions). |
 
+### Precedence: an explicit fluent call wins
+
+The builder seeds `ServiceBusOptions` with its defaults, binds the configuration section over that instance — its public surface only, and never replacing the instance — and then applies the fluent values last. Each fluent value is held in a nullable sentinel (`int?`, `bool?`, `TimeSpan?`), so the builder can tell "never called" from "called with the default value" and applies only the calls that were actually made. A key present in configuration therefore wins over the builder default, while an explicit fluent call wins over configuration — in either direction, so `WithMaxConcurrentCalls(1)` overrides a configured `5` exactly as `WithMaxConcurrentCalls(5)` overrides a configured `1`. A key absent from configuration and never set fluently keeps the default.
+
+The bind surface is deliberately narrow. `RetryPolicy` is the one non-public configuration property that has to bind, so it is bound explicitly from its own `RetryPolicy` subsection rather than by opening the whole type to the binder. Two things together keep `RetryOptions` and `TokenCredential` unreachable from configuration: that narrow surface, and the fact that both properties are null when the bind runs. Both are left null-defaulted deliberately — neither the null default nor the narrow surface may be changed without re-checking that configuration still cannot reach either property.
+
+The same rule covers retry: `WithNoRetry()` and `WithExponentialDelay(...)` beat a configured `RetryPolicy` section. The effective `ServiceBusRetryOptions` are resolved once, at the end of `Build()`, from the first source that stated any — the fluent call, then the bound `RetryPolicy` section, then the SDK default — so a section-derived one is never constructed at all when a fluent call was made. A configured `RetryPolicy` block the fluent call overrides is therefore never turned into `ServiceBusRetryOptions` at all, which is deliberate: its values are never handed to the Azure SDK, so a retry policy the host was never going to use can no longer stop it from starting.
+
+`Chatter.MessageBrokers` applies the opposite rule: its builders carry no nullable sentinel, so configuration is bound last and wins — over the builder default and over an explicit fluent call alike. The divergence is deliberate, and an application that configures both modules needs to know that the same-looking fluent call is authoritative in one module and overridable in the other.
+
+### Every injection style resolves the same options instance
+
+`ServiceBusOptions` is registered twice over the one instance the builder finished: once as the concrete type, and once behind `IOptions<ServiceBusOptions>`, `IOptionsSnapshot<ServiceBusOptions>` and `IOptionsMonitor<ServiceBusOptions>`. All four resolve the same object — connection string guarded, section bound, fluent values applied, retry options resolved — so nothing that reads the options can see a differently built one. Previously the three facets went to the container's own options factory, which produced a fresh, all-default `ServiceBusOptions` whose `ConnectionString` was `null`; nothing inside this package injects those facets, so that instance was reachable only by an application resolving a facet itself.
+
+`IOptionsMonitor<ServiceBusOptions>` is supported for resolution only. The section is bound once, while the options are being built, so the options never reload and the change callback is inert. Named options are not a concept in this package either — every name, including none, resolves the same built instance.
+
+**Behaviour change:** a `services.Configure<ServiceBusOptions>(...)` registration of your own is **no longer consulted**, because the facets are bound directly to the built instance and never go through the options factory. No known application relies on it, but it is a public behaviour change: configure the options fluently or through the `Chatter:Infrastructure:AzureServiceBus` section instead.
+
+`Chatter.MessageBrokers` applies the same rule to `MessageBrokerOptions`, `ReliabilityOptions`, `RecoveryOptions` and `CircuitBreakerOptions`. It is not applied across the whole suite: `Chatter.MessageBrokers.RabbitMQ` and `Chatter.MessageBrokers.SqlServiceBroker` still register only the concrete options singleton, deliberately — neither registers a `Configure<T>`, so neither has anything divergent to close.
+
 ### Retry and Circuit Breaker (receiving)
 
 Receive-side recovery is driven by the broker-agnostic retry and circuit-breaker policies in `Chatter.MessageBrokers.Recovery`. This package contributes ASB-aware transient-exception detection:
@@ -154,6 +186,25 @@ Receive-side recovery is driven by the broker-agnostic retry and circuit-breaker
 - `ServiceBusCircuitBreakerExceptionPredicatesProvider` (`ICircuitBreakerExceptionPredicatesProvider`)
 
 Both treat a `ServiceBusException` as transient when its `IsTransient` is `true`, or when its `Reason` is `ServiceBusFailureReason.ServiceCommunicationProblem`, `ServiceBusFailureReason.ServiceBusy`, or `ServiceBusFailureReason.ServiceTimeout`. The per-receiver `maxReceiveAttempts` (default `10`) bounds redelivery attempts before a message is routed to its configured `errorQueuePath`.
+
+#### Client retry (`RetryPolicy`)
+
+Separately from the Chatter recovery policies above, the Azure SDK's own `ServiceBusClient` retries transient failures on the wire. The `Chatter:Infrastructure:AzureServiceBus:RetryPolicy` section configures *that* retry, and **it now takes effect**. Earlier versions read the surrounding section in a way that discarded it, so an entire `RetryPolicy` block did nothing at all; a populated section is now carried onto the single shared `ServiceBusClient` as `ServiceBusClientOptions.RetryOptions`. If you have had a `RetryPolicy` section in `appsettings` all along, expect it to start being honored on this version — and to start reaching the Azure SDK, so a value the SDK could never run with now stops the host at startup instead of being quietly discarded.
+
+A fluent `WithNoRetry()` or `WithExponentialDelay(...)` settles the retry options on its own and the configuration below is not consulted at all — see [Precedence: an explicit fluent call wins](#precedence-an-explicit-fluent-call-wins). With no fluent retry call, three rules decide the resulting `ServiceBusRetryOptions`, and nothing is inferred beyond them:
+
+| Configuration | Resulting `ServiceBusRetryOptions` |
+| --- | --- |
+| No `Chatter:Infrastructure:AzureServiceBus` section at all | `RetryOptions` is left **unset** (`null`). Nothing was bound, so no source stated a retry policy and none is invented. The SDK applies its own defaults on the client. |
+| The Service Bus section exists, but has no `RetryPolicy` subsection or an empty one | An explicit `ServiceBusRetryOptions` carrying the SDK's own defaults for every parameter, with `Mode = Exponential`. |
+| `RetryPolicy:NoRetry` is `true` | `MaxRetries = 0` — client retry disabled. |
+| Any other populated `RetryPolicy` | `Mode = Exponential`, with `MaxRetries`, `Delay` and `MaxDelay` taken from `MaximumRetryCount`, `MinimumBackoffInSeconds` and `MaximumBackoffInSeconds` respectively — each one whenever its key was stated, and the SDK default for that parameter when the key was omitted. |
+
+An absent key and a stated one are distinguishable because every numeric parameter of the `RetryPolicy` section is nullable. Absent means the key was never written: the SDK default for that parameter stands and nothing is passed to the SDK. Stated means an operator wrote it: the value is passed to the SDK unchanged, so one the SDK could not run with is refused there instead of being silently replaced by that same default. A stated `MaximumRetryCount` of `0` is a value the SDK accepts, so it binds faithfully to `MaxRetries = 0` and client retry is off; `RetryPolicy:NoRetry` says the same thing outright and is the intention-revealing form. Issue #423 owns the question of whether a stated zero should keep binding this way.
+
+`DeltaBackoffInSeconds` is accepted so that an existing `RetryPolicy` section still binds without error, but it is **ignored**: `Azure.Messaging.ServiceBus` has no per-attempt delta-backoff knob to map it onto, and the value is not folded into any of the other parameters either. The fluent `WithExponentialDelay(...)` treats its own `deltaBackoffInSeconds` argument the same way, for the same reason.
+
+**Where each `ServiceBusOptions` key is checked.** A key of the wrong TYPE never reaches a sink at all: it fails during `Build()`, in the configuration binder, with an `InvalidOperationException` naming the full key path — `Chatter:Infrastructure:AzureServiceBus:RetryPolicy:MaximumRetryCount`, say. That applies to every bound key, `RetryPolicy` and public alike, and it is the one configuration failure that names the key you wrote. Every key that DOES convert is then checked at its sink rather than while the options are built. A stated `RetryPolicy` value is handed to the Azure SDK as the retry options are constructed, so a value the SDK cannot run with is refused there and the host does not start — the failure comes from the SDK and does not name the configuration key you wrote. `MaxConcurrentCalls` is checked when a receiver initializes, which raises an `InvalidOperationException` naming the receiver and the offending value when it is below `1`. `PrefetchCount` is handed to the Azure SDK's `ServiceBusReceiverOptions.PrefetchCount` when a receiver is created, and the SDK is the authority on what it accepts. `DeltaBackoffInSeconds` is checked nowhere, because it is ignored everywhere — see above. Nothing in this package aggregates these into one named failure; issue #423 tracks build-time validation.
 
 ## Authentication
 
@@ -246,7 +297,7 @@ public class DispatchOrderHandler : IMessageHandler<DispatchOrder>
 options.WithMessageContext(ASBMessageContext.PartitionKey, message.OrderId);
 ```
 
-A mismatched partition key throws `ArgumentOutOfRangeException` from the Azure SDK's `ServiceBusMessage.PartitionKey` setter — client-side, before the message ever reaches the broker.
+A mismatched partition key throws `ArgumentOutOfRangeException` from the Azure SDK — client-side, before the message ever reaches the broker.
 
 ### Inbound context inheritance
 
@@ -339,6 +390,6 @@ One further observation on a mixed trace: Chatter's broker-boundary spans use th
 
 ## Domain Language
 
-See the [domain glossary](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/CONTEXT.md) for definitions of Service Bus Receiver, Session Queue Receiver, Session Topic Subscription, Service Bus Sender, Service Bus Options, Service Bus Retry, Service Bus Circuit Breaker, Session, Session State, and Group Id ↔ SessionId realization.
+See the [domain glossary](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/CONTEXT.md) for definitions of Service Bus Receiver, Session Queue Receiver, Session Topic Subscription, Service Bus Sender, Service Bus Options, Service Bus Retry, No Retry Opt-In, Service Bus Circuit Breaker, Session, Session State, and Group Id ↔ SessionId realization.
 
 [← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)

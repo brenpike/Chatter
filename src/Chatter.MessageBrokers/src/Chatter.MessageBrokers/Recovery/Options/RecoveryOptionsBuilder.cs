@@ -1,4 +1,5 @@
 ﻿using Chatter.CQRS.DependencyInjection;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Retry;
 using Microsoft.Extensions.Configuration;
@@ -174,15 +175,31 @@ namespace Chatter.MessageBrokers.Recovery.Options
         public RecoveryOptions Build()
         {
             var recoveryOptions = new RecoveryOptions();
+            recoveryOptions.MaxRetryAttempts = _maxRetryAttempts;
+            // INVARIANT: the nested CircuitBreakerOptions is seeded BEFORE the parent bind so the binder mutates the
+            // instance CircuitBreakerOptionsBuilder already registered as a singleton instead of replacing it with an
+            // unregistered one. CircuitBreaker, RetryStrategy and RetryWithCircuitBreakerStrategy all inject the
+            // concrete type, so an orphaned instance would surface as a resolution failure.
+            recoveryOptions.CircuitBreakerOptions = _circuitBreakerOptions ?? CircuitBreakerOptionsBuilder.Create(_services).Build();
+
             if (_recoveryOptionsSection != null && _recoveryOptionsSection.Exists())
             {
-                recoveryOptions = _recoveryOptionsSection.Get<RecoveryOptions>();
-                _services.Configure<RecoveryOptions>(_recoveryOptionsSection);
-            }
-            else
-            {
-                recoveryOptions.MaxRetryAttempts = _maxRetryAttempts;
-                recoveryOptions.CircuitBreakerOptions = _circuitBreakerOptions;
+                // INVARIANT: bind INTO the fluent-defaulted instance and never replace it. Every property on
+                // RecoveryOptions is internal set, so the binder skips all of them unless BindNonPublicProperties is
+                // on; replacing the instance would additionally discard the defaults assigned above. Keys the section
+                // omits therefore keep their fluent default.
+                //
+                // INVARIANT: every single-instance resolution of RecoveryOptions returns the instance built here -
+                // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
+                // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
+                // a Configure<RecoveryOptions>(section) registration would build a second instance that never saw
+                // the fluent defaults above, so its CircuitBreakerOptions would be null and a section that omits
+                // MaxRetryAttempts would resolve it as 0, turning the first failure straight into
+                // MaxRetryAttemptsExceededException. The concrete registration is APPENDED rather than replaced, so
+                // a second Build() on the same IServiceCollection takes over single-instance resolution and leaves
+                // the earlier instances reachable through IEnumerable<RecoveryOptions> - each seeded by its own
+                // Build(), so no enumeration can surface an unseeded object.
+                _recoveryOptionsSection.Bind(recoveryOptions, o => o.BindNonPublicProperties = true);
             }
 
             if (_exceptionPredicates.Count > 0)
@@ -190,12 +207,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
                 _services.AddSingleton<IRetryExceptionPredicatesProvider>(new ConfigRetryExceptionPredicatesProvider(_exceptionPredicates));
             }
 
-            if (recoveryOptions.CircuitBreakerOptions is null)
-            {
-                recoveryOptions.CircuitBreakerOptions = CircuitBreakerOptionsBuilder.Create(_services).Build();
-            }
-
-            _services.AddSingleton(recoveryOptions);
+            _services.AddBuiltOptions(recoveryOptions);
 
             return recoveryOptions;
         }

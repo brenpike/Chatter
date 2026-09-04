@@ -58,6 +58,31 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
+        public void MustLetTheSdkRejectAFluentRetryCountAtTheFluentCallSite()
+        {
+            // With nothing ahead of it, ServiceBusRetryOptions.MaxRetries rejects 101 from its own setter
+            // INSIDE WithExponentialDelay, so the throw lands AT THE FLUENT CALL SITE rather than at
+            // Build() — which is where master raised it too.
+            var sut = CreateSut();
+
+            Action withExponentialDelay = () => sut.WithExponentialDelay(101, 30, 1, 3);
+
+            withExponentialDelay.Should().Throw<ArgumentOutOfRangeException>();
+        }
+
+        [Fact]
+        public void MustNotTreatFluentMinimumBackoffGreaterThanMaximumBackoffAsAViolation()
+        {
+            // The SDK CLAMPS a Delay above MaxDelay while computing each retry delay. That is not a crash, so
+            // nothing on this path refuses it — the fluent call carries both values straight to the SDK.
+            var sut = CreateSut();
+
+            Action withExponentialDelay = () => sut.WithExponentialDelay(5, 5, 60, 3);
+
+            withExponentialDelay.Should().NotThrow();
+        }
+
+        [Fact]
         public void MustReturnSameBuilderFromAddTokenProviderInstance()
         {
             var sut = CreateSut();

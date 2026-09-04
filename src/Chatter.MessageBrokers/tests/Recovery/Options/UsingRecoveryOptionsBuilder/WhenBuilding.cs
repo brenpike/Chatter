@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Recovery.Retry;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -135,11 +136,8 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
         }
 
         [Fact]
-        public void MustTakeConfigBranchAndSkipFluentDefaultsWhenFromConfigSectionPopulated()
+        public void MustHonourConfiguredMaxRetryAttemptsWhenFromConfigSectionPopulated()
         {
-            // INVARIANT: production binds the populated section via IConfigurationSection.Get<RecoveryOptions>(),
-            // whose internal-set scalar properties stay at their type default; the fluent else-branch (which would
-            // otherwise apply the _defaultMaxRetryAttempts of 5) is skipped, so a populated section yields 0, not 5.
             var services = new ServiceCollection();
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string>
@@ -151,8 +149,168 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
             var options = RecoveryOptionsBuilder.FromConfig(services, configuration);
 
             options.Should().NotBeNull();
-            options.MaxRetryAttempts.Should().Be(0);
+            options.MaxRetryAttempts.Should().Be(42);
             options.CircuitBreakerOptions.Should().NotBeNull();
         }
+
+        [Fact]
+        public void MustHonourNestedCircuitBreakerSectionWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:NumberOfFailuresBeforeOpen"] = "9"
+                })
+                .Build();
+
+            var options = RecoveryOptionsBuilder.FromConfig(services, configuration);
+
+            options.CircuitBreakerOptions.NumberOfFailuresBeforeOpen.Should().Be(9);
+        }
+
+        [Fact]
+        public void MustRetainDefaultMaxRetryAttemptsWhenFromConfigSectionOmitsIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:NumberOfFailuresBeforeOpen"] = "9"
+                })
+                .Build();
+
+            var options = RecoveryOptionsBuilder.FromConfig(services, configuration);
+
+            options.MaxRetryAttempts.Should().Be(5);
+        }
+
+        [Fact]
+        public void MustRetainEveryFluentDefaultWhenFromConfigSectionPresentWithoutChildKeys()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [RecoveryOptionsBuilder.RecoveryOptionsSectionName] = string.Empty
+                })
+                .Build();
+            configuration.GetSection(RecoveryOptionsBuilder.RecoveryOptionsSectionName).Exists().Should().BeTrue();
+
+            var options = RecoveryOptionsBuilder.FromConfig(services, configuration);
+
+            options.MaxRetryAttempts.Should().Be(5);
+            options.CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds.Should().Be(15);
+            options.CircuitBreakerOptions.ConcurrentHalfOpenAttempts.Should().Be(1);
+            options.CircuitBreakerOptions.NumberOfFailuresBeforeOpen.Should().Be(5);
+            options.CircuitBreakerOptions.NumberOfHalfOpenSuccessesToClose.Should().Be(3);
+            options.CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification.Should().Be(1800);
+        }
+
+        [Fact]
+        public void MustLeaveNestedCircuitBreakerOptionsResolvableWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:NumberOfFailuresBeforeOpen"] = "9"
+                })
+                .Build();
+
+            var options = RecoveryOptionsBuilder.FromConfig(services, configuration);
+
+            services.BuildServiceProvider().GetRequiredService<CircuitBreakerOptions>()
+                .Should().BeSameAs(options.CircuitBreakerOptions);
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            RecoveryOptionsBuilder.FromConfig(services, BuildConfigurationWith($"{RecoveryOptionsBuilder.RecoveryOptionsSectionName}:MaxRetryAttempts", "42"));
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptions<RecoveryOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<RecoveryOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsSnapshotWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            RecoveryOptionsBuilder.FromConfig(services, BuildConfigurationWith($"{RecoveryOptionsBuilder.RecoveryOptionsSectionName}:MaxRetryAttempts", "42"));
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsSnapshot<RecoveryOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<RecoveryOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsMonitorWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            RecoveryOptionsBuilder.FromConfig(services, BuildConfigurationWith($"{RecoveryOptionsBuilder.RecoveryOptionsSectionName}:MaxRetryAttempts", "42"));
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsMonitor<RecoveryOptions>>().CurrentValue
+                .Should().BeSameAs(provider.GetRequiredService<RecoveryOptions>());
+        }
+
+        [Fact]
+        public void MustResolveNonNullNestedCircuitBreakerOptionsFromTheOptionsFacetWhenFromConfigSectionOmitsThem()
+        {
+            var services = new ServiceCollection();
+
+            RecoveryOptionsBuilder.FromConfig(services, BuildConfigurationWith($"{RecoveryOptionsBuilder.RecoveryOptionsSectionName}:MaxRetryAttempts", "42"));
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptions<RecoveryOptions>>().Value.CircuitBreakerOptions
+                .Should().NotBeNull();
+        }
+
+        [Fact]
+        public void MustResolveOneNestedCircuitBreakerOptionsThroughEveryEntryPointWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            RecoveryOptionsBuilder.FromConfig(services, BuildConfigurationWith($"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:NumberOfFailuresBeforeOpen", "9"));
+
+            using var provider = services.BuildServiceProvider();
+            var nestedCircuitBreakerOptions = provider.GetRequiredService<IOptions<RecoveryOptions>>().Value.CircuitBreakerOptions;
+
+            nestedCircuitBreakerOptions.Should().BeSameAs(provider.GetRequiredService<IOptions<CircuitBreakerOptions>>().Value);
+            nestedCircuitBreakerOptions.Should().BeSameAs(provider.GetRequiredService<CircuitBreakerOptions>());
+            nestedCircuitBreakerOptions.Should().BeSameAs(provider.GetRequiredService<RecoveryOptions>().CircuitBreakerOptions);
+        }
+
+        [Fact]
+        public void MustRetainDefaultMaxRetryAttemptsOnTheOptionsFacetWhenFromConfigSectionOmitsIt()
+        {
+            var services = new ServiceCollection();
+
+            RecoveryOptionsBuilder.FromConfig(services, BuildConfigurationWith($"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:NumberOfFailuresBeforeOpen", "9"));
+
+            using var provider = services.BuildServiceProvider();
+            var facetOptions = provider.GetRequiredService<IOptions<RecoveryOptions>>().Value;
+
+            facetOptions.MaxRetryAttempts.Should().Be(5);
+            facetOptions.CircuitBreakerOptions.NumberOfFailuresBeforeOpen.Should().Be(9);
+        }
+
+        private static IConfiguration BuildConfigurationWith(string configurationKey, string value)
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [configurationKey] = value
+                })
+                .Build();
     }
 }

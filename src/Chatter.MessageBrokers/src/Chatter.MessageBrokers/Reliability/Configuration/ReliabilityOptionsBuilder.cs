@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Reliability.Outbox;
 
 namespace Chatter.MessageBrokers.Reliability.Configuration
@@ -75,20 +76,34 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         public ReliabilityOptions Build()
         {
             var reliabilityOptions = new ReliabilityOptions();
+            reliabilityOptions.RouteMessagesToOutbox = _routeMessagesToOutbox;
+            reliabilityOptions.MinutesToLiveInMemory = _minutesToLiveInMemory;
+            reliabilityOptions.EnableOutboxPollingProcessor = _enableOutboxPollingProcessor;
+            reliabilityOptions.OutboxProcessingIntervalInMilliseconds = _outboxProcessingIntervalInMilliseconds;
+
             if (_reliabilityOptionsSection != null && _reliabilityOptionsSection.Exists())
             {
-                reliabilityOptions = _reliabilityOptionsSection.Get<ReliabilityOptions>();
-                _services.Configure<ReliabilityOptions>(_reliabilityOptionsSection);
-            }
-            else
-            {
-                reliabilityOptions.RouteMessagesToOutbox = _routeMessagesToOutbox;
-                reliabilityOptions.MinutesToLiveInMemory = _minutesToLiveInMemory;
-                reliabilityOptions.EnableOutboxPollingProcessor = _enableOutboxPollingProcessor;
-                reliabilityOptions.OutboxProcessingIntervalInMilliseconds = _outboxProcessingIntervalInMilliseconds;
+                // INVARIANT: bind INTO the fluent-defaulted instance and never replace it. Every property on
+                // ReliabilityOptions is internal set, so the binder skips all of them unless BindNonPublicProperties is
+                // on; replacing the instance would additionally discard the defaults assigned above. Keys the section
+                // omits therefore keep their fluent default.
+                //
+                // INVARIANT: every single-instance resolution of ReliabilityOptions returns the instance built here -
+                // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
+                // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
+                // a Configure<ReliabilityOptions>(section) registration would build a second instance that never saw
+                // the fluent defaults above, so an application that resolved IOptions<ReliabilityOptions> - or the
+                // snapshot or monitor form - for itself would have read OutboxProcessingIntervalInMilliseconds as
+                // 0 where this built instance holds 5000. BrokeredMessageOutboxProcessor injects the concrete
+                // ReliabilityOptions, so that divergent facet instance was never able to reach its polling
+                // interval. The concrete registration is APPENDED rather than replaced, so a second Build() on the
+                // same IServiceCollection takes over single-instance resolution and leaves the earlier instances
+                // reachable through IEnumerable<ReliabilityOptions> - each seeded by its own Build(), so no
+                // enumeration can surface an unseeded object.
+                _reliabilityOptionsSection.Bind(reliabilityOptions, o => o.BindNonPublicProperties = true);
             }
 
-            _services.AddSingleton(reliabilityOptions);
+            _services.AddBuiltOptions(reliabilityOptions);
 
             return reliabilityOptions;
         }

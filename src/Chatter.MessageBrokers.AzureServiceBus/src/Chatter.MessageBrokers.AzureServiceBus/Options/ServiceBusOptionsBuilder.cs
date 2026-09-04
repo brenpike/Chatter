@@ -1,5 +1,6 @@
 using Azure.Core;
 using Azure.Messaging.ServiceBus;
+using Chatter.MessageBrokers.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
@@ -11,6 +12,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public IServiceCollection Services { get; private set; }
         private TokenCredential _tokenCredential;
         private const string _defaultAzureServiceBusSectionName = "Chatter:Infrastructure:AzureServiceBus";
+        private const string _retryPolicySectionName = "RetryPolicy";
         private string _connectionString = null;
         private string _azureServiceBusSectionName = null;
         private IConfiguration _configuration;
@@ -141,44 +143,91 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             // deltaBackoffInSeconds is retained on the signature for source compatibility but has no
             // equivalent in the new SDK retry model.
             _ = deltaBackoffInSeconds;
-            _retryOptions = new ServiceBusRetryOptions
-            {
-                Mode = ServiceBusRetryMode.Exponential,
-                MaxRetries = maximumRetryCount,
-                Delay = TimeSpan.FromSeconds(minimumBackoffInSeconds),
-                MaxDelay = TimeSpan.FromSeconds(maximumBackoffInSeconds)
-            };
+            _retryOptions = CreateExponentialRetryOptions(maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds);
             return this;
         }
 
-        private void PostConfiguration(ServiceBusOptions serviceBusConfig)
+        // INVARIANT: this is the ONE construction site for exponential retry options — the fluent
+        // WithExponentialDelay setter and the configuration-derived CreateConfiguredRetryOptions both route
+        // through it, so both paths build the options the same way and neither adds a check of its own.
+        // A null backoff means "not configured", leaving the SDK default for that parameter in place.
+        private static ServiceBusRetryOptions CreateExponentialRetryOptions(int maximumRetryCount, double? maximumBackoffInSeconds, double? minimumBackoffInSeconds)
         {
-            if (serviceBusConfig == null)
+            var sdkDefaults = new ServiceBusRetryOptions();
+            return new ServiceBusRetryOptions
+            {
+                Mode = ServiceBusRetryMode.Exponential,
+                MaxRetries = maximumRetryCount,
+                Delay = minimumBackoffInSeconds.HasValue ? TimeSpan.FromSeconds(minimumBackoffInSeconds.Value) : sdkDefaults.Delay,
+                MaxDelay = maximumBackoffInSeconds.HasValue ? TimeSpan.FromSeconds(maximumBackoffInSeconds.Value) : sdkDefaults.MaxDelay
+            };
+        }
+
+        private void BindRetryPolicy(ServiceBusOptions serviceBusConfig)
+        {
+            var retryPolicySection = _serviceBusOptionsSection.GetSection(_retryPolicySectionName);
+            if (!retryPolicySection.Exists())
             {
                 return;
             }
 
-            if (serviceBusConfig.RetryPolicy == null)
+            var retryPolicy = new RetryPolicyConfiguration();
+            retryPolicySection.Bind(retryPolicy);
+            serviceBusConfig.RetryPolicy = retryPolicy;
+        }
+
+        // INVARIANT: the effective retry options are RESOLVED ONCE, from the FIRST source that stated one —
+        // the fluent setter, then the bound RetryPolicy section, then the Azure SDK default. The FLUENT-FIRST
+        // ORDER OF THE CHECKS BELOW is what makes a configured section the fluent call overrides NEVER
+        // CONSTRUCTED, which is the point: constructing it would carry its values to the Azure SDK, which
+        // may reject one and so block host start on a retry policy the host was never going to use,
+        // contradicting this module's fluent-wins precedence. Only the source that actually wins is ever
+        // handed to the SDK. Note what is and is not load-bearing here: this
+        // check order is; the position of the CALL to this method in Build() is not, since every fluent
+        // setter has already run before Build() begins. That call position carries a SEPARATE, weaker
+        // guarantee, stated at the call site.
+        // A null return means retry options were never sourced at all — no fluent call and no bound
+        // service-bus section — leaving ServiceBusOptions.RetryOptions unset.
+        private ServiceBusRetryOptions ResolveRetryOptions(bool serviceBusSectionWasBound, RetryPolicyConfiguration retryPolicy)
+        {
+            if (_retryOptions != null)
             {
-                serviceBusConfig.RetryOptions = new ServiceBusRetryOptions();
+                return _retryOptions;
             }
-            else if (serviceBusConfig.RetryPolicy.MaximumRetryCount == 0
-                && serviceBusConfig.RetryPolicy.MaximumBackoffInSeconds == 0
-                && serviceBusConfig.RetryPolicy.MinimumBackoffInSeconds == 0
-                && serviceBusConfig.RetryPolicy.DeltaBackoffInSeconds == 0)
+
+            if (!serviceBusSectionWasBound)
             {
-                serviceBusConfig.RetryOptions = new ServiceBusRetryOptions { MaxRetries = 0 };
+                return null;
             }
-            else
+
+            if (retryPolicy == null)
             {
-                serviceBusConfig.RetryOptions = new ServiceBusRetryOptions
-                {
-                    Mode = ServiceBusRetryMode.Exponential,
-                    MaxRetries = serviceBusConfig.RetryPolicy.MaximumRetryCount,
-                    Delay = TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.MinimumBackoffInSeconds),
-                    MaxDelay = TimeSpan.FromSeconds(serviceBusConfig.RetryPolicy.MaximumBackoffInSeconds)
-                };
+                return new ServiceBusRetryOptions();
             }
+
+            if (retryPolicy.NoRetry)
+            {
+                return new ServiceBusRetryOptions { MaxRetries = 0 };
+            }
+
+            return CreateConfiguredRetryOptions(retryPolicy);
+        }
+
+        // INVARIANT: every configured parameter binds FAITHFULLY. An ABSENT parameter is null and leaves the
+        // SDK default for that parameter in place; a STATED one is carried through to the Azure SDK
+        // unchanged rather than being silently replaced by that same default, and the SDK may reject a value
+        // it cannot run with. A stated MaximumRetryCount of 0 therefore yields MaxRetries 0 — the
+        // faithful binding of one explicitly written key. That differs from the earlier behaviour, which
+        // inferred "off" only from an ALL-ZERO section. NoRetry, handled by ResolveRetryOptions, remains the
+        // intention-revealing way to switch retry off, and issue #423 owns the final call on whether a stated
+        // zero should keep binding this way.
+        private static ServiceBusRetryOptions CreateConfiguredRetryOptions(RetryPolicyConfiguration retryPolicy)
+        {
+            var sdkDefaults = new ServiceBusRetryOptions();
+            return CreateExponentialRetryOptions(
+                retryPolicy.MaximumRetryCount ?? sdkDefaults.MaxRetries,
+                retryPolicy.MaximumBackoffInSeconds,
+                retryPolicy.MinimumBackoffInSeconds);
         }
 
         // INVARIANT: connection-string SAS auth is present when the connection string carries either a
@@ -216,10 +265,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         internal ServiceBusOptions Build()
         {
             var options = new ServiceBusOptions();
-            if (_azureServiceBusSectionName != null && _serviceBusOptionsSection.Exists())
+            var serviceBusSectionWasBound = _azureServiceBusSectionName != null && _serviceBusOptionsSection.Exists();
+            if (serviceBusSectionWasBound)
             {
-                options = _serviceBusOptionsSection.Get<ServiceBusOptions>();
-                PostConfiguration(options);
+                // INVARIANT: bind INTO the default-initialized instance and never replace it; keys the
+                // section omits keep their default. The bind surface is deliberately NARROW — plain Bind()
+                // with BindNonPublicProperties OFF — and closure of the internal-set RetryOptions and
+                // TokenCredential properties to configuration rests on BOTH that narrowness AND their NULL
+                // default. Both are left null-defaulted deliberately: do not give either a non-null
+                // initializer, and do not widen the bind surface, without re-checking that configuration
+                // still cannot reach them. The pins are MustNotReachRetryOptionsWithAConfiguredValueTheSdkRejects,
+                // MustIgnoreConfiguredTokenCredentialValue and MustIgnoreNestedConfiguredTokenCredentialObject.
+                // RetryPolicy is the ONE internal configuration property that must bind, so it
+                // is bound EXPLICITLY below into a locally constructed instance whose own setters are public.
+                // Binding is all that happens here: the configured RetryPolicy is carried forward as DATA
+                // and only turned into retry options once, in the resolve step at the end of this method,
+                // where the fluent override that may discard it is already in hand.
+                _serviceBusOptionsSection.Bind(options);
+                BindRetryPolicy(options);
             }
 
             if (string.IsNullOrWhiteSpace(_connectionString) && string.IsNullOrWhiteSpace(options.ConnectionString))
@@ -230,11 +293,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             if (!string.IsNullOrWhiteSpace(_connectionString))
             {
                 options.ConnectionString = _connectionString;
-            }
-
-            if (_retryOptions != null)
-            {
-                options.RetryOptions = _retryOptions;
             }
 
             if (_tokenCredential != null && !ConnectionStringHasSas(options.ConnectionString))
@@ -282,7 +340,27 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 options.MaxSessionLockRenewalDuration = _maxSessionLockRenewalDuration.Value;
             }
 
-            Services.AddSingleton(options);
+            // Resolve the effective retry options LAST among the option values, once every source is in
+            // hand. What THIS position guarantees is narrow but real: resolution runs even when no
+            // service-bus section was bound, which is what lets the fluent-only path produce retry options
+            // at all. WHICH source wins — and therefore which is the only one ever constructed and the only
+            // one ever handed to the SDK — is decided by the fluent-first check order inside
+            // ResolveRetryOptions, not by this position.
+            options.RetryOptions = ResolveRetryOptions(serviceBusSectionWasBound, options.RetryPolicy);
+
+            // INVARIANT: every single-instance resolution of ServiceBusOptions returns the instance built here -
+            // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and IOptionsMonitor
+            // over that same instance - and it runs LAST, after the connection-string guard, the fluent-sentinel
+            // overrides and the retry resolution, so no facet can observe a half-built instance. This
+            // builder never registered a Configure<ServiceBusOptions>, so there is no second instance here to remove:
+            // what the facets resolved instead was a framework-created all-default ServiceBusOptions whose
+            // ConnectionString is null. Registering the facets COMPLETES the one-instance-everywhere invariant across
+            // the options graph rather than repairing a divergence this builder introduced. The concrete registration is
+            // APPENDED rather than replaced, so a second Build() on the same IServiceCollection takes over
+            // single-instance resolution and leaves the earlier instances reachable through
+            // IEnumerable<ServiceBusOptions> - each seeded and connection-string-guarded by its own Build(), so no
+            // enumeration can surface a half-built instance.
+            Services.AddBuiltOptions(options);
 
             return options;
         }

@@ -2,6 +2,7 @@ using Chatter.MessageBrokers.Reliability.Configuration;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using Xunit;
@@ -21,6 +22,31 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             options.MinutesToLiveInMemory.Should().Be(10);
             options.EnableOutboxPollingProcessor.Should().BeFalse();
             options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
+        }
+
+        /// <summary>
+        /// A configured value of the wrong TYPE is the one configuration failure that still happens while
+        /// the options are being built, and the one that names the key: <c>ConfigurationBinder</c> cannot
+        /// convert it, so it throws out of <c>Build()</c> before any runtime sink sees the value. Recorded
+        /// here so the distinction between a conversion failure and the absent semantic validation issue
+        /// #423 tracks is pinned rather than only described in prose. The message is asserted only for the
+        /// KEY PATH — the framework words the rest differently on net8.0 and net10.0.
+        /// </summary>
+        [Fact]
+        public void MustFailInTheBinderNamingTheKeyWhenAConfiguredValueIsNotConvertible()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:MinutesToLiveInMemory"] = "abc"
+                })
+                .Build();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<InvalidOperationException>()
+                      .Which.Message.Should().Contain($"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:MinutesToLiveInMemory");
         }
 
         [Fact]
@@ -74,12 +100,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         }
 
         [Fact]
-        public void MustTakeConfigBranchAndSkipFluentDefaultsWhenFromConfigSectionPopulated()
+        public void MustHonourConfiguredValuesAndRetainOmittedFluentDefaultsWhenFromConfigSectionPopulated()
         {
-            // INVARIANT: production binds the populated section via IConfigurationSection.Get<ReliabilityOptions>(),
-            // whose internal-set scalar properties stay at their type default; the fluent else-branch (which would
-            // otherwise apply MinutesToLiveInMemory of 10 and an interval of 5000) is skipped, so a populated
-            // section yields the type defaults (0), not the fluent defaults.
             var services = new ServiceCollection();
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string>
@@ -92,8 +114,131 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
 
             options.Should().NotBeNull();
-            options.MinutesToLiveInMemory.Should().Be(0);
+            options.RouteMessagesToOutbox.Should().BeTrue();
+            options.OutboxProcessingIntervalInMilliseconds.Should().Be(1234);
+            options.MinutesToLiveInMemory.Should().Be(10);
+            options.EnableOutboxPollingProcessor.Should().BeFalse();
+        }
+
+        [Fact]
+        public void MustRetainEveryFluentDefaultWhenFromConfigSectionPresentWithoutChildKeys()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [ReliabilityOptionsBuilder.ReliabilityOptionsSectionName] = string.Empty
+                })
+                .Build();
+            configuration.GetSection(ReliabilityOptionsBuilder.ReliabilityOptionsSectionName).Exists().Should().BeTrue();
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
+            options.RouteMessagesToOutbox.Should().BeFalse();
+            options.MinutesToLiveInMemory.Should().Be(10);
+            options.EnableOutboxPollingProcessor.Should().BeFalse();
+            options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithRouteMessagesToOutbox());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptions<ReliabilityOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<ReliabilityOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsSnapshotWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithRouteMessagesToOutbox());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsSnapshot<ReliabilityOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<ReliabilityOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsMonitorWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithRouteMessagesToOutbox());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsMonitor<ReliabilityOptions>>().CurrentValue
+                .Should().BeSameAs(provider.GetRequiredService<ReliabilityOptions>());
+        }
+
+        [Fact]
+        public void MustRetainOmittedFluentDefaultsOnTheBuiltOptionsWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithRouteMessagesToOutbox());
+
+            using var provider = services.BuildServiceProvider();
+            var builtOptions = provider.GetRequiredService<IOptions<ReliabilityOptions>>().Value;
+
+            builtOptions.RouteMessagesToOutbox.Should().BeTrue();
+            builtOptions.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
+            builtOptions.MinutesToLiveInMemory.Should().Be(10);
+        }
+
+        /// <summary>
+        /// <c>Task.Delay(0)</c> is legal and completes immediately, so how aggressively the outbox is polled is the
+        /// operator's call.
+        /// </summary>
+        [Fact]
+        public void MustAllowAZeroOutboxProcessingInterval()
+        {
+            var services = new ServiceCollection();
+            var configuration = BuildConfigurationWithOutboxProcessingInterval("0");
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
             options.OutboxProcessingIntervalInMilliseconds.Should().Be(0);
         }
+
+        /// <summary>
+        /// <c>Task.Delay</c> rejects anything below -1, so an enabled outbox polling processor configured this way
+        /// faults the whole background service, and this builder binds the value anyway. Build-time validation of
+        /// configured options is tracked by issue #423, so the acceptance is recorded here rather than overlooked.
+        /// </summary>
+        [Fact]
+        public void MustAcceptAConfiguredOutboxProcessingIntervalOfNegativeFive()
+        {
+            var services = new ServiceCollection();
+            var configuration = BuildConfigurationWithOutboxProcessingInterval("-5");
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
+            options.OutboxProcessingIntervalInMilliseconds.Should().Be(-5);
+        }
+
+        private static IConfiguration BuildConfigurationWithOutboxProcessingInterval(string interval)
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = interval
+                })
+                .Build();
+
+        private static IConfiguration BuildConfigurationWithRouteMessagesToOutbox()
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:RouteMessagesToOutbox"] = "true"
+                })
+                .Build();
     }
 }
