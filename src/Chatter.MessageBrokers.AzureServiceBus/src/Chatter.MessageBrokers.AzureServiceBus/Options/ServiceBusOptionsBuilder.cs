@@ -4,7 +4,6 @@ using Chatter.MessageBrokers.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
-using System.Collections.Generic;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Options
 {
@@ -48,12 +47,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
         private const int _defaultMaxConcurrentCalls = 1;
         private const int _defaultPrefetchCount = 0;
-        // The inclusive range ServiceBusRetryOptions.MaxRetries accepts inside its own setter.
-        private const int _minimumSdkRetryCount = 0;
-        private const int _maximumSdkRetryCount = 100;
-        // The longest delay a .NET timer can wait out is uint.MaxValue - 1 milliseconds, roughly 49.7 days.
-        // Derived from that limit rather than written down, exactly as CircuitBreakerOptions derives its own.
-        private const double _maximumDelayInSeconds = (uint.MaxValue - 1) / 1000d;
         private static readonly TimeSpan _defaultSessionIdleTimeout = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan _defaultMaxSessionLockRenewalDuration = TimeSpan.FromMinutes(5);
 
@@ -150,40 +143,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             // deltaBackoffInSeconds is retained on the signature for source compatibility but has no
             // equivalent in the new SDK retry model.
             _ = deltaBackoffInSeconds;
-            _retryOptions = CreateExponentialRetryOptions(new List<string>(), maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds);
+            _retryOptions = CreateExponentialRetryOptions(maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds);
             return this;
         }
 
         // INVARIANT: this is the ONE construction site for exponential retry options — the fluent
         // WithExponentialDelay setter and the configuration-derived CreateConfiguredRetryOptions both route
-        // through it, so neither can hand a raw value to a validating SDK setter. ServiceBusRetryOptions.MaxRetries
-        // validates its 0..100 range inside the setter and TimeSpan.FromSeconds overflows on a non-finite or
-        // out-of-range number; both raise a bare exception naming only the SDK member, never the knob the
-        // operator supplied. Every value is therefore checked BEFORE any SDK setter runs and every offending
-        // knob is named in ONE failure, so an operator who corrected one value and redeployed does not then
-        // discover the next.
+        // through it, so both paths bind the same way and the SDK's own setters stay the single authority on
+        // which values it can run with.
         // A null backoff means "not configured", leaving the SDK default for that parameter in place.
-        // The violations collection is passed IN rather than started here so that a caller which already
-        // found a violation while resolving its own values — the configuration path and its stated-zero
-        // retry count — still reports everything in that ONE failure.
-        private static ServiceBusRetryOptions CreateExponentialRetryOptions(List<string> violations, int maximumRetryCount, double? maximumBackoffInSeconds, double? minimumBackoffInSeconds)
+        private static ServiceBusRetryOptions CreateExponentialRetryOptions(int maximumRetryCount, double? maximumBackoffInSeconds, double? minimumBackoffInSeconds)
         {
-            if (maximumRetryCount < _minimumSdkRetryCount || maximumRetryCount > _maximumSdkRetryCount)
-            {
-                violations.Add($"'{nameof(RetryPolicyConfiguration.MaximumRetryCount)}' is {maximumRetryCount}, but the Azure Service Bus SDK accepts only {_minimumSdkRetryCount} through {_maximumSdkRetryCount}");
-            }
-
-            AddViolationWhenBackoffCannotBecomeATimeSpan(violations, nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds), maximumBackoffInSeconds);
-            AddViolationWhenBackoffCannotBecomeATimeSpan(violations, nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds), minimumBackoffInSeconds);
-            AddViolationWhenTheSdkRejectsBackoff(violations, nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds), maximumBackoffInSeconds, static (options, backoff) => options.MaxDelay = backoff);
-            AddViolationWhenTheSdkRejectsBackoff(violations, nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds), minimumBackoffInSeconds, static (options, backoff) => options.Delay = backoff);
-            AddViolationWhenBackoffCannotBeWaitedOut(violations, nameof(RetryPolicyConfiguration.MaximumBackoffInSeconds), maximumBackoffInSeconds);
-
-            if (violations.Count > 0)
-            {
-                throw new ServiceBusRetryOptionsValidationException(violations);
-            }
-
             var sdkDefaults = new ServiceBusRetryOptions();
             return new ServiceBusRetryOptions
             {
@@ -192,86 +162,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 Delay = minimumBackoffInSeconds.HasValue ? TimeSpan.FromSeconds(minimumBackoffInSeconds.Value) : sdkDefaults.Delay,
                 MaxDelay = maximumBackoffInSeconds.HasValue ? TimeSpan.FromSeconds(maximumBackoffInSeconds.Value) : sdkDefaults.MaxDelay
             };
-        }
-
-        // INVARIANT: a POSITIVE range check, not an enumeration of the bad values. Every number
-        // TimeSpan.FromSeconds cannot convert — NaN, either infinity, a negative, and anything beyond
-        // TimeSpan's own range — falls outside [0, TimeSpan.MaxValue.TotalSeconds] because no comparison
-        // against NaN succeeds, so a new unconvertible value cannot slip past by not being listed. The
-        // ceiling is derived from TimeSpan itself rather than written as a literal.
-        private static void AddViolationWhenBackoffCannotBecomeATimeSpan(ICollection<string> violations, string knobName, double? backoffInSeconds)
-        {
-            if (!backoffInSeconds.HasValue || TryConvertBackoffToTimeSpan(backoffInSeconds, out _))
-            {
-                return;
-            }
-
-            violations.Add($"'{knobName}' is {backoffInSeconds.Value}, but a backoff must be a number of seconds from 0 through {TimeSpan.MaxValue.TotalSeconds}");
-        }
-
-        // The ONE place the convertible range is expressed, so the checks that follow cannot disagree with it
-        // about which values are worth carrying further. A false return means the number is not convertible
-        // and AddViolationWhenBackoffCannotBecomeATimeSpan has already reported it, or there is no value at
-        // all — in both cases the later checks have nothing to say.
-        private static bool TryConvertBackoffToTimeSpan(double? backoffInSeconds, out TimeSpan backoff)
-        {
-            backoff = default;
-            if (!backoffInSeconds.HasValue)
-            {
-                return false;
-            }
-
-            var seconds = backoffInSeconds.Value;
-            if (!(seconds >= 0 && seconds <= TimeSpan.MaxValue.TotalSeconds))
-            {
-                return false;
-            }
-
-            backoff = TimeSpan.FromSeconds(seconds);
-            return true;
-        }
-
-        // INVARIANT: the SDK setter ITSELF is the oracle for each backoff's accepted range — that range is
-        // never written down here. ServiceBusRetryOptions.Delay and MaxDelay validate inside their own
-        // setters, so the value is offered to a throwaway instance first and a rejection becomes a violation
-        // naming the knob the operator supplied and carrying the SDK's own reason. A bound this module never
-        // enumerated therefore cannot slip past and surface later as a bare ArgumentOutOfRangeException
-        // naming only an SDK member: the current Delay ceiling of five minutes and its non-zero floor are
-        // caught without being restated, and so is any bound a future SDK version adds or moves.
-        private static void AddViolationWhenTheSdkRejectsBackoff(ICollection<string> violations, string knobName, double? backoffInSeconds, Action<ServiceBusRetryOptions, TimeSpan> offerToSdk)
-        {
-            if (!TryConvertBackoffToTimeSpan(backoffInSeconds, out var backoff))
-            {
-                return;
-            }
-
-            try
-            {
-                offerToSdk(new ServiceBusRetryOptions(), backoff);
-            }
-            catch (ArgumentException rejectedBySdk)
-            {
-                violations.Add($"'{knobName}' is {backoffInSeconds.Value}, but the Azure Service Bus SDK rejected the resulting retry delay: {rejectedBySdk.Message}");
-            }
-        }
-
-        // INVARIANT: MaxDelay is the ONE value that needs this ceiling, and that is a property of the sink
-        // rather than an omission. The SDK clamps every computed retry wait to MaxDelay — min(exponential
-        // backoff, MaxDelay) — and then waits it out on a delay timer, which rejects anything above
-        // uint.MaxValue - 1 milliseconds. Bounding MaxDelay bounds EVERY wait the retry path can produce, so
-        // the minimum backoff needs no ceiling of its own: it only feeds the exponential calculation whose
-        // result that clamp caps, and its own setter keeps it far below this limit anyway.
-        // MaxDelay's setter accepts any non-negative TimeSpan, so without this check a configured 90 days is
-        // representable, settable and passes the build, then throws ArgumentOutOfRangeException from the
-        // retry path in place of the transient Service Bus failure it was retrying.
-        private static void AddViolationWhenBackoffCannotBeWaitedOut(ICollection<string> violations, string knobName, double? backoffInSeconds)
-        {
-            if (!TryConvertBackoffToTimeSpan(backoffInSeconds, out _) || backoffInSeconds.Value <= _maximumDelayInSeconds)
-            {
-                return;
-            }
-
-            violations.Add($"'{knobName}' is {backoffInSeconds.Value}, but the longest delay a timer can wait out is {_maximumDelayInSeconds} seconds");
         }
 
         private void BindRetryPolicy(ServiceBusOptions serviceBusConfig)
@@ -321,24 +211,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             return CreateConfiguredRetryOptions(retryPolicy);
         }
 
-        // INVARIANT: disabling retry from configuration is UNREPRESENTABLE without the NoRetry opt-in
-        // handled by ResolveRetryOptions, and no numeric value can derive MaxRetries = 0. What a numeric
-        // CAN do is say nothing: an ABSENT parameter is null, falls back to the SDK default and is never
-        // validated, while a STATED one is always validated, so a value the SDK cannot run with is named in
-        // the failure rather than silently replaced by that same default. A stated zero retry count is the
-        // one stated value with an intended alternative, so its violation names the NoRetry opt-in instead
-        // of leaving an operator who wanted retry off to guess why zero was refused.
+        // INVARIANT: every configured parameter binds FAITHFULLY. An ABSENT parameter is null and leaves the
+        // SDK default for that parameter in place; a STATED one is carried through to the SDK's own setter,
+        // which raises its own failure for a value it cannot run with rather than having that value silently
+        // replaced by the same default. A stated MaximumRetryCount of 0 therefore yields MaxRetries 0 — the
+        // faithful binding of one explicitly written key. That differs from the earlier behaviour, which
+        // inferred "off" only from an ALL-ZERO section. NoRetry, handled by ResolveRetryOptions, remains the
+        // intention-revealing way to switch retry off, and issue #423 owns the final call on whether a stated
+        // zero should keep binding this way.
         private static ServiceBusRetryOptions CreateConfiguredRetryOptions(RetryPolicyConfiguration retryPolicy)
         {
-            var violations = new List<string>();
-            if (retryPolicy.MaximumRetryCount == 0)
-            {
-                violations.Add($"'{nameof(RetryPolicyConfiguration.MaximumRetryCount)}' is 0, but retry is switched off only through the '{nameof(RetryPolicyConfiguration.NoRetry)}' opt-in — set '{_retryPolicySectionName}:{nameof(RetryPolicyConfiguration.NoRetry)}' to true to disable retry, or state a count of at least 1");
-            }
-
             var sdkDefaults = new ServiceBusRetryOptions();
             return CreateExponentialRetryOptions(
-                violations,
                 retryPolicy.MaximumRetryCount ?? sdkDefaults.MaxRetries,
                 retryPolicy.MaximumBackoffInSeconds,
                 retryPolicy.MinimumBackoffInSeconds);

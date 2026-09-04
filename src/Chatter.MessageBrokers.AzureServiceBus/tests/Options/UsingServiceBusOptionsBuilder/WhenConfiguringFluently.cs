@@ -57,38 +57,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             sut.WithExponentialDelay(5, 30, 1, 3).Should().BeSameAs(sut);
         }
 
-        [Theory]
-        [InlineData(101)]
-        [InlineData(500)]
-        [InlineData(-1)]
-        public void MustThrowNamingMaximumRetryCountWhenFluentRetryCountOutsideTheSdkRange(int maximumRetryCount)
-        {
-            // The fluent path shares ONE guarded construction site with the configuration path, so a retry
-            // count the SDK cannot run with is reported the same way here instead of raising a bare
-            // ArgumentOutOfRangeException from the MaxRetries setter. A caller who passes -1 stated a value,
-            // exactly as a configured -1 does; neither path has a "greater than zero means configured"
-            // fall-through that would replace it with the SDK default.
-            var sut = CreateSut();
-
-            Action withExponentialDelay = () => sut.WithExponentialDelay(maximumRetryCount, 30, 1, 3);
-
-            withExponentialDelay.Should().Throw<ServiceBusRetryOptionsValidationException>()
-                .WithMessage($"*{nameof(RetryPolicyConfiguration.MaximumRetryCount)}*")
-                .WithMessage($"*{maximumRetryCount}*");
-        }
-
         [Fact]
-        public void MustThrowNamingMinimumBackoffInSecondsWhenFluentBackoffIsNegative()
+        public void MustLetTheSdkRejectAFluentRetryCountAtTheFluentCallSite()
         {
-            // TimeSpan.FromSeconds accepts a negative, so the builder itself never gated this: the rejection
-            // came from the SDK's own Delay setter as a bare ArgumentOutOfRangeException naming 'Delay', a
-            // member no operator supplied. The shared guard names the knob that was passed instead.
+            // With nothing ahead of it, ServiceBusRetryOptions.MaxRetries rejects 101 from its own setter
+            // INSIDE WithExponentialDelay, so the throw lands AT THE FLUENT CALL SITE rather than at
+            // Build() — which is where master raised it too.
             var sut = CreateSut();
 
-            Action withExponentialDelay = () => sut.WithExponentialDelay(5, 30, -1, 3);
+            Action withExponentialDelay = () => sut.WithExponentialDelay(101, 30, 1, 3);
 
-            withExponentialDelay.Should().Throw<ServiceBusRetryOptionsValidationException>()
-                .WithMessage($"*{nameof(RetryPolicyConfiguration.MinimumBackoffInSeconds)}*");
+            withExponentialDelay.Should().Throw<ArgumentOutOfRangeException>();
         }
 
         [Fact]

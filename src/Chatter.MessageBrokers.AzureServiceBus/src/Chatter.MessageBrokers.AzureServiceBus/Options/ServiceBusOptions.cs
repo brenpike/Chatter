@@ -42,17 +42,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
 
     internal class RetryPolicyConfiguration
     {
-        // INVARIANT: disabling retry is an EXPLICIT opt-in and is never inferred from a numeric value.
-        // A stated MaximumRetryCount of zero is reported as a violation pointing at this opt-in rather
-        // than being honoured, so retry cannot be switched off by accident.
+        // INVARIANT: this is the INTENTION-REVEALING way to switch retry off — it says so outright instead
+        // of leaving a reader to infer it from a count. It is no longer the only way: a stated
+        // MaximumRetryCount of 0 now binds faithfully and yields MaxRetries 0, which differs both from the
+        // earlier behaviour that inferred "off" only from an ALL-ZERO four-key section and from the
+        // build-time validation that briefly refused a stated zero outright. Issue #423 owns the final call
+        // on whether a stated zero should keep binding this way.
         public bool NoRetry { get; set; } = false;
-        // INVARIANT: every numeric parameter is NULLABLE so that ABSENT and STATED are distinguishable.
-        // Null means the key was never written, which falls back to the Azure SDK default for that
-        // parameter and is never validated; any other value was STATED by an operator and is validated,
-        // so a value the SDK cannot run with is named in the failure instead of being silently replaced
-        // by that same default. A non-nullable numeric could not tell a stated zero from an absent key,
-        // which is why the two outcomes were previously fused into one "greater than zero means
-        // configured" test.
+        // INVARIANT: every numeric parameter is NULLABLE so that ABSENT and STATED are distinguishable and
+        // each binds FAITHFULLY. Null means the key was never written, so the Azure SDK default for that
+        // parameter stands; any other value was STATED by an operator and reaches the SDK's own setter,
+        // which raises its own failure for a value it cannot run with. A non-nullable numeric could not
+        // tell a stated zero from an absent key, which is why the two outcomes were previously fused into
+        // one "greater than zero means configured" test that silently replaced a stated -5 with that same
+        // SDK default.
         public double? MinimumBackoffInSeconds { get; set; }
         public double? MaximumBackoffInSeconds { get; set; }
         public int? MaximumRetryCount { get; set; }
