@@ -294,15 +294,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             {
                 // INVARIANT: bind INTO the default-initialized instance and never replace it; keys the
                 // section omits keep their default. The bind surface is deliberately NARROW — plain Bind()
-                // with BindNonPublicProperties OFF — and that narrowness is what closes the internal-set
-                // RetryOptions and TokenCredential properties to configuration: the binder is never handed
-                // them, so they are UNREACHABLE by construction rather than overwritten afterwards.
-                // Widening the surface would let a stray RetryOptions key run the SDK's VALIDATING setters
-                // during the bind (MaxRetries rejects anything outside 0..100) and let a nested
-                // TokenCredential object drive the binder into activating an abstract type — both raise raw
-                // binder exceptions at host start, before any later assignment could correct them.
-                // RetryPolicy is the ONE internal configuration property that must bind, so it is bound
-                // EXPLICITLY below into a locally constructed instance whose own setters are public.
+                // with BindNonPublicProperties OFF — and closure of the internal-set RetryOptions and
+                // TokenCredential properties to configuration rests on BOTH that narrowness AND their NULL
+                // default: the binder passes over a setter it cannot reach only while the value it reads
+                // through the PUBLIC getter is null. Give either property a non-null initializer — say
+                // = new ServiceBusRetryOptions() — and the binder would bind INTO that object instead,
+                // driving its own PUBLIC setters, so a stray RetryOptions key would reach the SDK's
+                // VALIDATING setter (MaxRetries rejects anything outside 0..100). The null default is
+                // therefore LOAD-BEARING rather than incidental. Widening the surface would additionally let
+                // a nested TokenCredential object drive the binder into activating an abstract type. Both
+                // failures raise raw binder exceptions at host start, before any later assignment could
+                // correct them. RetryPolicy is the ONE internal configuration property that must bind, so it
+                // is bound EXPLICITLY below into a locally constructed instance whose own setters are public.
                 _serviceBusOptionsSection.Bind(options);
                 BindRetryPolicy(options);
                 PostConfiguration(options);
@@ -368,14 +371,18 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
                 options.MaxSessionLockRenewalDuration = _maxSessionLockRenewalDuration.Value;
             }
 
-            // INVARIANT: the instance built here is the only ServiceBusOptions dependency injection can hand out -
+            // INVARIANT: every single-instance resolution of ServiceBusOptions returns the instance built here -
             // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and IOptionsMonitor
             // over that same instance - and it runs LAST, after the connection-string guard, the fluent-sentinel
             // overrides and the guarded retry construction, so no facet can observe a half-built instance. This
             // builder never registered a Configure<ServiceBusOptions>, so there is no second instance here to remove:
             // what the facets resolved instead was a framework-created all-default ServiceBusOptions whose
             // ConnectionString is null. Registering the facets COMPLETES the one-instance-everywhere invariant across
-            // the options graph rather than repairing a divergence this builder introduced.
+            // the options graph rather than repairing a divergence this builder introduced. The concrete registration is
+            // APPENDED rather than replaced, so a second Build() on the same IServiceCollection takes over
+            // single-instance resolution and leaves the earlier instances reachable through
+            // IEnumerable<ServiceBusOptions> - each seeded and connection-string-guarded by its own Build(), so no
+            // enumeration can surface a half-built instance.
             Services.AddBuiltOptions(options);
 
             return options;

@@ -98,14 +98,18 @@ namespace Chatter.MessageBrokers.Configuration
             // reachable from this entry point too.
             messageBrokerOptions.Recovery.CircuitBreakerOptions.Validate();
 
-            // INVARIANT: the instance built here is the only MessageBrokerOptions dependency injection can hand out -
+            // INVARIANT: every single-instance resolution of MessageBrokerOptions returns the instance built here -
             // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and IOptionsMonitor
             // over that same instance - and it runs AFTER the nested validation above, so an invalid circuit breaker
             // section registers nothing at all. Unlike the nested builders this one never registered a
             // Configure<MessageBrokerOptions>, so there is no second instance here to remove: what the facets resolved
             // instead was a framework-created all-default MessageBrokerOptions, whose TransactionMode is None and
             // whose Reliability and Recovery are null. Registering the facets completes the one-instance-everywhere
-            // invariant across the whole options graph rather than repairing a divergence this builder introduced.
+            // invariant across the whole options graph rather than repairing a divergence this builder introduced. The
+            // concrete registration is APPENDED rather than replaced, so a second Build() on the same
+            // IServiceCollection takes over single-instance resolution and leaves the earlier instances reachable
+            // through IEnumerable<MessageBrokerOptions> - each seeded and validated by its own Build(), so no
+            // enumeration can surface an unseeded or unvalidated object.
             Services.AddBuiltOptions(messageBrokerOptions);
 
             return messageBrokerOptions;

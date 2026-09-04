@@ -276,7 +276,7 @@ An out-of-range circuit breaker value is rejected while the options are being bu
 
 Validation runs on the finalized options — after configuration has been bound over the fluent defaults — and from every entry point, so a bad value reaches it whether it arrived through `WithCircuitBreaker(...)`, through `Chatter:MessageBrokers:Recovery:CircuitBreaker`, or through the parent `Chatter:MessageBrokers` section. Previously an invalid value survived the build and surfaced much later as a bare `ArgumentOutOfRangeException` from the `new SemaphoreSlim(0, 0)` in the `CircuitBreaker` constructor, when the breaker was first resolved.
 
-Validation is also unavoidable, because the validated instance is the only `CircuitBreakerOptions` the container can hand out. There is no longer a second, unvalidated instance sitting behind `IOptions<CircuitBreakerOptions>` for a bad value to survive in.
+Validation is also unavoidable, because every single-instance resolution — the concrete `CircuitBreakerOptions`, `IOptions<CircuitBreakerOptions>`, `IOptionsSnapshot<CircuitBreakerOptions>` and `IOptionsMonitor<CircuitBreakerOptions>` — returns the validated instance. There is no longer a second, unvalidated instance sitting behind `IOptions<CircuitBreakerOptions>` for a bad value to survive in. The concrete registration is appended rather than replaced, so a second builder pass on the same `IServiceCollection` leaves the earlier instances reachable through `IEnumerable<CircuitBreakerOptions>` — but each of those was seeded and validated by its own `Build()`, so an enumeration cannot surface an unseeded or unvalidated object either.
 
 ### Every injection style resolves the same options instance
 

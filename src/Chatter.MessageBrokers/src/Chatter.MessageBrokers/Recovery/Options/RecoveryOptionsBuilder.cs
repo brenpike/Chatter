@@ -189,13 +189,17 @@ namespace Chatter.MessageBrokers.Recovery.Options
                 // on; replacing the instance would additionally discard the defaults assigned above. Keys the section
                 // omits therefore keep their fluent default.
                 //
-                // INVARIANT: the instance built here is the only RecoveryOptions dependency injection can hand out -
+                // INVARIANT: every single-instance resolution of RecoveryOptions returns the instance built here -
                 // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
                 // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
                 // a Configure<RecoveryOptions>(section) registration would build a second instance that never saw
                 // the fluent defaults above and never passed through the nested Validate() below, so its
                 // CircuitBreakerOptions would be null and a section that omits MaxRetryAttempts would resolve it as
-                // 0, turning the first failure straight into MaxRetryAttemptsExceededException.
+                // 0, turning the first failure straight into MaxRetryAttemptsExceededException. The concrete
+                // registration is APPENDED rather than replaced, so a second Build() on the same IServiceCollection
+                // takes over single-instance resolution and leaves the earlier instances reachable through
+                // IEnumerable<RecoveryOptions> - each seeded and validated by its own Build(), so no enumeration can
+                // surface an unseeded or unvalidated object.
                 _recoveryOptionsSection.Bind(recoveryOptions, o => o.BindNonPublicProperties = true);
             }
 
