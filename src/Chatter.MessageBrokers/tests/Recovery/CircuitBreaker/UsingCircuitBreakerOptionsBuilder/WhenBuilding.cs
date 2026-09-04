@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreakerOptionsBuilder
@@ -200,6 +201,62 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .WithMessage($"*{nameof(CircuitBreakerOptions.NumberOfHalfOpenSuccessesToClose)}*")
                 .WithMessage($"*{nameof(CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds)}*")
                 .WithMessage($"*{nameof(CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification)}*");
+        }
+
+        [Fact]
+        public void MustThrowNamingOpenToHalfOpenWaitTimeInSecondsWhenConfiguredAboveTheRuntimeMaximum()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => CircuitBreakerOptionsBuilder.FromConfig(services, BuildConfigurationWith("OpenToHalfOpenWaitTimeInSeconds", "7776000"));
+
+            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>()
+                .WithMessage($"*{nameof(CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds)}*");
+        }
+
+        [Fact]
+        public void MustThrowNamingSecondsOpenBeforeCriticalFailureNotificationWhenConfiguredAboveTheRuntimeMaximum()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => CircuitBreakerOptionsBuilder.FromConfig(services, BuildConfigurationWith("SecondsOpenBeforeCriticalFailureNotification", "7776000"));
+
+            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>()
+                .WithMessage($"*{nameof(CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification)}*");
+        }
+
+        [Fact]
+        public void MustAcceptBothDurationsAtTheHighestRuntimeSupportedValue()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:OpenToHalfOpenWaitTimeInSeconds"] = "4294967",
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:SecondsOpenBeforeCriticalFailureNotification"] = "4294967"
+                })
+                .Build();
+
+            var options = CircuitBreakerOptionsBuilder.FromConfig(services, configuration);
+
+            options.OpenToHalfOpenWaitTimeInSeconds.Should().Be(4294967);
+            options.SecondsOpenBeforeCriticalFailureNotification.Should().Be(4294967);
+        }
+
+        // The maximum this builder enforces is only worth anything while it matches what the runtime accepts.
+        // Timer.Change is one of the two sinks CircuitBreaker hands these durations to, so pin the boundary against
+        // it: the accepted maximum must still be accepted there, and one second more must be what the runtime itself
+        // rejects. This test fails if a future runtime moves the limit, rather than letting the constant drift.
+        [Fact]
+        public void MustEnforceTheSameDurationMaximumTheRuntimeAccepts()
+        {
+            using var timer = new Timer(_ => { });
+
+            var atMaximum = () => timer.Change(TimeSpan.FromSeconds(4294967), TimeSpan.FromMilliseconds(-1));
+            var aboveMaximum = () => timer.Change(TimeSpan.FromSeconds(4294968), TimeSpan.FromMilliseconds(-1));
+
+            atMaximum.Should().NotThrow();
+            aboveMaximum.Should().Throw<ArgumentOutOfRangeException>();
         }
 
         [Fact]
