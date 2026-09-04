@@ -92,8 +92,10 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
                 // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
                 // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
                 // a Configure<ReliabilityOptions>(section) registration would build a second instance that never saw
-                // the fluent defaults above, so a section that omits OutboxProcessingIntervalInMilliseconds would
-                // resolve it as 0 and the BrokeredMessageOutboxProcessor would poll the outbox in a tight loop.
+                // the fluent defaults above, so an application that resolved IOptions<ReliabilityOptions> - or the
+                // snapshot or monitor form - for itself would have read OutboxProcessingIntervalInMilliseconds as
+                // 0 where this built instance holds 5000. BrokeredMessageOutboxProcessor injects the concrete
+                // ReliabilityOptions, so its polling interval was never at risk.
                 _reliabilityOptionsSection.Bind(reliabilityOptions, o => o.BindNonPublicProperties = true);
             }
 

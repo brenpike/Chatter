@@ -268,11 +268,29 @@ In practice this means a `TransactionMode` in configuration overrides `WithTrans
 });
 ```
 
+Precedence is settled once, while the options are being built, and the settled result is the only thing any injection style can see: `IOptions<T>`, `IOptionsSnapshot<T>` and `IOptionsMonitor<T>` resolve the same instance as injecting the concrete options type — see [Every injection style resolves the same options instance](#every-injection-style-resolves-the-same-options-instance).
+
 ### Invalid circuit breaker options fail at build time
 
 An out-of-range circuit breaker value is rejected while the options are being built, by `CircuitBreakerOptionsValidationException` (namespace `Chatter.MessageBrokers.Recovery.CircuitBreaker`). The exception's message, and its `Violations` list, name **every** invalid option in one go, so an operator does not pay a deployment per invalid value. The minimums are what `CircuitBreaker` itself can run with: `ConcurrentHalfOpenAttempts`, `NumberOfFailuresBeforeOpen` and `NumberOfHalfOpenSuccessesToClose` must be at least `1`; `OpenToHalfOpenWaitTimeInSeconds` and `SecondsOpenBeforeCriticalFailureNotification` must be at least `0`.
 
 Validation runs on the finalized options — after configuration has been bound over the fluent defaults — and from every entry point, so a bad value reaches it whether it arrived through `WithCircuitBreaker(...)`, through `Chatter:MessageBrokers:Recovery:CircuitBreaker`, or through the parent `Chatter:MessageBrokers` section. Previously an invalid value survived the build and surfaced much later as a bare `ArgumentOutOfRangeException` from the `new SemaphoreSlim(0, 0)` in the `CircuitBreaker` constructor, when the breaker was first resolved.
+
+Validation is also unavoidable, because the validated instance is the only `CircuitBreakerOptions` the container can hand out. There is no longer a second, unvalidated instance sitting behind `IOptions<CircuitBreakerOptions>` for a bad value to survive in.
+
+### Every injection style resolves the same options instance
+
+`MessageBrokerOptions`, `ReliabilityOptions`, `RecoveryOptions` and `CircuitBreakerOptions` are each registered twice over the one instance their builder finished: once as the concrete type, and once behind `IOptions<T>`, `IOptionsSnapshot<T>` and `IOptionsMonitor<T>`. Injecting `IOptions<RecoveryOptions>` therefore hands back exactly the object `RecoveryOptionsBuilder.Build()` produced — fluent defaults applied, configuration bound over them, validation run — and so does injecting `RecoveryOptions` directly. Every default in the tables above, and the build-time `CircuitBreakerOptionsValidationException`, now hold on every injection style rather than only on direct injection of the concrete type.
+
+Previously the three facets went to the container's own options factory instead, which built a fresh object from the configuration section alone. That object had seen neither the fluent defaults nor validation, so an `IOptions<CircuitBreakerOptions>` reader saw `ConcurrentHalfOpenAttempts` as `0` where the built instance held `1`, an `IOptions<RecoveryOptions>` reader saw `MaxRetryAttempts` as `0` and a null `CircuitBreakerOptions` where the built instance held `5` and a populated one, and an `IOptions<ReliabilityOptions>` reader saw `OutboxProcessingIntervalInMilliseconds` as `0` where the built instance held `5000`. The parent options were the worst of them: `IOptions<MessageBrokerOptions>` returned an all-default instance whose `TransactionMode` was `None` and whose `Reliability` and `Recovery` were both `null`, so reading `.Recovery.MaxRetryAttempts` off it raised a `NullReferenceException` rather than returning a wrong number — not one configured key landed.
+
+Nothing inside this package injected those facets. `BrokeredMessageOutboxProcessor`, `RetryStrategy`, `RetryWithCircuitBreakerStrategy` and `CircuitBreaker` all inject the concrete options types, which were always correctly seeded, so the zeroed values were reachable only by an application that resolved a facet itself.
+
+`IOptionsMonitor<T>` is supported for resolution only. Configuration is bound once, while the options are being built, so the built options never reload and the change callback is inert. Named options are not a concept in this package either — every name, including none, resolves the same built instance.
+
+**Behaviour change:** a `services.Configure<MessageBrokerOptions>(...)`, `Configure<ReliabilityOptions>(...)`, `Configure<RecoveryOptions>(...)` or `Configure<CircuitBreakerOptions>(...)` registration of your own is **no longer consulted**. The facets are bound directly to the built instance and never go through the options factory, which is precisely what makes the built instance authoritative, so a post-configure of these four types silently stops applying. The narrowing is intentional, and no known application relies on it, but it is a public behaviour change: configure these options through the fluent builder or through the `Chatter:MessageBrokers` section instead.
+
+The same rule is applied to `ServiceBusOptions` by `Chatter.MessageBrokers.AzureServiceBus`. It is not applied across the whole suite: `Chatter.MessageBrokers.RabbitMQ` and `Chatter.MessageBrokers.SqlServiceBroker` still register only the concrete options singleton, deliberately — neither registers a `Configure<T>`, so neither has anything divergent to close.
 
 ## Routing Slips
 
