@@ -180,10 +180,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // INVARIANT: the effective retry options are RESOLVED ONCE, from the first source that stated one —
         // the fluent setter, then the bound RetryPolicy section, then the Azure SDK default — and the
         // resolution happens AFTER the fluent override is in hand. A configured section the fluent call
-        // overrides is therefore DISCARDED WITHOUT BEING VALIDATED, which is the point: rejecting a value
-        // that is about to be thrown away blocked host start on a retry policy the host was never going to
-        // use, contradicting this module's fluent-wins precedence. Resolution and validation happen at the
-        // same point, so neither can run against a value the other discarded.
+        // overrides is therefore NEVER CONSTRUCTED, which is the point: constructing it would carry its
+        // values into the SDK's own validating setters, and one the SDK rejects would block host start on
+        // a retry policy the host was never going to use, contradicting this module's fluent-wins
+        // precedence. Only the source that actually wins ever reaches those setters.
         // A null return means retry options were never sourced at all — no fluent call and no bound
         // service-bus section — leaving ServiceBusOptions.RetryOptions unset.
         private ServiceBusRetryOptions ResolveRetryOptions(bool serviceBusSectionWasBound, RetryPolicyConfiguration retryPolicy)
@@ -343,14 +343,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             }
 
             // Resolve the effective retry options LAST among the option values, once every source is in
-            // hand, so validation runs on the values this instance will actually carry and never on a
-            // configured section the fluent override discarded.
+            // hand, so only the source that actually wins is constructed and only its values reach the
+            // SDK's own setters — never those of a configured section the fluent override discarded.
             options.RetryOptions = ResolveRetryOptions(serviceBusSectionWasBound, options.RetryPolicy);
 
             // INVARIANT: every single-instance resolution of ServiceBusOptions returns the instance built here -
             // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and IOptionsMonitor
             // over that same instance - and it runs LAST, after the connection-string guard, the fluent-sentinel
-            // overrides and the guarded retry construction, so no facet can observe a half-built instance. This
+            // overrides and the retry resolution, so no facet can observe a half-built instance. This
             // builder never registered a Configure<ServiceBusOptions>, so there is no second instance here to remove:
             // what the facets resolved instead was a framework-created all-default ServiceBusOptions whose
             // ConnectionString is null. Registering the facets COMPLETES the one-instance-everywhere invariant across

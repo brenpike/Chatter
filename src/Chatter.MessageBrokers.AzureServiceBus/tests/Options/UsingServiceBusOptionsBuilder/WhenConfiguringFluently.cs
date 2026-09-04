@@ -74,7 +74,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         public void MustNotTreatFluentMinimumBackoffGreaterThanMaximumBackoffAsAViolation()
         {
             // The SDK CLAMPS a Delay above MaxDelay while computing each retry delay. That is not a crash, so
-            // the shared guard must not turn it into a violation on this path either.
+            // nothing on this path refuses it — the fluent call carries both values straight to the SDK.
             var sut = CreateSut();
 
             Action withExponentialDelay = () => sut.WithExponentialDelay(5, 5, 60, 3);
