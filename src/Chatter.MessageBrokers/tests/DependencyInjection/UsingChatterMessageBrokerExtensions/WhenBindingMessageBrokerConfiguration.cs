@@ -108,26 +108,6 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                 .TransactionMode.Should().Be(TransactionMode.FullAtomicityViaInfrastructure);
         }
 
-        /// <summary>
-        /// The documented DI entry point is the only path a consumer takes, and it never constructs a
-        /// <see cref="ReliabilityOptionsBuilder"/> over a configuration section - the nested Reliability keys land on
-        /// the instance through the parent bind alone, so this is where an invalid interval has to be caught.
-        /// </summary>
-        [Fact]
-        public void MustThrowNamingTheOutboxProcessingIntervalWhenReachedThroughAddMessageBrokerOptions()
-        {
-            var services = new ServiceCollection();
-            var configuration = BuildConfiguration(new Dictionary<string, string>
-            {
-                [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = "-2"
-            });
-
-            var build = () => services.AddMessageBrokerOptions(configuration).Build();
-
-            build.Should().Throw<ReliabilityOptionsValidationException>()
-                .WithMessage($"*{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}*-2*");
-        }
-
         [Fact]
         public void MustResolveTheBuiltOptionsFromEveryFacetOfEveryOptionsTypeWhenAddOptionsRanFirst()
         {

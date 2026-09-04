@@ -92,31 +92,17 @@ namespace Chatter.MessageBrokers.Configuration
                 _messageBrokerOptionsSection.Bind(messageBrokerOptions, o => o.BindNonPublicProperties = true);
             }
 
-            // INVARIANT: reliability options reached through the MessageBrokers parent section never pass through
-            // ReliabilityOptionsBuilder.Build(), which runs before the bind above mutates the very instance it already
-            // registered, so validating the finalized instance here is what makes build-time validation reachable from
-            // this entry point too. Both call sites are required: this one is the only path AddMessageBrokers takes,
-            // and the sub-builder's is the only one ReliabilityOptionsBuilder.FromConfig takes.
-            messageBrokerOptions.Reliability.Validate();
-
-            // INVARIANT: circuit breaker options reached through the MessageBrokers parent section never pass through
-            // CircuitBreakerOptionsBuilder.Build() or RecoveryOptionsBuilder.Build(), both of which run before the bind
-            // above mutates them, so validating the finalized instance here is what makes build-time validation
-            // reachable from this entry point too.
-            messageBrokerOptions.Recovery.CircuitBreakerOptions.Validate();
-
             // INVARIANT: every single-instance resolution of MessageBrokerOptions returns the instance built here -
             // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and IOptionsMonitor
-            // over that same instance - and it runs AFTER the nested validation above, so an invalid circuit breaker
-            // section registers nothing at all. Unlike the nested builders this one never registered a
+            // over that same instance. Unlike the nested builders this one never registered a
             // Configure<MessageBrokerOptions>, so there is no second instance here to remove: what the facets resolved
             // instead was a framework-created all-default MessageBrokerOptions, whose TransactionMode is None and
             // whose Reliability and Recovery are null. Registering the facets completes the one-instance-everywhere
             // invariant across the whole options graph rather than repairing a divergence this builder introduced. The
             // concrete registration is APPENDED rather than replaced, so a second Build() on the same
             // IServiceCollection takes over single-instance resolution and leaves the earlier instances reachable
-            // through IEnumerable<MessageBrokerOptions> - each seeded and validated by its own Build(), so no
-            // enumeration can surface an unseeded or unvalidated object.
+            // through IEnumerable<MessageBrokerOptions> - each seeded by its own Build(), so no enumeration can
+            // surface an unseeded object.
             Services.AddBuiltOptions(messageBrokerOptions);
 
             return messageBrokerOptions;

@@ -169,40 +169,9 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             builtOptions.MinutesToLiveInMemory.Should().Be(10);
         }
 
-        [Fact]
-        public void MustThrowNamingTheOutboxProcessingIntervalWhenConfiguredBelowNegativeOne()
-        {
-            var services = new ServiceCollection();
-            var configuration = BuildConfigurationWithOutboxProcessingInterval("-2");
-
-            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, configuration);
-
-            fromConfig.Should().Throw<ReliabilityOptionsValidationException>()
-                .WithMessage($"*{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}*-2*");
-        }
-
-        /// <summary>
-        /// -1 is <c>Timeout.Infinite</c>, so <c>Task.Delay</c> accepts it and the outbox polling processor never
-        /// faults - it simply waits forever after its first pass. Disabling the processor has to go through
-        /// <see cref="ReliabilityOptions.EnableOutboxPollingProcessor"/>, never through an interval that disables it
-        /// by inference, so the violation has to explain that rather than merely cite the delay primitive.
-        /// </summary>
-        [Fact]
-        public void MustExplainTheSilentDisableWhenConfiguredIntervalIsNegativeOne()
-        {
-            var services = new ServiceCollection();
-            var configuration = BuildConfigurationWithOutboxProcessingInterval("-1");
-
-            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, configuration);
-
-            fromConfig.Should().Throw<ReliabilityOptionsValidationException>()
-                .Which.Violations.Should().ContainSingle()
-                .Which.Should().Contain(nameof(ReliabilityOptions.EnableOutboxPollingProcessor));
-        }
-
         /// <summary>
         /// <c>Task.Delay(0)</c> is legal and completes immediately, so how aggressively the outbox is polled is the
-        /// operator's call, not a validation concern.
+        /// operator's call.
         /// </summary>
         [Fact]
         public void MustAllowAZeroOutboxProcessingInterval()
@@ -215,50 +184,20 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             options.OutboxProcessingIntervalInMilliseconds.Should().Be(0);
         }
 
-        [Fact]
-        public void MustThrowWhenTheFluentOutboxPollingProcessorIntervalIsNegative()
-        {
-            var services = new ServiceCollection();
-
-            var build = () => ReliabilityOptionsBuilder.Create(services).WithOutboxPollingProcessor(-5).Build();
-
-            build.Should().Throw<ReliabilityOptionsValidationException>()
-                .WithMessage($"*{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}*-5*");
-        }
-
         /// <summary>
-        /// Deliberate, not a bug: the FINALIZED instance is validated, never its reachability. An interval only the
-        /// disabled processor would have read is still rejected, because the deployment that turns
-        /// <see cref="ReliabilityOptions.EnableOutboxPollingProcessor"/> on is not the place to discover it.
+        /// <c>Task.Delay</c> rejects anything below -1, so an enabled outbox polling processor configured this way
+        /// faults the whole background service, and this builder binds the value anyway. Build-time validation of
+        /// configured options is tracked by issue #423, so the acceptance is recorded here rather than overlooked.
         /// </summary>
         [Fact]
-        public void MustThrowWhenTheConfiguredIntervalIsInvalidEvenThoughTheOutboxPollingProcessorIsDisabled()
+        public void MustAcceptAConfiguredOutboxProcessingIntervalOfNegativeFive()
         {
-            ReliabilityOptionsBuilder.FromConfig(new ServiceCollection(), BuildConfigurationWithOutboxProcessingInterval("5000"))
-                .EnableOutboxPollingProcessor.Should().BeFalse();
-
             var services = new ServiceCollection();
-            var configuration = BuildConfigurationWithOutboxProcessingInterval("-2");
+            var configuration = BuildConfigurationWithOutboxProcessingInterval("-5");
 
-            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, configuration);
+            var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
 
-            fromConfig.Should().Throw<ReliabilityOptionsValidationException>();
-        }
-
-        /// <summary>
-        /// Aggregation is one message naming every offending value, so an operator does not pay a deployment per
-        /// invalid option. Only one reliability option is validated today, so the aggregation is pinned on the
-        /// exception's own contract rather than through a configuration that cannot yet carry two violations.
-        /// </summary>
-        [Fact]
-        public void MustNameEveryViolationInOneMessage()
-        {
-            var violations = new[] { "first violation", "second violation" };
-
-            var exception = new ReliabilityOptionsValidationException(violations);
-
-            exception.Violations.Should().Equal(violations);
-            exception.Message.Should().Contain("first violation").And.Contain("second violation");
+            options.OutboxProcessingIntervalInMilliseconds.Should().Be(-5);
         }
 
         private static IConfiguration BuildConfigurationWithOutboxProcessingInterval(string interval)

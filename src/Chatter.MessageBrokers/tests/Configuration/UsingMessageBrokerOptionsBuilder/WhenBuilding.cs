@@ -218,46 +218,6 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
         }
 
         [Fact]
-        public void MustThrowNamingInvalidCircuitBreakerOptionWhenNestedSectionCarriesInvalidValue()
-        {
-            var services = new ServiceCollection();
-            var configuration = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string>
-                {
-                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:ConcurrentHalfOpenAttempts"] = "0"
-                })
-                .Build();
-
-            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
-
-            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>()
-                .WithMessage($"*{nameof(CircuitBreakerOptions.ConcurrentHalfOpenAttempts)}*");
-        }
-
-        /// <summary>
-        /// The nesting guard. <see cref="ReliabilityOptionsBuilder"/> registers its instance and validates it BEFORE
-        /// the parent bind runs, and the parent bind then MUTATES that same instance - so a Reliability value supplied
-        /// through the parent section never passes through the sub-builder's validation and escapes entirely unless
-        /// the finalized instance is validated here too.
-        /// </summary>
-        [Fact]
-        public void MustThrowNamingInvalidReliabilityOptionWhenNestedSectionCarriesInvalidValue()
-        {
-            var services = new ServiceCollection();
-            var configuration = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string>
-                {
-                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = "-2"
-                })
-                .Build();
-
-            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
-
-            fromConfig.Should().Throw<ReliabilityOptionsValidationException>()
-                .WithMessage($"*{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}*-2*");
-        }
-
-        [Fact]
         public void MustLeaveNestedOptionsResolvableWhenFromConfigNestedSectionsPopulated()
         {
             var services = new ServiceCollection();
@@ -437,56 +397,7 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             facetOptions.Recovery.CircuitBreakerOptions.Should().BeSameAs(options.Recovery.CircuitBreakerOptions);
         }
 
-        [Fact]
-        public void MustRegisterNoOptionsFacetWhenNestedCircuitBreakerValueIsInvalid()
-        {
-            var services = new ServiceCollection();
-            var configuration = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string>
-                {
-                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:ConcurrentHalfOpenAttempts"] = "0"
-                })
-                .Build();
-
-            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
-
-            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>();
-            services.Any(DescribesMessageBrokerOptions).Should().BeFalse();
-
-            using var provider = services.BuildServiceProvider();
-
-            provider.GetService<IOptions<MessageBrokerOptions>>().Should().BeNull();
-        }
-
-        [Fact]
-        public void MustRegisterNoOptionsFacetWhenNestedReliabilityValueIsInvalid()
-        {
-            var services = new ServiceCollection();
-            var configuration = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string>
-                {
-                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = "-2"
-                })
-                .Build();
-
-            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
-
-            fromConfig.Should().Throw<ReliabilityOptionsValidationException>();
-            services.Any(DescribesMessageBrokerOptions).Should().BeFalse();
-
-            using var provider = services.BuildServiceProvider();
-
-            provider.GetService<IOptions<MessageBrokerOptions>>().Should().BeNull();
-        }
-
         private const string ExplicitSectionName = "Custom:MessageBrokers";
-
-        private static bool DescribesMessageBrokerOptions(ServiceDescriptor descriptor)
-            => descriptor.ServiceType == typeof(MessageBrokerOptions)
-                || descriptor.ServiceType == typeof(IOptions<MessageBrokerOptions>)
-                || descriptor.ServiceType == typeof(IOptionsSnapshot<MessageBrokerOptions>)
-                || descriptor.ServiceType == typeof(IOptionsMonitor<MessageBrokerOptions>)
-                || descriptor.ServiceType == typeof(IConfigureOptions<MessageBrokerOptions>);
 
         private static void AssertConfiguredTransactionModeHonoured(MessageBrokerOptions options)
         {

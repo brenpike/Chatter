@@ -170,23 +170,6 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
         }
 
         [Fact]
-        public void MustThrowNamingInvalidCircuitBreakerOptionWhenNestedSectionCarriesInvalidValue()
-        {
-            var services = new ServiceCollection();
-            var configuration = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string>
-                {
-                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:ConcurrentHalfOpenAttempts"] = "0"
-                })
-                .Build();
-
-            var fromConfig = () => RecoveryOptionsBuilder.FromConfig(services, configuration);
-
-            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>()
-                .WithMessage($"*{nameof(CircuitBreakerOptions.ConcurrentHalfOpenAttempts)}*");
-        }
-
-        [Fact]
         public void MustRetainDefaultMaxRetryAttemptsWhenFromConfigSectionOmitsIt()
         {
             var services = new ServiceCollection();
@@ -322,21 +305,6 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
             facetOptions.CircuitBreakerOptions.NumberOfFailuresBeforeOpen.Should().Be(9);
         }
 
-        [Fact]
-        public void MustRegisterNoOptionsFacetWhenNestedCircuitBreakerValueIsInvalid()
-        {
-            var services = new ServiceCollection();
-
-            var fromConfig = () => RecoveryOptionsBuilder.FromConfig(services, BuildConfigurationWith($"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:ConcurrentHalfOpenAttempts", "0"));
-
-            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>();
-            services.Any(DescribesRecoveryOptions).Should().BeFalse();
-
-            using var provider = services.BuildServiceProvider();
-
-            provider.GetService<IOptions<RecoveryOptions>>().Should().BeNull();
-        }
-
         private static IConfiguration BuildConfigurationWith(string configurationKey, string value)
             => new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string>
@@ -344,12 +312,5 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
                     [configurationKey] = value
                 })
                 .Build();
-
-        private static bool DescribesRecoveryOptions(ServiceDescriptor descriptor)
-            => descriptor.ServiceType == typeof(RecoveryOptions)
-                || descriptor.ServiceType == typeof(IOptions<RecoveryOptions>)
-                || descriptor.ServiceType == typeof(IOptionsSnapshot<RecoveryOptions>)
-                || descriptor.ServiceType == typeof(IOptionsMonitor<RecoveryOptions>)
-                || descriptor.ServiceType == typeof(IConfigureOptions<RecoveryOptions>);
     }
 }

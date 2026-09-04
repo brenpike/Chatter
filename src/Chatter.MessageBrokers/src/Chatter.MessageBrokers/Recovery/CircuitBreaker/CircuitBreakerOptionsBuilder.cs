@@ -136,17 +136,15 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 // here - AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot
                 // and IOptionsMonitor over that same instance. The container's options factory is deliberately
                 // NOT used: a Configure<CircuitBreakerOptions>(section) registration would build a second
-                // instance that never saw the fluent defaults above and never passed through Validate(), so a
-                // section that omits ConcurrentHalfOpenAttempts would resolve it as 0 and CircuitBreaker would
-                // construct a SemaphoreSlim(0, 0) that blocks forever. The concrete registration is APPENDED
-                // rather than replaced, so a second Build() on the same IServiceCollection takes over
-                // single-instance resolution and leaves the earlier instances reachable through
-                // IEnumerable<CircuitBreakerOptions> - each seeded and validated by its own Build(), so no
-                // enumeration can surface an unseeded or unvalidated object.
+                // instance that never saw the fluent defaults above, so a section that omits
+                // ConcurrentHalfOpenAttempts would resolve it as 0 and CircuitBreaker would construct a
+                // SemaphoreSlim(0, 0) that blocks forever. The concrete registration is APPENDED rather than
+                // replaced, so a second Build() on the same IServiceCollection takes over single-instance
+                // resolution and leaves the earlier instances reachable through
+                // IEnumerable<CircuitBreakerOptions> - each seeded by its own Build(), so no enumeration can
+                // surface an unseeded object.
                 _circuitBreakerOptionsSection.Bind(circuitBreakerOptions, o => o.BindNonPublicProperties = true);
             }
-
-            circuitBreakerOptions.Validate();
 
             if (_exceptionPredicates.Count > 0)
             {

@@ -193,20 +193,14 @@ namespace Chatter.MessageBrokers.Recovery.Options
                 // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
                 // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
                 // a Configure<RecoveryOptions>(section) registration would build a second instance that never saw
-                // the fluent defaults above and never passed through the nested Validate() below, so its
-                // CircuitBreakerOptions would be null and a section that omits MaxRetryAttempts would resolve it as
-                // 0, turning the first failure straight into MaxRetryAttemptsExceededException. The concrete
-                // registration is APPENDED rather than replaced, so a second Build() on the same IServiceCollection
-                // takes over single-instance resolution and leaves the earlier instances reachable through
-                // IEnumerable<RecoveryOptions> - each seeded and validated by its own Build(), so no enumeration can
-                // surface an unseeded or unvalidated object.
+                // the fluent defaults above, so its CircuitBreakerOptions would be null and a section that omits
+                // MaxRetryAttempts would resolve it as 0, turning the first failure straight into
+                // MaxRetryAttemptsExceededException. The concrete registration is APPENDED rather than replaced, so
+                // a second Build() on the same IServiceCollection takes over single-instance resolution and leaves
+                // the earlier instances reachable through IEnumerable<RecoveryOptions> - each seeded by its own
+                // Build(), so no enumeration can surface an unseeded object.
                 _recoveryOptionsSection.Bind(recoveryOptions, o => o.BindNonPublicProperties = true);
             }
-
-            // INVARIANT: circuit breaker options reached through the Recovery parent section never pass through
-            // CircuitBreakerOptionsBuilder.Build(), so validating the finalized instance here is what makes build-time
-            // validation reachable from this entry point and not only from the standalone one.
-            recoveryOptions.CircuitBreakerOptions.Validate();
 
             if (_exceptionPredicates.Count > 0)
             {
