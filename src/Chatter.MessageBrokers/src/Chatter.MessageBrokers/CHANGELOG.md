@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-09-04
+
+### Fixed
+
+- The receiver hosted service now creates and owns its own DI scope for its whole lifetime, instead of the registration factory disposing that scope as it returned. A scoped replacement of a receiver dependency (for example `ICriticalFailureNotifier`) is no longer disposed at host start; it is disposed only after the receive loop has unwound, when the hosted service stops. A scoped replacement implementing only `IAsyncDisposable` no longer throws at host start; it is disposed asynchronously when the hosted service stops (#297, #314).
+
 ## [0.19.0] - 2026-09-03
 
 ### Added
