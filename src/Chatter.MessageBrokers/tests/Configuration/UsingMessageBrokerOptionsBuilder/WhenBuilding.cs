@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Reliability.Configuration;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System.Collections.Generic;
 using System.Linq;
 using Xunit;
@@ -320,7 +321,128 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             options.TransactionMode.Should().Be(TransactionMode.FullAtomicityViaInfrastructure);
         }
 
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.FromConfig(services, BuildConfiguration());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptions<MessageBrokerOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<MessageBrokerOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsSnapshotWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.FromConfig(services, BuildConfiguration());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsSnapshot<MessageBrokerOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<MessageBrokerOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsMonitorWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.FromConfig(services, BuildConfiguration());
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsMonitor<MessageBrokerOptions>>().CurrentValue
+                .Should().BeSameAs(provider.GetRequiredService<MessageBrokerOptions>());
+        }
+
+        [Fact]
+        public void MustDefaultTransactionModeToReceiveOnlyOnEveryOptionsFacetWhenNoConfigurationIsPresent()
+        {
+            var services = new ServiceCollection();
+            // AddOptions() stands in for the host, which registers the open generic options descriptors. Without the
+            // built options registered against the closed generics, those descriptors are what every facet resolves
+            // through - and the instance they hand out carries TransactionMode None, so a receive that fails after the
+            // message is taken loses it.
+            services.AddOptions();
+
+            MessageBrokerOptionsBuilder.Create(services).Build();
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptions<MessageBrokerOptions>>().Value
+                .TransactionMode.Should().Be(TransactionMode.ReceiveOnly);
+            provider.GetRequiredService<IOptionsSnapshot<MessageBrokerOptions>>().Value
+                .TransactionMode.Should().Be(TransactionMode.ReceiveOnly);
+            provider.GetRequiredService<IOptionsMonitor<MessageBrokerOptions>>().CurrentValue
+                .TransactionMode.Should().Be(TransactionMode.ReceiveOnly);
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromEveryOptionsFacetWhenNoConfigurationIsPresent()
+        {
+            var services = new ServiceCollection();
+            services.AddOptions();
+
+            var options = MessageBrokerOptionsBuilder.Create(services).Build();
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptions<MessageBrokerOptions>>().Value.Should().BeSameAs(options);
+            provider.GetRequiredService<IOptionsSnapshot<MessageBrokerOptions>>().Value.Should().BeSameAs(options);
+            provider.GetRequiredService<IOptionsMonitor<MessageBrokerOptions>>().CurrentValue.Should().BeSameAs(options);
+            provider.GetRequiredService<MessageBrokerOptions>().Should().BeSameAs(options);
+        }
+
+        [Fact]
+        public void MustRetainTheBuiltNestedOptionsOnTheOptionsFacetWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            var options = MessageBrokerOptionsBuilder.FromConfig(services, BuildConfiguration());
+
+            using var provider = services.BuildServiceProvider();
+            var facetOptions = provider.GetRequiredService<IOptions<MessageBrokerOptions>>().Value;
+
+            facetOptions.TransactionMode.Should().Be(TransactionMode.FullAtomicityViaInfrastructure);
+            facetOptions.Reliability.Should().BeSameAs(options.Reliability);
+            facetOptions.Recovery.Should().BeSameAs(options.Recovery);
+            facetOptions.Recovery.CircuitBreakerOptions.Should().BeSameAs(options.Recovery.CircuitBreakerOptions);
+        }
+
+        [Fact]
+        public void MustRegisterNoOptionsFacetWhenNestedCircuitBreakerValueIsInvalid()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:ConcurrentHalfOpenAttempts"] = "0"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>();
+            services.Any(DescribesMessageBrokerOptions).Should().BeFalse();
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetService<IOptions<MessageBrokerOptions>>().Should().BeNull();
+        }
+
         private const string ExplicitSectionName = "Custom:MessageBrokers";
+
+        private static bool DescribesMessageBrokerOptions(ServiceDescriptor descriptor)
+            => descriptor.ServiceType == typeof(MessageBrokerOptions)
+                || descriptor.ServiceType == typeof(IOptions<MessageBrokerOptions>)
+                || descriptor.ServiceType == typeof(IOptionsSnapshot<MessageBrokerOptions>)
+                || descriptor.ServiceType == typeof(IOptionsMonitor<MessageBrokerOptions>)
+                || descriptor.ServiceType == typeof(IConfigureOptions<MessageBrokerOptions>);
 
         private static void AssertConfiguredTransactionModeHonoured(MessageBrokerOptions options)
         {
