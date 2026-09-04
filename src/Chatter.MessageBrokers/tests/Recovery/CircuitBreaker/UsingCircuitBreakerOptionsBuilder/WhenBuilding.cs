@@ -2,6 +2,7 @@ using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -200,5 +201,91 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .WithMessage($"*{nameof(CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds)}*")
                 .WithMessage($"*{nameof(CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification)}*");
         }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            CircuitBreakerOptionsBuilder.FromConfig(services, BuildConfigurationWith("NumberOfFailuresBeforeOpen", "42"));
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptions<CircuitBreakerOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<CircuitBreakerOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsSnapshotWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            CircuitBreakerOptionsBuilder.FromConfig(services, BuildConfigurationWith("NumberOfFailuresBeforeOpen", "42"));
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsSnapshot<CircuitBreakerOptions>>().Value
+                .Should().BeSameAs(provider.GetRequiredService<CircuitBreakerOptions>());
+        }
+
+        [Fact]
+        public void MustResolveTheBuiltOptionsFromIOptionsMonitorWhenFromConfigSectionPopulated()
+        {
+            var services = new ServiceCollection();
+
+            CircuitBreakerOptionsBuilder.FromConfig(services, BuildConfigurationWith("NumberOfFailuresBeforeOpen", "42"));
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetRequiredService<IOptionsMonitor<CircuitBreakerOptions>>().CurrentValue
+                .Should().BeSameAs(provider.GetRequiredService<CircuitBreakerOptions>());
+        }
+
+        [Fact]
+        public void MustRetainFluentDefaultsOnTheOptionsFacetWhenFromConfigSectionOmitsKeys()
+        {
+            var services = new ServiceCollection();
+
+            CircuitBreakerOptionsBuilder.FromConfig(services, BuildConfigurationWith("NumberOfFailuresBeforeOpen", "42"));
+
+            using var provider = services.BuildServiceProvider();
+            var facetOptions = provider.GetRequiredService<IOptions<CircuitBreakerOptions>>().Value;
+
+            facetOptions.NumberOfFailuresBeforeOpen.Should().Be(42);
+            facetOptions.OpenToHalfOpenWaitTimeInSeconds.Should().Be(15);
+            facetOptions.ConcurrentHalfOpenAttempts.Should().Be(1);
+            facetOptions.NumberOfHalfOpenSuccessesToClose.Should().Be(3);
+            facetOptions.SecondsOpenBeforeCriticalFailureNotification.Should().Be(1800);
+        }
+
+        [Fact]
+        public void MustRegisterNoOptionsFacetWhenConfiguredValueIsInvalid()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => CircuitBreakerOptionsBuilder.FromConfig(services, BuildConfigurationWith("ConcurrentHalfOpenAttempts", "0"));
+
+            fromConfig.Should().Throw<CircuitBreakerOptionsValidationException>();
+            services.Any(DescribesCircuitBreakerOptions).Should().BeFalse();
+
+            using var provider = services.BuildServiceProvider();
+
+            provider.GetService<IOptions<CircuitBreakerOptions>>().Should().BeNull();
+        }
+
+        private static IConfiguration BuildConfigurationWith(string key, string value)
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:{key}"] = value
+                })
+                .Build();
+
+        private static bool DescribesCircuitBreakerOptions(ServiceDescriptor descriptor)
+            => descriptor.ServiceType == typeof(CircuitBreakerOptions)
+                || descriptor.ServiceType == typeof(IOptions<CircuitBreakerOptions>)
+                || descriptor.ServiceType == typeof(IOptionsSnapshot<CircuitBreakerOptions>)
+                || descriptor.ServiceType == typeof(IOptionsMonitor<CircuitBreakerOptions>)
+                || descriptor.ServiceType == typeof(IConfigureOptions<CircuitBreakerOptions>);
     }
 }

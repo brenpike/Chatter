@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using Chatter.MessageBrokers.Configuration;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
@@ -130,8 +131,15 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 // CircuitBreakerOptions is internal set, so the binder skips all of them unless
                 // BindNonPublicProperties is on; replacing the instance would additionally discard the defaults
                 // assigned above. Keys the section omits therefore keep their fluent default.
+                //
+                // INVARIANT: the instance built here is the only CircuitBreakerOptions dependency injection can
+                // hand out - AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot
+                // and IOptionsMonitor over that same instance. The container's options factory is deliberately
+                // NOT used: a Configure<CircuitBreakerOptions>(section) registration would build a second
+                // instance that never saw the fluent defaults above and never passed through Validate(), so a
+                // section that omits ConcurrentHalfOpenAttempts would resolve it as 0 and CircuitBreaker would
+                // construct a SemaphoreSlim(0, 0) that blocks forever.
                 _circuitBreakerOptionsSection.Bind(circuitBreakerOptions, o => o.BindNonPublicProperties = true);
-                _services.Configure<CircuitBreakerOptions>(_circuitBreakerOptionsSection, o => o.BindNonPublicProperties = true);
             }
 
             circuitBreakerOptions.Validate();
@@ -141,7 +149,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 _services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider>(new ConfigCircuitBreakerExceptionPredicatesProvider(_exceptionPredicates));
             }
 
-            _services.AddSingleton(circuitBreakerOptions);
+            _services.AddBuiltOptions(circuitBreakerOptions);
 
             return circuitBreakerOptions;
         }
