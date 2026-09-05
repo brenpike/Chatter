@@ -9,7 +9,7 @@ Technology-agnostic brokered messaging built on Chatter.CQRS: receiving, sending
 **Brokered Message Receiver**: The component that consumes brokered messages from infrastructure; runs as a background service, capped at one instance.
 _Avoid_: consumer, listener.
 
-**Receiver Scope**: The DI scope bounding a Brokered Message Receiver's scoped dependency graph. It is created from `IServiceScopeFactory` by the background service that owns the receiver, and disposed only when that service's own lifetime ends — after the receive loop has unwound, never earlier.
+**Receiver Scope**: The DI scope bounding a Brokered Message Receiver's scoped dependency graph. It is created from `IServiceScopeFactory` inside the background service's receive loop, and released as that loop unwinds — after the messaging infrastructure teardown, never earlier.
 _Avoid_: resolving a receiver's dependency graph from a `using var scope` inside a registration factory — the scope, and every scoped member of the graph, dies as the factory returns while the singleton hosted service keeps the dead graph.
 
 **Brokered Message Dispatcher**: Relays a received Brokered Message to the matching Command or Event handler.

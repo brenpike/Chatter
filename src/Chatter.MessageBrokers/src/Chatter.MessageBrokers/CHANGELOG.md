@@ -8,9 +8,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [0.19.1] - 2026-09-04
 
+### Changed
+
+- The receiver's dependency graph is now resolved when the hosted service STARTS rather than when it is constructed (both still occur during host startup). A failed resolve releases its partially-built scope and aborts host start with the ORIGINAL exception rather than a masking cleanup exception (#297, #314).
+
 ### Fixed
 
-- The receiver hosted service now creates and owns its own DI scope for its whole lifetime, instead of the registration factory disposing that scope as it returned. A scoped replacement of a receiver dependency (for example `ICriticalFailureNotifier`) is no longer disposed at host start; it is disposed only after the receive loop has unwound, when the hosted service stops. A scoped replacement implementing only `IAsyncDisposable` no longer throws at host start; it is disposed asynchronously when the hosted service stops (#297, #314).
+- The receiver hosted service now creates and owns its own DI scope for its whole lifetime, instead of the registration factory disposing that scope as it returned. A scoped replacement of a receiver dependency (for example `ICriticalFailureNotifier`) is no longer disposed at host start; it is disposed only after the receive loop has unwound, when the hosted service stops. A scoped replacement implementing only `IAsyncDisposable` no longer throws on any terminal path, including a synchronous host disposal that never stopped the receiver; it is disposed asynchronously whichever path tears the scope down (#297, #314).
 
 ## [0.19.0] - 2026-09-03
 
