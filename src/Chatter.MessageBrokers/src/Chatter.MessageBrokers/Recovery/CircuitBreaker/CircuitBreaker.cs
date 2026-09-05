@@ -13,12 +13,11 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         private readonly int _numberOfFailuresBeforeOpen;
         private readonly int _numberOfHalfOpenSuccessesToClose;
         private readonly TimeSpan _timeOpenBeforeCriticalFailureNotification;
-        private Timer _timer;
+        private readonly Timer _timer;
         private readonly ICircuitBreakerStateStore _stateStore;
         private readonly ILogger<CircuitBreaker> _logger;
         private readonly ICircuitBreakerExceptionEvaluator _exceptionEvaluator;
-        private bool _disposedValue;
-        private SemaphoreSlim _halfOpenSemaphore;
+        private readonly SemaphoreSlim _halfOpenSemaphore;
 
         public CircuitBreaker(ICircuitBreakerStateStore stateStore,
                               CircuitBreakerOptions circuitBreakerOptions,
@@ -128,27 +127,5 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
         private void ResetOpenTimer() => _timer?.Change(Timeout.Infinite, Timeout.Infinite);
         private void StartOpenTimer() => _timer?.Change(_timeOpenBeforeCriticalFailureNotification, TimeSpan.FromMilliseconds(-1));
-
-        private void Dispose(bool disposing)
-        {
-            if (!_disposedValue)
-            {
-                if (disposing)
-                {
-                    _halfOpenSemaphore?.Dispose();
-                    _timer?.Dispose();
-                }
-
-                _halfOpenSemaphore = null;
-                _timer = null;
-                _disposedValue = true;
-            }
-        }
-
-        public void Dispose()
-        {
-            Dispose(disposing: true);
-            GC.SuppressFinalize(this);
-        }
     }
 }

@@ -364,11 +364,13 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
             // itself does at the end of its lifetime. The loop is deliberately NOT started here: an always-half-open
             // store would make a live loop contend for the single half-open slot this test then asserts on.
             //
-            // INVARIANT: this guard is green on BOTH sides of the scope-ownership change, because CircuitBreaker
-            // declares a public Dispose() but does NOT implement IDisposable (neither does ICircuitBreaker), so the
-            // container never captured it as a scope-owned disposable and a torn-down scope never released its
-            // half-open admission primitive. The guard is kept so that giving the breaker a disposal contract later
-            // cannot reintroduce a half-open path over a released primitive through this seam.
+            // INVARIANT: this guard is green on BOTH sides of the scope-ownership change. CircuitBreaker implements
+            // neither IDisposable nor IAsyncDisposable (neither does ICircuitBreaker), so the container never
+            // captured the Scoped breaker as a scope-owned disposable and a torn-down receiver scope never released
+            // its half-open admission primitive: the breaker still admits a half-open execution after the scope that
+            // resolved it is gone. The orphan disposal members were REMOVED in this change rather than kept for a
+            // future disposal contract, so this is the guard that fails if a disposal contract is ever reintroduced
+            // while the breaker stays Scoped.
             using (var receiverScope = provider.CreateScope())
             {
                 receiverScope.ServiceProvider.GetRequiredService<IBrokeredMessageReceiver<TestReceiverMessage>>();

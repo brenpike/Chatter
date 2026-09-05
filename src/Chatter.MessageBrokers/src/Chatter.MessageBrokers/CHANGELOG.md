@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.20.0] - 2026-09-05
+
+### Removed
+
+- **`CircuitBreaker.Dispose()`** has been removed. No migration is required: `CircuitBreaker` implements neither `IDisposable` nor `IAsyncDisposable`, so the DI container never captured it as a scope-owned disposable and never invoked this member; nothing inside this package ever called it either. Its private `Dispose(bool)` was never public API, so `Dispose()` was the only breaking surface. An application using this package that called `Dispose()` explicitly was disposing the timer and half-open semaphore of a breaker the package still holds and still uses — that call was never correct. The breaker remains usable after its resolving scope is torn down (#315, #298).
 
 ## [0.19.1] - 2026-09-04
 
