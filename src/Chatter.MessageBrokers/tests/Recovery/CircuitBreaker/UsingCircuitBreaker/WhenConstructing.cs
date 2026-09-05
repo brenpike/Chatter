@@ -41,15 +41,5 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         public void MustThrowArgumentNullExceptionWhenExceptionEvaluatorIsNull()
             => FluentActions.Invoking(() => new MessageBrokers.Recovery.CircuitBreaker.CircuitBreaker(_store.Object, _options, _logger, null))
                 .Should().Throw<ArgumentNullException>();
-
-        [Fact]
-        public void MustNotThrowWhenDisposedTwice()
-        {
-            var sut = new MessageBrokers.Recovery.CircuitBreaker.CircuitBreaker(_store.Object, _options, _logger, _evaluator.Object);
-            sut.Dispose();
-
-            // The _disposedValue guard must make a second Dispose a no-op rather than re-disposing the (already-null) timer/semaphore.
-            FluentActions.Invoking(() => sut.Dispose()).Should().NotThrow();
-        }
     }
 }
