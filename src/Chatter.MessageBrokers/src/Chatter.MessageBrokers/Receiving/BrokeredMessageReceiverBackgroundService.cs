@@ -14,8 +14,15 @@ namespace Chatter.MessageBrokers.Receiving
     /// is resolved from lives for the duration of a single <see cref="ExecuteAsync"/> call, as an
     /// <c>await using</c> local. That removes the whole class of defect in which an owned scope survives as a field
     /// that some terminal path skips releasing, or releases through a synchronous disposal a scoped member of the
-    /// graph refuses: a failed resolve, a startup-fatal throw and a synchronous host disposal all leave the method,
-    /// and C# binds the release to every one of those exits.
+    /// graph refuses: a failed resolve and a startup-fatal throw leave the method directly, and a synchronous host
+    /// disposal cancels the receive loop so the method leaves on that cancellation. C# binds the release to every one
+    /// of those exits.
+    ///
+    /// What that does NOT buy is ORDERING against a synchronous disposal. This type adds no disposal override, so a
+    /// synchronous host/provider disposal runs the inherited <see cref="BackgroundService.Dispose"/>, which cancels
+    /// the stopping token and returns WITHOUT awaiting the execute task. On that path the scope is still released
+    /// through <c>DisposeAsync</c> - it is never released through a synchronous disposal - but the release completes
+    /// on the receive loop's background unwind, after <c>Dispose</c> has already returned.
     /// </summary>
     /// <typeparam name="TMessage">The type of messages the brokered message receiver accepts</typeparam>
     class BrokeredMessageReceiverBackgroundService<TMessage> : BackgroundService where TMessage : class, IMessage
