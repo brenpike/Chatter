@@ -25,8 +25,9 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
 {
     /// <summary>
     /// Pins the ownership of the DI scope the discovered Brokered Message Receiver graph is resolved from: the scope
-    /// belongs to the hosted background service whose lifetime bounds that graph, so every scoped member of the graph
-    /// stays alive for as long as the receiver does and is disposed only when the receiver's own lifetime ends.
+    /// belongs to the hosted background service's RECEIVE LOOP, not to the service object. Nothing is acquired until
+    /// the loop opens the scope, every scoped member stays alive for as long as the loop reads it, and the scope is
+    /// released as the loop exits — by return, by throw, or by the cancellation of a host that never stopped it.
     ///
     /// INVARIANT: the probes below are registered BEFORE AddChatterCqrs/AddMessageBrokers, so the framework's
     /// AddIfNotRegistered defaults skip the already-present service type and the probe lands in the real receiver graph.
@@ -87,16 +88,45 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
         /// </summary>
         private sealed class AsyncOnlyNotifierProbe : ICriticalFailureNotifier, IAsyncDisposable
         {
+            private readonly TaskCompletionSource<bool> _releasedSource =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
             private int _disposeCount;
 
             public int DisposeCount => Volatile.Read(ref _disposeCount);
+
+            /// <summary>Completes the first time this probe is released, so a test can WAIT for a release that happens
+            /// on a background unwind instead of polling for it.</summary>
+            public Task Released => _releasedSource.Task;
 
             public Task Notify(FailureContext failureContext) => Task.CompletedTask;
 
             public ValueTask DisposeAsync()
             {
                 Interlocked.Increment(ref _disposeCount);
+                _releasedSource.TrySetResult(true);
                 return default;
+            }
+        }
+
+        /// <summary>
+        /// Hands out a scoped <see cref="ICriticalFailureNotifier"/> while counting how many times the registration was
+        /// INVOKED, so a test can pin that the receiver graph was never built at all — a stronger claim than that it was
+        /// built and later released.
+        /// </summary>
+        private sealed class CountingNotifierProbeSource
+        {
+            private readonly ICriticalFailureNotifier _notifier;
+            private int _creationCount;
+
+            public CountingNotifierProbeSource(ICriticalFailureNotifier notifier) => _notifier = notifier;
+
+            public int CreationCount => Volatile.Read(ref _creationCount);
+
+            public ICriticalFailureNotifier CreateNotifier(IServiceProvider serviceProvider)
+            {
+                Interlocked.Increment(ref _creationCount);
+                return _notifier;
             }
         }
 
@@ -125,10 +155,13 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
         // Builds the real Chatter graph over the in-memory infrastructure double, with one receiver discovered via the
         // explicit AddReceiver route. preRegistrations runs against the ServiceCollection BEFORE AddChatterCqrs and
         // AddMessageBrokers so probe registrations win over the framework's AddIfNotRegistered defaults.
+        // postRegistrations runs AFTER them, where the last descriptor for a service type is the one
+        // GetRequiredService resolves, so a probe can REPLACE a service the framework registered unconditionally.
         private static ServiceProvider BuildProvider(
             InMemoryMessagingInfrastructureReceiver infraReceiver,
             Action<IServiceCollection> preRegistrations = null,
-            Action<MessageBrokerOptionsBuilder> optionsConfigurator = null)
+            Action<MessageBrokerOptionsBuilder> optionsConfigurator = null,
+            Action<IServiceCollection> postRegistrations = null)
         {
             var configuration = new ConfigurationBuilder().Build();
             var services = new ServiceCollection();
@@ -145,6 +178,8 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                 .AddMessageBrokers(
                     optionsBuilder: optionsConfigurator ?? AddTestReceiver,
                     receiverHandlerSourceBuilder: b => b.WithExplicitAssemblies(NoBrokeredMessageAssembly));
+
+            postRegistrations?.Invoke(services);
 
             return services.BuildServiceProvider();
         }
@@ -204,7 +239,7 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                 preRegistrations: services => services.AddScoped<ICriticalFailureNotifier>(_ => probe));
 
             var hostedService = ResolveReceiverHostedService(provider);
-            probe.DisposeCount.Should().Be(0, "resolving the hosted service must not dispose the graph it keeps");
+            probe.DisposeCount.Should().Be(0, "the graph is not acquired until the receiver starts");
 
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
@@ -237,40 +272,51 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
         }
 
         [Fact]
-        public void MustDisposeTheScopeWhenTheHostedReceiverIsDisposedWithoutEverStarting()
+        public void MustNotAcquireTheReceiverGraphUntilTheHostedReceiverStarts()
         {
             using var infraReceiver = NoMessages();
-            var probe = new DisposableNotifierProbe(infraReceiver);
+            var probeSource = new CountingNotifierProbeSource(new DisposableNotifierProbe(infraReceiver));
 
             var provider = BuildProvider(
                 infraReceiver,
-                preRegistrations: services => services.AddScoped<ICriticalFailureNotifier>(_ => probe));
+                preRegistrations: services => services.AddScoped<ICriticalFailureNotifier>(probeSource.CreateNotifier));
 
             ResolveReceiverHostedService(provider);
 
-            provider.Dispose();
+            Action disposeHost = () => provider.Dispose();
 
-            probe.DisposeCount.Should().Be(1, "a hosted receiver disposed without ever starting still owns its scope");
+            disposeHost.Should().NotThrow("a hosted receiver that never started has nothing of its own to release");
+
+            probeSource.CreationCount.Should().Be(
+                0,
+                "the receiver graph is not acquired until the receive loop opens the scope it lives in");
         }
 
         [Fact]
-        public async Task MustDisposeTheScopeOnceWhenStoppedWithoutStartingAndThenDisposed()
+        public async Task MustNotAcquireTheReceiverGraphWhenStoppedWithoutStartingAndThenDisposed()
         {
             using var infraReceiver = NoMessages();
-            var probe = new DisposableNotifierProbe(infraReceiver);
+            var probeSource = new CountingNotifierProbeSource(new DisposableNotifierProbe(infraReceiver));
 
             var provider = BuildProvider(
                 infraReceiver,
-                preRegistrations: services => services.AddScoped<ICriticalFailureNotifier>(_ => probe));
+                preRegistrations: services => services.AddScoped<ICriticalFailureNotifier>(probeSource.CreateNotifier));
 
             var hostedService = ResolveReceiverHostedService(provider);
 
             using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-            await AwaitBoundedAsync(hostedService.StopAsync(watchdog.Token), watchdog.Token);
-            provider.Dispose();
+            Func<Task> stopReceiver = () => AwaitBoundedAsync(hostedService.StopAsync(watchdog.Token), watchdog.Token);
 
-            probe.DisposeCount.Should().Be(1, "scope disposal is idempotent, so stop-then-dispose tears it down once");
+            await stopReceiver.Should().NotThrowAsync("stopping a receiver that never started has nothing to unwind");
+
+            Action disposeHost = () => provider.Dispose();
+
+            disposeHost.Should().NotThrow("a stopped-then-disposed hosted receiver holds nothing to release");
+
+            probeSource.CreationCount.Should().Be(
+                0,
+                "a receiver that never started never acquired its graph, so there is nothing to tear down twice");
         }
 
         [Fact]
@@ -297,7 +343,7 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
         }
 
         [Fact]
-        public async Task MustLeaveTheRecoveryCircuitBreakerUsableAfterTheHostedReceiverIsResolved()
+        public async Task MustLeaveTheRecoveryCircuitBreakerUsableAfterTheReceiverScopeIsTornDown()
         {
             using var infraReceiver = NoMessages();
             CircuitBreaker resolvedCircuitBreaker = null;
@@ -314,21 +360,87 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                     });
                 });
 
-            // Resolution alone is the moment a registration-factory-owned scope would be torn down. The receive loop is
-            // deliberately NOT started: an always-half-open store would make it contend for the single half-open slot.
+            // Resolve the receiver from an EXPLICIT scope and tear that scope down, which is what the receive loop
+            // itself does at the end of its lifetime. The loop is deliberately NOT started here: an always-half-open
+            // store would make a live loop contend for the single half-open slot this test then asserts on.
             //
             // INVARIANT: this guard is green on BOTH sides of the scope-ownership change, because CircuitBreaker
             // declares a public Dispose() but does NOT implement IDisposable (neither does ICircuitBreaker), so the
             // container never captured it as a scope-owned disposable and a torn-down scope never released its
             // half-open admission primitive. The guard is kept so that giving the breaker a disposal contract later
             // cannot reintroduce a half-open path over a released primitive through this seam.
-            ResolveReceiverHostedService(provider);
+            using (var receiverScope = provider.CreateScope())
+            {
+                receiverScope.ServiceProvider.GetRequiredService<IBrokeredMessageReceiver<TestReceiverMessage>>();
+            }
 
             resolvedCircuitBreaker.Should().NotBeNull("the circuit breaker is part of the resolved receiver graph");
 
             var executed = await resolvedCircuitBreaker.ExecuteAsync(_ => Task.FromResult(42));
 
             executed.Should().Be(42);
+        }
+
+        [Fact]
+        public async Task MustReleaseThePartiallyBuiltReceiverGraphWhenItCannotBeAcquired()
+        {
+            using var infraReceiver = NoMessages();
+            var probe = new DisposableNotifierProbe(infraReceiver);
+            var acquisitionFailure = new InvalidOperationException("the receiver graph cannot be acquired");
+
+            using var provider = BuildProvider(
+                infraReceiver,
+                preRegistrations: services => services.AddScoped<ICriticalFailureNotifier>(_ => probe),
+                postRegistrations: services => services.AddScoped<IBrokeredMessageReceiver<TestReceiverMessage>>(sp =>
+                {
+                    // Build part of the graph into the scope, THEN fail — exactly the shape of a receiver whose own
+                    // constructor throws after its scoped dependencies have been created.
+                    sp.GetRequiredService<ICriticalFailureNotifier>();
+                    throw acquisitionFailure;
+                }));
+
+            var hostedService = ResolveReceiverHostedService(provider);
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+            Func<Task> startReceiver = () => AwaitBoundedAsync(hostedService.StartAsync(watchdog.Token), watchdog.Token);
+
+            (await startReceiver.Should().ThrowAsync<InvalidOperationException>(
+                    "an unacquirable receiver is startup-fatal and must surface the ORIGINAL failure, not a cleanup failure"))
+                .Which.Should().BeSameAs(acquisitionFailure);
+
+            probe.DisposeCount.Should().Be(
+                1,
+                "the scope holding the partially built graph is released even though the acquisition never completed");
+        }
+
+        [Fact]
+        public async Task MustReleaseAnAsyncOnlyScopedDependencyWhenTheHostIsDisposedSynchronouslyWithoutStopping()
+        {
+            using var infraReceiver = NoMessages();
+            var probe = new AsyncOnlyNotifierProbe();
+
+            var provider = BuildProvider(
+                infraReceiver,
+                preRegistrations: services => services.AddScoped<ICriticalFailureNotifier>(_ => probe));
+
+            var hostedService = ResolveReceiverHostedService(provider);
+
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+            await AwaitBoundedAsync(hostedService.StartAsync(watchdog.Token), watchdog.Token);
+
+            // A synchronous host disposal with NO stop is the path a startup-fatal failure takes: StopAsync never runs
+            // and the container falls back to the SYNCHRONOUS disposal, which an async-only scoped member refuses.
+            Action disposeHostSynchronously = () => provider.Dispose();
+
+            disposeHostSynchronously.Should().NotThrow(
+                "a synchronous host disposal must not raise a disposal failure that would mask the original one");
+
+            // The receive loop unwinds in the background, so wait on the probe's own signal rather than polling.
+            await AwaitBoundedAsync(probe.Released, watchdog.Token);
+
+            probe.DisposeCount.Should().Be(1, "the async-only scoped dependency is released exactly once");
         }
     }
 }
