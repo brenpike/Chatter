@@ -52,13 +52,16 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             {
                 if (_stateStore.State != CircuitBreakerState.HalfOpen)
                 {
-                    await Task.Delay(_openToHalfOpenWaitTime);
+                    await Task.Delay(_openToHalfOpenWaitTime, cancellationToken);
                     _logger.LogInformation("Circuit Breaker half-open timer expired. Entering HALF-OPEN state.");
+                    await _stateStore.HalfOpenAsync();
+                    throw new CircuitBreakerOpenException(_stateStore.LastException);
                 }
+
+                await _halfOpenSemaphore.WaitAsync(cancellationToken);
 
                 try
                 {
-                    await _halfOpenSemaphore?.WaitAsync(cancellationToken);
                     await _stateStore.HalfOpenAsync();
                     var context = await action(_stateStore.State);
                     await TryClose();
@@ -66,21 +69,17 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 }
                 catch (Exception ex)
                 {
-                    await _stateStore.OpenAsync(ex);
+                    if (ShouldTrip(ex, cancellationToken))
+                    {
+                        await _stateStore.OpenAsync(ex);
+                    }
+
                     throw;
                 }
                 finally
                 {
-                    try
-                    {
-                        _halfOpenSemaphore?.Release();
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                    }
+                    _halfOpenSemaphore.Release();
                 }
-
-                throw new CircuitBreakerOpenException(_stateStore.LastException);
             }
 
             try
@@ -89,15 +88,32 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             }
             catch (Exception ex)
             {
-                if (!_exceptionEvaluator.ShouldTrip(ex))
+                if (ShouldTrip(ex, cancellationToken))
                 {
-                    _logger.LogTrace($"Circuit break not configured for exception type '{ex.GetType().FullName}'. Skipping.");
-                    throw;
+                    await TryOpen(ex);
                 }
 
-                await TryOpen(ex);
                 throw;
             }
+        }
+
+        // INVARIANT: the single trip-decision site for both the closed path and the half-open trial, so the two
+        // can never diverge on which exceptions trip the circuit. A cancellation the caller asked for is that
+        // caller shutting down rather than the service failing, so it never trips and never becomes LastException.
+        private bool ShouldTrip(Exception ex, CancellationToken cancellationToken)
+        {
+            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            if (!_exceptionEvaluator.ShouldTrip(ex))
+            {
+                _logger.LogTrace($"Circuit break not configured for exception type '{ex.GetType().FullName}'. Skipping.");
+                return false;
+            }
+
+            return true;
         }
 
         private async Task TryClose()

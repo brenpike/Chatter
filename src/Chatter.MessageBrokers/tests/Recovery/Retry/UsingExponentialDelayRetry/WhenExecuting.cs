@@ -2,6 +2,7 @@ using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Recovery.Retry;
 using FluentAssertions;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -9,6 +10,12 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingExponentialDelayRetry
 {
     public class WhenExecuting : Testing.Core.Context
     {
+        private const int _attemptsYieldingADelayLongerThanTheTest = 15;
+        private static readonly TimeSpan _cancellationObservationWindow = TimeSpan.FromSeconds(5);
+
+        private static FailureContext FailureContextWithDeliveryCount(int deliveryCount)
+            => new FailureContext(null, null, "failed", null, deliveryCount, null);
+
         [Fact]
         public async Task MustCompleteInstantlyWhenComputedDelayIsZero()
             // Attempt 1 computes 0ms; constructing with cap 0 keeps the awaited delay at zero.
@@ -24,5 +31,31 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingExponentialDelayRetry
             => await FluentActions
                 .Invoking(async () => await new ExponentialDelayRetry(0).ExecuteAsync((FailureContext)null))
                 .Should().ThrowAsync<ArgumentNullException>();
+
+        [Fact]
+        public async Task MustAbortInFlightDelayWhenCancellationIsRequested()
+        {
+            using var cancellation = new CancellationTokenSource();
+            var delaying = new ExponentialDelayRetry(_attemptsYieldingADelayLongerThanTheTest)
+                .ExecuteAsync(_attemptsYieldingADelayLongerThanTheTest, cancellation.Token);
+
+            cancellation.Cancel();
+
+            await FluentActions.Invoking(() => delaying.WaitAsync(_cancellationObservationWindow))
+                .Should().ThrowAsync<TaskCanceledException>();
+        }
+
+        [Fact]
+        public async Task MustAbortInFlightDelayForFailureContextWhenCancellationIsRequested()
+        {
+            using var cancellation = new CancellationTokenSource();
+            var delaying = new ExponentialDelayRetry(_attemptsYieldingADelayLongerThanTheTest)
+                .ExecuteAsync(FailureContextWithDeliveryCount(_attemptsYieldingADelayLongerThanTheTest), cancellation.Token);
+
+            cancellation.Cancel();
+
+            await FluentActions.Invoking(() => delaying.WaitAsync(_cancellationObservationWindow))
+                .Should().ThrowAsync<TaskCanceledException>();
+        }
     }
 }

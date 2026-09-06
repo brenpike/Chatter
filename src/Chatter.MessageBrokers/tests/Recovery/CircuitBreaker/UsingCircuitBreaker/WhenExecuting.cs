@@ -132,21 +132,72 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         }
 
         [Fact]
-        public async Task MustTransitionToHalfOpenAndExecuteWhenOpen()
+        public async Task MustRefuseWithoutExecutingWhenOpen()
         {
             Open();
-            _store.Setup(s => s.IncrementSuccessCounterAsync()).ReturnsAsync(1);
+            var wasExecuted = false;
 
-            var result = await CreateSut().ExecuteAsync(_ => Task.FromResult(11));
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync<int>(_ =>
+                {
+                    wasExecuted = true;
+                    return Task.FromResult(11);
+                }))
+                .Should().ThrowAsync<CircuitBreakerOpenException>();
 
-            result.Should().Be(11);
+            wasExecuted.Should().BeFalse();
             _store.Verify(s => s.HalfOpenAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task MustCarryLastExceptionOnTheRefusalWhenOpen()
+        {
+            Open();
+            var lastException = new FakeRecoverableException();
+            _store.SetupGet(s => s.LastException).Returns(lastException);
+
+            var refusal = await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync(_ => Task.FromResult(11)))
+                .Should().ThrowAsync<CircuitBreakerOpenException>();
+
+            refusal.Which.InnerException.Should().BeSameAs(lastException);
+        }
+
+        [Fact]
+        public async Task MustThrowOperationCanceledWhenTokenCancelledDuringTheOpenWait()
+        {
+            Open();
+            _options.OpenToHalfOpenWaitTimeInSeconds = 5;
+            using var cts = new CancellationTokenSource();
+            cts.CancelAfter(TimeSpan.FromMilliseconds(50));
+
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync(_ => Task.FromResult(11), cts.Token))
+                .Should().ThrowAsync<OperationCanceledException>();
+
+            _store.Verify(s => s.HalfOpenAsync(), Times.Never);
+        }
+
+        [Fact]
+        public async Task MustTrialOnTheNextCallAfterRefusingWhenOpen()
+        {
+            var store = new InMemoryCircuitBreakerStateStore(
+                New.Common().Logger<InMemoryCircuitBreakerStateStore>().Creation);
+            await store.OpenAsync(new FakeRecoverableException());
+            var sut = new CircuitBreakerSut(store, _options, _logger.Creation, _evaluator.Object);
+
+            await FluentActions
+                .Invoking(async () => await sut.ExecuteAsync(_ => Task.FromResult(11)))
+                .Should().ThrowAsync<CircuitBreakerOpenException>();
+
+            store.State.Should().Be(CircuitBreakerState.HalfOpen);
+            (await sut.ExecuteAsync(_ => Task.FromResult(11))).Should().Be(11);
         }
 
         [Fact]
         public async Task MustCloseStoreWhenHalfOpenSuccessThresholdReached()
         {
-            Open();
+            Open(CircuitBreakerState.HalfOpen);
             _store.Setup(s => s.IncrementSuccessCounterAsync()).ReturnsAsync(1);
 
             await CreateSut().ExecuteAsync(_ => Task.FromResult(1));
@@ -157,7 +208,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         [Fact]
         public async Task MustNotCloseStoreWhenHalfOpenSuccessBelowThreshold()
         {
-            Open();
+            Open(CircuitBreakerState.HalfOpen);
             _store.Setup(s => s.IncrementSuccessCounterAsync()).ReturnsAsync(0);
 
             await CreateSut().ExecuteAsync(_ => Task.FromResult(1));
@@ -168,13 +219,87 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         [Fact]
         public async Task MustReopenStoreAndRethrowWhenHalfOpenActionFails()
         {
-            Open();
+            Open(CircuitBreakerState.HalfOpen);
+            _evaluator.Setup(e => e.ShouldTrip(It.IsAny<Exception>())).Returns(true);
 
             await FluentActions
                 .Invoking(async () => await CreateSut().ExecuteAsync<int>(_ => throw new FakeRecoverableException()))
                 .Should().ThrowAsync<FakeRecoverableException>();
 
             _store.Verify(s => s.OpenAsync(It.IsAny<Exception>()), Times.Once);
+        }
+
+        [Fact]
+        public async Task MustNotReopenStoreWhenHalfOpenTrialThrowsNonTrippingException()
+        {
+            Open(CircuitBreakerState.HalfOpen);
+            _evaluator.Setup(e => e.ShouldTrip(It.IsAny<Exception>())).Returns(false);
+            var sut = CreateSut();
+
+            await FluentActions
+                .Invoking(async () => await sut.ExecuteAsync<int>(_ => throw new FakeRecoverableException()))
+                .Should().ThrowAsync<FakeRecoverableException>();
+
+            _store.Verify(s => s.OpenAsync(It.IsAny<Exception>()), Times.Never);
+
+            // The circuit stays HALF-OPEN and keeps executing while IsOpen still reports true: a non-tripping
+            // exception neither reopens the circuit nor counts a half-open success. This mirrors the closed
+            // path's non-tripping behaviour and is a defended property, not an oversight.
+            sut.IsOpen.Should().BeTrue();
+            (await sut.ExecuteAsync(_ => Task.FromResult(11))).Should().Be(11);
+        }
+
+        [Fact]
+        public async Task MustNotReopenStoreWhenHalfOpenTrialIsCancelledByCaller()
+        {
+            Open(CircuitBreakerState.HalfOpen);
+            using var cts = new CancellationTokenSource();
+
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync<int>(_ =>
+                {
+                    cts.Cancel();
+                    throw new OperationCanceledException(cts.Token);
+                }, cts.Token))
+                .Should().ThrowAsync<OperationCanceledException>();
+
+            _store.Verify(s => s.OpenAsync(It.IsAny<Exception>()), Times.Never);
+            _evaluator.Verify(e => e.ShouldTrip(It.IsAny<Exception>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task MustNotCountFailureWhenClosedActionIsCancelledByCaller()
+        {
+            Closed();
+            using var cts = new CancellationTokenSource();
+
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync<int>(_ =>
+                {
+                    cts.Cancel();
+                    throw new OperationCanceledException(cts.Token);
+                }, cts.Token))
+                .Should().ThrowAsync<OperationCanceledException>();
+
+            _store.Verify(s => s.IncrementFailureCounterAsync(It.IsAny<Exception>()), Times.Never);
+            _evaluator.Verify(e => e.ShouldTrip(It.IsAny<Exception>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task MustReleaseTheHalfOpenSlotWhenTheTrialThrows()
+        {
+            Open(CircuitBreakerState.HalfOpen);
+            _options.ConcurrentHalfOpenAttempts.Should().Be(1);
+            _evaluator.Setup(e => e.ShouldTrip(It.IsAny<Exception>())).Returns(true);
+            var sut = CreateSut();
+
+            await FluentActions
+                .Invoking(async () => await sut.ExecuteAsync<int>(_ => throw new FakeRecoverableException()))
+                .Should().ThrowAsync<FakeRecoverableException>();
+
+            // The single half-open slot must be back, so the next trial is admitted rather than waiting forever.
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            (await sut.ExecuteAsync(_ => Task.FromResult(11), watchdog.Token)).Should().Be(11);
         }
 
         [Fact]
