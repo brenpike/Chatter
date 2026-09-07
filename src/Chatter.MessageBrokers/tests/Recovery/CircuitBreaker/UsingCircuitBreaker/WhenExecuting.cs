@@ -251,7 +251,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             var inner = new InMemoryCircuitBreakerStateStore(
                 New.Common().Logger<InMemoryCircuitBreakerStateStore>().Creation);
             await inner.OpenAsync(new FakeRecoverableException());
-            await inner.HalfOpenAsync();
+            await inner.TryHalfOpenAsync();
             var sut = new CircuitBreakerSut(
                 new RecoverOnStateReadStateStore(inner), options, _logger.Creation, _evaluator.Object);
 
@@ -424,7 +424,6 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             public Task<int> IncrementFailureCounterAsync(Exception ex) => _inner.IncrementFailureCounterAsync(ex);
             public Task<int> IncrementSuccessCounterAsync() => _inner.IncrementSuccessCounterAsync();
             public Task CloseAsync() => _inner.CloseAsync();
-            public Task HalfOpenAsync() => _inner.HalfOpenAsync();
             public Task<bool> TryHalfOpenAsync() => _inner.TryHalfOpenAsync();
 
             private void RecoverInnerOnce()
@@ -435,7 +434,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 }
 
                 _hasRecovered = true;
-                _inner.HalfOpenAsync().GetAwaiter().GetResult();
+                _inner.TryHalfOpenAsync().GetAwaiter().GetResult();
                 _inner.IncrementSuccessCounterAsync().GetAwaiter().GetResult();
                 _inner.CloseAsync().GetAwaiter().GetResult();
             }

@@ -143,7 +143,6 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
             public Task<int> IncrementFailureCounterAsync(Exception ex) => Task.FromResult(1);
             public Task<int> IncrementSuccessCounterAsync() => Task.FromResult(1);
             public Task CloseAsync() => Task.CompletedTask;
-            public Task HalfOpenAsync() => Task.CompletedTask;
             public Task<bool> TryHalfOpenAsync() => Task.FromResult(false);
             public bool IsClosed => false;
             public CircuitBreakerState State => CircuitBreakerState.HalfOpen;

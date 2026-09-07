@@ -22,24 +22,6 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         public int FailureCount => _failureCount;
         public int SuccessCount => _successCount;
 
-        public Task HalfOpenAsync()
-        {
-            if (State == CircuitBreakerState.HalfOpen)
-            {
-                return Task.CompletedTask;
-            }
-
-            lock (stateLock)
-            {
-                Interlocked.Exchange(ref _successCount, 0);
-                LastStateChangedDateUtc = DateTime.UtcNow;
-                State = CircuitBreakerState.HalfOpen;
-            }
-
-            _logger.LogInformation("Circuit Breaker is now in the HALF-OPEN state.");
-            return Task.CompletedTask;
-        }
-
         // INVARIANT: the store is the sole adjudicator of the HALF-OPEN transition. The compare-and-swap runs
         // inside stateLock, which every writer of State also holds, so a caller can never command the
         // transition from a state it read before an unbounded await — it can only ask, and be refused.

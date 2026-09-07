@@ -106,37 +106,20 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         }
 
         [Fact]
-        public async Task MustSetHalfOpenStateOnHalfOpenAsync()
-        {
-            await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.HalfOpenAsync();
-            _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
-        }
-
-        [Fact]
-        public async Task MustResetSuccessCountOnHalfOpenAsync()
-        {
-            await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.IncrementSuccessCounterAsync();
-            await _sut.HalfOpenAsync();
-            _sut.SuccessCount.Should().Be(0);
-        }
-
-        [Fact]
         public async Task MustLogHalfOpenTransition()
         {
             await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.HalfOpenAsync();
+            await _sut.TryHalfOpenAsync();
             _logger.VerifyWasCalled(LogLevel.Information, "Circuit Breaker is now in the HALF-OPEN state.", Times.Once());
         }
 
         [Fact]
-        public async Task MustNoOpWhenAlreadyHalfOpen()
+        public async Task MustNotRelogTheTransitionWhenTryHalfOpenIsRefused()
         {
             await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.HalfOpenAsync();
-            await _sut.HalfOpenAsync();
-            // Second call returns early before re-logging the transition.
+            await _sut.TryHalfOpenAsync();
+            await _sut.TryHalfOpenAsync();
+            // The second call is refused because the circuit is no longer Open, so nothing is re-logged.
             _logger.VerifyWasCalled(LogLevel.Information, "Circuit Breaker is now in the HALF-OPEN state.", Times.Once());
         }
 
@@ -169,13 +152,20 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         public async Task MustRefuseAndLeaveTheSuccessCountWhenTryHalfOpenFindsAHalfOpenCircuit()
         {
             await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.HalfOpenAsync();
+            await _sut.TryHalfOpenAsync();
             await _sut.IncrementSuccessCounterAsync();
 
             (await _sut.TryHalfOpenAsync()).Should().BeFalse();
 
             _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
             _sut.SuccessCount.Should().Be(1);
+        }
+
+        [Fact]
+        public void MustNotExposeAnUnconditionalHalfOpenCommand()
+        {
+            typeof(ICircuitBreakerStateStore).GetMethod("HalfOpenAsync").Should().BeNull();
+            typeof(InMemoryCircuitBreakerStateStore).GetMethod("HalfOpenAsync").Should().BeNull();
         }
 
         [Fact]
