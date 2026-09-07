@@ -120,10 +120,10 @@ namespace Microsoft.Extensions.DependencyInjection
             // InvalidCastException loudly at the poll site. Split-store is impossible by construction.
             builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
-            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();
+            builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, DefaultRetryExceptionPredicatesProvider>();
             builder.Services.AddSingleton<IRetryExceptionEvaluator, RetryExceptionEvaluator>();
             builder.Services.AddSingleton<ICircuitBreakerExceptionEvaluator, CircuitBreakerExceptionEvaluator>();
-            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, DefaultExceptionsPredicateProvider>();
+            builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, DefaultCircuitBreakerExceptionPredicatesProvider>();
             builder.Services.AddScoped<IRetryStrategy, RetryStrategy>();
             builder.Services.AddScoped<IRecoveryStrategy, RetryWithCircuitBreakerStrategy>();
             builder.Services.AddScoped<IReceivedMessageDispatcher, ScopedReceivedMessageDispatcher>();
