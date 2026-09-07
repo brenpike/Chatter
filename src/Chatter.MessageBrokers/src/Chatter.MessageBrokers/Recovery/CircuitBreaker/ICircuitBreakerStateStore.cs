@@ -11,7 +11,6 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         Task<int> IncrementFailureCounterAsync(Exception ex);
         Task<int> IncrementSuccessCounterAsync();
         Task CloseAsync();
-        Task HalfOpenAsync();
         Task<bool> TryHalfOpenAsync();
         bool IsClosed { get; }
         CircuitBreakerState State { get; }

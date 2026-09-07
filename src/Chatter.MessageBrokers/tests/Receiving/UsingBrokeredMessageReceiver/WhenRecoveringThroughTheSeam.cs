@@ -204,12 +204,6 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 return _inner.OpenAsync(ex);
             }
 
-            public Task HalfOpenAsync()
-            {
-                Record(CircuitBreakerState.HalfOpen);
-                return _inner.HalfOpenAsync();
-            }
-
             public async Task<bool> TryHalfOpenAsync()
             {
                 var transitioned = await _inner.TryHalfOpenAsync();
@@ -434,7 +428,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
 
             // CB must have actually opened and half-opened — not merely ended Closed (the state it
             // also starts in). Without this, a regression where the breaker never calls
-            // OpenAsync/HalfOpenAsync would still leave the store Closed and pass the assertion below,
+            // OpenAsync/TryHalfOpenAsync would still leave the store Closed and pass the assertion below,
             // so this test would silently stop pinning the Closed → Open → HalfOpen transition.
             var observedTransitions = stateStore.ObservedTransitions;
             observedTransitions.Should().Contain(CircuitBreakerState.Open,

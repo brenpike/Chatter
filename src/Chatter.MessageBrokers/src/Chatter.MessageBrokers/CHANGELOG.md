@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-09-07
+
+### Changed
+
+- **`InMemoryCircuitBreakerStateStore` now publishes every member under its state lock.** The state, both counters, `LastException`, and `LastStateChangedDateUtc` are now read and written only inside the store's single `stateLock`. Previously `IncrementFailureCounterAsync` assigned `LastException` outside that lock while `OpenAsync` assigned it inside; the two writers no longer disagree about which side of the lock owns that field. The redundant `Interlocked` calls on the counters are gone now that every counter mutation is under the same lock. This is a change to the shipped in-memory implementation's internals only — no public member's name, type, or accessibility changed by it (#321, #298).
+
+### Removed
+
+- **`ICircuitBreakerStateStore.HalfOpenAsync()`** is removed, along with its implementation on `InMemoryCircuitBreakerStateStore`. Call `TryHalfOpenAsync()` instead: it returns `bool`, transitions only from `Open`, and mutates nothing when it refuses. It had zero production callers as of 0.22.0 — `TryHalfOpenAsync` (added in 0.21.0) is the only path `CircuitBreaker` uses. An external implementor of `ICircuitBreakerStateStore` must delete the member (#321, #298).
+
 ## [0.22.0] - 2026-09-07
 
 ### Changed
