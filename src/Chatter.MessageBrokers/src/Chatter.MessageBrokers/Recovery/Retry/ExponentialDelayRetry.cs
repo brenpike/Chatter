@@ -13,8 +13,12 @@ namespace Chatter.MessageBrokers.Recovery.Retry
         public ExponentialDelayRetry(int maxRetryAttempts)
             => _maxDelayInMilliseconds = GetDelayTimeInMillisecondsFromRetryAttempts(maxRetryAttempts);
 
+        // INVARIANT: the whole computation stays in double and is clamped to Task.Delay's accepted
+        // [0, int.MaxValue] domain before the integral cast, so no attempt count can wrap or hit an
+        // implementation-defined float-to-int conversion. Truncation stays ahead of the multiply to
+        // keep the per-attempt schedule byte-identical.
         int GetDelayTimeInMillisecondsFromRetryAttempts(int retryAttempts)
-            => (int)(1d / 2d * (Math.Pow(2d, retryAttempts) - 1d)) * _milliSecondsInASecond;
+            => (int)Math.Clamp(Math.Truncate(1d / 2d * (Math.Pow(2d, retryAttempts) - 1d)) * _milliSecondsInASecond, 0d, int.MaxValue);
 
         /// <summary>
         /// Calculates the exponential delay that will occur between operations based on the number of previous attempts
