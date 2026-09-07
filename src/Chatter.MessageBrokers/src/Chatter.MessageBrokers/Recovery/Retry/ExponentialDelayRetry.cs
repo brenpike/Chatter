@@ -1,5 +1,6 @@
 ﻿using Chatter.MessageBrokers.Context;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery.Retry
@@ -37,19 +38,23 @@ namespace Chatter.MessageBrokers.Recovery.Retry
         ///<br>Attempt #14 - 2h 16m 32s</br>
         ///<br>Attempt #15 - 4h 33m 4s</br>
         /// </remarks>
-        public Task ExecuteAsync(FailureContext failureContext)
+        public Task ExecuteAsync(FailureContext failureContext, CancellationToken cancellationToken)
         {
             _ = failureContext ?? throw new ArgumentNullException(nameof(failureContext));
-            return ExecuteAsync(failureContext.DeliveryCount);
+            return ExecuteAsync(failureContext.DeliveryCount, cancellationToken);
         }
 
-        public Task ExecuteAsync(int deliveryCount)
+        public Task ExecuteAsync(FailureContext failureContext) => ExecuteAsync(failureContext, CancellationToken.None);
+
+        public Task ExecuteAsync(int deliveryCount, CancellationToken cancellationToken)
         {
             var delayInMilliseconds = GetDelayTimeInMillisecondsFromRetryAttempts(deliveryCount);
 
             return Task.Delay(_maxDelayInMilliseconds < delayInMilliseconds
                 ? _maxDelayInMilliseconds
-                : delayInMilliseconds);
+                : delayInMilliseconds, cancellationToken);
         }
+
+        public Task ExecuteAsync(int deliveryCount) => ExecuteAsync(deliveryCount, CancellationToken.None);
     }
 }

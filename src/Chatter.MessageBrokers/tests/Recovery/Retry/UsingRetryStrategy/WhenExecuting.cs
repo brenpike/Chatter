@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingRetryStrategy
         {
             _options = New.MessageBrokers().Recovery().RecoveryOptions().WithMaxRetryAttempts(3);
             _logger = New.Common().RecordingLogger<RetryStrategy>();
-            _delay.Setup(d => d.ExecuteAsync(It.IsAny<int>())).Returns(Task.CompletedTask);
+            _delay.Setup(d => d.ExecuteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
             _sut = new RetryStrategy(_options, _logger.Creation, _delay.Object, _evaluator.Object);
         }
 
@@ -42,7 +42,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingRetryStrategy
 
             result.Should().Be(42);
             callCount.Should().Be(1);
-            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>()), Times.Never);
+            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Fact]
@@ -54,7 +54,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingRetryStrategy
                 .Invoking(async () => await _sut.ExecuteAsync<int>(() => throw new FakeRecoverableException()))
                 .Should().ThrowAsync<FakeRecoverableException>();
 
-            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>()), Times.Never);
+            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Fact]
@@ -110,7 +110,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingRetryStrategy
                 .Should().ThrowAsync<MaxRetryAttemptsExceededException>();
 
             // 3 max attempts -> delay consulted between attempts 1->2 and 2->3 only.
-            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>()), Times.Exactly(2));
+            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
         }
 
         [Fact]
@@ -131,14 +131,15 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingRetryStrategy
 
             ex.Which.Attempts.Should().Be(1);
             callCount.Should().Be(1);
-            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>()), Times.Never);
+            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Fact]
-        public async Task MustSwallowCircuitBreakerOpenExceptionAndRetryWithoutDelay()
+        public async Task MustDelayAndCountAttemptWhenCircuitBreakerRefusesThenSucceeds()
         {
-            // The CircuitBreakerOpenException catch block is empty: it neither evaluates, delays,
-            // nor counts the attempt. The loop simply re-runs the action on the next iteration.
+            // A refusal from an open circuit consumes retry budget exactly like an action failure:
+            // it is delayed and counted. It is NOT put to the retry exception evaluator, because a
+            // refusal is the circuit declining to run the action rather than a fault the action raised.
             var callCount = 0;
             var result = await _sut.ExecuteAsync(() =>
             {
@@ -152,8 +153,44 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingRetryStrategy
 
             result.Should().Be(99);
             callCount.Should().Be(2);
-            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>()), Times.Never);
+            _delay.Verify(d => d.ExecuteAsync(1, It.IsAny<CancellationToken>()), Times.Once);
             _evaluator.Verify(e => e.ShouldRetry(It.IsAny<Exception>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task MustThrowMaxRetryAttemptsExceededWhenCircuitBreakerRefusesEveryAttempt()
+        {
+            // A circuit that stays open must exhaust the retry budget and terminate rather than spin.
+            // The watchdog bounds the wait so a regression that stops counting the refused attempt
+            // fails this test instead of hanging the run.
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var callCount = 0;
+
+            var ex = await FluentActions
+                .Invoking(async () => await _sut.ExecuteAsync<int>(() =>
+                {
+                    callCount++;
+                    throw new CircuitBreakerOpenException(new FakeRecoverableException());
+                }, watchdog.Token))
+                .Should().ThrowAsync<MaxRetryAttemptsExceededException>();
+
+            ex.Which.Attempts.Should().Be(3);
+            ex.Which.InnerException.Should().BeOfType<CircuitBreakerOpenException>();
+            callCount.Should().Be(3);
+            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        }
+
+        [Fact]
+        public async Task MustPassCallersCancellationTokenToDelayStrategy()
+        {
+            _evaluator.Setup(e => e.ShouldRetry(It.IsAny<Exception>())).Returns(true);
+            using var cts = new CancellationTokenSource();
+
+            await FluentActions
+                .Invoking(async () => await _sut.ExecuteAsync<int>(() => throw new FakeRecoverableException(), cts.Token))
+                .Should().ThrowAsync<MaxRetryAttemptsExceededException>();
+
+            _delay.Verify(d => d.ExecuteAsync(It.IsAny<int>(), cts.Token), Times.Exactly(2));
         }
 
         [Fact]

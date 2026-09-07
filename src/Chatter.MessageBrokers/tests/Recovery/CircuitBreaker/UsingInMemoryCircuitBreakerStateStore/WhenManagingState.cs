@@ -141,6 +141,44 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         }
 
         [Fact]
+        public async Task MustTransitionAndResetSuccessCountWhenTryHalfOpenFindsAnOpenCircuit()
+        {
+            await _sut.OpenAsync(new FakeRecoverableException());
+            await _sut.IncrementSuccessCounterAsync();
+
+            (await _sut.TryHalfOpenAsync()).Should().BeTrue();
+
+            _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
+            _sut.SuccessCount.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task MustRefuseAndMutateNothingWhenTryHalfOpenFindsAClosedCircuit()
+        {
+            await _sut.IncrementSuccessCounterAsync();
+            var lastStateChanged = _sut.LastStateChangedDateUtc;
+
+            (await _sut.TryHalfOpenAsync()).Should().BeFalse();
+
+            _sut.State.Should().Be(CircuitBreakerState.Closed);
+            _sut.SuccessCount.Should().Be(1);
+            _sut.LastStateChangedDateUtc.Should().Be(lastStateChanged);
+        }
+
+        [Fact]
+        public async Task MustRefuseAndLeaveTheSuccessCountWhenTryHalfOpenFindsAHalfOpenCircuit()
+        {
+            await _sut.OpenAsync(new FakeRecoverableException());
+            await _sut.HalfOpenAsync();
+            await _sut.IncrementSuccessCounterAsync();
+
+            (await _sut.TryHalfOpenAsync()).Should().BeFalse();
+
+            _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
+            _sut.SuccessCount.Should().Be(1);
+        }
+
+        [Fact]
         public async Task MustIncrementAndReturnNewSuccessCount()
         {
             (await _sut.IncrementSuccessCounterAsync()).Should().Be(1);
