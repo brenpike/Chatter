@@ -158,14 +158,14 @@ Receiving is wrapped by an `IRecoveryStrategy` — the default `RetryWithCircuit
 {
     options.AddRecoveryOptions(r => r
         .UseExponentialDelayRecovery(maxRetryAttempts: 10)   // or UseConstantDelayRecovery(ms) / UseNoDelayRecovery()
-        .RetryWhen<MyTransientException>()                   // restrict which exceptions are retried
+        .RetryWhen<MyTransientException>()                   // ADD an exception type to the retry set
         .UseRouteToErrorQueueRecoveryAction()                // IMaxReceivesExceededAction
         .WithCircuitBreaker(cb => { /* CircuitBreakerOptionsBuilder */ }));
 });
 ```
 
-- **Retry** — `IRetryStrategy` (`RetryStrategy`) with a pluggable `IRetryDelayStrategy`: `NoDelayRetry` (default), `ConstantDelayRetry`, `ExponentialDelayRetry`. Default max attempts is 5. `RetryWhen` / `RetryWhen<TException>` restrict which exceptions are retried.
-- **Circuit Breaker** — `ICircuitBreaker` (`CircuitBreaker`) halts processing after repeated failures; state lives in `ICircuitBreakerStateStore` (default `InMemoryCircuitBreakerStateStore`). Throws `CircuitBreakerOpenException` when open.
+- **Retry** — `IRetryStrategy` (`RetryStrategy`) with a pluggable `IRetryDelayStrategy`: `NoDelayRetry` (default), `ConstantDelayRetry`, `ExponentialDelayRetry`. Default max attempts is 5. An exception is retried when its TYPE matches a registered predicate; the default set contains exactly one, matching a transient `BrokeredMessageReceiverException`. No default predicate reads `Exception.Message` — a handler exception routinely echoes message-body content, and text a caller does not control must not be able to influence recovery. `RetryWhen` / `RetryWhen<TException>` **add** to that set — every registered predicate is evaluated, and any single match is enough to retry — they do not replace or restrict it.
+- **Circuit Breaker** — `ICircuitBreaker` (`CircuitBreaker`) halts processing after repeated failures; state lives in `ICircuitBreakerStateStore` (default `InMemoryCircuitBreakerStateStore`). Throws `CircuitBreakerOpenException` when open. The circuit trips on the same type-only basis as Retry, from its own separate default set (also exactly one predicate, also the same transient `BrokeredMessageReceiverException` check) — so what to retry and what should trip the circuit are two independently registered decisions rather than one type answering both. `IsTrippedBy` / `IsTrippedBy<TException>` **add** to the trip set the same way `RetryWhen` adds to the retry set.
 - **Max Receives Exceeded** — when a message's delivery count reaches `MaxReceiveAttempts`, the receiver deadletters it and runs the `IMaxReceivesExceededAction` (default `ErrorQueueDispatcher`). `MaxReceiveAttemptsExceededException` / `MaxRetryAttemptsExceededException` signal the condition.
 - **Critical Failure / Error Queue** — an unrecoverable receive error (`CriticalReceiverException`) stops the receiver loop and raises a Critical Failure via `ICriticalFailureNotifier` (default `CriticalFailureEventDispatcher`, which dispatches a `CriticalFailureEvent`). Failed messages are routed to the **Error Queue** (`ErrorQueueDispatcher`). Poison messages (`PoisonedMessageException`, e.g. a body that won't deserialize) are deadlettered.
 

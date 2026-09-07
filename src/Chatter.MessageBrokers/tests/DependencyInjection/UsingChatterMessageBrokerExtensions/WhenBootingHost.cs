@@ -5,6 +5,8 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
+using Chatter.MessageBrokers.Recovery.CircuitBreaker;
+using Chatter.MessageBrokers.Recovery.Retry;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
 using Chatter.MessageBrokers.Tests.Receiving.Fakes;
@@ -250,6 +252,66 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
             infraReceiver.CallLog.Should().Contain(ReceiverCall.Dispose);
         }
 
+        // ------------------------------------------------------------------ (5) default transience classification
+
+        [Fact]
+        public void MustRegisterSeparateDefaultProvidersForRetryAndCircuitBreaker()
+        {
+            using var infraReceiver = NoMessages();
+            using var provider = BuildProvider(infraReceiver);
+
+            var retryProvider = provider.GetRequiredService<IRetryExceptionPredicatesProvider>();
+            var circuitBreakerProvider = provider.GetRequiredService<ICircuitBreakerExceptionPredicatesProvider>();
+
+            // INVARIANT: "should we retry this?" and "should this trip the circuit?" must be independently
+            // replaceable, so no single type may answer both questions.
+            retryProvider.GetType().Should().NotBe(circuitBreakerProvider.GetType());
+            retryProvider.Should().NotBeAssignableTo<ICircuitBreakerExceptionPredicatesProvider>();
+            circuitBreakerProvider.Should().NotBeAssignableTo<IRetryExceptionPredicatesProvider>();
+        }
+
+        [Theory]
+        [InlineData("retry")]
+        [InlineData("timeout")]
+        [InlineData("time out")]
+        [InlineData("rerun")]
+        [InlineData("internal server error")]
+        [InlineData("waiting")]
+        [InlineData("wait until")]
+        [InlineData("service unavailable")]
+        public void MustNotClassifyByExceptionMessageText(string retiredSubstring)
+        {
+            using var infraReceiver = NoMessages();
+            using var provider = BuildProvider(infraReceiver);
+
+            // A handler exception that echoes message-body content must never be classified transient: doing so
+            // lets one poison message exhaust the retry budget and open the receiver-wide circuit breaker.
+            var messageEchoingException = new Exception($"handler failed while processing '{retiredSubstring}'");
+
+            provider.GetRequiredService<IRetryExceptionEvaluator>()
+                    .ShouldRetry(messageEchoingException).Should().BeFalse();
+            provider.GetRequiredService<ICircuitBreakerExceptionEvaluator>()
+                    .ShouldTrip(messageEchoingException).Should().BeFalse();
+        }
+
+        [Fact]
+        public void MustNotReadExceptionTextAtAllWhenClassifying()
+        {
+            using var infraReceiver = NoMessages();
+            using var provider = BuildProvider(infraReceiver);
+
+            // INVARIANT: no SHIPPED DEFAULT predicate reads exception TEXT. Asserting only over the eight retired
+            // substrings pins those VALUES, not the invariant — a future default reading Message, ToString() or an
+            // inner exception's message with any OTHER content would still pass. Every text accessor on this
+            // exception throws, so the ACCESS itself fails the test, whatever string a predicate looks for.
+            var textAccessFails = new TextAccessIsAFailure(new TextAccessIsAFailure());
+
+            provider.GetRequiredService<IRetryExceptionEvaluator>()
+                    .ShouldRetry(textAccessFails).Should().BeFalse();
+            provider.GetRequiredService<ICircuitBreakerExceptionEvaluator>()
+                    .ShouldTrip(textAccessFails).Should().BeFalse();
+        }
+
         // ------------------------------------------------------------------ helpers
 
         private static InMemoryMessagingInfrastructureReceiver NoMessages()
@@ -267,6 +329,27 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                 messageReceiverPath: "test-queue",
                 receiverCancellationToken: CancellationToken.None,
                 bodyConverter: converter);
+        }
+
+        /// <summary>
+        /// An exception whose every TEXT accessor throws. Handing it to a classification path turns any read of
+        /// exception text into a test failure, so what gets pinned is "no default predicate reads text at all"
+        /// rather than "no default predicate matches these particular strings".
+        /// </summary>
+        private sealed class TextAccessIsAFailure : Exception
+        {
+            public TextAccessIsAFailure(Exception innerException = null)
+                : base(message: null, innerException: innerException)
+            { }
+
+            public override string Message
+                => throw new InvalidOperationException("A default transience predicate read Exception.Message.");
+
+            public override string StackTrace
+                => throw new InvalidOperationException("A default transience predicate read Exception.StackTrace.");
+
+            public override string ToString()
+                => throw new InvalidOperationException("A default transience predicate called Exception.ToString().");
         }
     }
 }
