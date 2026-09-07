@@ -10,10 +10,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 - **An open `CircuitBreaker` no longer executes the action.** It refuses instead, throwing `CircuitBreakerOpenException` without invoking the action. Calling code that relied on the action still running while the circuit was open must handle the refusal. A refused attempt also now consumes retry budget, so work behind a persistently open circuit surfaces `MaxRetryAttemptsExceededException` rather than retrying indefinitely (#316, #318, #320, #298).
 - **`IRetryDelayStrategy` implementors must accept a `CancellationToken`.** The tokenful `ExecuteAsync` overloads are now the abstract contract members; the tokenless forms remain as default-interface shims, so callers of the interface are unaffected (#316, #298).
+- **`ICircuitBreakerStateStore` gains `Task<bool> TryHalfOpenAsync()`.** An implementation must compare-and-swap `Open` to `HalfOpen` under its own synchronization, mutating nothing and returning `false` from any other state (#316, #298).
 
 ### Fixed
 
 - An open `CircuitBreaker` previously still executed the action on every call: the documented fast-fail `throw` sat after a `try` that always returned or rethrew, so it was unreachable. The open path is now its own branch that refuses without running the action (#316, #298).
+- A caller waking from either the open-circuit cooling wait or the half-open admission wait no longer forces a recovered circuit back to half-open, nor discards accumulated half-open successes (#316, #298).
 - The open-circuit cooling wait ignored the caller's cancellation token; cancelling during that wait now throws `OperationCanceledException` and leaves the circuit open rather than moving it to half-open (#316, #298).
 - A half-open trial's failure path opened the circuit for any exception, including a caller-requested shutdown cancellation, without consulting the trip predicate. It now shares the same trip decision as the closed path: a non-tripping exception no longer reopens the circuit, and a caller's own cancellation never does either (#316, #298).
 - The half-open slot is now released correctly after a failed trial, so the next trial is admitted rather than left waiting (#316, #298).
