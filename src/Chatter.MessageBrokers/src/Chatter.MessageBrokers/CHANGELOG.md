@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-09-07
+
+### Changed
+
+- **The default retry-exception predicates and the default circuit-breaker-trip-exception predicates are now answered by two separate types.** Previously one type implemented both `IRetryExceptionPredicatesProvider` and `ICircuitBreakerExceptionPredicatesProvider` and was registered as both, so what to retry and what should trip the circuit could not diverge. `DefaultRetryExceptionPredicatesProvider` and `DefaultCircuitBreakerExceptionPredicatesProvider` (both `internal`) now decide each question independently — each yields exactly one predicate, matching a transient `BrokeredMessageReceiverException` (#317, #298).
+
+### Removed
+
+- **`DefaultExceptionsPredicateProvider`** (public) is removed. An application that referenced it directly, or registered it itself, must remove that reference; the framework registers its two internal replacements automatically. See the Security entry below for the migration path for callers who relied on its message-text matching (#317, #298).
+
+### Security
+
+- **Exception message TEXT no longer influences whether a receive fault is retried or trips the circuit breaker.** The removed `DefaultExceptionsPredicateProvider` classified an exception as transient in part by substring-matching its message against eight strings (`retry`, `timeout`, `time out`, `rerun`, `internal server error`, `waiting`, `wait until`, `service unavailable`). A handler exception routinely echoes message-body content, so a crafted — or merely unlucky — message could be classified transient, retried to the trip threshold, and open the shared per-receiver circuit breaker that gates that receiver's message receive, its delivery-count probe, dispatch, and all four settlement paths (ack, nack, deadletter, and the error-queue forward). Since 0.21.0 an open circuit refuses rather than executes, and a refusal itself spends retry budget, so tripping it on one message denies service to every other message on the receiver rather than merely delaying them. The shipped defaults now classify a receive fault by exception TYPE only. No shipped transport loses coverage: Azure Service Bus, SQL Service Broker, and RabbitMQ each already classify their own SDK faults by exception type, in their own modules, unchanged. An application using only the core package, or a custom `IMessagingInfrastructureReceiver`, whose faults were retried only because their message text happened to match one of those eight strings, must register an explicit type-based predicate instead: `.RetryWhen<TException>()` for retry, `.IsTrippedBy<TException>()` for the circuit-breaker trip decision (#317, #298).
+
 ## [0.21.0] - 2026-09-06
 
 ### Changed
