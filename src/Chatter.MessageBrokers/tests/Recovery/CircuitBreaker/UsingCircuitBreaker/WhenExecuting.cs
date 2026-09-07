@@ -146,7 +146,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Should().ThrowAsync<CircuitBreakerOpenException>();
 
             wasExecuted.Should().BeFalse();
-            _store.Verify(s => s.HalfOpenAsync(), Times.Once);
+            _store.Verify(s => s.TryHalfOpenAsync(), Times.Once);
         }
 
         [Fact]
@@ -175,7 +175,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Invoking(async () => await CreateSut().ExecuteAsync(_ => Task.FromResult(11), cts.Token))
                 .Should().ThrowAsync<OperationCanceledException>();
 
-            _store.Verify(s => s.HalfOpenAsync(), Times.Never);
+            _store.Verify(s => s.TryHalfOpenAsync(), Times.Never);
         }
 
         [Fact]
@@ -192,6 +192,41 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
 
             store.State.Should().Be(CircuitBreakerState.HalfOpen);
             (await sut.ExecuteAsync(_ => Task.FromResult(11))).Should().Be(11);
+        }
+
+        [Fact]
+        public async Task MustNotRegressTheCircuitWhenItRecoversDuringTheCoolingWait()
+        {
+            var inner = new InMemoryCircuitBreakerStateStore(
+                New.Common().Logger<InMemoryCircuitBreakerStateStore>().Creation);
+            await inner.OpenAsync(new FakeRecoverableException());
+            var sut = new CircuitBreakerSut(
+                new RecoverOnStateReadStateStore(inner), _options, _logger.Creation, _evaluator.Object);
+
+            await FluentActions
+                .Invoking(async () => await sut.ExecuteAsync(_ => Task.FromResult(11)))
+                .Should().ThrowAsync<CircuitBreakerOpenException>();
+
+            inner.State.Should().Be(CircuitBreakerState.Closed);
+            inner.SuccessCount.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task MustNotDiscardHalfOpenProgressWhenTheCircuitRecoversBeforeAdmission()
+        {
+            CircuitBreakerOptions options = New.MessageBrokers().Recovery().CircuitBreakerOptions()
+                .WithFailuresBeforeOpen(1)
+                .WithHalfOpenSuccessesToClose(2);
+            var inner = new InMemoryCircuitBreakerStateStore(
+                New.Common().Logger<InMemoryCircuitBreakerStateStore>().Creation);
+            await inner.OpenAsync(new FakeRecoverableException());
+            await inner.HalfOpenAsync();
+            var sut = new CircuitBreakerSut(
+                new RecoverOnStateReadStateStore(inner), options, _logger.Creation, _evaluator.Object);
+
+            (await sut.ExecuteAsync(_ => Task.FromResult(11))).Should().Be(11);
+
+            inner.IsClosed.Should().BeTrue();
         }
 
         [Fact]
@@ -310,7 +345,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
 
             await CreateSut().ExecuteAsync(_ => Task.FromResult(1));
 
-            _store.Verify(s => s.HalfOpenAsync(), Times.Once);
+            _store.Verify(s => s.TryHalfOpenAsync(), Times.Once);
         }
 
         [Fact]
@@ -323,6 +358,56 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             await FluentActions
                 .Invoking(async () => await CreateSut().ExecuteAsync(_ => Task.FromResult(1), cts.Token))
                 .Should().ThrowAsync<OperationCanceledException>();
+        }
+
+        // INVARIANT: reading State is the ONLY trigger. The getter captures the inner value, drives the
+        // inner store through one full recovery (HalfOpen -> success -> Closed) exactly once, then returns
+        // the CAPTURED — now stale — value. That is a deterministic stand-in for another caller recovering
+        // the circuit across the breaker's unbounded await, with no thread race to lose. IsClosed must
+        // delegate plainly: the stale read alone is the trigger.
+        private sealed class RecoverOnStateReadStateStore : ICircuitBreakerStateStore
+        {
+            private readonly InMemoryCircuitBreakerStateStore _inner;
+            private bool _hasRecovered;
+
+            public RecoverOnStateReadStateStore(InMemoryCircuitBreakerStateStore inner)
+                => _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+
+            public CircuitBreakerState State
+            {
+                get
+                {
+                    var captured = _inner.State;
+                    RecoverInnerOnce();
+                    return captured;
+                }
+            }
+
+            public Exception LastException => _inner.LastException;
+            public DateTime LastStateChangedDateUtc => _inner.LastStateChangedDateUtc;
+            public bool IsClosed => _inner.IsClosed;
+            public int FailureCount => _inner.FailureCount;
+            public int SuccessCount => _inner.SuccessCount;
+
+            public Task OpenAsync(Exception ex) => _inner.OpenAsync(ex);
+            public Task<int> IncrementFailureCounterAsync(Exception ex) => _inner.IncrementFailureCounterAsync(ex);
+            public Task<int> IncrementSuccessCounterAsync() => _inner.IncrementSuccessCounterAsync();
+            public Task CloseAsync() => _inner.CloseAsync();
+            public Task HalfOpenAsync() => _inner.HalfOpenAsync();
+            public Task<bool> TryHalfOpenAsync() => _inner.TryHalfOpenAsync();
+
+            private void RecoverInnerOnce()
+            {
+                if (_hasRecovered)
+                {
+                    return;
+                }
+
+                _hasRecovered = true;
+                _inner.HalfOpenAsync().GetAwaiter().GetResult();
+                _inner.IncrementSuccessCounterAsync().GetAwaiter().GetResult();
+                _inner.CloseAsync().GetAwaiter().GetResult();
+            }
         }
     }
 }

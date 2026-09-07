@@ -54,7 +54,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 {
                     await Task.Delay(_openToHalfOpenWaitTime, cancellationToken);
                     _logger.LogInformation("Circuit Breaker half-open timer expired. Entering HALF-OPEN state.");
-                    await _stateStore.HalfOpenAsync();
+                    await _stateStore.TryHalfOpenAsync();
                     throw new CircuitBreakerOpenException(_stateStore.LastException);
                 }
 
@@ -62,7 +62,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
                 try
                 {
-                    await _stateStore.HalfOpenAsync();
+                    await _stateStore.TryHalfOpenAsync();
                     var context = await action(_stateStore.State);
                     await TryClose();
                     return context;

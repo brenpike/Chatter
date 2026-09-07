@@ -210,6 +210,17 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 return _inner.HalfOpenAsync();
             }
 
+            public async Task<bool> TryHalfOpenAsync()
+            {
+                var transitioned = await _inner.TryHalfOpenAsync();
+                if (transitioned)
+                {
+                    Record(CircuitBreakerState.HalfOpen);
+                }
+
+                return transitioned;
+            }
+
             public Task CloseAsync()
             {
                 Record(CircuitBreakerState.Closed);
