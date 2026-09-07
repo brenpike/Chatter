@@ -164,6 +164,37 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         }
 
         [Fact]
+        public async Task MustNotAnnounceHalfOpenWhenTheStoreRefusesTheTransition()
+        {
+            Open();
+            // Another caller recovered the circuit across the cooling wait, so the store refuses.
+            _store.Setup(s => s.TryHalfOpenAsync()).ReturnsAsync(false);
+
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync(_ => Task.FromResult(11)))
+                .Should().ThrowAsync<CircuitBreakerOpenException>();
+
+            _logger.VerifyWasCalled(LogLevel.Information,
+                "Circuit Breaker half-open timer expired. Entering HALF-OPEN state.",
+                Times.Never());
+        }
+
+        [Fact]
+        public async Task MustAnnounceHalfOpenWhenTheStoreGrantsTheTransition()
+        {
+            Open();
+            _store.Setup(s => s.TryHalfOpenAsync()).ReturnsAsync(true);
+
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync(_ => Task.FromResult(11)))
+                .Should().ThrowAsync<CircuitBreakerOpenException>();
+
+            _logger.VerifyWasCalled(LogLevel.Information,
+                "Circuit Breaker half-open timer expired. Entering HALF-OPEN state.",
+                Times.Once());
+        }
+
+        [Fact]
         public async Task MustThrowOperationCanceledWhenTokenCancelledDuringTheOpenWait()
         {
             Open();

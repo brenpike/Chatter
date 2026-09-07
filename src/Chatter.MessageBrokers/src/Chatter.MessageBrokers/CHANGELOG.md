@@ -15,7 +15,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Fixed
 
 - An open `CircuitBreaker` previously still executed the action on every call: the documented fast-fail `throw` sat after a `try` that always returned or rethrew, so it was unreachable. The open path is now its own branch that refuses without running the action (#316, #298).
-- A caller waking from either the open-circuit cooling wait or the half-open admission wait no longer forces a recovered circuit back to half-open, nor discards accumulated half-open successes (#316, #298).
+- A caller waking from either the open-circuit cooling wait or the half-open admission wait no longer forces a recovered circuit back to half-open, nor discards accumulated half-open successes. Such a caller no longer announces the half-open transition either: the information-level message is emitted only when the state store grants the transition, so a refusal no longer records a phantom state change in operational logs (#316, #298).
 - The open-circuit cooling wait ignored the caller's cancellation token; cancelling during that wait now throws `OperationCanceledException` and leaves the circuit open rather than moving it to half-open (#316, #298).
 - A half-open trial's failure path opened the circuit for any exception, including a caller-requested shutdown cancellation, without consulting the trip predicate. It now shares the same trip decision as the closed path: a non-tripping exception no longer reopens the circuit, and a caller's own cancellation never does either (#316, #298).
 - The half-open slot is now released correctly after a failed trial, so the next trial is admitted rather than left waiting (#316, #298).

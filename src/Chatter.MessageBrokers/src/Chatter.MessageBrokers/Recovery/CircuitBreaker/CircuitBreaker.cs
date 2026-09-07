@@ -53,8 +53,15 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 if (_stateStore.State != CircuitBreakerState.HalfOpen)
                 {
                     await Task.Delay(_openToHalfOpenWaitTime, cancellationToken);
-                    _logger.LogInformation("Circuit Breaker half-open timer expired. Entering HALF-OPEN state.");
-                    await _stateStore.TryHalfOpenAsync();
+
+                    // The store adjudicates, so the announcement waits on its verdict: another caller may have
+                    // recovered the circuit across the cooling wait, and a refused transition must stay silent
+                    // rather than record a half-open the circuit never entered.
+                    if (await _stateStore.TryHalfOpenAsync())
+                    {
+                        _logger.LogInformation("Circuit Breaker half-open timer expired. Entering HALF-OPEN state.");
+                    }
+
                     throw new CircuitBreakerOpenException(_stateStore.LastException);
                 }
 
