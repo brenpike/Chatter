@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-09-08
+
+### Changed
+
+- **`ICircuitBreakerStateStore` now issues one atomic admission instead of exposing separate state reads and transition calls.** The new `AdmitAsync(TimeSpan openToHalfOpenWaitTime)` returns a `CircuitBreakerAdmission` — a decision the store made, not state the caller observed, so it cannot go stale across an await. `CircuitBreakerAdmission` (public, readonly struct) carries a `CircuitBreakerVerdict` (public enum: `Refused`, `Execute`, `Trial`; `Refused` is its default value, so an admission that was never issued denies rather than admits), the `CircuitBreakerState`, the half-open `Episode` the admission belongs to, and `LastException`. When the store finds an open circuit's cooling period elapsed, the transition to `HalfOpen` and the `Trial` admission that enters it happen inside the same call, under the same lock — no caller can observe the store between deciding cooling is over and admitting the trial. `IncrementSuccessCounterAsync()` is now `IncrementSuccessCounterAsync(long episode)`: it records a half-open trial's success against the episode it was admitted to and returns that episode's success count, or `null` when the episode has since ended (the circuit re-opened and reset) so the success belongs to none. An external implementor of `ICircuitBreakerStateStore` must: track an episode counter, incrementing it on every `OpenAsync`, `CloseAsync`, and cooling-elapsed transition into half-open; implement `AdmitAsync` to decide the verdict from current state under the store's own synchronization, performing the open-to-half-open transition as part of that same decision when the wait has elapsed; and change `IncrementSuccessCounterAsync` to take the episode and return `null` once that episode no longer matches the store's current episode (#432, #298).
+- **With `OpenToHalfOpenWaitTimeInSeconds` set to `0`, an open circuit never refuses.** A zero wait is always already elapsed, so the first call after opening is admitted straight to a trial instead of being refused once more. The builder's default is `15` seconds (`CircuitBreakerOptionsBuilder`'s default, unchanged by this release), so production behaviour at the default configuration is unaffected; this only changes callers who configured an explicit `0`-second wait (#432, #298).
+- **The cooling wait is now ordered after the admission decision rather than before the transition.** `CircuitBreaker.ExecuteAsync` used to delay for the cooling period and only then ask the store to transition; it now asks the store to adjudicate first — the store performs the elapsed-cooling transition inside `AdmitAsync` — and paces a resulting refusal with the same delay afterward. Total wall-clock time to the first trial is unchanged; only the ordering of the wait relative to the transition decision moved (#432, #298).
+
+### Removed
+
+- **`ICircuitBreakerStateStore.TryHalfOpenAsync()`** is removed. `AdmitAsync(TimeSpan)` supersedes it: it decides the same open-to-half-open transition, atomically, as part of the single admission decision every caller now takes. An external implementor of `ICircuitBreakerStateStore` must delete this member (#432, #298).
+
+### Fixed
+
+- **`CircuitBreaker.ExecuteAsync` no longer selects its branch from state it observed before an `await`.** It previously read `IsOpen`, then `State`, then `State`/`LastException` again across separate lock acquisitions and an intervening `await`, so another caller could change the store's state in between and the branch taken no longer matched the store's current state. It now takes exactly one decision — the admission `AdmitAsync` issues — and branches on that, so the branch can never be invalidated by a concurrent caller. This is reachable in production: `ICircuitBreaker` and `ICircuitBreakerStateStore` are registered `Scoped`, and `BrokeredMessageReceiver` shares one recovery strategy across up to `MaxConcurrentCalls` concurrent workers (#432, #298).
+- **A half-open trial's success can no longer land in a later episode's counter.** Previously a trial admitted while the circuit was half-open could finish after the circuit had since re-opened and reset, and its success would still increment the (now unrelated) counter toward closing a half-open episode it was never part of. `IncrementSuccessCounterAsync` now takes the episode the trial was admitted to and discards the success (returns `null`) once that episode has ended (#432, #298).
+
 ## [0.23.1] - 2026-09-07
 
 ### Fixed
