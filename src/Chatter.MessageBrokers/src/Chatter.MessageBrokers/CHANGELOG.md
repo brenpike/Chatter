@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-09-08
+
+### Changed
+
+- **Nested options are no longer registered with the `IServiceCollection` until the whole options graph is finalized.** `MessageBrokerOptionsBuilder.AddReliabilityOptions(...)`, `AddRecoveryOptions(...)` and `RecoveryOptionsBuilder.WithCircuitBreaker(...)` used to `Build()` the sub-builder immediately and register its result, before the parent builder had bound its own configuration section over the graph — so a consumer could resolve a `ReliabilityOptions`, `RecoveryOptions` or `CircuitBreakerOptions` instance the parent's bind had not been applied to yet. Each of the four options builders — `MessageBrokerOptionsBuilder`, `ReliabilityOptionsBuilder`, `RecoveryOptionsBuilder` and `CircuitBreakerOptionsBuilder` — now splits into an internal `Resolve()`, which produces the finalized options without touching the container, and an internal `Publish(TOptions)`, which is the single registration site for that builder; `Build()` is `Resolve()` followed by `Publish()`. The three fluent nested-options setters listed above now retain the configured sub-builder and register nothing themselves — a fluent call alone no longer has any effect on the container. This is pinned by `MustNotRegisterAnyServiceWhenResolved` on each of the four builders, and by `MustNotRegisterCircuitBreakerOptionsBeforeBuildWhenWithCircuitBreakerUsed` and `MustNotRegisterNestedOptionsBeforeBuildWhenFluentNestedOptionsUsed`. `Resolve()` and `Publish()` are internal on all four builders; no existing public signature, type or accessibility changed (#423).
+
 ## [0.24.0] - 2026-09-08
 
 ### Changed
