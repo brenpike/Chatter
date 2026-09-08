@@ -18,9 +18,23 @@ namespace Chatter.MessageBrokers.Recovery.Options
         private readonly IConfigurationSection _recoveryOptionsSection;
         private int _maxRetryAttempts = _defaultMaxRetryAttempts;
         private readonly List<Predicate<Exception>> _exceptionPredicates;
+        private RetryDelayStrategyKind _retryDelayStrategyKind = RetryDelayStrategyKind.Unset;
+        private int _retryDelayStrategyArgument = 0;
+        private bool _routeToErrorQueueOnMaxReceivesExceeded = false;
 
         private const int _defaultMaxRetryAttempts = 5;
         private const int _maxExponentialRetryAttempts = 15;
+
+        // INVARIANT: the fluent surface records WHICH delay strategy was asked for as a value and never names the
+        // IServiceCollection; Publish is the only place that turns the recorded kind into a registration. A single
+        // field also keeps last-call-wins, matching Replace's remove-all-then-add semantics.
+        private enum RetryDelayStrategyKind
+        {
+            Unset,
+            NoDelay,
+            Exponential,
+            Constant
+        }
 
         private RecoveryOptionsBuilder(IServiceCollection services) : this(services, null) { }
         private RecoveryOptionsBuilder(IServiceCollection services, IConfigurationSection section)
@@ -59,12 +73,14 @@ namespace Chatter.MessageBrokers.Recovery.Options
         /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder WithCircuitBreaker(Action<CircuitBreakerOptionsBuilder> builder)
         {
-            var b = CircuitBreakerOptionsBuilder.Create(_services);
-            builder?.Invoke(b);
-            // INVARIANT: the configured sub-builder is retained rather than built here. Building it would register
-            // CircuitBreakerOptions before this builder - and any parent above it - has bound its own section, so a
-            // consumer could resolve an instance whose configured values had not been applied yet.
-            _circuitBreakerOptionsBuilder = b;
+            // INVARIANT: the ONE retained sub-builder is configured in place rather than replaced by a fresh one, so a
+            // second call accumulates onto the first call's state instead of discarding it - the circuit breaker
+            // exception predicates are consumed as an enumeration, so a discarded builder's predicates would never be
+            // registered at all. It is also never built here: building it would register CircuitBreakerOptions before
+            // this builder - and any parent above it - has bound its own section, so a consumer could resolve an
+            // instance whose configured values had not been applied yet.
+            var circuitBreakerOptionsBuilder = EnsureCircuitBreakerOptionsBuilder();
+            builder?.Invoke(circuitBreakerOptionsBuilder);
             return this;
         }
 
@@ -75,7 +91,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
         /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseNoDelayRecovery()
         {
-            _services.Replace<IRetryDelayStrategy, NoDelayRetry>(ServiceLifetime.Scoped);
+            _retryDelayStrategyKind = RetryDelayStrategyKind.NoDelay;
             return this;
         }
 
@@ -118,10 +134,8 @@ namespace Chatter.MessageBrokers.Recovery.Options
         public RecoveryOptionsBuilder UseExponentialDelayRecovery(int maxRetryAttempts)
         {
             _maxRetryAttempts = Math.Min(maxRetryAttempts, _maxExponentialRetryAttempts);
-            _services.Replace<IRetryDelayStrategy>(ServiceLifetime.Scoped, sp =>
-            {
-                return new ExponentialDelayRetry(maxRetryAttempts);
-            });
+            _retryDelayStrategyKind = RetryDelayStrategyKind.Exponential;
+            _retryDelayStrategyArgument = maxRetryAttempts;
             return this;
         }
 
@@ -133,10 +147,8 @@ namespace Chatter.MessageBrokers.Recovery.Options
         /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseConstantDelayRecovery(int constantDelayInMilliseconds)
         {
-            _services.Replace<IRetryDelayStrategy>(ServiceLifetime.Scoped, sp =>
-            {
-                return new ConstantDelayRetry(constantDelayInMilliseconds);
-            });
+            _retryDelayStrategyKind = RetryDelayStrategyKind.Constant;
+            _retryDelayStrategyArgument = constantDelayInMilliseconds;
             return this;
         }
 
@@ -147,7 +159,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
         /// <returns><see cref="RecoveryOptionsBuilder"/></returns>
         public RecoveryOptionsBuilder UseRouteToErrorQueueRecoveryAction()
         {
-            _services.Replace<IMaxReceivesExceededAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
+            _routeToErrorQueueOnMaxReceivesExceeded = true;
             return this;
         }
 
@@ -209,20 +221,48 @@ namespace Chatter.MessageBrokers.Recovery.Options
 
         /// <summary>
         /// Registers the supplied finalized <see cref="RecoveryOptions"/>, its nested
-        /// <see cref="CircuitBreakerOptions"/> and this builder's configured exception predicates against the
-        /// <see cref="IServiceCollection"/>.
+        /// <see cref="CircuitBreakerOptions"/>, this builder's configured exception predicates and the recovery
+        /// services its fluent calls asked for against the <see cref="IServiceCollection"/>.
         /// </summary>
         /// <param name="recoveryOptions">The finalized options produced by <see cref="Resolve"/></param>
         /// <remarks>
-        /// INVARIANT: this is the ONLY site in this builder that touches the <see cref="IServiceCollection"/> with
-        /// built options. A parent builder calls it after its own bind so the registered instances are the finalized
-        /// ones; a standalone <see cref="Build"/> calls it immediately because there is no parent left to bind. The
-        /// nested options are read back off the finalized graph so the published instance is always the one every
-        /// entry point reaches through <see cref="RecoveryOptions.CircuitBreakerOptions"/>.
+        /// INVARIANT: this is the ONLY site in this builder that touches the <see cref="IServiceCollection"/>, so a
+        /// fluent call alone changes nothing in the container. A parent builder calls it after its own bind so the
+        /// registered instances are the finalized ones; a standalone <see cref="Build"/> calls it immediately because
+        /// there is no parent left to bind. The nested options are read back off the finalized graph so the published
+        /// instance is always the one every entry point reaches through
+        /// <see cref="RecoveryOptions.CircuitBreakerOptions"/>.
         /// </remarks>
         internal void Publish(RecoveryOptions recoveryOptions)
         {
             EnsureCircuitBreakerOptionsBuilder().Publish(recoveryOptions.CircuitBreakerOptions);
+
+            // INVARIANT: the recorded argument is read into a local so each delay strategy is constructed from the
+            // value its own fluent call supplied, exactly as the fluent-time registration captured it.
+            var retryDelayStrategyArgument = _retryDelayStrategyArgument;
+            switch (_retryDelayStrategyKind)
+            {
+                case RetryDelayStrategyKind.NoDelay:
+                    _services.Replace<IRetryDelayStrategy, NoDelayRetry>(ServiceLifetime.Scoped);
+                    break;
+                case RetryDelayStrategyKind.Exponential:
+                    _services.Replace<IRetryDelayStrategy>(ServiceLifetime.Scoped, sp =>
+                    {
+                        return new ExponentialDelayRetry(retryDelayStrategyArgument);
+                    });
+                    break;
+                case RetryDelayStrategyKind.Constant:
+                    _services.Replace<IRetryDelayStrategy>(ServiceLifetime.Scoped, sp =>
+                    {
+                        return new ConstantDelayRetry(retryDelayStrategyArgument);
+                    });
+                    break;
+            }
+
+            if (_routeToErrorQueueOnMaxReceivesExceeded)
+            {
+                _services.Replace<IMaxReceivesExceededAction, ErrorQueueDispatcher>(ServiceLifetime.Scoped);
+            }
 
             if (_exceptionPredicates.Count > 0)
             {

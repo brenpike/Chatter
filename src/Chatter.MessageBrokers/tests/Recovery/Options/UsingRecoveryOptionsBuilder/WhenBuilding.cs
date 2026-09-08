@@ -44,6 +44,8 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
                 .WithMaxRetryAttempts(9)
                 .WithCircuitBreaker(cb => cb.SetNumberOfFailuresBeforeOpen(7))
                 .RetryWhen<InvalidOperationException>()
+                .UseNoDelayRecovery()
+                .UseRouteToErrorQueueRecoveryAction()
                 .Resolve();
 
             options.MaxRetryAttempts.Should().Be(9);

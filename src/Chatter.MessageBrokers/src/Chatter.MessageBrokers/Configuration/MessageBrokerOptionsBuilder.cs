@@ -57,23 +57,25 @@ namespace Chatter.MessageBrokers.Configuration
 
         public MessageBrokerOptionsBuilder AddReliabilityOptions(Action<ReliabilityOptionsBuilder> builder)
         {
-            var b = ReliabilityOptionsBuilder.Create(Services);
-            builder?.Invoke(b);
-            // INVARIANT: the configured sub-builder is retained rather than built here. Building it would register
-            // ReliabilityOptions before this builder has bound its own section, so a consumer could resolve an
-            // instance the parent bind had not been applied to yet.
-            _reliabilityOptionsBuilder = b;
+            // INVARIANT: the ONE retained sub-builder is configured in place rather than replaced by a fresh one, so
+            // a second call accumulates onto the first call's state instead of discarding it. It is also never built
+            // here: building it would register ReliabilityOptions before this builder has bound its own section, so a
+            // consumer could resolve an instance the parent bind had not been applied to yet.
+            var reliabilityOptionsBuilder = EnsureReliabilityOptionsBuilder();
+            builder?.Invoke(reliabilityOptionsBuilder);
             return this;
         }
 
         public MessageBrokerOptionsBuilder AddRecoveryOptions(Action<RecoveryOptionsBuilder> builder)
         {
-            var b = RecoveryOptionsBuilder.Create(Services);
-            builder?.Invoke(b);
-            // INVARIANT: the configured sub-builder is retained rather than built here. Building it would register
-            // RecoveryOptions and CircuitBreakerOptions before this builder has bound its own section, so a consumer
-            // could resolve instances the parent bind had not been applied to yet.
-            _recoveryOptionsBuilder = b;
+            // INVARIANT: the ONE retained sub-builder is configured in place rather than replaced by a fresh one, so
+            // a second call accumulates onto the first call's state instead of discarding it - the retry and circuit
+            // breaker exception predicates are consumed as an enumeration, so a discarded builder's predicates would
+            // never be registered at all. It is also never built here: building it would register RecoveryOptions and
+            // CircuitBreakerOptions before this builder has bound its own section, so a consumer could resolve
+            // instances the parent bind had not been applied to yet.
+            var recoveryOptionsBuilder = EnsureRecoveryOptionsBuilder();
+            builder?.Invoke(recoveryOptionsBuilder);
             return this;
         }
 

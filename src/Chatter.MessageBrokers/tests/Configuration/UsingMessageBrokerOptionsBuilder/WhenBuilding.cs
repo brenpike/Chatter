@@ -158,6 +158,28 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             services.Any(d => d.ServiceType == typeof(IRetryExceptionPredicatesProvider)).Should().BeTrue();
         }
 
+        /// <summary>
+        /// A second AddRecoveryOptions call must not silently discard the first call's predicates. Consumption is
+        /// enumerable - RetryExceptionEvaluator takes every IRetryExceptionPredicatesProvider - so both configured
+        /// exception types have to stay retryable.
+        /// </summary>
+        [Fact]
+        public void MustKeepBothRetryPredicateSetsWhenAddRecoveryOptionsUsedTwice()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.Create(services)
+                .AddRecoveryOptions(r => r.RetryWhen<InvalidOperationException>())
+                .AddRecoveryOptions(r => r.RetryWhen<FormatException>())
+                .Build();
+
+            using var provider = services.BuildServiceProvider();
+            var evaluator = new RetryExceptionEvaluator(provider.GetServices<IRetryExceptionPredicatesProvider>());
+
+            evaluator.ShouldRetry(new InvalidOperationException()).Should().BeTrue();
+            evaluator.ShouldRetry(new FormatException()).Should().BeTrue();
+        }
+
         [Fact]
         public void MustRegisterCircuitBreakerExceptionPredicatesProviderWhenIsTrippedByUsedThroughAddRecoveryOptions()
         {
