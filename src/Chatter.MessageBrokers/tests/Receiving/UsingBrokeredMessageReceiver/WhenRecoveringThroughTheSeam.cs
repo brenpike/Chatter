@@ -166,15 +166,28 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
         // but the store overwrites State on each transition (Open → HalfOpen → Closed), so the
         // intermediate Open/HalfOpen states are lost by the time the test inspects the final State.
         // This decorator delegates to the real InMemoryCircuitBreakerStateStore and records the
-        // ordered sequence of transitions actually requested, so a test can assert the circuit
-        // genuinely opened and half-opened rather than only that it ended Closed (a state it also
-        // starts in). Transitions are appended under a lock so the receiver loop's background writes
-        // never race the test thread's reads.
+        // ordered sequence of transitions the store actually MADE — each report answers whether it was
+        // the call that transitioned the circuit, so a report the store discards records nothing — and a
+        // test can then assert the circuit genuinely opened and half-opened rather than only that it
+        // ended Closed (a state it also starts in). Transitions are appended under a lock so the
+        // receiver loop's background writes never race the test thread's reads.
         private sealed class RecordingCircuitBreakerStateStore : ICircuitBreakerStateStore
         {
             private readonly InMemoryCircuitBreakerStateStore _inner;
             private readonly object _transitionsLock = new object();
             private readonly List<CircuitBreakerState> _transitions = new List<CircuitBreakerState>();
+
+            // INVARIANT: the receiver loop's own poll for the next message and a worker's dispatch retry
+            // both call AdmitAsync on this SAME shared breaker concurrently. AdmitAsync's own admission
+            // does not report whether THIS call was the one that flipped Open → HalfOpen (unlike the
+            // pre-#432 TryHalfOpenAsync, which returned that as an atomic bool), so HalfOpen is inferred
+            // here from a before/after read of _inner.State instead. Left unsynchronized, that read pair
+            // is a TOCTOU: a caller that loses the race to perform the transition can still observe
+            // HalfOpen afterward (the state stays HalfOpen for every caller until it closes) and record a
+            // second, spurious HalfOpen for the one transition another caller actually made. Serializing
+            // every AdmitAsync call through this gate restores the old atomicity: the read, the inner
+            // call, and the post-check all complete for one caller before the next caller's read begins.
+            private readonly SemaphoreSlim _admitGate = new SemaphoreSlim(1, 1);
 
             public RecordingCircuitBreakerStateStore(InMemoryCircuitBreakerStateStore inner)
                 => _inner = inner ?? throw new ArgumentNullException(nameof(inner));
@@ -198,31 +211,49 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             public int FailureCount => _inner.FailureCount;
             public int SuccessCount => _inner.SuccessCount;
 
-            public Task OpenAsync(Exception ex)
+            public async Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime, CancellationToken cancellationToken)
             {
-                Record(CircuitBreakerState.Open);
-                return _inner.OpenAsync(ex);
+                await _admitGate.WaitAsync();
+                try
+                {
+                    var wasOpen = _inner.State == CircuitBreakerState.Open;
+                    var admission = await _inner.AdmitAsync(openToHalfOpenWaitTime, cancellationToken);
+                    if (wasOpen && _inner.State == CircuitBreakerState.HalfOpen)
+                    {
+                        Record(CircuitBreakerState.HalfOpen);
+                    }
+
+                    return admission;
+                }
+                finally
+                {
+                    _admitGate.Release();
+                }
             }
 
-            public async Task<bool> TryHalfOpenAsync()
+            // The inner store returns whether THIS report transitioned the circuit, so a transition is recorded
+            // only when one genuinely happened rather than whenever a caller asked for one.
+            public async Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose, CancellationToken cancellationToken)
             {
-                var transitioned = await _inner.TryHalfOpenAsync();
-                if (transitioned)
+                var closed = await _inner.RecordSuccessAsync(admission, successesToClose, cancellationToken);
+                if (closed)
                 {
-                    Record(CircuitBreakerState.HalfOpen);
+                    Record(CircuitBreakerState.Closed);
                 }
 
-                return transitioned;
+                return closed;
             }
 
-            public Task CloseAsync()
+            public async Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen, CancellationToken cancellationToken)
             {
-                Record(CircuitBreakerState.Closed);
-                return _inner.CloseAsync();
-            }
+                var opened = await _inner.RecordFailureAsync(admission, ex, failuresToOpen, cancellationToken);
+                if (opened)
+                {
+                    Record(CircuitBreakerState.Open);
+                }
 
-            public Task<int> IncrementSuccessCounterAsync() => _inner.IncrementSuccessCounterAsync();
-            public Task<int> IncrementFailureCounterAsync(Exception ex) => _inner.IncrementFailureCounterAsync(ex);
+                return opened;
+            }
         }
 
         // ------------------------------------------------------------------
@@ -307,35 +338,42 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
         }
 
         // ------------------------------------------------------------------
-        // Test (b): a handler failure opens the circuit breaker, the next attempt is REFUSED by
-        //           the open circuit, and the attempt after that recovers through half-open.
+        // Test (b): a handler failure opens the circuit breaker, and the very next attempt is
+        //           admitted straight into a half-open trial that recovers it.
         //
         // COVERAGE — what this dispatch call's retry loop actually does, in order:
         //   1. Attempt 1: the handler runs and throws. ShouldTrip matches InvalidOperationException
         //      and the failure counter reaches NumberOfFailuresBeforeOpen=1, so the circuit opens
-        //      (Closed → Open).
-        //   2. Attempt 2: the open circuit REFUSES — the handler is never invoked. The breaker takes
-        //      the OpenToHalfOpenWaitTimeInSeconds=0 cooling wait, moves the store to HalfOpen, and
-        //      throws CircuitBreakerOpenException. The refusal itself is what performs the
-        //      Open → HalfOpen transition, and the retry loop spends an attempt on it. Refusal
-        //      without execution is pinned by
-        //      Recovery/CircuitBreaker/UsingCircuitBreaker/WhenExecuting.cs::MustRefuseWithoutExecutingWhenOpen
-        //      and MustTrialOnTheNextCallAfterRefusingWhenOpen; the refusal spending retry budget by
-        //      Recovery/Retry/UsingRetryStrategy/WhenExecuting.cs::MustDelayAndCountAttemptWhenCircuitBreakerRefusesThenSucceeds.
-        //   3. Attempt 3: the circuit is HalfOpen, so this attempt trials under the half-open
-        //      semaphore. The handler succeeds and one success reaches
+        //      (Closed → Open). ShouldRetry matches too, so this failure spends one of the three
+        //      budgeted retry attempts.
+        //   2. Attempt 2: AdmitAsync finds the store Open with its cooling period
+        //      (OpenToHalfOpenWaitTimeInSeconds=0) already elapsed, so the SAME call both moves the
+        //      store Open → HalfOpen and admits the trial (CircuitBreakerVerdict.Trial) — one
+        //      decision, not a refusal followed by a later trial. The handler runs under the
+        //      half-open trial and succeeds, and one success reaches
         //      NumberOfHalfOpenSuccessesToClose=1, so the circuit closes (HalfOpen → Closed).
+        //   Because the store now issues the admission itself instead of a caller inferring one from
+        //   a stale read, this path never receives CircuitBreakerVerdict.Refused and
+        //   CircuitBreakerOpenException is never thrown here — see the NOTE below. Refusal without
+        //   execution is pinned by
+        //   Recovery/CircuitBreaker/UsingCircuitBreaker/WhenExecuting.cs::MustRefuseWithoutExecutingWhenOpen;
+        //   the store's own cooling adjudication by
+        //   Recovery/CircuitBreaker/UsingInMemoryCircuitBreakerStateStore/WhenManagingState.cs::MustRefuseAdmissionWhileTheOpenCircuitIsStillCooling
+        //   and MustNotAdmitAnythingWhileTheOpenCircuitIsStillCooling; and a refusal still spending
+        //   retry budget (when one does occur) by
+        //   Recovery/Retry/UsingRetryStrategy/WhenExecuting.cs::MustDelayAndCountAttemptWhenCircuitBreakerRefusesThenSucceeds.
         //   The transitions are observed through RecordingCircuitBreakerStateStore — ObservedTransitions
-        //   for the Open and HalfOpen transitions the breaker actually requested, IsClosed for the
+        //   for the Open and HalfOpen transitions the store actually made, IsClosed for the
         //   final state — and via the final Ack in the receiver's CallLog.
         //
-        // ATTEMPT ARITHMETIC — ZERO HEADROOM: that sequence is exactly 3 attempts against the
-        //   MaxRetryAttempts = 3 configured below. The budget is fully spent; nothing is in reserve.
-        //   If a future change spends one more attempt anywhere in this loop — an extra refusal, an
-        //   extra cooling pass, an added recovery-wrapped call — the third attempt hits the max and
-        //   the loop throws MaxRetryAttemptsExceededException instead of reaching the Ack, and this
-        //   test goes red. Read that as a design signal about attempt arithmetic, not as a flaky
-        //   test: raising MaxRetryAttempts here would hide the very change worth arguing about.
+        // ATTEMPT ARITHMETIC — ONE ATTEMPT OF HEADROOM: that sequence spends 2 of the 3 attempts
+        //   budgeted by MaxRetryAttempts below — attempt 1 fails and opens the circuit, attempt 2 is
+        //   admitted straight into a half-open trial that succeeds and closes it. One attempt is
+        //   never used. If a future change spends both remaining attempts anywhere in this loop — an
+        //   added refusal, an extra cooling pass, another recovery-wrapped call that also fails — the
+        //   loop throws MaxRetryAttemptsExceededException instead of reaching the Ack, and this test
+        //   goes red. Read that as a design signal about attempt arithmetic, not as a flaky test:
+        //   raising MaxRetryAttempts here would hide the very change worth arguing about.
         //
         // DEFERRED: The precise moment the CB enters Open relative to the receiver's OTHER
         //   recovery-wrapped calls (ReceiveMessageAsync, MessageDeliveryCountAsync, settlement) is
@@ -345,11 +383,14 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
         //   Ack, and MUST be Closed after it.
         //
         // NOTE: ShouldTrip matches InvalidOperationException (thrown by the handler) and ShouldRetry
-        //   matches it too. ShouldRetry is what buys attempt 2 after the handler's own failure; it
-        //   plays no part in the move from attempt 2 to attempt 3, because a refusal bypasses the
-        //   retry exception evaluator entirely (MustDelayAndCountAttemptWhenCircuitBreakerRefusesThenSucceeds
-        //   verifies ShouldRetry is never consulted for a refusal). Because openToHalfOpenWaitTime=0 s,
-        //   the cooling wait is a Task.Delay(0 s); no real wall-clock delay occurs.
+        //   matches it too — ShouldRetry is what buys attempt 2 after the handler's own failure.
+        //   Because openToHalfOpenWaitTime=0 s — the value every CircuitBreakerOptionsCreator default
+        //   uses — an open circuit's cooling period is always already elapsed by the time anything
+        //   asks again, so the store never returns CircuitBreakerVerdict.Refused here: this test does
+        //   NOT exercise the refusal path, and no CircuitBreakerOpenException is ever raised in it.
+        //   That coverage lives in the breaker's own unit tests referenced above. The cooling wait
+        //   this test's path never reaches would be a Task.Delay(0 s) in any case, so no real
+        //   wall-clock delay is possible here regardless.
         // ------------------------------------------------------------------
         [Fact]
         public async Task MustOpenCircuitBreakerOnFailureThenRecoverViaHalfOpen()
@@ -400,8 +441,8 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 NullLogger<CircuitBreaker>.Instance,
                 cbEvaluator);
 
-            // Retry: ShouldRetry=true for InvalidOperationException. MaxRetryAttempts=3 is exactly
-            // the fail → refusal → half-open-trial sequence with ZERO headroom — see the attempt
+            // Retry: ShouldRetry=true for InvalidOperationException. MaxRetryAttempts=3 covers the
+            // fail → half-open-trial sequence with ONE attempt of headroom — see the attempt
             // arithmetic note on this test before changing it.
             var recoveryOptions = new RecoveryOptions { MaxRetryAttempts = 3 };
             var retryEvaluator = new RetryExceptionEvaluator(
@@ -427,9 +468,10 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 because: "handler must be re-attempted after the circuit breaker transitions through half-open");
 
             // CB must have actually opened and half-opened — not merely ended Closed (the state it
-            // also starts in). Without this, a regression where the breaker never calls
-            // OpenAsync/TryHalfOpenAsync would still leave the store Closed and pass the assertion below,
-            // so this test would silently stop pinning the Closed → Open → HalfOpen transition.
+            // also starts in). Without this, a regression where a reported failure never opens the
+            // circuit, or AdmitAsync never advances Open → HalfOpen, would still leave the store Closed
+            // and pass the assertion below, so this test would silently stop pinning the
+            // Closed → Open → HalfOpen transition.
             var observedTransitions = stateStore.ObservedTransitions;
             observedTransitions.Should().Contain(CircuitBreakerState.Open,
                 because: "the qualifying failure must trip the circuit breaker to Open before recovery");
