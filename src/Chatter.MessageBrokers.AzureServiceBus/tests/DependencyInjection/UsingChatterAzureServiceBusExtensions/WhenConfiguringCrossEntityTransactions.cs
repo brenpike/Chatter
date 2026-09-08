@@ -343,6 +343,23 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         // these into the ASB registry so the cross-entity guard counts them. Cross-entity is forced on via the
         // fluent ServiceBus opt-in. A queue receiver's sending path equals its receiver path (the queue IS the
         // top-level entity); a topic subscription's sending path is the distinct topic.
+        // Mirrors the descriptor lookup PopulateFromDiscoveredReceivers performs (ServiceType ==
+        // typeof(IDiscoveredReceiverRegistry), ImplementationInstance narrowed with `as`). Returns null on exactly
+        // the misses the production read swallows: a null read returns EARLY, so nothing is stamped and nothing is
+        // folded. Asserting a non-null result pins that the core had already PUBLISHED the registry, in a shape ASB's
+        // registration-time read can see, by the time ASB read it.
+        private static IDiscoveredReceiverRegistry ReadDiscoveredRegistryOffDescriptors(IServiceCollection services)
+            => services.FirstOrDefault(d => d.ServiceType == typeof(IDiscoveredReceiverRegistry))?
+                       .ImplementationInstance as IDiscoveredReceiverRegistry;
+
+        // ASB's OWN receiver registry. A core-route receiver reaches it ONLY through the
+        // PopulateFromDiscoveredReceivers fold, which runs past that null-guard, so its contents are production-side
+        // evidence that the discovered-registry read succeeded and the receiver was claimed by ASB.
+        private static global::Chatter.MessageBrokers.AzureServiceBus.DependencyInjection.ServiceBusReceiverRegistry
+            ResolveAsbReceiverRegistry(IServiceProvider provider)
+            => provider.GetRequiredService<
+                global::Chatter.MessageBrokers.AzureServiceBus.DependencyInjection.ServiceBusReceiverRegistry>();
+
         private static ServiceCollection BuildServicesWithCoreReceivers(
             Action<ServiceBusOptionsBuilder> configureServiceBus,
             Action<MessageBrokerOptionsBuilder> configureReceivers)
@@ -479,15 +496,27 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             // PopulateFromDiscoveredReceivers onto each ASB receiver's RETAINED live ReceiverOptions, so the value
             // reaches the receiver init seam. Asserted on the live ReceiverOptions held in IDiscoveredReceiverRegistry
             // — the same instance BrokeredMessageReceiver reads MaxConcurrentCalls from at startup.
-            await using var provider = BuildServicesWithCoreReceivers(
+            var services = BuildServicesWithCoreReceivers(
                 sb => sb.WithMaxConcurrentCalls(7),
-                mb => mb.AddReceiver<FirstCommand>("core-queue-a", senderPath: "core-queue-a", infrastructureType: ASBMessageContext.InfrastructureType))
-                .BuildServiceProvider();
+                mb => mb.AddReceiver<FirstCommand>("core-queue-a", senderPath: "core-queue-a", infrastructureType: ASBMessageContext.InfrastructureType));
+            await using var provider = services.BuildServiceProvider();
 
-            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            // The registry read is an `as` cast that yields NULL on a miss, and a null read stamps nothing at all,
+            // so pin that the read SUCCEEDED and landed on the same registry consumers resolve.
+            var discoveredRegistry = ReadDiscoveredRegistryOffDescriptors(services);
+            discoveredRegistry.Should().NotBeNull();
+            discoveredRegistry.Should().BeSameAs(provider.GetRequiredService<IDiscoveredReceiverRegistry>());
+
+            // The core-route receiver reached ASB's own registry, which happens only inside the fold that runs past
+            // the null-guard — production-side proof the read found the registry rather than nothing.
+            ResolveAsbReceiverRegistry(provider).DistinctTopLevelEntities().Should().Contain("core-queue-a");
+
             var asbReceiver = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "core-queue-a");
 
+            // The stamp came from the FINALIZED published ServiceBusOptions, not a coincidental literal.
+            asbReceiver.MaxConcurrentCalls.Should()
+                .Be(provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls);
             asbReceiver.MaxConcurrentCalls.Should().Be(7);
         }
 
@@ -497,15 +526,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             // Zero-behavior-change guard: with the global MaxConcurrentCalls unset (default 1), the stamp leaves
             // each ASB receiver's effective MaxConcurrentCalls at the default 1 — proving the flow does not alter
             // existing single-call (sequential) receive behavior for hosts that never configure it.
-            await using var provider = BuildServicesWithCoreReceivers(
+            var services = BuildServicesWithCoreReceivers(
                 sb => { },
-                mb => mb.AddReceiver<FirstCommand>("core-queue-a", senderPath: "core-queue-a", infrastructureType: ASBMessageContext.InfrastructureType))
-                .BuildServiceProvider();
+                mb => mb.AddReceiver<FirstCommand>("core-queue-a", senderPath: "core-queue-a", infrastructureType: ASBMessageContext.InfrastructureType));
+            await using var provider = services.BuildServiceProvider();
 
-            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            // A stamped 1 and an unstamped 1 are indistinguishable, so this arm would pass even if the registry read
+            // had found NOTHING. Close that ambiguity: the read succeeded, and the receiver was folded into ASB's
+            // own registry — which happens only past the null-guard, inside the same loop that stamps.
+            var discoveredRegistry = ReadDiscoveredRegistryOffDescriptors(services);
+            discoveredRegistry.Should().NotBeNull();
+            discoveredRegistry.Should().BeSameAs(provider.GetRequiredService<IDiscoveredReceiverRegistry>());
+            ResolveAsbReceiverRegistry(provider).DistinctTopLevelEntities().Should().Contain("core-queue-a");
+
             var asbReceiver = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "core-queue-a");
 
+            asbReceiver.MaxConcurrentCalls.Should()
+                .Be(provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls);
             asbReceiver.MaxConcurrentCalls.Should().Be(1);
         }
 
@@ -520,20 +558,27 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             // receiver in the same host keeps the global 7. Asserted on the live ReceiverOptions held in
             // IDiscoveredReceiverRegistry, the same instance BrokeredMessageReceiver reads at init: one worker ->
             // one in-flight message from the single held session receiver, FIFO-per-session preserved.
-            await using var provider = BuildServices(sb =>
+            var services = BuildServices(sb =>
             {
                 sb.WithMaxConcurrentCalls(7);
                 sb.AddSessionQueueReceiver<FirstCommand>("session-queue");
                 sb.AddQueueReceiver<SecondCommand>("normal-queue");
-            }).BuildServiceProvider();
+            });
+            await using var provider = services.BuildServiceProvider();
 
-            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            var discoveredRegistry = ReadDiscoveredRegistryOffDescriptors(services);
+            discoveredRegistry.Should().NotBeNull();
+            discoveredRegistry.Should().BeSameAs(provider.GetRequiredService<IDiscoveredReceiverRegistry>());
+
             var sessionReceiver = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "session-queue");
             var normalReceiver = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "normal-queue");
 
             sessionReceiver.MaxConcurrentCalls.Should().Be(1);
+            // The non-session receiver carries the FINALIZED published global, not a coincidental literal.
+            normalReceiver.MaxConcurrentCalls.Should()
+                .Be(provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls);
             normalReceiver.MaxConcurrentCalls.Should().Be(7);
         }
 
@@ -614,13 +659,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             // (P1) The clamp is a no-op when the global MaxConcurrentCalls is already 1 (the default): a session
             // receiver stays at 1, identical to its non-clamped state — the override neither raises nor changes a
             // host that never configured concurrency.
-            await using var provider = BuildServices(sb =>
-                sb.AddSessionQueueReceiver<FirstCommand>("session-queue")).BuildServiceProvider();
+            var services = BuildServices(sb => sb.AddSessionQueueReceiver<FirstCommand>("session-queue"));
+            await using var provider = services.BuildServiceProvider();
 
-            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            // Every value in this arm is 1, so the assertion below cannot tell a no-op clamp from a registry read
+            // that found nothing. Pin the read itself: the descriptor was found, narrowed non-null, and is the very
+            // registry consumers resolve.
+            var discoveredRegistry = ReadDiscoveredRegistryOffDescriptors(services);
+            discoveredRegistry.Should().NotBeNull();
+            discoveredRegistry.Should().BeSameAs(provider.GetRequiredService<IDiscoveredReceiverRegistry>());
+
             var sessionReceiver = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "session-queue");
 
+            sessionReceiver.MaxConcurrentCalls.Should()
+                .Be(provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls);
             sessionReceiver.MaxConcurrentCalls.Should().Be(1);
         }
 
@@ -701,18 +754,31 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             // (a) The non-ASB-default blank-typed receiver is also NOT stamped with ASB's global MaxConcurrentCalls:
             // with WithMaxConcurrentCalls(7) configured, the ASB-typed receiver is stamped to 7 but the blank-typed
             // (other-broker) receiver keeps the default 1 — proving the stamp is gated by ASB-default resolution.
-            await using var provider = BuildServicesWithPriorInfrastructureAndCoreReceivers(
+            var services = BuildServicesWithPriorInfrastructureAndCoreReceivers(
                 sb => sb.WithMaxConcurrentCalls(7),
                 mb =>
                 {
                     mb.AddReceiver<FirstCommand>("asb-queue-a", senderPath: "asb-queue-a", infrastructureType: ASBMessageContext.InfrastructureType);
                     mb.AddReceiver<SecondCommand>("other-queue-b", senderPath: "other-queue-b");
-                }).BuildServiceProvider();
+                });
+            await using var provider = services.BuildServiceProvider();
 
-            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+            // The blank receiver's 1 is also what a registry read that found NOTHING would leave behind, so pin the
+            // read: it succeeded, and the ASB-typed receiver was folded — the exclusion below is a per-receiver
+            // attribution decision, not a whole-loop no-op.
+            var discoveredRegistry = ReadDiscoveredRegistryOffDescriptors(services);
+            discoveredRegistry.Should().NotBeNull();
+            discoveredRegistry.Should().BeSameAs(provider.GetRequiredService<IDiscoveredReceiverRegistry>());
+
+            var asbRegistry = ResolveAsbReceiverRegistry(provider);
+            asbRegistry.DistinctTopLevelEntities().Should().Contain("asb-queue-a");
+            asbRegistry.DistinctTopLevelEntities().Should().NotContain("other-queue-b");
+
             var asbReceiver = discoveredRegistry.DiscoveredReceivers.Single(r => r.MessageReceiverPath == "asb-queue-a");
             var blankReceiver = discoveredRegistry.DiscoveredReceivers.Single(r => r.MessageReceiverPath == "other-queue-b");
 
+            asbReceiver.MaxConcurrentCalls.Should()
+                .Be(provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls);
             asbReceiver.MaxConcurrentCalls.Should().Be(7);
             blankReceiver.MaxConcurrentCalls.Should().Be(1);
         }

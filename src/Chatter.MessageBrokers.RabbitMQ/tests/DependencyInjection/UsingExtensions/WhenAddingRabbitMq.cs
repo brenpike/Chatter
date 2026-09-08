@@ -27,6 +27,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
     // AssemblySourceFilter.Apply() AppDomain scan), mirroring WhenAddingSqlServiceBroker.
     public class WhenAddingRabbitMq : Testing.Core.Context
     {
+        // The Chatter.CQRS assembly contains no [BrokeredMessage]-decorated IMessage types, so scoping the core
+        // assembly scan to it makes attribute-driven receiver discovery deterministically empty.
+        private static readonly System.Reflection.Assembly NoBrokeredMessageAssembly = typeof(Chatter.CQRS.IMessage).Assembly;
+
         private static IConfiguration EmptyConfig()
             => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>()).Build();
 
@@ -41,6 +45,32 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
 
             return services;
         }
+
+        // Runs AddRabbitMq behind the REAL core registration path (AddChatterCqrs -> AddMessageBrokers), so the
+        // MessageBrokerOptions instance RejectFullAtomicity reads off the descriptor set is the one the core
+        // PUBLISHED, published in the order production publishes it. Assembly scanning is scoped to the Chatter.CQRS
+        // assembly, which carries no [BrokeredMessage]-decorated types, so receiver discovery is deterministically
+        // empty and the multiple-RabbitMQ-receiver guard cannot fire.
+        private static IServiceCollection BuildRegistrationOverRealCore(
+            Action<MessageBrokerOptionsBuilder> configureMessageBrokers)
+        {
+            var services = new ServiceCollection();
+
+            services.AddChatterCqrs(EmptyConfig(), NoBrokeredMessageAssembly)
+                    .AddMessageBrokers(
+                        optionsBuilder: configureMessageBrokers,
+                        receiverHandlerSourceBuilder: b => b.WithExplicitAssemblies(NoBrokeredMessageAssembly))
+                    .AddRabbitMq(o => o.AddRabbitMqOptions(hostName: "localhost"));
+
+            return services;
+        }
+
+        // Mirrors the descriptor lookup RejectFullAtomicity performs (ServiceType == typeof(MessageBrokerOptions),
+        // ImplementationInstance narrowed with `as`). Returns null on exactly the misses the production read
+        // swallows: no descriptor, or a descriptor that is not an ImplementationInstance.
+        private static MessageBrokerOptions ReadGlobalOptionsOffDescriptors(IServiceCollection services)
+            => services.FirstOrDefault(d => d.ServiceType == typeof(MessageBrokerOptions))?
+                       .ImplementationInstance as MessageBrokerOptions;
 
         private static ServiceDescriptor Single(IServiceCollection services, Type serviceType)
             => services.Single(d => d.ServiceType == serviceType);
@@ -213,10 +243,49 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
         [Fact]
         public void MustNotThrowWhenGlobalTransactionModeIsNone()
         {
-            Action act = () => BuildRegistration(services =>
-                services.AddSingleton(GlobalOptions(TransactionMode.None)));
+            IServiceCollection services = null;
+            Action act = () => services = BuildRegistration(
+                s => s.AddSingleton(GlobalOptions(TransactionMode.None)));
 
             act.Should().NotThrow();
+
+            // "Did not throw" alone is ambiguous: the production read narrows ImplementationInstance with `as`, so a
+            // MISS yields null and the guard silently passes. Assert the read SUCCEEDED — the descriptor was found
+            // and carried the mode under test — so this arm cannot go green on a read that found nothing.
+            var globalOptions = ReadGlobalOptionsOffDescriptors(services);
+            globalOptions.Should().NotBeNull();
+            globalOptions.TransactionMode.Should().Be(TransactionMode.None);
+        }
+
+        // --- the read is against the instance the CORE published ---------------------------------------
+
+        [Fact]
+        public void MustRejectFullAtomicityPublishedByTheCoreOptionsBuild()
+        {
+            // The core publishes MessageBrokerOptions as a singleton ImplementationInstance during
+            // AddMessageBrokers, and AddRabbitMq reads it straight off the descriptor set afterwards. Driving the
+            // mode through the REAL core builder pins that ORDERING: were the publish ever to move after this read,
+            // the `as` cast would yield null, the guard would not fire, and an unsupportable configuration would
+            // boot silently.
+            Action act = () => BuildRegistrationOverRealCore(
+                mb => mb.WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure));
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustReadTheFinalizedGlobalTransactionModeOffTheCorePublishedInstance()
+        {
+            var services = BuildRegistrationOverRealCore(mb => mb.WithTransactionMode(TransactionMode.ReceiveOnly));
+
+            // The same descriptor lookup RejectFullAtomicity performs, against the core's own publish: a non-null
+            // instance carrying the finalized mode, and the very instance consumers resolve — not a second object.
+            var globalOptions = ReadGlobalOptionsOffDescriptors(services);
+            globalOptions.Should().NotBeNull();
+            globalOptions.TransactionMode.Should().Be(TransactionMode.ReceiveOnly);
+
+            using var provider = services.BuildServiceProvider();
+            globalOptions.Should().BeSameAs(provider.GetRequiredService<MessageBrokerOptions>());
         }
 
         // A non-RabbitMQ receiver requesting FullAtomicity must NOT be claimed by AddRabbitMq when RabbitMQ is

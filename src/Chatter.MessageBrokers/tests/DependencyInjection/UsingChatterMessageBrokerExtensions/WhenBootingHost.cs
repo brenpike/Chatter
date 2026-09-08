@@ -312,6 +312,58 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                     .ShouldTrip(textAccessFails).Should().BeFalse();
         }
 
+        // ------------------------------------------------------------------ (6) reliability read at registration
+
+        [Fact]
+        public void MustRouteToOutboxAndPollWhenReliabilityOptionsEnableThem()
+        {
+            using var infraReceiver = NoMessages();
+            using var provider = BuildProvider(
+                infraReceiver,
+                optionsConfigurator: b => b.AddReliabilityOptions(
+                    r => r.WithOutboxRouting().WithOutboxPollingProcessor(outboxProcessingIntervalInMilliseconds: 1234)));
+
+            // INVARIANT: AddMessageBrokers picks the outbox hosted service and the IRouteBrokeredMessages
+            // implementation by reading options.Reliability at REGISTRATION time, before any provider exists. The
+            // reliability sub-builder is retained and composed during the options build, so a Reliability facet that
+            // was empty at the moment of that read would silently take the default arm on both decisions. Pinning the
+            // published facet AND both registrations together fails if the facet the extension read was not the
+            // finalized one.
+            var reliability = provider.GetRequiredService<MessageBrokerOptions>().Reliability;
+            reliability.RouteMessagesToOutbox.Should().BeTrue();
+            reliability.EnableOutboxPollingProcessor.Should().BeTrue();
+            reliability.OutboxProcessingIntervalInMilliseconds.Should().Be(1234);
+
+            provider.GetServices<IHostedService>().Should().ContainSingle(s => s is BrokeredMessageOutboxProcessor);
+
+            using var scope = provider.CreateScope();
+            scope.ServiceProvider.GetRequiredService<IRouteBrokeredMessages>()
+                 .Should().BeOfType<OutboxBrokeredMessageRouter>();
+        }
+
+        [Fact]
+        public void MustRouteDirectlyAndNotPollWhenReliabilityOptionsLeaveTheOutboxDisabled()
+        {
+            using var infraReceiver = NoMessages();
+            using var provider = BuildProvider(
+                infraReceiver,
+                optionsConfigurator: b => b.AddReliabilityOptions(r => r.WithInMemoryOutboxTimeToLive(9)));
+
+            // The opposite arm of the SAME registration-time read, configured through the same retained sub-builder.
+            // MinutesToLiveInMemory is set to a non-default value so the facet is provably populated: "outbox off"
+            // here means the finalized facet said off, not that the extension read an empty facet.
+            var reliability = provider.GetRequiredService<MessageBrokerOptions>().Reliability;
+            reliability.MinutesToLiveInMemory.Should().Be(9);
+            reliability.RouteMessagesToOutbox.Should().BeFalse();
+            reliability.EnableOutboxPollingProcessor.Should().BeFalse();
+
+            provider.GetServices<IHostedService>().Should().NotContain(s => s is BrokeredMessageOutboxProcessor);
+
+            using var scope = provider.CreateScope();
+            scope.ServiceProvider.GetRequiredService<IRouteBrokeredMessages>()
+                 .Should().BeOfType<BrokeredMessageRouter>();
+        }
+
         // ------------------------------------------------------------------ helpers
 
         private static InMemoryMessagingInfrastructureReceiver NoMessages()
