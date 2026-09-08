@@ -50,13 +50,13 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         }
 
         private void Admit(CircuitBreakerVerdict verdict, CircuitBreakerState state, Exception lastException)
-            => _store.Setup(s => s.AdmitAsync(It.IsAny<TimeSpan>()))
+            => _store.Setup(s => s.AdmitAsync(It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
                      .ReturnsAsync(new CircuitBreakerAdmission(verdict, state, Episode, lastException));
 
         // The store answers whether THIS report transitioned the circuit. An un-stubbed report answers false —
         // "no transition" — so a test that wants the reported success to close the circuit must say so.
         private void CloseOnSuccess()
-            => _store.Setup(s => s.RecordSuccessAsync(It.IsAny<CircuitBreakerAdmission>(), It.IsAny<int>()))
+            => _store.Setup(s => s.RecordSuccessAsync(It.IsAny<CircuitBreakerAdmission>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
                      .ReturnsAsync(true);
 
         // Arranges an open REAL store through the store's own adjudication: a failure reported under the
@@ -64,8 +64,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         // command to arrange with.
         private static async Task DriveToOpenAsync(InMemoryCircuitBreakerStateStore store)
         {
-            var admission = await store.AdmitAsync(TimeSpan.Zero);
-            await store.RecordFailureAsync(admission, new FakeRecoverableException(), failuresToOpen: 1);
+            var admission = await store.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+            await store.RecordFailureAsync(
+                admission, new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None);
         }
 
         [Fact]
@@ -125,11 +126,65 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
 
             _store.Verify(s => s.RecordSuccessAsync(
                 It.Is<CircuitBreakerAdmission>(a => a.Verdict == CircuitBreakerVerdict.Trial && a.Episode == Episode),
-                _options.NumberOfHalfOpenSuccessesToClose), Times.Once);
+                _options.NumberOfHalfOpenSuccessesToClose,
+                It.IsAny<CancellationToken>()), Times.Once);
             _store.Verify(s => s.RecordFailureAsync(
                 It.Is<CircuitBreakerAdmission>(a => a.Verdict == CircuitBreakerVerdict.Trial && a.Episode == Episode),
                 It.IsAny<Exception>(),
-                _options.NumberOfFailuresBeforeOpen), Times.Once);
+                _options.NumberOfFailuresBeforeOpen,
+                It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        // INVARIANT: every member of the store contract carries the ambient cancellation of the call it
+        // adjudicates, and the breaker hands its OWN token to all three — the admission and both outcome
+        // reports alike. A store whose adjudication is real I/O can then carry that cancellation into it.
+        [Fact]
+        public async Task MustPassItsOwnTokenToEveryStoreCall()
+        {
+            Open(CircuitBreakerState.HalfOpen);
+            CloseOnSuccess();
+            _evaluator.Setup(e => e.ShouldTrip(It.IsAny<Exception>())).Returns(true);
+            using var cts = new CancellationTokenSource();
+            var sut = CreateSut();
+
+            await sut.ExecuteAsync(_ => Task.FromResult(1), cts.Token);
+            await FluentActions
+                .Invoking(async () => await sut.ExecuteAsync<int>(_ => throw new FakeRecoverableException(), cts.Token))
+                .Should().ThrowAsync<FakeRecoverableException>();
+
+            _store.Verify(s => s.AdmitAsync(It.IsAny<TimeSpan>(), cts.Token), Times.Exactly(2));
+            _store.Verify(s => s.RecordSuccessAsync(
+                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<int>(), cts.Token), Times.Once);
+            _store.Verify(s => s.RecordFailureAsync(
+                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>(), cts.Token), Times.Once);
+        }
+
+        // INVARIANT: a cancellation that arrives WHILE the store is adjudicating is honoured rather than
+        // ignored, so the action never runs for a caller that has already shut down. Re-checking the TOKEN
+        // across the admission await is not re-reading circuit STATE — the store's verdict and episode still
+        // select the branch and authorize every report, and nothing about the circuit is read a second time.
+        [Fact]
+        public async Task MustNotRunTheActionWhenCancellationArrivesWhileTheStoreIsAdjudicating()
+        {
+            using var cts = new CancellationTokenSource();
+            _store.Setup(s => s.AdmitAsync(It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                  .ReturnsAsync(() =>
+                  {
+                      cts.Cancel();
+                      return new CircuitBreakerAdmission(
+                          CircuitBreakerVerdict.Execute, CircuitBreakerState.Closed, Episode, null);
+                  });
+            var wasExecuted = false;
+
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync<int>(_ =>
+                {
+                    wasExecuted = true;
+                    return Task.FromResult(11);
+                }, cts.Token))
+                .Should().ThrowAsync<OperationCanceledException>();
+
+            wasExecuted.Should().BeFalse();
         }
 
         [Fact]
@@ -143,7 +198,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Should().ThrowAsync<FakeRecoverableException>();
 
             _store.Verify(s => s.RecordFailureAsync(
-                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>()), Times.Never);
+                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Fact]
@@ -178,7 +233,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Should().ThrowAsync<FakeRecoverableException>();
 
             _store.Verify(s => s.RecordFailureAsync(
-                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>()), Times.Once);
+                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact]
@@ -196,7 +251,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Should().ThrowAsync<CircuitBreakerOpenException>();
 
             wasExecuted.Should().BeFalse();
-            _store.Verify(s => s.AdmitAsync(It.IsAny<TimeSpan>()), Times.Once);
+            _store.Verify(s => s.AdmitAsync(It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         // INVARIANT: Refused is the DEFAULT CircuitBreakerVerdict, so an admission that was never issued denies
@@ -298,7 +353,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
 
             // The store adjudicates BEFORE the wait paces the refusal, so the admission is taken exactly once
             // and the cancelled wait is what surfaces.
-            _store.Verify(s => s.AdmitAsync(It.IsAny<TimeSpan>()), Times.Once);
+            _store.Verify(s => s.AdmitAsync(It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact]
@@ -370,7 +425,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             var inner = new InMemoryCircuitBreakerStateStore(
                 New.Common().Logger<InMemoryCircuitBreakerStateStore>().Creation);
             await DriveToOpenAsync(inner);
-            await inner.AdmitAsync(TimeSpan.Zero);
+            await inner.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
             var sut = new CircuitBreakerSut(
                 new RecoverOnAdmissionStateStore(inner, options.NumberOfHalfOpenSuccessesToClose),
                 options, _logger.Creation, _evaluator.Object);
@@ -394,7 +449,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             (await CreateSut().ExecuteAsync(_ => Task.FromResult(11))).Should().Be(11);
 
             _store.Verify(s => s.RecordSuccessAsync(
-                It.Is<CircuitBreakerAdmission>(a => a.Episode == Episode), It.IsAny<int>()), Times.Once);
+                It.Is<CircuitBreakerAdmission>(a => a.Episode == Episode),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()), Times.Once);
         }
 
         // The REOPEN half of this behaviour is the store's, adjudicated from the admission's Trial verdict —
@@ -411,7 +468,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Should().ThrowAsync<FakeRecoverableException>();
 
             _store.Verify(s => s.RecordFailureAsync(
-                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>()), Times.Once);
+                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact]
@@ -426,7 +483,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Should().ThrowAsync<FakeRecoverableException>();
 
             _store.Verify(s => s.RecordFailureAsync(
-                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>()), Times.Never);
+                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
 
             // The circuit stays HALF-OPEN and keeps executing while IsOpen still reports true: a non-tripping
             // exception neither reopens the circuit nor counts a half-open success. This mirrors the closed
@@ -450,7 +507,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Should().ThrowAsync<OperationCanceledException>();
 
             _store.Verify(s => s.RecordFailureAsync(
-                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>()), Times.Never);
+                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
             _evaluator.Verify(e => e.ShouldTrip(It.IsAny<Exception>()), Times.Never);
         }
 
@@ -469,7 +526,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 .Should().ThrowAsync<OperationCanceledException>();
 
             _store.Verify(s => s.RecordFailureAsync(
-                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>()), Times.Never);
+                It.IsAny<CircuitBreakerAdmission>(), It.IsAny<Exception>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
             _evaluator.Verify(e => e.ShouldTrip(It.IsAny<Exception>()), Times.Never);
         }
 
@@ -501,7 +558,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
 
             await CreateSut().ExecuteAsync(_ => Task.FromResult(1), watchdog.Token);
 
-            _store.Verify(s => s.AdmitAsync(It.IsAny<TimeSpan>()), Times.Once);
+            _store.Verify(s => s.AdmitAsync(It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact]
@@ -538,9 +595,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 _successesToClose = successesToClose;
             }
 
-            public async Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
+            public async Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime, CancellationToken cancellationToken)
             {
-                var admission = await _inner.AdmitAsync(openToHalfOpenWaitTime);
+                var admission = await _inner.AdmitAsync(openToHalfOpenWaitTime, cancellationToken);
                 RecoverInnerOnce(admission);
                 return admission;
             }
@@ -552,10 +609,10 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             public int FailureCount => _inner.FailureCount;
             public int SuccessCount => _inner.SuccessCount;
 
-            public Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose)
-                => _inner.RecordSuccessAsync(admission, successesToClose);
-            public Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen)
-                => _inner.RecordFailureAsync(admission, ex, failuresToOpen);
+            public Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose, CancellationToken cancellationToken)
+                => _inner.RecordSuccessAsync(admission, successesToClose, cancellationToken);
+            public Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen, CancellationToken cancellationToken)
+                => _inner.RecordFailureAsync(admission, ex, failuresToOpen, cancellationToken);
 
             private void RecoverInnerOnce(CircuitBreakerAdmission admission)
             {
@@ -565,7 +622,8 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
                 }
 
                 _hasRecovered = true;
-                _inner.RecordSuccessAsync(admission, _successesToClose).GetAwaiter().GetResult();
+                _inner.RecordSuccessAsync(admission, _successesToClose, CancellationToken.None)
+                      .GetAwaiter().GetResult();
             }
         }
     }

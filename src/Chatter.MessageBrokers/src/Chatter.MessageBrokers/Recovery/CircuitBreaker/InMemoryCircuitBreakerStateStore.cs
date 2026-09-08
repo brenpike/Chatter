@@ -1,5 +1,7 @@
 ﻿using Microsoft.Extensions.Logging;
 using System;
+using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
@@ -12,10 +14,16 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         private int _successCount;
         private Exception _lastException;
         private DateTime _lastStateChangedDateUtc;
+        private TimeSpan _lastStateChangedElapsed;
         private CircuitBreakerState _state;
         private long _episode;
         private readonly ILogger<InMemoryCircuitBreakerStateStore> _logger;
         private readonly object stateLock = new object();
+
+        // The cooling period is an ELAPSED interval, so it is measured from a monotonic source rather than from
+        // the wall clock: an NTP correction, a VM migration or an operator moving the system clock would
+        // otherwise admit a trial early or hold the circuit open past its configured wait.
+        private readonly Stopwatch _sinceConstruction = Stopwatch.StartNew();
 
         public InMemoryCircuitBreakerStateStore(ILogger<InMemoryCircuitBreakerStateStore> logger)
             => _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -55,18 +63,25 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         // admission or of an outcome reported against one; there is no transition command for a caller to issue.
         // So a caller neither selects its branch from state it observed before an await nor moves the circuit
         // from one: it receives a decision the store issued, stamped with the episode that decision belongs to.
-        public Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
+        //
+        // INVARIANT: this store's bodies are synchronous, so the caller's cancellation is honoured by refusing
+        // BEFORE stateLock is taken. Checking it inside the lock would abandon a half-applied decision, and
+        // awaiting on it under the lock is forbidden outright. The parameter is on the contract for an external
+        // store whose adjudication is real I/O.
+        public Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var enteredHalfOpen = false;
             CircuitBreakerAdmission admission;
 
             lock (stateLock)
             {
                 if (_state == CircuitBreakerState.Open
-                    && DateTime.UtcNow - _lastStateChangedDateUtc >= openToHalfOpenWaitTime)
+                    && _sinceConstruction.Elapsed - _lastStateChangedElapsed >= openToHalfOpenWaitTime)
                 {
                     _successCount = 0;
-                    _lastStateChangedDateUtc = DateTime.UtcNow;
+                    StampStateChange();
                     _state = CircuitBreakerState.HalfOpen;
                     _episode++;
                     enteredHalfOpen = true;
@@ -100,8 +115,10 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         // stateLock acquisition, so validating the admission and acting on it can never be interleaved. A
         // success is progress within ONE half-open episode: a trial that finishes after its own episode ended
         // records nothing rather than closing a circuit another caller has since tripped.
-        public Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose)
+        public Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var discarded = false;
             var closed = false;
 
@@ -115,7 +132,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 {
                     // The success count is deliberately NOT reset here: entering half-open is what starts an
                     // episode's count, and AdmitAsync already resets it there.
-                    _lastStateChangedDateUtc = DateTime.UtcNow;
+                    StampStateChange();
                     _state = CircuitBreakerState.Closed;
                     _failureCount = 0;
                     _episode++;
@@ -142,8 +159,10 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         // INVARIANT: a failed TRIAL re-opens the circuit immediately without counting toward failuresToOpen —
         // the trial IS the probe, so one failure is the whole evidence. That is a rule the STORE derives from
         // the admission's verdict, never a branch the caller chose.
-        public Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen)
+        public Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var discarded = false;
             var opened = false;
 
@@ -194,9 +213,19 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         // INVARIANT: called only while stateLock is held.
         private void OpenTheCircuit()
         {
-            _lastStateChangedDateUtc = DateTime.UtcNow;
+            StampStateChange();
             _state = CircuitBreakerState.Open;
             _episode++;
+        }
+
+        // INVARIANT: called only while stateLock is held, and it is the ONLY assignment site for either stamp.
+        // The two are set together here so a transition site cannot move one and leave the other behind: the
+        // wall-clock stamp is the published diagnostic, and the monotonic one is what every elapsed decision
+        // reads. No decision reads DateTime.UtcNow.
+        private void StampStateChange()
+        {
+            _lastStateChangedDateUtc = DateTime.UtcNow;
+            _lastStateChangedElapsed = _sinceConstruction.Elapsed;
         }
     }
 }

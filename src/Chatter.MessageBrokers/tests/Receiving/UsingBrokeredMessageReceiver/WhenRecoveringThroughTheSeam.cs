@@ -211,13 +211,13 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             public int FailureCount => _inner.FailureCount;
             public int SuccessCount => _inner.SuccessCount;
 
-            public async Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
+            public async Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime, CancellationToken cancellationToken)
             {
                 await _admitGate.WaitAsync();
                 try
                 {
                     var wasOpen = _inner.State == CircuitBreakerState.Open;
-                    var admission = await _inner.AdmitAsync(openToHalfOpenWaitTime);
+                    var admission = await _inner.AdmitAsync(openToHalfOpenWaitTime, cancellationToken);
                     if (wasOpen && _inner.State == CircuitBreakerState.HalfOpen)
                     {
                         Record(CircuitBreakerState.HalfOpen);
@@ -233,9 +233,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
 
             // The inner store returns whether THIS report transitioned the circuit, so a transition is recorded
             // only when one genuinely happened rather than whenever a caller asked for one.
-            public async Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose)
+            public async Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose, CancellationToken cancellationToken)
             {
-                var closed = await _inner.RecordSuccessAsync(admission, successesToClose);
+                var closed = await _inner.RecordSuccessAsync(admission, successesToClose, cancellationToken);
                 if (closed)
                 {
                     Record(CircuitBreakerState.Closed);
@@ -244,9 +244,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 return closed;
             }
 
-            public async Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen)
+            public async Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen, CancellationToken cancellationToken)
             {
-                var opened = await _inner.RecordFailureAsync(admission, ex, failuresToOpen);
+                var opened = await _inner.RecordFailureAsync(admission, ex, failuresToOpen, cancellationToken);
                 if (opened)
                 {
                     Record(CircuitBreakerState.Open);

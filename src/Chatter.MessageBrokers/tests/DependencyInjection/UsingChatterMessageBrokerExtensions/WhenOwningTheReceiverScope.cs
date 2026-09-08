@@ -141,11 +141,11 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
             public DateTime LastStateChangedDateUtc => DateTime.UtcNow;
             // No report ever transitions this probe: it reports the circuit ALWAYS half-open, which is the
             // whole point of the double.
-            public Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose)
+            public Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose, CancellationToken cancellationToken)
                 => Task.FromResult(false);
-            public Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen)
+            public Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen, CancellationToken cancellationToken)
                 => Task.FromResult(false);
-            public Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
+            public Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime, CancellationToken cancellationToken)
                 => Task.FromResult(new CircuitBreakerAdmission(CircuitBreakerVerdict.Trial, CircuitBreakerState.HalfOpen, 0, null));
             public bool IsClosed => false;
             public CircuitBreakerState State => CircuitBreakerState.HalfOpen;

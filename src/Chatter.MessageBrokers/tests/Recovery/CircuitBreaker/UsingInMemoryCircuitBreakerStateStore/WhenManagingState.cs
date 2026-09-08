@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Linq;
+using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -69,6 +71,31 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
             _sut.LastStateChangedDateUtc.Should().BeAfter(DateTime.MinValue);
         }
 
+        // INVARIANT: the published wall-clock stamp keeps moving at EVERY transition even though no decision
+        // reads it any more. Clearing it first is what gives these guards teeth: they fail if a transition site
+        // ever stamps the monotonic measure alone and leaves the diagnostic behind.
+        [Fact]
+        public async Task MustUpdateLastStateChangedDateWhenAnAdmissionEntersHalfOpen()
+        {
+            await DriveToOpenAsync();
+            ClearWallClockStamp();
+
+            await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+
+            _sut.LastStateChangedDateUtc.Should().BeAfter(DateTime.MinValue);
+        }
+
+        [Fact]
+        public async Task MustUpdateLastStateChangedDateWhenASuccessReportClosesTheCircuit()
+        {
+            var trial = await DriveToTrialAsync();
+            ClearWallClockStamp();
+
+            await _sut.RecordSuccessAsync(trial, successesToClose: 1, CancellationToken.None);
+
+            _sut.LastStateChangedDateUtc.Should().BeAfter(DateTime.MinValue);
+        }
+
         [Fact]
         public async Task MustLogOpenTransition()
         {
@@ -82,7 +109,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
             var trial = await DriveToTrialAsync();
             _sut.FailureCount.Should().Be(1);
 
-            await _sut.RecordSuccessAsync(trial, successesToClose: 1);
+            await _sut.RecordSuccessAsync(trial, successesToClose: 1, CancellationToken.None);
 
             _sut.FailureCount.Should().Be(0);
         }
@@ -91,18 +118,18 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         public async Task MustLogClosedTransition()
         {
             var trial = await DriveToTrialAsync();
-            await _sut.RecordSuccessAsync(trial, successesToClose: 1);
+            await _sut.RecordSuccessAsync(trial, successesToClose: 1, CancellationToken.None);
             _logger.VerifyWasCalled(LogLevel.Information, "Circuit Breaker is now in the CLOSED state.", Times.Once());
         }
 
         [Fact]
         public async Task MustAdmitExecutionAndMutateNothingWhenTheCircuitIsClosed()
         {
-            var first = await _sut.AdmitAsync(TimeSpan.Zero);
-            await _sut.RecordFailureAsync(first, new FakeRecoverableException(), failuresToOpen: 2);
+            var first = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+            await _sut.RecordFailureAsync(first, new FakeRecoverableException(), failuresToOpen: 2, CancellationToken.None);
             var lastStateChanged = _sut.LastStateChangedDateUtc;
 
-            var admission = await _sut.AdmitAsync(TimeSpan.Zero);
+            var admission = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
             admission.Verdict.Should().Be(CircuitBreakerVerdict.Execute);
             admission.State.Should().Be(CircuitBreakerState.Closed);
@@ -116,7 +143,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
             await DriveToOpenAsync();
             var lastStateChanged = _sut.LastStateChangedDateUtc;
 
-            var admission = await _sut.AdmitAsync(TimeSpan.FromMinutes(5));
+            var admission = await _sut.AdmitAsync(TimeSpan.FromMinutes(5), CancellationToken.None);
 
             admission.Verdict.Should().Be(CircuitBreakerVerdict.Refused);
             _sut.State.Should().Be(CircuitBreakerState.Open);
@@ -129,9 +156,39 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
             var ex = new FakeRecoverableException("boom");
             await DriveToOpenAsync(ex);
 
-            var admission = await _sut.AdmitAsync(TimeSpan.FromMinutes(5));
+            var admission = await _sut.AdmitAsync(TimeSpan.FromMinutes(5), CancellationToken.None);
 
             admission.LastException.Should().BeSameAs(ex);
+        }
+
+        // INVARIANT: the cooling period is measured from a MONOTONIC source, so a wall-clock correction — an
+        // NTP step, a VM migration, an operator moving the clock — cannot change when an open circuit is
+        // admitted to a trial. A BACKWARD correction is the dangerous direction under a wall-clock measure: it
+        // makes an interval that has not passed look as though it has, and admits a trial early.
+        [Fact]
+        public async Task MustNotAdmitATrialEarlyWhenTheWallClockStampMovesBackward()
+        {
+            await DriveToOpenAsync();
+            MoveWallClockStamp(TimeSpan.FromHours(-1));
+
+            var admission = await _sut.AdmitAsync(TimeSpan.FromMinutes(30), CancellationToken.None);
+
+            admission.Verdict.Should().Be(CircuitBreakerVerdict.Refused);
+            _sut.State.Should().Be(CircuitBreakerState.Open);
+        }
+
+        // The other direction of the same defect: a FORWARD correction makes an elapsed interval look as though
+        // it lies in the future, holding the circuit open past its configured wait — potentially far past it.
+        [Fact]
+        public async Task MustStillAdmitATrialWhenTheWallClockStampMovesForward()
+        {
+            await DriveToOpenAsync();
+            MoveWallClockStamp(TimeSpan.FromHours(1));
+
+            var admission = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+
+            admission.Verdict.Should().Be(CircuitBreakerVerdict.Trial);
+            _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
         }
 
         [Fact]
@@ -140,11 +197,11 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
             // The first episode carries a success, so the reset below is a real reset rather than an
             // already-zero count that would pass whatever the store did.
             var firstTrial = await DriveToTrialAsync();
-            await _sut.RecordSuccessAsync(firstTrial, successesToClose: 2);
-            await _sut.RecordFailureAsync(firstTrial, new FakeRecoverableException(), failuresToOpen: 1);
-            var whileCooling = await _sut.AdmitAsync(TimeSpan.FromMinutes(5));
+            await _sut.RecordSuccessAsync(firstTrial, successesToClose: 2, CancellationToken.None);
+            await _sut.RecordFailureAsync(firstTrial, new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None);
+            var whileCooling = await _sut.AdmitAsync(TimeSpan.FromMinutes(5), CancellationToken.None);
 
-            var admission = await _sut.AdmitAsync(TimeSpan.Zero);
+            var admission = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
             admission.Verdict.Should().Be(CircuitBreakerVerdict.Trial);
             admission.State.Should().Be(CircuitBreakerState.HalfOpen);
@@ -157,9 +214,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         public async Task MustAdmitATrialAndLeaveTheSuccessCountWhenTheCircuitIsAlreadyHalfOpen()
         {
             var entered = await DriveToTrialAsync();
-            await _sut.RecordSuccessAsync(entered, successesToClose: 2);
+            await _sut.RecordSuccessAsync(entered, successesToClose: 2, CancellationToken.None);
 
-            var admission = await _sut.AdmitAsync(TimeSpan.Zero);
+            var admission = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
             admission.Verdict.Should().Be(CircuitBreakerVerdict.Trial);
             admission.Episode.Should().Be(entered.Episode);
@@ -171,8 +228,8 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         {
             await DriveToOpenAsync();
 
-            await _sut.AdmitAsync(TimeSpan.Zero);
-            await _sut.AdmitAsync(TimeSpan.Zero);
+            await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+            await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
             _logger.VerifyWasCalled(LogLevel.Information, "Circuit Breaker is now in the HALF-OPEN state.", Times.Once());
         }
@@ -181,11 +238,60 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         public async Task MustIssueANewEpisodeForEveryHalfOpenAdmission()
         {
             var first = await DriveToTrialAsync();
-            await _sut.RecordFailureAsync(first, new FakeRecoverableException(), failuresToOpen: 1);
+            await _sut.RecordFailureAsync(first, new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None);
 
-            var second = await _sut.AdmitAsync(TimeSpan.Zero);
+            var second = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
             second.Episode.Should().NotBe(first.Episode);
+        }
+
+        // INVARIANT: every member of the contract carries the ambient cancellation of the call it adjudicates.
+        // This store's bodies are synchronous under one lock, so it honours the token by refusing BEFORE taking
+        // that lock — never inside it, and never by awaiting under it. The parameter is on the contract so an
+        // external store doing real I/O can carry the caller's cancellation into that I/O.
+        [Fact]
+        public async Task MustRefuseToAdmitWithoutTouchingStateWhenTheTokenIsAlreadyCancelled()
+        {
+            await DriveToOpenAsync();
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await FluentActions.Invoking(async () => await _sut.AdmitAsync(TimeSpan.Zero, cts.Token))
+                .Should().ThrowAsync<OperationCanceledException>();
+
+            _sut.State.Should().Be(CircuitBreakerState.Open);
+        }
+
+        [Fact]
+        public async Task MustRecordNothingWhenASuccessIsReportedWithAnAlreadyCancelledToken()
+        {
+            var trial = await DriveToTrialAsync();
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await FluentActions
+                .Invoking(async () => await _sut.RecordSuccessAsync(trial, successesToClose: 1, cts.Token))
+                .Should().ThrowAsync<OperationCanceledException>();
+
+            _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
+            _sut.SuccessCount.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task MustRecordNothingWhenAFailureIsReportedWithAnAlreadyCancelledToken()
+        {
+            var execute = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await FluentActions
+                .Invoking(async () => await _sut.RecordFailureAsync(
+                    execute, new FakeRecoverableException(), failuresToOpen: 1, cts.Token))
+                .Should().ThrowAsync<OperationCanceledException>();
+
+            _sut.State.Should().Be(CircuitBreakerState.Closed);
+            _sut.FailureCount.Should().Be(0);
+            _sut.LastException.Should().BeNull();
         }
 
         [Fact]
@@ -221,10 +327,10 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         public async Task MustDiscardASuccessWhoseEpisodeHasEnded()
         {
             var trial = await DriveToTrialAsync();
-            await _sut.RecordSuccessAsync(trial, successesToClose: 2);
-            await _sut.RecordFailureAsync(trial, new FakeRecoverableException(), failuresToOpen: 1);
+            await _sut.RecordSuccessAsync(trial, successesToClose: 2, CancellationToken.None);
+            await _sut.RecordFailureAsync(trial, new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None);
 
-            (await _sut.RecordSuccessAsync(trial, successesToClose: 2)).Should().BeFalse();
+            (await _sut.RecordSuccessAsync(trial, successesToClose: 2, CancellationToken.None)).Should().BeFalse();
 
             _sut.SuccessCount.Should().Be(1);
         }
@@ -233,9 +339,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         public async Task MustStoreTheLastExceptionForAFailureThatDoesNotOpenTheCircuit()
         {
             var ex = new FakeRecoverableException("failure");
-            var execute = await _sut.AdmitAsync(TimeSpan.Zero);
+            var execute = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
-            await _sut.RecordFailureAsync(execute, ex, failuresToOpen: 2);
+            await _sut.RecordFailureAsync(execute, ex, failuresToOpen: 2, CancellationToken.None);
 
             _sut.State.Should().Be(CircuitBreakerState.Closed);
             _sut.LastException.Should().BeSameAs(ex);
@@ -247,24 +353,44 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         // ENDED, so a test can report against an episode the store has already moved past.
         private async Task<CircuitBreakerAdmission> DriveToOpenAsync(Exception ex = null)
         {
-            var admission = await _sut.AdmitAsync(TimeSpan.Zero);
-            await _sut.RecordFailureAsync(admission, ex ?? new FakeRecoverableException(), failuresToOpen: 1);
+            var admission = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+            await _sut.RecordFailureAsync(admission, ex ?? new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None);
             return admission;
         }
 
         private async Task<CircuitBreakerAdmission> DriveToTrialAsync(Exception ex = null)
         {
             await DriveToOpenAsync(ex);
-            return await _sut.AdmitAsync(TimeSpan.Zero);
+            return await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
         }
+
+        // The wall-clock stamp the store publishes has no setter — it is a diagnostic, never an input — so a
+        // clock correction is simulated by moving the field behind it. Nothing the store DECIDES may move with
+        // it; that is exactly what the two tests above pin.
+        private static FieldInfo WallClockStampField()
+        {
+            var field = typeof(InMemoryCircuitBreakerStateStore)
+                .GetField("_lastStateChangedDateUtc", BindingFlags.Instance | BindingFlags.NonPublic);
+
+            field.Should().NotBeNull(because: "the store keeps the published wall-clock stamp in this field");
+            return field;
+        }
+
+        private void MoveWallClockStamp(TimeSpan by)
+        {
+            var field = WallClockStampField();
+            field.SetValue(_sut, ((DateTime)field.GetValue(_sut)).Add(by));
+        }
+
+        private void ClearWallClockStamp() => WallClockStampField().SetValue(_sut, DateTime.MinValue);
 
         [Fact]
         public async Task MustCountEverySuccessReportedUnderTheTrialAdmission()
         {
             var trial = await DriveToTrialAsync();
 
-            await _sut.RecordSuccessAsync(trial, successesToClose: 3);
-            await _sut.RecordSuccessAsync(trial, successesToClose: 3);
+            await _sut.RecordSuccessAsync(trial, successesToClose: 3, CancellationToken.None);
+            await _sut.RecordSuccessAsync(trial, successesToClose: 3, CancellationToken.None);
 
             _sut.SuccessCount.Should().Be(2);
         }
@@ -274,7 +400,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         {
             var trial = await DriveToTrialAsync();
 
-            (await _sut.RecordSuccessAsync(trial, successesToClose: 1)).Should().BeTrue();
+            (await _sut.RecordSuccessAsync(trial, successesToClose: 1, CancellationToken.None)).Should().BeTrue();
 
             _sut.State.Should().Be(CircuitBreakerState.Closed);
         }
@@ -284,7 +410,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         {
             var trial = await DriveToTrialAsync();
 
-            (await _sut.RecordSuccessAsync(trial, successesToClose: 2)).Should().BeFalse();
+            (await _sut.RecordSuccessAsync(trial, successesToClose: 2, CancellationToken.None)).Should().BeFalse();
 
             _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
         }
@@ -296,9 +422,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         public async Task MustNotCloseTheCircuitForASuccessReportedAgainstAnEndedEpisode()
         {
             var trial = await DriveToTrialAsync();
-            await _sut.RecordFailureAsync(trial, new FakeRecoverableException(), failuresToOpen: 1);
+            await _sut.RecordFailureAsync(trial, new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None);
 
-            (await _sut.RecordSuccessAsync(trial, successesToClose: 1)).Should().BeFalse();
+            (await _sut.RecordSuccessAsync(trial, successesToClose: 1, CancellationToken.None)).Should().BeFalse();
 
             _sut.State.Should().Be(CircuitBreakerState.Open);
         }
@@ -310,8 +436,8 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         {
             var neverIssued = default(CircuitBreakerAdmission);
 
-            (await _sut.RecordSuccessAsync(neverIssued, successesToClose: 1)).Should().BeFalse();
-            (await _sut.RecordFailureAsync(neverIssued, new FakeRecoverableException(), failuresToOpen: 1))
+            (await _sut.RecordSuccessAsync(neverIssued, successesToClose: 1, CancellationToken.None)).Should().BeFalse();
+            (await _sut.RecordFailureAsync(neverIssued, new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None))
                 .Should().BeFalse();
 
             _sut.State.Should().Be(CircuitBreakerState.Closed);
@@ -323,9 +449,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         [Fact]
         public async Task MustOpenTheCircuitWhenTheFailureThresholdIsReached()
         {
-            var execute = await _sut.AdmitAsync(TimeSpan.Zero);
+            var execute = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
-            (await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 1))
+            (await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None))
                 .Should().BeTrue();
 
             _sut.State.Should().Be(CircuitBreakerState.Open);
@@ -334,9 +460,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         [Fact]
         public async Task MustNotOpenTheCircuitWhenTheFailureCountIsBelowTheThreshold()
         {
-            var execute = await _sut.AdmitAsync(TimeSpan.Zero);
+            var execute = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
-            (await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 2))
+            (await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 2, CancellationToken.None))
                 .Should().BeFalse();
 
             _sut.State.Should().Be(CircuitBreakerState.Closed);
@@ -345,10 +471,10 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         [Fact]
         public async Task MustCountEveryFailureReportedUnderTheExecuteAdmission()
         {
-            var execute = await _sut.AdmitAsync(TimeSpan.Zero);
+            var execute = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
 
-            await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 3);
-            await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 3);
+            await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 3, CancellationToken.None);
+            await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 3, CancellationToken.None);
 
             _sut.FailureCount.Should().Be(2);
         }
@@ -358,15 +484,15 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         [Fact]
         public async Task MustReportOnlyTheCallThatTransitionedTheCircuit()
         {
-            var execute = await _sut.AdmitAsync(TimeSpan.Zero);
-            (await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 2))
+            var execute = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+            (await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 2, CancellationToken.None))
                 .Should().BeFalse();
-            (await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 2))
+            (await _sut.RecordFailureAsync(execute, new FakeRecoverableException(), failuresToOpen: 2, CancellationToken.None))
                 .Should().BeTrue();
 
-            var trial = await _sut.AdmitAsync(TimeSpan.Zero);
-            (await _sut.RecordSuccessAsync(trial, successesToClose: 2)).Should().BeFalse();
-            (await _sut.RecordSuccessAsync(trial, successesToClose: 2)).Should().BeTrue();
+            var trial = await _sut.AdmitAsync(TimeSpan.Zero, CancellationToken.None);
+            (await _sut.RecordSuccessAsync(trial, successesToClose: 2, CancellationToken.None)).Should().BeFalse();
+            (await _sut.RecordSuccessAsync(trial, successesToClose: 2, CancellationToken.None)).Should().BeTrue();
         }
 
         // INVARIANT (finding 2): a trial overtaken on the breaker's half-open semaphore reports its failure
@@ -376,9 +502,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         public async Task MustNotOpenTheCircuitForAFailureReportedAgainstAnEndedEpisode()
         {
             var trial = await DriveToTrialAsync();
-            await _sut.RecordSuccessAsync(trial, successesToClose: 1);
+            await _sut.RecordSuccessAsync(trial, successesToClose: 1, CancellationToken.None);
 
-            (await _sut.RecordFailureAsync(trial, new FakeRecoverableException(), failuresToOpen: 1))
+            (await _sut.RecordFailureAsync(trial, new FakeRecoverableException(), failuresToOpen: 1, CancellationToken.None))
                 .Should().BeFalse();
 
             _sut.State.Should().Be(CircuitBreakerState.Closed);
@@ -389,9 +515,9 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         {
             var opening = new FakeRecoverableException("opened the circuit");
             var trial = await DriveToTrialAsync(opening);
-            await _sut.RecordSuccessAsync(trial, successesToClose: 1);
+            await _sut.RecordSuccessAsync(trial, successesToClose: 1, CancellationToken.None);
 
-            await _sut.RecordFailureAsync(trial, new FakeRecoverableException("belongs to no episode"), failuresToOpen: 1);
+            await _sut.RecordFailureAsync(trial, new FakeRecoverableException("belongs to no episode"), failuresToOpen: 1, CancellationToken.None);
 
             _sut.LastException.Should().BeSameAs(opening);
         }
@@ -404,7 +530,7 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
             var trial = await DriveToTrialAsync();
             var failuresBeforeTheTrial = _sut.FailureCount;
 
-            (await _sut.RecordFailureAsync(trial, new FakeRecoverableException(), failuresToOpen: int.MaxValue))
+            (await _sut.RecordFailureAsync(trial, new FakeRecoverableException(), failuresToOpen: int.MaxValue, CancellationToken.None))
                 .Should().BeTrue();
 
             _sut.State.Should().Be(CircuitBreakerState.Open);

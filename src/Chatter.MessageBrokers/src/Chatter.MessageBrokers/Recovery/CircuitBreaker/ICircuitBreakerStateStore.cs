@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
@@ -47,6 +48,13 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
     public interface ICircuitBreakerStateStore
     {
         Exception LastException { get; }
+
+        /// <summary>
+        /// When the circuit last changed state, in wall-clock terms. This is a DIAGNOSTIC: no decision the
+        /// store makes reads it. An implementation measures the cooling interval an admission adjudicates from
+        /// a MONOTONIC source instead, so a wall-clock correction cannot admit a trial early or hold the
+        /// circuit open past its configured wait.
+        /// </summary>
         DateTime LastStateChangedDateUtc { get; }
 
         /// <summary>
@@ -59,9 +67,10 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         /// <param name="successesToClose">How many successes within one half-open episode close the circuit. The
         /// threshold travels with the report rather than being held by the store, so the store carries no
         /// configuration of its own.</param>
+        /// <param name="cancellationToken">The ambient cancellation of the call this outcome belongs to.</param>
         /// <returns><see langword="true"/> only when THIS report is what closed the circuit; <see langword="false"/>
         /// when it was counted without closing, or discarded.</returns>
-        Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose);
+        Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose, CancellationToken cancellationToken);
 
         /// <summary>
         /// Reports one failure against the admission that authorized the call, adjudicated the same way
@@ -74,15 +83,20 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         /// only when the report is accepted.</param>
         /// <param name="failuresToOpen">How many failures open the circuit. Like the success threshold, it travels
         /// with the report rather than being held by the store.</param>
+        /// <param name="cancellationToken">The ambient cancellation of the call this outcome belongs to.</param>
         /// <returns><see langword="true"/> only when THIS report is what opened the circuit; <see langword="false"/>
         /// when it was counted without opening, or discarded.</returns>
-        Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen);
+        Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen, CancellationToken cancellationToken);
 
         /// <summary>
         /// Adjudicates one caller's admission against the store's own state, transitioning an open circuit whose
         /// cooling period has elapsed into the half-open state as part of the same decision.
         /// </summary>
-        Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime);
+        /// <param name="openToHalfOpenWaitTime">How long an open circuit cools before a trial is admitted. An
+        /// implementation measures the interval that has elapsed since the last transition from a MONOTONIC
+        /// source — never from the wall clock, which a clock correction moves in either direction.</param>
+        /// <param name="cancellationToken">The ambient cancellation of the call being adjudicated.</param>
+        Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime, CancellationToken cancellationToken);
         bool IsClosed { get; }
         CircuitBreakerState State { get; }
         int FailureCount { get; }

@@ -52,7 +52,14 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var admission = await _stateStore.AdmitAsync(_openToHalfOpenWaitTime);
+            var admission = await _stateStore.AdmitAsync(_openToHalfOpenWaitTime, cancellationToken);
+
+            // INVARIANT: re-checking the TOKEN across the admission await is NOT re-reading circuit STATE — the
+            // anti-pattern this type was rewritten to remove. The admission's verdict and episode still select
+            // the branch and authorize every report, and nothing about the circuit is read a second time. What
+            // is honoured here is a cancellation that arrived while the store was adjudicating, so a caller
+            // that has already shut down does not have its action run anyway.
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (admission.Verdict == CircuitBreakerVerdict.Trial)
             {
@@ -92,7 +99,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             try
             {
                 var context = await action(admission.State);
-                await ReportSuccessAsync(admission);
+                await ReportSuccessAsync(admission, cancellationToken);
                 return context;
             }
             catch (Exception ex)
@@ -127,11 +134,11 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
         // INVARIANT: the single success-report site. The breaker reports a success only on the trial path, and
         // the store's Trial-only guard makes that a store-ENFORCED rule rather than a caller convention.
-        private async Task ReportSuccessAsync(CircuitBreakerAdmission admission)
+        private async Task ReportSuccessAsync(CircuitBreakerAdmission admission, CancellationToken cancellationToken)
         {
             _logger.LogTrace("Reporting a success against the issued admission");
 
-            if (await _stateStore.RecordSuccessAsync(admission, _numberOfHalfOpenSuccessesToClose))
+            if (await _stateStore.RecordSuccessAsync(admission, _numberOfHalfOpenSuccessesToClose, cancellationToken))
             {
                 ResetOpenTimer();
             }
@@ -150,7 +157,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
             _logger.LogTrace("Reporting a failure against the issued admission");
 
-            if (await _stateStore.RecordFailureAsync(admission, ex, _numberOfFailuresBeforeOpen))
+            if (await _stateStore.RecordFailureAsync(admission, ex, _numberOfFailuresBeforeOpen, cancellationToken))
             {
                 StartOpenTimer();
             }
