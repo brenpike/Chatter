@@ -182,6 +182,27 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             _store.Verify(s => s.AdmitAsync(It.IsAny<TimeSpan>()), Times.Once);
         }
 
+        // INVARIANT: Refused is the DEFAULT CircuitBreakerVerdict, so an admission that was never issued denies
+        // rather than admits. This test deliberately sets up NO AdmitAsync — the un-stubbed Moq
+        // Task<CircuitBreakerAdmission> completes with default(CircuitBreakerAdmission), which is exactly the
+        // "never issued" admission — and pins that the breaker refuses on it instead of silently taking a branch.
+        [Fact]
+        public async Task MustRefuseOnAnAdmissionThatWasNeverIssued()
+        {
+            default(CircuitBreakerAdmission).Verdict.Should().Be(CircuitBreakerVerdict.Refused);
+            var wasExecuted = false;
+
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync<int>(_ =>
+                {
+                    wasExecuted = true;
+                    return Task.FromResult(11);
+                }))
+                .Should().ThrowAsync<CircuitBreakerOpenException>();
+
+            wasExecuted.Should().BeFalse();
+        }
+
         [Fact]
         public async Task MustCarryLastExceptionOnTheRefusalWhenOpen()
         {
