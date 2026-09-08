@@ -364,6 +364,30 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
                  .Should().BeOfType<BrokeredMessageRouter>();
         }
 
+        // ------------------------------------------------------------------ (7) recovery publish precedes defaults
+
+        [Fact]
+        public void MustResolveConfiguredRetryDelayStrategyNotThePresenceGatedDefault()
+        {
+            using var infraReceiver = NoMessages();
+            using var provider = BuildProvider(
+                infraReceiver,
+                optionsConfigurator: b => b.AddRecoveryOptions(r => r.UseConstantDelayRecovery(250)));
+
+            // INVARIANT: MessageBrokerOptionsBuilder.Build() must actually Publish the recovery sub-builder's
+            // configured IRetryDelayStrategy via Replace (RemoveAll+Add), so it always wins over
+            // ChatterMessageBrokerExtensions' own presence-gated AddIfNotRegistered<IRetryDelayStrategy,
+            // NoDelayRetry> default regardless of call order. What this pins is that Publish's Replace call fires at
+            // all, and that the default stays presence-gated rather than becoming an unconditional Replace/Add of
+            // its own - either regression would let NoDelayRetry silently win over a consumer's configured strategy.
+            // ConstantDelayRetry is asserted (not NoDelayRetry) because NoDelayRetry is ALSO the shipped default: a
+            // test configuring UseNoDelayRecovery would pass whether or not Publish actually ran, so it cannot
+            // distinguish a genuine publish from a silently-won default.
+            using var scope = provider.CreateScope();
+            scope.ServiceProvider.GetRequiredService<IRetryDelayStrategy>()
+                 .Should().BeOfType<ConstantDelayRetry>();
+        }
+
         // ------------------------------------------------------------------ helpers
 
         private static InMemoryMessagingInfrastructureReceiver NoMessages()
