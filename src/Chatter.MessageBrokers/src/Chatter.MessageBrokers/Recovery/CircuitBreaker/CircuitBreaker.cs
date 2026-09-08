@@ -54,17 +54,21 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
 
             var admission = await _stateStore.AdmitAsync(_openToHalfOpenWaitTime);
 
-            if (admission.Verdict == CircuitBreakerVerdict.Refused)
+            if (admission.Verdict == CircuitBreakerVerdict.Trial)
+            {
+                return await ExecuteTrialAsync(action, admission, cancellationToken);
+            }
+
+            // A verdict is AUTHORIZED to run the action, never merely not-forbidden — the same positive
+            // allowlist the store's two report sites apply. A dispatch that refused only Refused would run the
+            // action for a verdict added later and then have its failure discarded by the store, hiding the
+            // fault from the circuit entirely.
+            if (admission.Verdict != CircuitBreakerVerdict.Execute)
             {
                 // The wait paces the refusal. The receive loop has no pacing of its own and the default retry
                 // delay strategy is NoDelayRetry, so returning the refusal immediately would busy-spin.
                 await Task.Delay(_openToHalfOpenWaitTime, cancellationToken);
                 throw new CircuitBreakerOpenException(admission.LastException);
-            }
-
-            if (admission.Verdict == CircuitBreakerVerdict.Trial)
-            {
-                return await ExecuteTrialAsync(action, admission, cancellationToken);
             }
 
             try

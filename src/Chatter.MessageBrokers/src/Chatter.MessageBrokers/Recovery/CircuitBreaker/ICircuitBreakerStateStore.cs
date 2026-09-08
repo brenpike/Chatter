@@ -19,7 +19,9 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
     /// made, not state the caller observed, so it cannot go stale across an await: it names the branch the
     /// caller is admitted to and the half-open episode that branch belongs to. It is also the token required to
     /// move the circuit — every outcome is reported back against the admission that authorized the call — so a
-    /// caller holds no way to command a transition of its own.
+    /// caller holds no way to command a transition of its own. What a store adjudicates a report on is the
+    /// <see cref="Verdict"/> and <see cref="Episode"/> the admission carries, re-checked under the store's own
+    /// synchronization; the admission carries no proof of who issued it, so it authorizes rather than authenticates.
     /// </summary>
     public readonly struct CircuitBreakerAdmission
     {
@@ -51,7 +53,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         /// Reports one success against the admission that authorized the call. The store adjudicates the report
         /// — a success can only ever CLOSE the circuit, and only a <see cref="CircuitBreakerVerdict.Trial"/>
         /// admission may report one — so the caller never commands the transition. A success reported against an
-        /// admission whose episode has ended, or against one the store never issued, records nothing at all.
+        /// admission whose episode has ended, or against one that did not authorize a trial, records nothing at all.
         /// </summary>
         /// <param name="admission">The admission this outcome is reported against: the one the store issued to this caller.</param>
         /// <param name="successesToClose">How many successes within one half-open episode close the circuit. The

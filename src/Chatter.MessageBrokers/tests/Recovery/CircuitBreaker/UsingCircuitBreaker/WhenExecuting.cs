@@ -220,6 +220,27 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
             wasExecuted.Should().BeFalse();
         }
 
+        // INVARIANT: the branch dispatch is a POSITIVE ALLOWLIST — only Execute and Trial run the action, so a
+        // verdict added later, or one an external store invents, refuses instead of executing. The store's two
+        // report sites already allowlist the verdicts they accept, so a fail-OPEN dispatch would run an action
+        // whose failure the store would then discard, hiding the fault from the circuit entirely.
+        [Fact]
+        public async Task MustRefuseAnAdmissionCarryingAVerdictOutsideTheContract()
+        {
+            Admit((CircuitBreakerVerdict)int.MaxValue, CircuitBreakerState.Closed, null);
+            var wasExecuted = false;
+
+            await FluentActions
+                .Invoking(async () => await CreateSut().ExecuteAsync<int>(_ =>
+                {
+                    wasExecuted = true;
+                    return Task.FromResult(11);
+                }))
+                .Should().ThrowAsync<CircuitBreakerOpenException>();
+
+            wasExecuted.Should().BeFalse();
+        }
+
         [Fact]
         public async Task MustCarryLastExceptionOnTheRefusalWhenOpen()
         {
