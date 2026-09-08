@@ -29,6 +29,13 @@ _Avoid_: forwarder (a Router specialization).
 
 **Circuit Breaker**: A recovery policy that halts processing after repeated failures.
 
+**Admission**: The grant a Circuit Breaker's state store ISSUES to one caller, naming the branch that caller is admitted to. It is a decision the store made, not state the caller observed, so it cannot go stale: the caller acts on the grant it was issued rather than reading the circuit's state to select a branch. Issuing it is also what adjudicates the cooling period — an open circuit whose wait has elapsed enters the half-open state as part of the same single decision, and one that is still cooling is refused and left open.
+_Avoid_: reading an Admission as an OBSERVATION of circuit state — an observation is already stale by the time the caller branches on it, which is the whole distinction this term exists to keep. The store ADJUDICATES and a caller never COMMANDS a transition, so do not reintroduce "half-open command" framing.
+
+**Verdict**: Which branch an Admission names — **Refused** (the circuit declines to run the action and answers the caller with its last exception), **Execute** (the action runs against a closed circuit), or **Trial** (the action runs as one half-open trial).
+
+**Episode**: The generation of one circuit state. Every transition begins a new episode, and progress belongs to the episode it was admitted under: a half-open trial's success is recorded against its own episode, and a success whose episode has ended is discarded rather than counted toward closing a later one.
+
 **Critical Failure**: An unrecoverable receive error; raises a Critical Failure Event and may route the message to the Error Queue.
 
 **Error Queue**: Destination for messages that exhausted recovery and cannot be handled.
