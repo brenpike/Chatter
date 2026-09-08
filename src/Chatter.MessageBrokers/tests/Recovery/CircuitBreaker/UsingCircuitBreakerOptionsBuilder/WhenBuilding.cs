@@ -27,6 +27,21 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingCircuitBreak
         }
 
         [Fact]
+        public void MustNotRegisterAnyServiceWhenResolved()
+        {
+            var services = new ServiceCollection();
+
+            var options = CircuitBreakerOptionsBuilder.Create(services)
+                .SetNumberOfFailuresBeforeOpen(7)
+                .IsTrippedBy<InvalidOperationException>()
+                .Resolve();
+
+            options.NumberOfFailuresBeforeOpen.Should().Be(7);
+            options.ConcurrentHalfOpenAttempts.Should().Be(1);
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
         public void MustThrowArgumentNullExceptionWhenServicesIsNull()
         {
             var create = () => CircuitBreakerOptionsBuilder.Create(null);

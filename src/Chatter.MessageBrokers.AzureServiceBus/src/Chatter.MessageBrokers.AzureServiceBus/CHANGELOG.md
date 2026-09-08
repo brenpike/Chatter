@@ -4,13 +4,11 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
+## [2.3.0] - 2026-09-08
 
 ### Changed
 
-### Fixed
+- **A `RetryPolicy` section that a fluent override discards is no longer bound at all.** `ServiceBusOptionsBuilder.Build()` used to bind the whole configuration section — including `RetryPolicy` — before resolving which retry source wins; the fluent-first check that decides `ResolveRetryOptions` only ran afterward. `RetryPolicy` is now bound inside `ResolveRetryOptions`, behind that same fluent-first check, so a `RetryPolicy` section a fluent call such as `WithNoRetry()` or `WithExponentialDelay(...)` overrides is never bound at all. A configured `RetryPolicy` key the `ConfigurationBinder` cannot convert — for example `MaximumRetryCount: "oops"` — therefore no longer fails `Build()` when a fluent override was going to discard that section anyway; it previously did, because the bind ran unconditionally. Pinned by `MustStartWithFluentNoRetryWhenTheConfiguredRetryPolicyIsOneTheBinderCannotConvert`. A `RetryPolicy` section the binder *can* convert but a fluent override still discards was already never constructed or handed to the Azure SDK as of 2.2.0 — that part is unchanged (#423).
 
 ## [2.2.0] - 2026-09-03
 

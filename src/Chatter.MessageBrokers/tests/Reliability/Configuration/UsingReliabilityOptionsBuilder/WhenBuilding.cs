@@ -24,6 +24,18 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
         }
 
+        [Fact]
+        public void MustNotRegisterAnyServiceWhenResolved()
+        {
+            var services = new ServiceCollection();
+
+            var options = ReliabilityOptionsBuilder.Create(services).WithOutboxRouting().Resolve();
+
+            options.RouteMessagesToOutbox.Should().BeTrue();
+            options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
+            services.Should().BeEmpty();
+        }
+
         /// <summary>
         /// A configured value of the wrong TYPE is the one configuration failure that still happens while
         /// the options are being built, and the one that names the key: <c>ConfigurationBinder</c> cannot

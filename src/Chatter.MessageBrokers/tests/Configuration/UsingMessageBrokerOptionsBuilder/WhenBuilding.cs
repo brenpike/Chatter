@@ -2,13 +2,17 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Options;
+using Chatter.MessageBrokers.Recovery.Retry;
 using Chatter.MessageBrokers.Reliability.Configuration;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBuilder
@@ -105,6 +109,89 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
                 .Build();
 
             options.Recovery.Should().NotBeNull();
+        }
+
+        [Fact]
+        public void MustNotRegisterAnyServiceWhenResolved()
+        {
+            var services = new ServiceCollection();
+
+            var options = MessageBrokerOptionsBuilder.Create(services)
+                .WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure)
+                .AddReliabilityOptions(r => r.WithOutboxRouting())
+                .AddRecoveryOptions(r => r.WithMaxRetryAttempts(9))
+                .Resolve();
+
+            options.TransactionMode.Should().Be(TransactionMode.FullAtomicityViaInfrastructure);
+            options.Reliability.RouteMessagesToOutbox.Should().BeTrue();
+            options.Recovery.MaxRetryAttempts.Should().Be(9);
+            options.Recovery.CircuitBreakerOptions.Should().NotBeNull();
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustNotRegisterNestedOptionsBeforeBuildWhenFluentNestedOptionsUsed()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.Create(services)
+                .AddReliabilityOptions(r => r.WithOutboxRouting())
+                .AddRecoveryOptions(r => r.WithMaxRetryAttempts(9));
+
+            services.Any(d => d.ServiceType == typeof(ReliabilityOptions)).Should().BeFalse();
+            services.Any(d => d.ServiceType == typeof(RecoveryOptions)).Should().BeFalse();
+            services.Any(d => d.ServiceType == typeof(CircuitBreakerOptions)).Should().BeFalse();
+        }
+
+        /// <summary>
+        /// Deferring the nested publish to the parent must not lose the sub-builder's OTHER registration. The
+        /// exception predicates configured through the nested builders are registered by their own publish step, so
+        /// composing them through this builder still has to reach it.
+        /// </summary>
+        [Fact]
+        public void MustRegisterRetryExceptionPredicatesProviderWhenRetryWhenUsedThroughAddRecoveryOptions()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.Create(services)
+                .AddRecoveryOptions(r => r.RetryWhen<InvalidOperationException>())
+                .Build();
+
+            services.Any(d => d.ServiceType == typeof(IRetryExceptionPredicatesProvider)).Should().BeTrue();
+        }
+
+        /// <summary>
+        /// A second AddRecoveryOptions call must not silently discard the first call's predicates. Consumption is
+        /// enumerable - RetryExceptionEvaluator takes every IRetryExceptionPredicatesProvider - so both configured
+        /// exception types have to stay retryable.
+        /// </summary>
+        [Fact]
+        public void MustKeepBothRetryPredicateSetsWhenAddRecoveryOptionsUsedTwice()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.Create(services)
+                .AddRecoveryOptions(r => r.RetryWhen<InvalidOperationException>())
+                .AddRecoveryOptions(r => r.RetryWhen<FormatException>())
+                .Build();
+
+            using var provider = services.BuildServiceProvider();
+            var evaluator = new RetryExceptionEvaluator(provider.GetServices<IRetryExceptionPredicatesProvider>());
+
+            evaluator.ShouldRetry(new InvalidOperationException()).Should().BeTrue();
+            evaluator.ShouldRetry(new FormatException()).Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustRegisterCircuitBreakerExceptionPredicatesProviderWhenIsTrippedByUsedThroughAddRecoveryOptions()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.Create(services)
+                .AddRecoveryOptions(r => r.WithCircuitBreaker(cb => cb.IsTrippedBy<InvalidOperationException>()))
+                .Build();
+
+            services.Any(d => d.ServiceType == typeof(ICircuitBreakerExceptionPredicatesProvider)).Should().BeTrue();
         }
 
         [Fact]
@@ -397,6 +484,58 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             facetOptions.Recovery.CircuitBreakerOptions.Should().BeSameAs(options.Recovery.CircuitBreakerOptions);
         }
 
+        /// <summary>
+        /// The JSON configuration provider carries an explicit null through as a section with no value and no
+        /// children, so binding one must leave the seeded nested instance in place rather than replace it with null.
+        /// The publish step dereferences the finalized graph - RecoveryOptionsBuilder.Publish reads
+        /// RecoveryOptions.CircuitBreakerOptions, and AddBuiltOptions registers each nested instance as a singleton -
+        /// so a nulled child would fail registration outright instead of falling back to the fluent default.
+        /// </summary>
+        [Fact]
+        public void MustPublishTheSeededNestedOptionsWhenFromConfigNestedSectionsAreExplicitJsonNulls()
+        {
+            var services = new ServiceCollection();
+            var configuration = BuildJsonConfiguration(
+                @"{ ""Chatter"": { ""MessageBrokers"": { ""TransactionMode"": ""FullAtomicityViaInfrastructure"", ""Reliability"": null, ""Recovery"": null } } }");
+
+            var options = MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            options.TransactionMode.Should().Be(TransactionMode.FullAtomicityViaInfrastructure);
+            options.Reliability.Should().NotBeNull();
+            options.Recovery.Should().NotBeNull();
+            options.Recovery.CircuitBreakerOptions.Should().NotBeNull();
+
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<ReliabilityOptions>().Should().BeSameAs(options.Reliability);
+            provider.GetRequiredService<RecoveryOptions>().Should().BeSameAs(options.Recovery);
+            provider.GetRequiredService<CircuitBreakerOptions>().Should().BeSameAs(options.Recovery.CircuitBreakerOptions);
+        }
+
+        /// <summary>
+        /// The same guarantee one level deeper, through the documented 'CircuitBreaker' key that
+        /// RecoveryOptions.CircuitBreakerOptions is aliased onto - the only spelling the binder reaches. An explicit
+        /// null there must not null the grandchild RecoveryOptionsBuilder.Publish dereferences. The bound
+        /// MaxRetryAttempts pins that the surrounding section really was applied, so the surviving circuit breaker
+        /// default is not just an unbound section.
+        /// </summary>
+        [Fact]
+        public void MustPublishTheSeededCircuitBreakerOptionsWhenFromConfigCircuitBreakerSectionIsAnExplicitJsonNull()
+        {
+            var services = new ServiceCollection();
+            var configuration = BuildJsonConfiguration(
+                @"{ ""Chatter"": { ""MessageBrokers"": { ""Recovery"": { ""MaxRetryAttempts"": 42, ""CircuitBreaker"": null } } } }");
+
+            var options = MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            options.Recovery.MaxRetryAttempts.Should().Be(42);
+            options.Recovery.CircuitBreakerOptions.Should().NotBeNull();
+            options.Recovery.CircuitBreakerOptions.NumberOfFailuresBeforeOpen.Should().Be(5);
+
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<RecoveryOptions>().Should().BeSameAs(options.Recovery);
+            provider.GetRequiredService<CircuitBreakerOptions>().Should().BeSameAs(options.Recovery.CircuitBreakerOptions);
+        }
+
         private const string ExplicitSectionName = "Custom:MessageBrokers";
 
         private static void AssertConfiguredTransactionModeHonoured(MessageBrokerOptions options)
@@ -406,6 +545,11 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             options.Reliability.Should().NotBeNull();
             options.Recovery.Should().NotBeNull();
         }
+
+        private static IConfiguration BuildJsonConfiguration(string json)
+            => new ConfigurationBuilder()
+                .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                .Build();
 
         private static IConfiguration BuildConfiguration()
             => new ConfigurationBuilder()

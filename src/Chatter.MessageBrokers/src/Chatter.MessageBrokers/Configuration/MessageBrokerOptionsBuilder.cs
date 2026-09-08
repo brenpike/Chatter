@@ -12,8 +12,8 @@ namespace Chatter.MessageBrokers.Configuration
         public IServiceCollection Services { get; }
         private readonly IConfiguration _configuration;
         private TransactionMode _transactionMode = TransactionMode.ReceiveOnly;
-        private ReliabilityOptions _reliabilityOptions = null;
-        private RecoveryOptions _recoveryOptions = null;
+        private ReliabilityOptionsBuilder _reliabilityOptionsBuilder = null;
+        private RecoveryOptionsBuilder _recoveryOptionsBuilder = null;
         private IConfigurationSection _messageBrokerOptionsSection = null;
 
         public const string MessageBrokerSectionName = "Chatter:MessageBrokers";
@@ -57,31 +57,48 @@ namespace Chatter.MessageBrokers.Configuration
 
         public MessageBrokerOptionsBuilder AddReliabilityOptions(Action<ReliabilityOptionsBuilder> builder)
         {
-            var b = ReliabilityOptionsBuilder.Create(Services);
-            builder?.Invoke(b);
-            _reliabilityOptions = b.Build();
+            // INVARIANT: the ONE retained sub-builder is configured in place rather than replaced by a fresh one, so
+            // a second call accumulates onto the first call's state instead of discarding it. It is also never built
+            // here: building it would register ReliabilityOptions before this builder has bound its own section, so a
+            // consumer could resolve an instance the parent bind had not been applied to yet.
+            var reliabilityOptionsBuilder = EnsureReliabilityOptionsBuilder();
+            builder?.Invoke(reliabilityOptionsBuilder);
             return this;
         }
 
         public MessageBrokerOptionsBuilder AddRecoveryOptions(Action<RecoveryOptionsBuilder> builder)
         {
-            var b = RecoveryOptionsBuilder.Create(Services);
-            builder?.Invoke(b);
-            _recoveryOptions = b.Build();
+            // INVARIANT: the ONE retained sub-builder is configured in place rather than replaced by a fresh one, so
+            // a second call accumulates onto the first call's state instead of discarding it - the retry and circuit
+            // breaker exception predicates are consumed as an enumeration, so a discarded builder's predicates would
+            // never be registered at all. It is also never built here: building it would register RecoveryOptions and
+            // CircuitBreakerOptions before this builder has bound its own section, so a consumer could resolve
+            // instances the parent bind had not been applied to yet.
+            var recoveryOptionsBuilder = EnsureRecoveryOptionsBuilder();
+            builder?.Invoke(recoveryOptionsBuilder);
             return this;
         }
 
-        internal MessageBrokerOptions Build()
+        /// <summary>
+        /// Produces the finalized <see cref="MessageBrokerOptions"/>, nested options included, without touching the
+        /// <see cref="IServiceCollection"/>.
+        /// </summary>
+        /// <returns>The finalized <see cref="MessageBrokerOptions"/></returns>
+        /// <remarks>
+        /// INVARIANT: this is the COMPOSITION path and it publishes nothing, so nothing can be resolved from the
+        /// container before this builder has bound its own section over the whole graph.
+        /// </remarks>
+        internal MessageBrokerOptions Resolve()
         {
             var messageBrokerOptions = new MessageBrokerOptions();
             messageBrokerOptions.TransactionMode = _transactionMode;
             // INVARIANT: the nested Reliability and Recovery options are seeded BEFORE the parent bind so the binder
-            // mutates the instances their sub-builders already registered as singletons instead of replacing them with
-            // unregistered ones. InMemoryBrokeredMessageOutbox, BrokeredMessageOutboxProcessor, RetryStrategy,
-            // RetryWithCircuitBreakerStrategy and CircuitBreaker all inject the concrete options types, so an orphaned
-            // instance would surface as a resolution failure.
-            messageBrokerOptions.Reliability = _reliabilityOptions ?? ReliabilityOptionsBuilder.Create(Services).Build();
-            messageBrokerOptions.Recovery = _recoveryOptions ?? RecoveryOptionsBuilder.Create(Services).Build();
+            // mutates the instances their sub-builders resolved instead of replacing them. InMemoryBrokeredMessageOutbox,
+            // BrokeredMessageOutboxProcessor, RetryStrategy, RetryWithCircuitBreakerStrategy and CircuitBreaker all
+            // inject the concrete options types, and Build publishes the instances reachable from the finalized graph,
+            // so no consumer can reach an orphaned one.
+            messageBrokerOptions.Reliability = EnsureReliabilityOptionsBuilder().Resolve();
+            messageBrokerOptions.Recovery = EnsureRecoveryOptionsBuilder().Resolve();
 
             if (_messageBrokerOptionsSection != null && _messageBrokerOptionsSection.Exists())
             {
@@ -91,6 +108,21 @@ namespace Chatter.MessageBrokers.Configuration
                 // TransactionMode degraded from ReceiveOnly to None. Keys the section omits keep their fluent default.
                 _messageBrokerOptionsSection.Bind(messageBrokerOptions, o => o.BindNonPublicProperties = true);
             }
+
+            return messageBrokerOptions;
+        }
+
+        internal MessageBrokerOptions Build()
+        {
+            var messageBrokerOptions = Resolve();
+
+            // INVARIANT: this is the ONE publish site for the whole options graph and it runs only after the section
+            // above has been bound. The nested options are published from the finalized graph rather than from the
+            // sub-builders' own return values, so every entry point - the concrete type, the options facets and
+            // MessageBrokerOptions.Reliability / .Recovery / .Recovery.CircuitBreakerOptions - reaches one instance
+            // per options type.
+            EnsureReliabilityOptionsBuilder().Publish(messageBrokerOptions.Reliability);
+            EnsureRecoveryOptionsBuilder().Publish(messageBrokerOptions.Recovery);
 
             // INVARIANT: every single-instance resolution of MessageBrokerOptions returns the instance built here -
             // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and IOptionsMonitor
@@ -106,6 +138,30 @@ namespace Chatter.MessageBrokers.Configuration
             Services.AddBuiltOptions(messageBrokerOptions);
 
             return messageBrokerOptions;
+        }
+
+        // INVARIANT: Resolve and Build must reach the SAME sub-builder, so the default one is created once and
+        // retained here rather than constructed at each call site.
+        private ReliabilityOptionsBuilder EnsureReliabilityOptionsBuilder()
+        {
+            if (_reliabilityOptionsBuilder == null)
+            {
+                _reliabilityOptionsBuilder = ReliabilityOptionsBuilder.Create(Services);
+            }
+
+            return _reliabilityOptionsBuilder;
+        }
+
+        // INVARIANT: Resolve and Build must reach the SAME sub-builder, so the default one is created once and
+        // retained here rather than constructed at each call site.
+        private RecoveryOptionsBuilder EnsureRecoveryOptionsBuilder()
+        {
+            if (_recoveryOptionsBuilder == null)
+            {
+                _recoveryOptionsBuilder = RecoveryOptionsBuilder.Create(Services);
+            }
+
+            return _recoveryOptionsBuilder;
         }
     }
 }
