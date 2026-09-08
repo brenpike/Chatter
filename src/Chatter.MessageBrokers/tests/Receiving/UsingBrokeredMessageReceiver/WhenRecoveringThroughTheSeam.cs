@@ -166,10 +166,11 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
         // but the store overwrites State on each transition (Open → HalfOpen → Closed), so the
         // intermediate Open/HalfOpen states are lost by the time the test inspects the final State.
         // This decorator delegates to the real InMemoryCircuitBreakerStateStore and records the
-        // ordered sequence of transitions actually requested, so a test can assert the circuit
-        // genuinely opened and half-opened rather than only that it ended Closed (a state it also
-        // starts in). Transitions are appended under a lock so the receiver loop's background writes
-        // never race the test thread's reads.
+        // ordered sequence of transitions the store actually MADE — each report answers whether it was
+        // the call that transitioned the circuit, so a report the store discards records nothing — and a
+        // test can then assert the circuit genuinely opened and half-opened rather than only that it
+        // ended Closed (a state it also starts in). Transitions are appended under a lock so the
+        // receiver loop's background writes never race the test thread's reads.
         private sealed class RecordingCircuitBreakerStateStore : ICircuitBreakerStateStore
         {
             private readonly InMemoryCircuitBreakerStateStore _inner;
@@ -210,12 +211,6 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             public int FailureCount => _inner.FailureCount;
             public int SuccessCount => _inner.SuccessCount;
 
-            public Task OpenAsync(Exception ex)
-            {
-                Record(CircuitBreakerState.Open);
-                return _inner.OpenAsync(ex);
-            }
-
             public async Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
             {
                 await _admitGate.WaitAsync();
@@ -236,14 +231,29 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 }
             }
 
-            public Task CloseAsync()
+            // The inner store returns whether THIS report transitioned the circuit, so a transition is recorded
+            // only when one genuinely happened rather than whenever a caller asked for one.
+            public async Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose)
             {
-                Record(CircuitBreakerState.Closed);
-                return _inner.CloseAsync();
+                var closed = await _inner.RecordSuccessAsync(admission, successesToClose);
+                if (closed)
+                {
+                    Record(CircuitBreakerState.Closed);
+                }
+
+                return closed;
             }
 
-            public Task<int?> IncrementSuccessCounterAsync(long episode) => _inner.IncrementSuccessCounterAsync(episode);
-            public Task<int> IncrementFailureCounterAsync(Exception ex) => _inner.IncrementFailureCounterAsync(ex);
+            public async Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen)
+            {
+                var opened = await _inner.RecordFailureAsync(admission, ex, failuresToOpen);
+                if (opened)
+                {
+                    Record(CircuitBreakerState.Open);
+                }
+
+                return opened;
+            }
         }
 
         // ------------------------------------------------------------------
@@ -458,9 +468,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 because: "handler must be re-attempted after the circuit breaker transitions through half-open");
 
             // CB must have actually opened and half-opened — not merely ended Closed (the state it
-            // also starts in). Without this, a regression where the store never calls OpenAsync, or
-            // AdmitAsync never advances Open → HalfOpen, would still leave the store Closed and pass
-            // the assertion below, so this test would silently stop pinning the
+            // also starts in). Without this, a regression where a reported failure never opens the
+            // circuit, or AdmitAsync never advances Open → HalfOpen, would still leave the store Closed
+            // and pass the assertion below, so this test would silently stop pinning the
             // Closed → Open → HalfOpen transition.
             var observedTransitions = stateStore.ObservedTransitions;
             observedTransitions.Should().Contain(CircuitBreakerState.Open,

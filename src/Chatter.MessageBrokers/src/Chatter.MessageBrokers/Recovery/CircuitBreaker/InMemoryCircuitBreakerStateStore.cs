@@ -94,57 +94,107 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             }
         }
 
-        public Task CloseAsync()
+        // INVARIANT: the store adjudicates the report and performs the transition it warrants inside ONE
+        // stateLock acquisition, so validating the admission and acting on it can never be interleaved. A
+        // success is progress within ONE half-open episode: a trial that finishes after its own episode ended
+        // records nothing rather than closing a circuit another caller has since tripped.
+        public Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose)
         {
+            var discarded = false;
+            var closed = false;
+
             lock (stateLock)
             {
-                _lastStateChangedDateUtc = DateTime.UtcNow;
-                _state = CircuitBreakerState.Closed;
-                _failureCount = 0;
-                _episode++;
+                if (admission.Verdict != CircuitBreakerVerdict.Trial || admission.Episode != _episode)
+                {
+                    discarded = true;
+                }
+                else if (++_successCount >= successesToClose)
+                {
+                    // The success count is deliberately NOT reset here: entering half-open is what starts an
+                    // episode's count, and AdmitAsync already resets it there.
+                    _lastStateChangedDateUtc = DateTime.UtcNow;
+                    _state = CircuitBreakerState.Closed;
+                    _failureCount = 0;
+                    _episode++;
+                    closed = true;
+                }
             }
-            _logger.LogInformation("Circuit Breaker is now in the CLOSED state.");
-            return Task.CompletedTask;
+
+            if (discarded)
+            {
+                _logger.LogTrace("Success discarded: the half-open episode it was admitted to has ended");
+            }
+            else if (closed)
+            {
+                _logger.LogInformation("Circuit Breaker is now in the CLOSED state.");
+            }
+            else
+            {
+                _logger.LogTrace("Incrementing success counter");
+            }
+
+            return Task.FromResult(closed);
         }
 
-        public Task OpenAsync(Exception ex)
+        // INVARIANT: a failed TRIAL re-opens the circuit immediately without counting toward failuresToOpen —
+        // the trial IS the probe, so one failure is the whole evidence. That is a rule the STORE derives from
+        // the admission's verdict, never a branch the caller chose.
+        public Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen)
         {
+            var discarded = false;
+            var opened = false;
+
+            // A verdict is AUTHORIZED to report a failure, never merely not-forbidden: a verdict added later
+            // reports nothing until it is named here.
+            var authorized = admission.Verdict == CircuitBreakerVerdict.Execute
+                             || admission.Verdict == CircuitBreakerVerdict.Trial;
+
             lock (stateLock)
             {
-                _lastStateChangedDateUtc = DateTime.UtcNow;
-                _lastException = ex;
-                _state = CircuitBreakerState.Open;
-                _episode++;
+                if (!authorized || admission.Episode != _episode)
+                {
+                    discarded = true;
+                }
+                else
+                {
+                    _lastException = ex;
+
+                    if (admission.Verdict == CircuitBreakerVerdict.Trial)
+                    {
+                        OpenTheCircuit();
+                        opened = true;
+                    }
+                    else if (++_failureCount >= failuresToOpen)
+                    {
+                        OpenTheCircuit();
+                        opened = true;
+                    }
+                }
             }
-            _logger.LogInformation("Circuit Breaker is now in the OPEN state.");
-            return Task.CompletedTask;
+
+            if (discarded)
+            {
+                _logger.LogTrace("Failure discarded: the episode it was admitted to has ended");
+            }
+            else if (opened)
+            {
+                _logger.LogInformation("Circuit Breaker is now in the OPEN state.");
+            }
+            else
+            {
+                _logger.LogTrace("Incrementing failure counter");
+            }
+
+            return Task.FromResult(opened);
         }
 
-        // INVARIANT: success is progress within ONE half-open episode. Every transition begins a new episode, so
-        // a trial that finishes after its own episode ended records nothing rather than crediting a later one.
-        public Task<int?> IncrementSuccessCounterAsync(long episode)
+        // INVARIANT: called only while stateLock is held.
+        private void OpenTheCircuit()
         {
-            int? successes;
-            lock (stateLock)
-            {
-                successes = _episode == episode ? ++_successCount : (int?)null;
-            }
-
-            _logger.LogTrace(successes is null
-                ? "Success discarded: the half-open episode it was admitted to has ended"
-                : "Incrementing success counter");
-
-            return Task.FromResult(successes);
-        }
-
-        public Task<int> IncrementFailureCounterAsync(Exception ex)
-        {
-            _logger.LogTrace("Incrementing failure counter");
-            lock (stateLock)
-            {
-                _lastException = ex;
-                return Task.FromResult(++_failureCount);
-            }
+            _lastStateChangedDateUtc = DateTime.UtcNow;
+            _state = CircuitBreakerState.Open;
+            _episode++;
         }
     }
 }

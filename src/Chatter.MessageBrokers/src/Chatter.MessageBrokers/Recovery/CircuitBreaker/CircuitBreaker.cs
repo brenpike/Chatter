@@ -72,11 +72,7 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             }
             catch (Exception ex)
             {
-                if (ShouldTrip(ex, cancellationToken))
-                {
-                    await TryOpen(ex);
-                }
-
+                await ReportFailureAsync(ex, admission, cancellationToken);
                 throw;
             }
         }
@@ -91,16 +87,12 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             try
             {
                 var context = await action(admission.State);
-                await TryClose(admission.Episode);
+                await ReportSuccessAsync(admission);
                 return context;
             }
             catch (Exception ex)
             {
-                if (ShouldTrip(ex, cancellationToken))
-                {
-                    await _stateStore.OpenAsync(ex);
-                }
-
+                await ReportFailureAsync(ex, admission, cancellationToken);
                 throw;
             }
             finally
@@ -128,30 +120,33 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             return true;
         }
 
-        private async Task TryClose(long episode)
+        // INVARIANT: the single success-report site. The breaker reports a success only on the trial path, and
+        // the store's Trial-only guard makes that a store-ENFORCED rule rather than a caller convention.
+        private async Task ReportSuccessAsync(CircuitBreakerAdmission admission)
         {
-            _logger.LogTrace("Attempting to CLOSE circuit");
-            var successes = await _stateStore.IncrementSuccessCounterAsync(episode);
+            _logger.LogTrace("Reporting a success against the issued admission");
 
-            if (successes is null)
+            if (await _stateStore.RecordSuccessAsync(admission, _numberOfHalfOpenSuccessesToClose))
             {
-                _logger.LogTrace("Half-open trial finished after its episode ended. Its success was discarded.");
-                return;
-            }
-
-            if (successes.Value >= _numberOfHalfOpenSuccessesToClose)
-            {
-                await _stateStore.CloseAsync();
                 ResetOpenTimer();
             }
         }
 
-        private async Task TryOpen(Exception ex)
+        // INVARIANT: the single failure-report site for both the closed path and the half-open trial, so the
+        // two can never diverge on how a failure is reported. The store derives which transition a failure
+        // warrants from the admission's own verdict, and the returned bool — not a state re-read — is what
+        // drives the timer.
+        private async Task ReportFailureAsync(Exception ex, CircuitBreakerAdmission admission, CancellationToken cancellationToken)
         {
-            _logger.LogTrace("Attempting to OPEN circuit");
-            if (await _stateStore.IncrementFailureCounterAsync(ex) >= _numberOfFailuresBeforeOpen)
+            if (!ShouldTrip(ex, cancellationToken))
             {
-                await _stateStore.OpenAsync(ex);
+                return;
+            }
+
+            _logger.LogTrace("Reporting a failure against the issued admission");
+
+            if (await _stateStore.RecordFailureAsync(admission, ex, _numberOfFailuresBeforeOpen))
+            {
                 StartOpenTimer();
             }
         }

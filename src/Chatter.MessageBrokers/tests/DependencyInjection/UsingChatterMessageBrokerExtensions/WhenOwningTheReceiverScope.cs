@@ -139,10 +139,12 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
         {
             public Exception LastException => null;
             public DateTime LastStateChangedDateUtc => DateTime.UtcNow;
-            public Task OpenAsync(Exception ex) => Task.CompletedTask;
-            public Task<int> IncrementFailureCounterAsync(Exception ex) => Task.FromResult(1);
-            public Task<int?> IncrementSuccessCounterAsync(long episode) => Task.FromResult((int?)1);
-            public Task CloseAsync() => Task.CompletedTask;
+            // No report ever transitions this probe: it reports the circuit ALWAYS half-open, which is the
+            // whole point of the double.
+            public Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose)
+                => Task.FromResult(false);
+            public Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen)
+                => Task.FromResult(false);
             public Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
                 => Task.FromResult(new CircuitBreakerAdmission(CircuitBreakerVerdict.Trial, CircuitBreakerState.HalfOpen, 0, null));
             public bool IsClosed => false;

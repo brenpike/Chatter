@@ -44,15 +44,17 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
     {
         Exception LastException { get; }
         DateTime LastStateChangedDateUtc { get; }
-        Task OpenAsync(Exception ex);
-        Task<int> IncrementFailureCounterAsync(Exception ex);
-        Task CloseAsync();
 
         /// <summary>
-        /// Records one half-open trial's success against the episode it was admitted to and returns that
-        /// episode's success count, or <c>null</c> when the episode has ended and the success belongs to none.
+        /// Reports one outcome against the admission it was issued and returns whether THIS report transitioned
+        /// the circuit. The store adjudicates the report — a success can only ever CLOSE and a failure can only
+        /// ever OPEN — so the caller never commands a transition and an outcome reported against an ended
+        /// episode or an admission that was never issued records nothing at all.
         /// </summary>
-        Task<int?> IncrementSuccessCounterAsync(long episode);
+        Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose);
+
+        /// <inheritdoc cref="RecordSuccessAsync"/>
+        Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen);
 
         /// <summary>
         /// Adjudicates one caller's admission against the store's own state, transitioning an open circuit whose
