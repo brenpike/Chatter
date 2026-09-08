@@ -17,7 +17,9 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
     /// <summary>
     /// The admission an <see cref="ICircuitBreakerStateStore"/> issues to a caller. It is a decision the store
     /// made, not state the caller observed, so it cannot go stale across an await: it names the branch the
-    /// caller is admitted to and the half-open episode that branch belongs to.
+    /// caller is admitted to and the half-open episode that branch belongs to. It is also the token required to
+    /// move the circuit — every outcome is reported back against the admission that authorized the call — so a
+    /// caller holds no way to command a transition of its own.
     /// </summary>
     public readonly struct CircuitBreakerAdmission
     {
@@ -46,14 +48,32 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         DateTime LastStateChangedDateUtc { get; }
 
         /// <summary>
-        /// Reports one outcome against the admission it was issued and returns whether THIS report transitioned
-        /// the circuit. The store adjudicates the report — a success can only ever CLOSE and a failure can only
-        /// ever OPEN — so the caller never commands a transition and an outcome reported against an ended
-        /// episode or an admission that was never issued records nothing at all.
+        /// Reports one success against the admission that authorized the call. The store adjudicates the report
+        /// — a success can only ever CLOSE the circuit, and only a <see cref="CircuitBreakerVerdict.Trial"/>
+        /// admission may report one — so the caller never commands the transition. A success reported against an
+        /// admission whose episode has ended, or against one the store never issued, records nothing at all.
         /// </summary>
+        /// <param name="admission">The admission this outcome is reported against: the one the store issued to this caller.</param>
+        /// <param name="successesToClose">How many successes within one half-open episode close the circuit. The
+        /// threshold travels with the report rather than being held by the store, so the store carries no
+        /// configuration of its own.</param>
+        /// <returns><see langword="true"/> only when THIS report is what closed the circuit; <see langword="false"/>
+        /// when it was counted without closing, or discarded.</returns>
         Task<bool> RecordSuccessAsync(CircuitBreakerAdmission admission, int successesToClose);
 
-        /// <inheritdoc cref="RecordSuccessAsync"/>
+        /// <summary>
+        /// Reports one failure against the admission that authorized the call, adjudicated the same way
+        /// <see cref="RecordSuccessAsync"/> adjudicates a success: a failure can only ever OPEN the circuit, and
+        /// a failure reported against an admission whose episode has ended, or against one that did not authorize
+        /// execution, records nothing at all — not even the store's last exception.
+        /// </summary>
+        /// <param name="admission">The admission this outcome is reported against: the one the store issued to this caller.</param>
+        /// <param name="ex">The exception the admitted call failed with. It becomes the store's last exception
+        /// only when the report is accepted.</param>
+        /// <param name="failuresToOpen">How many failures open the circuit. Like the success threshold, it travels
+        /// with the report rather than being held by the store.</param>
+        /// <returns><see langword="true"/> only when THIS report is what opened the circuit; <see langword="false"/>
+        /// when it was counted without opening, or discarded.</returns>
         Task<bool> RecordFailureAsync(CircuitBreakerAdmission admission, Exception ex, int failuresToOpen);
 
         /// <summary>

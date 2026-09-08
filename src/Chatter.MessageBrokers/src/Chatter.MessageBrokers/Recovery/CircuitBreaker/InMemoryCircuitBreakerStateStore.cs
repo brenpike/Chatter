@@ -50,9 +50,11 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             get { lock (stateLock) { return _successCount; } }
         }
 
-        // INVARIANT: the store is the sole adjudicator of admission, and it decides inside stateLock — which every
-        // writer of _state also holds — so a caller never selects its branch from state it observed before an await.
-        // It receives a decision the store issued, stamped with the episode that decision belongs to.
+        // INVARIANT: the store is the sole adjudicator of EVERY transition. A transition happens only inside
+        // stateLock — which every writer of _state also holds — and only as the store's own adjudication of an
+        // admission or of an outcome reported against one; there is no transition command for a caller to issue.
+        // So a caller neither selects its branch from state it observed before an await nor moves the circuit
+        // from one: it receives a decision the store issued, stamped with the episode that decision belongs to.
         public Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
         {
             var enteredHalfOpen = false;

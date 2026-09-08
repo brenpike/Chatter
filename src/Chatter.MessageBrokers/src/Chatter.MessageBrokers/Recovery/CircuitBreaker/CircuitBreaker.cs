@@ -44,9 +44,10 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         public bool IsClosed { get { return _stateStore.IsClosed; } }
         public bool IsOpen { get { return !IsClosed; } }
 
-        // INVARIANT: the branch is named by the admission the store ISSUES, and the decision is taken exactly
-        // once per call. Nothing here is selected from state this caller observed, so no await can invalidate
-        // the branch it is on: an admission is a decision, not an observation.
+        // INVARIANT: the breaker neither selects its branch from state it observed NOR commands a transition.
+        // It takes exactly one decision per call — the admission the store ISSUES — and reports every outcome
+        // back against that same admission, so no await can invalidate either half: an admission is a decision
+        // rather than an observation, and an outcome is evidence the store adjudicates rather than a command.
         public async Task<TResult> ExecuteAsync<TResult>(Func<CircuitBreakerState, Task<TResult>> action, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
