@@ -141,9 +141,10 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
             public DateTime LastStateChangedDateUtc => DateTime.UtcNow;
             public Task OpenAsync(Exception ex) => Task.CompletedTask;
             public Task<int> IncrementFailureCounterAsync(Exception ex) => Task.FromResult(1);
-            public Task<int> IncrementSuccessCounterAsync() => Task.FromResult(1);
+            public Task<int?> IncrementSuccessCounterAsync(long episode) => Task.FromResult((int?)1);
             public Task CloseAsync() => Task.CompletedTask;
-            public Task<bool> TryHalfOpenAsync() => Task.FromResult(false);
+            public Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
+                => Task.FromResult(new CircuitBreakerAdmission(CircuitBreakerVerdict.Trial, CircuitBreakerState.HalfOpen, 0, null));
             public bool IsClosed => false;
             public CircuitBreakerState State => CircuitBreakerState.HalfOpen;
             public int FailureCount => 0;

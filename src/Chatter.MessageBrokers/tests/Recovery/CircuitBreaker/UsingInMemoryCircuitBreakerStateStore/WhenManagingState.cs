@@ -106,59 +106,95 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         }
 
         [Fact]
-        public async Task MustLogHalfOpenTransition()
+        public async Task MustAdmitExecutionAndMutateNothingWhenTheCircuitIsClosed()
         {
-            await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.TryHalfOpenAsync();
-            _logger.VerifyWasCalled(LogLevel.Information, "Circuit Breaker is now in the HALF-OPEN state.", Times.Once());
-        }
-
-        [Fact]
-        public async Task MustNotRelogTheTransitionWhenTryHalfOpenIsRefused()
-        {
-            await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.TryHalfOpenAsync();
-            await _sut.TryHalfOpenAsync();
-            // The second call is refused because the circuit is no longer Open, so nothing is re-logged.
-            _logger.VerifyWasCalled(LogLevel.Information, "Circuit Breaker is now in the HALF-OPEN state.", Times.Once());
-        }
-
-        [Fact]
-        public async Task MustTransitionAndResetSuccessCountWhenTryHalfOpenFindsAnOpenCircuit()
-        {
-            await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.IncrementSuccessCounterAsync();
-
-            (await _sut.TryHalfOpenAsync()).Should().BeTrue();
-
-            _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
-            _sut.SuccessCount.Should().Be(0);
-        }
-
-        [Fact]
-        public async Task MustRefuseAndMutateNothingWhenTryHalfOpenFindsAClosedCircuit()
-        {
-            await _sut.IncrementSuccessCounterAsync();
+            var first = await _sut.AdmitAsync(TimeSpan.Zero);
+            await _sut.IncrementSuccessCounterAsync(first.Episode);
             var lastStateChanged = _sut.LastStateChangedDateUtc;
 
-            (await _sut.TryHalfOpenAsync()).Should().BeFalse();
+            var admission = await _sut.AdmitAsync(TimeSpan.Zero);
 
-            _sut.State.Should().Be(CircuitBreakerState.Closed);
+            admission.Verdict.Should().Be(CircuitBreakerVerdict.Execute);
+            admission.State.Should().Be(CircuitBreakerState.Closed);
             _sut.SuccessCount.Should().Be(1);
             _sut.LastStateChangedDateUtc.Should().Be(lastStateChanged);
         }
 
         [Fact]
-        public async Task MustRefuseAndLeaveTheSuccessCountWhenTryHalfOpenFindsAHalfOpenCircuit()
+        public async Task MustRefuseAdmissionWhileTheOpenCircuitIsStillCooling()
         {
             await _sut.OpenAsync(new FakeRecoverableException());
-            await _sut.TryHalfOpenAsync();
-            await _sut.IncrementSuccessCounterAsync();
+            var lastStateChanged = _sut.LastStateChangedDateUtc;
 
-            (await _sut.TryHalfOpenAsync()).Should().BeFalse();
+            var admission = await _sut.AdmitAsync(TimeSpan.FromMinutes(5));
 
+            admission.Verdict.Should().Be(CircuitBreakerVerdict.Refused);
+            _sut.State.Should().Be(CircuitBreakerState.Open);
+            _sut.LastStateChangedDateUtc.Should().Be(lastStateChanged);
+        }
+
+        [Fact]
+        public async Task MustCarryTheLastExceptionOnARefusedAdmission()
+        {
+            var ex = new FakeRecoverableException("boom");
+            await _sut.OpenAsync(ex);
+
+            var admission = await _sut.AdmitAsync(TimeSpan.FromMinutes(5));
+
+            admission.LastException.Should().BeSameAs(ex);
+        }
+
+        [Fact]
+        public async Task MustAdmitATrialAndEnterHalfOpenWhenTheOpenCircuitHasFinishedCooling()
+        {
+            await _sut.OpenAsync(new FakeRecoverableException());
+            var whileCooling = await _sut.AdmitAsync(TimeSpan.FromMinutes(5));
+            await _sut.IncrementSuccessCounterAsync(whileCooling.Episode);
+
+            var admission = await _sut.AdmitAsync(TimeSpan.Zero);
+
+            admission.Verdict.Should().Be(CircuitBreakerVerdict.Trial);
+            admission.State.Should().Be(CircuitBreakerState.HalfOpen);
+            admission.Episode.Should().NotBe(whileCooling.Episode);
             _sut.State.Should().Be(CircuitBreakerState.HalfOpen);
+            _sut.SuccessCount.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task MustAdmitATrialAndLeaveTheSuccessCountWhenTheCircuitIsAlreadyHalfOpen()
+        {
+            await _sut.OpenAsync(new FakeRecoverableException());
+            var entered = await _sut.AdmitAsync(TimeSpan.Zero);
+            await _sut.IncrementSuccessCounterAsync(entered.Episode);
+
+            var admission = await _sut.AdmitAsync(TimeSpan.Zero);
+
+            admission.Verdict.Should().Be(CircuitBreakerVerdict.Trial);
+            admission.Episode.Should().Be(entered.Episode);
             _sut.SuccessCount.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task MustAnnounceTheHalfOpenTransitionOnceForTheAdmissionThatEntersIt()
+        {
+            await _sut.OpenAsync(new FakeRecoverableException());
+
+            await _sut.AdmitAsync(TimeSpan.Zero);
+            await _sut.AdmitAsync(TimeSpan.Zero);
+
+            _logger.VerifyWasCalled(LogLevel.Information, "Circuit Breaker is now in the HALF-OPEN state.", Times.Once());
+        }
+
+        [Fact]
+        public async Task MustIssueANewEpisodeForEveryHalfOpenAdmission()
+        {
+            await _sut.OpenAsync(new FakeRecoverableException());
+            var first = await _sut.AdmitAsync(TimeSpan.Zero);
+            await _sut.OpenAsync(new FakeRecoverableException());
+
+            var second = await _sut.AdmitAsync(TimeSpan.Zero);
+
+            second.Episode.Should().NotBe(first.Episode);
         }
 
         [Fact]
@@ -171,9 +207,23 @@ namespace Chatter.MessageBrokers.Tests.Recovery.CircuitBreaker.UsingInMemoryCirc
         [Fact]
         public async Task MustIncrementAndReturnNewSuccessCount()
         {
-            (await _sut.IncrementSuccessCounterAsync()).Should().Be(1);
-            (await _sut.IncrementSuccessCounterAsync()).Should().Be(2);
+            var episode = (await _sut.AdmitAsync(TimeSpan.Zero)).Episode;
+
+            (await _sut.IncrementSuccessCounterAsync(episode)).Should().Be(1);
+            (await _sut.IncrementSuccessCounterAsync(episode)).Should().Be(2);
             _sut.SuccessCount.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task MustDiscardASuccessWhoseEpisodeHasEnded()
+        {
+            await _sut.OpenAsync(new FakeRecoverableException());
+            var trial = await _sut.AdmitAsync(TimeSpan.Zero);
+            await _sut.CloseAsync();
+
+            (await _sut.IncrementSuccessCounterAsync(trial.Episode)).Should().BeNull();
+
+            _sut.SuccessCount.Should().Be(0);
         }
 
         [Fact]

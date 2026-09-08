@@ -44,54 +44,31 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         public bool IsClosed { get { return _stateStore.IsClosed; } }
         public bool IsOpen { get { return !IsClosed; } }
 
+        // INVARIANT: the branch is named by the admission the store ISSUES, and the decision is taken exactly
+        // once per call. Nothing here is selected from state this caller observed, so no await can invalidate
+        // the branch it is on: an admission is a decision, not an observation.
         public async Task<TResult> ExecuteAsync<TResult>(Func<CircuitBreakerState, Task<TResult>> action, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (IsOpen)
+            var admission = await _stateStore.AdmitAsync(_openToHalfOpenWaitTime);
+
+            if (admission.Verdict == CircuitBreakerVerdict.Refused)
             {
-                if (_stateStore.State != CircuitBreakerState.HalfOpen)
-                {
-                    await Task.Delay(_openToHalfOpenWaitTime, cancellationToken);
+                // The wait paces the refusal. The receive loop has no pacing of its own and the default retry
+                // delay strategy is NoDelayRetry, so returning the refusal immediately would busy-spin.
+                await Task.Delay(_openToHalfOpenWaitTime, cancellationToken);
+                throw new CircuitBreakerOpenException(admission.LastException);
+            }
 
-                    // The store adjudicates, so the announcement waits on its verdict: another caller may have
-                    // recovered the circuit across the cooling wait, and a refused transition must stay silent
-                    // rather than record a half-open the circuit never entered.
-                    if (await _stateStore.TryHalfOpenAsync())
-                    {
-                        _logger.LogInformation("Circuit Breaker half-open timer expired. Entering HALF-OPEN state.");
-                    }
-
-                    throw new CircuitBreakerOpenException(_stateStore.LastException);
-                }
-
-                await _halfOpenSemaphore.WaitAsync(cancellationToken);
-
-                try
-                {
-                    await _stateStore.TryHalfOpenAsync();
-                    var context = await action(_stateStore.State);
-                    await TryClose();
-                    return context;
-                }
-                catch (Exception ex)
-                {
-                    if (ShouldTrip(ex, cancellationToken))
-                    {
-                        await _stateStore.OpenAsync(ex);
-                    }
-
-                    throw;
-                }
-                finally
-                {
-                    _halfOpenSemaphore.Release();
-                }
+            if (admission.Verdict == CircuitBreakerVerdict.Trial)
+            {
+                return await ExecuteTrialAsync(action, admission, cancellationToken);
             }
 
             try
             {
-                return await action(_stateStore.State);
+                return await action(admission.State);
             }
             catch (Exception ex)
             {
@@ -101,6 +78,34 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 }
 
                 throw;
+            }
+        }
+
+        private async Task<TResult> ExecuteTrialAsync<TResult>(Func<CircuitBreakerState, Task<TResult>> action,
+                                                              CircuitBreakerAdmission admission,
+                                                              CancellationToken cancellationToken)
+        {
+            _logger.LogInformation("Circuit Breaker admitted a HALF-OPEN trial.");
+            await _halfOpenSemaphore.WaitAsync(cancellationToken);
+
+            try
+            {
+                var context = await action(admission.State);
+                await TryClose(admission.Episode);
+                return context;
+            }
+            catch (Exception ex)
+            {
+                if (ShouldTrip(ex, cancellationToken))
+                {
+                    await _stateStore.OpenAsync(ex);
+                }
+
+                throw;
+            }
+            finally
+            {
+                _halfOpenSemaphore.Release();
             }
         }
 
@@ -123,10 +128,18 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
             return true;
         }
 
-        private async Task TryClose()
+        private async Task TryClose(long episode)
         {
             _logger.LogTrace("Attempting to CLOSE circuit");
-            if (await _stateStore.IncrementSuccessCounterAsync() >= _numberOfHalfOpenSuccessesToClose)
+            var successes = await _stateStore.IncrementSuccessCounterAsync(episode);
+
+            if (successes is null)
+            {
+                _logger.LogTrace("Half-open trial finished after its episode ended. Its success was discarded.");
+                return;
+            }
+
+            if (successes.Value >= _numberOfHalfOpenSuccessesToClose)
             {
                 await _stateStore.CloseAsync();
                 ResetOpenTimer();

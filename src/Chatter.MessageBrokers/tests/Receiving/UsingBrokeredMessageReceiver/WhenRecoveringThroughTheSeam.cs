@@ -204,15 +204,16 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 return _inner.OpenAsync(ex);
             }
 
-            public async Task<bool> TryHalfOpenAsync()
+            public async Task<CircuitBreakerAdmission> AdmitAsync(TimeSpan openToHalfOpenWaitTime)
             {
-                var transitioned = await _inner.TryHalfOpenAsync();
-                if (transitioned)
+                var wasOpen = _inner.State == CircuitBreakerState.Open;
+                var admission = await _inner.AdmitAsync(openToHalfOpenWaitTime);
+                if (wasOpen && _inner.State == CircuitBreakerState.HalfOpen)
                 {
                     Record(CircuitBreakerState.HalfOpen);
                 }
 
-                return transitioned;
+                return admission;
             }
 
             public Task CloseAsync()
@@ -221,7 +222,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
                 return _inner.CloseAsync();
             }
 
-            public Task<int> IncrementSuccessCounterAsync() => _inner.IncrementSuccessCounterAsync();
+            public Task<int?> IncrementSuccessCounterAsync(long episode) => _inner.IncrementSuccessCounterAsync(episode);
             public Task<int> IncrementFailureCounterAsync(Exception ex) => _inner.IncrementFailureCounterAsync(ex);
         }
 
