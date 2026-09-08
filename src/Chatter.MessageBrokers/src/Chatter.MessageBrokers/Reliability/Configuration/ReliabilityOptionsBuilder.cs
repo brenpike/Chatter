@@ -73,7 +73,17 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
             return this;
         }
 
-        public ReliabilityOptions Build()
+        /// <summary>
+        /// Produces the finalized <see cref="ReliabilityOptions"/> without touching the
+        /// <see cref="IServiceCollection"/>.
+        /// </summary>
+        /// <returns>The finalized <see cref="ReliabilityOptions"/></returns>
+        /// <remarks>
+        /// INVARIANT: this is the COMPOSITION path and it publishes nothing. A parent builder seeds its own graph
+        /// from here, binds its section over that graph and only then publishes, so no consumer can resolve an
+        /// options instance the parent has not finished binding.
+        /// </remarks>
+        internal ReliabilityOptions Resolve()
         {
             var reliabilityOptions = new ReliabilityOptions();
             reliabilityOptions.RouteMessagesToOutbox = _routeMessagesToOutbox;
@@ -87,24 +97,43 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
                 // ReliabilityOptions is internal set, so the binder skips all of them unless BindNonPublicProperties is
                 // on; replacing the instance would additionally discard the defaults assigned above. Keys the section
                 // omits therefore keep their fluent default.
-                //
-                // INVARIANT: every single-instance resolution of ReliabilityOptions returns the instance built here -
-                // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
-                // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
-                // a Configure<ReliabilityOptions>(section) registration would build a second instance that never saw
-                // the fluent defaults above, so an application that resolved IOptions<ReliabilityOptions> - or the
-                // snapshot or monitor form - for itself would have read OutboxProcessingIntervalInMilliseconds as
-                // 0 where this built instance holds 5000. BrokeredMessageOutboxProcessor injects the concrete
-                // ReliabilityOptions, so that divergent facet instance was never able to reach its polling
-                // interval. The concrete registration is APPENDED rather than replaced, so a second Build() on the
-                // same IServiceCollection takes over single-instance resolution and leaves the earlier instances
-                // reachable through IEnumerable<ReliabilityOptions> - each seeded by its own Build(), so no
-                // enumeration can surface an unseeded object.
                 _reliabilityOptionsSection.Bind(reliabilityOptions, o => o.BindNonPublicProperties = true);
             }
 
-            _services.AddBuiltOptions(reliabilityOptions);
+            return reliabilityOptions;
+        }
 
+        /// <summary>
+        /// Registers the supplied finalized <see cref="ReliabilityOptions"/> against the
+        /// <see cref="IServiceCollection"/>.
+        /// </summary>
+        /// <param name="reliabilityOptions">The finalized options produced by <see cref="Resolve"/></param>
+        /// <remarks>
+        /// INVARIANT: this is the ONLY site in this builder that touches the <see cref="IServiceCollection"/>. A
+        /// parent builder calls it after its own bind so the registered instance is the finalized one; a standalone
+        /// <see cref="Build"/> calls it immediately because there is no parent left to bind.
+        /// </remarks>
+        internal void Publish(ReliabilityOptions reliabilityOptions)
+        {
+            // INVARIANT: every single-instance resolution of ReliabilityOptions returns the instance published here -
+            // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
+            // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
+            // a Configure<ReliabilityOptions>(section) registration would build a second instance that never saw
+            // the fluent defaults, so an application that resolved IOptions<ReliabilityOptions> - or the
+            // snapshot or monitor form - for itself would have read OutboxProcessingIntervalInMilliseconds as
+            // 0 where the resolved instance holds 5000. BrokeredMessageOutboxProcessor injects the concrete
+            // ReliabilityOptions, so that divergent facet instance was never able to reach its polling
+            // interval. The concrete registration is APPENDED rather than replaced, so a second Build() on the
+            // same IServiceCollection takes over single-instance resolution and leaves the earlier instances
+            // reachable through IEnumerable<ReliabilityOptions> - each seeded by its own Resolve(), so no
+            // enumeration can surface an unseeded object.
+            _services.AddBuiltOptions(reliabilityOptions);
+        }
+
+        public ReliabilityOptions Build()
+        {
+            var reliabilityOptions = Resolve();
+            Publish(reliabilityOptions);
             return reliabilityOptions;
         }
     }

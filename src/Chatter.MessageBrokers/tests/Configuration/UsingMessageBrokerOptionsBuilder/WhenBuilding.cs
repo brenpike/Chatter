@@ -2,11 +2,13 @@ using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Options;
+using Chatter.MessageBrokers.Recovery.Retry;
 using Chatter.MessageBrokers.Reliability.Configuration;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Xunit;
@@ -105,6 +107,67 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
                 .Build();
 
             options.Recovery.Should().NotBeNull();
+        }
+
+        [Fact]
+        public void MustNotRegisterAnyServiceWhenResolved()
+        {
+            var services = new ServiceCollection();
+
+            var options = MessageBrokerOptionsBuilder.Create(services)
+                .WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure)
+                .AddReliabilityOptions(r => r.WithOutboxRouting())
+                .AddRecoveryOptions(r => r.WithMaxRetryAttempts(9))
+                .Resolve();
+
+            options.TransactionMode.Should().Be(TransactionMode.FullAtomicityViaInfrastructure);
+            options.Reliability.RouteMessagesToOutbox.Should().BeTrue();
+            options.Recovery.MaxRetryAttempts.Should().Be(9);
+            options.Recovery.CircuitBreakerOptions.Should().NotBeNull();
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustNotRegisterNestedOptionsBeforeBuildWhenFluentNestedOptionsUsed()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.Create(services)
+                .AddReliabilityOptions(r => r.WithOutboxRouting())
+                .AddRecoveryOptions(r => r.WithMaxRetryAttempts(9));
+
+            services.Any(d => d.ServiceType == typeof(ReliabilityOptions)).Should().BeFalse();
+            services.Any(d => d.ServiceType == typeof(RecoveryOptions)).Should().BeFalse();
+            services.Any(d => d.ServiceType == typeof(CircuitBreakerOptions)).Should().BeFalse();
+        }
+
+        /// <summary>
+        /// Deferring the nested publish to the parent must not lose the sub-builder's OTHER registration. The
+        /// exception predicates configured through the nested builders are registered by their own publish step, so
+        /// composing them through this builder still has to reach it.
+        /// </summary>
+        [Fact]
+        public void MustRegisterRetryExceptionPredicatesProviderWhenRetryWhenUsedThroughAddRecoveryOptions()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.Create(services)
+                .AddRecoveryOptions(r => r.RetryWhen<InvalidOperationException>())
+                .Build();
+
+            services.Any(d => d.ServiceType == typeof(IRetryExceptionPredicatesProvider)).Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustRegisterCircuitBreakerExceptionPredicatesProviderWhenIsTrippedByUsedThroughAddRecoveryOptions()
+        {
+            var services = new ServiceCollection();
+
+            MessageBrokerOptionsBuilder.Create(services)
+                .AddRecoveryOptions(r => r.WithCircuitBreaker(cb => cb.IsTrippedBy<InvalidOperationException>()))
+                .Build();
+
+            services.Any(d => d.ServiceType == typeof(ICircuitBreakerExceptionPredicatesProvider)).Should().BeTrue();
         }
 
         [Fact]

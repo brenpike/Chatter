@@ -116,7 +116,17 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         public CircuitBreakerOptionsBuilder IsTrippedBy<TException>() where TException : Exception
             => IsTrippedBy(e => e is TException);
 
-        public CircuitBreakerOptions Build()
+        /// <summary>
+        /// Produces the finalized <see cref="CircuitBreakerOptions"/> without touching the
+        /// <see cref="IServiceCollection"/>.
+        /// </summary>
+        /// <returns>The finalized <see cref="CircuitBreakerOptions"/></returns>
+        /// <remarks>
+        /// INVARIANT: this is the COMPOSITION path and it publishes nothing. A parent builder seeds its own graph
+        /// from here, binds its section over that graph and only then publishes, so no consumer can resolve an
+        /// options instance the parent has not finished binding.
+        /// </remarks>
+        internal CircuitBreakerOptions Resolve()
         {
             var circuitBreakerOptions = new CircuitBreakerOptions();
             circuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds = _openToHalfOpenWaitTimeInSeconds;
@@ -131,28 +141,47 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
                 // CircuitBreakerOptions is internal set, so the binder skips all of them unless
                 // BindNonPublicProperties is on; replacing the instance would additionally discard the defaults
                 // assigned above. Keys the section omits therefore keep their fluent default.
-                //
-                // INVARIANT: every single-instance resolution of CircuitBreakerOptions returns the instance built
-                // here - AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot
-                // and IOptionsMonitor over that same instance. The container's options factory is deliberately
-                // NOT used: a Configure<CircuitBreakerOptions>(section) registration would build a second
-                // instance that never saw the fluent defaults above, so a section that omits
-                // ConcurrentHalfOpenAttempts would resolve it as 0 and CircuitBreaker would be constructed
-                // from that 0 rather than from the default assigned here. The concrete registration is
-                // APPENDED rather than replaced, so a second Build() on the same IServiceCollection takes
-                // over single-instance resolution and leaves the earlier instances reachable through
-                // IEnumerable<CircuitBreakerOptions> - each seeded by its own Build(), so no enumeration can
-                // surface an unseeded object.
                 _circuitBreakerOptionsSection.Bind(circuitBreakerOptions, o => o.BindNonPublicProperties = true);
             }
 
+            return circuitBreakerOptions;
+        }
+
+        /// <summary>
+        /// Registers the supplied finalized <see cref="CircuitBreakerOptions"/> and this builder's configured
+        /// exception predicates against the <see cref="IServiceCollection"/>.
+        /// </summary>
+        /// <param name="circuitBreakerOptions">The finalized options produced by <see cref="Resolve"/></param>
+        /// <remarks>
+        /// INVARIANT: this is the ONLY site in this builder that touches the <see cref="IServiceCollection"/> with
+        /// built options. A parent builder calls it after its own bind so the registered instance is the finalized
+        /// one; a standalone <see cref="Build"/> calls it immediately because there is no parent left to bind.
+        /// </remarks>
+        internal void Publish(CircuitBreakerOptions circuitBreakerOptions)
+        {
             if (_exceptionPredicates.Count > 0)
             {
                 _services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider>(new ConfigCircuitBreakerExceptionPredicatesProvider(_exceptionPredicates));
             }
 
+            // INVARIANT: every single-instance resolution of CircuitBreakerOptions returns the instance published
+            // here - AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot
+            // and IOptionsMonitor over that same instance. The container's options factory is deliberately
+            // NOT used: a Configure<CircuitBreakerOptions>(section) registration would build a second
+            // instance that never saw the fluent defaults, so a section that omits
+            // ConcurrentHalfOpenAttempts would resolve it as 0 and CircuitBreaker would be constructed
+            // from that 0 rather than from the resolved default. The concrete registration is
+            // APPENDED rather than replaced, so a second Build() on the same IServiceCollection takes
+            // over single-instance resolution and leaves the earlier instances reachable through
+            // IEnumerable<CircuitBreakerOptions> - each seeded by its own Resolve(), so no enumeration can
+            // surface an unseeded object.
             _services.AddBuiltOptions(circuitBreakerOptions);
+        }
 
+        public CircuitBreakerOptions Build()
+        {
+            var circuitBreakerOptions = Resolve();
+            Publish(circuitBreakerOptions);
             return circuitBreakerOptions;
         }
     }

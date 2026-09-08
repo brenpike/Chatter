@@ -36,6 +36,32 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
         }
 
         [Fact]
+        public void MustNotRegisterAnyServiceWhenResolved()
+        {
+            var services = new ServiceCollection();
+
+            var options = RecoveryOptionsBuilder.Create(services)
+                .WithMaxRetryAttempts(9)
+                .WithCircuitBreaker(cb => cb.SetNumberOfFailuresBeforeOpen(7))
+                .RetryWhen<InvalidOperationException>()
+                .Resolve();
+
+            options.MaxRetryAttempts.Should().Be(9);
+            options.CircuitBreakerOptions.NumberOfFailuresBeforeOpen.Should().Be(7);
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustNotRegisterCircuitBreakerOptionsBeforeBuildWhenWithCircuitBreakerUsed()
+        {
+            var services = new ServiceCollection();
+
+            RecoveryOptionsBuilder.Create(services).WithCircuitBreaker(cb => cb.SetNumberOfFailuresBeforeOpen(7));
+
+            services.Any(d => d.ServiceType == typeof(CircuitBreakerOptions)).Should().BeFalse();
+        }
+
+        [Fact]
         public void MustThrowArgumentNullExceptionWhenServicesIsNull()
         {
             var create = () => RecoveryOptionsBuilder.Create(null);

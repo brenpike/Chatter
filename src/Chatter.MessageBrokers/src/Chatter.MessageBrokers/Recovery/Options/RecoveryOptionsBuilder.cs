@@ -11,7 +11,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
 {
     public class RecoveryOptionsBuilder
     {
-        private CircuitBreakerOptions _circuitBreakerOptions = null;
+        private CircuitBreakerOptionsBuilder _circuitBreakerOptionsBuilder = null;
 
         public const string RecoveryOptionsSectionName = "Chatter:MessageBrokers:Recovery";
         private readonly IServiceCollection _services;
@@ -61,7 +61,10 @@ namespace Chatter.MessageBrokers.Recovery.Options
         {
             var b = CircuitBreakerOptionsBuilder.Create(_services);
             builder?.Invoke(b);
-            _circuitBreakerOptions = b.Build();
+            // INVARIANT: the configured sub-builder is retained rather than built here. Building it would register
+            // CircuitBreakerOptions before this builder - and any parent above it - has bound its own section, so a
+            // consumer could resolve an instance whose configured values had not been applied yet.
+            _circuitBreakerOptionsBuilder = b;
             return this;
         }
 
@@ -172,15 +175,25 @@ namespace Chatter.MessageBrokers.Recovery.Options
         public RecoveryOptionsBuilder RetryWhen<TException>() where TException : Exception
             => RetryWhen(e => e is TException);
 
-        public RecoveryOptions Build()
+        /// <summary>
+        /// Produces the finalized <see cref="RecoveryOptions"/>, nested <see cref="CircuitBreakerOptions"/> included,
+        /// without touching the <see cref="IServiceCollection"/>.
+        /// </summary>
+        /// <returns>The finalized <see cref="RecoveryOptions"/></returns>
+        /// <remarks>
+        /// INVARIANT: this is the COMPOSITION path and it publishes nothing. A parent builder seeds its own graph
+        /// from here, binds its section over that graph and only then publishes, so no consumer can resolve an
+        /// options instance the parent has not finished binding.
+        /// </remarks>
+        internal RecoveryOptions Resolve()
         {
             var recoveryOptions = new RecoveryOptions();
             recoveryOptions.MaxRetryAttempts = _maxRetryAttempts;
-            // INVARIANT: the nested CircuitBreakerOptions is seeded BEFORE the parent bind so the binder mutates the
-            // instance CircuitBreakerOptionsBuilder already registered as a singleton instead of replacing it with an
-            // unregistered one. CircuitBreaker, RetryStrategy and RetryWithCircuitBreakerStrategy all inject the
-            // concrete type, so an orphaned instance would surface as a resolution failure.
-            recoveryOptions.CircuitBreakerOptions = _circuitBreakerOptions ?? CircuitBreakerOptionsBuilder.Create(_services).Build();
+            // INVARIANT: the nested CircuitBreakerOptions is seeded BEFORE this builder's bind so the binder mutates
+            // the instance the sub-builder resolved instead of replacing it. CircuitBreaker, RetryStrategy and
+            // RetryWithCircuitBreakerStrategy all inject the concrete type, and Publish registers the instance
+            // reachable from the finalized graph, so no consumer can reach an orphaned one.
+            recoveryOptions.CircuitBreakerOptions = EnsureCircuitBreakerOptionsBuilder().Resolve();
 
             if (_recoveryOptionsSection != null && _recoveryOptionsSection.Exists())
             {
@@ -188,28 +201,64 @@ namespace Chatter.MessageBrokers.Recovery.Options
                 // RecoveryOptions is internal set, so the binder skips all of them unless BindNonPublicProperties is
                 // on; replacing the instance would additionally discard the defaults assigned above. Keys the section
                 // omits therefore keep their fluent default.
-                //
-                // INVARIANT: every single-instance resolution of RecoveryOptions returns the instance built here -
-                // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
-                // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
-                // a Configure<RecoveryOptions>(section) registration would build a second instance that never saw
-                // the fluent defaults above, so its CircuitBreakerOptions would be null and a section that omits
-                // MaxRetryAttempts would resolve it as 0, turning the first failure straight into
-                // MaxRetryAttemptsExceededException. The concrete registration is APPENDED rather than replaced, so
-                // a second Build() on the same IServiceCollection takes over single-instance resolution and leaves
-                // the earlier instances reachable through IEnumerable<RecoveryOptions> - each seeded by its own
-                // Build(), so no enumeration can surface an unseeded object.
                 _recoveryOptionsSection.Bind(recoveryOptions, o => o.BindNonPublicProperties = true);
             }
+
+            return recoveryOptions;
+        }
+
+        /// <summary>
+        /// Registers the supplied finalized <see cref="RecoveryOptions"/>, its nested
+        /// <see cref="CircuitBreakerOptions"/> and this builder's configured exception predicates against the
+        /// <see cref="IServiceCollection"/>.
+        /// </summary>
+        /// <param name="recoveryOptions">The finalized options produced by <see cref="Resolve"/></param>
+        /// <remarks>
+        /// INVARIANT: this is the ONLY site in this builder that touches the <see cref="IServiceCollection"/> with
+        /// built options. A parent builder calls it after its own bind so the registered instances are the finalized
+        /// ones; a standalone <see cref="Build"/> calls it immediately because there is no parent left to bind. The
+        /// nested options are read back off the finalized graph so the published instance is always the one every
+        /// entry point reaches through <see cref="RecoveryOptions.CircuitBreakerOptions"/>.
+        /// </remarks>
+        internal void Publish(RecoveryOptions recoveryOptions)
+        {
+            EnsureCircuitBreakerOptionsBuilder().Publish(recoveryOptions.CircuitBreakerOptions);
 
             if (_exceptionPredicates.Count > 0)
             {
                 _services.AddSingleton<IRetryExceptionPredicatesProvider>(new ConfigRetryExceptionPredicatesProvider(_exceptionPredicates));
             }
 
+            // INVARIANT: every single-instance resolution of RecoveryOptions returns the instance published here -
+            // AddBuiltOptions registers it as the concrete type and as IOptions, IOptionsSnapshot and
+            // IOptionsMonitor over that same instance. The container's options factory is deliberately NOT used:
+            // a Configure<RecoveryOptions>(section) registration would build a second instance that never saw
+            // the fluent defaults, so its CircuitBreakerOptions would be null and a section that omits
+            // MaxRetryAttempts would resolve it as 0, turning the first failure straight into
+            // MaxRetryAttemptsExceededException. The concrete registration is APPENDED rather than replaced, so
+            // a second Build() on the same IServiceCollection takes over single-instance resolution and leaves
+            // the earlier instances reachable through IEnumerable<RecoveryOptions> - each seeded by its own
+            // Resolve(), so no enumeration can surface an unseeded object.
             _services.AddBuiltOptions(recoveryOptions);
+        }
 
+        public RecoveryOptions Build()
+        {
+            var recoveryOptions = Resolve();
+            Publish(recoveryOptions);
             return recoveryOptions;
+        }
+
+        // INVARIANT: Resolve and Publish must reach the SAME sub-builder, so the default one is created once and
+        // retained here rather than constructed at each call site.
+        private CircuitBreakerOptionsBuilder EnsureCircuitBreakerOptionsBuilder()
+        {
+            if (_circuitBreakerOptionsBuilder == null)
+            {
+                _circuitBreakerOptionsBuilder = CircuitBreakerOptionsBuilder.Create(_services);
+            }
+
+            return _circuitBreakerOptionsBuilder;
         }
     }
 }

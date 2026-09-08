@@ -491,6 +491,31 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
+        public void MustStartWithFluentNoRetryWhenTheConfiguredRetryPolicyIsOneTheBinderCannotConvert()
+        {
+            // REGRESSION GUARD for the BIND sitting behind the fluent-first check: a configured RetryPolicy
+            // section the fluent call discards is never BOUND, so a MaximumRetryCount the
+            // ConfigurationBinder cannot convert never raises its InvalidOperationException on a section the
+            // host was never going to use. This is strictly stronger than the never-CONSTRUCTED guards
+            // above: a non-convertible scalar fails inside the bind itself, before any construction, so it
+            // fails while the bind still runs unconditionally and passes only once the bind is gated too.
+            // Without a fluent override the same key still fails the binder — see
+            // MustFailInTheBinderNamingTheKeyWhenAConfiguredRetryValueIsNotConvertible.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "oops",
+            });
+
+            var options = Create(new ServiceCollection(), config)
+                .WithNoRetry()
+                .Build();
+
+            options.RetryOptions.Should().NotBeNull();
+            options.RetryOptions.MaxRetries.Should().Be(0);
+        }
+
+        [Fact]
         public void MustApplyNoRetryOptionsViaFluentSetter()
         {
             var options = Create(new ServiceCollection(), EmptyConfig())
