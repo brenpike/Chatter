@@ -57,10 +57,49 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingExponentialDelayRetry
             => MaxDelayOf(_sut).Should().Be(15000);
 
         [Fact]
-        public void MustOverflowToNegativeForLargeAttempt()
-        {
-            // (int)(0.5 * (2^31 - 1)) * 1000 overflows Int32 and wraps negative; pinned as-is.
-            ComputedDelayFor(_sut, 31).Should().BeLessThan(0);
-        }
+        public void MustComputeTheLargestInDomainDelayForAttemptTwentyTwo()
+            // 0.5 * (2^22 - 1) truncates to 2097151s -> 2097151000ms, the last product below int.MaxValue.
+            => ComputedDelayFor(_sut, 22).Should().Be(2097151000);
+
+        [Fact]
+        public void MustSaturateAtTaskDelayCeilingForAttemptThirtyOne()
+            // Inverted from MustOverflowToNegativeForLargeAttempt, which pinned the Int32 wrap as-is.
+            => ComputedDelayFor(_sut, 31).Should().Be(int.MaxValue);
+
+        [Theory]
+        [InlineData(23)]
+        [InlineData(24)]
+        [InlineData(25)]
+        [InlineData(26)]
+        [InlineData(27)]
+        [InlineData(28)]
+        [InlineData(29)]
+        [InlineData(30)]
+        [InlineData(32)]
+        [InlineData(1024)]
+        [InlineData(2048)]
+        [InlineData(int.MaxValue)]
+        public void MustSaturateAtTaskDelayCeilingForEveryOverflowingAttempt(int attempts)
+            // Attempt 23 is the first whose product exceeds int.MaxValue; every larger attempt does too,
+            // including 28 (which wrapped positive to a 12.43 day delay) and 1024 (where 2^n is +Infinity).
+            => ComputedDelayFor(_sut, attempts).Should().Be(int.MaxValue);
+
+        [Theory]
+        [InlineData(-1)]
+        [InlineData(int.MinValue)]
+        public void MustComputeZeroMillisecondsForANegativeAttemptCount(int attempts)
+            => ComputedDelayFor(_sut, attempts).Should().Be(0);
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(22)]
+        [InlineData(23)]
+        [InlineData(28)]
+        [InlineData(31)]
+        [InlineData(1024)]
+        [InlineData(int.MaxValue)]
+        [InlineData(int.MinValue)]
+        public void MustComputeADelayWithinTaskDelaysAcceptedDomain(int attempts)
+            => ComputedDelayFor(_sut, attempts).Should().BeInRange(0, int.MaxValue);
     }
 }

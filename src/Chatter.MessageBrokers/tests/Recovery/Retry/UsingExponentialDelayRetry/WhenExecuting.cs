@@ -27,6 +27,20 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingExponentialDelayRetry
             => await new ExponentialDelayRetry(0).ExecuteAsync(5);
 
         [Fact]
+        public async Task MustCompleteWhenConstructedWithAnOverflowingMaxRetryAttempts()
+            // Cap computed from 30 attempts used to wrap negative, so the first delay was rejected outright.
+            => await new ExponentialDelayRetry(30).ExecuteAsync(1);
+
+        [Fact]
+        public async Task MustCompleteWhenTheDeliveryCountOverflowsTheComputedDelay()
+            // Cap 0 with an attempt whose computed delay used to wrap negative; the negative computed value won.
+            => await new ExponentialDelayRetry(0).ExecuteAsync(23);
+
+        [Fact]
+        public async Task MustCompleteForFailureContextWhenTheDeliveryCountOverflowsTheComputedDelay()
+            => await new ExponentialDelayRetry(0).ExecuteAsync(FailureContextWithDeliveryCount(23));
+
+        [Fact]
         public async Task MustThrowArgumentNullExceptionWhenFailureContextIsNull()
             => await FluentActions
                 .Invoking(async () => await new ExponentialDelayRetry(0).ExecuteAsync((FailureContext)null))

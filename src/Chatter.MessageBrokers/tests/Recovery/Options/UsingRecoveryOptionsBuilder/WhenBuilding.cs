@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuilder
@@ -99,6 +100,24 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Options.UsingRecoveryOptionsBuil
                 .Build();
 
             options.MaxRetryAttempts.Should().Be(3);
+        }
+
+        [Fact]
+        public async Task MustCompleteTheFirstDelayOfTheResolvedStrategyWhenExponentialDelayExceedsCeiling()
+        {
+            var services = new ServiceCollection();
+
+            RecoveryOptionsBuilder.Create(services)
+                .UseExponentialDelayRecovery(30)
+                .Build();
+
+            using var provider = services.BuildServiceProvider();
+            using var scope = provider.CreateScope();
+            var retryDelayStrategy = scope.ServiceProvider.GetRequiredService<IRetryDelayStrategy>();
+
+            var delaying = async () => await retryDelayStrategy.ExecuteAsync(1);
+
+            await delaying.Should().NotThrowAsync<ArgumentOutOfRangeException>();
         }
 
         [Fact]

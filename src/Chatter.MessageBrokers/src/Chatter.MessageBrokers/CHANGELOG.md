@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.1] - 2026-09-07
+
+### Fixed
+
+- **`ExponentialDelayRetry`'s (internal) delay computation no longer overflows `Int32` before it reaches `Task.Delay`.** The computation now runs in `double` and clamps once to `Task.Delay`'s accepted `[0, int.MaxValue]` domain before any integral cast, so the clamp covers both callers — the constructor and `ExecuteAsync` — by construction. Previously, attempt 23 wrapped to a negative value and threw `ArgumentOutOfRangeException` on the very next retry; attempt 28 wrapped to a *positive* value and silently produced a 12.43-day delay instead of failing loudly. Attempts 0-22 compute the same delay as before; this is not a change to the retry schedule for any attempt that previously worked. This is an internal type — no public member's name, type, or accessibility changed by it. `RecoveryOptionsBuilder.UseExponentialDelayRecovery(30)` no longer throws on its first resolved retry (#319, #298).
+
 ## [0.23.0] - 2026-09-07
 
 ### Changed
