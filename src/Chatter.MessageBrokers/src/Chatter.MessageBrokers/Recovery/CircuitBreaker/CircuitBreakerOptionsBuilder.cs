@@ -159,11 +159,10 @@ namespace Chatter.MessageBrokers.Recovery.CircuitBreaker
         }
 
         /// <summary>
-        /// Refuses any value on the finalized <see cref="CircuitBreakerOptions"/> that the
-        /// <see cref="CircuitBreaker"/> reading it cannot run with.
+        /// Refuses any value on the finalized <see cref="CircuitBreakerOptions"/>.
         /// </summary>
         /// <param name="circuitBreakerOptions">The finalized options produced by <see cref="Resolve"/></param>
-        /// <exception cref="ConfiguredValueRefusedException">A configured value the circuit breaker cannot run with</exception>
+        /// <exception cref="ConfiguredValueRefusedException">A configured value was refused</exception>
         /// <remarks>
         /// INVARIANT: validation is its own phase between <see cref="Resolve"/> and <see cref="Publish"/>. It cannot
         /// live in Resolve, because this builder has no section of its own when a parent composes it and every

@@ -284,15 +284,15 @@ Validation is its own phase, between resolving the options graph and publishing 
 
 These are the values that are refused:
 
-| Option | Refused when | Bound derived from |
-| --- | --- | --- |
-| `MessageBrokerOptions.TransactionMode` | the enum does not define it | `TransactionMode` itself, via `Enum.IsDefined`. The binder is loud only for a mode it cannot PARSE; a numeric literal converts cleanly to an undefined member of this byte-backed enum and would reach the `TransactionContext` the receiver builds |
-| `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, `-1` included | the `Task.Delay` `BrokeredMessageOutboxProcessor` awaits between poll passes. `-1` is `Timeout.Infinite`, which `Task.Delay` takes happily and an ENABLED poller would then wait on for good |
-| `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity`, or a positive magnitude `DateTime.AddMinutes` rejects | the in-memory outbox's expiry scan, which adds the ttl to each processed timestamp. A `NaN` slips through the scan's own `ttl <= 0` disable guard, because every comparison against a `NaN` is false, so finiteness is required before the magnitude question means anything |
-| `RecoveryOptions.MaxRetryAttempts` | below `1` | `RetryStrategy`, which starts at attempt 1 and gives up once `attempts >= MaxRetryAttempts`, so every budget at or below 1 buys exactly one attempt and binding a `0` would disable retry without saying so |
-| `CircuitBreakerOptions.ConcurrentHalfOpenAttempts` | below `1` | the `new SemaphoreSlim(n, n)` the `CircuitBreaker` awaits before each half-open trial. A negative throws out of the breaker's own constructor; a zero is a perfectly legal semaphore that admits nothing, so the host starts and the first trial then blocks for good |
-| `CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds` | negative, or longer than `Task.Delay` can wait | `Task.Delay`. The state store's own cooling gate accepts every `TimeSpan`, so `Task.Delay` is the strictly binding sink for this value |
-| `CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification` | negative, or longer than `Timer.Change` can schedule | the `Timer.Change` the circuit breaker arms its critical-failure notification with |
+| Option | Refused when |
+| --- | --- |
+| `MessageBrokerOptions.TransactionMode` | the enum does not define it |
+| `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, `-1` included |
+| `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity`, or a positive magnitude `DateTime.AddMinutes` rejects |
+| `RecoveryOptions.MaxRetryAttempts` | below `1` |
+| `CircuitBreakerOptions.ConcurrentHalfOpenAttempts` | below `1` |
+| `CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds` | negative, or longer than `Task.Delay` can wait |
+| `CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification` | negative, or longer than `Timer.Change` can schedule |
 
 Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory` and `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` for the in-memory ttl; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
 
