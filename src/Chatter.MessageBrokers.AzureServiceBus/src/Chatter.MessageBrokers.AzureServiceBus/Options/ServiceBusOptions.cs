@@ -46,9 +46,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // of leaving a reader to infer it from a count. It is no longer the only way: a stated
         // MaximumRetryCount of 0 now binds faithfully and yields MaxRetries 0, which differs both from the
         // earlier behaviour that inferred "off" only from an ALL-ZERO four-key section and from the
-        // build-time validation that briefly refused a stated zero outright. A stated zero KEEPS binding
-        // this way: zero retries is legitimate operator intent, so it is neither refused nor rewritten into
-        // a NoRetry the operator did not write (#423).
+        // build-time validation that briefly refused a stated zero outright. Issue #423 owns the final call
+        // on whether a stated zero should keep binding this way.
         public bool NoRetry { get; set; } = false;
         // INVARIANT: every numeric parameter is NULLABLE so that ABSENT and STATED are distinguishable and
         // each binds FAITHFULLY. Null means the key was never written, so the Azure SDK default for that
