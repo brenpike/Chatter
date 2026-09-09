@@ -1,4 +1,5 @@
-﻿using Chatter.MessageBrokers.Receiving;
+﻿using Chatter.MessageBrokers.Exceptions;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery.Options;
 using Chatter.MessageBrokers.Reliability.Configuration;
 using Microsoft.Extensions.Configuration;
@@ -112,9 +113,53 @@ namespace Chatter.MessageBrokers.Configuration
             return messageBrokerOptions;
         }
 
+        /// <summary>
+        /// Refuses any value on the finalized <see cref="MessageBrokerOptions"/>, nested options included, that the
+        /// runtime sink reading it cannot run with.
+        /// </summary>
+        /// <param name="messageBrokerOptions">The finalized options produced by <see cref="Resolve"/></param>
+        /// <exception cref="ConfiguredValueRefusedException">A configured value the sink cannot run with</exception>
+        /// <remarks>
+        /// INVARIANT: validation is its own phase between <see cref="Resolve"/> and the publish step, and it walks
+        /// the finalized graph. It cannot live in Resolve, because the nested builders have no section of their own
+        /// and every value configured for them arrives from the bind above AFTER their Resolve has returned; and it
+        /// cannot live in the publish step, because that publishes Reliability before Recovery, so a refusal raised
+        /// there would leave the reliability options registered. Recursing into the same sub-builders the
+        /// composition path visits keeps compose, validate and publish on one graph.
+        /// </remarks>
+        internal void Validate(MessageBrokerOptions messageBrokerOptions)
+        {
+            // INVARIANT: the configuration binder is loud only for a transaction mode it cannot PARSE. A numeric
+            // literal converts cleanly to an undefined member of this byte-backed enum and reaches the
+            // TransactionContext the receiver builds, so the enum type itself is the oracle for what may be
+            // configured rather than a set restated here.
+            if (!Enum.IsDefined(typeof(TransactionMode), messageBrokerOptions.TransactionMode))
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(MessageBrokerOptions)}.{nameof(MessageBrokerOptions.TransactionMode)}",
+                                                          messageBrokerOptions.TransactionMode,
+                                                          $"one of {string.Join(", ", Enum.GetNames(typeof(TransactionMode)))}",
+                                                          _messageBrokerOptionsSection?.Path);
+            }
+
+            // INVARIANT: a null child is left to the publish step, which fails host registration loudly on it,
+            // rather than dereferenced here - validation must not turn a registration failure into a
+            // NullReferenceException.
+            if (messageBrokerOptions.Reliability != null)
+            {
+                EnsureReliabilityOptionsBuilder().Validate(messageBrokerOptions.Reliability);
+            }
+
+            if (messageBrokerOptions.Recovery != null)
+            {
+                EnsureRecoveryOptionsBuilder().Validate(messageBrokerOptions.Recovery);
+            }
+        }
+
         internal MessageBrokerOptions Build()
         {
             var messageBrokerOptions = Resolve();
+
+            Validate(messageBrokerOptions);
 
             // INVARIANT: this is the ONE publish site for the whole options graph and it runs only after the section
             // above has been bound. The nested options are published from the finalized graph rather than from the

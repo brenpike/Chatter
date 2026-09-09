@@ -1,4 +1,5 @@
 using Chatter.MessageBrokers.Configuration;
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Options;
@@ -535,6 +536,106 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             provider.GetRequiredService<RecoveryOptions>().Should().BeSameAs(options.Recovery);
             provider.GetRequiredService<CircuitBreakerOptions>().Should().BeSameAs(options.Recovery.CircuitBreakerOptions);
         }
+
+        /// <summary>
+        /// The refused value belongs to the NESTED circuit breaker options and arrives through THIS builder's own
+        /// section - the nested builders have no section of their own, so a configured value only reaches them after
+        /// the parent bind. That is why validation is its own phase over the finalized graph rather than part of
+        /// either neighbour: it cannot run inside Resolve, which returns before the parent bind, and it cannot run
+        /// inside the publish step, which registers the reliability options first and would therefore have left them
+        /// in the container by the time the circuit breaker value was refused.
+        /// </summary>
+        [Fact]
+        public void MustRefuseANestedCircuitBreakerValueAndPublishNothingWhenTheParentSectionCarriesIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{CircuitBreakerOptionsBuilder.CircuitBreakerOptionsSectionName}:ConcurrentHalfOpenAttempts"] = "0"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(CircuitBreakerOptions)}.{nameof(CircuitBreakerOptions.ConcurrentHalfOpenAttempts)}");
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustRefuseANestedReliabilityValueAndPublishNothingWhenTheParentSectionCarriesIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = "-5"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}");
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// The binder is loud only for a transaction mode it cannot PARSE. A numeric literal converts cleanly to an
+        /// undefined member of the byte-backed enum and reaches the TransactionContext the receiver builds, so the
+        /// enum type itself is the oracle for what may be configured.
+        /// </summary>
+        [Fact]
+        public void MustAcceptEveryNumericTransactionModeTheEnumDefines()
+        {
+            foreach (var definedTransactionMode in Enum.GetValues(typeof(TransactionMode)).Cast<TransactionMode>())
+            {
+                var services = new ServiceCollection();
+
+                var options = MessageBrokerOptionsBuilder.FromConfig(services, BuildConfigurationWithTransactionMode(((byte)definedTransactionMode).ToString()));
+
+                options.TransactionMode.Should().Be(definedTransactionMode);
+            }
+        }
+
+        [Fact]
+        public void MustRefuseANumericTransactionModeTheEnumDoesNotDefine()
+        {
+            var services = new ServiceCollection();
+            var undefinedTransactionMode = FirstUndefinedTransactionMode();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, BuildConfigurationWithTransactionMode(undefinedTransactionMode.ToString()));
+
+            var refusal = fromConfig.Should().Throw<ConfiguredValueRefusedException>().Which;
+            refusal.OptionName.Should().Be($"{nameof(MessageBrokerOptions)}.{nameof(MessageBrokerOptions.TransactionMode)}");
+            refusal.ConfigurationPath.Should().Be(MessageBrokerOptionsBuilder.MessageBrokerSectionName);
+            services.Should().BeEmpty();
+        }
+
+        // The enum is its own oracle: the offered value is the first one it does not define rather than a literal
+        // this test picked, so widening TransactionMode moves the probe instead of leaving it stale.
+        private static byte FirstUndefinedTransactionMode()
+        {
+            for (var candidate = 0; candidate <= byte.MaxValue; candidate++)
+            {
+                if (!Enum.IsDefined(typeof(TransactionMode), (byte)candidate))
+                {
+                    return (byte)candidate;
+                }
+            }
+
+            Assert.Fail("TransactionMode defines every byte, so this test can no longer offer an undefined one.");
+            return default;
+        }
+
+        private static IConfiguration BuildConfigurationWithTransactionMode(string transactionMode)
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{MessageBrokerOptionsBuilder.MessageBrokerSectionName}:TransactionMode"] = transactionMode
+                })
+                .Build();
 
         private const string ExplicitSectionName = "Custom:MessageBrokers";
 

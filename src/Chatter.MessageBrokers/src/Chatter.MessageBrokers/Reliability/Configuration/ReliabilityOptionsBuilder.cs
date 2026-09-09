@@ -2,6 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using Chatter.MessageBrokers.Configuration;
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Reliability.Outbox;
 
 namespace Chatter.MessageBrokers.Reliability.Configuration
@@ -12,6 +13,10 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         private double _minutesToLiveInMemory = 10;
         private bool _enableOutboxPollingProcessor = false;
         private int _outboxProcessingIntervalInMilliseconds = 5000;
+
+        private const int _minimumOutboxProcessingIntervalInMilliseconds = 0;
+        private const string _outboxProcessingIntervalBound = "at least 0 milliseconds";
+        private const string _minutesToLiveInMemoryBound = "a finite number of minutes DateTime.AddMinutes can add to a processed timestamp";
 
         public const string ReliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability";
         private readonly IServiceCollection _services;
@@ -104,6 +109,66 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         }
 
         /// <summary>
+        /// Refuses any value on the finalized <see cref="ReliabilityOptions"/> that the runtime sink reading it
+        /// cannot run with.
+        /// </summary>
+        /// <param name="reliabilityOptions">The finalized options produced by <see cref="Resolve"/></param>
+        /// <exception cref="ConfiguredValueRefusedException">A configured value the sink cannot run with</exception>
+        /// <remarks>
+        /// INVARIANT: validation is its own phase between <see cref="Resolve"/> and <see cref="Publish"/>. It cannot
+        /// live in Resolve, because this builder has no section of its own when a parent composes it and every
+        /// configured value then arrives from the parent bind AFTER Resolve has returned; and it cannot live in
+        /// Publish, because a parent publishes its other children around this one and a refusal raised there would
+        /// leave them registered.
+        /// </remarks>
+        internal void Validate(ReliabilityOptions reliabilityOptions)
+        {
+            // INVARIANT: BrokeredMessageOutboxProcessor.ExecuteAsync awaits Task.Delay(interval) with no try of its
+            // own, so anything below -1 faults the whole background service; -1 is Timeout.Infinite, which an ENABLED
+            // poller would wait on for good. Zero stays accepted - Task.Delay completes it immediately, so how
+            // aggressively the outbox is polled is the operator's call.
+            if (reliabilityOptions.OutboxProcessingIntervalInMilliseconds < _minimumOutboxProcessingIntervalInMilliseconds)
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}",
+                                                          reliabilityOptions.OutboxProcessingIntervalInMilliseconds,
+                                                          _outboxProcessingIntervalBound,
+                                                          _reliabilityOptionsSection?.Path);
+            }
+
+            if (!CanScheduleExpiry(reliabilityOptions.MinutesToLiveInMemory))
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.MinutesToLiveInMemory)}",
+                                                          reliabilityOptions.MinutesToLiveInMemory,
+                                                          _minutesToLiveInMemoryBound,
+                                                          _reliabilityOptionsSection?.Path);
+            }
+        }
+
+        private static bool CanScheduleExpiry(double minutesToLiveInMemory)
+        {
+            // INVARIANT: a non-positive ttl is the outbox's documented 'expiry cleanup disabled' branch, so it stays
+            // accepted - but that guard is a comparison, and every comparison against a NaN is false, so a configured
+            // NaN passes it and reaches the expiry scan. AddMinutes cannot be the whole oracle either: it rejects a
+            // NaN on net8.0 and absorbs it silently on net10.0. Requiring a finite number of minutes first is what
+            // makes the refusal hold on every target; the magnitude is still the sink's own call rather than a range
+            // restated here.
+            if (!double.IsFinite(minutesToLiveInMemory))
+            {
+                return false;
+            }
+
+            try
+            {
+                DateTime.UtcNow.AddMinutes(minutesToLiveInMemory);
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Registers the supplied finalized <see cref="ReliabilityOptions"/> against the
         /// <see cref="IServiceCollection"/>.
         /// </summary>
@@ -133,6 +198,7 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         public ReliabilityOptions Build()
         {
             var reliabilityOptions = Resolve();
+            Validate(reliabilityOptions);
             Publish(reliabilityOptions);
             return reliabilityOptions;
         }

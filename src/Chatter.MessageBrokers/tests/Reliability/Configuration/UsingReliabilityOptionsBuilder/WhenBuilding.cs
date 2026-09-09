@@ -1,3 +1,4 @@
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Reliability.Configuration;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
@@ -5,6 +6,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilityOptionsBuilder
@@ -223,19 +227,166 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
 
         /// <summary>
         /// <c>Task.Delay</c> rejects anything below -1, so an enabled outbox polling processor configured this way
-        /// faults the whole background service, and this builder binds the value anyway. Build-time validation of
-        /// configured options is tracked by issue #423, so the acceptance is recorded here rather than overlooked.
+        /// faults the whole background service. This builder used to bind the value and let the host start, and the
+        /// acceptance was recorded here as a deferral naming issue #423. #423 closes it: the value is now refused at
+        /// build time, and the deferral record becomes the pin for the refusal.
         /// </summary>
         [Fact]
-        public void MustAcceptAConfiguredOutboxProcessingIntervalOfNegativeFive()
+        public void MustRefuseAConfiguredOutboxProcessingIntervalOfNegativeFive()
         {
             var services = new ServiceCollection();
             var configuration = BuildConfigurationWithOutboxProcessingInterval("-5");
 
-            var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, configuration);
 
-            options.OutboxProcessingIntervalInMilliseconds.Should().Be(-5);
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>();
+            services.Should().BeEmpty();
         }
+
+        /// <summary>
+        /// -1 is <c>Timeout.Infinite</c>, so <c>Task.Delay</c> takes it happily and an ENABLED poller then waits for
+        /// good. The polling sink is the only thing that can express 'never poll again', and it cannot, so the value
+        /// is refused rather than bound into a processor that would silently stop.
+        /// </summary>
+        [Theory]
+        [InlineData(0)]
+        [InlineData(5000)]
+        [InlineData(-1)]
+        [InlineData(-5)]
+        [InlineData(int.MinValue)]
+        public void MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval(int interval)
+        {
+            var services = new ServiceCollection();
+            var theSinkCanPollAtIt = TaskDelayAccepts(interval) && interval != Timeout.Infinite;
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxProcessingInterval(interval.ToString()));
+
+            if (theSinkCanPollAtIt)
+            {
+                fromConfig.Should().NotThrow<ConfiguredValueRefusedException>();
+            }
+            else
+            {
+                fromConfig.Should().Throw<ConfiguredValueRefusedException>();
+                services.Should().BeEmpty();
+            }
+        }
+
+        /// <summary>
+        /// The double converter takes "NaN", "Infinity" and "1e300" straight off a configuration section, and NaN
+        /// then slips through the outbox's own <c>ttl &lt;= 0</c> disable guard - every comparison against it is
+        /// false - to fault the expiry scan. A non-positive ttl stays accepted: that IS the disable branch.
+        /// </summary>
+        [Theory]
+        [InlineData("0")]
+        [InlineData("10")]
+        [InlineData("-5")]
+        [InlineData("NaN")]
+        [InlineData("Infinity")]
+        [InlineData("-Infinity")]
+        [InlineData("1e300")]
+        [InlineData("-1e300")]
+        public void MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory(string minutesToLiveInMemory)
+        {
+            var services = new ServiceCollection();
+            var theSinkCanScheduleIt = ExpiryScanAccepts(double.Parse(minutesToLiveInMemory, CultureInfo.InvariantCulture));
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithMinutesToLiveInMemory(minutesToLiveInMemory));
+
+            if (theSinkCanScheduleIt)
+            {
+                fromConfig.Should().NotThrow<ConfiguredValueRefusedException>();
+            }
+            else
+            {
+                fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                          .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.MinutesToLiveInMemory)}");
+                services.Should().BeEmpty();
+            }
+        }
+
+        /// <summary>
+        /// A NaN ttl is the exact value this module measured slipping through the outbox's own disable guard, and
+        /// the magnitude offer alone cannot refuse it everywhere: <c>DateTime.AddMinutes</c> rejects a NaN on net8.0
+        /// and absorbs it silently on net10.0. Requiring a finite number of minutes is what makes the refusal hold on
+        /// every target rather than on one of them.
+        /// </summary>
+        [Fact]
+        public void MustRefuseANonFiniteConfiguredMinutesToLiveInMemoryOnEveryTargetFramework()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithMinutesToLiveInMemory("NaN"));
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.MinutesToLiveInMemory)}");
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustNameTheRefusedPropertyValueBoundAndResolvedSectionPathWhenAConfiguredValueIsRefused()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxProcessingInterval("-5"));
+
+            var refusal = fromConfig.Should().Throw<ConfiguredValueRefusedException>().Which;
+            refusal.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}");
+            refusal.RefusedValue.Should().Be(-5);
+            refusal.ConfigurationPath.Should().Be(ReliabilityOptionsBuilder.ReliabilityOptionsSectionName);
+            refusal.Message.Should().Contain(refusal.OptionName)
+                   .And.Contain("-5")
+                   .And.Contain(refusal.ConfigurationPath)
+                   .And.Contain(refusal.RequiredBound);
+        }
+
+        // BrokeredMessageOutboxProcessor awaits Task.Delay(interval) with no try of its own, so Task.Delay is asked
+        // here whether it can run the configured interval rather than having its accepted range restated.
+        private static bool TaskDelayAccepts(int millisecondsDelay)
+        {
+            try
+            {
+                // INVARIANT: the already-cancelled token keeps this probe from arming a real timer. Task.Delay
+                // validates its argument before it observes the token, and the out-of-range candidates above go red
+                // the moment that stops being true.
+                _ = Task.Delay(millisecondsDelay, new CancellationToken(true));
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+        }
+
+        // InMemoryBrokeredMessageOutbox adds the ttl to each processed timestamp, so the value is offered to that
+        // very call rather than having DateTime.AddMinutes' accepted magnitude restated. AddMinutes is NOT a total
+        // oracle though: measured here, net8.0 rejects a NaN and net10.0 absorbs it silently, so a ttl has to be a
+        // finite number of minutes before the magnitude question means anything.
+        private static bool ExpiryScanAccepts(double minutesToLiveInMemory)
+        {
+            if (!double.IsFinite(minutesToLiveInMemory))
+            {
+                return false;
+            }
+
+            try
+            {
+                DateTime.UtcNow.AddMinutes(minutesToLiveInMemory);
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+        }
+
+        private static IConfiguration BuildConfigurationWithMinutesToLiveInMemory(string minutesToLiveInMemory)
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:MinutesToLiveInMemory"] = minutesToLiveInMemory
+                })
+                .Build();
 
         private static IConfiguration BuildConfigurationWithOutboxProcessingInterval(string interval)
             => new ConfigurationBuilder()
