@@ -31,6 +31,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             options.MinutesToLiveInMemory.Should().Be(10);
             options.EnableOutboxPollingProcessor.Should().BeFalse();
             options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
+            options.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(60);
+            options.InMemoryInboxMaxEntries.Should().Be(200000);
         }
 
         [Fact]
@@ -96,6 +98,48 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             var options = ReliabilityOptionsBuilder.Create(services).WithInMemoryOutboxTimeToLive(99).Build();
 
             options.MinutesToLiveInMemory.Should().Be(99);
+        }
+
+        [Fact]
+        public void MustReflectWithInMemoryInboxDeduplicationWindow()
+        {
+            var services = new ServiceCollection();
+
+            var options = ReliabilityOptionsBuilder.Create(services).WithInMemoryInboxDeduplicationWindow(15).Build();
+
+            options.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(15);
+        }
+
+        [Fact]
+        public void MustReflectWithInMemoryInboxMaxEntries()
+        {
+            var services = new ServiceCollection();
+
+            var options = ReliabilityOptionsBuilder.Create(services).WithInMemoryInboxMaxEntries(1500).Build();
+
+            options.InMemoryInboxMaxEntries.Should().Be(1500);
+        }
+
+        /// <summary>
+        /// Both in-memory inbox settings are seeded before the section is bound, so a configured value takes the
+        /// fluent default's place rather than being overwritten by it.
+        /// </summary>
+        [Fact]
+        public void MustHonourConfiguredInMemoryInboxSettingsOverTheirFluentDefaults()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxDeduplicationWindowInMinutes"] = "5",
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxMaxEntries"] = "25"
+                })
+                .Build();
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
+            options.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(5);
+            options.InMemoryInboxMaxEntries.Should().Be(25);
         }
 
         [Fact]
@@ -391,6 +435,77 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             services.Should().BeEmpty();
         }
 
+        /// <summary>
+        /// The cap is the in-memory inbox's memory safety valve, so a cap of zero would retain no receipt at all while
+        /// the inbox still allocated for every one of them - deduplicating nothing under a setting that reads like a
+        /// retention limit. It is refused rather than treated as 'disabled': the deduplication window is where an
+        /// operator says how long a receipt lives, and a non-positive window already says 'never expire'.
+        /// </summary>
+        [Fact]
+        public void MustRefuseAConfiguredInMemoryInboxMaxEntriesOfZero()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithInMemoryInboxMaxEntries("0"));
+
+            var refusal = fromConfig.Should().Throw<ConfiguredValueRefusedException>().Which;
+            refusal.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxMaxEntries)}");
+            refusal.RefusedValue.Should().Be(0);
+            refusal.RequiredBound.Should().Be("at least 1 entry");
+            refusal.ConfigurationPath.Should().Be(ReliabilityOptionsBuilder.ReliabilityOptionsSectionName);
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// A negative cap names no number of receipts the inbox could hold, so there is nothing for it to mean.
+        /// </summary>
+        [Fact]
+        public void MustRefuseAConfiguredNegativeInMemoryInboxMaxEntries()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithInMemoryInboxMaxEntries("-5"));
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxMaxEntries)}");
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// One receipt is the smallest cap the inbox can still deduplicate an immediate redelivery under, so the bound
+        /// stops exactly there rather than at some larger house minimum.
+        /// </summary>
+        [Fact]
+        public void MustAcceptTheSmallestInMemoryInboxMaxEntriesTheInboxCanHold()
+        {
+            var services = new ServiceCollection();
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithInMemoryInboxMaxEntries("1"));
+
+            options.InMemoryInboxMaxEntries.Should().Be(1);
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<ReliabilityOptions>().Should().BeSameAs(options);
+        }
+
+        /// <summary>
+        /// A non-positive window disables time-based expiry, the same idiom <see cref="ReliabilityOptions.MinutesToLiveInMemory"/>
+        /// already teaches on this very options type. It is accepted whatever its magnitude, and the cap remains the
+        /// only thing that then releases a receipt.
+        /// </summary>
+        [Theory]
+        [InlineData("0", 0)]
+        [InlineData("-5", -5)]
+        public void MustAcceptANonPositiveInMemoryInboxDeduplicationWindow(string configuredWindow, int expectedWindow)
+        {
+            var services = new ServiceCollection();
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithInMemoryInboxDeduplicationWindow(configuredWindow));
+
+            options.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(expectedWindow);
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<ReliabilityOptions>().Should().BeSameAs(options);
+        }
+
         [Fact]
         public void MustNameTheRefusedPropertyValueBoundAndResolvedSectionPathWhenAConfiguredValueIsRefused()
         {
@@ -515,6 +630,22 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
                 {
                     [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = interval,
                     [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:EnableOutboxPollingProcessor"] = enableOutboxPollingProcessor.ToString()
+                })
+                .Build();
+
+        private static IConfiguration BuildConfigurationWithInMemoryInboxMaxEntries(string maxEntries)
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxMaxEntries"] = maxEntries
+                })
+                .Build();
+
+        private static IConfiguration BuildConfigurationWithInMemoryInboxDeduplicationWindow(string windowInMinutes)
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxDeduplicationWindowInMinutes"] = windowInMinutes
                 })
                 .Build();
 

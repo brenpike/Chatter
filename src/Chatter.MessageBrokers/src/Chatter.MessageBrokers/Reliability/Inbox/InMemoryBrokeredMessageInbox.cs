@@ -7,8 +7,13 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability.Inbox
 {
-    public class InMemoryBrokeredMessageInbox : IBrokeredMessageInbox, IInboxDeduplicator
+    public class InMemoryBrokeredMessageInbox : IBrokeredMessageInbox, IInboxDeduplicator, IProcessLifetimeStore
     {
+        // INVARIANT: this dictionary is the process's ONLY record of which message ids have been received, so the
+        // instance holding it must outlive any DI scope. ScopedReceivedMessageDispatcher opens a FRESH scope per
+        // delivery, so a per-scope instance starts every redelivery with an empty dictionary and deduplicates
+        // nothing. Hence IProcessLifetimeStore and the process-lifetime registration; the relational and document
+        // provider stores keep their markers outside the instance and are correctly per-operation.
         private readonly ConcurrentDictionary<string, bool> _inbox;
         private readonly ILogger<InMemoryBrokeredMessageInbox> _logger;
 

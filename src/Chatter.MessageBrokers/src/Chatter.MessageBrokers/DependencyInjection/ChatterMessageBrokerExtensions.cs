@@ -118,8 +118,13 @@ namespace Microsoft.Extensions.DependencyInjection
             // resolved IBrokeredMessageOutbox / IBrokeredMessageInbox at the consumption site (precedent:
             // OutboxProcessor's IUnitOfWork cast). A custom store lacking the required facet throws
             // InvalidCastException loudly at the poll site. Split-store is impossible by construction.
-            builder.Services.AddIfNotRegistered<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>(ServiceLifetime.Scoped);
-            builder.Services.AddIfNotRegistered<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>(ServiceLifetime.Scoped);
+            // The SHIPPED in-memory defaults below are process-lifetime (IProcessLifetimeStore): their dictionaries
+            // are the process's only copy of the outbox rows and the received ids, while every consumer opens a fresh
+            // scope per operation. A CUSTOM primary registered before this call keeps its own lifetime — the presence
+            // gate inside AddProcessLifetimeDefault leaves it untouched — because a provider store keeps its state
+            // outside the instance and is correctly per-operation.
+            builder.Services.AddProcessLifetimeDefault<IBrokeredMessageOutbox, InMemoryBrokeredMessageOutbox>();
+            builder.Services.AddProcessLifetimeDefault<IBrokeredMessageInbox, InMemoryBrokeredMessageInbox>();
             builder.Services.AddSingleton<IRetryExceptionPredicatesProvider, DefaultRetryExceptionPredicatesProvider>();
             builder.Services.AddSingleton<IRetryExceptionEvaluator, RetryExceptionEvaluator>();
             builder.Services.AddSingleton<ICircuitBreakerExceptionEvaluator, CircuitBreakerExceptionEvaluator>();

@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System;
 using Chatter.MessageBrokers.Configuration;
 using Chatter.MessageBrokers.Exceptions;
+using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 
 namespace Chatter.MessageBrokers.Reliability.Configuration
@@ -13,10 +14,14 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         private double _minutesToLiveInMemory = 10;
         private bool _enableOutboxPollingProcessor = false;
         private int _outboxProcessingIntervalInMilliseconds = 5000;
+        private int _inMemoryInboxDeduplicationWindowInMinutes = 60;
+        private int _inMemoryInboxMaxEntries = 200000;
 
         private const int _minimumOutboxProcessingIntervalInMilliseconds = 0;
         private const string _outboxProcessingIntervalBound = "at least 0 milliseconds";
         private const string _minutesToLiveInMemoryBound = "at most 0 minutes, which disables expiry cleanup, or a finite number of minutes";
+        private const int _minimumInMemoryInboxMaxEntries = 1;
+        private const string _inMemoryInboxMaxEntriesBound = "at least 1 entry";
 
         public const string ReliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability";
         private readonly IServiceCollection _services;
@@ -65,6 +70,35 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         }
 
         /// <summary>
+        /// Defines the deduplication window of the <see cref="InMemoryBrokeredMessageInbox"/>: after a receipt completes,
+        /// a redelivery of the same message id is skipped for this long. The <see cref="InMemoryBrokeredMessageInbox"/>
+        /// is registered by Chatter by default if no other persistance strategy is used. Default value is 60.
+        /// </summary>
+        /// <param name="windowInMinutes">The time a completed receipt deduplicates redeliveries of its message id for. A
+        /// non-positive value disables time-based expiry, leaving <see cref="WithInMemoryInboxMaxEntries"/> as the only
+        /// thing that releases a receipt.</param>
+        /// <returns><see cref="ReliabilityOptionsBuilder"/></returns>
+        public ReliabilityOptionsBuilder WithInMemoryInboxDeduplicationWindow(int windowInMinutes)
+        {
+            _inMemoryInboxDeduplicationWindowInMinutes = windowInMinutes;
+            return this;
+        }
+
+        /// <summary>
+        /// Defines the most receipts the <see cref="InMemoryBrokeredMessageInbox"/> will retain. This is a memory safety
+        /// valve rather than the deduplication guarantee: under memory pressure it truncates the window advertised by
+        /// <see cref="WithInMemoryInboxDeduplicationWindow"/>, so a redelivery within that window can be handled again
+        /// once its receipt has been evicted. Default value is 200000.
+        /// </summary>
+        /// <param name="maxEntries">The most receipts to retain. Must be at least 1.</param>
+        /// <returns><see cref="ReliabilityOptionsBuilder"/></returns>
+        public ReliabilityOptionsBuilder WithInMemoryInboxMaxEntries(int maxEntries)
+        {
+            _inMemoryInboxMaxEntries = maxEntries;
+            return this;
+        }
+
+        /// <summary>
         /// Enables the <see cref="BrokeredMessageOutboxProcessor"/> which processes messages from the outbox and sends them to messaging infrastructure 
         /// at a timed interval. The default polling interval is 5000 milliseconds. This does not enable sending of messages to the outbox by default which
         /// must be done by calling <see cref="WithOutboxRouting"/> or by using <see cref="OutboxProcessingBehavior{TMessage}"/>.
@@ -95,6 +129,8 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
             reliabilityOptions.MinutesToLiveInMemory = _minutesToLiveInMemory;
             reliabilityOptions.EnableOutboxPollingProcessor = _enableOutboxPollingProcessor;
             reliabilityOptions.OutboxProcessingIntervalInMilliseconds = _outboxProcessingIntervalInMilliseconds;
+            reliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes = _inMemoryInboxDeduplicationWindowInMinutes;
+            reliabilityOptions.InMemoryInboxMaxEntries = _inMemoryInboxMaxEntries;
 
             if (_reliabilityOptionsSection != null && _reliabilityOptionsSection.Exists())
             {
@@ -143,6 +179,20 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
                 throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.MinutesToLiveInMemory)}",
                                                           reliabilityOptions.MinutesToLiveInMemory,
                                                           _minutesToLiveInMemoryBound,
+                                                          _reliabilityOptionsSection?.Path);
+            }
+
+            // INVARIANT: the cap is the in-memory inbox's memory safety valve, so it must name a number of receipts the
+            // inbox can actually hold. A cap of zero would retain no receipt while the inbox still allocated for every
+            // one of them - deduplicating nothing under a setting that reads like a retention limit - and a negative cap
+            // names no number at all. Neither is read as 'disabled': the deduplication window is where an operator says
+            // how long a receipt lives, and a non-positive window there already says 'never expire', which is why
+            // InMemoryInboxDeduplicationWindowInMinutes is refused nothing here.
+            if (reliabilityOptions.InMemoryInboxMaxEntries < _minimumInMemoryInboxMaxEntries)
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxMaxEntries)}",
+                                                          reliabilityOptions.InMemoryInboxMaxEntries,
+                                                          _inMemoryInboxMaxEntriesBound,
                                                           _reliabilityOptionsSection?.Path);
             }
         }
