@@ -229,10 +229,10 @@ namespace Chatter.MessageBrokers.Recovery.Options
 
         /// <summary>
         /// Refuses any value on the finalized <see cref="RecoveryOptions"/>, nested
-        /// <see cref="CircuitBreakerOptions"/> included, that the runtime sink reading it cannot run with.
+        /// <see cref="CircuitBreakerOptions"/> included.
         /// </summary>
         /// <param name="recoveryOptions">The finalized options produced by <see cref="Resolve"/></param>
-        /// <exception cref="ConfiguredValueRefusedException">A configured value the sink cannot run with</exception>
+        /// <exception cref="ConfiguredValueRefusedException">A configured value was refused</exception>
         /// <remarks>
         /// INVARIANT: validation is its own phase between <see cref="Resolve"/> and <see cref="Publish"/>. It cannot
         /// live in Resolve, because this builder has no section of its own when a parent composes it and every

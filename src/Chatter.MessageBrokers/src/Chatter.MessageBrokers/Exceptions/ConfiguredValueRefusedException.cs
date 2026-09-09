@@ -3,7 +3,7 @@
 namespace Chatter.MessageBrokers.Exceptions
 {
     /// <summary>
-    /// Thrown when an options builder refuses a configured value that the runtime sink reading it cannot run with.
+    /// Thrown when an options builder refuses a configured value.
     /// </summary>
     public class ConfiguredValueRefusedException : Exception
     {
@@ -29,7 +29,7 @@ namespace Chatter.MessageBrokers.Exceptions
         public object RefusedValue { get; }
 
         /// <summary>
-        /// The bound the value had to satisfy, stated in terms of the sink the bound was derived from.
+        /// The bound the value had to satisfy.
         /// </summary>
         public string RequiredBound { get; }
 

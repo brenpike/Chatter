@@ -16,7 +16,7 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
 
         private const int _minimumOutboxProcessingIntervalInMilliseconds = 0;
         private const string _outboxProcessingIntervalBound = "at least 0 milliseconds";
-        private const string _minutesToLiveInMemoryBound = "at most 0 minutes, which disables expiry cleanup, or a finite number of minutes DateTime.AddMinutes can add to a processed timestamp";
+        private const string _minutesToLiveInMemoryBound = "at most 0 minutes, which disables expiry cleanup, or a finite number of minutes DateTime.UtcNow.AddMinutes can add";
 
         public const string ReliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability";
         private readonly IServiceCollection _services;
@@ -109,11 +109,10 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         }
 
         /// <summary>
-        /// Refuses any value on the finalized <see cref="ReliabilityOptions"/> that the runtime sink reading it
-        /// cannot run with.
+        /// Refuses any value on the finalized <see cref="ReliabilityOptions"/>.
         /// </summary>
         /// <param name="reliabilityOptions">The finalized options produced by <see cref="Resolve"/></param>
-        /// <exception cref="ConfiguredValueRefusedException">A configured value the sink cannot run with</exception>
+        /// <exception cref="ConfiguredValueRefusedException">A configured value was refused</exception>
         /// <remarks>
         /// INVARIANT: validation is its own phase between <see cref="Resolve"/> and <see cref="Publish"/>. It cannot
         /// live in Resolve, because this builder has no section of its own when a parent composes it and every

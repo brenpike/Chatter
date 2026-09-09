@@ -114,11 +114,10 @@ namespace Chatter.MessageBrokers.Configuration
         }
 
         /// <summary>
-        /// Refuses any value on the finalized <see cref="MessageBrokerOptions"/>, nested options included, that the
-        /// runtime sink reading it cannot run with.
+        /// Refuses any value on the finalized <see cref="MessageBrokerOptions"/>, nested options included.
         /// </summary>
         /// <param name="messageBrokerOptions">The finalized options produced by <see cref="Resolve"/></param>
-        /// <exception cref="ConfiguredValueRefusedException">A configured value the sink cannot run with</exception>
+        /// <exception cref="ConfiguredValueRefusedException">A configured value was refused</exception>
         /// <remarks>
         /// INVARIANT: validation is its own phase between <see cref="Resolve"/> and the publish step, and it walks
         /// the finalized graph. It cannot live in Resolve, because the nested builders have no section of their own

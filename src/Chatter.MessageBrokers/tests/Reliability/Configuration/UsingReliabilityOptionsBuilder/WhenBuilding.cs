@@ -317,8 +317,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         /// <summary>
         /// A NaN ttl is the exact value this module measured slipping through the outbox's own <c>ttl &lt;= 0</c>
         /// disable guard - every comparison against a NaN is false - so the scan it reaches is asked here whether it
-        /// disabled itself, and it did not. <c>DateTime.AddMinutes</c> cannot be asked that question on its own: it
-        /// rejects a NaN on net8.0 and absorbs it silently on net10.0, so the outbox is driven instead.
+        /// disabled itself, and it did not. <c>DateTime.AddMinutes</c> cannot be asked that question on its own, so
+        /// the outbox is driven instead.
         /// </summary>
         [Fact]
         public async Task MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor()
