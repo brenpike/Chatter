@@ -16,7 +16,7 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
 
         private const int _minimumOutboxProcessingIntervalInMilliseconds = 0;
         private const string _outboxProcessingIntervalBound = "at least 0 milliseconds";
-        private const string _minutesToLiveInMemoryBound = "a finite number of minutes DateTime.AddMinutes can add to a processed timestamp";
+        private const string _minutesToLiveInMemoryBound = "at most 0 minutes, which disables expiry cleanup, or a finite number of minutes DateTime.AddMinutes can add to a processed timestamp";
 
         public const string ReliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability";
         private readonly IServiceCollection _services;
@@ -146,17 +146,28 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
 
         private static bool CanScheduleExpiry(double minutesToLiveInMemory)
         {
-            // INVARIANT: a non-positive ttl is the outbox's documented 'expiry cleanup disabled' branch, so it stays
-            // accepted - but that guard is a comparison, and every comparison against a NaN is false, so a configured
-            // NaN passes it and reaches the expiry scan. AddMinutes cannot be the whole oracle either: it rejects a
-            // NaN on net8.0 and absorbs it silently on net10.0. Requiring a finite number of minutes first is what
-            // makes the refusal hold on every target; the magnitude is still the sink's own call rather than a range
-            // restated here.
+            // INVARIANT: InMemoryBrokeredMessageOutbox opens its expiry scan with this very comparison and returns on
+            // it before it reads a single timestamp, so a ttl the scan disables itself on is one it runs without
+            // computing anything - accepted whatever its magnitude. The comparison is written the way the scan writes
+            // it rather than negated: every comparison against a NaN is false, so a NaN falls through to the
+            // finiteness question below instead of being waved through here as non-positive.
+            if (minutesToLiveInMemory <= 0)
+            {
+                return true;
+            }
+
+            // INVARIANT: only a NaN or a positive infinity reaches here, and the scan's disable branch has already
+            // declined to cover either. AddMinutes cannot settle a NaN on its own - it rejects one on some targets and
+            // absorbs it silently on others - so finiteness is asked first and the magnitude below stays the sink's
+            // own call rather than a range restated here.
             if (!double.IsFinite(minutesToLiveInMemory))
             {
                 return false;
             }
 
+            // INVARIANT: the scan adds the ttl to ProcessedFromOutboxAtUtc, a timestamp always stamped later than this
+            // build, and a later reference has less room left before DateTime.MaxValue. UtcNow is therefore the most
+            // permissive reference available at build time and can never refuse a magnitude the scan would have added.
             try
             {
                 DateTime.UtcNow.AddMinutes(minutesToLiveInMemory);

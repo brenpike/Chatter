@@ -1,12 +1,17 @@
+using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Exceptions;
+using Chatter.MessageBrokers.Reliability;
 using Chatter.MessageBrokers.Reliability.Configuration;
+using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -273,9 +278,11 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         }
 
         /// <summary>
-        /// The double converter takes "NaN", "Infinity" and "1e300" straight off a configuration section, and NaN
-        /// then slips through the outbox's own <c>ttl &lt;= 0</c> disable guard - every comparison against it is
-        /// false - to fault the expiry scan. A non-positive ttl stays accepted: that IS the disable branch.
+        /// The double converter takes "NaN", "Infinity" and "1e300" straight off a configuration section, so the
+        /// verdict on each is the real outbox's rather than a house rule: a ttl the expiry scan disables itself on,
+        /// or schedules a real future expiry with, is accepted, and one it faults on or treats a just-processed
+        /// message as already expired under is refused. A non-positive ttl is accepted however large its magnitude -
+        /// the scan returns on it before it computes anything at all.
         /// </summary>
         [Theory]
         [InlineData("0")]
@@ -286,10 +293,12 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         [InlineData("-Infinity")]
         [InlineData("1e300")]
         [InlineData("-1e300")]
-        public void MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory(string minutesToLiveInMemory)
+        public async Task MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory(string minutesToLiveInMemory)
         {
             var services = new ServiceCollection();
-            var theSinkCanScheduleIt = ExpiryScanAccepts(double.Parse(minutesToLiveInMemory, CultureInfo.InvariantCulture));
+            var observation = await ObserveTheRealExpiryScan(double.Parse(minutesToLiveInMemory, CultureInfo.InvariantCulture));
+            var theSinkCanScheduleIt = observation == ExpiryScanObservation.DisabledItself
+                                    || observation == ExpiryScanObservation.ScheduledAFutureExpiry;
 
             var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithMinutesToLiveInMemory(minutesToLiveInMemory));
 
@@ -306,15 +315,16 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         }
 
         /// <summary>
-        /// A NaN ttl is the exact value this module measured slipping through the outbox's own disable guard, and
-        /// the magnitude offer alone cannot refuse it everywhere: <c>DateTime.AddMinutes</c> rejects a NaN on net8.0
-        /// and absorbs it silently on net10.0. Requiring a finite number of minutes is what makes the refusal hold on
-        /// every target rather than on one of them.
+        /// A NaN ttl is the exact value this module measured slipping through the outbox's own <c>ttl &lt;= 0</c>
+        /// disable guard - every comparison against a NaN is false - so the scan it reaches is asked here whether it
+        /// disabled itself, and it did not. <c>DateTime.AddMinutes</c> cannot be asked that question on its own: it
+        /// rejects a NaN on net8.0 and absorbs it silently on net10.0, so the outbox is driven instead.
         /// </summary>
         [Fact]
-        public void MustRefuseANonFiniteConfiguredMinutesToLiveInMemoryOnEveryTargetFramework()
+        public async Task MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor()
         {
             var services = new ServiceCollection();
+            (await ObserveTheRealExpiryScan(double.NaN)).Should().NotBe(ExpiryScanObservation.DisabledItself);
 
             var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithMinutesToLiveInMemory("NaN"));
 
@@ -358,27 +368,75 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             }
         }
 
-        // InMemoryBrokeredMessageOutbox adds the ttl to each processed timestamp, so the value is offered to that
-        // very call rather than having DateTime.AddMinutes' accepted magnitude restated. AddMinutes is NOT a total
-        // oracle though: measured here, net8.0 rejects a NaN and net10.0 absorbs it silently, so a ttl has to be a
-        // finite number of minutes before the magnitude question means anything.
-        private static bool ExpiryScanAccepts(double minutesToLiveInMemory)
+        // What a real InMemoryBrokeredMessageOutbox did with a configured ttl. Nothing here restates any part of the
+        // scan: the outbox is constructed, driven and then asked what it kept, so this oracle answers out of the sink
+        // and stays free to disagree with whatever the builder's own predicate happens to say.
+        private enum ExpiryScanObservation
         {
-            if (!double.IsFinite(minutesToLiveInMemory))
-            {
-                return false;
-            }
+            // Returned before it computed anything: even a message processed a day ago survived it.
+            DisabledItself,
+            // Scheduled a real future expiry: the day-old message went and the just-processed one stayed.
+            ScheduledAFutureExpiry,
+            // Expired a message it had processed this very instant, so the ttl bought that message no life at all.
+            ExpiredAJustProcessedMessage,
+            // Threw out of the arithmetic it adds the ttl with.
+            Faulted
+        }
+
+        private const string _agedMessageId = "processed-a-day-ago";
+        private const string _freshMessageId = "processed-this-instant";
+
+        private static async Task<ExpiryScanObservation> ObserveTheRealExpiryScan(double minutesToLiveInMemory)
+        {
+            var outbox = new InMemoryBrokeredMessageOutbox(NullLogger<InMemoryBrokeredMessageOutbox>.Instance,
+                                                           new ReliabilityOptions { MinutesToLiveInMemory = minutesToLiveInMemory });
+
+            await outbox.SendToOutbox(CreateOutbound(_agedMessageId), new TransactionContext());
+            await outbox.SendToOutbox(CreateOutbound(_freshMessageId), new TransactionContext());
+            var stored = (await outbox.GetUnprocessedMessagesFromOutbox()).ToDictionary(message => message.MessageId);
+            stored[_agedMessageId].ProcessedFromOutboxAtUtc = DateTime.UtcNow.AddDays(-1);
 
             try
             {
-                DateTime.UtcNow.AddMinutes(minutesToLiveInMemory);
-                return true;
+                // Stamps the fresh message with the current time and runs the expiry scan over both of them.
+                await outbox.UpdateProcessedDate(stored[_freshMessageId]);
             }
             catch (ArgumentOutOfRangeException)
             {
+                return ExpiryScanObservation.Faulted;
+            }
+
+            if (!await RemainsInTheOutbox(outbox, _freshMessageId))
+            {
+                return ExpiryScanObservation.ExpiredAJustProcessedMessage;
+            }
+
+            return await RemainsInTheOutbox(outbox, _agedMessageId)
+                ? ExpiryScanObservation.DisabledItself
+                : ExpiryScanObservation.ScheduledAFutureExpiry;
+        }
+
+        // The outbox publishes no processed-message query, so retention is read the way the outbox's own tests read
+        // it: a message it still holds owns its id, and a second send under that id is refused.
+        private static async Task<bool> RemainsInTheOutbox(InMemoryBrokeredMessageOutbox outbox, string messageId)
+        {
+            try
+            {
+                await outbox.SendToOutbox(CreateOutbound(messageId), new TransactionContext());
                 return false;
             }
+            catch (InvalidOperationException)
+            {
+                return true;
+            }
         }
+
+        private static OutboundBrokeredMessage CreateOutbound(string messageId)
+            => new OutboundBrokeredMessage(messageId,
+                                           new byte[] { 1, 2, 3 },
+                                           new Dictionary<string, object>(),
+                                           "destination",
+                                           new TextPlainBodyConverter());
 
         private static IConfiguration BuildConfigurationWithMinutesToLiveInMemory(string minutesToLiveInMemory)
             => new ConfigurationBuilder()
