@@ -163,6 +163,25 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
                 .Should().ThrowAsync<InvalidOperationException>();
         }
 
+        [Fact]
+        public async Task MustRetainProcessedMessageWithoutFaultingWhenMinutesToLiveOutrunsTheDateRange()
+        {
+            // INVARIANT: the scan compares ELAPSED minutes against the ttl instead of adding the ttl to the
+            // processed timestamp, so a ttl no elapsed time can ever reach costs nothing and expires nothing.
+            // Adding it threw an ArgumentOutOfRangeException out of UpdateProcessedDate, which OutboxProcessor
+            // calls inside its unit of work BEFORE dispatching and catches around the whole block, so every
+            // message was stamped processed, logged and then never dispatched and never retried.
+            _reliabilityOptions.MinutesToLiveInMemory = 1e300;
+            await _sut.SendToOutbox(CreateOutbound("id-1"), new TransactionContext());
+            var message = (await _sut.GetUnprocessedMessagesFromOutbox()).Single();
+
+            await FluentActions.Invoking(async () => await _sut.UpdateProcessedDate(message))
+                .Should().NotThrowAsync();
+
+            await FluentActions.Invoking(async () => await _sut.SendToOutbox(CreateOutbound("id-1"), new TransactionContext()))
+                .Should().ThrowAsync<InvalidOperationException>();
+        }
+
         private static IPersistanceTransaction StubTransaction(Guid transactionId)
         {
             var transaction = new Mock<IPersistanceTransaction>();

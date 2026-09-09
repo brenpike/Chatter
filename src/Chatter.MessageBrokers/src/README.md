@@ -249,7 +249,7 @@ A worked `appsettings.json`, showing every bindable key at its default:
 
 The table above is the whole configurable surface. The remaining fluent calls — the retry delay strategy (`UseNoDelayRecovery`, `UseConstantDelayRecovery`, `UseExponentialDelayRecovery`), the retry and circuit-breaker exception predicates (`RetryWhen`, `IsTrippedBy`), and the max-receives-exceeded action (`UseRouteToErrorQueueRecoveryAction`) — register services and have no configuration key of their own.
 
-`UseExponentialDelayRecovery(int)` is the exception to the second half of that: as well as registering the delay strategy it also sets `MaxRetryAttempts`, clamped to 15. `MaxRetryAttempts` is in the table above, so a configured value binds over whatever that call set it to. How the registered delay strategy relates to a configured `MaxRetryAttempts` is not settled here — it is tracked in issue #423.
+`UseExponentialDelayRecovery(int)` is the exception to the second half of that: as well as registering the delay strategy it also sets `MaxRetryAttempts`, clamped to 15 (`MustClampMaxRetryAttemptsToFifteenWhenExponentialDelayExceedsCeiling`). `MaxRetryAttempts` is in the table above, so a configured value binds over whatever that call set it to. The clamp is applied ONCE, and the clamped budget is what both the options and the registered delay strategy are tuned to: `UseExponentialDelayRecovery(30)` gives the strategy the same clamped budget the options ended up carrying, so each wait caps at the delay the fifteenth attempt schedules rather than at the far longer cap the discarded argument would have bought (`MustTuneTheResolvedExponentialDelayStrategyToTheClampedMaxRetryAttempts`). That is the relationship issue #423 left open, and it is settled here.
 
 ### Precedence: configuration wins
 
@@ -272,19 +272,42 @@ In practice this means a `TransactionMode` in configuration overrides `WithTrans
 
 Precedence is settled once, while the options are being built, and the settled result is the only thing any injection style can see: `IOptions<T>`, `IOptionsSnapshot<T>` and `IOptionsMonitor<T>` resolve the same instance as injecting the concrete options type — see [Every injection style resolves the same options instance](#every-injection-style-resolves-the-same-options-instance).
 
-### No option value is semantically checked at build time
+### Configured values are refused at build time
 
-Two different kinds of bad configuration fail in two different places, and only one of them fails while the options are being built.
+Three kinds of bad configuration fail in three different places, and two of the three fail while the options are being built.
 
-**A value of the wrong TYPE fails during `Build()`, at the binder.** `MinutesToLiveInMemory: "abc"`, `RouteMessagesToOutbox: "not-bool"`, a circuit-breaker count that is not a number, or a `TransactionMode` naming no member of the enum cannot be converted, so `ConfigurationBinder` throws an `InvalidOperationException` out of `Build()` before anything downstream sees the value. This is the one configuration failure that names the offending key — the message carries the full key path, such as `Chatter:MessageBrokers:Reliability:MinutesToLiveInMemory`. Nothing in this module raises it; it is the binder's own failure, surfacing wherever the builder runs, which for `AddMessageBrokers` is host start.
+**A value of the wrong TYPE fails during `Build()`, at the binder.** `MinutesToLiveInMemory: "abc"`, `RouteMessagesToOutbox: "not-bool"`, a circuit-breaker count that is not a number, or a `TransactionMode` naming no member of the enum cannot be converted, so `ConfigurationBinder` throws an `InvalidOperationException` out of `Build()` before anything downstream sees the value. The message carries the full key path, such as `Chatter:MessageBrokers:Reliability:MinutesToLiveInMemory`. Nothing in this module raises it; it is the binder's own failure, surfacing wherever the builder runs, which for `AddMessageBrokers` is host start.
 
-**A value of the right type but a nonsensical VALUE is not checked at all.** Nothing here inspects what a converted value means, so it surfaces from the component that actually reads it — or does not surface at all:
+**A value of the right type can still be refused during `Build()`, by this module.** The refusal is a `ConfiguredValueRefusedException` (`Chatter.MessageBrokers.Exceptions`) — this module's own named failure for a semantic case, in this module's vocabulary rather than the binder's or the sink's. It carries `OptionName` (the offending property, qualified by its options type), `RefusedValue`, `RequiredBound` and `ConfigurationPath`, the section the refusing builder actually resolved, including a custom section name the builder was retargeted onto (`MustNameTheRefusedPropertyValueBoundAndResolvedSectionPathWhenAConfiguredValueIsRefused`, `MustNameTheResolvedCustomSectionPathWhenAConfiguredValueIsRefusedThroughACustomSectionName`). `ConfigurationPath` is null when the refusing builder resolved no section of its own, and the option name still identifies the property in that case.
 
-- an `OutboxProcessingIntervalInMilliseconds` that is not a sensible poll interval is handed straight to `BrokeredMessageOutboxProcessor`, which waits that long between poll passes. Nothing checks it first.
-- a `ConcurrentHalfOpenAttempts` below `1` reaches the `new SemaphoreSlim(...)` in the `CircuitBreaker` constructor the first time the breaker is resolved. Nothing checks it first.
-- `ReceiverOptions.MaxConcurrentCalls` below `1` raises an `InvalidOperationException` naming the receiver when that receiver initializes.
+Validation is its own phase, between resolving the options graph and publishing it, and it walks the FINALIZED graph — after the outermost bind, before any registration. A value configured for a NESTED option is reached even though the nested builders have no configuration section of their own, because such a value only lands on the graph after the parent bind.
 
-Issue #423 tracks build-time validation — a single named failure over the semantic cases above, in this module's own vocabulary rather than the binder's or the sink's.
+These are the values that are refused:
+
+| Option | Refused when |
+| --- | --- |
+| `MessageBrokerOptions.TransactionMode` | the enum does not define it |
+| `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, `-1` included, when the outbox polling processor is enabled |
+| `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity` |
+| `RecoveryOptions.MaxRetryAttempts` | below `1` |
+| `CircuitBreakerOptions.ConcurrentHalfOpenAttempts` | below `1` |
+| `CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds` | negative, or longer than `Task.Delay` can wait |
+| `CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification` | negative, or longer than `Timer.Change` can schedule |
+
+Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`, `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` and `MustRefuseAConfiguredInfiniteMinutesToLiveInMemoryTheExpiryScanRunsWithoutFaulting` for the in-memory ttl; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
+
+The upper bound on the two circuit-breaker durations is a constant derived from the BCL's maximum supported timeout rather than probed at run time. It is straddled by two theories that offer the seconds either side of it to a real `Task.Delay` and a real `Timer.Change` and require the builder to agree with whichever answer the sink gives (`MustAgreeWithTaskDelayAboutAConfiguredOpenToHalfOpenWaitTime`, `MustAgreeWithTimerChangeAboutAConfiguredTimeOpenBeforeCriticalEvent`), so a move in either BCL bound is loud rather than silent.
+
+**Values that are deliberately still accepted:**
+
+- a zero `OutboxProcessingIntervalInMilliseconds`. `Task.Delay` completes it immediately, so how aggressively the outbox is polled stays the operator's call (`MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval`).
+- a non-positive `MinutesToLiveInMemory`. That is the outbox's own `ttl <= 0` disabled-cleanup branch, not a degenerate value (`MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`).
+- a zero `OpenToHalfOpenWaitTimeInSeconds`, which is load-bearing rather than degenerate: a zero wait is always already elapsed, so an open circuit never refuses and the very next call is trialled instead (`MustAcceptAConfiguredOpenToHalfOpenWaitTimeOfZero`, `MustTrialTheOpenCircuitOnTheCallThatFindsItsCoolingPeriodElapsed`).
+- a `NumberOfFailuresBeforeOpen` or `NumberOfHalfOpenSuccessesToClose` of zero. The state store counts both as `++count >= threshold`, so no value faults them, and a threshold of 1 or less states "trip, or close, on the first" — intent an operator is entitled to express (`MustAcceptAConfiguredCountThresholdOfZero`).
+
+**What is still left to the sink.** `ReceiverOptions.MaxConcurrentCalls` below `1` raises an `InvalidOperationException` naming the receiver when that receiver initializes; `ReceiverOptions` is not on the bindable surface above and no builder here inspects it.
+
+The refusal set is scoped to what configuration can reach — the keys in the table above and the nested options composed under them. A fluent-only argument with no configuration key and no field on the options it tunes sits outside that scope by decision rather than by oversight, `UseConstantDelayRecovery(int)` being the one worth naming: its argument is recorded on the builder, reaches the registered delay strategy directly, is never stored on `RecoveryOptions`, and is not validated.
 
 ### Every injection style resolves the same options instance
 

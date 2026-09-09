@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -26,7 +27,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
     // binds faithfully to MaxRetries 0. An ABSENT numeric parameter falls back to the SDK default for that
     // parameter; a STATED one is carried to the SDK's own setter, which raises its OWN
     // ArgumentOutOfRangeException naming the SDK member rather than the configuration key — nothing on this
-    // path inspects a configured value first, and issue #423 owns named build-time validation. When the
+    // path inspects a configured value first, and this module adds NO named build-time validation of its
+    // own, BY DECISION: that setter is the authority and already refuses a value it cannot run with during
+    // Build(), with nothing yet registered in the service collection (#423). When the
     // whole service-bus section is absent nothing binds, so RetryOptions stays null. The fluent
     // WithNoRetry() / WithExponentialDelay() setters WIN over a configured RetryPolicy — this module's
     // nullable-sentinel backing fields make an explicit fluent call beat configuration, the opposite of the
@@ -49,6 +52,127 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
 
         private static ServiceBusOptionsBuilder Create(IServiceCollection services, IConfiguration configuration)
             => ServiceBusOptionsBuilder.Create(services, configuration);
+
+        // INVARIANT: the Azure SDK's OWN property setter is the oracle for every retry bound this builder
+        // can produce. Each helper below offers a candidate to the SAME ServiceBusRetryOptions setter
+        // CreateExponentialRetryOptions assigns to, so every bound pinned in this file is READ from the SDK
+        // at run time instead of restated as a constant here. That is why this module adds no bound of its
+        // own: a check here could only repeat the predicate the SDK already applies, and a check that
+        // DIVERGED from it would refuse a value the released package accepts.
+        private static bool SdkAcceptsRetryCount(int retryCount)
+        {
+            try
+            {
+                _ = new ServiceBusRetryOptions { MaxRetries = retryCount };
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+        }
+
+        // A backoff the TimeSpan conversion itself cannot express is one the setter can never be offered,
+        // so it counts as refused for the search below; the pins assert the setter's own exception type
+        // separately, which keeps a TimeSpan-range refusal from being mistaken for an SDK-range one.
+        private static bool SdkAcceptsDelaySeconds(double seconds)
+        {
+            try
+            {
+                _ = new ServiceBusRetryOptions { Delay = TimeSpan.FromSeconds(seconds) };
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+            catch (OverflowException)
+            {
+                return false;
+            }
+        }
+
+        private static bool SdkAcceptsMaxDelaySeconds(double seconds)
+        {
+            try
+            {
+                _ = new ServiceBusRetryOptions { MaxDelay = TimeSpan.FromSeconds(seconds) };
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+            catch (OverflowException)
+            {
+                return false;
+            }
+        }
+
+        // The largest MaxRetries the SDK setter accepts, bisected over that setter's own verdict. The setter
+        // range-checks, so the values it accepts are contiguous and the bisection is exact. Both premises
+        // are asserted, so an SDK that stops bounding MaxRetries fails here LOUDLY rather than yielding a
+        // ceiling nothing checked.
+        private static int FindSdkMaximumRetryCount()
+        {
+            SdkAcceptsRetryCount(0).Should().BeTrue("the bisection starts from a retry count the SDK accepts");
+            SdkAcceptsRetryCount(int.MaxValue).Should().BeFalse("a first-refused retry count exists only while the SDK bounds MaxRetries");
+
+            var accepted = 0;
+            var refused = int.MaxValue;
+            while (refused - accepted > 1)
+            {
+                var midpoint = accepted + ((refused - accepted) / 2);
+                if (SdkAcceptsRetryCount(midpoint))
+                {
+                    accepted = midpoint;
+                }
+                else
+                {
+                    refused = midpoint;
+                }
+            }
+
+            return accepted;
+        }
+
+        // Bisects between a backoff the SDK setter ACCEPTS and one it REFUSES, returning the closest pair
+        // that straddles that setter's own boundary. Milliseconds are the search unit because
+        // TimeSpan.FromSeconds resolves to them, so every probe round-trips through the same conversion
+        // CreateExponentialRetryOptions performs and the returned pair is adjacent at that resolution.
+        private static (double AcceptedSeconds, double RefusedSeconds) FindBackoffBoundarySeconds(
+            Func<double, bool> sdkAccepts,
+            long acceptedMilliseconds,
+            long refusedMilliseconds)
+        {
+            sdkAccepts(acceptedMilliseconds / 1000d).Should().BeTrue("the bisection starts from a backoff the SDK accepts");
+            sdkAccepts(refusedMilliseconds / 1000d).Should().BeFalse("the bisection starts from a backoff the SDK refuses");
+
+            while (Math.Abs(refusedMilliseconds - acceptedMilliseconds) > 1)
+            {
+                var midpoint = acceptedMilliseconds + ((refusedMilliseconds - acceptedMilliseconds) / 2);
+                if (sdkAccepts(midpoint / 1000d))
+                {
+                    acceptedMilliseconds = midpoint;
+                }
+                else
+                {
+                    refusedMilliseconds = midpoint;
+                }
+            }
+
+            return (acceptedMilliseconds / 1000d, refusedMilliseconds / 1000d);
+        }
+
+        // The pair of configured MinimumBackoffInSeconds values straddling the floor ServiceBusRetryOptions.Delay
+        // enforces: the search walks DOWN from the SDK's own default delay towards zero.
+        private static (double AcceptedSeconds, double RefusedSeconds) FindSdkDelayFloorSeconds()
+            => FindBackoffBoundarySeconds(SdkAcceptsDelaySeconds, (long)new ServiceBusRetryOptions().Delay.TotalMilliseconds, 0);
+
+        // The pair straddling the ceiling the same setter enforces: the search walks UP from that default
+        // towards the largest duration TimeSpan can express.
+        private static (double AcceptedSeconds, double RefusedSeconds) FindSdkDelayCeilingSeconds()
+            => FindBackoffBoundarySeconds(SdkAcceptsDelaySeconds, (long)new ServiceBusRetryOptions().Delay.TotalMilliseconds, (long)TimeSpan.MaxValue.TotalMilliseconds);
 
         [Fact]
         public void MustThrowBareExceptionWhenNoConnectionStringInlineOrConfig()
@@ -303,18 +427,70 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         [Fact]
         public void MustAcceptConfiguredMaximumRetryCountAtTheSdkCeiling()
         {
-            // 100 is the ceiling ServiceBusRetryOptions.MaxRetries accepts in its own setter, so the boundary
-            // belongs to the valid side: the stated value is carried straight through and the setter accepts
-            // it. 101 is the first value that same setter rejects.
+            // The ceiling is READ from ServiceBusRetryOptions.MaxRetries — the very setter the stated value
+            // is assigned to — instead of being restated here, so this pin follows the SDK if the bound ever
+            // moves. The boundary belongs to the valid side: the stated value is carried straight through
+            // and the setter accepts it. The other side of the same boundary is pinned by
+            // MustLetTheSdkRefuseTheFirstConfiguredMaximumRetryCountAboveItsCeiling.
+            var sdkCeiling = FindSdkMaximumRetryCount();
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
-                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = "100",
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = sdkCeiling.ToString(CultureInfo.InvariantCulture),
             });
 
             var options = Create(new ServiceCollection(), config).Build();
 
-            options.RetryOptions.MaxRetries.Should().Be(100);
+            options.RetryOptions.MaxRetries.Should().Be(sdkCeiling);
+        }
+
+        [Fact]
+        public void MustLetTheSdkRefuseTheFirstConfiguredMaximumRetryCountAboveItsCeiling()
+        {
+            // The FIRST refused retry count, derived by bisecting ServiceBusRetryOptions.MaxRetries' own
+            // verdict rather than naming a constant: nothing in this module range-checks a retry count, so
+            // the setter refuses it from inside the construction. The refusal is confirmed against the
+            // setter here instead of assumed, and it arrives at BUILD time — the service collection is
+            // still empty afterwards, so no facet can resolve a half-built ServiceBusOptions and surface
+            // the refused value later.
+            var firstRefused = FindSdkMaximumRetryCount() + 1;
+            SdkAcceptsRetryCount(firstRefused).Should().BeFalse("one above the ceiling is the first retry count the SDK setter refuses");
+
+            var services = new ServiceCollection();
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = firstRefused.ToString(CultureInfo.InvariantCulture),
+            });
+            var sut = Create(services, config);
+
+            Action build = () => sut.Build();
+
+            build.Should().Throw<ArgumentOutOfRangeException>();
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustLetTheSdkRefuseANegativeConfiguredMaximumRetryCount()
+        {
+            // The negative side of the same setter's range. A stated -1 reaches MaxRetries because the
+            // nullable numerics carry it there — a "greater than zero means configured" ternary would have
+            // replaced it with the SDK default silently — and the setter refuses it at BUILD time, leaving
+            // the service collection empty.
+            SdkAcceptsRetryCount(-1).Should().BeFalse("the SDK setter refuses a negative retry count");
+
+            var services = new ServiceCollection();
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumRetryCount"] = (-1).ToString(CultureInfo.InvariantCulture),
+            });
+            var sut = Create(services, config);
+
+            Action build = () => sut.Build();
+
+            build.Should().Throw<ArgumentOutOfRangeException>();
+            services.Should().BeEmpty();
         }
 
         [Fact]
@@ -323,8 +499,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             // A stated MaximumRetryCount of 0 is bound FAITHFULLY: one explicitly written key reaches
             // MaxRetries as 0. That differs from master, which inferred "off" only from an ALL-ZERO
             // four-key section, and from the build-time validation that briefly refused it outright.
-            // NoRetry stays the intention-revealing knob for switching retry off; whether a stated zero
-            // should keep binding this way is the open design question issue #423 owns.
+            // NoRetry stays the intention-revealing knob for switching retry off, but a stated zero is NOT
+            // rewritten into one on the operator's behalf: zero retries is legitimate operator intent
+            // (#423).
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
@@ -340,18 +517,109 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         public void MustLetTheSdkRejectAConfiguredMinimumBackoffItCannotRunWith()
         {
             // Nothing inspects a stated backoff before the SDK does: the construction assigns
-            // Delay = TimeSpan.FromSeconds(7776000) and ServiceBusRetryOptions.Delay rejects it from its
-            // OWN setter. The nullable numerics are what carry a stated value that far — a "greater than
-            // zero means configured" ternary would have replaced it with the SDK default silently.
-            var config = ConfigWith(new Dictionary<string, string>
+            // Delay = TimeSpan.FromSeconds(stated) and ServiceBusRetryOptions.Delay decides. The nullable
+            // numerics are what carry a stated value that far — a "greater than zero means configured"
+            // ternary would have replaced it with the SDK default silently. Both sides of the setter's
+            // CEILING are pinned, and the pair is BISECTED out of that setter's own verdict rather than
+            // named here, so the pin cannot drift when the SDK moves the bound: the last accepted backoff
+            // binds to Delay, and the first refused one throws at BUILD time with the service collection
+            // still empty. The floor of the same setter is pinned by
+            // MustStraddleTheSdkDelayFloorWithTheConfiguredMinimumBackoff.
+            var (acceptedSeconds, refusedSeconds) = FindSdkDelayCeilingSeconds();
+
+            var acceptedConfig = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
-                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = "7776000",
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = acceptedSeconds.ToString(CultureInfo.InvariantCulture),
             });
 
-            Action build = () => Create(new ServiceCollection(), config).Build();
+            var options = Create(new ServiceCollection(), acceptedConfig).Build();
+
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(acceptedSeconds));
+
+            var services = new ServiceCollection();
+            var refusedConfig = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = refusedSeconds.ToString(CultureInfo.InvariantCulture),
+            });
+            var sut = Create(services, refusedConfig);
+
+            Action build = () => sut.Build();
 
             build.Should().Throw<ArgumentOutOfRangeException>();
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustStraddleTheSdkDelayFloorWithTheConfiguredMinimumBackoff()
+        {
+            // The other bound of the same setter, bisected the same way but walking DOWN from the SDK's own
+            // default delay: the smallest backoff ServiceBusRetryOptions.Delay accepts binds through, and
+            // the largest one below it — a stated zero, on the SDK measured here — is refused by that setter
+            // at BUILD time, leaving nothing registered. Zero is worth pinning because it is the value an
+            // operator is most likely to write meaning "no wait", and this module does not translate it
+            // into one.
+            var (acceptedSeconds, refusedSeconds) = FindSdkDelayFloorSeconds();
+
+            var acceptedConfig = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = acceptedSeconds.ToString(CultureInfo.InvariantCulture),
+            });
+
+            var options = Create(new ServiceCollection(), acceptedConfig).Build();
+
+            options.RetryOptions.Delay.Should().Be(TimeSpan.FromSeconds(acceptedSeconds));
+
+            var services = new ServiceCollection();
+            var refusedConfig = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MinimumBackoffInSeconds"] = refusedSeconds.ToString(CultureInfo.InvariantCulture),
+            });
+            var sut = Create(services, refusedConfig);
+
+            Action build = () => sut.Build();
+
+            build.Should().Throw<ArgumentOutOfRangeException>();
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustLetTheSdkRefuseANegativeConfiguredMaximumBackoff()
+        {
+            // MaxDelay carries a DIFFERENT rule from Delay — it is non-negative rather than strictly
+            // positive — and the pair is bisected out of that setter's own verdict, so the difference is
+            // read from the SDK rather than assumed: a stated zero binds to MaxDelay, while the largest
+            // negative backoff below it is refused at BUILD time with the service collection still empty.
+            // A cross-field rule would be wrong here for the same reason: see
+            // MustNotTreatMinimumBackoffGreaterThanMaximumBackoffAsAViolation.
+            var (acceptedSeconds, refusedSeconds) = FindBackoffBoundarySeconds(SdkAcceptsMaxDelaySeconds, 0, -1000);
+            refusedSeconds.Should().BeNegative("MaxDelay's boundary is the sign change, not a magnitude");
+
+            var acceptedConfig = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = acceptedSeconds.ToString(CultureInfo.InvariantCulture),
+            });
+
+            var options = Create(new ServiceCollection(), acceptedConfig).Build();
+
+            options.RetryOptions.MaxDelay.Should().Be(TimeSpan.FromSeconds(acceptedSeconds));
+
+            var services = new ServiceCollection();
+            var refusedConfig = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:RetryPolicy:MaximumBackoffInSeconds"] = refusedSeconds.ToString(CultureInfo.InvariantCulture),
+            });
+            var sut = Create(services, refusedConfig);
+
+            Action build = () => sut.Build();
+
+            build.Should().Throw<ArgumentOutOfRangeException>();
+            services.Should().BeEmpty();
         }
 
         [Fact]

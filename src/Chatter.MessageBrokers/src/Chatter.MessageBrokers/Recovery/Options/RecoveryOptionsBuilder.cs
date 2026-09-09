@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS.DependencyInjection;
 using Chatter.MessageBrokers.Configuration;
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Recovery.CircuitBreaker;
 using Chatter.MessageBrokers.Recovery.Retry;
 using Microsoft.Extensions.Configuration;
@@ -24,6 +25,8 @@ namespace Chatter.MessageBrokers.Recovery.Options
 
         private const int _defaultMaxRetryAttempts = 5;
         private const int _maxExponentialRetryAttempts = 15;
+        private const int _minimumMaxRetryAttempts = 1;
+        private const string _maxRetryAttemptsBound = "at least 1 attempt";
 
         // INVARIANT: the fluent surface records WHICH delay strategy was asked for as a value and never names the
         // IServiceCollection; Publish is the only place that turns the recorded kind into a registration. A single
@@ -116,26 +119,31 @@ namespace Chatter.MessageBrokers.Recovery.Options
         /// <remarks>
         /// Exponential delay per attempt:
         ///<br>Attempt #1  - 0s</br>
-        ///<br>Attempt #2  - 2s</br>
-        ///<br>Attempt #3  - 4s</br>
-        ///<br>Attempt #4  - 8s</br>
-        ///<br>Attempt #5  - 16s</br>
-        ///<br>Attempt #6  - 32s</br>
-        ///<br>Attempt #7  - 1m 4s</br>
-        ///<br>Attempt #8  - 2m 8s</br>
-        ///<br>Attempt #9  - 4m 16s</br>
-        ///<br>Attempt #10 - 8m 32s</br>
-        ///<br>Attempt #11 - 17m 4s</br>
-        ///<br>Attempt #12 - 34m 8s</br>
-        ///<br>Attempt #13 - 1h 8m 16s</br>
-        ///<br>Attempt #14 - 2h 16m 32s</br>
-        ///<br>Attempt #15 - 4h 33m 4s</br>
+        ///<br>Attempt #2  - 1s</br>
+        ///<br>Attempt #3  - 3s</br>
+        ///<br>Attempt #4  - 7s</br>
+        ///<br>Attempt #5  - 15s</br>
+        ///<br>Attempt #6  - 31s</br>
+        ///<br>Attempt #7  - 1m 3s</br>
+        ///<br>Attempt #8  - 2m 7s</br>
+        ///<br>Attempt #9  - 4m 15s</br>
+        ///<br>Attempt #10 - 8m 31s</br>
+        ///<br>Attempt #11 - 17m 3s</br>
+        ///<br>Attempt #12 - 34m 7s</br>
+        ///<br>Attempt #13 - 1h 8m 15s</br>
+        ///<br>Attempt #14 - 2h 16m 31s</br>
+        ///<br>Attempt #15 - 4h 33m 3s</br>
         /// </remarks>
         public RecoveryOptionsBuilder UseExponentialDelayRecovery(int maxRetryAttempts)
         {
-            _maxRetryAttempts = Math.Min(maxRetryAttempts, _maxExponentialRetryAttempts);
+            // INVARIANT: the ceiling is applied ONCE and the clamped budget is what both the options and the delay
+            // strategy are tuned to. Reading the attempt budget back at publish time instead would let a later
+            // WithMaxRetryAttempts silently retune the strategy, which is exactly what the recorded argument below
+            // exists to prevent.
+            var clampedMaxRetryAttempts = Math.Min(maxRetryAttempts, _maxExponentialRetryAttempts);
+            _maxRetryAttempts = clampedMaxRetryAttempts;
             _retryDelayStrategyKind = RetryDelayStrategyKind.Exponential;
-            _retryDelayStrategyArgument = maxRetryAttempts;
+            _retryDelayStrategyArgument = clampedMaxRetryAttempts;
             return this;
         }
 
@@ -220,6 +228,41 @@ namespace Chatter.MessageBrokers.Recovery.Options
         }
 
         /// <summary>
+        /// Refuses any value on the finalized <see cref="RecoveryOptions"/>, nested
+        /// <see cref="CircuitBreakerOptions"/> included.
+        /// </summary>
+        /// <param name="recoveryOptions">The finalized options produced by <see cref="Resolve"/></param>
+        /// <exception cref="ConfiguredValueRefusedException">A configured value was refused</exception>
+        /// <remarks>
+        /// INVARIANT: validation is its own phase between <see cref="Resolve"/> and <see cref="Publish"/>. It cannot
+        /// live in Resolve, because this builder has no section of its own when a parent composes it and every
+        /// configured value then arrives from the parent bind AFTER Resolve has returned; and it cannot live in
+        /// Publish, because a parent publishes its other children around this one and a refusal raised there would
+        /// leave them registered. It recurses into the same sub-builder the composition path visits, so compose,
+        /// validate and publish all walk one graph.
+        /// </remarks>
+        internal void Validate(RecoveryOptions recoveryOptions)
+        {
+            // INVARIANT: RetryStrategy starts at attempt 1 and gives up once attempts >= MaxRetryAttempts, so every
+            // budget at or below 1 buys exactly one attempt. A zero or a negative therefore states a budget the sink
+            // cannot express, and binding it disables retry without saying so.
+            if (recoveryOptions.MaxRetryAttempts < _minimumMaxRetryAttempts)
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(RecoveryOptions)}.{nameof(RecoveryOptions.MaxRetryAttempts)}",
+                                                          recoveryOptions.MaxRetryAttempts,
+                                                          _maxRetryAttemptsBound,
+                                                          _recoveryOptionsSection?.Path);
+            }
+
+            // INVARIANT: a null child is left to Publish, which fails host registration loudly on it, rather than
+            // dereferenced here - validation must not turn a registration failure into a NullReferenceException.
+            if (recoveryOptions.CircuitBreakerOptions != null)
+            {
+                EnsureCircuitBreakerOptionsBuilder().Validate(recoveryOptions.CircuitBreakerOptions);
+            }
+        }
+
+        /// <summary>
         /// Registers the supplied finalized <see cref="RecoveryOptions"/>, its nested
         /// <see cref="CircuitBreakerOptions"/>, this builder's configured exception predicates and the recovery
         /// services its fluent calls asked for against the <see cref="IServiceCollection"/>.
@@ -285,6 +328,7 @@ namespace Chatter.MessageBrokers.Recovery.Options
         public RecoveryOptions Build()
         {
             var recoveryOptions = Resolve();
+            Validate(recoveryOptions);
             Publish(recoveryOptions);
             return recoveryOptions;
         }

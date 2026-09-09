@@ -2,6 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using Chatter.MessageBrokers.Configuration;
+using Chatter.MessageBrokers.Exceptions;
 using Chatter.MessageBrokers.Reliability.Outbox;
 
 namespace Chatter.MessageBrokers.Reliability.Configuration
@@ -12,6 +13,10 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         private double _minutesToLiveInMemory = 10;
         private bool _enableOutboxPollingProcessor = false;
         private int _outboxProcessingIntervalInMilliseconds = 5000;
+
+        private const int _minimumOutboxProcessingIntervalInMilliseconds = 0;
+        private const string _outboxProcessingIntervalBound = "at least 0 milliseconds";
+        private const string _minutesToLiveInMemoryBound = "at most 0 minutes, which disables expiry cleanup, or a finite number of minutes";
 
         public const string ReliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability";
         private readonly IServiceCollection _services;
@@ -104,6 +109,66 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         }
 
         /// <summary>
+        /// Refuses any value on the finalized <see cref="ReliabilityOptions"/>.
+        /// </summary>
+        /// <param name="reliabilityOptions">The finalized options produced by <see cref="Resolve"/></param>
+        /// <exception cref="ConfiguredValueRefusedException">A configured value was refused</exception>
+        /// <remarks>
+        /// INVARIANT: validation is its own phase between <see cref="Resolve"/> and <see cref="Publish"/>. It cannot
+        /// live in Resolve, because this builder has no section of its own when a parent composes it and every
+        /// configured value then arrives from the parent bind AFTER Resolve has returned; and it cannot live in
+        /// Publish, because a parent publishes its other children around this one and a refusal raised there would
+        /// leave them registered.
+        /// </remarks>
+        internal void Validate(ReliabilityOptions reliabilityOptions)
+        {
+            // INVARIANT: BrokeredMessageOutboxProcessor.ExecuteAsync awaits Task.Delay(interval) with no try of its
+            // own, so anything below -1 faults the whole background service; -1 is Timeout.Infinite, which an ENABLED
+            // poller would wait on for good. Zero stays accepted - Task.Delay completes it immediately, so how
+            // aggressively the outbox is polled is the operator's call. That processor is the interval's only reader
+            // and ChatterMessageBrokerExtensions registers it only when EnableOutboxPollingProcessor is set, so the
+            // refusal is asked only of a host that will run one: with the poller off nothing ever waits on the value
+            // and a host carrying a stale out-of-range one still starts.
+            if (reliabilityOptions.EnableOutboxPollingProcessor
+             && reliabilityOptions.OutboxProcessingIntervalInMilliseconds < _minimumOutboxProcessingIntervalInMilliseconds)
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}",
+                                                          reliabilityOptions.OutboxProcessingIntervalInMilliseconds,
+                                                          _outboxProcessingIntervalBound,
+                                                          _reliabilityOptionsSection?.Path);
+            }
+
+            if (!CanScheduleExpiry(reliabilityOptions.MinutesToLiveInMemory))
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.MinutesToLiveInMemory)}",
+                                                          reliabilityOptions.MinutesToLiveInMemory,
+                                                          _minutesToLiveInMemoryBound,
+                                                          _reliabilityOptionsSection?.Path);
+            }
+        }
+
+        private static bool CanScheduleExpiry(double minutesToLiveInMemory)
+        {
+            // INVARIANT: InMemoryBrokeredMessageOutbox opens its expiry scan with this very comparison and returns on
+            // it before it reads a single timestamp, so a ttl the scan disables itself on is one it runs without
+            // computing anything - accepted whatever its magnitude. The comparison is written the way the scan writes
+            // it rather than negated: every comparison against a NaN is false, so a NaN falls through to the
+            // finiteness question below instead of being waved through here as non-positive.
+            if (minutesToLiveInMemory <= 0)
+            {
+                return true;
+            }
+
+            // INVARIANT: only a NaN or a positive infinity reaches here, and the scan's disable branch has already
+            // declined to cover either. No magnitude is refused alongside them: the scan compares elapsed minutes
+            // against the ttl rather than computing an expiry instant, so it runs every finite number without
+            // faulting and there is no arithmetic left for this builder to derive a bound from. These two are
+            // refused as intent that names no number of minutes - a NaN expires every message the instant it is
+            // processed, and an infinity says nothing ever expires, which a non-positive ttl already states.
+            return double.IsFinite(minutesToLiveInMemory);
+        }
+
+        /// <summary>
         /// Registers the supplied finalized <see cref="ReliabilityOptions"/> against the
         /// <see cref="IServiceCollection"/>.
         /// </summary>
@@ -133,6 +198,7 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         public ReliabilityOptions Build()
         {
             var reliabilityOptions = Resolve();
+            Validate(reliabilityOptions);
             Publish(reliabilityOptions);
             return reliabilityOptions;
         }
