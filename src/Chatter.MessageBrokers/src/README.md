@@ -144,12 +144,24 @@ The Outbox pattern records outgoing messages so they can be published reliably a
 
 `WithOutboxRouting()` swaps `IRouteBrokeredMessages` for `OutboxBrokeredMessageRouter`. `WithOutboxPollingProcessor(...)` registers `BrokeredMessageOutboxProcessor` (an `IHostedService`). The default store is `InMemoryBrokeredMessageOutbox`; `WithInMemoryOutboxTimeToLive(minutes)` controls its retention.
 
+The shipped in-memory outbox and inbox are registered as process-lifetime singletons, not per DI scope. A receiver's `ScopedReceivedMessageDispatcher` opens a fresh scope for every delivery, so a per-scope instance would start every poll and every delivery with an empty store: the outbox would never have anything to drain and the inbox would deduplicate nothing. `MinutesToLiveInMemory` is unchanged in what it means — it is still the outbox's cleanup of already-processed rows — but that cleanup now runs across polls instead of being discarded with the scope it used to live in. One consequence worth calling out: `SendToOutbox` throwing `InvalidOperationException` for a repeated `MessageId` is now reachable in practice, because the store the second call sees is the same store the first call wrote into, rather than a fresh empty one.
+
 On each poll, the drain dispatches the message to broker infrastructure first and only stamps the row's processed date once that publish has returned. Delivery is therefore **at-least-once, not exactly-once**: a publish that throws leaves the row unprocessed so the next poll retries it, and a publish that succeeds followed by a mark/commit failure — or a second host instance polling the same durable store concurrently — can dispatch the same message a second time. A handler that is not naturally idempotent should sit behind the Inbox on the receiving side to absorb that duplicate.
 
 ### Inbox
 The Inbox pattern records received messages to enforce idempotent, once-only handling (`IBrokeredMessageInbox`, default `InMemoryBrokeredMessageInbox`, applied via `InboxBehavior`).
 
 The inbox reserves the message id before invoking the handler, not after the handler completes. A concurrent delivery that arrives for the same message id while the first delivery is still in flight finds the id already reserved: it is skipped without the handler being invoked and without throwing. If the handler throws, the reservation is released so a retry re-invokes the handler for that id. Because the reservation exists for the whole time the handler is running, `HasBeenReceived` reports `true` for a message id that is still in flight, not only for one whose handler has already completed.
+
+Like the outbox, the shipped in-memory inbox is a process-lifetime singleton, so a received message id is remembered across scopes rather than only for the delivery that received it. Being process-lifetime, it needs its own retention policy so it doesn't grow without bound:
+
+- **`InMemoryInboxDeduplicationWindowInMinutes`** (default `60`) is the deduplication window and the PRIMARY guarantee. After a receipt completes, a redelivery of the same message id is skipped for this long; once the window has elapsed, that id is handled again. A non-positive value disables time-based expiry, leaving `InMemoryInboxMaxEntries` as the only thing that ever releases a receipt.
+- **`InMemoryInboxMaxEntries`** (default `200000`) is an out-of-memory safety valve, not the deduplication guarantee. It is refused below `1`. When the store reaches the cap it evicts completed entries first — an in-flight reservation is never expired and never evicted, no matter how long it has been in flight — and if enforcing the cap evicts anything still inside its window, it logs a warning exactly once per store, because the advertised window is no longer being honoured under that load. If every entry is in flight, the store grows past the cap rather than blocking or throwing.
+- `HasBeenReceived` reports `true` for an in-flight reservation and for a completed receipt still inside the window, and `false` once that receipt has expired.
+
+Expiry is decided on contact, not by the periodic sweep: a receipt that has passed its window is already treated as expired — a redelivery of its id is handled again and `HasBeenReceived` returns `false` for it — even before the next sweep has run. The sweep only reclaims the memory such receipts hold; it is not what makes them expire.
+
+Because the store is process-lifetime, sizing the window and the cap together matters: a rough estimate is that a retained entry costs on the order of 200 bytes, so the cap should stay comfortably above `deduplication window × peak receipt rate`. At the defaults — a 60-minute window and a cap of 200,000 — that bounds sustained throughput to roughly 55 receipts per second before the cap starts truncating the window, and holds the store at an estimated ~40 MB at full occupancy. Raise `InMemoryInboxMaxEntries` (or shorten `InMemoryInboxDeduplicationWindowInMinutes`) for a workload that runs hotter than that.
 
 > **Persistence note:** the in-memory inbox/outbox are for development and single-node scenarios. Durable, transactional EF-backed implementations of `IBrokeredMessageInbox` / `IBrokeredMessageOutbox` (plus `IUnitOfWork` / `IPersistanceTransaction`) live in a sibling EntityFrameworkCore reliability package.
 
@@ -206,6 +218,8 @@ The default in each row is the value the fluent builder seeds before configurati
 | `MinutesToLiveInMemory` | `double` | `10` |
 | `EnableOutboxPollingProcessor` | `bool` | `false` |
 | `OutboxProcessingIntervalInMilliseconds` | `int` | `5000` |
+| `InMemoryInboxDeduplicationWindowInMinutes` | `int` | `60` |
+| `InMemoryInboxMaxEntries` | `int` | `200000` |
 
 `Chatter:MessageBrokers:Recovery`
 
@@ -234,7 +248,9 @@ A worked `appsettings.json`, showing every bindable key at its default:
         "RouteMessagesToOutbox": false,
         "MinutesToLiveInMemory": 10,
         "EnableOutboxPollingProcessor": false,
-        "OutboxProcessingIntervalInMilliseconds": 5000
+        "OutboxProcessingIntervalInMilliseconds": 5000,
+        "InMemoryInboxDeduplicationWindowInMinutes": 60,
+        "InMemoryInboxMaxEntries": 200000
       },
       "Recovery": {
         "MaxRetryAttempts": 5,
@@ -293,12 +309,13 @@ These are the values that are refused:
 | `MessageBrokerOptions.TransactionMode` | the enum does not define it |
 | `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, `-1` included, when the outbox polling processor is enabled |
 | `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity` |
+| `ReliabilityOptions.InMemoryInboxMaxEntries` | below `1` |
 | `RecoveryOptions.MaxRetryAttempts` | below `1` |
 | `CircuitBreakerOptions.ConcurrentHalfOpenAttempts` | below `1` |
 | `CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds` | negative, or longer than `Task.Delay` can wait |
 | `CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification` | negative, or longer than `Timer.Change` can schedule |
 
-Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`, `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` and `MustRefuseAConfiguredInfiniteMinutesToLiveInMemoryTheExpiryScanRunsWithoutFaulting` for the in-memory ttl; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
+Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`, `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` and `MustRefuseAConfiguredInfiniteMinutesToLiveInMemoryTheExpiryScanRunsWithoutFaulting` for the in-memory ttl; `MustRefuseAConfiguredInMemoryInboxMaxEntriesOfZero` and `MustRefuseAConfiguredNegativeInMemoryInboxMaxEntries` for the inbox cap; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
 
 The upper bound on the two circuit-breaker durations is a constant derived from the BCL's maximum supported timeout rather than probed at run time. It is straddled by two theories that offer the seconds either side of it to a real `Task.Delay` and a real `Timer.Change` and require the builder to agree with whichever answer the sink gives (`MustAgreeWithTaskDelayAboutAConfiguredOpenToHalfOpenWaitTime`, `MustAgreeWithTimerChangeAboutAConfiguredTimeOpenBeforeCriticalEvent`), so a move in either BCL bound is loud rather than silent.
 
@@ -306,6 +323,7 @@ The upper bound on the two circuit-breaker durations is a constant derived from 
 
 - a zero `OutboxProcessingIntervalInMilliseconds`. `Task.Delay` completes it immediately, so how aggressively the outbox is polled stays the operator's call (`MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval`).
 - a non-positive `MinutesToLiveInMemory`. That is the outbox's own `ttl <= 0` disabled-cleanup branch, not a degenerate value (`MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`).
+- a non-positive `InMemoryInboxDeduplicationWindowInMinutes`. It disables time-based expiry the same way a non-positive `MinutesToLiveInMemory` does, leaving `InMemoryInboxMaxEntries` as the only bound left on the inbox (`MustAcceptANonPositiveInMemoryInboxDeduplicationWindow`).
 - a zero `OpenToHalfOpenWaitTimeInSeconds`, which is load-bearing rather than degenerate: a zero wait is always already elapsed, so an open circuit never refuses and the very next call is trialled instead (`MustAcceptAConfiguredOpenToHalfOpenWaitTimeOfZero`, `MustTrialTheOpenCircuitOnTheCallThatFindsItsCoolingPeriodElapsed`).
 - a `NumberOfFailuresBeforeOpen` or `NumberOfHalfOpenSuccessesToClose` of zero. The state store counts both as `++count >= threshold`, so no value faults them, and a threshold of 1 or less states "trip, or close, on the first" — intent an operator is entitled to express (`MustAcceptAConfiguredCountThresholdOfZero`).
 
