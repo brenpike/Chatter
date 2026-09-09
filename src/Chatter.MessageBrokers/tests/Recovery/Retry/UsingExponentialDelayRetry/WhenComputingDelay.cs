@@ -51,6 +51,29 @@ namespace Chatter.MessageBrokers.Tests.Recovery.Retry.UsingExponentialDelayRetry
         public void MustComputeFiveHundredElevenSecondsForAttemptTen()
             => ComputedDelayFor(_sut, 10).Should().Be(511000);
 
+        // This theory exists so the per-attempt table documented on ExponentialDelayRetry and on
+        // RecoveryOptionsBuilder.UseExponentialDelayRecovery cannot drift from the computation again.
+        // Every row below is transcribed from that table; a documented row that stops matching what
+        // ExponentialDelayRetry computes fails here.
+        [Theory]
+        [InlineData(1, 0)]
+        [InlineData(2, 1)]
+        [InlineData(3, 3)]
+        [InlineData(4, 7)]
+        [InlineData(5, 15)]
+        [InlineData(6, 31)]
+        [InlineData(7, 63)]
+        [InlineData(8, 127)]
+        [InlineData(9, 255)]
+        [InlineData(10, 511)]
+        [InlineData(11, 1023)]
+        [InlineData(12, 2047)]
+        [InlineData(13, 4095)]
+        [InlineData(14, 8191)]
+        [InlineData(15, 16383)]
+        public void MustComputeTheDelayTheDocumentedTableStatesForEveryDocumentedAttempt(int attempts, int documentedSeconds)
+            => ComputedDelayFor(_sut, attempts).Should().Be(documentedSeconds * 1000);
+
         [Fact]
         public void MustSetMaxDelayFromConstructorRetryAttempts()
             // The constructor overwrites the 1024 default with the computed delay for maxRetryAttempts (5 -> 15000ms).

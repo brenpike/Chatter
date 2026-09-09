@@ -27,7 +27,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
     // binds faithfully to MaxRetries 0. An ABSENT numeric parameter falls back to the SDK default for that
     // parameter; a STATED one is carried to the SDK's own setter, which raises its OWN
     // ArgumentOutOfRangeException naming the SDK member rather than the configuration key — nothing on this
-    // path inspects a configured value first, and issue #423 owns named build-time validation. When the
+    // path inspects a configured value first, and this module adds NO named build-time validation of its
+    // own, BY DECISION: that setter is the authority and already refuses a value it cannot run with during
+    // Build(), with nothing yet registered in the service collection (#423). When the
     // whole service-bus section is absent nothing binds, so RetryOptions stays null. The fluent
     // WithNoRetry() / WithExponentialDelay() setters WIN over a configured RetryPolicy — this module's
     // nullable-sentinel backing fields make an explicit fluent call beat configuration, the opposite of the
@@ -497,8 +499,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
             // A stated MaximumRetryCount of 0 is bound FAITHFULLY: one explicitly written key reaches
             // MaxRetries as 0. That differs from master, which inferred "off" only from an ALL-ZERO
             // four-key section, and from the build-time validation that briefly refused it outright.
-            // NoRetry stays the intention-revealing knob for switching retry off; whether a stated zero
-            // should keep binding this way is the open design question issue #423 owns.
+            // NoRetry stays the intention-revealing knob for switching retry off, but a stated zero is NOT
+            // rewritten into one on the operator's behalf: zero retries is legitimate operator intent
+            // (#423).
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,

@@ -224,8 +224,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // it cannot run with. A stated MaximumRetryCount of 0 therefore yields MaxRetries 0 — the
         // faithful binding of one explicitly written key. That differs from the earlier behaviour, which
         // inferred "off" only from an ALL-ZERO section. NoRetry, handled by ResolveRetryOptions, remains the
-        // intention-revealing way to switch retry off, and issue #423 owns the final call on whether a stated
-        // zero should keep binding this way.
+        // intention-revealing way to switch retry off, but a stated zero KEEPS binding to MaxRetries 0
+        // rather than being rewritten into a NoRetry on the operator's behalf: zero retries is legitimate
+        // operator intent (#423).
         private static ServiceBusRetryOptions CreateConfiguredRetryOptions(RetryPolicyConfiguration retryPolicy)
         {
             var sdkDefaults = new ServiceBusRetryOptions();

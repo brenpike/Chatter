@@ -119,20 +119,20 @@ namespace Chatter.MessageBrokers.Recovery.Options
         /// <remarks>
         /// Exponential delay per attempt:
         ///<br>Attempt #1  - 0s</br>
-        ///<br>Attempt #2  - 2s</br>
-        ///<br>Attempt #3  - 4s</br>
-        ///<br>Attempt #4  - 8s</br>
-        ///<br>Attempt #5  - 16s</br>
-        ///<br>Attempt #6  - 32s</br>
-        ///<br>Attempt #7  - 1m 4s</br>
-        ///<br>Attempt #8  - 2m 8s</br>
-        ///<br>Attempt #9  - 4m 16s</br>
-        ///<br>Attempt #10 - 8m 32s</br>
-        ///<br>Attempt #11 - 17m 4s</br>
-        ///<br>Attempt #12 - 34m 8s</br>
-        ///<br>Attempt #13 - 1h 8m 16s</br>
-        ///<br>Attempt #14 - 2h 16m 32s</br>
-        ///<br>Attempt #15 - 4h 33m 4s</br>
+        ///<br>Attempt #2  - 1s</br>
+        ///<br>Attempt #3  - 3s</br>
+        ///<br>Attempt #4  - 7s</br>
+        ///<br>Attempt #5  - 15s</br>
+        ///<br>Attempt #6  - 31s</br>
+        ///<br>Attempt #7  - 1m 3s</br>
+        ///<br>Attempt #8  - 2m 7s</br>
+        ///<br>Attempt #9  - 4m 15s</br>
+        ///<br>Attempt #10 - 8m 31s</br>
+        ///<br>Attempt #11 - 17m 3s</br>
+        ///<br>Attempt #12 - 34m 7s</br>
+        ///<br>Attempt #13 - 1h 8m 15s</br>
+        ///<br>Attempt #14 - 2h 16m 31s</br>
+        ///<br>Attempt #15 - 4h 33m 3s</br>
         /// </remarks>
         public RecoveryOptionsBuilder UseExponentialDelayRecovery(int maxRetryAttempts)
         {
