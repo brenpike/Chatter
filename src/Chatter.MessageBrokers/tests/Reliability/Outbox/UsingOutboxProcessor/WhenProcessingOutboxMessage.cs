@@ -102,6 +102,53 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             _outbox.As<IPollableOutboxStore>().Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Once);
         }
 
+        /// <summary>
+        /// Stamps <see cref="OutboxMessage.ProcessedFromOutboxAtUtc"/> the way a real Pollable Outbox Store stamps
+        /// it, so an assertion on the row reads the state a later poll would read rather than a mock's unset default.
+        /// </summary>
+        private void StampProcessedDateOnMark()
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.UpdateProcessedDate(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+                      .Callback<OutboxMessage, CancellationToken>((m, _) => m.ProcessedFromOutboxAtUtc = DateTime.UtcNow)
+                      .Returns(Task.CompletedTask);
+
+        // ORDERING ORACLE: the drain must publish BEFORE it records the row processed. Marking first records a
+        // message that never reached the broker as delivered, so the failed row is never polled again and is lost
+        // permanently. The oracle is the SINK, never a copy of the production condition: the store's own
+        // UpdateProcessedDate is what stamps the processed date, so the assertion reads the row state the next poll
+        // would read. The dispatch verification keeps it non-vacuous - a drain that stopped publishing at all would
+        // otherwise satisfy the unprocessed assertions.
+        [Fact]
+        public async Task MustLeaveOutboxMessageUnprocessedWhenDispatchFails()
+        {
+            var message = CreateOutboxMessage();
+            StampProcessedDateOnMark();
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                       .ThrowsAsync(new InvalidOperationException("the broker publish failed deliberately"));
+
+            await _sut.Process(message);
+
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+            message.ProcessedFromOutboxAtUtc.Should().BeNull();
+            _outbox.As<IPollableOutboxStore>().Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        // ERROR-POSTURE LOCK: a failed publish stays logged-and-swallowed. Process is driven by the outbox poll and
+        // by OutboxProcessingBehavior, so rethrowing would push a broker outage into the CQRS pipeline. This test is
+        // green both before and after the ordering fix by design - it exists so the fix cannot quietly change the
+        // posture along with the order.
+        [Fact]
+        public async Task MustNotThrowWhenDispatchFails()
+        {
+            StampProcessedDateOnMark();
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                       .ThrowsAsync(new InvalidOperationException("the broker publish failed deliberately"));
+
+            Func<Task> process = () => _sut.Process(CreateOutboxMessage());
+
+            await process.Should().NotThrowAsync();
+        }
+
         // REGRESSION ORACLE: production writers (InMemory/EF SendToOutbox) serialize the entire
         // IDictionary<string, object> MessageContext, which legitimately holds non-string values —
         // an integer ReceiveAttempts (SSB receive/deadletter), a TimeSpan TimeToLive, and a DateTime

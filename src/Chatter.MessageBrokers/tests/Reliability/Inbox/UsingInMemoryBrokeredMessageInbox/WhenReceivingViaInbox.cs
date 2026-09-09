@@ -102,8 +102,9 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
                     await _sut.ReceiveViaInbox<object>(new object(), context, () => throw new InvalidOperationException("boom")))
                 .Should().ThrowAsync<InvalidOperationException>();
 
-            // INVARIANT: the inbox records the id only after the receiver completes, so a failed
-            // receipt leaves the id absent and a retry re-invokes the receiver.
+            // INVARIANT: the inbox reserves the id before the receiver runs and releases the
+            // reservation when the receiver throws, so a failed receipt leaves the id absent and a
+            // retry re-invokes the receiver.
             var invokedOnRetry = false;
             await _sut.ReceiveViaInbox<object>(new object(), context, () => { invokedOnRetry = true; return Task.CompletedTask; });
             invokedOnRetry.Should().BeTrue();

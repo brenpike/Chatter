@@ -69,8 +69,6 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
                 await ((IUnitOfWork)_brokeredMessageOutbox).ExecuteAsync(async ct =>
                 {
-                    await pollable.UpdateProcessedDate(message, ct);
-
                     // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides, and it decides HERE
                     // rather than inside the scope. Argument evaluation precedes the guard INSIDE SendScope.Open,
                     // so a call site that reaches DispatchObserved has already resolved the persisted parent and
@@ -89,6 +87,13 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
                     _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
 
+                    // INVARIANT: the row is recorded processed ONLY after the publish returns, on BOTH diagnostics
+                    // branches above. A publish that throws leaves the row unprocessed so the next poll retries it;
+                    // marking first would record a message that never reached the broker as delivered and lose it,
+                    // because Process swallows the failure and no later poll would ever see the row again.
+                    // The converse - a publish that succeeds and a mark that then fails - redelivers the message on
+                    // the next poll. That duplicate is the accepted cost of at-least-once delivery here.
+                    await pollable.UpdateProcessedDate(message, ct);
                 }, null, cancellationToken);
             }
             catch (Exception e)

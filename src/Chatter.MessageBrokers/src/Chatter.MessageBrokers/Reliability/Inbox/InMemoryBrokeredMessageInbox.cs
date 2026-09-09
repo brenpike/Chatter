@@ -27,19 +27,22 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
                 throw new ArgumentException("A brokered message must have a message id to be persisted in the inbox.", nameof(id));
             }
 
-            if (_inbox.ContainsKey(id))
+            // INVARIANT: the id is reserved before the receiver runs, so concurrent receipts of one
+            // message id contend on the reservation and only the winner invokes the receiver.
+            if (!_inbox.TryAdd(id, true))
             {
                 _logger.LogTrace($"Brokered message of type '{typeof(TMessage).Name}' with id: '{id}' was already received.");
                 return;
             }
 
-            await messageReceiver().ConfigureAwait(false);
-
-            if (!_inbox.TryAdd(id, true))
+            try
             {
-                var error = $"Unable to retrieve brokered message of type '{typeof(TMessage).Name}' with id: '{id}' from the in memory inbox.";
-                _logger.LogError(error);
-                throw new InvalidOperationException(error);
+                await messageReceiver().ConfigureAwait(false);
+            }
+            catch
+            {
+                _inbox.TryRemove(id, out _);
+                throw;
             }
 
             _logger.LogTrace($"Brokered message of type '{typeof(TMessage).Name}' with id: '{id}' was successfully received and added to inbox.");
