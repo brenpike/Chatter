@@ -315,18 +315,20 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         }
 
         /// <summary>
-        /// The double converter takes "NaN", "Infinity" and "1e300" straight off a configuration section, so the
-        /// verdict on each is the real outbox's rather than a house rule: a ttl the expiry scan disables itself on,
-        /// or schedules a real future expiry with, is accepted, and one it faults on or treats a just-processed
-        /// message as already expired under is refused. A non-positive ttl is accepted however large its magnitude -
-        /// the scan returns on it before it computes anything at all.
+        /// The double converter takes "NaN" and "1e300" straight off a configuration section, so the verdict on each
+        /// is the real outbox's rather than a house rule: a ttl the expiry scan expires nothing under, or schedules a
+        /// real future expiry with, is accepted, and one it treats a just-processed message as already expired under
+        /// is refused. A non-positive ttl is accepted however large its magnitude - the scan returns on it before it
+        /// computes anything at all - and so is "1e300", which INVERTED from refused to accepted once the scan
+        /// stopped computing an expiry instant the sink could reject: it now compares elapsed minutes against the
+        /// ttl, so no magnitude faults it. A NaN and a positive infinity are stated by their own facts below,
+        /// because the builder refuses those as intent rather than deriving the verdict from the scan.
         /// </summary>
         [Theory]
         [InlineData("0")]
         [InlineData("10")]
         [InlineData("-5")]
         [InlineData("NaN")]
-        [InlineData("Infinity")]
         [InlineData("-Infinity")]
         [InlineData("1e300")]
         [InlineData("-1e300")]
@@ -334,7 +336,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         {
             var services = new ServiceCollection();
             var observation = await ObserveTheRealExpiryScan(double.Parse(minutesToLiveInMemory, CultureInfo.InvariantCulture));
-            var theSinkCanScheduleIt = observation == ExpiryScanObservation.DisabledItself
+            var theSinkCanScheduleIt = observation == ExpiryScanObservation.ExpiredNothing
                                     || observation == ExpiryScanObservation.ScheduledAFutureExpiry;
 
             var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithMinutesToLiveInMemory(minutesToLiveInMemory));
@@ -354,16 +356,35 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         /// <summary>
         /// A NaN ttl is the exact value this module measured slipping through the outbox's own <c>ttl &lt;= 0</c>
         /// disable guard - every comparison against a NaN is false - so the scan it reaches is asked here whether it
-        /// disabled itself, and it did not. <c>DateTime.AddMinutes</c> cannot be asked that question on its own, so
+        /// left everything in place, and it did not. Nothing in the scan can be asked that question on its own, so
         /// the outbox is driven instead.
         /// </summary>
         [Fact]
         public async Task MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor()
         {
             var services = new ServiceCollection();
-            (await ObserveTheRealExpiryScan(double.NaN)).Should().NotBe(ExpiryScanObservation.DisabledItself);
+            (await ObserveTheRealExpiryScan(double.NaN)).Should().NotBe(ExpiryScanObservation.ExpiredNothing);
 
             var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithMinutesToLiveInMemory("NaN"));
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.MinutesToLiveInMemory)}");
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// A positive infinity is the one refused ttl the expiry scan itself runs without complaint, so it is stated
+        /// apart from the theory above rather than folded into an oracle that would then have to restate the
+        /// builder's own rule. The scan expires nothing under it, exactly as a non-positive ttl already says plainly;
+        /// it is refused because it names no number of minutes, not because any arithmetic rejects it.
+        /// </summary>
+        [Fact]
+        public async Task MustRefuseAConfiguredInfiniteMinutesToLiveInMemoryTheExpiryScanRunsWithoutFaulting()
+        {
+            var services = new ServiceCollection();
+            (await ObserveTheRealExpiryScan(double.PositiveInfinity)).Should().Be(ExpiryScanObservation.ExpiredNothing);
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithMinutesToLiveInMemory("Infinity"));
 
             fromConfig.Should().Throw<ConfiguredValueRefusedException>()
                       .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.MinutesToLiveInMemory)}");
@@ -410,13 +431,16 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         // and stays free to disagree with whatever the builder's own predicate happens to say.
         private enum ExpiryScanObservation
         {
-            // Returned before it computed anything: even a message processed a day ago survived it.
-            DisabledItself,
+            // Expired nothing: even a message processed a day ago survived it, either because the scan returned
+            // before it computed anything or because no elapsed time reaches the ttl.
+            ExpiredNothing,
             // Scheduled a real future expiry: the day-old message went and the just-processed one stayed.
             ScheduledAFutureExpiry,
             // Expired a message it had processed this very instant, so the ttl bought that message no life at all.
             ExpiredAJustProcessedMessage,
-            // Threw out of the arithmetic it adds the ttl with.
+            // Threw out of the arithmetic it reads the ttl with. No ttl reaches this now that the scan compares
+            // elapsed minutes instead of computing an expiry instant; it is kept so a reintroduced overflow is a
+            // failure here rather than a silently narrowed oracle.
             Faulted
         }
 
@@ -449,7 +473,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             }
 
             return await RemainsInTheOutbox(outbox, _agedMessageId)
-                ? ExpiryScanObservation.DisabledItself
+                ? ExpiryScanObservation.ExpiredNothing
                 : ExpiryScanObservation.ScheduledAFutureExpiry;
         }
 

@@ -107,7 +107,15 @@ namespace Chatter.MessageBrokers.Reliability
                     continue;
                 }
 
-                if (message.ProcessedFromOutboxAtUtc.Value.AddMinutes(ttl) > DateTime.UtcNow)
+                // INVARIANT: the ttl is compared against ELAPSED time rather than added to the processed
+                // timestamp, so no expiry instant is computed and there is nothing left to overflow -
+                // subtracting two DateTime values always fits a TimeSpan and comparing two doubles is total.
+                // AddMinutes was the one operation here that could throw, and OutboxProcessor calls
+                // UpdateProcessedDate inside its unit of work BEFORE dispatching and catches every exception
+                // around the whole block, so a ttl too large to add stamped each message processed, logged one
+                // line and left it never dispatched and never retried. A ttl no elapsed time can reach now
+                // simply never expires anything, which is what such a ttl asks for.
+                if ((DateTime.UtcNow - message.ProcessedFromOutboxAtUtc.Value).TotalMinutes < ttl)
                 {
                     continue;
                 }

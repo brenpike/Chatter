@@ -16,7 +16,7 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
 
         private const int _minimumOutboxProcessingIntervalInMilliseconds = 0;
         private const string _outboxProcessingIntervalBound = "at least 0 milliseconds";
-        private const string _minutesToLiveInMemoryBound = "at most 0 minutes, which disables expiry cleanup, or a finite number of minutes DateTime.UtcNow.AddMinutes can add";
+        private const string _minutesToLiveInMemoryBound = "at most 0 minutes, which disables expiry cleanup, or a finite number of minutes";
 
         public const string ReliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability";
         private readonly IServiceCollection _services;
@@ -160,26 +160,12 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
             }
 
             // INVARIANT: only a NaN or a positive infinity reaches here, and the scan's disable branch has already
-            // declined to cover either. AddMinutes cannot settle a NaN on its own - it rejects one on some targets and
-            // absorbs it silently on others - so finiteness is asked first and the magnitude below stays the sink's
-            // own call rather than a range restated here.
-            if (!double.IsFinite(minutesToLiveInMemory))
-            {
-                return false;
-            }
-
-            // INVARIANT: the scan adds the ttl to ProcessedFromOutboxAtUtc, a timestamp always stamped later than this
-            // build, and a later reference has less room left before DateTime.MaxValue. UtcNow is therefore the most
-            // permissive reference available at build time and can never refuse a magnitude the scan would have added.
-            try
-            {
-                DateTime.UtcNow.AddMinutes(minutesToLiveInMemory);
-                return true;
-            }
-            catch (ArgumentOutOfRangeException)
-            {
-                return false;
-            }
+            // declined to cover either. No magnitude is refused alongside them: the scan compares elapsed minutes
+            // against the ttl rather than computing an expiry instant, so it runs every finite number without
+            // faulting and there is no arithmetic left for this builder to derive a bound from. These two are
+            // refused as intent that names no number of minutes - a NaN expires every message the instant it is
+            // processed, and an infinity says nothing ever expires, which a non-positive ttl already states.
+            return double.IsFinite(minutesToLiveInMemory);
         }
 
         /// <summary>

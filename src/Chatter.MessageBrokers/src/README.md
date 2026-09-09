@@ -288,13 +288,13 @@ These are the values that are refused:
 | --- | --- |
 | `MessageBrokerOptions.TransactionMode` | the enum does not define it |
 | `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, `-1` included, when the outbox polling processor is enabled |
-| `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity`, or a positive magnitude `DateTime.AddMinutes` rejects |
+| `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity` |
 | `RecoveryOptions.MaxRetryAttempts` | below `1` |
 | `CircuitBreakerOptions.ConcurrentHalfOpenAttempts` | below `1` |
 | `CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds` | negative, or longer than `Task.Delay` can wait |
 | `CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification` | negative, or longer than `Timer.Change` can schedule |
 
-Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory` and `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` for the in-memory ttl; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
+Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`, `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` and `MustRefuseAConfiguredInfiniteMinutesToLiveInMemoryTheExpiryScanRunsWithoutFaulting` for the in-memory ttl; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
 
 The upper bound on the two circuit-breaker durations is a constant derived from the BCL's maximum supported timeout rather than probed at run time. It is straddled by two theories that offer the seconds either side of it to a real `Task.Delay` and a real `Timer.Change` and require the builder to agree with whichever answer the sink gives (`MustAgreeWithTaskDelayAboutAConfiguredOpenToHalfOpenWaitTime`, `MustAgreeWithTimerChangeAboutAConfiguredTimeOpenBeforeCriticalEvent`), so a move in either BCL bound is loud rather than silent.
 
