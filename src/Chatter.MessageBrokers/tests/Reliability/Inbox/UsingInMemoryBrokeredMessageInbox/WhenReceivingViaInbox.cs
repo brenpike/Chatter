@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
@@ -16,13 +17,18 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
     {
         private readonly Mock<IBrokeredMessageBodyConverter> _bodyConverter = new Mock<IBrokeredMessageBodyConverter>();
         private readonly LoggerCreator<InMemoryBrokeredMessageInbox> _logger;
+        private readonly ReliabilityOptions _reliabilityOptions = new ReliabilityOptions
+        {
+            InMemoryInboxDeduplicationWindowInMinutes = 60,
+            InMemoryInboxMaxEntries = 200000
+        };
         private readonly InMemoryBrokeredMessageInbox _sut;
 
         public WhenReceivingViaInbox()
         {
             _bodyConverter.SetupGet(c => c.ContentType).Returns("application/json");
             _logger = New.Common().Logger<InMemoryBrokeredMessageInbox>();
-            _sut = new InMemoryBrokeredMessageInbox(_logger.Creation);
+            _sut = new InMemoryBrokeredMessageInbox(_logger.Creation, _reliabilityOptions);
         }
 
         private Mock<IMessageBrokerContext> CreateContext(string messageId)
@@ -35,7 +41,12 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
 
         [Fact]
         public void MustThrowArgumentNullExceptionWhenLoggerIsNull()
-            => FluentActions.Invoking(() => new InMemoryBrokeredMessageInbox(null))
+            => FluentActions.Invoking(() => new InMemoryBrokeredMessageInbox(null, _reliabilityOptions))
+                .Should().Throw<ArgumentNullException>();
+
+        [Fact]
+        public void MustThrowArgumentNullExceptionWhenReliabilityOptionsIsNull()
+            => FluentActions.Invoking(() => new InMemoryBrokeredMessageInbox(_logger.Creation, null))
                 .Should().Throw<ArgumentNullException>();
 
         [Fact]

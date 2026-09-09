@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
@@ -26,7 +27,11 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
         {
             _bodyConverter.SetupGet(c => c.ContentType).Returns("application/json");
             _logger = New.Common().Logger<InMemoryBrokeredMessageInbox>();
-            _sut = new InMemoryBrokeredMessageInbox(_logger.Creation);
+            _sut = new InMemoryBrokeredMessageInbox(_logger.Creation, new ReliabilityOptions
+            {
+                InMemoryInboxDeduplicationWindowInMinutes = 60,
+                InMemoryInboxMaxEntries = 200000
+            });
 
             var inbound = new InboundBrokeredMessage("id-1", new byte[] { 1 }, new Dictionary<string, object>(), "receiver-path", _bodyConverter.Object);
             var context = new Mock<IMessageBrokerContext>();

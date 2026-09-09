@@ -2,6 +2,7 @@ using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
+using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -82,7 +83,12 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInboxBehavior
             // message ids end to end rather than asserting only on a mock interaction.
             var bodyConverter = new Mock<IBrokeredMessageBodyConverter>();
             bodyConverter.SetupGet(c => c.ContentType).Returns("application/json");
-            var inbox = new InMemoryBrokeredMessageInbox(new Mock<ILogger<InMemoryBrokeredMessageInbox>>().Object);
+            var inbox = new InMemoryBrokeredMessageInbox(new Mock<ILogger<InMemoryBrokeredMessageInbox>>().Object,
+                                                         new ReliabilityOptions
+                                                         {
+                                                             InMemoryInboxDeduplicationWindowInMinutes = 60,
+                                                             InMemoryInboxMaxEntries = 200000
+                                                         });
             var sut = new InboxBehavior<FakeCommand>(inbox, _logger);
 
             var inbound = new InboundBrokeredMessage("id-1", new byte[] { 1 }, new Dictionary<string, object>(), "receiver-path", bodyConverter.Object);
