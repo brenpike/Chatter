@@ -144,8 +144,12 @@ The Outbox pattern records outgoing messages so they can be published reliably a
 
 `WithOutboxRouting()` swaps `IRouteBrokeredMessages` for `OutboxBrokeredMessageRouter`. `WithOutboxPollingProcessor(...)` registers `BrokeredMessageOutboxProcessor` (an `IHostedService`). The default store is `InMemoryBrokeredMessageOutbox`; `WithInMemoryOutboxTimeToLive(minutes)` controls its retention.
 
+On each poll, the drain dispatches the message to broker infrastructure first and only stamps the row's processed date once that publish has returned. Delivery is therefore **at-least-once, not exactly-once**: a publish that throws leaves the row unprocessed so the next poll retries it, and a publish that succeeds followed by a mark/commit failure — or a second host instance polling the same durable store concurrently — can dispatch the same message a second time. A handler that is not naturally idempotent should sit behind the Inbox on the receiving side to absorb that duplicate.
+
 ### Inbox
 The Inbox pattern records received messages to enforce idempotent, once-only handling (`IBrokeredMessageInbox`, default `InMemoryBrokeredMessageInbox`, applied via `InboxBehavior`).
+
+The inbox reserves the message id before invoking the handler, not after the handler completes. A concurrent delivery that arrives for the same message id while the first delivery is still in flight finds the id already reserved: it is skipped without the handler being invoked and without throwing. If the handler throws, the reservation is released so a retry re-invokes the handler for that id. Because the reservation exists for the whole time the handler is running, `HasBeenReceived` reports `true` for a message id that is still in flight, not only for one whose handler has already completed.
 
 > **Persistence note:** the in-memory inbox/outbox are for development and single-node scenarios. Durable, transactional EF-backed implementations of `IBrokeredMessageInbox` / `IBrokeredMessageOutbox` (plus `IUnitOfWork` / `IPersistanceTransaction`) live in a sibling EntityFrameworkCore reliability package.
 

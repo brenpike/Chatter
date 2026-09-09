@@ -141,6 +141,18 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
         }
 
         [Fact]
+        public void OutboxDefault_CastingToUnitOfWorkYieldsSameInstance()
+        {
+            using var scope = BuildScope();
+            var sp = scope.ServiceProvider;
+
+            var outbox = sp.GetRequiredService<IBrokeredMessageOutbox>();
+            var unitOfWork = (IUnitOfWork)outbox;
+
+            ReferenceEquals(outbox, unitOfWork).Should().BeTrue("OutboxProcessor casts the resolved outbox to IUnitOfWork; the default store must satisfy that facet from the same instance, not a wrapper");
+        }
+
+        [Fact]
         public void OutboxDefault_NoPollableOutboxStoreDescriptorRegistered()
         {
             using var scope = BuildScope();
