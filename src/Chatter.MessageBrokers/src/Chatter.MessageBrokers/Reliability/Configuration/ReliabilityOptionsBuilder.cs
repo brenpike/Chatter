@@ -125,8 +125,12 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
             // INVARIANT: BrokeredMessageOutboxProcessor.ExecuteAsync awaits Task.Delay(interval) with no try of its
             // own, so anything below -1 faults the whole background service; -1 is Timeout.Infinite, which an ENABLED
             // poller would wait on for good. Zero stays accepted - Task.Delay completes it immediately, so how
-            // aggressively the outbox is polled is the operator's call.
-            if (reliabilityOptions.OutboxProcessingIntervalInMilliseconds < _minimumOutboxProcessingIntervalInMilliseconds)
+            // aggressively the outbox is polled is the operator's call. That processor is the interval's only reader
+            // and ChatterMessageBrokerExtensions registers it only when EnableOutboxPollingProcessor is set, so the
+            // refusal is asked only of a host that will run one: with the poller off nothing ever waits on the value
+            // and a host carrying a stale out-of-range one still starts.
+            if (reliabilityOptions.EnableOutboxPollingProcessor
+             && reliabilityOptions.OutboxProcessingIntervalInMilliseconds < _minimumOutboxProcessingIntervalInMilliseconds)
             {
                 throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}",
                                                           reliabilityOptions.OutboxProcessingIntervalInMilliseconds,

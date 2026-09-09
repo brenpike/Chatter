@@ -223,7 +223,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         public void MustAllowAZeroOutboxProcessingInterval()
         {
             var services = new ServiceCollection();
-            var configuration = BuildConfigurationWithOutboxProcessingInterval("0");
+            var configuration = BuildConfigurationWithOutboxProcessingInterval("0", enableOutboxPollingProcessor: true);
 
             var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
 
@@ -234,17 +234,54 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         /// <c>Task.Delay</c> rejects anything below -1, so an enabled outbox polling processor configured this way
         /// faults the whole background service. This builder used to bind the value and let the host start, and the
         /// acceptance was recorded here as a deferral naming issue #423. #423 closes it: the value is now refused at
-        /// build time, and the deferral record becomes the pin for the refusal.
+        /// build time, and the deferral record becomes the pin for the refusal. The poller is stated here because
+        /// the refusal is asked only of a host that will run one - see the two pins below.
         /// </summary>
         [Fact]
         public void MustRefuseAConfiguredOutboxProcessingIntervalOfNegativeFive()
         {
             var services = new ServiceCollection();
-            var configuration = BuildConfigurationWithOutboxProcessingInterval("-5");
+            var configuration = BuildConfigurationWithOutboxProcessingInterval("-5", enableOutboxPollingProcessor: true);
 
             var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, configuration);
 
             fromConfig.Should().Throw<ConfiguredValueRefusedException>();
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// <c>BrokeredMessageOutboxProcessor</c> is the interval's only reader and <c>ChatterMessageBrokerExtensions</c>
+        /// registers it only when <c>EnableOutboxPollingProcessor</c> is set, so with the poller off nothing will ever
+        /// wait on this value and a host carrying a stale out-of-range one must still start.
+        /// </summary>
+        [Fact]
+        public void MustAcceptAnOutOfRangeOutboxProcessingIntervalWhenTheOutboxPollingProcessorIsDisabled()
+        {
+            var services = new ServiceCollection();
+            var configuration = BuildConfigurationWithOutboxProcessingInterval("-5", enableOutboxPollingProcessor: false);
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
+            options.EnableOutboxPollingProcessor.Should().BeFalse();
+            options.OutboxProcessingIntervalInMilliseconds.Should().Be(-5);
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<ReliabilityOptions>().Should().BeSameAs(options);
+        }
+
+        /// <summary>
+        /// The same value the disabled poller keeps: turning the poller on is the whole difference between the two
+        /// pins, so the refusal is narrowed to the hosts that run a poller rather than lifted.
+        /// </summary>
+        [Fact]
+        public void MustRefuseTheSameOutOfRangeOutboxProcessingIntervalWhenTheOutboxPollingProcessorIsEnabled()
+        {
+            var services = new ServiceCollection();
+            var configuration = BuildConfigurationWithOutboxProcessingInterval("-5", enableOutboxPollingProcessor: true);
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}");
             services.Should().BeEmpty();
         }
 
@@ -264,7 +301,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             var services = new ServiceCollection();
             var theSinkCanPollAtIt = TaskDelayAccepts(interval) && interval != Timeout.Infinite;
 
-            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxProcessingInterval(interval.ToString()));
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxProcessingInterval(interval.ToString(), enableOutboxPollingProcessor: true));
 
             if (theSinkCanPollAtIt)
             {
@@ -338,7 +375,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         {
             var services = new ServiceCollection();
 
-            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxProcessingInterval("-5"));
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxProcessingInterval("-5", enableOutboxPollingProcessor: true));
 
             var refusal = fromConfig.Should().Throw<ConfiguredValueRefusedException>().Which;
             refusal.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}");
@@ -446,11 +483,14 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
                 })
                 .Build();
 
-        private static IConfiguration BuildConfigurationWithOutboxProcessingInterval(string interval)
+        // The interval and the poller switch travel together because only the poller reads the interval, so every
+        // test that states one states the other.
+        private static IConfiguration BuildConfigurationWithOutboxProcessingInterval(string interval, bool enableOutboxPollingProcessor)
             => new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string>
                 {
-                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = interval
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = interval,
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:EnableOutboxPollingProcessor"] = enableOutboxPollingProcessor.ToString()
                 })
                 .Build();
 

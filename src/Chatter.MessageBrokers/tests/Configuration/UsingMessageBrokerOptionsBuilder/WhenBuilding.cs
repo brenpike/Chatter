@@ -563,6 +563,10 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             services.Should().BeEmpty();
         }
 
+        /// <summary>
+        /// The poller key travels with the interval because the interval is only refused for a host that will run the
+        /// outbox polling processor - that processor is its only reader.
+        /// </summary>
         [Fact]
         public void MustRefuseANestedReliabilityValueAndPublishNothingWhenTheParentSectionCarriesIt()
         {
@@ -570,7 +574,8 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string>
                 {
-                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = "-5"
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxProcessingIntervalInMilliseconds"] = "-5",
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:EnableOutboxPollingProcessor"] = "true"
                 })
                 .Build();
 

@@ -287,7 +287,7 @@ These are the values that are refused:
 | Option | Refused when |
 | --- | --- |
 | `MessageBrokerOptions.TransactionMode` | the enum does not define it |
-| `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, `-1` included |
+| `ReliabilityOptions.OutboxProcessingIntervalInMilliseconds` | below `0`, `-1` included, when the outbox polling processor is enabled |
 | `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity`, or a positive magnitude `DateTime.AddMinutes` rejects |
 | `RecoveryOptions.MaxRetryAttempts` | below `1` |
 | `CircuitBreakerOptions.ConcurrentHalfOpenAttempts` | below `1` |
