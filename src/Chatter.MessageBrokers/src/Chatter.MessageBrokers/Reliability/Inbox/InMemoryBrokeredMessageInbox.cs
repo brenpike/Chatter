@@ -15,6 +15,8 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         private const long MaximumSweepIntervalInMilliseconds = 60000L;
         private const int CapHeadroomNumerator = 15;
         private const int CapHeadroomDenominator = 16;
+        private const int MinimumDeduplicationWindowInMinutes = 1;
+        private const int MinimumMaxEntries = 1;
 
         // INVARIANT: this dictionary is the process's ONLY record of which message ids have been received, so the
         // instance holding it must outlive any DI scope. ScopedReceivedMessageDispatcher opens a FRESH scope per
@@ -67,6 +69,28 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
             if (reliabilityOptions is null)
             {
                 throw new ArgumentNullException(nameof(reliabilityOptions));
+            }
+
+            // INVARIANT: the window and the cap are refused here as well as in ReliabilityOptionsBuilder.Validate,
+            // because the builder is not the only way an options instance reaches this constructor. Every property on
+            // ReliabilityOptions has an INTERNAL setter and the documented defaults are the builder's fields, so a
+            // consumer constructing ReliabilityOptions itself can only hand over zeros - and a zero pair is exactly
+            // the configuration this store cannot honour: a zero window leaves every entry, completed receipt and
+            // in-flight reservation alike, immediately reclaimable, and a zero cap retains no receipt at all, so the
+            // inbox would deduplicate nothing while reading as configured. Refusing at construction is what keeps
+            // 'silently deduplicates nothing' unreachable rather than merely unconfigured through the builder.
+            if (reliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes < MinimumDeduplicationWindowInMinutes)
+            {
+                throw new ArgumentOutOfRangeException(nameof(reliabilityOptions),
+                                                      reliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes,
+                                                      $"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes)} must be at least {MinimumDeduplicationWindowInMinutes} minute. Build the options with {nameof(ReliabilityOptionsBuilder)} to get the documented defaults.");
+            }
+
+            if (reliabilityOptions.InMemoryInboxMaxEntries < MinimumMaxEntries)
+            {
+                throw new ArgumentOutOfRangeException(nameof(reliabilityOptions),
+                                                      reliabilityOptions.InMemoryInboxMaxEntries,
+                                                      $"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxMaxEntries)} must be at least {MinimumMaxEntries} entry. Build the options with {nameof(ReliabilityOptionsBuilder)} to get the documented defaults.");
             }
 
             _deduplicationWindowInMilliseconds = reliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes * MillisecondsPerMinute;

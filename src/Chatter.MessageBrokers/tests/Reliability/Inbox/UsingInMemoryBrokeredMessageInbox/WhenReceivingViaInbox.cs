@@ -1,4 +1,4 @@
-using Chatter.MessageBrokers.Context;
+﻿using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Reliability.Inbox;
@@ -48,6 +48,36 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
         public void MustThrowArgumentNullExceptionWhenReliabilityOptionsIsNull()
             => FluentActions.Invoking(() => new InMemoryBrokeredMessageInbox(_logger.Creation, null))
                 .Should().Throw<ArgumentNullException>();
+
+        // A ReliabilityOptions constructed outside ReliabilityOptionsBuilder carries none of the documented
+        // defaults - every property has an internal setter, so a consumer calling the public constructor can only
+        // hand over zeros. A zero window leaves every completed receipt immediately reclaimable and a zero cap
+        // retains no receipt at all, so the inbox would deduplicate nothing while looking configured. It refuses
+        // the instance instead of silently constructing a store that cannot honour its contract.
+        [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        public void MustThrowArgumentOutOfRangeExceptionWhenDeduplicationWindowIsNotPositive(int windowInMinutes)
+            => FluentActions.Invoking(() => new InMemoryBrokeredMessageInbox(_logger.Creation, new ReliabilityOptions
+            {
+                InMemoryInboxDeduplicationWindowInMinutes = windowInMinutes,
+                InMemoryInboxMaxEntries = 200000
+            })).Should().Throw<ArgumentOutOfRangeException>();
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        public void MustThrowArgumentOutOfRangeExceptionWhenMaxEntriesIsNotPositive(int maxEntries)
+            => FluentActions.Invoking(() => new InMemoryBrokeredMessageInbox(_logger.Creation, new ReliabilityOptions
+            {
+                InMemoryInboxDeduplicationWindowInMinutes = 60,
+                InMemoryInboxMaxEntries = maxEntries
+            })).Should().Throw<ArgumentOutOfRangeException>();
+
+        [Fact]
+        public void MustThrowArgumentOutOfRangeExceptionWhenOptionsAreDefaultConstructed()
+            => FluentActions.Invoking(() => new InMemoryBrokeredMessageInbox(_logger.Creation, new ReliabilityOptions()))
+                .Should().Throw<ArgumentOutOfRangeException>();
 
         [Fact]
         public async Task MustInvokeMessageReceiverOnFirstReceipt()
