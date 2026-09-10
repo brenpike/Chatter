@@ -12,11 +12,20 @@ using System.Threading.Tasks;
 
 namespace Chatter.MessageBrokers.Reliability
 {
-    class InMemoryBrokeredMessageOutbox : IBrokeredMessageOutbox, IPollableOutboxStore
+    class InMemoryBrokeredMessageOutbox : IBrokeredMessageOutbox, IPollableOutboxStore, IUnitOfWork, IProcessLifetimeStore
     {
+        // INVARIANT: this dictionary is the process's ONLY copy of the outbox rows, so the instance holding it must
+        // outlive any DI scope. A sender writes a row in the scope its operation runs in, and
+        // BrokeredMessageOutboxProcessor opens a FRESH scope for every poll, so a per-scope instance hands the drain
+        // an empty dictionary and the default outbox delivers nothing at all. Hence IProcessLifetimeStore and the
+        // process-lifetime registration; the relational and document provider stores keep their rows outside the
+        // instance and are correctly per-operation.
         private readonly ConcurrentDictionary<string, OutboxMessage> _outbox;
         private readonly ILogger<InMemoryBrokeredMessageOutbox> _logger;
         private readonly ReliabilityOptions _reliabilityOptions;
+
+        IPersistanceTransaction IUnitOfWork.CurrentTransaction => null;
+        bool IUnitOfWork.HasActiveTransaction => false;
 
         public InMemoryBrokeredMessageOutbox(ILogger<InMemoryBrokeredMessageOutbox> logger, ReliabilityOptions reliabilityOptions)
         {
@@ -128,5 +137,13 @@ namespace Chatter.MessageBrokers.Reliability
                 => Task.FromResult<IEnumerable<OutboxMessage>>(_outbox.Values
                         .Where(m => m.ProcessedFromOutboxAtUtc is null && m.BatchId == transactionId)
                         .ToList());
+
+        // INVARIANT: a NON-TRANSACTIONAL pass-through. OutboxProcessor obtains the unit of work by
+        // casting the single resolved outbox (Reliability-Store Facet Resolution), so the default
+        // in-memory store must realize this facet or the drain never stamps a processed date and
+        // never dispatches. There is nothing to enlist in-memory, so the operation runs as-is and
+        // its failure travels out unchanged rather than being swallowed by a fake transaction.
+        Task IUnitOfWork.ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken)
+            => operation(cancellationToken);
     }
 }

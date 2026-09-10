@@ -28,8 +28,10 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
     /// <see cref="OutboxProcessor"/> casts to <see cref="IUnitOfWork"/>. Split-store is impossible
     /// by construction: there is exactly one resolved instance per pair.
     ///
-    /// INVARIANT: all cases resolve facets within a single <see cref="IServiceScope"/> — cross-scope
-    /// resolution would give different scoped instances by definition and is not a split-store defect.
+    /// INVARIANT: all cases resolve facets within a single <see cref="IServiceScope"/> because the fact under test is
+    /// facet-cast identity, not store lifetime. Cross-scope sharing is a SEPARATE fact with its own oracle,
+    /// <see cref="WhenSharingReliabilityStoresAcrossScopes"/>, and for the shipped in-memory defaults it IS a defect
+    /// when it fails: their whole state lives in the instance while every consumer opens a fresh scope per operation.
     /// </summary>
     public class WhenResolvingReliabilityStores : Testing.Core.Context
     {
@@ -138,6 +140,18 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
             var pollable = (IPollableOutboxStore)outbox;
 
             ReferenceEquals(outbox, pollable).Should().BeTrue("cast must return the same instance, not a wrapper");
+        }
+
+        [Fact]
+        public void OutboxDefault_CastingToUnitOfWorkYieldsSameInstance()
+        {
+            using var scope = BuildScope();
+            var sp = scope.ServiceProvider;
+
+            var outbox = sp.GetRequiredService<IBrokeredMessageOutbox>();
+            var unitOfWork = (IUnitOfWork)outbox;
+
+            ReferenceEquals(outbox, unitOfWork).Should().BeTrue("OutboxProcessor casts the resolved outbox to IUnitOfWork; the default store must satisfy that facet from the same instance, not a wrapper");
         }
 
         [Fact]

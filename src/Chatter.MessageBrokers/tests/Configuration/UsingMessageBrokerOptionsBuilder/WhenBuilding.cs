@@ -253,6 +253,8 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             options.Reliability.MinutesToLiveInMemory.Should().Be(10);
             options.Reliability.EnableOutboxPollingProcessor.Should().BeFalse();
             options.Reliability.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
+            options.Reliability.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(60);
+            options.Reliability.InMemoryInboxMaxEntries.Should().Be(200000);
             options.Recovery.MaxRetryAttempts.Should().Be(5);
             options.Recovery.CircuitBreakerOptions.NumberOfFailuresBeforeOpen.Should().Be(5);
         }
@@ -583,6 +585,69 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
 
             fromConfig.Should().Throw<ConfiguredValueRefusedException>()
                       .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxProcessingIntervalInMilliseconds)}");
+            services.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustHonourNestedInMemoryInboxRetentionKeysWhenTheParentSectionCarriesThem()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxDeduplicationWindowInMinutes"] = "5",
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxMaxEntries"] = "10"
+                })
+                .Build();
+
+            var options = MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            options.Reliability.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(5);
+            options.Reliability.InMemoryInboxMaxEntries.Should().Be(10);
+        }
+
+        /// <summary>
+        /// The refused value belongs to the NESTED in-memory inbox cap and arrives through THIS builder's own
+        /// section, the same composition the neighbouring nested-reliability and nested-circuit-breaker refusals
+        /// above pin.
+        /// </summary>
+        [Fact]
+        public void MustRefuseANestedInMemoryInboxMaxEntriesAndPublishNothingWhenTheParentSectionCarriesIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxMaxEntries"] = "0"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxMaxEntries)}");
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// The refused value belongs to the NESTED in-memory inbox deduplication window and arrives through THIS
+        /// builder's own section, the same composition the neighbouring nested refusals above pin.
+        /// </summary>
+        [Fact]
+        public void MustRefuseANestedInMemoryInboxDeduplicationWindowAndPublishNothingWhenTheParentSectionCarriesIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxDeduplicationWindowInMinutes"] = "0"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes)}");
             services.Should().BeEmpty();
         }
 
