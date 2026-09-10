@@ -29,7 +29,7 @@ _Avoid_: middleware.
 **Message Dispatcher**: Routes a Command (to one handler) or an Event (to many) — `IMessageDispatcher`.
 _Avoid_: mediator (used as the pattern name, not the type).
 
-**Query Dispatcher**: Routes a Query to its `IQueryHandler<TQuery,TResult>` — `IQueryDispatcher`, separate from the Message Dispatcher.
+**Query Dispatcher**: Routes a Query to its `IQueryHandler<TQuery,TResult>` — `IQueryDispatcher`, separate from the Message Dispatcher. It caches one invoker per distinct Query type and Read Model type pair for the life of the process, and never evicts. See ADR-0013.
 
 **External Dispatcher**: The outbound-publish seam (`IExternalDispatcher`), a no-op by default (`NoOpExternalDispatcher`); a broker module replaces it to publish Integration Events.
 

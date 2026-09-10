@@ -148,6 +148,14 @@ Query scanning discovers only closed handler types. An open-generic query handle
 services.AddTransient(typeof(IQueryHandler<,>), typeof(MyHandler<,>));
 ```
 
+#### Caching and retention
+
+The invoker cache is a process-lifetime static with no eviction, and every entry strongly roots the caller-supplied query `Type`. Its entry count is bounded by the number of distinct `(runtime query type, result type)` pairs ever dispatched — not by traffic.
+
+Do not dispatch a query type defined in an `AssemblyLoadContext` you intend to unload through `Query<TResult>(IQuery<TResult>)`. Dispatch it through `Query<TQuery, TResult>`, which never touches the cache, or accept that the load context will not unload. The hatch only reaches callers that can name `TQuery` at compile time; a reflective host holding an arbitrary `IQuery<TResult>` cannot use it.
+
+Design rationale — and why the cache is left static and documented rather than weakened — is recorded in [ADR-0013](https://github.com/brenpike/Chatter/blob/master/docs/adr/0013-query-invoker-cache-process-lifetime-retention-documented-not-weakened.md).
+
 ### Events: Domain vs Integration
 
 An `IEvent` is dispatched through the same `IMessageDispatcher` but is fanned out to **all** registered `IMessageHandler<TEvent>` handlers (event handlers are appended during scanning rather than replaced). Handlers are invoked sequentially.
