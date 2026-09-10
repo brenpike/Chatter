@@ -9,7 +9,7 @@ PR C of epic #301 closes #336 by replacing a `MakeGenericType` call plus two `dy
 query dispatch with a closed-generic adapter that is built once and cached. The cache is
 `QueryDispatcher._invokers`, a `private static readonly ConcurrentDictionary<(Type QueryType, Type
 ResultType), object>` living in the default `AssemblyLoadContext`
-(`src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs:25`). Its key is derived from
+(`src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs`). Its key is derived from
 `query.GetType()` — a value the caller supplies — so every entry strongly roots a caller-supplied
 runtime `Type` for the lifetime of the process, with no eviction.
 
@@ -73,19 +73,8 @@ host that receives an arbitrary `IQuery<TResult>` and cannot name its concrete t
 hatch at all; for that host the obligation reduces to the second half — the load context will not
 unload — and this ADR does not pretend otherwise.
 
-What the code builds, as construction facts only:
-
-- `AddQueryHandlers` (`src/Chatter.CQRS/src/Chatter.CQRS/DependencyInjection/CqrsExtensions.cs:146-155`)
-  scans at composition time and registers a CLOSED `IQueryHandler<TQuery, TResult>` service descriptor
-  per discovered query type into the root `IServiceCollection`.
-- Those descriptors already strongly root the same `Type`s for the lifetime of the root provider they
-  are built into.
-- A query type therefore cannot reach the cache without already being rooted by DI, so **the cache adds
-  no retention in the documented hosting model** — one `IServiceProvider` for the life of the process.
-
-Marginal retention exists in exactly ONE shape: a per-plugin `ServiceProvider` built over a collectible
-`AssemblyLoadContext` and later disposed in order to unload it. There, the DI root goes away with the
-provider and the cache entry does not.
+The cache is a root in its own right; whether dependency injection also roots a given query type is
+not relied on.
 
 **What this is NOT — so that this finding is not re-raised against the wrong types every review:**
 
