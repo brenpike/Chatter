@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.14.2] - 2026-09-10
+
+### Changed
+
+- `QueryDispatcher.Query<TResult>(IQuery<TResult>, IQueryHandlerContext)` built a closed `IQueryHandler<,>` type via `MakeGenericType` and made two `dynamic` conversions — one to resolve the handler, one to invoke it — on every call, each routed through a DLR call site. It now dispatches through a closed-generic adapter cached per `(runtime query type, TResult)` pair, so `MakeGenericType` runs once per pair, on a cache miss, instead of on every dispatch. The package multi-targets `net8.0;net10.0` and carries no trimming annotations; `dynamic` was the most trim- and AOT-hostile construct on this path, and the adapter removes that dependency outright without introducing expression-tree compilation or reflection emit, either of which would have added `RequiresDynamicCode` exposure instead of removing it. The cache is static and holds only stateless invokers — never a handler instance or an `IServiceProvider` — because `QueryDispatcher` is registered per scope and an instance-level cache would be rebuilt every scope; the handler is still resolved from the `IServiceProvider` passed to each call on every dispatch, so a scoped handler lifetime behaves exactly as before. The cache key is the pair of the runtime query type and the result type, so two distinct query types that share a result type still resolve to their own handlers. The public signature and the fault shape are unchanged: an unregistered handler still throws `InvalidOperationException` out of `GetRequiredService`, before the handler is ever invoked (#336).
+
 ## [0.14.1] - 2026-09-10
 
 ### Changed
