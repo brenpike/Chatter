@@ -147,6 +147,33 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
             await Task.WhenAll(first.receipt, second.receipt, third.receipt);
         }
 
+        /// <summary>
+        /// The growth above is bounded IN TIME rather than merely tolerated, and it is the mandatory positive window
+        /// that makes it so: every one of those reservations becomes reclaimable once its lease elapses, so the store
+        /// comes back down to its cap on the next receipt without an operator doing anything.
+        /// </summary>
+        [Fact]
+        public async Task MustReturnToItsCapOnceTheWindowElapsesForTheEntriesThatGrewPastIt()
+        {
+            var inbox = CreateInbox(maxEntries: 1, windowInMinutes: 1);
+
+            var first = await ParkAReceipt(inbox, "id-1");
+            var second = await ParkAReceipt(inbox, "id-2");
+            var third = await ParkAReceipt(inbox, "id-3");
+            var entryCountWhileEveryEntryWasInFlight = inbox.EntryCount;
+
+            _now = OneMinuteInMilliseconds;
+            await ReceiveReportingInvocation(inbox, "id-4");
+
+            first.release.SetResult(true);
+            second.release.SetResult(true);
+            third.release.SetResult(true);
+            await Task.WhenAll(first.receipt, second.receipt, third.receipt);
+
+            entryCountWhileEveryEntryWasInFlight.Should().Be(3);
+            inbox.EntryCount.Should().Be(1);
+        }
+
         [Fact]
         public async Task MustReclaimAnAbandonedInFlightReservationRatherThanEvictAnUnexpiredReceiptAtTheCap()
         {

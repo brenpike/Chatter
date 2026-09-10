@@ -630,6 +630,28 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
         }
 
         /// <summary>
+        /// The refused value belongs to the NESTED in-memory inbox deduplication window and arrives through THIS
+        /// builder's own section, the same composition the neighbouring nested refusals above pin.
+        /// </summary>
+        [Fact]
+        public void MustRefuseANestedInMemoryInboxDeduplicationWindowAndPublishNothingWhenTheParentSectionCarriesIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxDeduplicationWindowInMinutes"] = "0"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes)}");
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
         /// The binder is loud only for a transaction mode it cannot PARSE. A numeric literal converts cleanly to an
         /// undefined member of the byte-backed enum and reaches the TransactionContext the receiver builds, so the
         /// enum type itself is the oracle for what may be configured.

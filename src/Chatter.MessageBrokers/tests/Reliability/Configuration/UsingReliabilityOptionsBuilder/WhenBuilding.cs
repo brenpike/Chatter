@@ -439,7 +439,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         /// The cap is the in-memory inbox's memory safety valve, so a cap of zero would retain no receipt at all while
         /// the inbox still allocated for every one of them - deduplicating nothing under a setting that reads like a
         /// retention limit. It is refused rather than treated as 'disabled': the deduplication window is where an
-        /// operator says how long a receipt lives, and a non-positive window already says 'never expire'.
+        /// operator says how long a receipt lives.
         /// </summary>
         [Fact]
         public void MustRefuseAConfiguredInMemoryInboxMaxEntriesOfZero()
@@ -488,20 +488,54 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         }
 
         /// <summary>
-        /// A non-positive window disables time-based expiry, the same idiom <see cref="ReliabilityOptions.MinutesToLiveInMemory"/>
-        /// already teaches on this very options type. It is accepted whatever its magnitude, and the cap remains the
-        /// only thing that then releases a receipt.
+        /// The window is the in-memory inbox's ONLY reclamation rule: every entry it holds, a completed receipt and an
+        /// in-flight reservation alike, is released by that rule and by nothing else. A window of zero would therefore
+        /// leave no entry reclaimable at all - a hung handler's reservation would never end and the cap, which never
+        /// takes a reservation the window still honours, would have nothing left to evict. It is refused rather than
+        /// read as 'disabled': there is no configuration under which the inbox is allowed to hold an entry forever.
         /// </summary>
-        [Theory]
-        [InlineData("0", 0)]
-        [InlineData("-5", -5)]
-        public void MustAcceptANonPositiveInMemoryInboxDeduplicationWindow(string configuredWindow, int expectedWindow)
+        [Fact]
+        public void MustRefuseAConfiguredInMemoryInboxDeduplicationWindowOfZero()
         {
             var services = new ServiceCollection();
 
-            var options = ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithInMemoryInboxDeduplicationWindow(configuredWindow));
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithInMemoryInboxDeduplicationWindow("0"));
 
-            options.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(expectedWindow);
+            var refusal = fromConfig.Should().Throw<ConfiguredValueRefusedException>().Which;
+            refusal.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes)}");
+            refusal.RefusedValue.Should().Be(0);
+            refusal.RequiredBound.Should().Be("at least 1 minute");
+            refusal.ConfigurationPath.Should().Be(ReliabilityOptionsBuilder.ReliabilityOptionsSectionName);
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// A negative window names no period a receipt could be remembered for, so there is nothing for it to mean.
+        /// </summary>
+        [Fact]
+        public void MustRefuseAConfiguredNegativeInMemoryInboxDeduplicationWindow()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithInMemoryInboxDeduplicationWindow("-5"));
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes)}");
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// One minute is the shortest window the setting can express, so the bound stops exactly there rather than at
+        /// some larger house minimum.
+        /// </summary>
+        [Fact]
+        public void MustAcceptTheSmallestInMemoryInboxDeduplicationWindowTheSettingCanExpress()
+        {
+            var services = new ServiceCollection();
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithInMemoryInboxDeduplicationWindow("1"));
+
+            options.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(1);
             using var provider = services.BuildServiceProvider();
             provider.GetRequiredService<ReliabilityOptions>().Should().BeSameAs(options);
         }

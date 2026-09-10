@@ -43,6 +43,9 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         // rather than the wall clock, exactly as the circuit breaker's cooling period is: an NTP correction, a VM
         // migration or an operator moving the system clock would otherwise expire a receipt early or hold it past
         // its configured window. This constructor lets a test supply that monotonic source directly.
+        // INVARIANT: the supplied clock must only ever return NON-NEGATIVE readings, which Environment.TickCount64
+        // does for the first ~292 million years of a process. That is the precondition the entry encoding below
+        // depends on to keep a reservation and a completed receipt apart.
         internal InMemoryBrokeredMessageInbox(ILogger<InMemoryBrokeredMessageInbox> logger, ReliabilityOptions reliabilityOptions, Func<long> clock)
             : this(logger, reliabilityOptions, clock, null)
         { }
@@ -51,7 +54,9 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         // present and its conditional update of that entry: a concurrent sweep can remove the entry inside that
         // window, which makes the update fail for a reason that is not a competing reservation. Reproducing that
         // ordering with threads and timing would be flaky, so this constructor lets a test run its interference at
-        // exactly that point. Every production construction leaves the callback null.
+        // exactly that point. The callback runs INSIDE the reserve path, so whatever receipt it drives there must
+        // complete synchronously - one that parked on a reservation of its own would still be holding it when the
+        // reserve path resumed. Every production construction leaves the callback null.
         internal InMemoryBrokeredMessageInbox(ILogger<InMemoryBrokeredMessageInbox> logger, ReliabilityOptions reliabilityOptions, Func<long> clock, Action<string> beforeReReservingAnEntry)
         {
             _inbox = new ConcurrentDictionary<string, long>();
@@ -75,8 +80,9 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         // Every entry's value carries BOTH the state it is in and the monotonic instant it entered that state: a
         // completed receipt stores its completion instant as it is, and a reservation stores its reservation
         // instant negated and shifted down by one. The shift is what makes a reservation taken at instant 0
-        // negative too, so the two states never collide at any reading the clock can produce. One reclamation rule
-        // then covers both of them, which is why neither removal below needs a case for a reservation.
+        // negative too, so the two states never collide at any NON-NEGATIVE reading - which is every reading the
+        // clock seam is required to produce. One reclamation rule then covers both of them, which is why neither
+        // removal below needs a case for a reservation.
         private static long Reservation(long reservedAt) => -reservedAt - 1;
 
         private static bool IsReservation(long value) => value < 0;
@@ -181,33 +187,25 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
             }
         }
 
-        // The single reclamation rule, and the only place the window is read. It decides ON CONTACT rather than
-        // waiting for the sweep, so the window is exact no matter when the sweep last ran, and it asks the same
-        // question of a reservation as of a completed receipt: an id is remembered for the window, and a
-        // reservation is honoured for the window. So a handler that neither returns nor throws holds its id for
-        // the window and no longer, and a non-positive window disables the rule outright - it stops expiring a
-        // completed receipt and stops treating a reservation as abandoned alike. The window is compared against
-        // ELAPSED time rather than added to the stored instant, so no deadline is computed and there is nothing
-        // left to overflow.
-        private bool IsReclaimable(long value)
-        {
-            if (_deduplicationWindowInMilliseconds <= 0)
-            {
-                return false;
-            }
-
-            return _clock() - InstantOf(value) >= _deduplicationWindowInMilliseconds;
-        }
+        // INVARIANT: the single reclamation rule, the only place the window is read, and TOTAL - it takes no branch
+        // on configuration, so EVERY entry becomes reclaimable once its instant is older than the window, in EVERY
+        // configuration a host can start with. No entry state and no configured value can produce an entry that
+        // nothing is able to remove. ReliabilityOptionsBuilder refuses a window below one minute for exactly that
+        // reason: a rule this one could be switched off would leave a hung handler's reservation held for good and
+        // the entry cap, which never takes a reservation the window still honours, with nothing left to evict.
+        //
+        // It decides ON CONTACT rather than waiting for the sweep, so the window is exact no matter when the sweep
+        // last ran, and it asks the same question of a reservation as of a completed receipt: an id is remembered for
+        // the window, and a reservation is honoured for the window. So a handler that has not returned holds its id
+        // for the window and no longer - whether it is dead or merely slow. The window is compared against ELAPSED
+        // time rather than added to the stored instant, so no deadline is computed and there is nothing left to
+        // overflow.
+        private bool IsReclaimable(long value) => _clock() - InstantOf(value) >= _deduplicationWindowInMilliseconds;
 
         // The routine reclaim. It is elected by one receipt per interval and is deliberately QUIET: reclaiming
         // entries the window has already released is the store working as configured, not a condition to report.
         private void SweepExpiredEntriesIfDue()
         {
-            if (_deduplicationWindowInMilliseconds <= 0)
-            {
-                return;
-            }
-
             var now = _clock();
             var due = Volatile.Read(ref _nextSweepDueAt);
 
@@ -263,14 +261,11 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
                 return;
             }
 
-            if (_deduplicationWindowInMilliseconds > 0)
-            {
-                SweepExpiredEntries();
+            SweepExpiredEntries();
 
-                if (Volatile.Read(ref _count) <= _maxEntries)
-                {
-                    return;
-                }
+            if (Volatile.Read(ref _count) <= _maxEntries)
+            {
+                return;
             }
 
             var evicted = EvictEntriesWithoutAHonouredReservation();
@@ -281,8 +276,9 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
                 // than blocking or throwing: blocking self-deadlocks, because the entries are in flight only while
                 // their handlers run and the thread that would block is one that must run a handler to free a
                 // slot; and throwing surfaces as a receive failure, so the redelivery meets the same state and a
-                // soft bound becomes a hard outage. The growth is bounded in time either way, because a
-                // reservation the window stops honouring is reclaimable like any other entry.
+                // soft bound becomes a hard outage. The growth is bounded IN TIME, unconditionally: the window is
+                // mandatory and positive, so every one of these reservations stops being honoured once its lease
+                // elapses and is then reclaimable like any other entry.
                 _logger.LogTrace($"The in memory inbox holds {Volatile.Read(ref _count)} received message id(s), above its cap of {_maxEntries}, because every entry is still in flight.");
                 return;
             }
@@ -326,12 +322,8 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
 
         private void ReportCapEviction(int evicted)
         {
-            var configuredWindow = _deduplicationWindowInMilliseconds > 0
-                ? $"{_deduplicationWindowInMilliseconds / MillisecondsPerMinute} minutes"
-                : "disabled";
-
             var report = $"The in memory inbox reached its cap of {_maxEntries} received message id(s) and evicted {evicted} unexpired one(s). "
-                       + $"Its configured deduplication window ({configuredWindow}) is no longer being honoured under this load, so a "
+                       + $"Its configured deduplication window ({_deduplicationWindowInMilliseconds / MillisecondsPerMinute} minutes) is no longer being honoured under this load, so a "
                        + $"redelivery inside that window can be handled again. Raise {nameof(ReliabilityOptions.InMemoryInboxMaxEntries)} or shorten "
                        + $"{nameof(ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes)}.";
 

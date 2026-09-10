@@ -22,6 +22,8 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         private const string _minutesToLiveInMemoryBound = "at most 0 minutes, which disables expiry cleanup, or a finite number of minutes";
         private const int _minimumInMemoryInboxMaxEntries = 1;
         private const string _inMemoryInboxMaxEntriesBound = "at least 1 entry";
+        private const int _minimumInMemoryInboxDeduplicationWindowInMinutes = 1;
+        private const string _inMemoryInboxDeduplicationWindowBound = "at least 1 minute";
 
         public const string ReliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability";
         private readonly IServiceCollection _services;
@@ -74,9 +76,10 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         /// a redelivery of the same message id is skipped for this long. The <see cref="InMemoryBrokeredMessageInbox"/>
         /// is registered by Chatter by default if no other persistance strategy is used. Default value is 60.
         /// </summary>
-        /// <param name="windowInMinutes">The time a completed receipt deduplicates redeliveries of its message id for. A
-        /// non-positive value disables time-based expiry, leaving <see cref="WithInMemoryInboxMaxEntries"/> as the only
-        /// thing that releases a receipt.</param>
+        /// <param name="windowInMinutes">The time a completed receipt deduplicates redeliveries of its message id for, and
+        /// the lease on an in-flight reservation. Must be at least 1 minute. A handler that can run longer than this window
+        /// is pre-empted by a second handler for the same message id, so size the window above the slowest handler and keep
+        /// that handler idempotent.</param>
         /// <returns><see cref="ReliabilityOptionsBuilder"/></returns>
         public ReliabilityOptionsBuilder WithInMemoryInboxDeduplicationWindow(int windowInMinutes)
         {
@@ -185,14 +188,28 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
             // INVARIANT: the cap is the in-memory inbox's memory safety valve, so it must name a number of receipts the
             // inbox can actually hold. A cap of zero would retain no receipt while the inbox still allocated for every
             // one of them - deduplicating nothing under a setting that reads like a retention limit - and a negative cap
-            // names no number at all. Neither is read as 'disabled': the deduplication window is where an operator says
-            // how long a receipt lives, and a non-positive window there already says 'never expire', which is why
-            // InMemoryInboxDeduplicationWindowInMinutes is refused nothing here.
+            // names no number at all. Neither is read as 'disabled'.
             if (reliabilityOptions.InMemoryInboxMaxEntries < _minimumInMemoryInboxMaxEntries)
             {
                 throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxMaxEntries)}",
                                                           reliabilityOptions.InMemoryInboxMaxEntries,
                                                           _inMemoryInboxMaxEntriesBound,
+                                                          _reliabilityOptionsSection?.Path);
+            }
+
+            // INVARIANT: the window is the in-memory inbox's ONLY reclamation rule - every entry it holds, a completed
+            // receipt and an in-flight reservation alike, is released by that rule and by nothing else - so it is
+            // mandatory and positive. A non-positive window would leave no entry reclaimable at all: a hung handler's
+            // reservation would never end, and the cap, which never takes a reservation the window still honours, would
+            // then have nothing left it could evict, which turns the store's out-of-memory safety valve off along with
+            // expiry. It is deliberately NOT read as 'disabled' the way a non-positive MinutesToLiveInMemory is: that
+            // one governs cleanup of rows the outbox has already processed, so disabling it only retains them, while
+            // disabling this one would let the inbox hold an entry forever with nothing able to remove it.
+            if (reliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes < _minimumInMemoryInboxDeduplicationWindowInMinutes)
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes)}",
+                                                          reliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes,
+                                                          _inMemoryInboxDeduplicationWindowBound,
                                                           _reliabilityOptionsSection?.Path);
             }
         }

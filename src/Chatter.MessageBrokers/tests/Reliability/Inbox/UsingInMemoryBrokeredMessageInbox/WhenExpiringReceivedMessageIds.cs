@@ -218,34 +218,50 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
             entryCountAfterTheSweep.Should().Be(1);
         }
 
-        [Fact]
-        public async Task MustNeverAbandonAnInFlightReservationWhenTheWindowIsDisabled()
+        /// <summary>
+        /// The window is now mandatory and at least one minute, so the reclamation rule has NO configuration escape:
+        /// there is no window a host can be configured with under which a completed receipt outlives it. These two
+        /// theories walk the ends of the configurable domain - the shortest window the setting can express and the
+        /// longest - and require the same answer at both.
+        /// </summary>
+        [Theory]
+        [InlineData(1)]
+        [InlineData(int.MaxValue)]
+        public async Task MustHandleARedeliveryOnceTheWindowHasElapsedUnderEveryConfigurableWindow(int windowInMinutes)
         {
-            var inbox = CreateInbox(windowInMinutes: 0);
-            var context = CreateContext("id-1");
-            var inFlight = await ParkAReceipt(inbox, context);
-
-            _now = long.MaxValue;
-            var duplicateInvoked = await ReceiveReportingInvocation(inbox, context);
-            var receivedWhileInFlight = await inbox.HasBeenReceived("id-1");
-
-            inFlight.release.SetResult(true);
-            await inFlight.receipt;
-
-            duplicateInvoked.Should().BeFalse();
-            receivedWhileInFlight.Should().BeTrue();
-        }
-
-        [Fact]
-        public async Task MustNeverExpireWhenTheWindowIsDisabled()
-        {
-            var inbox = CreateInbox(windowInMinutes: 0);
+            var inbox = CreateInbox(windowInMinutes);
             var context = CreateContext("id-1");
             await ReceiveReportingInvocation(inbox, context);
 
-            _now = long.MaxValue;
+            _now = windowInMinutes * OneMinuteInMilliseconds;
 
-            (await ReceiveReportingInvocation(inbox, context)).Should().BeFalse();
+            (await ReceiveReportingInvocation(inbox, context)).Should().BeTrue();
+            (await inbox.HasBeenReceived("id-1")).Should().BeTrue();
+        }
+
+        /// <summary>
+        /// The same rule, asked of the state that used to have an escape: a reservation whose handler never returns.
+        /// No configurable window leaves such a reservation held indefinitely, so a hung handler cannot make its id
+        /// permanently unreclaimable under any configuration a host can start with.
+        /// </summary>
+        [Theory]
+        [InlineData(1)]
+        [InlineData(int.MaxValue)]
+        public async Task MustNeverHoldAnInFlightReservationBeyondTheWindowUnderEveryConfigurableWindow(int windowInMinutes)
+        {
+            var inbox = CreateInbox(windowInMinutes);
+            var context = CreateContext("id-1");
+            var abandoned = await ParkAReceipt(inbox, context);
+
+            _now = windowInMinutes * OneMinuteInMilliseconds;
+            var receivedWhileAbandoned = await inbox.HasBeenReceived("id-1");
+            var redeliveryInvoked = await ReceiveReportingInvocation(inbox, context);
+
+            abandoned.release.SetResult(true);
+            await abandoned.receipt;
+
+            receivedWhileAbandoned.Should().BeFalse();
+            redeliveryInvoked.Should().BeTrue();
         }
 
         [Fact]
