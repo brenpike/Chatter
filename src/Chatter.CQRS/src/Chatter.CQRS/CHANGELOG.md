@@ -12,6 +12,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.14.0] - 2026-09-10
+
+### Changed
+
+- The `LogTrace` calls in `CommandDispatcher` and `EventDispatcher` built an interpolated string on every dispatch regardless of whether trace-level logging was enabled. They are now guarded by `ILogger.IsEnabled(LogLevel.Trace)` and use a constant message template with a per-closed-generic cached type name, so a dispatch running at a higher minimum log level no longer pays for string interpolation it will discard (#338).
+
+### Fixed
+
+- `CommandDispatcher.DispatchToHandler<TMessage>` was not `async`: it returned `handler.Handle(...)` / `pipeline.Execute(...)` directly from inside its `try`, so a command handler whose `Task` faulted AFTER an `await` never re-entered the dispatcher's `catch` and was logged nowhere. It is now `async` and awaits both calls inside the `try` (with `ConfigureAwait(false)`), matching `EventDispatcher`'s existing shape, so an asynchronously faulting command handler now produces an error log record where it previously produced none. The uniform consequence for callers: a synchronous resolution fault — for example, no registered `IMessageHandler<TMessage>` — now arrives on the returned `Task` unconditionally, diagnostics on or off, rather than throwing out of the `Dispatch` call itself. A caller that separates `Dispatch(...)` from its `await` will therefore see such a fault surface at the `await` rather than at the call (#415).
+- All four dispatcher catch blocks — `CommandDispatcher`, `EventDispatcher`, and both `QueryDispatcher` overloads — logged `LogError($"... {e.StackTrace}")`, stringifying the stack trace into the message and passing no exception to the logger. They now use the `LogError(exception, template, args)` overload, so a structured-logging sink receives the exception object itself and the message template is a constant rather than an interpolated string (#337).
+
 ## [0.13.1] - 2026-09-10
 
 ### Changed
