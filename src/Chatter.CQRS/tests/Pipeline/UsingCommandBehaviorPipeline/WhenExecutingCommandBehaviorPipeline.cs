@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Pipeline;
+using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
 using Moq;
 using System;
@@ -94,6 +95,30 @@ namespace Chatter.CQRS.Tests.Pipeline.UsingCommandBehaviorPipeline
             await FluentActions.Invoking(() => _sut.Execute(It.IsAny<ICommand>(), It.IsAny<IMessageHandlerContext>(), handler)).Should().ThrowAsync<Exception>();
         }
 
+        [Fact]
+        public async Task MustNotCallHandlerWhenACommandBehaviorDoesNotCallNext()
+        {
+            var behaviors = new ICommandBehavior<ICommand>[] { new ShortCircuitingCommandBehavior(_logger) };
+            var sut = new CommandBehaviorPipeline<ICommand>(behaviors);
+
+            await sut.Execute(It.IsAny<ICommand>(), It.IsAny<IMessageHandlerContext>(), _handler);
+
+            _logger.Log.Should().Equal("behavior short circuit");
+        }
+
+        [Fact]
+        public void MustNotAllocateWhileExecutingWithNoRegisteredCommandBehaviors()
+        {
+            var handler = new CountingMessageHandler();
+            var sut = new CommandBehaviorPipeline<ICommand>(Array.Empty<ICommandBehavior<ICommand>>());
+
+            var measurement = GuardCostProbe.Measure<Task>(() => sut.Execute(null, null, handler));
+
+            handler.HandleCount.Should().BeGreaterThan(0);
+            measurement.MedianAllocatedBytesPerBatch.Should().Be(0,
+                "an execution with no registered command behaviors must call the handler directly instead of materializing a delegate chain: " + measurement);
+        }
+
         public class TestLogger
         {
             public List<string> Log { get; } = new List<string>();
@@ -124,6 +149,30 @@ namespace Chatter.CQRS.Tests.Pipeline.UsingCommandBehaviorPipeline
                 _logger.Log.Add($"behavior two before");
                 await next();
                 _logger.Log.Add($"behavior two after");
+            }
+        }
+
+        public class ShortCircuitingCommandBehavior : ICommandBehavior<ICommand>
+        {
+            private readonly TestLogger _logger;
+
+            public ShortCircuitingCommandBehavior(TestLogger logger) => _logger = logger;
+
+            public Task Handle(ICommand message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next)
+            {
+                _logger.Log.Add("behavior short circuit");
+                return Task.CompletedTask;
+            }
+        }
+
+        public class CountingMessageHandler : IMessageHandler<IMessage>
+        {
+            public int HandleCount { get; private set; }
+
+            public Task Handle(IMessage message, IMessageHandlerContext context)
+            {
+                HandleCount++;
+                return Task.CompletedTask;
             }
         }
 
