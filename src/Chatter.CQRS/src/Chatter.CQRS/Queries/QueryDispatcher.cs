@@ -22,6 +22,11 @@ namespace Chatter.CQRS.Queries
         // dispatch and the handler is resolved on every dispatch.
         // INVARIANT: the key is the pair (runtime query type, result type). Keying on the compile-time
         // IQuery<TResult> or on TResult alone would route two different query types to a single handler.
+        // INVARIANT: this cache is process-lifetime with no eviction, and every entry strongly roots the
+        // caller-supplied query Type for the life of the process. Entry count is bounded by the number of
+        // distinct (runtime query type, result type) pairs ever dispatched, not by traffic. A caller that
+        // needs a collectible AssemblyLoadContext to unload must dispatch through Query<TQuery, TResult>,
+        // which never touches this cache (ADR-0013).
         private static readonly ConcurrentDictionary<(Type QueryType, Type ResultType), object> _invokers = new ConcurrentDictionary<(Type QueryType, Type ResultType), object>();
         private static readonly Func<(Type QueryType, Type ResultType), object> _invokerFactory = CreateInvoker;
 
