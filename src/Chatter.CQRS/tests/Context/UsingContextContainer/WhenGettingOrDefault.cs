@@ -53,5 +53,17 @@ namespace Chatter.CQRS.Tests.Context.UsingContextContainer
             Assert.Same(_reallyFakeContext.Object, c1);
             Assert.NotEqual(fakeContext2, c1);
         }
+
+        [Fact]
+        public void MustStoreDefaultWhenValueTypeDoesntExist()
+        {
+            var doesExistBefore = _sut.TryGet<int>(out _);
+            var c1New = _sut.GetOrDefault<int>();
+            var doesExistAfter = _sut.TryGet<int>(out var ctx);
+            Assert.False(doesExistBefore);
+            Assert.Equal(default, c1New);
+            Assert.True(doesExistAfter);
+            Assert.Equal(default, ctx);
+        }
     }
 }

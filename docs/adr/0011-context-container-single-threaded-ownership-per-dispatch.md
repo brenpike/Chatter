@@ -1,0 +1,117 @@
+---
+status: accepted
+date: 2026-09-10
+---
+
+# Context Container: single-threaded ownership per dispatch, documented rather than synchronized
+
+`ContextContainer` is the type-keyed bag every **Message Context** carries (`IContainContext.Container`).
+It is a plain `Dictionary<string, object>` plus an optional inherited container, and it is mutated on
+the dispatch path: `MessageDispatcher` seeds the active `IMessageDispatcher` and `IExternalDispatcher`
+into it, the **Brokered Message Receiver** adds the transaction context for a received message, and
+application handlers add whatever else they need.
+
+Issue #333 observes — correctly — that this dictionary is unsynchronized, so two dispatches sharing one
+container would race on it. The question this ADR settles is not whether the race is real, but whether
+the answer is to make the container thread-safe or to state, and keep true by construction, the
+ownership rule the container already depends on.
+
+## Considered Options
+
+- **Option 1 — Document the ownership contract: one container per dispatch, one thread at a time
+  (CHOSEN).** Costs nothing on the dispatch path, and matches what every in-repo path already does.
+  Its weakness is honest: the rule is enforced by convention and by the fact that no in-repo code
+  constructs a shared container, not by the type system.
+
+- **Option 2 — Swap the backing store for a `ConcurrentDictionary<string, object>`, with a `Lazy<T>`
+  per entry so `GetOrAdd`'s factory runs exactly once.** This is the *correct* shape for a
+  thread-safe type-keyed bag, and it is not dismissed lightly: it would make single-container
+  concurrent use safe at the dictionary level, and `Lazy<T>` closes the duplicate-factory-invocation
+  hole a bare `ConcurrentDictionary.GetOrAdd` leaves open. It is rejected for three reasons, in order
+  of weight.
+
+  1. **The container's VALUES are themselves thread-hostile, so synchronizing the bag fixes almost
+     nothing.** What actually goes into a container is a `MessageBrokerContext`, a
+     `TransactionContext`, the dispatchers, and application state — none of them thread-safe. Making
+     the *lookup* atomic only makes the handoff of a mutable, unsynchronized object atomic; the
+     object then races exactly as before. Worse, a container advertised as thread-safe invites
+     precisely the sharing the values cannot survive, so this option can leave a consumer less safe
+     than the documented rule does.
+  2. **`TryGet` spans an inherited-container chain that no concurrent dictionary can make atomic.**
+     A miss in the local dictionary recurses into the inherited container, which may itself have a
+     parent. Even with every link a `ConcurrentDictionary`, the walk is a sequence of independent
+     atomic reads with no atomic "present anywhere in the chain" answer, and `GetOrAdd`'s
+     read-the-chain-then-add-locally is a compound operation a per-link primitive cannot close.
+     Closing it properly would require a lock spanning the whole chain — a lock ordering across
+     containers whose lifetimes are independent of one another.
+  3. **It adds allocation to the exact per-dispatch hot path epic #301 is separately trying to
+     shrink.** A `ConcurrentDictionary` is a heavier allocation than a `Dictionary`, and a per-entry
+     `Lazy<T>` adds an object per stored value. A container is constructed for every dispatch and
+     every received message, so this cost lands on the hottest path in the library, in exchange for
+     a safety property reason 1 says is largely illusory.
+
+- **Option 3 — An EF-Core-style concurrency detector: a lightweight interlocked entry/exit guard
+  around each container operation that throws when a second thread enters while one is inside.**
+  This is the genuinely attractive alternative and the closest thing here to closed-by-construction:
+  it does not pretend the container is thread-safe, it turns the unsupported usage into a loud,
+  immediate, diagnosable failure instead of silent corruption, and it is the pattern `DbContext`
+  uses for the same class of "single-threaded by contract" object. It is rejected here on two
+  grounds: it introduces new public exception surface on `Chatter.CQRS` (a new exception type, or a
+  new throwing condition on existing members, that consumers would then depend on), and it puts an
+  interlocked read-modify-write on *every* container operation — again on the per-dispatch hot path
+  of #301 — to detect a condition no in-repo path can currently reach. **If #333 reopens, Option 3,
+  NOT Option 2, is the route to reconsider**: it addresses the actual failure mode (unsupported
+  sharing) at the point of use, without claiming a thread-safety the stored values cannot honour.
+
+## Decision
+
+**A `ContextContainer` is not synchronized, and is not going to be. One container is owned by exactly
+one dispatch, and is used by one thread at a time. Sharing a single container across concurrent
+dispatches is UNSUPPORTED.** The contract is stated in `src/Chatter.CQRS/src/README.md` (Message
+Context → Threading) and in the CQRS `CONTEXT.md`; the code is unchanged by this decision.
+
+The contract holds **by construction** for every path in this repository — the race #333 describes has
+zero in-repo reachability:
+
+- `MessageDispatcher.Dispatch` creates a fresh `MessageHandlerContext`, and therefore a fresh
+  container, for every dispatch that does not supply one; a supplied context comes from the caller's
+  own dispatch.
+- `MessageHandlerContext` and `QueryHandlerContext` each construct their own container on
+  construction — there is no shared or static container anywhere in the library.
+- The **Brokered Message Receiver** builds a `MessageBrokerContext` per received message and hands it
+  to that message's own processing worker, so concurrent per-message workers never touch a common
+  container.
+- The routing path chains a NEW container to the current dispatch's container as its inherited parent
+  rather than sharing one mutable container between threads.
+
+No in-repo path hands one container to two threads. The race is reachable only if an application
+deliberately passes one context object into concurrent dispatches, which this ADR declares
+unsupported.
+
+## Consequences
+
+- **No public API change, no behavior change, no cost on the dispatch path.** The decision is
+  documentation; the dispatch path keeps the allocation profile epic #301 is working to reduce.
+- **The contract is enforced by convention, not by the type system.** A future change that dispatches
+  concurrently from a single context would reintroduce the race silently. The reviewable signal is
+  narrow and specific: a context object (or its container) captured by more than one concurrent
+  dispatch or worker.
+- **An application that shares one context across concurrent dispatches is out of contract**, and the
+  resulting corruption is its own to avoid — Chatter neither prevents nor detects it today.
+- **Option 3 remains on the table.** If a real in-repo sharing path appears, or a consumer reports the
+  corruption in the field, the concurrency detector is the next step, and this ADR would be superseded
+  rather than amended.
+- **`GetOrAdd`'s presence rule is part of the same contract surface** and is documented alongside it: a
+  stored `null` is a PRESENT value and is returned as-is rather than re-running the factory, with
+  `GetOrNew<T>()` the deliberate exception that always returns an instance.
+
+## References
+
+- Issue #333 — *`ContextContainer` is an unsynchronized `Dictionary` mutated per dispatch: concurrent
+  dispatches sharing a context race*. The issue this ADR answers.
+- Issue #332 — *`ContextContainer.GetOrAdd` gates on `is null`: value-type context silently returns
+  `default(T)`*. The sibling defect on the same type; source of the presence rule documented above.
+- Epic #301 — *Chatter.CQRS: handler registration correctness and per-dispatch hot path*. The parent
+  epic, and the reason per-dispatch allocation is weighed as heavily as it is in Options 2 and 3.
+- ADR-0008 — *Document-tier participation model and multi-container via a per-command container
+  registry*. Precedent for the closed-by-construction framing used above.

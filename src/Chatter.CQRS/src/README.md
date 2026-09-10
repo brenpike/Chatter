@@ -196,6 +196,16 @@ public Task Handle(CreateOrder message, IMessageHandlerContext context)
 
 A `ContextContainer` can be created with an inherited container, in which case lookups fall through to the parent. When you dispatch without supplying a context, `MessageDispatcher` creates a fresh `MessageHandlerContext` and seeds the container with the active `IMessageDispatcher` and `IExternalDispatcher`.
 
+#### Threading
+
+A `ContextContainer` is **not** synchronized. `Include`, `Get`/`TryGet` and the `GetOrAdd`/`GetOrDefault`/`GetOrNew` helpers all read and mutate a plain dictionary, so one container is owned by exactly **one dispatch** and must be used by **one thread at a time**. Sharing a single container across concurrent dispatches is unsupported.
+
+Every path inside Chatter already satisfies this by construction: `MessageDispatcher` creates a fresh `MessageHandlerContext` — and therefore a fresh container — for each dispatch that does not supply one, and the Brokered Message Receiver builds a separate context per received message, so each concurrent per-message worker gets its own container. The contract only becomes yours to keep if you deliberately hand one context to concurrent dispatches, which is unsupported.
+
+Note also that `GetOrAdd` treats a stored `null` as a **present** value and returns it rather than invoking the factory; `GetOrNew<T>()` is the deliberate exception — it always returns an instance.
+
+Design rationale — and why the container is documented as single-threaded rather than made thread-safe — is recorded in [ADR-0011](https://github.com/brenpike/Chatter/blob/master/docs/adr/0011-context-container-single-threaded-ownership-per-dispatch.md).
+
 ### Dispatch
 
 `IMessageDispatcher` is the unified entry point for both commands and events. Internally it resolves the correct `IDispatchMessages` implementation (`CommandDispatcher` for `ICommand`, `EventDispatcher` for `IEvent`) via the `IMessageDispatcherProvider`, based on the message type. `IQueryDispatcher` handles queries separately.

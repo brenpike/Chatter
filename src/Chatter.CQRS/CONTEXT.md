@@ -24,6 +24,8 @@ _Avoid_: middleware.
 
 **Message Context**: Per-dispatch contextual data flowing alongside a message through dispatch and handling.
 
+**Context Container**: The type-keyed bag of contextual data a Message Context carries (`ContextContainer`), optionally chained to an inherited container so a lookup that misses falls through to the parent. It is unsynchronized: one container is owned by exactly one dispatch and is used by one thread at a time, and sharing one across concurrent dispatches is unsupported. See ADR-0011.
+
 **Message Dispatcher**: Routes a Command (to one handler) or an Event (to many) — `IMessageDispatcher`.
 _Avoid_: mediator (used as the pattern name, not the type).
 
@@ -42,6 +44,7 @@ _Avoid_: listener (a reserved alias — the .NET BCL subscription type is always
 - A Command Pipeline wraps all Command handlers.
 - A Domain Event may be promoted to an Integration Event, published outward via the External Dispatcher (replaced by a broker module).
 - Message Context accompanies every dispatch through the pipeline and handlers.
+- A Context Container belongs to exactly one Message Context, and therefore to exactly one dispatch: the Message Dispatcher gives every dispatch its own container and the Brokered Message Receiver gives every concurrent per-message worker its own, so single-threaded ownership holds by construction.
 - The Diagnostics Surface observes Command and Event dispatch through the Message Dispatcher; Query dispatch is not instrumented, and nothing is emitted until an application subscribes.
 
 ## Example dialogue

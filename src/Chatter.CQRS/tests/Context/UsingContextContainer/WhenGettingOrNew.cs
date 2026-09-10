@@ -46,5 +46,13 @@ namespace Chatter.CQRS.Tests.Context.UsingContextContainer
             var c1 = _sut.GetOrNew<ReallyFakeContext>();
             Assert.Equal(_reallyFakeContext.Object, c1);
         }
+
+        [Fact]
+        public void MustReturnNewOfTWhenNullIsStoredForType()
+        {
+            _sut.Include<AnotherFakeContext>(null);
+            var c1New = _sut.GetOrNew<AnotherFakeContext>();
+            Assert.NotNull(c1New);
+        }
     }
 }
