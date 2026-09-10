@@ -14,6 +14,7 @@ namespace Chatter.Testing.Core.Creators.Common
             : base(newContext, creation)
         {
             _loggerMock = new Mock<ILogger<T>>();
+            _loggerMock.Setup(x => x.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
             _loggerMock.Setup(x => x.Log(
                     It.IsAny<LogLevel>(),
                     It.IsAny<EventId>(),
@@ -46,6 +47,21 @@ namespace Chatter.Testing.Core.Creators.Common
                     It.IsAny<EventId>(),
                     It.Is<It.IsAnyType>((v, t) => state(v, t)),
                     It.IsAny<Exception>(),
+                    It.Is<Func<It.IsAnyType, Exception, string>>((v, t) => true)), times);
+
+            return this;
+        }
+
+        public LoggerCreator<T> VerifyWasCalled(LogLevel level, string expectedMessage, Exception expectedException, Times times = default)
+        {
+            Func<object, Type, bool> state = (v, t) => expectedMessage == null || v.ToString().CompareTo(expectedMessage) == 0;
+
+            _loggerMock.Verify(
+                x => x.Log(
+                    It.Is<LogLevel>(l => l == level),
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => state(v, t)),
+                    It.Is<Exception>(e => ReferenceEquals(e, expectedException)),
                     It.Is<Func<It.IsAnyType, Exception, string>>((v, t) => true)), times);
 
             return this;
