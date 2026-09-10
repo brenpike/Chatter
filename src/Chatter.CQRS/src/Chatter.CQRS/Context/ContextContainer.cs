@@ -6,6 +6,15 @@ namespace Chatter.CQRS.Context
     /// <summary>
     /// Contains context used to extend functionality
     /// </summary>
+    /// <remarks>
+    /// A <see cref="ContextContainer"/> stores a plain <see cref="Dictionary{TKey, TValue}"/>, takes no lock and
+    /// provides no synchronization of any kind on any of its members.
+    /// Never use one container from two threads at the same time: concurrent use is undefined and can corrupt the
+    /// underlying dictionary. Await each nested dispatch before starting the next, and do not capture a Message
+    /// Context - or its container - into work that runs alongside its dispatch. A nested dispatch that runs against
+    /// the caller's own container is expected, and is safe when it is awaited; the hazard is simultaneity, not reuse.
+    /// See ADR-0011 for the rationale.
+    /// </remarks>
     public class ContextContainer
     {
         private readonly IDictionary<string, object> _context = new Dictionary<string, object>();
@@ -105,7 +114,10 @@ namespace Chatter.CQRS.Context
         /// of <typeparamref name="T"/>, adds to the container and returns the value.
         /// </summary>
         /// <typeparam name="T">The type of context to get or add.</typeparam>
-        /// <returns>The value retrieved from context or <see cref="default{T}"/>.</returns>
+        /// <returns>
+        /// The value already present in the container - including a stored <see langword="null"/> - or <see cref="default{T}"/>,
+        /// which is stored in the container before being returned.
+        /// </returns>
         public T GetOrDefault<T>()
             => GetOrAdd<T>(() => default);
 
@@ -115,16 +127,21 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The type of context to get or add.</typeparam>
         /// <param name="factoryMethod">The factory to create <typeparamref name="T"/> if not found in the container.</param>
-        /// <returns>The value retrieved from context or created by <paramref name="factoryMethod"/>.</returns>
+        /// <returns>
+        /// The value already present in the container - including a stored <see langword="null"/> - or the value created by
+        /// <paramref name="factoryMethod"/>. <paramref name="factoryMethod"/> is invoked only when no value is present for
+        /// <typeparamref name="T"/>, and its result is stored even when it is <see langword="null"/> or a default value type.
+        /// </returns>
         public T GetOrAdd<T>(Func<T> factoryMethod)
         {
-            TryGet<T>(out var tryGetValue);
-            if (tryGetValue is null)
+            if (TryGet<T>(out var existingValue))
             {
-                tryGetValue = factoryMethod();
-                Include(tryGetValue);
+                return existingValue;
             }
-            return tryGetValue;
+
+            var createdValue = factoryMethod();
+            Include(createdValue);
+            return createdValue;
         }
 
         /// <summary>
@@ -132,8 +149,21 @@ namespace Chatter.CQRS.Context
         /// of <typeparamref name="T"/>, adds to the container and returns the value.
         /// </summary>
         /// <typeparam name="T">The type of context to get or add.</typeparam>
-        /// <returns>The value retrieved from context or a new instance of <typeparamref name="T"/>.</returns>
+        /// <returns>
+        /// The non-<see langword="null"/> value already present in the container, otherwise a new instance of
+        /// <typeparamref name="T"/> which is stored in the container before being returned. Unlike <see cref="GetOrAdd{T}(Func{T})"/>,
+        /// a stored <see langword="null"/> is replaced with a new instance.
+        /// </returns>
         public T GetOrNew<T>() where T : class, new()
-            => GetOrAdd(() => new T());
+        {
+            if (TryGet<T>(out var existingValue) && existingValue is not null)
+            {
+                return existingValue;
+            }
+
+            var createdValue = new T();
+            Include(createdValue);
+            return createdValue;
+        }
     }
 }

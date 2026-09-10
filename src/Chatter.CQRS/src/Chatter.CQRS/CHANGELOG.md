@@ -12,6 +12,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.13.1] - 2026-09-10
+
+### Changed
+
+- A stored `null` is now treated as a present value rather than an absence. `GetOrNew<T>()` is the deliberate unchanged exception: it keeps its own guard and still returns an instance (#332).
+- ADR-0011 records why the container is deliberately not synchronized; the README's Threading subsection carries the caller-facing requirement (#333).
+
+### Fixed
+
+- `ContextContainer.GetOrAdd<T>` conflated `default(T)` with absence, so a non-nullable value type re-invoked the factory forever and never returned a stored value; it now branches on the result `TryGet` reports. `GetOrDefault<T>()` consequently stores `default(T)` for value types as its documentation always promised (#332).
+
 ## [0.13.0] - 2026-09-10
 
 ### Changed

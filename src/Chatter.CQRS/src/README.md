@@ -196,6 +196,16 @@ public Task Handle(CreateOrder message, IMessageHandlerContext context)
 
 A `ContextContainer` can be created with an inherited container, in which case lookups fall through to the parent. When you dispatch without supplying a context, `MessageDispatcher` creates a fresh `MessageHandlerContext` and seeds the container with the active `IMessageDispatcher` and `IExternalDispatcher`.
 
+#### Threading
+
+A `ContextContainer` is **not** synchronized. `Include`, `Get`/`TryGet` and the `GetOrAdd`/`GetOrDefault`/`GetOrNew` helpers all read and mutate a plain dictionary, and the type takes no lock. Never use one container from two threads at the same time: concurrent use is undefined and can corrupt the underlying dictionary.
+
+A dispatch that is handed an existing context reuses that context's container: `MessageDispatcher.Dispatch(message, context)` seeds the container it is given rather than creating a new one. `Chatter.MessageBrokers`' `context.InMemory()` is that path — it forwards the caller's own context straight through — so a handler that starts two `context.InMemory()` dispatches without awaiting the first before starting the second runs both against one container. Await every nested dispatch before starting the next. A nested dispatch against the caller's own container is expected and is safe once awaited — the hazard is simultaneity, not reuse.
+
+Note also that `GetOrAdd` treats a stored `null` as a **present** value and returns it rather than invoking the factory; `GetOrNew<T>()` is the deliberate exception — it always returns an instance.
+
+Design rationale — and why the container is left unsynchronized and documented rather than guarded — is recorded in [ADR-0011](https://github.com/brenpike/Chatter/blob/master/docs/adr/0011-context-container-unsynchronized-documented-not-guarded.md).
+
 ### Dispatch
 
 `IMessageDispatcher` is the unified entry point for both commands and events. Internally it resolves the correct `IDispatchMessages` implementation (`CommandDispatcher` for `ICommand`, `EventDispatcher` for `IEvent`) via the `IMessageDispatcherProvider`, based on the message type. `IQueryDispatcher` handles queries separately.
