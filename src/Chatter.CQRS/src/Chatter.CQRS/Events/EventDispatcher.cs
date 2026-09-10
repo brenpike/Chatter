@@ -58,12 +58,17 @@ namespace Chatter.CQRS.Events
                 foreach (var handler in handlers)
                 {
                     await handler.Handle(message, messageHandlerContext).ConfigureAwait(false);
-                    _logger.LogTrace($"Invoked event handler for '{typeof(TMessage)}'.");
+
+                    // INVARIANT: the guard stays inside the loop so the trace is still written once per handler.
+                    if (_logger.IsEnabled(LogLevel.Trace))
+                    {
+                        _logger.LogTrace("Invoked event handler for '{MessageType}'.", MessageTypeNames<TMessage>.Display);
+                    }
                 }
             }
             catch (Exception e)
             {
-                _logger.LogError($"Error dispatching event of type '{typeof(TMessage).Name}': {e.StackTrace}");
+                _logger.LogError(e, "Error dispatching event of type '{MessageType}'.", MessageTypeNames<TMessage>.Name);
                 throw;
             }
         }
@@ -92,6 +97,20 @@ namespace Chatter.CQRS.Events
                     ChatterDiagnostics.RecordDispatchDuration<TMessage>(startTimestamp, ChatterTelemetryTags.DispatchKinds.Event, errorType);
                 }
             }
+        }
+
+        /// <summary>
+        /// Names computed once per closed generic, so a dispatch never builds a type name.
+        /// </summary>
+        /// <typeparam name="TMessage">The compile-time type of the message being dispatched.</typeparam>
+        private static class MessageTypeNames<TMessage>
+        {
+            /// <summary>
+            /// The type rendered exactly as an interpolated <see cref="Type"/> renders it, so a trace
+            /// message reads identically for a constructed generic message as for a simple one.
+            /// </summary>
+            internal static readonly string Display = typeof(TMessage).ToString();
+            internal static readonly string Name = typeof(TMessage).Name;
         }
     }
 }

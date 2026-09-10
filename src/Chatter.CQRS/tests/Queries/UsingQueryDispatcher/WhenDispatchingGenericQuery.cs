@@ -65,6 +65,18 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
         }
 
         [Fact]
+        public async Task MustLogCaughtExceptionAsTheLogRecordExceptionWithoutStackTraceInMessage()
+        {
+            var fault = new Exception("query dispatch failed");
+            var expectedMessage = $"Error dispatching query of type '{typeof(IQuery<string>).Name}'";
+            _serviceProvider.Setup(p => p.GetService(typeof(IQueryHandler<IQuery<string>, string>))).Throws(fault);
+            await FluentActions.Invoking(async () => await _sut.Query<IQuery<string>, string>(_query)).Should().ThrowAsync<Exception>();
+            _logger.VerifyWasCalled(LogLevel.Error, expectedMessage, fault, Times.Once());
+            _logger.LoggedMessages.Should().ContainSingle();
+            _logger.LoggedMessages[0].message.Should().Be(expectedMessage);
+        }
+
+        [Fact]
         public async Task MustReturnValueFromQueryHandlerIfSuccessful()
         {
             var returnValue = "result";

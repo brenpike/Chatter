@@ -20,6 +20,7 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         private readonly EventDispatcher _sut;
 
         private static string _eventHandlerInvokedLogMessage = $"Invoked event handler for '{typeof(IMessage)}'.";
+        private static string _eventDispatchFailedLogMessage = $"Error dispatching event of type '{typeof(IMessage).Name}'.";
 
         public WhenDispatching()
         {
@@ -70,6 +71,18 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         }
 
         [Fact]
+        public async Task MustLogErrorWithTheCaughtExceptionAttached()
+        {
+            var handlerException = new InvalidOperationException("event handler failed");
+            _handler.Setup(p => p.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>())).ThrowsAsync(handlerException);
+            await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, null)).Should().ThrowAsync<InvalidOperationException>();
+            _logger.VerifyWasCalled(LogLevel.Error,
+                   _eventDispatchFailedLogMessage,
+                   handlerException,
+                   Times.Once());
+        }
+
+        [Fact]
         public async Task MustThrowExceptionWhenMessageHandlerIsInvokedAndRaisesException()
         {
             _handler.Setup(p => p.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>())).Throws<Exception>();
@@ -77,10 +90,36 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         }
 
         [Fact]
+        public async Task MustRenderAConstructedGenericEventTypeTheWayInterpolationRenderedIt()
+        {
+            var genericHandler = new Mock<IMessageHandler<GenericEvent<Payload>>>();
+            _serviceProvider.Setup(p => p.GetService(typeof(IEnumerable<IMessageHandler<GenericEvent<Payload>>>)))
+                .Returns(new[] { genericHandler.Object }.TakeWhile(_ => true));
+
+            var interpolatedRendering = $"Invoked event handler for '{typeof(GenericEvent<Payload>)}'.";
+            var assemblyQualifiedRendering = $"Invoked event handler for '{typeof(GenericEvent<Payload>).FullName}'.";
+            // A constructed generic is the only case where the two renderings differ; without this the test proves nothing.
+            assemblyQualifiedRendering.Should().NotBe(interpolatedRendering);
+
+            await _sut.Dispatch(new GenericEvent<Payload>(), null);
+
+            _logger.VerifyWasCalled(LogLevel.Trace, interpolatedRendering, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Trace, assemblyQualifiedRendering, Times.Never());
+        }
+
+        [Fact]
         public async Task MustThrowIfExceptionIsRaisedGettingMessageHandlerFromServiceProvider()
         {
             _serviceProvider.Setup(p => p.GetService(typeof(IEnumerable<IMessageHandler<IMessage>>))).Throws<Exception>();
             await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, null)).Should().ThrowAsync<Exception>();
+        }
+
+        public sealed class GenericEvent<T> : IEvent
+        {
+        }
+
+        public sealed class Payload
+        {
         }
     }
 }

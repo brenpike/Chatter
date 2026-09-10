@@ -38,7 +38,7 @@ namespace Chatter.CQRS.Queries
             }
             catch (Exception e)
             {
-                _logger.LogError($"Error dispatching query of type '{query.GetType().Name}': {e.StackTrace}");
+                _logger.LogError(e, "Error dispatching query of type '{QueryType}'", query.GetType().Name);
                 throw;
             }
         }
@@ -57,7 +57,7 @@ namespace Chatter.CQRS.Queries
             }
             catch (Exception e)
             {
-                _logger.LogError($"Error dispatching query of type '{typeof(TQuery).Name}': {e.StackTrace}");
+                _logger.LogError(e, "Error dispatching query of type '{QueryType}'", typeof(TQuery).Name);
                 throw;
             }
         }
