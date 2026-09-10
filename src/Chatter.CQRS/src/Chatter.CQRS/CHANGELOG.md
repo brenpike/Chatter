@@ -17,7 +17,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Changed
 
 - A stored `null` is now treated as a present value rather than an absence. `GetOrNew<T>()` is the deliberate unchanged exception: it keeps its own guard and still returns an instance (#332).
-- The container's threading contract is now documented — single-threaded ownership per dispatch — stating why the container is deliberately not synchronized; see the README's Threading subsection and ADR-0011 (#333).
+- ADR-0011 records why the container is deliberately not synchronized; the README's Threading subsection carries the caller-facing requirement (#333).
 
 ### Fixed
 

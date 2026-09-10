@@ -7,10 +7,13 @@ namespace Chatter.CQRS.Context
     /// Contains context used to extend functionality
     /// </summary>
     /// <remarks>
-    /// A <see cref="ContextContainer"/> is NOT synchronized. A container is owned by exactly one message dispatch
-    /// and must be used by one thread at a time. Sharing a single container across concurrent threads - for example
-    /// by dispatching from within a handler without awaiting, or by capturing a container in a background task -
-    /// is unsupported and can corrupt the underlying dictionary.
+    /// A <see cref="ContextContainer"/> stores a plain <see cref="Dictionary{TKey, TValue}"/>, takes no lock and
+    /// provides no synchronization of any kind on any of its members.
+    /// Never use one container from two threads at the same time: concurrent use is undefined and can corrupt the
+    /// underlying dictionary. Await each nested dispatch before starting the next, and do not capture a Message
+    /// Context - or its container - into work that runs alongside its dispatch. A nested dispatch that runs against
+    /// the caller's own container is expected, and is safe when it is awaited; the hazard is simultaneity, not reuse.
+    /// See ADR-0011 for the rationale.
     /// </remarks>
     public class ContextContainer
     {

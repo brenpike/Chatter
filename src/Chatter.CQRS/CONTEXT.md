@@ -24,7 +24,7 @@ _Avoid_: middleware.
 
 **Message Context**: Per-dispatch contextual data flowing alongside a message through dispatch and handling.
 
-**Context Container**: The type-keyed bag of contextual data a Message Context carries (`ContextContainer`), optionally chained to an inherited container so a lookup that misses falls through to the parent. It is unsynchronized: one container is owned by exactly one dispatch and is used by one thread at a time, and sharing one across concurrent dispatches is unsupported. See ADR-0011.
+**Context Container**: The type-keyed bag of contextual data a Message Context carries (`ContextContainer`), optionally chained to an inherited container so a lookup that misses falls through to the parent. It is unsynchronized: concurrent use is undefined. See ADR-0011.
 
 **Message Dispatcher**: Routes a Command (to one handler) or an Event (to many) — `IMessageDispatcher`.
 _Avoid_: mediator (used as the pattern name, not the type).
