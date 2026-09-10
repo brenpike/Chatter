@@ -144,9 +144,10 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             services.Scan(s =>
                    s.FromAssemblies(assemblies)
-                       .AddClasses(c => c.AssignableTo(typeof(IQueryHandler<,>)))
+                       .AddClasses(c => c.AssignableTo(typeof(IQueryHandler<,>))
+                            .Where(handler => !handler.IsGenericType || handler.IsGenericTypeWithNonGenericTypeParameters()))
                        .UsingRegistrationStrategy(RegistrationStrategy.Throw)
-                       .AsImplementedInterfaces()
+                       .As(handler => handler.GetImplementedInterfacesThatMatchOpenGenericType(typeof(IQueryHandler<,>)))
                        .WithTransientLifetime());
             return services;
         }
