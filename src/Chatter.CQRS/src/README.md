@@ -12,7 +12,7 @@ The module distinguishes three kinds of message, all of which derive from the `I
 - **Queries** (`IQuery<T>`) — retrieve a read model without mutating state; dispatched to exactly one handler that returns a result.
 - **Events** (`IEvent`) — announce that something happened; fanned out to **zero or many** handlers.
 
-Handlers are discovered automatically by assembly scanning (powered by [Scrutor](https://github.com/khellang/Scrutor)) and registered into the standard `Microsoft.Extensions.DependencyInjection` container. Commands additionally flow through an optional **command pipeline** of cross-cutting behaviors.
+Handlers are discovered automatically by assembly scanning (powered by [Scrutor](https://github.com/khellang/Scrutor)) and registered into the standard `Microsoft.Extensions.DependencyInjection` container. A handler is registered only under the closed `IMessageHandler<TMessage>` / `IQueryHandler<TQuery,TResult>` interface(s) it implements, not under any other interface the handler class may implement (see the command registration contract below). Commands additionally flow through an optional **command pipeline** of cross-cutting behaviors.
 
 ## Installation
 

@@ -5,6 +5,7 @@ using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using Xunit;
@@ -42,11 +43,35 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         }
 
         [Fact]
+        public void MustNotRegisterNonHandlerInterfacesOfAHandler()
+        {
+            var assembly = New.Common().Assembly
+                .WithTypes(typeof(FakeCommandHandlerWithService), typeof(FakeEventHandlerWithService))
+                .Creation;
+            var sc = new ServiceCollection();
+            sc.AddMessageHandlers(new Assembly[] { assembly });
+
+            sc.Should().NotContain(sd => sd.ServiceType == typeof(IFakeService));
+            sc.Should().HaveCount(2);
+        }
+
+        [Fact]
         public void MustReturnSelf()
         {
             var sc = new ServiceCollection();
             var returnValue = sc.AddMessageHandlers(new Assembly[] { });
             returnValue.Should().BeSameAs(sc);
+        }
+
+        private interface IFakeService { }
+        private class FakeEventHandlerWithService : IMessageHandler<FakeEvent>, IFakeService
+        {
+            public Task Handle(FakeEvent message, IMessageHandlerContext context) => throw new NotImplementedException();
+        }
+
+        private class FakeCommandHandlerWithService : IMessageHandler<FakeCommand>, IFakeService
+        {
+            public Task Handle(FakeCommand message, IMessageHandlerContext context) => throw new NotImplementedException();
         }
 
         private class FakeEvent : IEvent { }

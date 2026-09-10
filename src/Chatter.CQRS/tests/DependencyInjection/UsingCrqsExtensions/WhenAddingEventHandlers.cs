@@ -5,6 +5,7 @@ using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using Xunit;
@@ -93,11 +94,49 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         }
 
         [Fact]
+        public void MustNotRegisterNonHandlerInterfacesOfAnEventHandler()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeEventHandlerWithService)).Creation;
+            var sc = new ServiceCollection();
+            sc.AddEventHandlers(new Assembly[] { assembly });
+
+            sc.Should().NotContain(sd => sd.ServiceType == typeof(IFakeService));
+            sc.Should().Contain(sd => sd.ServiceType == typeof(IMessageHandler<FakeEvent>)
+                                      && sd.ImplementationType == typeof(FakeEventHandlerWithService));
+        }
+
+        [Fact]
+        public void MustRegisterOneDescriptorPerEventHandledByAHandlerOfTwoEvents()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeHandlerOfTwoEvents)).Creation;
+            var sc = new ServiceCollection();
+            sc.AddEventHandlers(new Assembly[] { assembly });
+
+            sc.Count(sd => sd.ServiceType == typeof(IMessageHandler<FakeEvent>)
+                           && sd.ImplementationType == typeof(FakeHandlerOfTwoEvents)).Should().Be(1);
+            sc.Count(sd => sd.ServiceType == typeof(IMessageHandler<FakeOtherEvent>)
+                           && sd.ImplementationType == typeof(FakeHandlerOfTwoEvents)).Should().Be(1);
+        }
+
+        [Fact]
         public void MustReturnSelf()
         {
             var sc = new ServiceCollection();
             var returnValue = sc.AddEventHandlers(new Assembly[] { });
             returnValue.Should().BeSameAs(sc);
+        }
+
+        private interface IFakeService { }
+        private class FakeEventHandlerWithService : IMessageHandler<FakeEvent>, IFakeService
+        {
+            public Task Handle(FakeEvent message, IMessageHandlerContext context) => throw new NotImplementedException();
+        }
+
+        private class FakeOtherEvent : IEvent { }
+        private class FakeHandlerOfTwoEvents : IMessageHandler<FakeEvent>, IMessageHandler<FakeOtherEvent>
+        {
+            public Task Handle(FakeEvent message, IMessageHandlerContext context) => throw new NotImplementedException();
+            public Task Handle(FakeOtherEvent message, IMessageHandlerContext context) => throw new NotImplementedException();
         }
 
         private class FakeGenericEventHandler<T> : IMessageHandler<FakeEvent>

@@ -5,6 +5,7 @@ using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using Xunit;
@@ -88,11 +89,63 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         }
 
         [Fact]
+        public void MustNotRegisterNonHandlerInterfacesOfACommandHandler()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeCommandHandlerWithService)).Creation;
+            var sc = new ServiceCollection();
+            sc.AddCommandHandlers(new Assembly[] { assembly });
+
+            sc.Should().NotContain(sd => sd.ServiceType == typeof(IFakeService));
+            sc.Should().Contain(sd => sd.ServiceType == typeof(IMessageHandler<FakeCommand>)
+                                      && sd.ImplementationType == typeof(FakeCommandHandlerWithService));
+        }
+
+        [Fact]
+        public void MustNotReplaceAnUnrelatedRegistrationMadeBeforeTheScan()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeCommandHandlerWithService)).Creation;
+            var sc = new ServiceCollection();
+            sc.AddScoped<IFakeService, FakeCommandHandlerWithService>();
+
+            sc.AddCommandHandlers(new Assembly[] { assembly });
+
+            var sd = sc.Single(d => d.ServiceType == typeof(IFakeService));
+            sd.Lifetime.Should().Be(ServiceLifetime.Scoped);
+            sd.ImplementationType.Should().Be(typeof(FakeCommandHandlerWithService));
+        }
+
+        [Fact]
+        public void MustRegisterOneDescriptorPerCommandHandledByAHandlerOfTwoCommands()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeHandlerOfTwoCommands)).Creation;
+            var sc = new ServiceCollection();
+            sc.AddCommandHandlers(new Assembly[] { assembly });
+
+            sc.Count(sd => sd.ServiceType == typeof(IMessageHandler<FakeCommand>)
+                           && sd.ImplementationType == typeof(FakeHandlerOfTwoCommands)).Should().Be(1);
+            sc.Count(sd => sd.ServiceType == typeof(IMessageHandler<FakeOtherCommand>)
+                           && sd.ImplementationType == typeof(FakeHandlerOfTwoCommands)).Should().Be(1);
+        }
+
+        [Fact]
         public void MustReturnSelf()
         {
             var sc = new ServiceCollection();
             var returnValue = sc.AddCommandHandlers(new Assembly[] { });
             returnValue.Should().BeSameAs(sc);
+        }
+
+        private interface IFakeService { }
+        private class FakeCommandHandlerWithService : IMessageHandler<FakeCommand>, IFakeService
+        {
+            public Task Handle(FakeCommand message, IMessageHandlerContext context) => throw new NotImplementedException();
+        }
+
+        private class FakeOtherCommand : ICommand { }
+        private class FakeHandlerOfTwoCommands : IMessageHandler<FakeCommand>, IMessageHandler<FakeOtherCommand>
+        {
+            public Task Handle(FakeCommand message, IMessageHandlerContext context) => throw new NotImplementedException();
+            public Task Handle(FakeOtherCommand message, IMessageHandlerContext context) => throw new NotImplementedException();
         }
 
         private class FakeGenericCommandHandler<T> : IMessageHandler<FakeCommand>
