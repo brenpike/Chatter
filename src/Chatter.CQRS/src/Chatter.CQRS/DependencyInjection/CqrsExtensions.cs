@@ -136,8 +136,11 @@ namespace Microsoft.Extensions.DependencyInjection
                 .Where(handlerInterface => handlerInterface.GetImplementedInterfacesOfSingleGenericTypeArgument()
                     .Any(implementedByMessage => implementedByMessage == genericParameterMatchType));
 
+        internal static bool IsClosedHandlerType(this Type type)
+            => !type.IsGenericType || type.IsGenericTypeWithNonGenericTypeParameters();
+
         internal static bool IsValidMessageHandler(this Type type, Type genericParameterMatchType)
-            => (!type.IsGenericType || type.IsGenericTypeWithNonGenericTypeParameters())
+            => type.IsClosedHandlerType()
                 && type.IsImplementingOpenGenericTypeWithMatchingTypeParameter(typeof(IMessageHandler<>), genericParameterMatchType);
 
         internal static IServiceCollection AddQueryHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
@@ -145,7 +148,7 @@ namespace Microsoft.Extensions.DependencyInjection
             services.Scan(s =>
                    s.FromAssemblies(assemblies)
                        .AddClasses(c => c.AssignableTo(typeof(IQueryHandler<,>))
-                            .Where(handler => !handler.IsGenericType || handler.IsGenericTypeWithNonGenericTypeParameters()))
+                            .Where(handler => handler.IsClosedHandlerType()))
                        .UsingRegistrationStrategy(RegistrationStrategy.Throw)
                        .As(handler => handler.GetImplementedInterfacesThatMatchOpenGenericType(typeof(IQueryHandler<,>)))
                        .WithTransientLifetime());

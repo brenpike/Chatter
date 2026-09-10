@@ -12,7 +12,7 @@ The module distinguishes three kinds of message, all of which derive from the `I
 - **Queries** (`IQuery<T>`) — retrieve a read model without mutating state; dispatched to exactly one handler that returns a result.
 - **Events** (`IEvent`) — announce that something happened; fanned out to **zero or many** handlers.
 
-Handlers are discovered automatically by assembly scanning (powered by [Scrutor](https://github.com/khellang/Scrutor)) and registered into the standard `Microsoft.Extensions.DependencyInjection` container. A handler is registered only under the closed `IMessageHandler<TMessage>` / `IQueryHandler<TQuery,TResult>` interface(s) it implements, not under any other interface the handler class may implement (see the command registration contract below). Commands additionally flow through an optional **command pipeline** of cross-cutting behaviors.
+Handlers are discovered automatically by assembly scanning (powered by [Scrutor](https://github.com/khellang/Scrutor)) and registered into the standard `Microsoft.Extensions.DependencyInjection` container. Only closed handler types are scanned, and a discovered handler is registered only under the closed `IMessageHandler<TMessage>` / `IQueryHandler<TQuery,TResult>` interface(s) it implements, not under any other interface the handler class may implement (see the command registration contract below). An open-generic handler class is not discovered by the scan and must be registered manually. Commands additionally flow through an optional **command pipeline** of cross-cutting behaviors.
 
 ## Installation
 
@@ -132,6 +132,12 @@ public class OrdersService
 ```
 
 `IQueryDispatcher` offers overloads that take the query alone or with an explicit `IQueryHandlerContext`, and strongly-typed `Query<TQuery, TResult>` forms.
+
+Query scanning discovers only closed handler types. An open-generic query handler — `class MyHandler<TQuery, TResult> : IQueryHandler<TQuery, TResult>` — is not discovered and must be registered manually after `AddChatterCqrs`:
+
+```csharp
+services.AddTransient(typeof(IQueryHandler<,>), typeof(MyHandler<,>));
+```
 
 ### Events: Domain vs Integration
 

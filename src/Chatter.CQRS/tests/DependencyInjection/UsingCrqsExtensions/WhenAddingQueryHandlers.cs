@@ -61,7 +61,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         }
 
         [Fact]
-        public void MustRegisterNothingForAnOpenGenericQueryHandler()
+        public void MustRegisterNothingForAnArityMismatchedOpenGenericQueryHandler()
         {
             var assembly = New.Common().Assembly.WithTypes(typeof(OpenGenericFakeHandler<>)).Creation;
             var sc = new ServiceCollection();
@@ -69,6 +69,41 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             sc.AddQueryHandlers(new Assembly[] { assembly });
 
             sc.Should().BeEmpty();
+        }
+
+        [Fact]
+        public void MustRegisterNothingForAnArityMatchedOpenGenericQueryHandler()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(ArityMatchedFakeHandler<,>)).Creation;
+            var sc = new ServiceCollection();
+
+            sc.AddQueryHandlers(new Assembly[] { assembly });
+
+            sc.Should().BeEmpty();
+
+            using (var serviceProvider = sc.BuildServiceProvider())
+            {
+                serviceProvider.GetService(typeof(IQueryHandler<ArityMatchedProbeQuery, string>)).Should().BeNull();
+            }
+        }
+
+        [Fact]
+        public void MustRegisterOnlyClosedServiceTypesWhenScanningAMixOfQueryHandlerShapes()
+        {
+            var assembly = New.Common().Assembly
+                .WithTypes(typeof(MixedProbeHandler), typeof(ArityMatchedFakeHandler<,>), typeof(OpenGenericFakeHandler<>))
+                .Creation;
+            var sc = new ServiceCollection();
+
+            sc.AddQueryHandlers(new Assembly[] { assembly });
+
+            sc.Should().OnlyContain(sd => sd.ServiceType.ContainsGenericParameters == false);
+            sc.Count(sd => sd.ServiceType == typeof(IQueryHandler<MixedProbeQuery, string>) && sd.ImplementationType == typeof(MixedProbeHandler)).Should().Be(1);
+
+            using (var serviceProvider = sc.BuildServiceProvider())
+            {
+                serviceProvider.GetService(typeof(IQueryHandler<MixedProbeQuery, string>)).Should().BeOfType<MixedProbeHandler>();
+            }
         }
 
         [Fact]
@@ -92,6 +127,18 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         {
             public Task<string> Handle(FakeQuery query, IQueryHandlerContext context) => throw new NotImplementedException();
         }
+        public class MixedProbeQuery : IQuery<string> { }
+        public class MixedProbeHandler : IQueryHandler<MixedProbeQuery, string>
+        {
+            public Task<string> Handle(MixedProbeQuery query, IQueryHandlerContext context) => throw new NotImplementedException();
+        }
+
+        public class ArityMatchedProbeQuery : IQuery<string> { }
+        public class ArityMatchedFakeHandler<TQuery, TResult> : IQueryHandler<TQuery, TResult> where TQuery : class, IQuery<TResult>
+        {
+            public Task<TResult> Handle(TQuery query, IQueryHandlerContext context) => throw new NotImplementedException();
+        }
+
         private class FakeHandler : IQueryHandler<FakeQuery, string>
         {
             public Task<string> Handle(FakeQuery query, IQueryHandlerContext context) => throw new NotImplementedException();

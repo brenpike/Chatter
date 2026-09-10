@@ -17,6 +17,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Changed
 
 - Handlers are no longer registered under every interface they implement. Assembly scanning previously used Scrutor's `AsImplementedInterfaces()`, so a handler class was registered against `IMessageHandler<TMessage>` / `IQueryHandler<TQuery,TResult>` *and* any other interface it happened to implement. A handler is now registered only under the closed `IMessageHandler<TMessage>` / `IQueryHandler<TQuery,TResult>` interface(s) it implements. **This is a breaking change**: if a handler class also implements an unrelated service interface and you resolve that interface from the container populated by `AddChatterCqrs` / `AddMessageHandlers` / `AddQueryHandlers`, that registration no longer exists. Register your handler's own service interface explicitly.
+- The query scan now discovers only closed handler types. An open-generic query handler — `class MyHandler<TQuery, TResult> : IQueryHandler<TQuery, TResult>` — was previously discovered and registered under the open definition `IQueryHandler<,>`, as a byproduct of Scrutor's `AsImplementedInterfaces()` arity normalization; the command and event scans have always rejected open-generic handlers. **This is a breaking change**: an open-generic query handler is no longer discovered by `AddChatterCqrs` / `AddQueryHandlers`. Register it manually after `AddChatterCqrs`:
+  ```csharp
+  services.AddTransient(typeof(IQueryHandler<,>), typeof(MyHandler<,>));
+  ```
 
 ### Fixed
 
