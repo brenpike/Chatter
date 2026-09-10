@@ -64,7 +64,7 @@ namespace Chatter.CQRS.Commands
                 {
                     if (_logger.IsEnabled(LogLevel.Trace))
                     {
-                        _logger.LogTrace("No command behavior pipeline found. Executing message handler for '{MessageType}'.", MessageTypeNames<TMessage>.FullName);
+                        _logger.LogTrace("No command behavior pipeline found. Executing message handler for '{MessageType}'.", MessageTypeNames<TMessage>.Display);
                     }
 
                     await handler.Handle(message, messageHandlerContext).ConfigureAwait(false);
@@ -73,7 +73,7 @@ namespace Chatter.CQRS.Commands
 
                 if (_logger.IsEnabled(LogLevel.Trace))
                 {
-                    _logger.LogTrace("Executing command behavior pipeline for '{MessageType}'.", MessageTypeNames<TMessage>.FullName);
+                    _logger.LogTrace("Executing command behavior pipeline for '{MessageType}'.", MessageTypeNames<TMessage>.Display);
                 }
 
                 await pipeline.Execute(message, messageHandlerContext, handler).ConfigureAwait(false);
@@ -117,7 +117,11 @@ namespace Chatter.CQRS.Commands
         /// <typeparam name="TMessage">The compile-time type of the command being dispatched.</typeparam>
         private static class MessageTypeNames<TMessage>
         {
-            internal static readonly string FullName = typeof(TMessage).FullName;
+            /// <summary>
+            /// The type rendered exactly as an interpolated <see cref="Type"/> renders it, so a trace
+            /// message reads identically for a constructed generic message as for a simple one.
+            /// </summary>
+            internal static readonly string Display = typeof(TMessage).ToString();
             internal static readonly string Name = typeof(TMessage).Name;
         }
     }

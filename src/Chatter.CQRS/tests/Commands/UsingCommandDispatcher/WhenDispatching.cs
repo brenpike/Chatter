@@ -168,6 +168,32 @@ namespace Chatter.CQRS.Tests.Commands.UsingCommandDispatcher
             _logger.LoggedMessages.Should().ContainSingle(logged => logged.level == LogLevel.Error);
         }
 
+        [Fact]
+        public async Task MustRenderAConstructedGenericCommandTypeTheWayInterpolationRenderedIt()
+        {
+            var genericHandler = new Mock<IMessageHandler<GenericCommand<Payload>>>();
+            _serviceProvider.Setup(p => p.GetService(typeof(IMessageHandler<GenericCommand<Payload>>)))
+                .Returns(genericHandler.Object);
+
+            var interpolatedRendering = $"No command behavior pipeline found. Executing message handler for '{typeof(GenericCommand<Payload>)}'.";
+            var assemblyQualifiedRendering = $"No command behavior pipeline found. Executing message handler for '{typeof(GenericCommand<Payload>).FullName}'.";
+            // A constructed generic is the only case where the two renderings differ; without this the test proves nothing.
+            assemblyQualifiedRendering.Should().NotBe(interpolatedRendering);
+
+            await _sut.Dispatch(new GenericCommand<Payload>(), null);
+
+            _logger.VerifyWasCalled(LogLevel.Trace, interpolatedRendering, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Trace, assemblyQualifiedRendering, Times.Never());
+        }
+
+        public sealed class GenericCommand<T> : ICommand
+        {
+        }
+
+        public sealed class Payload
+        {
+        }
+
         private InvalidOperationException ArrangeMessageHandlerThatFaultsAfterAnAwait()
         {
             var failure = new InvalidOperationException("The message handler faulted after an await.");

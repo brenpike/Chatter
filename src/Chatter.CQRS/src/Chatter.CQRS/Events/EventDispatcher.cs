@@ -62,7 +62,7 @@ namespace Chatter.CQRS.Events
                     // INVARIANT: the guard stays inside the loop so the trace is still written once per handler.
                     if (_logger.IsEnabled(LogLevel.Trace))
                     {
-                        _logger.LogTrace("Invoked event handler for '{MessageType}'.", MessageTypeNames<TMessage>.FullName);
+                        _logger.LogTrace("Invoked event handler for '{MessageType}'.", MessageTypeNames<TMessage>.Display);
                     }
                 }
             }
@@ -105,7 +105,11 @@ namespace Chatter.CQRS.Events
         /// <typeparam name="TMessage">The compile-time type of the message being dispatched.</typeparam>
         private static class MessageTypeNames<TMessage>
         {
-            internal static readonly string FullName = typeof(TMessage).FullName;
+            /// <summary>
+            /// The type rendered exactly as an interpolated <see cref="Type"/> renders it, so a trace
+            /// message reads identically for a constructed generic message as for a simple one.
+            /// </summary>
+            internal static readonly string Display = typeof(TMessage).ToString();
             internal static readonly string Name = typeof(TMessage).Name;
         }
     }
