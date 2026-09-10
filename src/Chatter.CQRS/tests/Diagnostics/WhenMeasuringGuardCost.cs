@@ -19,7 +19,8 @@ namespace Chatter.CQRS.Tests.Diagnostics
     /// <see cref="ChatterDiagnostics.RecordDispatchDuration{TMessage}"/>. They do NOT claim a zero-allocation
     /// dispatch, because the real dispatch path already allocates per dispatch independently of diagnostics:
     /// <c>CommandDispatcher</c> allocates a log-argument array only when trace logging is enabled, and
-    /// <c>CommandBehaviorPipeline.Execute</c> builds a fresh delegate chain per execution. Neither is part of
+    /// <c>CommandBehaviorPipeline.Execute</c> builds a fresh delegate chain per execution only when behaviours
+    /// are registered. Neither is part of
     /// this change and neither is asserted here.
     ///
     /// The RATIO gate is what covers the real path. It is a SAME-RUN comparison — the guard and a full
