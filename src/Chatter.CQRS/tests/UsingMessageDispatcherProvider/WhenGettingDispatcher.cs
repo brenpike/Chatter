@@ -2,6 +2,7 @@
 using Chatter.CQRS.Events;
 using FluentAssertions;
 using Moq;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Xunit;
@@ -76,6 +77,66 @@ namespace Chatter.CQRS.Tests.UsingMessageDispatcherProvider
         [Fact]
         public void MustThrowIfNoMatchingDispatchTypeMatchingImplementedInterfaces()
             => FluentActions.Invoking(() => _sut.GetDispatcher<ClassWithMultipleImplementedInterfaces>()).Should().ThrowExactly<KeyNotFoundException>();
+
+        [Fact]
+        public void MustWalkImplementedInterfacesOnlyOncePerMessageType()
+        {
+            var sut = CreateWalkCountingProvider();
+
+            var firstDispatcher = sut.GetDispatcher<FakeEvent>();
+            var secondDispatcher = sut.GetDispatcher<FakeEvent>();
+
+            secondDispatcher.Should().BeSameAs(firstDispatcher);
+            secondDispatcher.Should().BeSameAs(_eventDispatcher.Object);
+            sut.ImplementedInterfaceWalkCount.Should().Be(1);
+        }
+
+        [Fact]
+        public void MustThrowOnEveryCallWhenNoDispatchTypeMatchesBecauseMissesAreNeverMemoized()
+        {
+            var sut = CreateWalkCountingProvider();
+
+            FluentActions.Invoking(() => sut.GetDispatcher<ClassWithMultipleImplementedInterfaces>()).Should().ThrowExactly<KeyNotFoundException>();
+            FluentActions.Invoking(() => sut.GetDispatcher<ClassWithMultipleImplementedInterfaces>()).Should().ThrowExactly<KeyNotFoundException>();
+            sut.ImplementedInterfaceWalkCount.Should().Be(2);
+        }
+
+        [Fact]
+        public void MustNeverWalkImplementedInterfacesWhenDispatchTypeMatchesExactly()
+        {
+            var sut = CreateWalkCountingProvider();
+
+            var firstDispatcher = sut.GetDispatcher<ICommand>();
+            var secondDispatcher = sut.GetDispatcher<ICommand>();
+
+            firstDispatcher.Should().BeSameAs(_commandDispatcher.Object);
+            secondDispatcher.Should().BeSameAs(_commandDispatcher.Object);
+            sut.ImplementedInterfaceWalkCount.Should().Be(0);
+        }
+
+        private WalkCountingMessageDispatcherProvider CreateWalkCountingProvider()
+            => new WalkCountingMessageDispatcherProvider(new IDispatchMessages[]
+            {
+                _nonRetrievableEventDispatcher.Object,
+                _eventDispatcher.Object,
+                _anotherEventDispatcher.Object,
+                _commandDispatcher.Object
+            });
+
+        private class WalkCountingMessageDispatcherProvider : MessageDispatcherProvider
+        {
+            public WalkCountingMessageDispatcherProvider(IEnumerable<IDispatchMessages> dispatchers)
+                : base(dispatchers)
+            { }
+
+            public int ImplementedInterfaceWalkCount { get; private set; }
+
+            internal override bool TryGetDispatcherByImplementedInterface(Type messageType, out IDispatchMessages dispatcher)
+            {
+                ImplementedInterfaceWalkCount++;
+                return base.TryGetDispatcherByImplementedInterface(messageType, out dispatcher);
+            }
+        }
 
         private class FakeEvent : IEvent { }
         private class ClassWithMultipleImplementedInterfaces : IMessage, IFakeInterface2, IFakeInterface3 { }

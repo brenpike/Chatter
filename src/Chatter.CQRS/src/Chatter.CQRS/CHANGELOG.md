@@ -12,6 +12,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.14.1] - 2026-09-10
+
+### Changed
+
+- `MessageDispatcherProvider.GetDispatcher<TMessage>()` walked `typeof(TMessage).GetTypeInfo().ImplementedInterfaces` on every dispatch, with no write-back of the result. Resolved dispatcher mappings are now memoized in a separate dictionary, so a message type's interface walk result is reused for the life of the provider instead of being recomputed on every dispatch. The memo is deliberately kept apart from the dictionary the interface walk reads: writing a resolved message type back into that dictionary would let it become a key a later multi-interface message could match instead of the key it matches today, making dispatcher selection depend on resolution history and on the unspecified order of `ImplementedInterfaces`. The cache is also per provider instance, never process-wide — the provider and the dispatchers it holds are registered per scope, and a static cache would dispatch through a disposed scope. A lookup miss is never cached: an unresolvable message type still throws `KeyNotFoundException` on every call, not just the first (#334).
+- `CommandBehaviorPipeline.Execute` re-enumerated its registered behaviours and rebuilt its delegate chain via `Reverse()` and `Aggregate` on every execution. It now materializes the behaviours once per call, invokes the message handler directly when none are registered, and composes the chain by iterating the materialized array backwards; the first-registered behaviour still ends up outermost, an ordering guarantee four other modules depend on and which is unchanged. Behaviours are still materialized per execution rather than in the constructor, so a behaviour registered after the pipeline was resolved still takes part in the next execution. Measured: a dispatch with no registered behaviours went from 216 bytes allocated per call and ~310 ns/op to 0 bytes per call and ~30 ns/op (#335).
+
 ## [0.14.0] - 2026-09-10
 
 ### Changed
