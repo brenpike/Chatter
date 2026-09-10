@@ -32,7 +32,9 @@ namespace Chatter.CQRS.DependencyInjection
         /// </summary>
         public string NamespaceSelector { get; }
         /// <summary>
-        /// An enumerable of <see cref="Assembly"/> to be included in the filtered list, regardless on criteria matching
+        /// An enumerable of <see cref="Assembly"/> which are the only assemblies returned by <see cref="Apply"/> when
+        /// no <see cref="NamespaceSelector"/> is set. When a <see cref="NamespaceSelector"/> is set, they are included
+        /// in the filtered list regardless of criteria matching.
         /// </summary>
         public IEnumerable<Assembly> ExplictAssemblies { get; }
 
@@ -46,9 +48,18 @@ namespace Chatter.CQRS.DependencyInjection
         /// <summary>
         /// Applies filter criteria against the <see cref="IAssemblyFilterSourceProvider"/>, returning the <see cref="Assembly"/> that match.
         /// </summary>
-        /// <returns>The enumerable of assemblies that match filter criteria and any <see cref="ExplictAssemblies"/></returns>
+        /// <returns>
+        /// The <see cref="ExplictAssemblies"/> only, when <see cref="ExplictAssemblies"/> are supplied and no
+        /// <see cref="NamespaceSelector"/> is set; otherwise the enumerable of assemblies that match filter criteria
+        /// and any <see cref="ExplictAssemblies"/>
+        /// </returns>
         public IEnumerable<Assembly> Apply()
-            => ExplictAssemblies.Union(GetAssembliesThatMatchNamespaceSelector());
+            => IsBoundedToExplicitAssemblies
+                   ? ExplictAssemblies.Distinct()
+                   : ExplictAssemblies.Union(GetAssembliesThatMatchNamespaceSelector());
+
+        private bool IsBoundedToExplicitAssemblies
+            => ExplictAssemblies.Any() && string.IsNullOrWhiteSpace(NamespaceSelector);
 
         private IEnumerable<Assembly> GetAssembliesThatMatchNamespaceSelector()
             => AssemblySourceProvider.GetSourceAssemblies().Where(assembly => SafeGetLoadableTypes(assembly)

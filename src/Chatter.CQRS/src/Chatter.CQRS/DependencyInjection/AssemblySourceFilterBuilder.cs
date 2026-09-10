@@ -50,7 +50,10 @@ namespace Chatter.CQRS.DependencyInjection
         }
 
         /// <summary>
-        /// Adds explicit assemblies via marker types used for message handler registration
+        /// Adds explicit assemblies via marker types used for message handler registration. When no namespace
+        /// selector is also configured via <see cref="WithNamespaceSelector(string)"/>, these become the only
+        /// assemblies scanned; configuring a namespace selector widens the scan to include matching loaded
+        /// assemblies as well.
         /// </summary>
         /// <param name="markerTypes">The marker types used to select assemblies</param>
         public AssemblySourceFilterBuilder WithMarkerTypes(params Type[] markerTypes)
@@ -61,7 +64,10 @@ namespace Chatter.CQRS.DependencyInjection
         }
 
         /// <summary>
-        /// Adds explicit assemblies to be used for message handler registration
+        /// Adds explicit assemblies to be used for message handler registration. When no namespace selector is
+        /// also configured via <see cref="WithNamespaceSelector(string)"/>, these become the only assemblies
+        /// scanned; configuring a namespace selector widens the scan to include matching loaded assemblies as
+        /// well.
         /// </summary>
         /// <param name="assemblies">The assemblies to search</param>
         public AssemblySourceFilterBuilder WithExplicitAssemblies(params Assembly[] assemblies)

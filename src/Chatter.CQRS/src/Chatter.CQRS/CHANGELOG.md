@@ -12,6 +12,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.13.0] - 2026-09-10
+
+### Changed
+
+- `AssemblySourceFilter.Apply()` now returns only the explicitly-supplied assemblies when explicit assemblies are configured and no namespace selector is set — reached through `AddChatterCqrs(configuration, params Type[])`, `AddChatterCqrs(configuration, params Assembly[])`, and any `messageHandlerSourceBuilder` configuration that calls `WithMarkerTypes` / `WithExplicitAssemblies` without also calling `WithNamespaceSelector`. Previously it unioned the explicit assemblies with every assembly matching the namespace selector, and a null or empty selector matched every loaded assembly, so any of those configurations scanned the entire `AppDomain` anyway. Of the four filter configurations, only one changes: no explicit assemblies with no selector still scans the whole `AppDomain` (unchanged); no explicit assemblies with a selector still returns only the selector matches (unchanged); explicit assemblies with a selector still returns their union with the selector matches (unchanged); explicit assemblies with no selector now returns only the explicit assemblies — **this is a breaking change**. `services.AddChatterCqrs(configuration)`, the primary documented zero-argument ambient-scan form, supplies no explicit assemblies and is not affected. To restore the previous ambient union, add `.WithNamespaceSelector("*")` alongside your marker types or explicit assemblies. `Chatter.MessageBrokers`'s `AddMessageBrokers` reuses this same filter instance for receiver discovery and ships no change of its own, so a consumer who passed explicit assemblies to `AddChatterCqrs` and nothing to `AddMessageBrokers` now gets receiver discovery scoped to those same explicit assemblies too (#329).
+
+### Security
+
+- The `AppDomain`-wide scan the configuration above triggered meant any loaded assembly's `IMessageHandler<TCommand>` was auto-registered and, under the command scan's `RegistrationStrategy.Replace()`, could silently displace the application's own handler for that command with no error or warning. Any loaded assembly's duplicate `IQueryHandler<TQuery,TResult>` hit the query scan's `RegistrationStrategy.Throw` instead, so that path failed loudly with a startup `DuplicateTypeRegistrationException` rather than silently displacing a handler. For a foreign assembly to reach either path it must contain a closed handler for one of the application's own message types, which means it must be able to reference that type — so the realistic exposure is an application whose message contracts live in a shared package a compromised or careless dependency also references, or two of the application's own assemblies colliding by accident, not an arbitrary third-party package hijacking an unrelated command (#329).
+
 ## [0.12.0] - 2026-09-09
 
 ### Changed
