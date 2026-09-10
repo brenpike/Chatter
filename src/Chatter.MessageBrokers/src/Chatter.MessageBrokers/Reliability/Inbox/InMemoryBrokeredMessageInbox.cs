@@ -11,10 +11,6 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
 {
     public class InMemoryBrokeredMessageInbox : IBrokeredMessageInbox, IInboxDeduplicator, IProcessLifetimeStore
     {
-        // A reserved-but-not-yet-completed receipt. Every other value is the monotonic timestamp the receipt
-        // completed at, which is what makes both removals value-conditional and an in-flight reservation
-        // structurally unremovable rather than merely checked for.
-        private const long InFlight = long.MinValue;
         private const long MillisecondsPerMinute = 60000L;
         private const long MaximumSweepIntervalInMilliseconds = 60000L;
         private const int CapHeadroomNumerator = 15;
@@ -28,6 +24,7 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         private readonly ConcurrentDictionary<string, long> _inbox;
         private readonly ILogger<InMemoryBrokeredMessageInbox> _logger;
         private readonly Func<long> _clock;
+        private readonly Action<string> _beforeReReservingAnEntry;
         private readonly long _deduplicationWindowInMilliseconds;
         private readonly long _sweepIntervalInMilliseconds;
         private readonly int _maxEntries;
@@ -47,10 +44,20 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         // migration or an operator moving the system clock would otherwise expire a receipt early or hold it past
         // its configured window. This constructor lets a test supply that monotonic source directly.
         internal InMemoryBrokeredMessageInbox(ILogger<InMemoryBrokeredMessageInbox> logger, ReliabilityOptions reliabilityOptions, Func<long> clock)
+            : this(logger, reliabilityOptions, clock, null)
+        { }
+
+        // The reserve path's correctness turns on what can happen BETWEEN its read of an entry that is already
+        // present and its conditional update of that entry: a concurrent sweep can remove the entry inside that
+        // window, which makes the update fail for a reason that is not a competing reservation. Reproducing that
+        // ordering with threads and timing would be flaky, so this constructor lets a test run its interference at
+        // exactly that point. Every production construction leaves the callback null.
+        internal InMemoryBrokeredMessageInbox(ILogger<InMemoryBrokeredMessageInbox> logger, ReliabilityOptions reliabilityOptions, Func<long> clock, Action<string> beforeReReservingAnEntry)
         {
             _inbox = new ConcurrentDictionary<string, long>();
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+            _beforeReReservingAnEntry = beforeReReservingAnEntry;
 
             if (reliabilityOptions is null)
             {
@@ -65,6 +72,17 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
 
         internal int EntryCount => Volatile.Read(ref _count);
 
+        // Every entry's value carries BOTH the state it is in and the monotonic instant it entered that state: a
+        // completed receipt stores its completion instant as it is, and a reservation stores its reservation
+        // instant negated and shifted down by one. The shift is what makes a reservation taken at instant 0
+        // negative too, so the two states never collide at any reading the clock can produce. One reclamation rule
+        // then covers both of them, which is why neither removal below needs a case for a reservation.
+        private static long Reservation(long reservedAt) => -reservedAt - 1;
+
+        private static bool IsReservation(long value) => value < 0;
+
+        private static long InstantOf(long value) => value < 0 ? -value - 1 : value;
+
         public async Task ReceiveViaInbox<TMessage>(TMessage message, IMessageBrokerContext messageBrokerContext, Func<Task> messageReceiver)
         {
             var id = messageBrokerContext.BrokeredMessage.MessageId;
@@ -76,7 +94,7 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
 
             // INVARIANT: the id is reserved before the receiver runs, so concurrent receipts of one
             // message id contend on the reservation and only the winner invokes the receiver.
-            if (!TryReserve(id))
+            if (!TryReserve(id, out var reservation))
             {
                 _logger.LogTrace($"Brokered message of type '{typeof(TMessage).Name}' with id: '{id}' was already received.");
                 return;
@@ -91,49 +109,62 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
             }
             catch
             {
-                Release(id);
+                Release(id, reservation);
                 throw;
             }
 
-            _inbox.TryUpdate(id, _clock(), InFlight);
+            // INVARIANT: conditional on THIS receipt's own reservation. A receipt that outran the window was
+            // abandoned and its id may have been re-reserved or reclaimed since, and it must not overwrite
+            // whatever took its place.
+            _inbox.TryUpdate(id, _clock(), reservation);
 
             _logger.LogTrace($"Brokered message of type '{typeof(TMessage).Name}' with id: '{id}' was successfully received and added to inbox.");
         }
 
-        // An in-flight reservation and a receipt still inside its deduplication window both report true; an expired
-        // one reports false whether or not a sweep has reclaimed it yet.
+        // A reservation the window still honours and a receipt still inside that window both report true; once the
+        // window has elapsed both report false, whether or not a sweep has reclaimed the entry yet.
         public Task<bool> HasBeenReceived(string messageId, CancellationToken cancellationToken = default)
-            => Task.FromResult(_inbox.TryGetValue(messageId, out var observed) && !HasExpired(observed));
+            => Task.FromResult(_inbox.TryGetValue(messageId, out var observed) && !IsReclaimable(observed));
 
         // INVARIANT: at most two TryAdd attempts, never an unbounded retry loop - a receive path that could spin
         // against a concurrent sweep would trade a bounded duplicate for an unbounded stall.
-        private bool TryReserve(string id)
+        private bool TryReserve(string id, out long reservation)
         {
-            if (TryReserveFreshly(id))
+            reservation = Reservation(_clock());
+
+            if (TryAddReservation(id, reservation))
             {
                 return true;
             }
 
-            if (!_inbox.TryGetValue(id, out var observed))
+            if (_inbox.TryGetValue(id, out var observed))
             {
-                // A sweep reclaimed the entry between the failed add and this read, so one more attempt settles it;
-                // a second failure is a genuine concurrent duplicate rather than a lost race with the sweep.
-                return TryReserveFreshly(id);
+                if (!IsReclaimable(observed))
+                {
+                    return false;
+                }
+
+                _beforeReReservingAnEntry?.Invoke(id);
+
+                // Losing this update means EITHER that another delivery re-reserved the reclaimable id first -
+                // which makes this one a duplicate of that reservation - OR that the key is gone, because
+                // TryUpdate also reports false for an absent key. The add below tells the two apart. The entry
+                // count is unchanged on success here, since the entry never left.
+                if (_inbox.TryUpdate(id, reservation, observed))
+                {
+                    return true;
+                }
             }
 
-            if (!HasExpired(observed))
-            {
-                return false;
-            }
-
-            // Losing this update means another delivery re-reserved the expired id first, which makes this one a
-            // duplicate of that reservation. The entry count is unchanged either way - the entry never left.
-            return _inbox.TryUpdate(id, InFlight, observed);
+            // Either the read above missed the entry or the update above found it already gone: a sweep reclaimed
+            // it since the failed add, so one more attempt settles it. A second failure is a genuine concurrent
+            // duplicate rather than a lost race with the sweep.
+            return TryAddReservation(id, reservation);
         }
 
-        private bool TryReserveFreshly(string id)
+        private bool TryAddReservation(string id, long reservation)
         {
-            if (!_inbox.TryAdd(id, InFlight))
+            if (!_inbox.TryAdd(id, reservation))
             {
                 return false;
             }
@@ -142,25 +173,30 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
             return true;
         }
 
-        private void Release(string id)
+        private void Release(string id, long reservation)
         {
-            if (_inbox.TryRemove(new KeyValuePair<string, long>(id, InFlight)))
+            if (_inbox.TryRemove(new KeyValuePair<string, long>(id, reservation)))
             {
                 Interlocked.Decrement(ref _count);
             }
         }
 
-        // Expiry is decided ON CONTACT rather than by the sweep, so the deduplication window is exact no matter
-        // when the sweep last ran. The window is compared against ELAPSED time rather than added to the completion
-        // timestamp, so no expiry instant is computed and there is nothing left to overflow.
-        private bool HasExpired(long completedAt)
+        // The single reclamation rule, and the only place the window is read. It decides ON CONTACT rather than
+        // waiting for the sweep, so the window is exact no matter when the sweep last ran, and it asks the same
+        // question of a reservation as of a completed receipt: an id is remembered for the window, and a
+        // reservation is honoured for the window. So a handler that neither returns nor throws holds its id for
+        // the window and no longer, and a non-positive window disables the rule outright - it stops expiring a
+        // completed receipt and stops treating a reservation as abandoned alike. The window is compared against
+        // ELAPSED time rather than added to the stored instant, so no deadline is computed and there is nothing
+        // left to overflow.
+        private bool IsReclaimable(long value)
         {
-            if (completedAt == InFlight || _deduplicationWindowInMilliseconds <= 0)
+            if (_deduplicationWindowInMilliseconds <= 0)
             {
                 return false;
             }
 
-            return _clock() - completedAt >= _deduplicationWindowInMilliseconds;
+            return _clock() - InstantOf(value) >= _deduplicationWindowInMilliseconds;
         }
 
         // The routine reclaim. It is elected by one receipt per interval and is deliberately QUIET: reclaiming
@@ -194,13 +230,14 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
 
             foreach (var entry in _inbox)
             {
-                if (!HasExpired(entry.Value))
+                if (!IsReclaimable(entry.Value))
                 {
                     continue;
                 }
 
-                // INVARIANT: value-conditional removal. An entry another delivery has re-reserved since this
-                // enumeration read it holds InFlight, no longer matches, and so cannot be swept.
+                // INVARIANT: value-conditional removal. The check above already spares a reservation the window
+                // still honours; this is what spares an entry another delivery has completed or re-reserved SINCE
+                // this enumeration read it, because such an entry holds a newer value and no longer matches.
                 if (_inbox.TryRemove(entry))
                 {
                     Interlocked.Decrement(ref _count);
@@ -236,14 +273,16 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
                 }
             }
 
-            var evicted = EvictCompletedEntries();
+            var evicted = EvictEntriesWithoutAHonouredReservation();
 
             if (evicted == 0)
             {
-                // Every entry is still in flight. The store GROWS past its cap rather than blocking or throwing:
-                // blocking self-deadlocks, because the entries are in flight only while their handlers run and the
-                // thread that would block is one that must run a handler to free a slot; and throwing surfaces as a
-                // receive failure, so the redelivery meets the same state and a soft bound becomes a hard outage.
+                // Every entry holds a reservation the window still honours. The store GROWS past its cap rather
+                // than blocking or throwing: blocking self-deadlocks, because the entries are in flight only while
+                // their handlers run and the thread that would block is one that must run a handler to free a
+                // slot; and throwing surfaces as a receive failure, so the redelivery meets the same state and a
+                // soft bound becomes a hard outage. The growth is bounded in time either way, because a
+                // reservation the window stops honouring is reclaimable like any other entry.
                 _logger.LogTrace($"The in memory inbox holds {Volatile.Read(ref _count)} received message id(s), above its cap of {_maxEntries}, because every entry is still in flight.");
                 return;
             }
@@ -255,7 +294,7 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         // used. The cap is a safety valve, so paying for a recency structure on every receipt to order evictions
         // that only happen under memory pressure is the wrong trade. Evicting down to a headroom below the cap
         // amortizes one pass over a cap/16 receipts rather than running one on every receipt.
-        private int EvictCompletedEntries()
+        private int EvictEntriesWithoutAHonouredReservation()
         {
             var evictUntil = (int)((long)_maxEntries * CapHeadroomNumerator / CapHeadroomDenominator);
             var evicted = 0;
@@ -267,13 +306,14 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
                     break;
                 }
 
-                if (entry.Value == InFlight)
+                if (IsReservation(entry.Value) && !IsReclaimable(entry.Value))
                 {
                     continue;
                 }
 
-                // INVARIANT: value-conditional removal on a completion timestamp, so an in-flight reservation can
-                // never be a victim - the cap bounds memory, it does not cancel a receipt that is still running.
+                // INVARIANT: value-conditional removal, and the one entry the cap will not take is a reservation
+                // the window still honours - the cap bounds memory, it does not cancel a receipt that is still
+                // inside the window it was promised.
                 if (_inbox.TryRemove(entry))
                 {
                     Interlocked.Decrement(ref _count);

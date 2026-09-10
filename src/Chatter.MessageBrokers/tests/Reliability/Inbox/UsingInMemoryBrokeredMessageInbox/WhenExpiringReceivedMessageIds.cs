@@ -6,6 +6,7 @@ using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Xunit;
@@ -23,6 +24,10 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
         // than the wall clock. Driving that clock by assignment keeps every expiry test deterministic and instant.
         private long _now;
 
+        // Armed by the one test that needs a sweep to land between the reserve path's read of an existing entry
+        // and its update of that entry. Left null everywhere else, so no other test observes it at all.
+        private Action<string> _interfereBeforeReReservation;
+
         public WhenExpiringReceivedMessageIds()
         {
             _bodyConverter.SetupGet(c => c.ContentType).Returns("application/json");
@@ -36,7 +41,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
                                                     InMemoryInboxDeduplicationWindowInMinutes = windowInMinutes,
                                                     InMemoryInboxMaxEntries = 200000
                                                 },
-                                                () => _now);
+                                                () => _now,
+                                                id => _interfereBeforeReReservation?.Invoke(id));
 
         private IMessageBrokerContext CreateContext(string messageId)
         {
@@ -51,6 +57,23 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
             var invoked = false;
             await inbox.ReceiveViaInbox<object>(new object(), context, () => { invoked = true; return Task.CompletedTask; });
             return invoked;
+        }
+
+        // Returns the receipt task once its receiver has entered, so the caller holds a reservation that stays in
+        // flight until it releases the returned source. No wall-clock wait is involved anywhere.
+        private static async Task<(Task receipt, TaskCompletionSource<bool> release)> ParkAReceipt(InMemoryBrokeredMessageInbox inbox, IMessageBrokerContext context)
+        {
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var receipt = inbox.ReceiveViaInbox<object>(new object(), context, () =>
+            {
+                entered.SetResult(true);
+                return release.Task;
+            });
+
+            await entered.Task;
+            return (receipt, release);
         }
 
         [Fact]
@@ -91,26 +114,123 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
         }
 
         [Fact]
-        public async Task MustNeverExpireAnInFlightReservation()
+        public async Task MustHandleARedeliveryWhoseExpiredEntryASweepReclaimsWhileItIsBeingReReserved()
         {
             var inbox = CreateInbox(windowInMinutes: 1);
             var context = CreateContext("id-1");
-            var receiverEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var receiverRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await ReceiveReportingInvocation(inbox, context);
 
-            var inFlightReceipt = inbox.ReceiveViaInbox<object>(new object(), context, () =>
+            // The window has elapsed, so id-1's entry is expired and the routine sweep is due. The interference
+            // below runs a receipt of an unrelated id, and that receipt's sweep reclaims id-1's expired entry -
+            // between this redelivery's read of that entry and its attempt to re-reserve it.
+            _now = OneMinuteInMilliseconds;
+            _interfereBeforeReReservation = _ =>
             {
-                receiverEntered.SetResult(true);
-                return receiverRelease.Task;
-            });
-            await receiverEntered.Task;
+                _interfereBeforeReReservation = null;
+                ReceiveReportingInvocation(inbox, CreateContext("sweeping-id")).GetAwaiter().GetResult();
+            };
 
-            _now = OneMinuteInMilliseconds * 1000;
+            (await ReceiveReportingInvocation(inbox, context)).Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task MustNotReportASweptEntryAsAnAlreadyReceivedDuplicate()
+        {
+            var inbox = CreateInbox(windowInMinutes: 1);
+            var context = CreateContext("id-1");
+            await ReceiveReportingInvocation(inbox, context);
+
+            _now = OneMinuteInMilliseconds;
+            _interfereBeforeReReservation = _ =>
+            {
+                _interfereBeforeReReservation = null;
+                ReceiveReportingInvocation(inbox, CreateContext("sweeping-id")).GetAwaiter().GetResult();
+            };
+            await ReceiveReportingInvocation(inbox, context);
+
+            _logger.VerifyWasCalled(LogLevel.Trace,
+                "Brokered message of type 'Object' with id: 'id-1' was already received.",
+                Times.Never());
+        }
+
+        [Fact]
+        public async Task MustNeverReclaimAnInFlightReservationInsideTheWindow()
+        {
+            var inbox = CreateInbox(windowInMinutes: 1);
+            var context = CreateContext("id-1");
+            var inFlight = await ParkAReceipt(inbox, context);
+
+            _now = OneMinuteInMilliseconds - 1;
             var duplicateInvoked = await ReceiveReportingInvocation(inbox, context);
             var receivedWhileInFlight = await inbox.HasBeenReceived("id-1");
 
-            receiverRelease.SetResult(true);
-            await inFlightReceipt;
+            inFlight.release.SetResult(true);
+            await inFlight.receipt;
+
+            duplicateInvoked.Should().BeFalse();
+            receivedWhileInFlight.Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task MustHandleARedeliveryOfAnAbandonedInFlightReservationOnceTheWindowHasElapsed()
+        {
+            var inbox = CreateInbox(windowInMinutes: 1);
+            var context = CreateContext("id-1");
+            var abandoned = await ParkAReceipt(inbox, context);
+
+            _now = OneMinuteInMilliseconds;
+            var redeliveryInvoked = await ReceiveReportingInvocation(inbox, context);
+
+            abandoned.release.SetResult(true);
+            await abandoned.receipt;
+
+            redeliveryInvoked.Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task MustReportHasBeenReceivedFalseForAnAbandonedInFlightReservation()
+        {
+            var inbox = CreateInbox(windowInMinutes: 1);
+            var abandoned = await ParkAReceipt(inbox, CreateContext("id-1"));
+
+            _now = OneMinuteInMilliseconds;
+            var receivedWhileAbandoned = await inbox.HasBeenReceived("id-1");
+
+            abandoned.release.SetResult(true);
+            await abandoned.receipt;
+
+            receivedWhileAbandoned.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task MustReclaimAnAbandonedInFlightReservationOnTheNextSweep()
+        {
+            var inbox = CreateInbox(windowInMinutes: 1);
+            var abandoned = await ParkAReceipt(inbox, CreateContext("id-1"));
+
+            _now = OneMinuteInMilliseconds;
+            await ReceiveReportingInvocation(inbox, CreateContext("id-2"));
+            var entryCountAfterTheSweep = inbox.EntryCount;
+
+            abandoned.release.SetResult(true);
+            await abandoned.receipt;
+
+            entryCountAfterTheSweep.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task MustNeverAbandonAnInFlightReservationWhenTheWindowIsDisabled()
+        {
+            var inbox = CreateInbox(windowInMinutes: 0);
+            var context = CreateContext("id-1");
+            var inFlight = await ParkAReceipt(inbox, context);
+
+            _now = long.MaxValue;
+            var duplicateInvoked = await ReceiveReportingInvocation(inbox, context);
+            var receivedWhileInFlight = await inbox.HasBeenReceived("id-1");
+
+            inFlight.release.SetResult(true);
+            await inFlight.receipt;
 
             duplicateInvoked.Should().BeFalse();
             receivedWhileInFlight.Should().BeTrue();

@@ -148,6 +148,38 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Inbox.UsingInMemoryBrokeredMe
         }
 
         [Fact]
+        public async Task MustReclaimAnAbandonedInFlightReservationRatherThanEvictAnUnexpiredReceiptAtTheCap()
+        {
+            // A two minute window makes the routine sweep interval (capped at one minute) shorter than the window,
+            // which is what lets the store reach a moment where an entry is abandoned but the next routine sweep
+            // is not yet due - so enforcing the cap is what has to reclaim it.
+            var inbox = CreateInbox(maxEntries: 3, windowInMinutes: 2);
+
+            _now = 10000;
+            var abandoned = await ParkAReceipt(inbox, "id-1");
+
+            _now = OneMinuteInMilliseconds;
+            await ReceiveReportingInvocation(inbox, "id-2");
+
+            _now = 2 * OneMinuteInMilliseconds;
+            await ReceiveReportingInvocation(inbox, "id-3");
+
+            // id-1's reservation is now older than the window, and id-4 puts the store one over its cap.
+            _now = 2 * OneMinuteInMilliseconds + 10000;
+            await ReceiveReportingInvocation(inbox, "id-4");
+            var entryCountAfterTheCapWasEnforced = inbox.EntryCount;
+
+            abandoned.release.SetResult(true);
+            await abandoned.receipt;
+
+            entryCountAfterTheCapWasEnforced.Should().Be(3);
+            (await inbox.HasBeenReceived("id-1")).Should().BeFalse();
+            (await inbox.HasBeenReceived("id-2")).Should().BeTrue();
+            (await inbox.HasBeenReceived("id-3")).Should().BeTrue();
+            _logger.VerifyWasCalled(LogLevel.Warning, null, Times.Never());
+        }
+
+        [Fact]
         public async Task MustNeverEvictAnInFlightReservationAtTheCap()
         {
             var inbox = CreateInbox(maxEntries: 1);
