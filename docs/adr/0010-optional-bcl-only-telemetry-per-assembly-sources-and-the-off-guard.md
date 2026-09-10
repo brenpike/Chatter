@@ -884,6 +884,26 @@ no timestamp, starts no span and writes no header — R2's `null`-activity early
 such a branch, and it is the mechanism by which "no Chatter `Activity`" becomes "no wire change".
 Only the word *verbatim* was wrong; R1–R4 are unchanged.
 
+**AMENDED — R4's "no async state machine" MECHANISM is WITHDRAWN; the guarantee it exists to state is
+not.** The command path's uninstrumented dispatch is now `async`
+(`src/Chatter.CQRS/src/Chatter.CQRS/Commands/CommandDispatcher.cs`: `Dispatch` at :40-54,
+`DispatchToHandler` at :56-86 — R4's own `:38-59` citation was already stale before this change) and
+AWAITS `handler.Handle(...)` / `pipeline.Execute(...)` inside its `try` rather than returning either
+`Task` directly. It had to: a handler that faults ASYNCHRONOUSLY never reaches a `catch` the
+dispatcher has already returned out of, so the original shape logged NOTHING for precisely the
+failures worth logging, and silence was never an acceptable price for avoiding one state machine. The
+consequence, stated plainly: **that state machine now exists whether or not diagnostics are on.** It
+belongs to the dispatch itself, not to the instrumentation, and it is no longer something the off
+path can be described as avoiding.
+
+R4's INTENT is unchanged and is still enforced by the off-guard: `Dispatch` evaluates
+`ChatterDiagnostics.IsEnabled` before any argument is constructed and returns the uninstrumented
+`Task` on the off path, so an application that never opted in still reads no timestamp, builds no
+span name, allocates no tag list and starts no `Activity`. What is withdrawn is the SHAPE sentence —
+the synchronous `Task`-returning `Dispatch` and "**No async state machine is introduced when tracing
+is off**". What stands is the COST sentence: no diagnostics work and no diagnostics allocation is
+added to the non-instrumented dispatch path.
+
 **AMENDED — the diagnostics path is NOT tracing-gated, and the name `IsEnabled` is what misleads.**
 The outer exit a call site evaluates is an OR across tracing AND metrics, on BOTH surfaces:
 
@@ -957,6 +977,32 @@ The whole of the divergence is that an application catching synchronously around
 would see the exception move to the `Task` once it opts in. It is documented rather than designed
 away, because designing it away means making the instrumented path non-`async`, which
 [Option 6](#considered-options) shows is worse.
+
+**AMENDED AGAIN — the divergence stands at TWO seams, not three; at `CommandDispatcher.Dispatch` it is
+CLOSED.** The block above is narrowed to `ReplyRouter.Route` and `ForwardingRouter.Route`, which still
+have exactly the shape it describes: each is a non-`async`, `Task`-returning method whose off branch
+returns the router's `Task` directly and whose on branch delegates to an `async` helper
+(`Routing/ReplyRouter.cs:31-57` returning `_router.Route(...)` or `RouteWithDiagnostics(...)`;
+`Routing/ForwardingRouter.cs:32-61` the same). At those two seams a synchronous throw does still move
+onto the returned `Task` when an application opts in, and everything the block says about them holds.
+
+`CommandDispatcher.Dispatch` is no longer one of them. BOTH of its branches now run through the same
+`async DispatchToHandler`, so there is no on-versus-off difference left to accept — see the [R4
+mechanism withdrawal](#the-off-guard) above for why the uninstrumented dispatch became `async`, which
+is not restated here. The second bullet's parenthetical that `EventDispatcher`'s OFF path is itself
+`async` remains true and now describes the command seam too.
+
+The third bullet is RETIRED for the command seam: "**the off path is intact — it still returns the
+original `Task` directly, with no async state machine added**" is FALSE there, because
+`DispatchToHandler` is `async` on both paths. What R4 still promises at that seam is the COST
+sentence — no diagnostics work and no diagnostics allocation added to the off path — and that is
+intact.
+
+What replaces the divergence at the command seam is a UNIFORM property, stated plainly for callers: a
+synchronous resolution fault — no registered `IMessageHandler<TMessage>`, say — arrives on the
+returned `Task` UNCONDITIONALLY, diagnostics on or off. A caller that separates `Dispatch(...)` from
+its `await` therefore sees such a fault at the `await` rather than at the call. That is caller-visible
+behaviour changed from 0.13.1 and is recorded in this release's CHANGELOG.
 
 ## Propagation scope
 
