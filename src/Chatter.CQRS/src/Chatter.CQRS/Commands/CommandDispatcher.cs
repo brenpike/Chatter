@@ -39,9 +39,12 @@ namespace Chatter.CQRS.Commands
         /// the <paramref name="message"/> is dispatched by <see cref="IMessageDispatcher"/>.</remarks>
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
-            // INVARIANT: ADR-0010 R1/R4 — the off-guard is evaluated before any argument is constructed, and the
-            // off path returns the original Task from the uninstrumented dispatch, so no async state machine, no
-            // timestamp read and no allocation are added when an application has not opted into diagnostics.
+            // INVARIANT: ADR-0010 R1/R4 (as amended) — the off-guard is evaluated before any argument is
+            // constructed, and the off path returns the original Task from the uninstrumented dispatch, so no
+            // timestamp read, no span name and no diagnostics allocation are added when an application has not
+            // opted into diagnostics. R4's original "no async state machine" claim no longer holds: the
+            // uninstrumented dispatch is itself async so an asynchronously faulting handler reaches its catch,
+            // and that single state machine exists whether or not diagnostics are on.
             if (!ChatterDiagnostics.IsEnabled)
             {
                 return DispatchToHandler(message, messageHandlerContext);
@@ -50,7 +53,7 @@ namespace Chatter.CQRS.Commands
             return DispatchToHandlerWithDiagnostics(message, messageHandlerContext);
         }
 
-        private Task DispatchToHandler<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
+        private async Task DispatchToHandler<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
             try
             {
@@ -59,16 +62,25 @@ namespace Chatter.CQRS.Commands
 
                 if (pipeline == null)
                 {
-                    _logger.LogTrace($"No command behavior pipeline found. Executing message handler for '{typeof(TMessage)}'.");
-                    return handler.Handle(message, messageHandlerContext);
+                    if (_logger.IsEnabled(LogLevel.Trace))
+                    {
+                        _logger.LogTrace("No command behavior pipeline found. Executing message handler for '{MessageType}'.", MessageTypeNames<TMessage>.FullName);
+                    }
+
+                    await handler.Handle(message, messageHandlerContext).ConfigureAwait(false);
+                    return;
                 }
-                
-                _logger.LogTrace($"Executing command behavior pipeline for '{typeof(TMessage)}'.");
-                return pipeline.Execute(message, messageHandlerContext, handler);
+
+                if (_logger.IsEnabled(LogLevel.Trace))
+                {
+                    _logger.LogTrace("Executing command behavior pipeline for '{MessageType}'.", MessageTypeNames<TMessage>.FullName);
+                }
+
+                await pipeline.Execute(message, messageHandlerContext, handler).ConfigureAwait(false);
             }
             catch (Exception e)
             {
-                _logger.LogError($"Error dispatching command of type '{typeof(TMessage).Name}': {e.StackTrace}");
+                _logger.LogError(e, "Error dispatching command of type '{MessageType}'.", MessageTypeNames<TMessage>.Name);
                 throw;
             }
         }
@@ -97,6 +109,16 @@ namespace Chatter.CQRS.Commands
                     ChatterDiagnostics.RecordDispatchDuration<TMessage>(startTimestamp, ChatterTelemetryTags.DispatchKinds.Command, errorType);
                 }
             }
+        }
+
+        /// <summary>
+        /// Type names computed once per closed generic, so a dispatch never builds a log argument.
+        /// </summary>
+        /// <typeparam name="TMessage">The compile-time type of the command being dispatched.</typeparam>
+        private static class MessageTypeNames<TMessage>
+        {
+            internal static readonly string FullName = typeof(TMessage).FullName;
+            internal static readonly string Name = typeof(TMessage).Name;
         }
     }
 }

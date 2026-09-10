@@ -20,6 +20,7 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         private readonly EventDispatcher _sut;
 
         private static string _eventHandlerInvokedLogMessage = $"Invoked event handler for '{typeof(IMessage)}'.";
+        private static string _eventDispatchFailedLogMessage = $"Error dispatching event of type '{typeof(IMessage).Name}'.";
 
         public WhenDispatching()
         {
@@ -66,6 +67,18 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
             _serviceProvider.Setup(p => p.GetService(typeof(IEnumerable<IMessageHandler<IMessage>>))).Throws<Exception>();
             await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, null)).Should().ThrowAsync<Exception>();
             _logger.VerifyWasCalled(LogLevel.Error, null,
+                   Times.Once());
+        }
+
+        [Fact]
+        public async Task MustLogErrorWithTheCaughtExceptionAttached()
+        {
+            var handlerException = new InvalidOperationException("event handler failed");
+            _handler.Setup(p => p.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>())).ThrowsAsync(handlerException);
+            await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, null)).Should().ThrowAsync<InvalidOperationException>();
+            _logger.VerifyWasCalled(LogLevel.Error,
+                   _eventDispatchFailedLogMessage,
+                   handlerException,
                    Times.Once());
         }
 
