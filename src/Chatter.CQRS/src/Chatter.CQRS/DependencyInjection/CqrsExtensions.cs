@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Scrutor;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -113,7 +114,7 @@ namespace Microsoft.Extensions.DependencyInjection
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
                         .Where(handler => IsValidMessageHandler(handler, typeof(IEvent))))
                    .UsingRegistrationStrategy(RegistrationStrategy.Append)
-                   .AsImplementedInterfaces()
+                   .As(handler => handler.GetMessageHandlerInterfacesFor(typeof(IEvent)))
                    .WithTransientLifetime());
             return services;
         }
@@ -125,22 +126,31 @@ namespace Microsoft.Extensions.DependencyInjection
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
                         .Where(handler => IsValidMessageHandler(handler, typeof(ICommand))))
                    .UsingRegistrationStrategy(RegistrationStrategy.Replace())
-                   .AsImplementedInterfaces()
+                   .As(handler => handler.GetMessageHandlerInterfacesFor(typeof(ICommand)))
                    .WithTransientLifetime());
             return services;
         }
 
+        internal static IEnumerable<Type> GetMessageHandlerInterfacesFor(this Type type, Type genericParameterMatchType)
+            => type.GetImplementedInterfacesThatMatchOpenGenericType(typeof(IMessageHandler<>))
+                .Where(handlerInterface => handlerInterface.GetImplementedInterfacesOfSingleGenericTypeArgument()
+                    .Any(implementedByMessage => implementedByMessage == genericParameterMatchType));
+
+        internal static bool IsClosedHandlerType(this Type type)
+            => !type.IsGenericType || type.IsGenericTypeWithNonGenericTypeParameters();
+
         internal static bool IsValidMessageHandler(this Type type, Type genericParameterMatchType)
-            => (!type.IsGenericType || type.IsGenericTypeWithNonGenericTypeParameters())
+            => type.IsClosedHandlerType()
                 && type.IsImplementingOpenGenericTypeWithMatchingTypeParameter(typeof(IMessageHandler<>), genericParameterMatchType);
 
         internal static IServiceCollection AddQueryHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
         {
             services.Scan(s =>
                    s.FromAssemblies(assemblies)
-                       .AddClasses(c => c.AssignableTo(typeof(IQueryHandler<,>)))
+                       .AddClasses(c => c.AssignableTo(typeof(IQueryHandler<,>))
+                            .Where(handler => handler.IsClosedHandlerType()))
                        .UsingRegistrationStrategy(RegistrationStrategy.Throw)
-                       .AsImplementedInterfaces()
+                       .As(handler => handler.GetImplementedInterfacesThatMatchOpenGenericType(typeof(IQueryHandler<,>)))
                        .WithTransientLifetime());
             return services;
         }

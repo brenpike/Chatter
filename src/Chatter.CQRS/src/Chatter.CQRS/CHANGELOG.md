@@ -12,6 +12,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.12.0] - 2026-09-09
+
+### Changed
+
+- Handlers are no longer registered under every interface they implement. Assembly scanning previously used Scrutor's `AsImplementedInterfaces()`, so a handler class was registered against `IMessageHandler<TMessage>` / `IQueryHandler<TQuery,TResult>` *and* any other interface it happened to implement. A handler is now registered only under the closed `IMessageHandler<TMessage>` / `IQueryHandler<TQuery,TResult>` interface(s) it implements. **This is a breaking change**: if a handler class also implements an unrelated service interface and you resolve that interface from the container populated by `AddChatterCqrs` / `AddMessageHandlers` / `AddQueryHandlers`, that registration no longer exists. Register your handler's own service interface explicitly.
+- The query scan now discovers only closed handler types. An open-generic query handler — `class MyHandler<TQuery, TResult> : IQueryHandler<TQuery, TResult>` — was previously discovered and registered under the open definition `IQueryHandler<,>`, as a byproduct of Scrutor's `AsImplementedInterfaces()` arity normalization; the command and event scans have always rejected open-generic handlers. **This is a breaking change**: an open-generic query handler is no longer discovered by `AddChatterCqrs` / `AddQueryHandlers`. Register it manually after `AddChatterCqrs`:
+  ```csharp
+  services.AddTransient(typeof(IQueryHandler<,>), typeof(MyHandler<,>));
+  ```
+
+### Fixed
+
+- A handler class implementing both a command-handler interface (`IMessageHandler<TCommand>`) and an event-handler interface (`IMessageHandler<TEvent>`) — a dual-role handler — received every dispatched event twice. The command scan and the event scan both matched the class and, via `AsImplementedInterfaces()`, each registered it under every interface it implemented, so `IMessageHandler<TEvent>` ended up with two descriptors and `EventDispatcher` invoked the handler twice per event.
+- Scanning handlers a second time — a second `AddChatterCqrs` / `AddMessageHandlers` call across multiple assemblies, or calling the event scan before the command scan — could silently delete already-registered event handlers. The command scan's `Replace()` strategy replaces prior registrations of the same closed handler interface; because `AsImplementedInterfaces()` widened a dual-role handler's registered interfaces to include an event-handler interface, a later command scan silently removed event handlers a prior scan had already registered for that event, with no error or warning (#330).
+
 ## [0.11.1] - 2026-09-02
 
 ### Fixed
