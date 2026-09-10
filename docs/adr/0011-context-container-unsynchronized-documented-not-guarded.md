@@ -3,7 +3,7 @@ status: accepted
 date: 2026-09-10
 ---
 
-# Context Container: single-threaded ownership per dispatch, documented rather than synchronized
+# Context Container: unsynchronized, documented rather than synchronized
 
 `ContextContainer` is the type-keyed bag every **Message Context** carries (`IContainContext.Container`).
 It is a plain `Dictionary<string, object>` plus an optional inherited container, and it is mutated on
@@ -11,16 +11,16 @@ the dispatch path: `MessageDispatcher` seeds the active `IMessageDispatcher` and
 into it, the **Brokered Message Receiver** adds the transaction context for a received message, and
 application handlers add whatever else they need.
 
-Issue #333 observes — correctly — that this dictionary is unsynchronized, so two dispatches sharing one
-container would race on it. The question this ADR settles is not whether the race is real, but whether
-the answer is to make the container thread-safe or to state, and keep true by construction, the
-ownership rule the container already depends on.
+Issue #333 observes — correctly — that this dictionary is unsynchronized, so two dispatches using one
+container at the same time would race on it. The question this ADR settles is not whether the race is
+real, but whether the answer is to make the container thread-safe or to state, as a requirement the
+type places on its callers, that a container is never used from two threads at once.
 
 ## Considered Options
 
-- **Option 1 — Document the ownership contract: one container per dispatch, one thread at a time
-  (CHOSEN).** Costs nothing on the dispatch path, and matches what every in-repo path already does.
-  Its weakness is honest: the rule is enforced by convention, not by the type system.
+- **Option 1 — Document what the type is (an unsynchronized dictionary) and what it requires of a
+  caller (never two threads at once) (CHOSEN).** Costs nothing on the dispatch path. Its weakness is
+  honest: the requirement is met by the caller, not enforced by the type system.
 
 - **Option 2 — Swap the backing store for a `ConcurrentDictionary<string, object>`, with a `Lazy<T>`
   per entry so `GetOrAdd`'s factory runs exactly once.** This is the *correct* shape for a
@@ -64,10 +64,31 @@ ownership rule the container already depends on.
 
 ## Decision
 
-**A `ContextContainer` is not synchronized, and is not going to be. One container is owned by exactly
-one dispatch, and is used by one thread at a time. Sharing a single container across concurrent
-dispatches is UNSUPPORTED.** The contract is stated in `src/Chatter.CQRS/src/README.md` (Message
-Context → Threading) and in the CQRS `CONTEXT.md`; the code is unchanged by this decision.
+**A `ContextContainer` is not synchronized, and is not going to be.** The type stores a plain
+`Dictionary<string, object>`, takes no lock, and offers no synchronization of any kind on any of its
+members — that is a fact about the class body, and it is the whole of what the type guarantees.
+
+**What that requires of a caller: never use one container from two threads at the same time.**
+Concurrent use of a single container is undefined and can corrupt the underlying dictionary.
+Concretely: await each nested dispatch before starting the next, and do not capture a Message Context
+(or its container) into work that runs alongside the dispatch that created it.
+
+**A nested dispatch that runs against the caller's OWN container is expected, and is safe when it is
+awaited.** `Dispatch(message, context)` deliberately seeds and reuses the container it is handed, and
+`context.InMemory()` is exactly that path; one container serving a chain of nested dispatches in
+sequence is normal use, not a violation. The hazard is simultaneity, not reuse.
+
+The caller-facing statement of the requirement lives in `src/Chatter.CQRS/src/README.md` (Message
+Context → Threading); the CQRS `CONTEXT.md` and the `ContextContainer` XML remarks point here for the
+rationale. The code is unchanged by this decision.
+
+**The ownership framing was tried, and is rejected — do not reintroduce it.** An earlier revision of
+this ADR stated the rule as cardinality: that a container belongs to exactly one dispatch. That
+framing fails twice. It is false against `Dispatch(message, context)`, which runs a second dispatch
+against the container an outer dispatch already holds. And it is stronger than the code needs: it
+condemns the awaited nested dispatch above, which is safe, so it does not discriminate between the
+safe case and the racing one. Stating the rule in the concurrency primitive names the actual hazard
+and leaves the safe case permitted.
 
 What the code builds, as construction facts only — they do not license a "therefore it is safe"
 conclusion:
