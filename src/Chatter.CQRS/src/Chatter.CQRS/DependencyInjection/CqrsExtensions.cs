@@ -24,7 +24,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <param name="services">The <see cref="IServiceCollection"/> used to register services used for cqrs capabilities</param>
         /// <param name="configuration">The <see cref="IConfiguration"/> used for configuration based settings</param>
         /// <param name="pipelineBuilder">An optional builder used to define an <see cref="ICommandBehaviorPipeline{TMessage}"/></param>
-        /// <param name="messageHandlerSourceBuilder">An optional builder used to define a <see cref="AssemblySourceFilter"/>. Assemblies will be used to find <see cref="IMessageHandler{TMessage}"/> for registration.</param>
+        /// <param name="messageHandlerSourceBuilder">An optional builder used to define a <see cref="AssemblySourceFilter"/>. When explicit assemblies or marker types are supplied to the builder and no namespace selector is also configured, only those assemblies are scanned to find <see cref="IMessageHandler{TMessage}"/> for registration; configuring <see cref="AssemblySourceFilterBuilder.WithNamespaceSelector(string)"/> widens the scan to include matching loaded assemblies as well.</param>
         /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
         public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, Action<CommandPipelineBuilder> pipelineBuilder = null, Action<AssemblySourceFilterBuilder> messageHandlerSourceBuilder = null)
         {
@@ -54,7 +54,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <param name="services">The <see cref="IServiceCollection"/> used to register services used for cqrs capabilities</param>
         /// <param name="configuration">The <see cref="IConfiguration"/> used for configuration based settings</param>
         /// <param name="pipelineBuilder">An optional builder used to define an <see cref="ICommandBehaviorPipeline{TMessage}"/></param>
-        /// <param name="markerTypesForRequiredAssemblies">Marker types whose parent assemblies will be used to find <see cref="IMessageHandler{TMessage}"/> for registration.</param>
+        /// <param name="markerTypesForRequiredAssemblies">Marker types whose parent assemblies are the only assemblies scanned to find <see cref="IMessageHandler{TMessage}"/> for registration, unless a namespace selector is also configured via <see cref="AssemblySourceFilterBuilder.WithNamespaceSelector(string)"/>, which widens the scan to include matching loaded assemblies as well.</param>
         /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
         public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, Action<CommandPipelineBuilder> pipelineBuilder = null, params Type[] markerTypesForRequiredAssemblies)
             => services.AddChatterCqrs(configuration, pipelineBuilder, b => b.WithMarkerTypes(markerTypesForRequiredAssemblies));
@@ -64,7 +64,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         /// <param name="services">The <see cref="IServiceCollection"/> used to register services used for cqrs capabilities</param>
         /// <param name="configuration">The <see cref="IConfiguration"/> used for configuration based settings</param>
-        /// <param name="markerTypesForRequiredAssemblies">Marker types whose parent assemblies will be used to find <see cref="IMessageHandler{TMessage}"/> for registration.</param>
+        /// <param name="markerTypesForRequiredAssemblies">Marker types whose parent assemblies are the only assemblies scanned to find <see cref="IMessageHandler{TMessage}"/> for registration, unless a namespace selector is also configured via <see cref="AssemblySourceFilterBuilder.WithNamespaceSelector(string)"/>, which widens the scan to include matching loaded assemblies as well.</param>
         /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
         public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, params Type[] markerTypesForRequiredAssemblies)
             => services.AddChatterCqrs(configuration, null, b => b.WithMarkerTypes(markerTypesForRequiredAssemblies));
@@ -74,7 +74,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         /// <param name="services">The <see cref="IServiceCollection"/> used to register services used for cqrs capabilities</param>
         /// <param name="configuration">The <see cref="IConfiguration"/> used for configuration based settings</param>
-        /// <param name="handlerAssemblies">Assemblies will be used to find <see cref="IMessageHandler{TMessage}"/> for registration.</param>
+        /// <param name="handlerAssemblies">The only assemblies scanned to find <see cref="IMessageHandler{TMessage}"/> for registration, unless a namespace selector is also configured via <see cref="AssemblySourceFilterBuilder.WithNamespaceSelector(string)"/>, which widens the scan to include matching loaded assemblies as well.</param>
         /// <returns>An <see cref="IChatterBuilder"/> used to configure Chatter capabilities</returns>
         public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, params Assembly[] handlerAssemblies)
             => services.AddChatterCqrs(configuration, null, b => b.WithExplicitAssemblies(handlerAssemblies));

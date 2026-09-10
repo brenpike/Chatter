@@ -26,17 +26,26 @@ dotnet add package Chatter.CQRS
 
 The entry point is the `AddChatterCqrs` extension method on `IServiceCollection`. It scans the supplied assemblies for handlers and wires up the dispatchers. Several overloads control how handler assemblies are located:
 
+- The zero-argument `AddChatterCqrs(configuration)` overload — no marker types, no explicit assemblies, no namespace selector — scans every loaded assembly in the current `AppDomain`.
+- Marker types or explicit assemblies, with no namespace selector configured, scan **only** those assemblies — nothing else in the `AppDomain` is scanned.
+- A namespace selector, whether used alone or alongside marker types / explicit assemblies, widens the scan to every assembly the selector matches, in addition to any explicit assemblies supplied.
+
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
 
-// Locate handler assemblies via marker types (the assembly each type lives in is scanned)
+// Locate handler assemblies via marker types — ONLY the assemblies these types live in are scanned
 services.AddChatterCqrs(configuration, typeof(CreateOrderHandler), typeof(SomeOtherHandler));
 
-// ...or pass explicit assemblies
+// ...or pass explicit assemblies — ONLY the assemblies passed are scanned
 services.AddChatterCqrs(configuration, typeof(Program).Assembly);
 
 // ...or select assemblies by namespace/assembly-name with '*' and '?' wildcards
 services.AddChatterCqrs(configuration, "MyApp.*");
+
+// ...or widen a marker-type/explicit-assembly scan back to the whole AppDomain with a '*' namespace selector
+services.AddChatterCqrs(
+    configuration,
+    messageHandlerSourceBuilder: source => source.WithMarkerTypes(typeof(CreateOrderHandler)).WithNamespaceSelector("*"));
 
 // ...or use the full builder form with a command pipeline + assembly source filter
 services.AddChatterCqrs(

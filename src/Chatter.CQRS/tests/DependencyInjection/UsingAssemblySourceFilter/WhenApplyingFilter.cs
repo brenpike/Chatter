@@ -59,7 +59,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceFilter
         }
 
         [Fact]
-        public void MustNotFilterAnyAssembliesWhenNameselectorIsNullWithExplicitAssemblies()
+        public void MustReturnOnlyExplicitAssembliesWhenNamespaceSelectorIsNull()
         {
             var assembly = New.Common().Assembly.Creation;
             var assembly2 = New.Common().Assembly.Creation;
@@ -72,9 +72,9 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceFilter
             var filter = new AssemblySourceFilter(assemblyFilterSourceProvider, null, explicitAssemblies);
             var result = filter.Apply();
 
-            result.Should().HaveCount(2);
+            result.Should().HaveCount(1);
             result.Should().Contain(assembly);
-            result.Should().Contain(assembly2);
+            result.Should().NotContain(assembly2);
         }
 
         [Fact]
@@ -93,7 +93,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceFilter
         }
 
         [Fact]
-        public void MustNotFilterAnyAssembliesWhenNamespaceSelectorIsEmptyWithExplicitAssemblies()
+        public void MustReturnOnlyExplicitAssembliesWhenNamespaceSelectorIsEmpty()
         {
             var assembly = New.Common().Assembly.Creation;
             var assembly2 = New.Common().Assembly.Creation;
@@ -106,9 +106,62 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceFilter
             var filter = new AssemblySourceFilter(assemblyFilterSourceProvider, string.Empty, explicitAssemblies);
             var result = filter.Apply();
 
+            result.Should().HaveCount(1);
+            result.Should().Contain(assembly);
+            result.Should().NotContain(assembly2);
+        }
+
+        [Fact]
+        public void MustReturnOnlyExplicitAssembliesWhenNamespaceSelectorIsWhitespace()
+        {
+            var assembly = New.Common().Assembly.Creation;
+            var assembly2 = New.Common().Assembly.Creation;
+            var explicitAssemblies = new Assembly[] { assembly };
+
+            var assemblyFilterSourceProvider = New.Cqrs().AssemblyFilterSourceProvider
+                .WithSourceAssemblies(assembly2)
+                .Creation;
+
+            var filter = new AssemblySourceFilter(assemblyFilterSourceProvider, "   ", explicitAssemblies);
+            var result = filter.Apply();
+
+            result.Should().HaveCount(1);
+            result.Should().Contain(assembly);
+            result.Should().NotContain(assembly2);
+        }
+
+        [Fact]
+        public void MustContainSourceAssembliesWhenNamespaceSelectorMatchesEverythingWithExplicitAssemblies()
+        {
+            var assembly = New.Common().Assembly.Creation;
+            var assembly2 = New.Common().Assembly.Creation;
+            var explicitAssemblies = new Assembly[] { assembly };
+
+            var assemblyFilterSourceProvider = New.Cqrs().AssemblyFilterSourceProvider
+                .WithSourceAssemblies(assembly2)
+                .Creation;
+
+            var filter = new AssemblySourceFilter(assemblyFilterSourceProvider, "*", explicitAssemblies);
+            var result = filter.Apply();
+
             result.Should().HaveCount(2);
             result.Should().Contain(assembly);
             result.Should().Contain(assembly2);
+        }
+
+        [Fact]
+        public void MustNotContainDuplicateExplicitAssembliesWhenNamespaceSelectorIsNull()
+        {
+            var assembly = New.Common().Assembly.Creation;
+            var explicitAssemblies = new Assembly[] { assembly, assembly };
+
+            var assemblyFilterSourceProvider = New.Cqrs().AssemblyFilterSourceProvider.Creation;
+
+            var filter = new AssemblySourceFilter(assemblyFilterSourceProvider, null, explicitAssemblies);
+            var result = filter.Apply();
+
+            result.Should().HaveCount(1);
+            result.Should().Contain(assembly);
         }
 
         [Fact]
