@@ -90,8 +90,12 @@ unsupported.
 
 ## Consequences
 
-- **No public API change, no behavior change, no cost on the dispatch path.** The decision is
-  documentation; the dispatch path keeps the allocation profile epic #301 is working to reduce.
+- **No public API change, no synchronization added, no cost on the dispatch path.** The
+  concurrency decision is documentation; the dispatch path keeps the allocation profile epic #301
+  is working to reduce. This is scoped to the concurrency decision only — it is not a claim that
+  the release is behaviorally inert. The sibling #332 fix shipped alongside it changes
+  `GetOrAdd<T>`'s hit/miss semantics observably, as the bullet below and the 0.13.1 changelog
+  both record.
 - **The contract is enforced by convention, not by the type system.** A future change that dispatches
   concurrently from a single context would reintroduce the race silently. The reviewable signal is
   narrow and specific: a context object (or its container) captured by more than one concurrent
