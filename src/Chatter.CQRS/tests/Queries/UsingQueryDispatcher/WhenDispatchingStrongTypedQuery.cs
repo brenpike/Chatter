@@ -20,6 +20,8 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
 
         public class TestQuery : IQuery<string> { }
 
+        public class OtherTestQuery : IQuery<string> { }
+
         public WhenDispatchingStrongTypedQuery()
         {
             _query = new TestQuery();
@@ -74,6 +76,40 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
             _logger.VerifyWasCalled(LogLevel.Error, $"Error dispatching query of type '{nameof(TestQuery)}'", fault, Times.Once());
             _logger.LoggedMessages.Should().ContainSingle();
             _logger.LoggedMessages[0].message.Should().Be($"Error dispatching query of type '{nameof(TestQuery)}'");
+        }
+
+        [Fact]
+        public async Task MustReuseTheCachedInvokerForRepeatedDispatchesOfTheSameQueryType()
+        {
+            await _sut.Query(_query);
+            var invoker = QueryDispatcher.CachedInvokers[(typeof(TestQuery), typeof(string))];
+
+            var nextScopeProvider = new Mock<IServiceProvider>();
+            nextScopeProvider.Setup(p => p.GetService(typeof(IQueryHandler<TestQuery, string>))).Returns(_handler.Object);
+            var nextScopeDispatcher = new QueryDispatcher(nextScopeProvider.Object, _logger.Creation);
+
+            await nextScopeDispatcher.Query(new TestQuery());
+
+            QueryDispatcher.CachedInvokers[(typeof(TestQuery), typeof(string))].Should().BeSameAs(invoker);
+            _serviceProvider.Verify(p => p.GetService(typeof(IQueryHandler<TestQuery, string>)), Times.Once);
+            nextScopeProvider.Verify(p => p.GetService(typeof(IQueryHandler<TestQuery, string>)), Times.Once);
+        }
+
+        [Fact]
+        public async Task MustResolveItsOwnHandlerForEachQueryTypeSharingAResultType()
+        {
+            var otherHandler = new Mock<IQueryHandler<OtherTestQuery, string>>();
+            otherHandler.Setup(h => h.Handle(It.IsAny<OtherTestQuery>(), It.IsAny<IQueryHandlerContext>())).ReturnsAsync("other result");
+            _serviceProvider.Setup(p => p.GetService(typeof(IQueryHandler<OtherTestQuery, string>))).Returns(otherHandler.Object);
+            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>())).ReturnsAsync("result");
+
+            var result = await _sut.Query(_query);
+            var otherResult = await _sut.Query(new OtherTestQuery());
+
+            result.Should().Be("result");
+            otherResult.Should().Be("other result");
+            _handler.Verify(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>()), Times.Once);
+            otherHandler.Verify(h => h.Handle(It.IsAny<OtherTestQuery>(), It.IsAny<IQueryHandlerContext>()), Times.Once);
         }
 
         [Fact]
