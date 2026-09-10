@@ -44,7 +44,7 @@ _Avoid_: listener (a reserved alias — the .NET BCL subscription type is always
 - A Command Pipeline wraps all Command handlers.
 - A Domain Event may be promoted to an Integration Event, published outward via the External Dispatcher (replaced by a broker module).
 - Message Context accompanies every dispatch through the pipeline and handlers.
-- A Context Container belongs to exactly one Message Context, and therefore to exactly one dispatch: the Message Dispatcher gives every dispatch its own container and the Brokered Message Receiver gives every concurrent per-message worker its own, so single-threaded ownership holds by construction.
+- A Context Container belongs to exactly one Message Context: a dispatch that supplies no context gets a fresh Message Context and therefore a fresh container, while a dispatch given an existing Message Context reuses that context's container. See ADR-0011.
 - The Diagnostics Surface observes Command and Event dispatch through the Message Dispatcher; Query dispatch is not instrumented, and nothing is emitted until an application subscribes.
 
 ## Example dialogue
