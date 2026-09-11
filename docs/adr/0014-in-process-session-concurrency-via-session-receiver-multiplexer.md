@@ -175,17 +175,24 @@ receiver is closed before it is nulled.
 
 ### Configuration: SPECIFICITY BEATS SOURCE
 
-`MaxConcurrentCalls` is settable GLOBALLY on Service Bus Options and PER RECEIVER on the session registration
-entry points. **When a receiver states its own value, that value wins — whatever source either value came
-from.** A per-receiver value set fluently beats a global value from configuration, and a per-receiver value
-from configuration beats a global value set fluently. Specificity decides; the source does not enter into it.
+`MaxConcurrentCalls` is settable GLOBALLY on Service Bus Options and PER RECEIVER at REGISTRATION, as an
+argument to the registration entry points. **When a receiver states its own value at registration, that value
+wins — whatever source the GLOBAL value came from.** A stated per-receiver value beats a global value set
+fluently and beats a global value bound from configuration alike. Specificity decides; the source of the
+global does not enter into it.
 
 This sits ALONGSIDE the module's existing fluent-beats-configuration rule for Service Bus Options, and does
 not contradict it. That rule resolves a conflict between two SOURCES for the SAME value — the nullable
 backing fields in `ServiceBusOptionsBuilder` that let a fluent call override a bound section. This rule
 resolves a conflict between two SCOPES. They are different axes and both apply: the global value is resolved
-fluent-first from its two sources, the per-receiver value is resolved fluent-first from its two sources, and
-then the per-receiver value, if stated, wins.
+fluent-first from its two sources, and then a stated per-receiver value, if there is one, wins.
+
+KNOWN LIMITATION: a per-receiver `MaxConcurrentCalls` cannot currently be expressed in CONFIGURATION at all.
+`ServiceBusOptions` carries global scalars with no receivers collection, the core `ReceiverOptions` is not on
+the bindable surface (`src/Chatter.MessageBrokers/src/README.md`), and `BrokeredMessageAttribute` carries no
+concurrency property. Registration is therefore the only place a per-receiver value can be stated, and a
+receiver discovered by the attribute scan can only ever inherit the global. This is recorded as the present
+boundary of the rule, not as a defect this decision undertakes to fix.
 
 `MaxConcurrentCalls` must still be at least `1`; the core rejects anything lower at receiver init
 (`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs:281`).

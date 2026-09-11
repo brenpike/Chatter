@@ -170,28 +170,55 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                               TransactionMode? transactionMode = null,
                                                                               int maxReceiveAttempts = 10)
             where TMessage : class, IEvent
-            => AddTopicSubscription<TMessage>(builder, topicName, subscriptionName, maxConcurrentCalls: null,
-                                              errorQueuePath: errorQueuePath, description: description,
-                                              transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+            => AddTopicSubscriptionCore<TMessage>(builder, topicName, subscriptionName, maxConcurrentCalls: null,
+                                                  errorQueuePath: errorQueuePath, description: description,
+                                                  transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
 
         // Per-receiver-concurrency sibling of AddTopicSubscription. maxConcurrentCalls is how many messages this
-        // subscription may process at once; null inherits the global ServiceBusOptions.MaxConcurrentCalls.
-        // INVARIANT: maxConcurrentCalls is REQUIRED here. That is what keeps an existing call that omits it from
-        // being applicable to this overload at all, so it binds the overload above exactly as before instead of
-        // going ambiguous between two candidates that both need default substitution. It sits IMMEDIATELY AFTER
-        // the required path parameters rather than last so the parameters that follow keep their defaults (C#
-        // forbids an optional parameter AHEAD of a required one, which is what a trailing position would force):
-        // stating just this one knob costs one argument, not four placeholders. Overload resolution separates the
-        // two candidates by the TYPE in that position — an int reaches only this overload, a string only the one
-        // above.
+        // subscription may process at once; omitting it (the overload above) inherits the global
+        // ServiceBusOptions.MaxConcurrentCalls.
+        //
+        // INVARIANT: maxConcurrentCalls is REQUIRED and NON-NULLABLE here, and both properties are load-bearing
+        // for overload resolution.
+        //   REQUIRED keeps an existing call that omits the argument from being applicable to this overload at
+        //   all, so it binds the overload above exactly as before instead of going ambiguous between two
+        //   candidates that both need default substitution.
+        //   NON-NULLABLE keeps an existing call that passes a POSITIONAL null in this slot unambiguous: `null`
+        //   converts to both `string` and `int?` with neither a better conversion target (CS0121), but has no
+        //   conversion to `int`, so `("topic", "sub", null)` is simply not applicable here and binds the overload
+        //   above. Argument TYPE alone does NOT separate the two candidates — that reasoning is what shipped the
+        //   ambiguity this shape now avoids.
+        // The residual is the literal `default`, which converts to every type and so remains ambiguous in this
+        // position; such a call must state a typed value or omit the argument.
+        //
+        // It sits IMMEDIATELY AFTER the required path parameters rather than last so the parameters that follow
+        // keep their defaults (C# forbids an optional parameter AHEAD of a required one, which is what a trailing
+        // position would force): stating just this one knob costs one argument, not four placeholders.
         public static ServiceBusOptionsBuilder AddTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
                                                                               string topicName,
                                                                               string subscriptionName,
-                                                                              int? maxConcurrentCalls,
+                                                                              int maxConcurrentCalls,
                                                                               string errorQueuePath = null,
                                                                               string description = null,
                                                                               TransactionMode? transactionMode = null,
                                                                               int maxReceiveAttempts = 10)
+            where TMessage : class, IEvent
+            => AddTopicSubscriptionCore<TMessage>(builder, topicName, subscriptionName, maxConcurrentCalls,
+                                                  errorQueuePath: errorQueuePath, description: description,
+                                                  transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+
+        // The single registration body behind both AddTopicSubscription overloads. It keeps maxConcurrentCalls
+        // NULLABLE — null means "stated nothing, inherit the global" — which is the shape the registry lookup and
+        // the below-1 guard speak; only the PUBLIC per-receiver overload narrows it to a non-nullable int, and
+        // purely to keep overload resolution unambiguous.
+        private static ServiceBusOptionsBuilder AddTopicSubscriptionCore<TMessage>(ServiceBusOptionsBuilder builder,
+                                                                                   string topicName,
+                                                                                   string subscriptionName,
+                                                                                   int? maxConcurrentCalls,
+                                                                                   string errorQueuePath,
+                                                                                   string description,
+                                                                                   TransactionMode? transactionMode,
+                                                                                   int maxReceiveAttempts)
             where TMessage : class, IEvent
         {
             GuardStatedMaxConcurrentCalls(maxConcurrentCalls);
@@ -211,19 +238,35 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                           TransactionMode? transactionMode = null,
                                                                           int maxReceiveAttempts = 10)
             where TMessage : class, ICommand
-            => AddQueueReceiver<TMessage>(builder, queueName, maxConcurrentCalls: null,
-                                          errorQueuePath: errorQueuePath, description: description,
-                                          transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+            => AddQueueReceiverCore<TMessage>(builder, queueName, maxConcurrentCalls: null,
+                                              errorQueuePath: errorQueuePath, description: description,
+                                              transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
 
         // Per-receiver-concurrency sibling of AddQueueReceiver. maxConcurrentCalls is how many messages this
-        // queue receiver may process at once; null inherits the global ServiceBusOptions.MaxConcurrentCalls.
+        // queue receiver may process at once; omitting it (the overload above) inherits the global
+        // ServiceBusOptions.MaxConcurrentCalls. See AddTopicSubscription for why this parameter is REQUIRED,
+        // NON-NULLABLE and not trailing.
         public static ServiceBusOptionsBuilder AddQueueReceiver<TMessage>(this ServiceBusOptionsBuilder builder,
                                                                           string queueName,
-                                                                          int? maxConcurrentCalls,
+                                                                          int maxConcurrentCalls,
                                                                           string errorQueuePath = null,
                                                                           string description = null,
                                                                           TransactionMode? transactionMode = null,
                                                                           int maxReceiveAttempts = 10)
+            where TMessage : class, ICommand
+            => AddQueueReceiverCore<TMessage>(builder, queueName, maxConcurrentCalls,
+                                              errorQueuePath: errorQueuePath, description: description,
+                                              transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+
+        // The single registration body behind both AddQueueReceiver overloads; nullable maxConcurrentCalls for
+        // the same reason as AddTopicSubscriptionCore.
+        private static ServiceBusOptionsBuilder AddQueueReceiverCore<TMessage>(ServiceBusOptionsBuilder builder,
+                                                                               string queueName,
+                                                                               int? maxConcurrentCalls,
+                                                                               string errorQueuePath,
+                                                                               string description,
+                                                                               TransactionMode? transactionMode,
+                                                                               int maxReceiveAttempts)
             where TMessage : class, ICommand
         {
             GuardStatedMaxConcurrentCalls(maxConcurrentCalls);
@@ -245,21 +288,38 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                      TransactionMode? transactionMode = null,
                                                                                      int maxReceiveAttempts = 10)
             where TMessage : class, IEvent
-            => AddSessionTopicSubscription<TMessage>(builder, topicName, subscriptionName, maxConcurrentCalls: null,
-                                                     errorQueuePath: errorQueuePath, description: description,
-                                                     transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+            => AddSessionTopicSubscriptionCore<TMessage>(builder, topicName, subscriptionName, maxConcurrentCalls: null,
+                                                         errorQueuePath: errorQueuePath, description: description,
+                                                         transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
 
         // Per-receiver-concurrency sibling of AddSessionTopicSubscription. In SESSION mode maxConcurrentCalls is
         // how many SESSIONS this subscription holds at once (ADR-0014) — each held session is still served one
-        // message at a time; null inherits the global ServiceBusOptions.MaxConcurrentCalls.
+        // message at a time; omitting it (the overload above) inherits the global
+        // ServiceBusOptions.MaxConcurrentCalls. See AddTopicSubscription for why this parameter is REQUIRED,
+        // NON-NULLABLE and not trailing.
         public static ServiceBusOptionsBuilder AddSessionTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
                                                                                      string topicName,
                                                                                      string subscriptionName,
-                                                                                     int? maxConcurrentCalls,
+                                                                                     int maxConcurrentCalls,
                                                                                      string errorQueuePath = null,
                                                                                      string description = null,
                                                                                      TransactionMode? transactionMode = null,
                                                                                      int maxReceiveAttempts = 10)
+            where TMessage : class, IEvent
+            => AddSessionTopicSubscriptionCore<TMessage>(builder, topicName, subscriptionName, maxConcurrentCalls,
+                                                         errorQueuePath: errorQueuePath, description: description,
+                                                         transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+
+        // The single registration body behind both AddSessionTopicSubscription overloads; nullable
+        // maxConcurrentCalls for the same reason as AddTopicSubscriptionCore.
+        private static ServiceBusOptionsBuilder AddSessionTopicSubscriptionCore<TMessage>(ServiceBusOptionsBuilder builder,
+                                                                                          string topicName,
+                                                                                          string subscriptionName,
+                                                                                          int? maxConcurrentCalls,
+                                                                                          string errorQueuePath,
+                                                                                          string description,
+                                                                                          TransactionMode? transactionMode,
+                                                                                          int maxReceiveAttempts)
             where TMessage : class, IEvent
         {
             GuardStatedMaxConcurrentCalls(maxConcurrentCalls);
@@ -282,20 +342,35 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                  TransactionMode? transactionMode = null,
                                                                                  int maxReceiveAttempts = 10)
             where TMessage : class, ICommand
-            => AddSessionQueueReceiver<TMessage>(builder, queueName, maxConcurrentCalls: null,
-                                                 errorQueuePath: errorQueuePath, description: description,
-                                                 transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+            => AddSessionQueueReceiverCore<TMessage>(builder, queueName, maxConcurrentCalls: null,
+                                                     errorQueuePath: errorQueuePath, description: description,
+                                                     transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
 
         // Per-receiver-concurrency sibling of AddSessionQueueReceiver. In SESSION mode maxConcurrentCalls is how
         // many SESSIONS this receiver holds at once (ADR-0014) — each held session is still served one message at
-        // a time; null inherits the global ServiceBusOptions.MaxConcurrentCalls.
+        // a time; omitting it (the overload above) inherits the global ServiceBusOptions.MaxConcurrentCalls. See
+        // AddTopicSubscription for why this parameter is REQUIRED, NON-NULLABLE and not trailing.
         public static ServiceBusOptionsBuilder AddSessionQueueReceiver<TMessage>(this ServiceBusOptionsBuilder builder,
                                                                                  string queueName,
-                                                                                 int? maxConcurrentCalls,
+                                                                                 int maxConcurrentCalls,
                                                                                  string errorQueuePath = null,
                                                                                  string description = null,
                                                                                  TransactionMode? transactionMode = null,
                                                                                  int maxReceiveAttempts = 10)
+            where TMessage : class, ICommand
+            => AddSessionQueueReceiverCore<TMessage>(builder, queueName, maxConcurrentCalls,
+                                                     errorQueuePath: errorQueuePath, description: description,
+                                                     transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+
+        // The single registration body behind both AddSessionQueueReceiver overloads; nullable maxConcurrentCalls
+        // for the same reason as AddTopicSubscriptionCore.
+        private static ServiceBusOptionsBuilder AddSessionQueueReceiverCore<TMessage>(ServiceBusOptionsBuilder builder,
+                                                                                      string queueName,
+                                                                                      int? maxConcurrentCalls,
+                                                                                      string errorQueuePath,
+                                                                                      string description,
+                                                                                      TransactionMode? transactionMode,
+                                                                                      int maxReceiveAttempts)
             where TMessage : class, ICommand
         {
             GuardStatedMaxConcurrentCalls(maxConcurrentCalls);

@@ -782,9 +782,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         {
             // COMPILE-TIME proof that the per-receiver overloads leave every call shape unambiguous, in BOTH
             // directions. maxConcurrentCalls sits IMMEDIATELY AFTER the required path parameter(s) and is itself
-            // REQUIRED, so overload resolution separates the two candidates by the TYPE of the argument in that
-            // position: an int reaches only the new overload, a string reaches only the old one, and a call that
-            // omits the position entirely is not applicable to the new overload at all — so CS0121 never arises.
+            // REQUIRED and NON-NULLABLE, so overload resolution separates the two candidates by the TYPE of the
+            // argument in that position: an int reaches only the new overload, a string reaches only the old one,
+            // and a call that omits the position entirely is not applicable to the new overload at all — so
+            // CS0121 never arises. A `null` argument in that position is what a NULLABLE parameter would have
+            // made ambiguous; it is pinned separately below, in
+            // MustBindAPositionalNullToTheOriginalOverloadOnEveryRegistrationMethod.
             // Because the parameter is no longer trailing, the remaining parameters keep their defaults (CS1737
             // does not fire), which is what makes the one-knob call site spell ONE extra argument, not four.
             // Compiling IS the assertion for the binding; the stamped value says WHICH overload ran — an
@@ -840,6 +843,54 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
 
             StatedReceiver(discoveredRegistry, "legacy-session-sub").MaxConcurrentCalls.Should().Be(7);
             StatedReceiver(discoveredRegistry, "stated-session-sub").MaxConcurrentCalls.Should().Be(8);
+        }
+
+        [Fact]
+        public async Task MustBindAPositionalNullToTheOriginalOverloadOnEveryRegistrationMethod()
+        {
+            // SOURCE-COMPATIBILITY pin, and a COMPILE-LEVEL one. A `null` literal converts to `string` and to
+            // `int?` with neither a better conversion target, so a per-receiver parameter typed `int?` makes every
+            // call below CS0121 — an existing consumer passing a positional null in the errorQueuePath slot would
+            // stop compiling on upgrade. The parameter is a NON-NULLABLE `int` precisely so `null` has no
+            // conversion to it and these calls stay applicable to the original overload only.
+            //
+            // Do NOT "simplify" these call sites by naming the arguments or dropping the nulls: the ARGUMENT
+            // SHAPES are the assertion, and this file stops compiling the moment anyone reintroduces a nullable or
+            // reference type in that slot. The runtime assertions say WHICH overload ran — inheriting the global 7
+            // means the original one did.
+            //
+            // KNOWN RESIDUAL, deliberately not pinned: the literal `default` in the same position converts to
+            // every candidate type and stays ambiguous. A test cannot assert a compile error, so it is recorded in
+            // the CHANGELOG instead; such a call must state a typed value or omit the argument.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+
+                sb.AddQueueReceiver<FirstCommand>("null-queue", null);
+                sb.AddQueueReceiver<FirstCommand>("null-described-queue", null, "desc");
+
+                sb.AddSessionQueueReceiver<FirstCommand>("null-session-queue", null);
+                sb.AddSessionQueueReceiver<FirstCommand>("null-described-session-queue", null, "desc");
+
+                sb.AddTopicSubscription<FirstEvent>("null-topic", "null-sub", null);
+                sb.AddTopicSubscription<FirstEvent>("null-described-topic", "null-described-sub", null, "desc");
+
+                sb.AddSessionTopicSubscription<FirstEvent>("null-session-topic", "null-session-sub", null);
+                sb.AddSessionTopicSubscription<FirstEvent>("null-described-session-topic", "null-described-session-sub", null, "desc");
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+
+            provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls.Should().Be(7);
+
+            StatedReceiver(discoveredRegistry, "null-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-described-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-session-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-described-session-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-described-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-session-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-described-session-sub").MaxConcurrentCalls.Should().Be(7);
         }
 
         [Fact]
