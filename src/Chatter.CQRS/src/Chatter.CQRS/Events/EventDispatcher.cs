@@ -34,8 +34,11 @@ namespace Chatter.CQRS.Events
         /// <param name="message">The event to be dispatched.</param>
         /// <param name="messageHandlerContext">The context to be dispatched with <paramref name="message"/>.</param>
         /// <returns>An awaitable <see cref="Task"/></returns>
-        /// <remarks><see cref="IEvent"/> can have multiple handlers and all will be invoked when 
-        /// the <paramref name="message"/> is dispatched by <see cref="IMessageDispatcher"/></remarks>
+        /// <remarks>Each <see cref="IMessageHandler{TMessage}"/> resolved for <typeparamref name="TMessage"/> is
+        /// awaited in resolution order. The first handler that throws propagates out of <c>Dispatch</c>: the
+        /// exception is logged once and rethrown unchanged, and no subsequent handler is invoked (ADR-0012).
+        /// A caller that needs a subscriber to run independently of its siblings must give that subscriber its own
+        /// delivery — its own broker subscription or queue — rather than one dispatch carrying several handlers.</remarks>
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
             // INVARIANT: ADR-0010 R1/R4 — the off-guard is evaluated before any argument is constructed, and the
