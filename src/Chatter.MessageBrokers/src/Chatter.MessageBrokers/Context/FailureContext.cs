@@ -41,16 +41,25 @@ namespace Chatter.MessageBrokers.Context
         /// </summary>
         public Exception Failure { get; }
         /// <summary>
-        /// How many times the failed delivery had been received when the failure occurred.
+        /// How many times the failed delivery had been received when the failure occurred, or an out-of-band value
+        /// when there is no such count — read the remarks before branching on it.
         /// </summary>
         /// <remarks>
-        /// A value of <see cref="int.MaxValue"/> is the uncountable-delivery sentinel, NOT a real attempt count: the
-        /// receiving infrastructure held no usable Receive Attempts value for this delivery, so how many times it had
-        /// been received is unknown here. Such a delivery is being deadlettered on its FIRST handler error rather than
-        /// retried, which is the only way a registered recovery action is handed the sentinel.
-        /// An application's registered recovery action must therefore not do ARITHMETIC on this value — not
-        /// subtracting from it, not computing a backoff from it, not treating it as an attempt number — because the
-        /// sentinel means "uncountable", while every such computation would answer with a number regardless.
+        /// <c>-1</c> means there is no delivery being counted at all. It is the value carried when a critical receiver
+        /// fault is reported to an <c>ICriticalFailureNotifier</c>, and <see cref="Inbound"/> is null alongside it.
+        /// <see cref="int.MaxValue"/> is the uncountable-delivery sentinel that the default
+        /// <see cref="IMessagingInfrastructureReceiver.MessageDeliveryCountAsync"/> answers with when the receiving
+        /// infrastructure held no usable Receive Attempts value for the delivery, so how many times it had been
+        /// received is unknown. That sentinel is NOT a reserved value: a Receive Attempts that genuinely holds
+        /// <see cref="int.MaxValue"/> is returned as itself and arrives here indistinguishably. The collision is
+        /// reachable rather than theoretical, because an adapter that saturates a publisher-supplied delivery-count
+        /// header into <c>[0, int.MaxValue]</c> can stamp exactly this value. Both readings settle the delivery the
+        /// same way — <see cref="int.MaxValue"/> sits at or above every configurable MaxReceiveAttempts, so it
+        /// deadletters either way — so what the collision costs is the ability to say WHY, never the outcome.
+        /// An application's registered recovery or notification action must therefore not do ARITHMETIC on this value
+        /// — not subtracting from it, not computing a backoff from it, not treating it as an attempt number — because
+        /// it may mean "no delivery" or "uncountable", while every such computation would answer with a number
+        /// regardless.
         /// </remarks>
         public int DeliveryCount { get; }
         public TransactionContext TransactionContext { get; }

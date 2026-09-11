@@ -112,7 +112,10 @@ namespace Chatter.MessageBrokers.Receiving
         /// The stored count when Receive Attempts is present AND is an integral value — <see cref="sbyte"/>,
         /// <see cref="byte"/>, <see cref="short"/>, <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>,
         /// <see cref="long"/> or <see cref="ulong"/> — lying within <c>[0, int.MaxValue]</c>; otherwise
-        /// <see cref="int.MaxValue"/>, the dead-letter sentinel.
+        /// <see cref="int.MaxValue"/>, the dead-letter sentinel. The sentinel is NOT a reserved value: a stored count
+        /// that genuinely holds <see cref="int.MaxValue"/> is returned as itself, and nothing downstream can tell the
+        /// two apart. Both sit at or above every configurable MaxReceiveAttempts, so both deadletter — see
+        /// <see cref="FailureContext.DeliveryCount"/>, which is where the value reaches application code.
         /// </returns>
         /// <remarks>
         /// INVARIANT: this probe is TOTAL. It answers with the dead-letter sentinel — a count no configured
@@ -120,8 +123,13 @@ namespace Chatter.MessageBrokers.Receiving
         /// Receive Attempts, a non-integral one (<see cref="decimal"/>, <see cref="double"/>, <see cref="float"/>, a
         /// string, a byte[]), or an integral one outside <c>[0, int.MaxValue]</c>. Any integral width IS this
         /// infrastructure's own count, because Receive Attempts is stamped as an <see cref="int"/> but arrives as a
-        /// <see cref="long"/> once a delivery has been replayed from an outbox — the same tolerance
-        /// <see cref="Sending.OutboundBrokeredMessage"/> already applies when it reads the key back.
+        /// <see cref="long"/> once a delivery has been replayed from an outbox.
+        /// <see cref="Sending.OutboundBrokeredMessage"/> tolerates that same replayed width when it reads the key back,
+        /// but it does NOT apply this rule and must not be read as doing so: it converts through
+        /// <see cref="Convert.ToInt32(object)"/>, which accepts shapes this probe refuses — a numeric string, a
+        /// <see cref="bool"/>, a rounded <see cref="double"/> or <see cref="decimal"/> — and which THROWS on an
+        /// unparsable or out-of-range value. The two are deliberately not one rule: only this probe is awaited inside
+        /// the error ladder, where a throw is unaffordable.
         /// INVARIANT: the range is checked BEFORE the value is narrowed. A narrowing conversion of an out-of-range
         /// integral throws <see cref="OverflowException"/>, and a probe that throws is the exact fault this member is
         /// written to avoid.
