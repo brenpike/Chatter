@@ -50,7 +50,7 @@ namespace Microsoft.Extensions.DependencyInjection
             var receiverRegistry = GetOrAddReceiverRegistry(builder.Services);
 
             // Fold attribute-registered receivers ([BrokeredMessageAttribute] assembly scan) into the ASB
-            // receiver registry and stamp the global MaxConcurrentCalls. This runs at registration time, before
+            // receiver registry and stamp each receiver's effective MaxConcurrentCalls. This runs at registration time, before
             // the shared-client factory reads the registry at lazy resolve. `options` (the built ServiceBusOptions)
             // is the only place the finalized global MaxConcurrentCalls is known — it is resolved at
             // optBuilder.Build(), AFTER the receiver-registration options delegate has already run.
@@ -170,12 +170,36 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                               TransactionMode? transactionMode = null,
                                                                               int maxReceiveAttempts = 10)
             where TMessage : class, IEvent
+            => AddTopicSubscription<TMessage>(builder, topicName, subscriptionName, maxConcurrentCalls: null,
+                                              errorQueuePath: errorQueuePath, description: description,
+                                              transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+
+        // Per-receiver-concurrency sibling of AddTopicSubscription. maxConcurrentCalls is how many messages this
+        // subscription may process at once; null inherits the global ServiceBusOptions.MaxConcurrentCalls.
+        // INVARIANT: maxConcurrentCalls is REQUIRED here. That is what keeps an existing call that omits it from
+        // being applicable to this overload at all, so it binds the overload above exactly as before instead of
+        // going ambiguous between two candidates that both need default substitution. It sits IMMEDIATELY AFTER
+        // the required path parameters rather than last so the parameters that follow keep their defaults (C#
+        // forbids an optional parameter AHEAD of a required one, which is what a trailing position would force):
+        // stating just this one knob costs one argument, not four placeholders. Overload resolution separates the
+        // two candidates by the TYPE in that position — an int reaches only this overload, a string only the one
+        // above.
+        public static ServiceBusOptionsBuilder AddTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                              string topicName,
+                                                                              string subscriptionName,
+                                                                              int? maxConcurrentCalls,
+                                                                              string errorQueuePath = null,
+                                                                              string description = null,
+                                                                              TransactionMode? transactionMode = null,
+                                                                              int maxReceiveAttempts = 10)
+            where TMessage : class, IEvent
         {
+            GuardStatedMaxConcurrentCalls(maxConcurrentCalls);
             // The TOPIC is the top-level entity Azure Service Bus pins a cross-entity transaction to; two
             // subscriptions on the same topic share one top-level entity. The SUBSCRIPTION name is the
             // receiver path that distinguishes this receiver from another subscription on the same topic for
             // the per-receiver session lookup.
-            GetOrAddReceiverRegistry(builder.Services).Register(topicName, subscriptionName, transactionMode);
+            GetOrAddReceiverRegistry(builder.Services).Register(topicName, subscriptionName, transactionMode, maxConcurrentCalls: maxConcurrentCalls);
             builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -187,10 +211,25 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                           TransactionMode? transactionMode = null,
                                                                           int maxReceiveAttempts = 10)
             where TMessage : class, ICommand
+            => AddQueueReceiver<TMessage>(builder, queueName, maxConcurrentCalls: null,
+                                          errorQueuePath: errorQueuePath, description: description,
+                                          transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+
+        // Per-receiver-concurrency sibling of AddQueueReceiver. maxConcurrentCalls is how many messages this
+        // queue receiver may process at once; null inherits the global ServiceBusOptions.MaxConcurrentCalls.
+        public static ServiceBusOptionsBuilder AddQueueReceiver<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                          string queueName,
+                                                                          int? maxConcurrentCalls,
+                                                                          string errorQueuePath = null,
+                                                                          string description = null,
+                                                                          TransactionMode? transactionMode = null,
+                                                                          int maxReceiveAttempts = 10)
+            where TMessage : class, ICommand
         {
+            GuardStatedMaxConcurrentCalls(maxConcurrentCalls);
             // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to,
             // and is its own receiver path for the per-receiver session lookup.
-            GetOrAddReceiverRegistry(builder.Services).Register(queueName, queueName, transactionMode);
+            GetOrAddReceiverRegistry(builder.Services).Register(queueName, queueName, transactionMode, maxConcurrentCalls: maxConcurrentCalls);
             builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -206,12 +245,29 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                      TransactionMode? transactionMode = null,
                                                                                      int maxReceiveAttempts = 10)
             where TMessage : class, IEvent
+            => AddSessionTopicSubscription<TMessage>(builder, topicName, subscriptionName, maxConcurrentCalls: null,
+                                                     errorQueuePath: errorQueuePath, description: description,
+                                                     transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+
+        // Per-receiver-concurrency sibling of AddSessionTopicSubscription. In SESSION mode maxConcurrentCalls is
+        // how many SESSIONS this subscription holds at once (ADR-0014) — each held session is still served one
+        // message at a time; null inherits the global ServiceBusOptions.MaxConcurrentCalls.
+        public static ServiceBusOptionsBuilder AddSessionTopicSubscription<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                                     string topicName,
+                                                                                     string subscriptionName,
+                                                                                     int? maxConcurrentCalls,
+                                                                                     string errorQueuePath = null,
+                                                                                     string description = null,
+                                                                                     TransactionMode? transactionMode = null,
+                                                                                     int maxReceiveAttempts = 10)
+            where TMessage : class, IEvent
         {
+            GuardStatedMaxConcurrentCalls(maxConcurrentCalls);
             // The TOPIC is the top-level entity Azure Service Bus pins a cross-entity transaction to; two
             // subscriptions on the same topic share one top-level entity. The SUBSCRIPTION name is the
             // receiver path that marks THIS subscription session-mode without affecting a sibling normal
             // subscription on the same topic.
-            GetOrAddReceiverRegistry(builder.Services).Register(topicName, subscriptionName, transactionMode, requiresSession: true);
+            GetOrAddReceiverRegistry(builder.Services).Register(topicName, subscriptionName, transactionMode, requiresSession: true, maxConcurrentCalls: maxConcurrentCalls);
             builder.Services.AddReceiver<TMessage>(subscriptionName, errorQueuePath, description, topicName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
         }
@@ -226,12 +282,40 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                  TransactionMode? transactionMode = null,
                                                                                  int maxReceiveAttempts = 10)
             where TMessage : class, ICommand
+            => AddSessionQueueReceiver<TMessage>(builder, queueName, maxConcurrentCalls: null,
+                                                 errorQueuePath: errorQueuePath, description: description,
+                                                 transactionMode: transactionMode, maxReceiveAttempts: maxReceiveAttempts);
+
+        // Per-receiver-concurrency sibling of AddSessionQueueReceiver. In SESSION mode maxConcurrentCalls is how
+        // many SESSIONS this receiver holds at once (ADR-0014) — each held session is still served one message at
+        // a time; null inherits the global ServiceBusOptions.MaxConcurrentCalls.
+        public static ServiceBusOptionsBuilder AddSessionQueueReceiver<TMessage>(this ServiceBusOptionsBuilder builder,
+                                                                                 string queueName,
+                                                                                 int? maxConcurrentCalls,
+                                                                                 string errorQueuePath = null,
+                                                                                 string description = null,
+                                                                                 TransactionMode? transactionMode = null,
+                                                                                 int maxReceiveAttempts = 10)
+            where TMessage : class, ICommand
         {
+            GuardStatedMaxConcurrentCalls(maxConcurrentCalls);
             // The QUEUE is itself the top-level entity Azure Service Bus pins a cross-entity transaction to,
             // and is its own receiver path for the per-receiver session lookup.
-            GetOrAddReceiverRegistry(builder.Services).Register(queueName, queueName, transactionMode, requiresSession: true);
+            GetOrAddReceiverRegistry(builder.Services).Register(queueName, queueName, transactionMode, requiresSession: true, maxConcurrentCalls: maxConcurrentCalls);
             builder.Services.AddReceiver<TMessage>(queueName, errorQueuePath, description, queueName, transactionMode, ASBMessageContext.InfrastructureType, maxReceiveAttempts: maxReceiveAttempts);
             return builder;
+        }
+
+        // A STATED per-receiver MaxConcurrentCalls is validated HERE, at registration, where the call site that
+        // stated it is still in view. The INHERITED (null -> global) path is deliberately not validated here:
+        // core receiver init remains the single sink for the at-least-1 floor and already fails there by name.
+        private static void GuardStatedMaxConcurrentCalls(int? maxConcurrentCalls)
+        {
+            if (maxConcurrentCalls.HasValue && maxConcurrentCalls.Value < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxConcurrentCalls), maxConcurrentCalls.Value,
+                    "Azure Service Bus MaxConcurrentCalls must be at least 1.");
+            }
         }
 
         // Resolves the single ServiceBusReceiverRegistry instance shared across all AddQueueReceiver/
@@ -253,8 +337,8 @@ namespace Microsoft.Extensions.DependencyInjection
 
         // Folds attribute-registered receivers (the core [BrokeredMessageAttribute] assembly scan, which never
         // calls AddQueueReceiver/AddTopicSubscription) into the ASB receiver registry so the cross-entity
-        // effective-flag computation and single-top-level-entity guard see them, and stamps the global
-        // MaxConcurrentCalls onto each ASB receiver's retained ReceiverOptions.
+        // effective-flag computation and single-top-level-entity guard see them, and stamps each ASB receiver's
+        // EFFECTIVE MaxConcurrentCalls (its own stated value, else the global) onto its retained ReceiverOptions.
         //
         // The core IDiscoveredReceiverRegistry retains the LIVE ReceiverOptions instances; it is registered as a
         // singleton ImplementationInstance, so it is read directly off the IServiceCollection here at
@@ -292,26 +376,26 @@ namespace Microsoft.Extensions.DependencyInjection
                     continue;
                 }
 
-                // (MaxConcurrentCalls) Stamp the finalized global value onto the retained live instance, before
-                // any hosted-service pumps. Visible at receiver init via ReceiverOptions.MaxConcurrentCalls.
+                // (MaxConcurrentCalls) Stamp the EFFECTIVE value onto the retained live instance, before any
+                // hosted-service pumps. Visible at receiver init via ReceiverOptions.MaxConcurrentCalls.
                 //
-                // (P1 session-concurrency clamp) A session-mode receiver holds a SINGLE ServiceBusSessionReceiver
-                // and must serve at most ONE in-flight message at a time: the core BrokeredMessageReceiver spawns
-                // MaxConcurrentCalls workers that all call ReceiveAsync on that one held session receiver, so >1
-                // would pull from the single session concurrently and break FIFO-per-session ordering and
-                // session-state consistency. Clamp this receiver's live MaxConcurrentCalls to 1 (overriding the
-                // global value) so one worker maps to one in-flight message. Non-session receivers keep the global
-                // value. The clamp is a no-op when the global value is already 1. The session flag was recorded on
-                // receiverRegistry by AddSessionQueueReceiver/AddSessionTopicSubscription during the options
-                // delegate, which runs BEFORE this method, so the per-receiver lookup is populated here.
-                if (receiverRegistry.RequiresSession(receiverOptions.MessageReceiverPath, receiverOptions.SendingPath))
-                {
-                    receiverOptions.MaxConcurrentCalls = 1;
-                }
-                else
-                {
-                    receiverOptions.MaxConcurrentCalls = options.MaxConcurrentCalls;
-                }
+                // PRECEDENCE — SPECIFICITY BEATS SOURCE (ADR-0014): the value a receiver STATED on its own
+                // registration wins over the global value, whatever source either one came from. A per-receiver
+                // value set fluently beats a global bound from configuration, and a per-receiver value bound from
+                // configuration beats a global set fluently. This is a DIFFERENT axis from the module's
+                // fluent-beats-configuration rule, which resolves two SOURCES for ONE value; this resolves two
+                // SCOPES. Both apply: each scope is resolved fluent-first, then the narrower scope wins. The
+                // stated values were recorded on receiverRegistry by the Add*Receiver/Add*Subscription overloads
+                // during the options delegate, which runs BEFORE this method, so the lookup is populated here.
+                //
+                // Session mode does NOT change the stamp: in session mode MaxConcurrentCalls means CONCURRENT
+                // SESSIONS (ADR-0014), and each multiplexed single-session child still serves one message at a
+                // time, so a session receiver takes the same effective value a non-session one would. Range
+                // validation of the INHERITED global stays with core receiver init, the single sink for the
+                // at-least-1 floor; a STATED per-receiver value is rejected at registration instead.
+                receiverOptions.MaxConcurrentCalls =
+                    receiverRegistry.StatedMaxConcurrentCalls(receiverOptions.MessageReceiverPath, receiverOptions.SendingPath)
+                    ?? options.MaxConcurrentCalls;
 
                 // (F3) Infer the ASB top-level entity (queue vs topic) using the same SendingPath/ReceiverPath
                 // convention as AzureServiceBusEntityPathBuilder: a queue receiver has SendingPath empty or equal

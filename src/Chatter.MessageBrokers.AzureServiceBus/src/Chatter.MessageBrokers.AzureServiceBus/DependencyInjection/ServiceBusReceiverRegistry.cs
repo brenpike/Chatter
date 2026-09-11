@@ -20,7 +20,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
         // receiver factory runs. Storing and looking up under this single derived key closes the
         // raw-(at-registration)-vs-formatted-(at-runtime) mismatch class by construction: a topic
         // subscription's key is "<topic>/Subscriptions/<sub>" regardless of whether the receiver path
-        // arrived raw (registration / discovery clamp) or already formatted (runtime CreateProductionReceiver).
+        // arrived raw (registration / discovery fold) or already formatted (runtime CreateProductionReceiver).
         private static readonly IBrokeredMessagePathBuilder _pathBuilder = new AzureServiceBusEntityPathBuilder();
         private const string SubscriptionsSegment = "Subscriptions";
 
@@ -35,10 +35,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
         // AddSessionTopicSubscription); the receiver factory reads it at client-build time via the
         // per-receiver RequiresSession(receiverPath, sendingPath) lookup to select the session adapter for
         // THIS receiver (not every receiver sharing the top-level entity).
-        public void Register(string topLevelEntity, string receiverPath, TransactionMode? transactionMode, bool requiresSession = false)
+        // maxConcurrentCalls is the value this receiver STATED on its own registration; null means it stated
+        // nothing and inherits the global ServiceBusOptions.MaxConcurrentCalls at stamp time.
+        public void Register(string topLevelEntity, string receiverPath, TransactionMode? transactionMode, bool requiresSession = false, int? maxConcurrentCalls = null)
         {
             var canonicalReceivingPath = CanonicalReceivingPath(topLevelEntity, receiverPath);
-            _receivers.Add(new RegisteredReceiver(topLevelEntity, canonicalReceivingPath, transactionMode, requiresSession));
+            GuardStatedMaxConcurrentCallsConflict(topLevelEntity, canonicalReceivingPath, maxConcurrentCalls);
+            _receivers.Add(new RegisteredReceiver(topLevelEntity, canonicalReceivingPath, transactionMode, requiresSession, maxConcurrentCalls));
         }
 
         // True when any configured receiver's EFFECTIVE transaction mode is FullAtomicityViaInfrastructure,
@@ -66,16 +69,61 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
         // semantics (mirroring DistinctTopLevelEntities). receiverPath is the receiver's own path (queue name
         // or subscription name) and sendingPath is the topic for a subscription (empty/equal-to-receiver-path
         // for a queue); the same pair was supplied at registration. The receiver factory
-        // (ServiceBusReceiver.CreateProductionReceiver) calls this at client-build time, and STEP-002's
-        // concurrency clamp reuses it to ask "is this receiver path session-mode?".
+        // (ServiceBusReceiver.CreateProductionReceiver) calls this at client-build time.
         public bool RequiresSession(string receiverPath, string sendingPath)
         {
             var topLevelEntity = InferTopLevelEntity(sendingPath, receiverPath);
             var canonicalReceivingPath = CanonicalReceivingPath(topLevelEntity, receiverPath);
-            return _receivers.Any(r => r.RequiresSession
-                && string.Equals(r.MessageReceiverPath, canonicalReceivingPath, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(r.TopLevelEntity, topLevelEntity, StringComparison.OrdinalIgnoreCase));
+            return _receivers.Any(r => r.RequiresSession && MatchesReceiverKey(r, topLevelEntity, canonicalReceivingPath));
         }
+
+        // The MaxConcurrentCalls the SPECIFIC receiver identified by (receiverPath, sendingPath) STATED on its
+        // own registration, or null when it stated nothing and inherits the global. Keyed the same canonical way
+        // RequiresSession is, so the raw-(at-registration)-vs-formatted-(at-runtime) path shapes collapse to one
+        // key here too.
+        // FIRST NON-NULL, not first entry: the attribute-discovery fold appends a DUPLICATE entry for a receiver
+        // it has already seen, carrying a null stated value, so a positional first-match would let that null mask
+        // a value the receiver actually stated. Two DIFFERENT stated values for one key cannot reach this method
+        // — Register refuses them.
+        public int? StatedMaxConcurrentCalls(string receiverPath, string sendingPath)
+        {
+            var topLevelEntity = InferTopLevelEntity(sendingPath, receiverPath);
+            var canonicalReceivingPath = CanonicalReceivingPath(topLevelEntity, receiverPath);
+            return _receivers
+                .Where(r => MatchesReceiverKey(r, topLevelEntity, canonicalReceivingPath))
+                .Select(r => r.MaxConcurrentCalls)
+                .FirstOrDefault(stated => stated.HasValue);
+        }
+
+        // Two registrations of ONE receiver stating two DIFFERENT concurrency values have no defensible
+        // resolution — picking either silently gives the host a receiver sized by whichever call site happened to
+        // run first. Refuse at registration naming the key and both values, the same posture
+        // ResolveEffectiveCrossEntityTransactions takes for the unsupportable cross-entity combination. Equal
+        // values agree, and a null states nothing, so neither conflicts.
+        private void GuardStatedMaxConcurrentCallsConflict(string topLevelEntity, string canonicalReceivingPath, int? maxConcurrentCalls)
+        {
+            if (!maxConcurrentCalls.HasValue)
+            {
+                return;
+            }
+
+            var conflicting = _receivers
+                .Where(r => MatchesReceiverKey(r, topLevelEntity, canonicalReceivingPath))
+                .Select(r => r.MaxConcurrentCalls)
+                .FirstOrDefault(stated => stated.HasValue && stated.Value != maxConcurrentCalls.Value);
+            if (conflicting.HasValue)
+            {
+                throw new InvalidOperationException(
+                    $"Azure Service Bus receiver '{canonicalReceivingPath}' was registered with conflicting MaxConcurrentCalls values: {conflicting.Value} and {maxConcurrentCalls.Value}. Register it once, or state the same value on every registration.");
+            }
+        }
+
+        // The per-receiver key: canonical receiving path AND top-level entity, both compared case-insensitively
+        // to match Azure Service Bus entity-name semantics (mirroring DistinctTopLevelEntities). One definition
+        // shared by every per-receiver lookup so they can never drift apart.
+        private static bool MatchesReceiverKey(RegisteredReceiver receiver, string topLevelEntity, string canonicalReceivingPath)
+            => string.Equals(receiver.MessageReceiverPath, canonicalReceivingPath, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(receiver.TopLevelEntity, topLevelEntity, StringComparison.OrdinalIgnoreCase);
 
         // Mirrors the registration-time top-level-entity inference (and ServiceBusReceiver.InferTopLevelEntity):
         // a queue receiver's sending path is empty or equals its receiver path (the queue IS the top-level
@@ -92,7 +140,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
         // IDEMPOTENCY: GetMessageReceivingPath is NOT self-idempotent — re-formatting an already-formatted
         // subscription path would yield "<topic>/Subscriptions/<topic>/Subscriptions/<sub>". The runtime
         // CreateProductionReceiver lookup passes an ALREADY-FORMATTED receiver path (StartReceiver rewrote it),
-        // while registration / the discovery clamp pass a RAW subscription name. This guard short-circuits the
+        // while registration / the discovery fold pass a RAW subscription name. This guard short-circuits the
         // already-formatted case so both inputs collapse to the same canonical key.
         private static string CanonicalReceivingPath(string topLevelEntity, string receiverPath)
         {
@@ -118,18 +166,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.DependencyInjection
 
         private readonly struct RegisteredReceiver
         {
-            public RegisteredReceiver(string topLevelEntity, string messageReceiverPath, TransactionMode? transactionMode, bool requiresSession)
+            public RegisteredReceiver(string topLevelEntity, string messageReceiverPath, TransactionMode? transactionMode, bool requiresSession, int? maxConcurrentCalls)
             {
                 TopLevelEntity = topLevelEntity;
                 MessageReceiverPath = messageReceiverPath;
                 TransactionMode = transactionMode;
                 RequiresSession = requiresSession;
+                MaxConcurrentCalls = maxConcurrentCalls;
             }
 
             public string TopLevelEntity { get; }
             public string MessageReceiverPath { get; }
             public TransactionMode? TransactionMode { get; }
             public bool RequiresSession { get; }
+            public int? MaxConcurrentCalls { get; }
         }
     }
 }
