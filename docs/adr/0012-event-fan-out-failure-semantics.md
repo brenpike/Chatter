@@ -108,14 +108,16 @@ once and rethrows it unchanged, and no subsequent handler is invoked. The except
 the handler threw it — it is never wrapped, and it is never joined to another handler's exception. That is
 a fact about the method body, and it is the whole of what the type does.
 
-**The dispatcher's one error record is not the delivery's total.** When the event arrived through a
-`BrokeredMessageReceiver`, the receiver logs the rethrown exception again before rethrowing it in turn, so a
-failed broker-delivered dispatch leaves at least two error records: one from `EventDispatcher` and at least
-one more from `BrokeredMessageReceiver`. `BrokeredMessageReceiver.DispatchReceivedMessageAsync` catches the
-exception the dispatch rethrows, calls `LogError`, and rethrows it; the receive worker's error ladder can
-write a further record of its own. When an event is dispatched directly through `IMessageDispatcher`, with
-no receiver around the dispatch, the dispatcher's one record is the only error record Chatter writes for
-that dispatch.
+**The dispatcher's one `LogError` call is not always the only one Chatter makes for a failure.** When the
+event arrived through a `BrokeredMessageReceiver`, the receiver logs the rethrown exception again before
+rethrowing it in turn, so the exception from a failed dispatch of a broker-delivered event is passed to
+`LogError` at least twice: once by `EventDispatcher` and at least once more by `BrokeredMessageReceiver`.
+`BrokeredMessageReceiver.DispatchReceivedMessageAsync` catches the exception the dispatch rethrows, calls
+`LogError`, and rethrows it; the receive worker's error ladder can make a further `LogError` call of its
+own. When an event is dispatched directly through `IMessageDispatcher`, with no receiver around the
+dispatch, the dispatcher's one `LogError` call is the only one Chatter makes for that dispatch. These count
+the calls Chatter makes, not the records an application sees: whether a call produces a record, and how
+many, is decided by the log levels and logging providers the application configures.
 
 **What that requires of a caller that needs a subscriber to run independently of its siblings: its own
 delivery, dispatched by a service provider in which it is the only handler for the event.** Handlers are
@@ -124,13 +126,14 @@ resolved from the service provider by event type, not by the delivery that trigg
 `ScopedReceivedMessageDispatcher` — the default `IReceivedMessageDispatcher` — creates each delivery's scope
 from the host's one `IServiceScopeFactory`, so every Brokered Message Receiver in a host dispatches into the
 same handler set whatever subscription or queue it receives from. A second broker subscription or queue for
-the same event in the same host therefore does not isolate one subscriber: each delivery re-runs the entire
-fan-out, invoking every sibling handler again and duplicating their side effects. A separate delivery is
+the same event in the same host therefore does not isolate one subscriber: each delivery dispatches into the
+same handler set in the same order, stopping at the first handler that throws, so every delivery that reaches
+a sibling handler invokes it, duplicating its side effects across those deliveries. A separate delivery is
 necessary but not sufficient. A subscriber runs independently of its siblings only when it has its own
 delivery — its own broker subscription or queue — and is dispatched by a separate endpoint or host whose
 service provider registers that subscriber as the only handler for the event. Its own delivery gives it its
 own copy of the event, so it fails, retries and recovers on its own; its own service provider is what stops
-that copy from re-running its siblings. One dispatch carrying several handlers is one unit of work and
+that copy from reaching its siblings. One dispatch carrying several handlers is one unit of work and
 cannot supply that property. Within a single dispatch, a handler that must not be able to strand its
 siblings has to contain its own failures.
 
@@ -223,8 +226,8 @@ rationale. The code is unchanged by this decision — the loop it describes is t
   deduplicates them.
 - **The revisit trigger is a transport, not a loop.** If independent per-subscriber failure becomes a
   requirement, the route is a separate delivery per subscriber, dispatched by a separate endpoint or host
-  whose service provider registers only that subscriber — the answer every transport-backed library in the
-  survey reached — not per-handler `catch` inside `EventDispatcher`.
+  whose service provider registers that subscriber as the only handler for the event — the answer every
+  transport-backed library in the survey reached — not per-handler `catch` inside `EventDispatcher`.
 
 ## References
 

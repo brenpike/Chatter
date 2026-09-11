@@ -37,16 +37,20 @@ namespace Chatter.CQRS.Events
         /// <remarks>Each <see cref="IMessageHandler{TMessage}"/> resolved for <typeparamref name="TMessage"/> is
         /// awaited in resolution order. The first handler that throws propagates out of <c>Dispatch</c>: the
         /// dispatcher logs the exception once and rethrows it unchanged, and no subsequent handler is invoked
-        /// (ADR-0012). The dispatcher's one error record is not the delivery's total. When the event arrived through
-        /// a <c>BrokeredMessageReceiver</c>, the receiver logs the rethrown exception again before rethrowing it in
-        /// turn, so a failed broker-delivered dispatch leaves at least two error records: one from
-        /// <c>EventDispatcher</c> and at least one more from <c>BrokeredMessageReceiver</c>. When an event is
-        /// dispatched directly through <see cref="IMessageDispatcher"/>, with no receiver around the dispatch, the
-        /// dispatcher's one record is the only error record Chatter writes for that dispatch.
+        /// (ADR-0012). The dispatcher's one <c>LogError</c> call is not always the only one Chatter makes for a
+        /// failure. When the event arrived through a <c>BrokeredMessageReceiver</c>, the receiver logs the rethrown
+        /// exception again before rethrowing it in turn, so the exception from a failed dispatch of a
+        /// broker-delivered event is passed to <c>LogError</c> at least twice: once by <c>EventDispatcher</c> and at
+        /// least once more by <c>BrokeredMessageReceiver</c>. When an event is dispatched directly through
+        /// <see cref="IMessageDispatcher"/>, with no receiver around the dispatch, the dispatcher's one
+        /// <c>LogError</c> call is the only one Chatter makes for that dispatch. These count the calls Chatter makes,
+        /// not the records an application sees: whether a call produces a record, and how many, is decided by the log
+        /// levels and logging providers the application configures.
         /// Handlers are resolved from the service provider by event type, not by the delivery that triggered the
         /// dispatch. A second broker subscription or queue for the same event in the same host therefore does not
-        /// isolate one subscriber: each delivery re-runs the entire fan-out, invoking every sibling handler again
-        /// and duplicating their side effects. A separate delivery is necessary but not sufficient. A subscriber
+        /// isolate one subscriber: each delivery dispatches into the same handler set in the same order, stopping at
+        /// the first handler that throws, so every delivery that reaches a sibling handler invokes it, duplicating its
+        /// side effects across those deliveries. A separate delivery is necessary but not sufficient. A subscriber
         /// runs independently of its siblings only when it has its own delivery — its own broker subscription or
         /// queue — and is dispatched by a separate endpoint or host whose service provider registers that
         /// subscriber as the only handler for the event.</remarks>
