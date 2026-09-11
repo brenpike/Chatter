@@ -127,7 +127,7 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 | Property | Default | Description |
 | --- | --- | --- |
 | `ConnectionString` | (required) | Azure Service Bus namespace connection string. |
-| `MaxConcurrentCalls` | `1` | Maximum number of messages processed concurrently. |
+| `MaxConcurrentCalls` | `1` | Maximum number of messages processed concurrently for a non-session receiver, or sessions held at once for a session-enabled receiver. Settable globally here or per receiver on the registration call, with the per-receiver value winning when stated. See [Sessions](#sessions). |
 | `PrefetchCount` | `0` | Number of messages eagerly fetched from the broker. |
 | `TokenCredential` | `null` | AAD `Azure.Core.TokenCredential` (see [Authentication](#authentication)). |
 | `SessionIdleTimeout` | `00:01:00` (60 s) | How long a held session may yield no message before it is released and the receiver rolls. Applies only to session-enabled receivers. |
@@ -137,6 +137,8 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 | `RetryPolicy:MinimumBackoffInSeconds` | SDK default | Base backoff the exponential delay is calculated from (`ServiceBusRetryOptions.Delay`). Omit the key to keep the SDK default; a stated value is carried to the Azure SDK unchanged. |
 | `RetryPolicy:MaximumBackoffInSeconds` | SDK default | Ceiling on the delay between attempts (`ServiceBusRetryOptions.MaxDelay`). Omit the key to keep the SDK default; a stated value is carried to the Azure SDK unchanged. |
 | `RetryPolicy:DeltaBackoffInSeconds` | `0` | Accepted for configuration compatibility and **ignored** — `Azure.Messaging.ServiceBus` has no per-attempt delta-backoff knob. |
+
+**Tuning note: `PrefetchCount` is not a throughput lever for a slow handler.** A prefetched message is buffered client-side, and its lock starts ageing the moment it is fetched, not the moment a handler picks it up. With a slow handler, the Nth prefetched message can sit for roughly N times the handler duration before it is served. In session mode this compounds, because a buffered message ages against the session lock rather than the message lock. Reach for `MaxConcurrentCalls` for throughput instead; the knob itself, and its default, are unchanged by this release.
 
 ### `ServiceBusOptionsBuilder` methods
 
@@ -154,13 +156,25 @@ The `AddAzureServiceBus(asb => ...)` delegate exposes a `ServiceBusOptionsBuilde
 | `WithSessionIdleTimeout(TimeSpan)` | Overrides how long a held session may yield no message before rolling to the next. Default: 60 s. See [Sessions](#sessions). |
 | `WithMaxSessionLockRenewalDuration(TimeSpan)` | Overrides the ceiling on held-session lock renewal. Default: 5 min. See [Sessions](#sessions). |
 | `AddQueueReceiver<TMessage>(...)` | Registers a queue receiver for an `ICommand`. |
+| `AddQueueReceiver<TMessage>(queueName, maxConcurrentCalls, ...)` | Registers a queue receiver for an `ICommand` that states its own `MaxConcurrentCalls` instead of inheriting the global value. |
 | `AddSessionQueueReceiver<TMessage>(...)` | Registers a session-enabled queue receiver for an `ICommand`. See [Sessions](#sessions). |
+| `AddSessionQueueReceiver<TMessage>(queueName, maxConcurrentCalls, ...)` | Registers a session-enabled queue receiver for an `ICommand` that states its own `MaxConcurrentCalls` — in session mode, sessions held at once. See [Sessions](#sessions). |
 | `AddTopicSubscription<TMessage>(...)` | Registers a topic subscription receiver for an `IEvent`. |
+| `AddTopicSubscription<TMessage>(topicName, subscriptionName, maxConcurrentCalls, ...)` | Registers a topic subscription receiver for an `IEvent` that states its own `MaxConcurrentCalls` instead of inheriting the global value. |
 | `AddSessionTopicSubscription<TMessage>(...)` | Registers a session-enabled topic subscription receiver for an `IEvent`. See [Sessions](#sessions). |
+| `AddSessionTopicSubscription<TMessage>(topicName, subscriptionName, maxConcurrentCalls, ...)` | Registers a session-enabled topic subscription receiver for an `IEvent` that states its own `MaxConcurrentCalls` — in session mode, sessions held at once. See [Sessions](#sessions). |
 
 ### Precedence: an explicit fluent call wins
 
 The builder seeds `ServiceBusOptions` with its defaults, binds the configuration section over that instance — its public surface only, and never replacing the instance — and then applies the fluent values last. Each fluent value is held in a nullable sentinel (`int?`, `bool?`, `TimeSpan?`), so the builder can tell "never called" from "called with the default value" and applies only the calls that were actually made. A key present in configuration therefore wins over the builder default, while an explicit fluent call wins over configuration — in either direction, so `WithMaxConcurrentCalls(1)` overrides a configured `5` exactly as `WithMaxConcurrentCalls(5)` overrides a configured `1`. A key absent from configuration and never set fluently keeps the default.
+
+### Per-receiver `MaxConcurrentCalls`: specificity beats source
+
+Each of the four registration methods above has a `maxConcurrentCalls` overload that lets one receiver state its own value instead of inheriting the global `ServiceBusOptions.MaxConcurrentCalls`. **When a receiver states its own value, that value wins — whatever source either value came from.** A per-receiver value set fluently beats a global value from configuration, and a per-receiver value from configuration beats a global value set fluently; specificity decides, and the source does not enter into it. This sits ALONGSIDE the fluent-beats-configuration rule above and does not contradict it — that rule resolves a conflict between two SOURCES for the SAME value, this one resolves a conflict between two SCOPES (global vs. per-receiver), and both apply: each value is resolved fluent-first from its own two sources, and only then does a stated per-receiver value win over the global.
+
+A stated `maxConcurrentCalls` below `1` throws immediately at the registration call; registering the same receiver path twice with two different stated values also throws. The original overloads that omit `maxConcurrentCalls` are unchanged and still bind, so adding a per-receiver value to an existing registration is both source- and binary-compatible.
+
+In session mode `MaxConcurrentCalls` means sessions held at once, not messages — see [Sessions](#sessions).
 
 The bind surface is deliberately narrow. `RetryPolicy` is the one non-public configuration property that has to bind, so it is bound explicitly from its own `RetryPolicy` subsection rather than by opening the whole type to the binder. Two things together keep `RetryOptions` and `TokenCredential` unreachable from configuration: that narrow surface, and the fact that both properties are null when the bind runs. Both are left null-defaulted deliberately — neither the null default nor the narrow surface may be changed without re-checking that configuration still cannot reach either property.
 
@@ -255,7 +269,19 @@ services
     });
 ```
 
-Each registered receiver processes one session at a time, holding it for FIFO delivery and rolling to the next when it is drained or goes idle. To increase throughput, run additional receiver instances; there is no max-concurrent-sessions knob.
+### Sessions held at once
+
+A session-enabled receiver holds up to `MaxConcurrentCalls` sessions at once — settable globally on `ServiceBusOptions` or per receiver on `AddSessionQueueReceiver` / `AddSessionTopicSubscription` (see [`ServiceBusOptionsBuilder` methods](#servicebusoptionsbuilder-methods) and [specificity beats source](#per-receiver-maxconcurrentcalls-specificity-beats-source)). Within each held session, messages are still delivered one at a time in strict FIFO order per Group Id — that guarantee is unchanged. At `MaxConcurrentCalls = 1` (the default) a receiver holds exactly one session, exactly as before this knob took effect for session receivers.
+
+```csharp
+asb.AddSessionQueueReceiver<ProcessOrder>("orders-session-queue", maxConcurrentCalls: 5);
+```
+
+**Handler state must be thread-safe or per-scope.** With `MaxConcurrentCalls` above `1`, handlers for different sessions now run concurrently within one process; a static field, a cached client with per-call mutable state, or a non-thread-safe collection captured in a closure is now reached from several threads at once where it previously was not.
+
+**Sizing is a product, not a sum.** A receiver holding N sessions issues up to N concurrent session-accept waits when fewer sessions are available than N — a child with no session available simply waits, costing an idle connection, not a fault. Across M replicas the deployment holds up to M-by-N locked sessions at once; size N against the entity's session population, not against the handler alone.
+
+To keep the previous single-session-at-a-time behaviour explicitly, state `maxConcurrentCalls: 1` on the receiver or set the global `MaxConcurrentCalls` to `1`.
 
 ### Reading the session id in a handler
 
@@ -390,6 +416,6 @@ One further observation on a mixed trace: Chatter's broker-boundary spans use th
 
 ## Domain Language
 
-See the [domain glossary](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/CONTEXT.md) for definitions of Service Bus Receiver, Session Queue Receiver, Session Topic Subscription, Service Bus Sender, Service Bus Options, Service Bus Retry, No Retry Opt-In, Service Bus Circuit Breaker, Session, Session State, and Group Id ↔ SessionId realization.
+See the [domain glossary](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/CONTEXT.md) for definitions of Service Bus Receiver, Session Queue Receiver, Session Topic Subscription, Service Bus Sender, Service Bus Options, Service Bus Retry, No Retry Opt-In, Service Bus Circuit Breaker, Session, Session State, Max Concurrent Calls, Session Multiplexer, and Group Id ↔ SessionId realization.
 
 [← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)
