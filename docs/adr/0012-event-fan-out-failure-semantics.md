@@ -26,14 +26,16 @@ possible, but which of the two — the loop or the sentence — is the one that 
 
 - **Option 2 — Keep abort-on-first-failure, and correct the documentation that promised otherwise
   (CHOSEN).** No production code changes anywhere. Its weakness is honest and is stated plainly in the
-  decision: *which* sibling handlers get skipped is not something an application controls.
+  decision: *which* sibling handlers get skipped follows registration order, and an application that has
+  not deliberately ordered its registrations gets an order it did not choose.
 
 ## Prior art
 
 The plan's recommendation was overruled by a survey of comparable .NET libraries. The survey does not
-decide the question by popularity; it decides it by showing that four of the five buy subscriber
-independence somewhere else entirely, and that the one library which does aggregate in-process pays a
-price Chatter would not want.
+decide the question by popularity; it decides it by showing that three of the five buy subscriber
+independence somewhere else entirely — at the transport — that the one library built on Chatter's exact
+shape, an in-process fan-out with no transport underneath, ships abort-on-first-failure anyway, and that the
+one library which does aggregate in-process pays a price Chatter would not want.
 
 - **MediatR** — the default notification publisher is `ForeachAwaitPublisher`, selected by `Mediator`'s
   own single-argument constructor (`: this(serviceProvider, new ForeachAwaitPublisher())`). Its `Publish`
@@ -66,11 +68,19 @@ price Chatter would not want.
   failing handler still reaches the caller inside an `AggregateException` wrapper. The honest framing of
   the survey is four-to-one with a named exception, not unanimity.
 
-**The architectural point that actually settles it.** Four of the five do not buy subscriber independence
-inside the in-process loop at all; they buy it at the **transport**, by giving each subscriber its own copy
-in its own input queue. NServiceBus states that as the reason the mechanism exists: "To ensure that each
-subscriber can process and potentially retry the event independently of other subscribers, NServiceBus
-ensures that each subscriber receives a copy of the published event delivered to their input queue."
+**The architectural point that actually settles it.** Three of the five — NServiceBus, MassTransit and
+Rebus — do not buy subscriber independence inside the in-process loop at all; they buy it at the
+**transport**, by giving each subscriber its own copy in its own input queue. NServiceBus states that as the
+reason the mechanism exists: "To ensure that each subscriber can process and potentially retry the event
+independently of other subscribers, NServiceBus ensures that each subscriber receives a copy of the
+published event delivered to their input queue."
+
+**MediatR is counted separately, and it is the strongest single data point here.** It has no transport at
+all, so it cannot be counted toward a transport consensus — and that absence is exactly what makes it the
+closest match to Chatter of anything surveyed: an in-process fan-out with nothing underneath it to isolate
+subscribers. Faced with precisely Chatter's problem, its shipped default is abort-on-first-failure, and its
+one alternative publisher still surfaces only the first fault. MediatR carries Option 2 on its own, without
+being added to the transport count.
 
 **Chatter has no per-subscriber queue.** `BrokeredMessageReceiver.DispatchReceivedMessageAsync` makes ONE
 `DispatchAsync` call per received message — it is the sole dispatch call in that method — and that call
@@ -85,8 +95,10 @@ The plan read `CqrsExtensions.AddEventHandlers`' use of `RegistrationStrategy.Ap
 `AddCommandHandlers`' `RegistrationStrategy.Replace()` — as implying that event handlers are decoupled
 failure domains. It does not. `Append` buys **DI-level** decoupling: subscribers do not know about one
 another at registration time, and adding one does not displace another. Every library surveyed above has
-exactly that same DI-level decoupling and still aborts. Failure-domain decoupling is a different property,
-and the survey shows it is supplied by the transport, not by the registration strategy.
+exactly that same DI-level decoupling, and every one of them except Brighter still aborts. Failure-domain
+decoupling is a different property: the survey shows it is supplied by the transport where there is one and
+— as MediatR shows, with no transport and no per-handler `catch` — simply not supplied where there is not.
+The registration strategy supplies it nowhere.
 
 ## Decision
 
@@ -108,14 +120,30 @@ constrained `where TMessage : ICommand` — so it never deduplicates the event p
 re-runs the fan-out from the start, including the handlers that already succeeded, exactly as NServiceBus
 describes for its own retries. Event handlers must be idempotent or must roll back.
 
-**The cost this decision accepts, stated plainly: handler invocation order is NOT deterministic, so *which*
-siblings are skipped can vary between deliveries of the same event.** `Append` preserves assembly-scan
-order, and an application does not control assembly-scan order; NServiceBus documents the same absence of a
-fixed sequence for unordered handlers. The consequence is that "the prefix before the first failure" is not
-a stable set. This is a real cost of Option 2 and it is not offset by anything above — it is accepted
-because the alternative costs more, not because it is small. An application that cannot tolerate it needs
-the separate-delivery answer in the caller obligation, which is the only mechanism that makes a
-subscriber's fate independent of its siblings'.
+**The cost this decision accepts, stated plainly: an application that has not deliberately ordered its
+handler registrations gets an invocation order nobody chose, and that order decides which siblings are
+skipped.** Handlers run in the order their descriptors sit in the `IServiceCollection`:
+`EventDispatcher.DispatchToHandlers` resolves them through `GetServices<IMessageHandler<TMessage>>()`, and
+Microsoft's service-registration documentation states that services appear in the order they were
+registered when resolved via `IEnumerable<{SERVICE}>`. Descriptors are frozen at `BuildServiceProvider` and
+nothing on the dispatch path reorders them, so within one process the same event skips the SAME set of
+siblings on every delivery. What is not chosen is where that order came from. A handler discovered by
+`AddEventHandlers` is appended in scan order — assembly order from `AssemblySourceFilter.Apply()`, then
+`Assembly.GetTypes()` order within each assembly, neither of which is contractually specified — and for the
+overload that names no assemblies the source is `AppDomain.CurrentDomain.GetAssemblies()` at the moment
+`AddChatterCqrs` runs, that is, whatever happened to be loaded. So "the prefix before the first failure" is
+a stable set for the life of a process, but it is a set an application fell into rather than picked, and it
+can differ across builds and across runs.
+
+**The control an application does have is real and bounded.** It orders its own `Add*` calls relative to
+`AddChatterCqrs`, and a hand-registered handler sits where it was registered. It canNOT reposition a
+*scanned* handler by re-registering it: `AddEventHandlers` uses `RegistrationStrategy.Append`, which adds a
+descriptor unconditionally, so re-registering a handler the scan already found produces a SECOND descriptor
+and the handler runs TWICE per event — the double-invocation shape `0.12.0` fixed. NServiceBus documents the
+same absence of a chosen sequence for unordered handlers. This is a real cost of Option 2 and it is not
+offset by anything above — it is accepted because the alternative costs more, not because it is small. An
+application that cannot tolerate it needs the separate-delivery answer in the caller obligation, which is
+the only mechanism that makes a subscriber's fate independent of its siblings'.
 
 `OperationCanceledException` raises no design question under this decision: the `catch (Exception)` treats
 it as any other fault, so a cancelled handler ends the dispatch the way a failing one does. Option 1 would
@@ -160,14 +188,16 @@ rationale. The code is unchanged by this decision — the loop it describes is t
   (`src/Chatter.CQRS/tests/Events/UsingEventDispatcher/WhenDispatching.cs`) asserts that the handler before
   the fault ran once, the handler after it never ran, and the exception that surfaced is the same instance
   the handler threw. A future change to Option 1 has to delete or rewrite that test deliberately.
-- **Which siblings are skipped is not stable across deliveries**, per the cost accepted in the decision.
-  An application that reasons about "the handlers that ran" is reasoning about something Chatter does not
-  fix.
+- **Which siblings are skipped is fixed within a process, but by an order nobody chose**, per the cost
+  accepted in the decision. Registration order is invocation order, and an application that has not
+  deliberately ordered its registrations gets scan order: the same set is skipped on every delivery in one
+  process, and a different set may be skipped after a rebuild. An application that wants to reason about
+  *which* handlers ran has to order its own registrations, which is something Chatter does not do for it.
 - **Event handlers carry the idempotency obligation**, because neither the inbox nor the fan-out
   deduplicates them.
 - **The revisit trigger is a transport, not a loop.** If independent per-subscriber failure becomes a
-  requirement, the route is a separate delivery per subscriber — the answer every library in the survey
-  except Brighter reached — not per-handler `catch` inside `EventDispatcher`.
+  requirement, the route is a separate delivery per subscriber — the answer every transport-backed library
+  in the survey reached — not per-handler `catch` inside `EventDispatcher`.
 
 ## References
 

@@ -178,7 +178,7 @@ public class SendConfirmationEmail : IMessageHandler<OrderCreated>
 
 #### When a handler throws
 
-Event handlers are not isolated from one another. The first handler that throws ends the dispatch: the exception is logged once and rethrown **unchanged** — never wrapped, never joined to another handler's exception — and no subsequent handler is invoked. Handlers that already ran are not rolled back, and handler order is assembly-scan order, so *which* of the remaining handlers were skipped is not something an application controls.
+Event handlers are not isolated from one another. The first handler that throws ends the dispatch: the exception is logged once and rethrown **unchanged** — never wrapped, never joined to another handler's exception — and no subsequent handler is invoked. Handlers that already ran are not rolled back. Handlers are invoked in the order their registrations were added to the `IServiceCollection`, so the same event skips the same siblings on every delivery within a process; an application that has not deliberately ordered its registrations gets assembly-scan order, which it did not choose and which can differ across builds. Ordering your own `Add*` calls relative to `AddChatterCqrs` moves a hand-registered handler, but re-registering a handler the assembly scan already found does not reposition it — event handler registration appends unconditionally, so the handler ends up registered twice and runs twice per event.
 
 If a subscriber must run independently of its siblings, give it its own delivery — its own broker subscription or queue — rather than adding it to a fan-out that is a single unit of work. Within one dispatch, a handler that must not be able to strand its siblings has to contain its own failures.
 
