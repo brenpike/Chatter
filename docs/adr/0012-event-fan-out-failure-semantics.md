@@ -126,14 +126,17 @@ skipped.** Handlers run in the order their descriptors sit in the `IServiceColle
 `EventDispatcher.DispatchToHandlers` resolves them through `GetServices<IMessageHandler<TMessage>>()`, and
 Microsoft's service-registration documentation states that services appear in the order they were
 registered when resolved via `IEnumerable<{SERVICE}>`. Descriptors are frozen at `BuildServiceProvider` and
-nothing on the dispatch path reorders them, so within one process the same event skips the SAME set of
-siblings on every delivery. What is not chosen is where that order came from. A handler discovered by
+nothing on the dispatch path reorders them, so within one process the invocation ORDER is the same on every
+delivery. WHICH siblings get skipped is still decided per delivery: the skipped set is the suffix after
+whichever handler actually threw, so a deterministic failure skips the same set every time, while a transient
+or conditional one lets those siblings run on a later delivery where a different handler may end the
+dispatch. What is not chosen is where that order came from. A handler discovered by
 `AddEventHandlers` is appended in scan order — assembly order from `AssemblySourceFilter.Apply()`, then
 `Assembly.GetTypes()` order within each assembly, neither of which is contractually specified — and for the
 overload that names no assemblies the source is `AppDomain.CurrentDomain.GetAssemblies()` at the moment
-`AddChatterCqrs` runs, that is, whatever happened to be loaded. So "the prefix before the first failure" is
-a stable set for the life of a process, but it is a set an application fell into rather than picked, and it
-can differ across builds and across runs.
+`AddChatterCqrs` runs, that is, whatever happened to be loaded. So the sequence — and with it "the prefix
+before the first failure" whenever that failure is deterministic — is stable for the life of a process, but
+it is an order an application fell into rather than picked, and it can differ across builds and across runs.
 
 **The control an application does have is real and bounded.** It orders its own `Add*` calls relative to
 `AddChatterCqrs`, and a hand-registered handler sits where it was registered. It canNOT reposition a
@@ -188,11 +191,13 @@ rationale. The code is unchanged by this decision — the loop it describes is t
   (`src/Chatter.CQRS/tests/Events/UsingEventDispatcher/WhenDispatching.cs`) asserts that the handler before
   the fault ran once, the handler after it never ran, and the exception that surfaced is the same instance
   the handler threw. A future change to Option 1 has to delete or rewrite that test deliberately.
-- **Which siblings are skipped is fixed within a process, but by an order nobody chose**, per the cost
-  accepted in the decision. Registration order is invocation order, and an application that has not
-  deliberately ordered its registrations gets scan order: the same set is skipped on every delivery in one
-  process, and a different set may be skipped after a rebuild. An application that wants to reason about
-  *which* handlers ran has to order its own registrations, which is something Chatter does not do for it.
+- **Invocation order is fixed within a process, but it is an order nobody chose**, per the cost accepted in
+  the decision. Registration order is invocation order, and an application that has not deliberately ordered
+  its registrations gets scan order. Which siblings are skipped follows from that order and from whichever
+  handler threw on the delivery: a deterministic failure skips the same set every time in one process, a
+  transient or conditional one shifts the skipped set between deliveries, and a rebuild can change the order
+  itself. An application that wants to reason about *which* handlers ran has to order its own registrations,
+  which is something Chatter does not do for it.
 - **Event handlers carry the idempotency obligation**, because neither the inbox nor the fan-out
   deduplicates them.
 - **The revisit trigger is a transport, not a loop.** If independent per-subscriber failure becomes a
