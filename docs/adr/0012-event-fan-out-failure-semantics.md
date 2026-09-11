@@ -103,16 +103,36 @@ The registration strategy supplies it nowhere.
 ## Decision
 
 **An `EventDispatcher` dispatch stops at the first handler that throws.** Each `IMessageHandler<TMessage>`
-resolved for the event is awaited in resolution order; the first exception is logged once and rethrown
-unchanged, and no subsequent handler is invoked. The exception reaches the caller as the handler threw it —
-it is never wrapped, and it is never joined to another handler's exception. That is a fact about the method
-body, and it is the whole of what the type does.
+resolved for the event is awaited in resolution order; when one throws, the dispatcher logs the exception
+once and rethrows it unchanged, and no subsequent handler is invoked. The exception reaches the caller as
+the handler threw it — it is never wrapped, and it is never joined to another handler's exception. That is
+a fact about the method body, and it is the whole of what the type does.
 
-**What that requires of a caller that needs a subscriber to run independently of its siblings: give that
-subscriber its own delivery.** A separate broker subscription or queue, so the subscriber receives its own
-copy of the event and fails, retries and recovers on its own. One dispatch carrying several handlers is one
-unit of work and cannot supply that property. Within a single dispatch, a handler that must not be able to
-strand its siblings has to contain its own failures.
+**The dispatcher's one error record is not the delivery's total.** When the event arrived through a
+`BrokeredMessageReceiver`, the receiver logs the rethrown exception again before rethrowing it in turn, so a
+failed broker-delivered dispatch leaves at least two error records: one from `EventDispatcher` and at least
+one more from `BrokeredMessageReceiver`. `BrokeredMessageReceiver.DispatchReceivedMessageAsync` catches the
+exception the dispatch rethrows, calls `LogError`, and rethrows it; the receive worker's error ladder can
+write a further record of its own. When an event is dispatched directly through `IMessageDispatcher`, with
+no receiver around the dispatch, the dispatcher's one record is the only error record Chatter writes for
+that dispatch.
+
+**What that requires of a caller that needs a subscriber to run independently of its siblings: its own
+delivery, dispatched by a service provider in which it is the only handler for the event.** Handlers are
+resolved from the service provider by event type, not by the delivery that triggered the dispatch.
+`EventDispatcher.DispatchToHandlers` resolves them through `GetServices<IMessageHandler<TMessage>>()`, and
+`ScopedReceivedMessageDispatcher` — the default `IReceivedMessageDispatcher` — creates each delivery's scope
+from the host's one `IServiceScopeFactory`, so every Brokered Message Receiver in a host dispatches into the
+same handler set whatever subscription or queue it receives from. A second broker subscription or queue for
+the same event in the same host therefore does not isolate one subscriber: each delivery re-runs the entire
+fan-out, invoking every sibling handler again and duplicating their side effects. A separate delivery is
+necessary but not sufficient. A subscriber runs independently of its siblings only when it has its own
+delivery — its own broker subscription or queue — and is dispatched by a separate endpoint or host whose
+service provider registers that subscriber as the only handler for the event. Its own delivery gives it its
+own copy of the event, so it fails, retries and recovers on its own; its own service provider is what stops
+that copy from re-running its siblings. One dispatch carrying several handlers is one unit of work and
+cannot supply that property. Within a single dispatch, a handler that must not be able to strand its
+siblings has to contain its own failures.
 
 **A handler that is invoked more than once for one logical event is expected, and handlers must tolerate
 it.** The reliability inbox is COMMAND-scoped — `InboxBehavior<TMessage>` is an `ICommandBehavior<TMessage>`
@@ -145,8 +165,9 @@ descriptor unconditionally, so re-registering a handler the scan already found p
 and the handler runs TWICE per event — the double-invocation shape `0.12.0` fixed. NServiceBus documents the
 same absence of a chosen sequence for unordered handlers. This is a real cost of Option 2 and it is not
 offset by anything above — it is accepted because the alternative costs more, not because it is small. An
-application that cannot tolerate it needs the separate-delivery answer in the caller obligation, which is
-the only mechanism that makes a subscriber's fate independent of its siblings'.
+application that cannot tolerate it needs the isolation answer in the caller obligation — its own
+delivery, dispatched by a service provider in which it is the only handler for the event — which is the
+only mechanism that makes a subscriber's fate independent of its siblings'.
 
 `OperationCanceledException` raises no design question under this decision: the `catch (Exception)` treats
 it as any other fault, so a cancelled handler ends the dispatch the way a failing one does. Option 1 would
@@ -201,8 +222,9 @@ rationale. The code is unchanged by this decision — the loop it describes is t
 - **Event handlers carry the idempotency obligation**, because neither the inbox nor the fan-out
   deduplicates them.
 - **The revisit trigger is a transport, not a loop.** If independent per-subscriber failure becomes a
-  requirement, the route is a separate delivery per subscriber — the answer every transport-backed library
-  in the survey reached — not per-handler `catch` inside `EventDispatcher`.
+  requirement, the route is a separate delivery per subscriber, dispatched by a separate endpoint or host
+  whose service provider registers only that subscriber — the answer every transport-backed library in the
+  survey reached — not per-handler `catch` inside `EventDispatcher`.
 
 ## References
 

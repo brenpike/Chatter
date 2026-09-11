@@ -36,9 +36,20 @@ namespace Chatter.CQRS.Events
         /// <returns>An awaitable <see cref="Task"/></returns>
         /// <remarks>Each <see cref="IMessageHandler{TMessage}"/> resolved for <typeparamref name="TMessage"/> is
         /// awaited in resolution order. The first handler that throws propagates out of <c>Dispatch</c>: the
-        /// exception is logged once and rethrown unchanged, and no subsequent handler is invoked (ADR-0012).
-        /// A caller that needs a subscriber to run independently of its siblings must give that subscriber its own
-        /// delivery — its own broker subscription or queue — rather than one dispatch carrying several handlers.</remarks>
+        /// dispatcher logs the exception once and rethrows it unchanged, and no subsequent handler is invoked
+        /// (ADR-0012). The dispatcher's one error record is not the delivery's total. When the event arrived through
+        /// a <c>BrokeredMessageReceiver</c>, the receiver logs the rethrown exception again before rethrowing it in
+        /// turn, so a failed broker-delivered dispatch leaves at least two error records: one from
+        /// <c>EventDispatcher</c> and at least one more from <c>BrokeredMessageReceiver</c>. When an event is
+        /// dispatched directly through <see cref="IMessageDispatcher"/>, with no receiver around the dispatch, the
+        /// dispatcher's one record is the only error record Chatter writes for that dispatch.
+        /// Handlers are resolved from the service provider by event type, not by the delivery that triggered the
+        /// dispatch. A second broker subscription or queue for the same event in the same host therefore does not
+        /// isolate one subscriber: each delivery re-runs the entire fan-out, invoking every sibling handler again
+        /// and duplicating their side effects. A separate delivery is necessary but not sufficient. A subscriber
+        /// runs independently of its siblings only when it has its own delivery — its own broker subscription or
+        /// queue — and is dispatched by a separate endpoint or host whose service provider registers that
+        /// subscriber as the only handler for the event.</remarks>
         public Task Dispatch<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
         {
             // INVARIANT: ADR-0010 R1/R4 — the off-guard is evaluated before any argument is constructed, and the
