@@ -201,7 +201,7 @@ intended. This is accepted rather than fixed: removing it would break the propag
 `(DateTime?)GetMessageContextByKey(ASBMessageContext.ScheduledEnqueueTimeUtc)`, and
 `OutboundBrokeredMessage.RefreshTimeToLive` hard-casts `(DateTime?)` on `MessageContext.ExpiryTimeUtc`, so a
 wire value of the wrong type that is inherited outward throws on dispatch. That is tracked by the still-open
-#323 and is not closed by this ADR.
+#464 and is not closed by this ADR.
 
 **An application that reads a `Chatter.*` header as an assertion about its sender is wrong to, and Chatter
 will not stop it.** `Via`, `ReplyToAddress`, `ReplyToGroupId`, `FailureDetails`, `FailureDescription` and
@@ -232,7 +232,7 @@ precedence over one the application added itself. Nobody should read these fixes
 - **No production behaviour changes because of this ADR.** It records a doctrine the code already follows and
   a decision not to add a mechanism. No header's fate on a hop changes, so no module takes a major bump for
   it.
-- **#322, #323 and #326 stay open as known, accepted exposure**, not as work queued behind this ADR. They
+- **#322, #326 and #464 stay open as known, accepted exposure**, not as work queued behind this ADR. They
   describe real properties of the system; this decision is that the properties are not worth the fix at the
   current evidence, and closing them requires the trigger below rather than a fresh reading of the same
   facts.
@@ -263,9 +263,12 @@ precedence over one the application added itself. Nobody should read these fixes
 - Epic #299 — *No trust boundary on inbound `Chatter.*` control-plane headers*. The epic this ADR answers,
   and the source of the allowlist proposal it declines.
 - Issue #322 — *Inbound routing slip steers outbound forwarding with no validation (confused deputy)*;
-  issue #323 — *Handler send/publish copies the entire inbound context, laundering control-plane headers
-  through trusted hops*; issue #326 — *`FailureContext.ToString` embeds exception message and stack trace*.
-  All three remain open as accepted exposure.
+  issue #326 — *`FailureContext.ToString` embeds exception message and stack trace*; issue #464 — *Outbound
+  header reads still hard-cast, so a mistyped inherited header throws on dispatch*. All three remain open as
+  accepted exposure. Issue #323 — *Handler send/publish copies the entire inbound context, laundering
+  control-plane headers through trusted hops* — is CLOSED with this decision: the context inheritance it
+  calls laundering is by design, as recorded above, and its one remaining finding, the outbound hard casts,
+  was split out into #464.
 - Issue #324 — *Unvalidated casts of broker-supplied headers; failed delivery-count probe leaves the message
   permanently unsettled*; issue #325 — *`TryGetRoutingSlip` catch-all masks tampering and deserialization
   faults as 'no slip present'*. The robustness fixes shipping alongside this ADR.
