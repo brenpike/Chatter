@@ -402,13 +402,31 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         private async Task ReplaceDisposedChildAsync(SessionSlot slot, ObjectDisposedException disposed)
         {
-            await CloseChildAsync(slot.Child).ConfigureAwait(false);
+            var disposedChild = slot.Child;
+            await CloseChildAsync(disposedChild).ConfigureAwait(false);
 
             var replacement = _sessionChildFactory();
+
+            // INVARIANT: the replacement is built outside the lock, so CloseAsync can have snapshotted and closed
+            // every child and marked the multiplexer closed in the meantime. Installing then would leave a child no
+            // close path ever reaches again, because CloseAsync is idempotent — so the state the install depends on
+            // is re-validated under the lock, exactly as the single-session adapter re-checks _closed after
+            // accepting a session.
+            bool installed;
             lock (_syncLock)
             {
-                slot.Child = replacement;
-                slot.PendingReceive = null;
+                installed = !_closed && ReferenceEquals(slot.Child, disposedChild);
+                if (installed)
+                {
+                    slot.Child = replacement;
+                    slot.PendingReceive = null;
+                }
+            }
+
+            if (!installed)
+            {
+                await CloseChildAsync(replacement).ConfigureAwait(false);
+                return;
             }
 
             _logger.LogWarning(disposed, $"Azure Service Bus session child receiver for '{_receiverPath}' was disposed; it has been closed and replaced");

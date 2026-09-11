@@ -23,6 +23,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionRec
         private readonly List<InMemorySessionMessageReceiver> _children = new List<InMemorySessionMessageReceiver>();
         private readonly RecordingLoggerCreator<SessionReceiverMultiplexer> _logger;
 
+        // Gates the FACTORY, not a child: the multiplexer creates a replacement child between closing the disposed
+        // one and installing it, so parking the factory parks the replacement path exactly inside that window
+        // without any interleaving being scheduled while the multiplexer holds its lock.
+        private TaskCompletionSource<bool> _childCreationReached;
+        private TaskCompletionSource<bool> _childCreationGate;
+
         public WhenMultiplexingSessions() => _logger = New.Common().RecordingLogger<SessionReceiverMultiplexer>();
 
         private SessionReceiverMultiplexer CreateSut(int maxConcurrentSessions)
@@ -30,6 +36,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionRec
 
         private IServiceBusSessionChildReceiver CreateChild()
         {
+            _childCreationReached?.TrySetResult(true);
+            _childCreationGate?.Task.GetAwaiter().GetResult();
+
             var child = new InMemorySessionMessageReceiver();
             _children.Add(child);
             return child;
@@ -350,6 +359,30 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionRec
             _children[0].CloseCount.Should().Be(1);
             _children.Should().HaveCount(3, "the disposed child is replaced from the factory, the healthy sibling is not");
             _logger.CountOf(LogLevel.Warning).Should().Be(1);
+        }
+
+        [Fact]
+        public async Task MustCloseRatherThanInstallAReplacementForAMultiplexerThatClosedMeanwhile()
+        {
+            var sut = CreateSut(maxConcurrentSessions: 2);
+            var receive = await ArrangeArmedReceiveAsync(sut);
+            _childCreationReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _childCreationGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            _children[0].IsClosedOrClosing = true;
+            _children[0].FailReceive(new ObjectDisposedException("receiver"));
+
+            // The replacement is parked mid-creation, so teardown runs to completion strictly inside the window
+            // between the disposed child's close and the install.
+            var parked = await Task.WhenAny(_childCreationReached.Task, Task.Delay(_waitTimeout));
+            parked.Should().BeSameAs(_childCreationReached.Task, "the replacement child is created before it is installed");
+            await sut.CloseAsync();
+            _childCreationGate.SetResult(true);
+
+            (await receive).Should().BeNull();
+            _children.Should().HaveCount(3);
+            _children[2].CloseCount.Should().Be(1,
+                "CloseAsync is idempotent, so a replacement installed after teardown would be a child no close path ever reaches");
         }
 
         [Fact]
