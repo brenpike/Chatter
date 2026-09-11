@@ -22,7 +22,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
     /// renewal <see cref="Task"/>; the renewal CTS is cancelled BEFORE the held session receiver is closed
     /// on every release path (drain, idle, lock loss, teardown) so no renewal call races a closing receiver.
     /// </remarks>
-    internal class AzureSdkSessionMessageReceiverAdapter : IServiceBusMessageReceiver
+    internal class AzureSdkSessionMessageReceiverAdapter : IServiceBusSessionMessageReceiver, IServiceBusSessionChildReceiver
     {
         readonly object _syncLock = new object();
         private readonly ServiceBusClient _client;
@@ -59,7 +59,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// The currently held SDK session receiver, or null when no session is held. Later steps include
         /// this in the transaction <c>Container</c> and resolve it for session-state Get/Set/Clear.
         /// </summary>
-        internal ServiceBusSessionReceiver HeldSessionReceiver
+        public ServiceBusSessionReceiver HeldSessionReceiver
         {
             get
             {
@@ -68,6 +68,42 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                     return _sessionReceiver;
                 }
             }
+        }
+
+        public string HeldSessionId
+        {
+            get
+            {
+                lock (_syncLock)
+                {
+                    return _sessionReceiver?.SessionId;
+                }
+            }
+        }
+
+        public DateTimeOffset? HeldSessionLockedUntil
+        {
+            get
+            {
+                lock (_syncLock)
+                {
+                    return _sessionReceiver?.SessionLockedUntil;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Answers the held session receiver, ignoring <paramref name="message"/>: this adapter holds exactly one
+        /// session, so every message it delivered came from that session.
+        /// </summary>
+        public ServiceBusSessionReceiver SessionReceiverFor(ServiceBusReceivedMessage message) => HeldSessionReceiver;
+
+        /// <summary>
+        /// No-op: holding exactly one session there is no session slot to free when the worker finishes with a
+        /// delivery. The session rolls on drain, idle, or lock loss instead.
+        /// </summary>
+        public void DeliveryReleased(ServiceBusReceivedMessage message)
+        {
         }
 
         public bool IsClosedOrClosing

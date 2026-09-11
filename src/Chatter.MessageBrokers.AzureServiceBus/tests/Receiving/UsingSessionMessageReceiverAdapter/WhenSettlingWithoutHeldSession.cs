@@ -50,6 +50,52 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionMes
         }
 
         [Fact]
+        public void MustExposeNoSessionIdWhenNoSessionHeld()
+        {
+            var sut = CreateSut();
+            sut.HeldSessionId.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustExposeNoSessionLockExpiryWhenNoSessionHeld()
+        {
+            var sut = CreateSut();
+            sut.HeldSessionLockedUntil.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustAnswerNoSessionReceiverForAMessageWhenNoSessionHeld()
+        {
+            var sut = CreateSut();
+
+            // The single-session adapter answers with the session it holds, so with none held there is no
+            // session receiver to put in the message's transaction container.
+            sut.SessionReceiverFor(AnyMessage()).Should().BeNull();
+        }
+
+        [Fact]
+        public void MustNoOpDeliveryReleasedWhenNoSessionHeld()
+        {
+            var sut = CreateSut();
+
+            // Holding one session there is no slot to free, so the release signal is inert — and it must stay
+            // inert with no session held at all, since the signal arrives after settlement has already rolled
+            // the session away.
+            Action act = () => sut.DeliveryReleased(AnyMessage());
+
+            act.Should().NotThrow();
+        }
+
+        [Fact]
+        public void MustSatisfyBothSessionReceiverPorts()
+        {
+            var sut = CreateSut();
+
+            sut.Should().BeAssignableTo<IServiceBusSessionMessageReceiver>();
+            sut.Should().BeAssignableTo<IServiceBusSessionChildReceiver>();
+        }
+
+        [Fact]
         public void MustNotReportClosedOnConstruction()
         {
             var sut = CreateSut();

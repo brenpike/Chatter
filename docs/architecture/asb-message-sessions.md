@@ -1,9 +1,19 @@
 # Solution Architecture: Azure Service Bus Message Sessions
 
-- **Status:** Proposed
+- **Status:** Proposed — **amended, and superseded IN PART, by
+  [ADR-0014](../adr/0014-in-process-session-concurrency-via-session-receiver-multiplexer.md)**
 - **Slug:** `asb-message-sessions`
 - **PRD:** [docs/prds/asb-message-sessions.md](../prds/asb-message-sessions.md)
 - **Issue:** [#209](https://github.com/brenpike/Chatter/issues/209)
+
+> **Amendment note (ADR-0014, issue #457).** Two claims below are superseded: that cross-session
+> parallelism is available only by running more receiver instances (Decision), and that a
+> max-concurrent-sessions knob is intentionally N/A (Configuration). In session mode
+> `MaxConcurrentCalls` now means CONCURRENT SESSIONS, served by a multiplexer over N single-session
+> receivers. Everything else in this document stands as written, including the one-message-at-a-time
+> rule, which is preserved exactly — it is now a property of each held session rather than of the
+> receiver. The amended claims are marked in place and are NOT deleted: they record why the original
+> design was right for the Initiative that shipped it.
 
 This document is the HOW companion to the WHAT-only PRD. It records the design decisions,
 component responsibilities, key flows, seam contracts, and risks for adding Azure Service Bus
@@ -37,8 +47,16 @@ through the existing `IServiceBusMessageReceiver` port — not the native push p
 A session-mode receiver accepts one session, holds it, serves that session's messages FIFO
 through the same `ReceiveAsync` contract the non-session adapter already satisfies, settles on the
 held session, and rolls to the next session when the current one drains, goes idle, or loses its
-lock. Cross-session parallelism is achieved operationally by running more receiver instances, not
-in-process.
+lock. ~~Cross-session parallelism is achieved operationally by running more receiver instances, not
+in-process.~~
+
+> **AMENDED by [ADR-0014](../adr/0014-in-process-session-concurrency-via-session-receiver-multiplexer.md).**
+> The struck sentence held while one receiver owned one session adapter. A session-mode receiver now
+> owns a multiplexer over up to `MaxConcurrentCalls` single-session receivers, so cross-session
+> parallelism is available in-process as well as operationally, and the total across a deployment is
+> replicas multiplied by that value. The rest of this Decision is unchanged: each held session still
+> serves ONE message at a time in FIFO order, and at `MaxConcurrentCalls` of 1 — the default — the
+> bare single-session adapter is used with no multiplexer in the path, exactly as described here.
 
 ### Rationale and precedent
 
@@ -162,6 +180,12 @@ lifecycle:
   (drain, idle, lock loss, teardown), so no renewal call races a closing/closed session receiver.
 - The ceiling is the configured `MaxSessionLockRenewalDuration`; once reached, renewal stops and the
   session is allowed to expire/roll naturally rather than being held forever.
+- **At `MaxConcurrentCalls` > 1 this design COMPOSES PER CHILD and is not otherwise changed**
+  ([ADR-0014](../adr/0014-in-process-session-concurrency-via-session-receiver-multiplexer.md)). Each
+  single-session receiver held by the multiplexer owns its OWN renewal CTS and renewal task for its
+  OWN session, and cancels that CTS before closing that session receiver. There is no shared renewal
+  loop and no cross-session coordination: N held sessions mean N independent instances of exactly the
+  one-CTS-per-session design stated above.
 - **Option (a) fallback understanding:** if bounded programmatic renewal proves unworkable against a
   given target, the documented fallback is to rely on the entity's `LockDuration` alone (no
   programmatic renewal), accepting that a single message's processing must complete within
@@ -202,7 +226,13 @@ lifecycle:
 - **Teardown while a session is held.** On `StopReceiver` / dispose while a session is held, the
   renewal CTS is cancelled and the held session receiver is closed as part of the adapter's
   `CloseAsync`, mirroring the existing adapter's close-and-null discipline so the pump's
-  quiesce-before-dispose contract holds.
+  quiesce-before-dispose contract holds. **At `MaxConcurrentCalls` > 1 this composes per child**
+  ([ADR-0014](../adr/0014-in-process-session-concurrency-via-session-receiver-multiplexer.md)): the
+  multiplexer's `CloseAsync` closes EVERY held child, each cancelling its own renewal CTS before
+  closing its own session receiver, so no session is left holding a lock behind a torn-down receiver.
+  ADR-0014 also records a defect this makes material — `ServiceBusReceiver`'s rebuild path used to
+  null its inner receiver WITHOUT closing it, which orphaned one held session before and would orphan
+  N children, N renewal loops and N-1 armed session accepts now; it closes before nulling.
 
 ## Configuration
 
@@ -215,8 +245,18 @@ pattern used for `MaxConcurrentCalls` / `PrefetchCount` / `EnableCrossEntityTran
 - **`MaxSessionLockRenewalDuration`** — the ceiling on how long a held session's lock is renewed
   for long-running processing.
 
-A **max-concurrent-sessions** knob is intentionally **N/A**: the model is one session at a time per
-receiver instance; cross-session concurrency scales by instance count, not configuration.
+~~A **max-concurrent-sessions** knob is intentionally **N/A**: the model is one session at a time per
+receiver instance; cross-session concurrency scales by instance count, not configuration.~~
+
+> **AMENDED by [ADR-0014](../adr/0014-in-process-session-concurrency-via-session-receiver-multiplexer.md).**
+> The knob exists, and it is not a new one: in session mode **`MaxConcurrentCalls` means CONCURRENT
+> SESSIONS** — how many single-session receivers the session-mode receiver holds at once, each still
+> serving one message at a time. It is settable globally on Service Bus Options and per receiver on
+> the session registration entry points, and **specificity beats source**: a per-receiver value wins
+> over the global one whatever source either came from. That is a different axis from the
+> fluent-call-wins-over-configuration rule above, which resolves two SOURCES for one value; both
+> apply. `PrefetchCount` is NOT a second throughput lever here — a prefetched message ages against
+> the session lock while it waits its turn — so it keeps its meaning and its default unchanged.
 
 ## Testing strategy
 
