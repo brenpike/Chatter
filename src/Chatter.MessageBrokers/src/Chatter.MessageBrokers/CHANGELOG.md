@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-09-11
+
+### Added
+
+- `IDeliveryReleaseSignal` (`Chatter.MessageBrokers.Receiving`) — an OPTIONAL capability a messaging-infrastructure receiver MAY implement alongside `IMessagingInfrastructureReceiver`, discovered by a type check rather than by widening that port. Its one member, `DeliveryReleased(MessageBrokerContext context)`, is called EXACTLY ONCE per delivered message, AFTER the settlement answer for that delivery (acknowledge, acknowledge-failure, negative acknowledge, dead-letter and poison alike) and BEFORE the receiver returns the concurrency slot the delivery occupied. It MUST NOT throw: a throw is logged and swallowed, and the slot is still returned regardless. `IMessagingInfrastructureReceiver` itself is deliberately NOT widened with this member — an infrastructure that does not implement `IDeliveryReleaseSignal` is never called for it and needs no change at all.
+
 ## [0.27.0] - 2026-09-09
 
 ### Added

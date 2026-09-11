@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-09-11
+
+### Added
+
+- Per-receiver `maxConcurrentCalls` overloads on all four registration methods — `AddQueueReceiver<TMessage>("queue", maxConcurrentCalls, ...)`, `AddSessionQueueReceiver<TMessage>("queue", maxConcurrentCalls, ...)`, `AddTopicSubscription<TMessage>("topic", "subscription", maxConcurrentCalls, ...)` and `AddSessionTopicSubscription<TMessage>("topic", "subscription", maxConcurrentCalls, ...)` — letting one receiver state its own concurrency instead of inheriting the global `ServiceBusOptions.MaxConcurrentCalls`. The original signatures are unchanged and still bind, so this is both source- and binary-compatible — with the single exception of a call passing the literal `default` in that argument position, which is ambiguous and must be written as an explicit typed value or have the argument omitted. A stated value below `1` throws at registration, and registering the same receiver path twice with two different stated values also throws.
+- The session receiver multiplexer: a session-mode receiver now owns up to `MaxConcurrentCalls` single-session children instead of exactly one, each still holding and serving one session at a time in Group Id order (ADR-0014).
+
+### Changed
+
+- **Session receivers now honour `MaxConcurrentCalls` — set globally or per receiver — as the number of sessions held at once.** The previous clamp to `1` is removed: at `MaxConcurrentCalls = 1` the bare single-session adapter is still used directly with no multiplexer in the path, so today's behaviour is unchanged at that value, but any higher value now takes effect for session receivers exactly as it already did for non-session ones.
+- Bundled dependency uplift to Chatter.MessageBrokers 0.28.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it) — required for the `IDeliveryReleaseSignal` capability the multiplexer uses to free a held session's slot.
+
+BREAKING — a global `MaxConcurrentCalls` above `1` was previously CLAMPED to `1` for session receivers and had no effect there. **It is now LIVE: every session receiver will hold that many sessions after upgrading, even though nothing in the consumer's own configuration changed.**
+
+- **Session handlers now run CONCURRENTLY across sessions inside one process.** Shared mutable handler state must be thread-safe or per-scope. Within any one session, messages are still handled one at a time in order — that is unchanged.
+- **Idle cost:** a receiver holding N sessions keeps N session-accept waits open when fewer sessions are available than N. A child with no session available waits on its accept and consumes nothing but an idle connection until one appears.
+- **Across M replicas, the deployment now holds up to M-by-N locked sessions at once.** Sizing is a product, not a sum — size N against the entity's session population, not against the handler alone.
+- **To keep the old behaviour**, state `maxConcurrentCalls: 1` on the session receiver, or set the global `MaxConcurrentCalls` to `1`.
+
+**Why this is a MINOR rather than a MAJOR:** the API surface is purely additive — the four new overloads sit alongside the unchanged originals — and the behaviour change is a previously-inert setting becoming live, not a signature or contract change. The `2.2.0` entry in this same file set the precedent of shipping a loud behaviour change as a minor release carrying an explicit BREAKING callout, and this release follows it.
+
 ## [2.3.0] - 2026-09-08
 
 ### Changed

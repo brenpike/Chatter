@@ -942,6 +942,10 @@ namespace Chatter.MessageBrokers.Receiving
             }
             finally
             {
+                // ORDER IS LOAD-BEARING: the delivery-release signal runs BEFORE the concurrency slot is
+                // returned, so a capability-aware infrastructure has freed whatever this delivery held by the
+                // time the loop is admitted to receive the next one.
+                SignalDeliveryReleased(messageContext);
                 ReleaseConcurrencySlot();
             }
         }
@@ -956,6 +960,31 @@ namespace Chatter.MessageBrokers.Receiving
             }
             catch (ObjectDisposedException)
             {
+            }
+        }
+
+        // INVARIANT: the delivery-release signal is an OPTIONAL capability discovered by type check, so an
+        // infrastructure receiver that does not declare IDeliveryReleaseSignal is never called for it. The pattern
+        // match reads _infrastructureReceiver ONCE and evaluates false on a null field, so a Dispose that already
+        // nulled it simply skips the signal. A throw is swallowed after logging — mirroring the slot release's own
+        // ObjectDisposedException swallow — so a faulty capability can never leak the concurrency slot.
+        void SignalDeliveryReleased(MessageBrokerContext context)
+        {
+            if (_infrastructureReceiver is not IDeliveryReleaseSignal signal)
+            {
+                return;
+            }
+
+            try
+            {
+                signal.DeliveryReleased(context);
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Error signaling the release of a brokered message delivery");
             }
         }
 

@@ -43,12 +43,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         // receiverFactory null, so CreateProductionReceiver is used) with the supplied registry. sendingPath
         // defaults to receiverPath (the queue-receiver shape); a subscription supplies its topic explicitly so
         // the per-receiver session key carries (subscription, topic).
-        private static async Task<ServiceBusReceiver> InitializedSutAsync(ServiceBusReceiverRegistry registry, string receiverPath, string sendingPath = null)
+        private static async Task<ServiceBusReceiver> InitializedSutAsync(ServiceBusReceiverRegistry registry, string receiverPath, string sendingPath = null, int maxConcurrentCalls = 1)
         {
             var serviceBusOptions = new ServiceBusOptions { ConnectionString = _connectionString };
             var logger = new Mock<ILogger<ServiceBusReceiver>>();
             var sut = new ServiceBusReceiver(CreateClient(), serviceBusOptions, new MessageBrokerOptions(), logger.Object, JsonFactory(), registry);
-            await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = receiverPath, SendingPath = sendingPath ?? receiverPath }, CancellationToken.None);
+            await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = receiverPath, SendingPath = sendingPath ?? receiverPath, MaxConcurrentCalls = maxConcurrentCalls }, CancellationToken.None);
             return sut;
         }
 
@@ -157,6 +157,47 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var sut = await InitializedSutAsync(registry, receiverPath: sessionQueue);
 
             sut.InnerReceiver.Should().BeOfType<AzureSdkSessionMessageReceiverAdapter>();
+        }
+
+        [Fact]
+        public async Task MustSelectSessionMultiplexerWhenSessionReceiverAllowsMoreThanOneConcurrentCall()
+        {
+            // In session mode MaxConcurrentCalls means CONCURRENT SESSIONS (ADR-0014), so a session receiver
+            // asking for more than one gets the multiplexer that holds one session per child.
+            const string sessionQueue = "session-queue";
+            var registry = new ServiceBusReceiverRegistry();
+            registry.Register(sessionQueue, sessionQueue, transactionMode: null, requiresSession: true);
+
+            var sut = await InitializedSutAsync(registry, sessionQueue, maxConcurrentCalls: 3);
+
+            sut.InnerReceiver.Should().BeOfType<SessionReceiverMultiplexer>();
+        }
+
+        [Fact]
+        public async Task MustSelectBareSessionAdapterWhenSessionReceiverAllowsOneConcurrentCall()
+        {
+            // At N = 1 today's object graph is unchanged, not merely equivalent: the bare single-session
+            // adapter is used directly with no multiplexer in the path (ADR-0014).
+            const string sessionQueue = "session-queue";
+            var registry = new ServiceBusReceiverRegistry();
+            registry.Register(sessionQueue, sessionQueue, transactionMode: null, requiresSession: true);
+
+            var sut = await InitializedSutAsync(registry, sessionQueue, maxConcurrentCalls: 1);
+
+            sut.InnerReceiver.Should().BeOfType<AzureSdkSessionMessageReceiverAdapter>();
+        }
+
+        [Fact]
+        public async Task MustSelectNonSessionAdapterWhenNonSessionReceiverAllowsMoreThanOneConcurrentCall()
+        {
+            // In non-session mode MaxConcurrentCalls keeps its existing meaning — concurrent messages from one
+            // entity, served by the core's worker pool over ONE adapter — so nothing about the branch changes.
+            var registry = new ServiceBusReceiverRegistry();
+            registry.Register("plain-queue", "plain-queue", transactionMode: null, requiresSession: false);
+
+            var sut = await InitializedSutAsync(registry, "plain-queue", maxConcurrentCalls: 3);
+
+            sut.InnerReceiver.Should().BeOfType<AzureSdkMessageReceiverAdapter>();
         }
 
         [Fact]

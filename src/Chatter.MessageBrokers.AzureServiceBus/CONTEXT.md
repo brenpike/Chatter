@@ -6,11 +6,11 @@ Azure Service Bus implementation of the Chatter.MessageBrokers interfaces for se
 
 **Queue Receiver**: Receiver bound to an ASB queue for Commands (`AddQueueReceiver<TMessage>`).
 
-**Session Queue Receiver**: A Queue Receiver opted into session mode (`AddSessionQueueReceiver<TMessage>`). Processes one session at a time, delivering that session's messages in strict FIFO order per Group Id (SessionId). Broader throughput is achieved by running additional receiver instances; there is no in-process multi-session parallelism knob.
+**Session Queue Receiver**: A Queue Receiver opted into session mode (`AddSessionQueueReceiver<TMessage>`). Holds up to `MaxConcurrentCalls` sessions at once via its Session Multiplexer; within each held session, messages are still delivered one at a time in strict FIFO order per Group Id (SessionId). See ADR-0014.
 
 **Topic Subscription**: Receiver bound to an ASB topic subscription for Events (`AddTopicSubscription<TMessage>`).
 
-**Session Topic Subscription**: A Topic Subscription opted into session mode (`AddSessionTopicSubscription<TMessage>`). Same single-session-at-a-time, FIFO-per-Group-Id semantics as the Session Queue Receiver.
+**Session Topic Subscription**: A Topic Subscription opted into session mode (`AddSessionTopicSubscription<TMessage>`). Same Session Multiplexer, held-up-to-`MaxConcurrentCalls`-sessions, FIFO-per-Group-Id-within-each-session semantics as the Session Queue Receiver.
 
 **Service Bus Sender**: Azure Service Bus realization of the message sender, publishing to queues/topics; outbound handler API via `IMessageHandlerContext.AzureServiceBus()`.
 
@@ -26,6 +26,12 @@ _Avoid_: a dedicated settlement exception (the adapter no longer defines or rais
 **Session**: An Azure Service Bus session-enabled receive mode. A held session owns the FIFO delivery of all messages sharing the same SessionId until the session is drained, released on idle timeout, or rolled due to a lost session lock. Sessions are provisioned externally; the adapter neither creates nor auto-enables session-capable entities.
 
 **Session State**: Durable, per-session binary payload stored on the Azure Service Bus entity for the currently held session. Readable and writable during handler execution via `GetSessionStateAsync` / `SetSessionStateAsync` / `ClearSessionStateAsync`. Only available while handling a message received through a Session Queue Receiver or Session Topic Subscription; invoking it for a non-session message throws `InvalidOperationException`.
+
+**Max Concurrent Calls** (`MaxConcurrentCalls`): One knob with one reading per mode — concurrent MESSAGES for a non-session receiver, concurrent SESSIONS for a session receiver. Settable globally on Service Bus Options or per receiver on the registration entry point, with the per-receiver value winning when stated, including a stated `1`, which means deliberately serial rather than "unset". **Specificity beats source**: the per-receiver value beats the global whatever source either came from — a per-receiver value set fluently beats a global value from configuration, and a per-receiver value from configuration beats a global value set fluently. This is a DIFFERENT axis from this context's existing fluent-beats-configuration rule, and both apply: each of the two values (global, per-receiver) is resolved fluent-first from its own two sources, and only then does the per-receiver value, if stated, win over the global. The floor of at least `1` is checked when the receiver starts, with the existing named error; a stated per-receiver value below `1` is refused earlier, at registration. See ADR-0014.
+_Avoid_: "max-concurrent-sessions knob" (there is one knob, `MaxConcurrentCalls`, not a second session-only one).
+
+**Session Multiplexer**: The internal composition of up to `MaxConcurrentCalls` held sessions behind one session-mode receiver — the mechanism a Session Queue Receiver or Session Topic Subscription uses above `MaxConcurrentCalls = 1`. Each held session is still served by its own single-session child, one message at a time, in Group Id order. A session slot is freed on Delivery Release (Message Brokers context); a held session whose lock has expired without being freed is never reclaimed, and is warned about on the next receive pass. That check is CONDITIONAL on there being a pass to run it: the multiplexer sweeps every slot whenever any one slot is free, so a stale hold is reported on a pass another session's slot drives, but no pass runs — and so no warning is raised — while all `MaxConcurrentCalls` slots are simultaneously occupied. See ADR-0014.
+_Avoid_: "session pool" (children are not interchangeable — each holds and answers for exactly one session, and is never handed a different one to serve).
 
 **Group Id ↔ SessionId realization**: The Azure Service Bus `SessionId` is the broker realization of the suite's existing Group Id (AMQP group-id) term. Inbound, a session message's `SessionId` is surfaced under `MessageContext.GroupId`; outbound, `SendOptions.WithGroupId` sets `ServiceBusMessage.SessionId`. No `WithSessionId` alias is introduced — Group Id is the single canonical surface. A handler sending or publishing through `IMessageHandlerContext` inherits the inbound Group Id (and the rest of the inbound message context) onto the outbound message by design, not incidentally.
 
@@ -50,6 +56,7 @@ _Avoid_: "second options instance", "options factory instance".
 - Authentication is supplied by the Azure Service Bus Auth context.
 - PeekLock Settlement realizes the Settlement Outcome contract defined in the Message Brokers context; a `ReceiveAndDelete` receiver owes no settlement at all, and a PeekLock settlement with no received message to settle reports Failed instead of raising.
 - Session State and inbound Group Id (SessionId) surfacing are entirely within this adapter; no core Message Brokers or CQRS concept is changed.
+- The Session Multiplexer consumes the Message Brokers context's Delivery Release signal to free a held session's slot once its worker is done with a delivery, whether or not that delivery settled.
 
 ## Example dialogue
 

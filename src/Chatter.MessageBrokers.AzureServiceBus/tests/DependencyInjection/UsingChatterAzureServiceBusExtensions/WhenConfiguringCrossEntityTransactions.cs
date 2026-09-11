@@ -44,6 +44,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
                     enableCrossEntityTransactions.ToString(),
             }).Build();
 
+        // Builds a configuration whose Chatter:Infrastructure:AzureServiceBus section carries the connection
+        // string plus a GLOBAL MaxConcurrentCalls, so the global value arrives purely by config binding with NO
+        // fluent WithMaxConcurrentCalls call — the source a per-receiver value has to beat.
+        private static IConfiguration MaxConcurrentCallsConfig(int maxConcurrentCalls)
+            => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+            {
+                ["Chatter:Infrastructure:AzureServiceBus:ConnectionString"] = _connectionString,
+                ["Chatter:Infrastructure:AzureServiceBus:MaxConcurrentCalls"] = maxConcurrentCalls.ToString(),
+            }).Build();
+
         // Builds services where the ASB opt-in comes ONLY from configuration binding (no fluent
         // WithConnectionString / WithCrossEntityTransactions): the section is bound by the options builder.
         private static ServiceCollection BuildServicesFromConfig(
@@ -547,17 +557,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             asbReceiver.MaxConcurrentCalls.Should().Be(1);
         }
 
-        // ----------------------------------------------------------------- (P1) session-mode concurrency clamp
+        // ----------------------------------------------------------------- (ADR-0014) session concurrency and the per-receiver knob
 
         [Fact]
-        public async Task MustClampSessionReceiverMaxConcurrentCallsToOneWhileNonSessionKeepsGlobal()
+        public async Task MustGiveSessionReceiverTheGlobalMaxConcurrentCallsJustLikeANonSessionReceiver()
         {
-            // (P1) A session-mode receiver holds a SINGLE ServiceBusSessionReceiver and must serve at most ONE
-            // in-flight message at a time, so PopulateFromDiscoveredReceivers clamps its live ReceiverOptions
-            // .MaxConcurrentCalls to 1 — overriding the global value (set fluently to 7) — while a NON-session
-            // receiver in the same host keeps the global 7. Asserted on the live ReceiverOptions held in
-            // IDiscoveredReceiverRegistry, the same instance BrokeredMessageReceiver reads at init: one worker ->
-            // one in-flight message from the single held session receiver, FIFO-per-session preserved.
+            // ADR-0014: in session mode MaxConcurrentCalls means CONCURRENT SESSIONS, so a session-mode receiver
+            // is stamped with the global value (set fluently to 7) exactly as its non-session neighbour is. The
+            // clamp that overwrote a session receiver's live ReceiverOptions.MaxConcurrentCalls with 1 is gone:
+            // the one-message-per-session property now belongs to each multiplexed single-session child, not to
+            // the receiver. Asserted on the live ReceiverOptions held in IDiscoveredReceiverRegistry, the same
+            // instance BrokeredMessageReceiver reads at init.
             var services = BuildServices(sb =>
             {
                 sb.WithMaxConcurrentCalls(7);
@@ -575,21 +585,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             var normalReceiver = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "normal-queue");
 
-            sessionReceiver.MaxConcurrentCalls.Should().Be(1);
-            // The non-session receiver carries the FINALIZED published global, not a coincidental literal.
+            // Both carry the FINALIZED published global, not a coincidental literal.
+            sessionReceiver.MaxConcurrentCalls.Should()
+                .Be(provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls);
+            sessionReceiver.MaxConcurrentCalls.Should().Be(7);
             normalReceiver.MaxConcurrentCalls.Should()
                 .Be(provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls);
             normalReceiver.MaxConcurrentCalls.Should().Be(7);
         }
 
         [Fact]
-        public async Task MustClampSessionTopicSubscriptionWhileSiblingSubscriptionOnSameTopicKeepsGlobal()
+        public async Task MustGiveSessionTopicSubscriptionAndItsSiblingOnTheSameTopicTheGlobal()
         {
-            // (P1) The clamp is PER-RECEIVER, not per-top-level-entity: a session-enabled subscription and a
-            // normal subscription on the SAME topic are distinct receivers, so only the session one is clamped to
-            // 1 while the sibling normal subscription keeps the global 7. Proves the clamp branches on the
-            // per-receiver session flag via RequiresSession(receiverPath, sendingPath), matching the registry's
-            // per-receiver session attribution.
+            // ADR-0014: a session-enabled subscription and a normal subscription on the SAME topic are distinct
+            // receivers, and neither is singled out any more — both are stamped with the global 7. Retained from
+            // the clamp era because the session subscription's raw-vs-canonical path handling still runs here:
+            // the stamp resolves this subscription's own entry, not its sibling's.
             await using var provider = BuildServices(sb =>
             {
                 sb.WithMaxConcurrentCalls(7);
@@ -603,18 +614,16 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             var normalSubscription = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "normal-sub");
 
-            sessionSubscription.MaxConcurrentCalls.Should().Be(1);
+            sessionSubscription.MaxConcurrentCalls.Should().Be(7);
             normalSubscription.MaxConcurrentCalls.Should().Be(7);
         }
 
         [Fact]
-        public async Task MustClampSessionTopicSubscriptionStandaloneToOneWithGlobalAboveOne()
+        public async Task MustGiveStandaloneSessionTopicSubscriptionTheGlobalAboveOne()
         {
-            // (P1-topic) Regression for the raw-path-to-canonical-key path: a session topic subscription has
-            // MessageReceiverPath = raw subscription name at discovery time (before the core runtime rewrite to
-            // "<topic>/Subscriptions/<sub>"). RequiresSession must still resolve the session flag via the
-            // canonical key so the clamp fires correctly. This is the standalone case — no sibling subscription
-            // — proving the clamp is not accidentally gated on a sibling being present.
+            // ADR-0014: a lone session topic subscription inherits the global 7 — nothing overwrites it with 1
+            // any more. The standalone case, with no sibling subscription present, so the value cannot have come
+            // from a neighbouring receiver's entry.
             await using var provider = BuildServices(sb =>
             {
                 sb.WithMaxConcurrentCalls(7);
@@ -625,17 +634,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             var sessionSubscription = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "session-sub");
 
-            sessionSubscription.MaxConcurrentCalls.Should().Be(1);
+            sessionSubscription.MaxConcurrentCalls.Should().Be(7);
         }
 
         [Fact]
-        public async Task MustClampSessionTopicSubscriptionAndLeaveNormalSubscriptionOnDifferentTopicAtGlobal()
+        public async Task MustGiveSessionTopicSubscriptionAndNormalSubscriptionOnDifferentTopicsTheGlobal()
         {
-            // (P1-topic) The clamp is PER-RECEIVER and does not spill across topics: a session subscription on
-            // one topic is clamped to 1 while a normal subscription on a DISTINCT topic keeps the global 7.
-            // This complements MustClampSessionTopicSubscriptionWhileSiblingSubscriptionOnSameTopicKeepsGlobal
-            // (same-topic siblings) and confirms the per-receiver session flag is isolated by canonical key,
-            // not by topic membership.
+            // ADR-0014: a session subscription on one topic and a normal subscription on a DISTINCT topic both
+            // inherit the global 7. Complements the same-topic sibling fact above: no receiver is singled out by
+            // session mode, and neither topic's entry leaks into the other's stamp.
             await using var provider = BuildServices(sb =>
             {
                 sb.WithMaxConcurrentCalls(7);
@@ -649,16 +656,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             var normalSubscription = discoveredRegistry.DiscoveredReceivers
                 .Single(r => r.MessageReceiverPath == "normal-sub");
 
-            sessionSubscription.MaxConcurrentCalls.Should().Be(1);
+            sessionSubscription.MaxConcurrentCalls.Should().Be(7);
             normalSubscription.MaxConcurrentCalls.Should().Be(7);
         }
 
         [Fact]
-        public async Task MustLeaveSessionReceiverAtOneWhenGlobalMaxConcurrentCallsAlreadyOne()
+        public async Task MustLeaveSessionReceiverAtOneWhenGlobalMaxConcurrentCallsIsUnset()
         {
-            // (P1) The clamp is a no-op when the global MaxConcurrentCalls is already 1 (the default): a session
-            // receiver stays at 1, identical to its non-clamped state — the override neither raises nor changes a
-            // host that never configured concurrency.
+            // ADR-0014 zero-behaviour-change default: with the global MaxConcurrentCalls unset (default 1), a
+            // session receiver is stamped 1, so ServiceBusReceiver uses the bare single-session adapter with no
+            // multiplexer in the path. Removing the clamp raises nothing for a host that never configured
+            // concurrency; it only stops overriding hosts that did.
             var services = BuildServices(sb => sb.AddSessionQueueReceiver<FirstCommand>("session-queue"));
             await using var provider = services.BuildServiceProvider();
 
@@ -676,6 +684,286 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
                 .Be(provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls);
             sessionReceiver.MaxConcurrentCalls.Should().Be(1);
         }
+
+        [Fact]
+        public async Task MustLetAStatedPerReceiverValueBeatTheGlobalOnEveryRegistrationMethod()
+        {
+            // SPECIFICITY BEATS SOURCE (ADR-0014): a value the receiver STATES on its own registration wins over
+            // the global one. The knob is on all four registration methods with one meaning per mode — concurrent
+            // messages for a non-session receiver, concurrent sessions for a session receiver — so all four are
+            // exercised against one global of 7.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+                sb.AddQueueReceiver<FirstCommand>("stated-queue", 2);
+                sb.AddTopicSubscription<FirstEvent>("stated-topic", "stated-sub", 3);
+                sb.AddSessionQueueReceiver<SecondCommand>("stated-session-queue", 4);
+                sb.AddSessionTopicSubscription<SecondEvent>("stated-session-topic", "stated-session-sub", 5);
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+
+            // The global really is 7, so every value below is an override rather than a coincidence.
+            provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls.Should().Be(7);
+
+            StatedReceiver(discoveredRegistry, "stated-queue").MaxConcurrentCalls.Should().Be(2);
+            StatedReceiver(discoveredRegistry, "stated-sub").MaxConcurrentCalls.Should().Be(3);
+            StatedReceiver(discoveredRegistry, "stated-session-queue").MaxConcurrentCalls.Should().Be(4);
+            StatedReceiver(discoveredRegistry, "stated-session-sub").MaxConcurrentCalls.Should().Be(5);
+        }
+
+        [Fact]
+        public async Task MustHonourAStatedOneAgainstAGlobalAboveOne()
+        {
+            // A stated 1 is a deliberate choice of serial processing, not an unset value: it must beat a global 7
+            // in the SAME direction as a stated 9 would. The nullable stated value is what distinguishes "stated
+            // the default" from "stated nothing" — a plain int could not tell those apart.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+                sb.AddSessionQueueReceiver<FirstCommand>("serial-session-queue", 1);
+                sb.AddQueueReceiver<SecondCommand>("inheriting-queue");
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+
+            StatedReceiver(discoveredRegistry, "serial-session-queue").MaxConcurrentCalls.Should().Be(1);
+            // The neighbour proves the global was 7 all along, so the 1 above is the stated value winning and not
+            // a global that happened to be 1.
+            StatedReceiver(discoveredRegistry, "inheriting-queue").MaxConcurrentCalls.Should().Be(7);
+        }
+
+        [Fact]
+        public async Task MustLetAStatedPerReceiverValueBeatAGlobalBoundFromConfiguration()
+        {
+            // SPECIFICITY BEATS SOURCE, the config arm: the global arrives purely by section binding (no fluent
+            // WithMaxConcurrentCalls call) and the per-receiver value still wins. This is a DIFFERENT axis from
+            // the module's fluent-beats-configuration rule, which resolves two SOURCES for ONE value; this
+            // resolves two SCOPES, and the narrower scope wins whatever source either value came from.
+            await using var provider = BuildServicesFromConfig(MaxConcurrentCallsConfig(7), sb =>
+            {
+                sb.AddSessionQueueReceiver<FirstCommand>("stated-session-queue", 3);
+                sb.AddQueueReceiver<SecondCommand>("inheriting-queue");
+            }).BuildServiceProvider();
+
+            // The global came from configuration, not from a fluent call.
+            provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls.Should().Be(7);
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+
+            StatedReceiver(discoveredRegistry, "stated-session-queue").MaxConcurrentCalls.Should().Be(3);
+            StatedReceiver(discoveredRegistry, "inheriting-queue").MaxConcurrentCalls.Should().Be(7);
+        }
+
+        [Fact]
+        public async Task MustGiveADiscoveredReceiverTheGlobalWhileAStatedNeighbourKeepsItsOwnValue()
+        {
+            // A receiver registered through the core route (the shape the [BrokeredMessageAttribute] assembly scan
+            // produces) states nothing, so it inherits the global 7 — while a fluently-registered neighbour that
+            // DID state a value keeps it. Pins that "stated nothing" and "stated a value" are distinguished
+            // per-receiver rather than host-wide.
+            await using var provider = BuildServicesWithCoreReceivers(
+                sb =>
+                {
+                    sb.WithMaxConcurrentCalls(7);
+                    sb.AddQueueReceiver<SecondCommand>("stated-queue", 2);
+                },
+                mb => mb.AddReceiver<FirstCommand>("core-queue-a", senderPath: "core-queue-a", infrastructureType: ASBMessageContext.InfrastructureType))
+                .BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+
+            StatedReceiver(discoveredRegistry, "core-queue-a").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "stated-queue").MaxConcurrentCalls.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task MustBindEveryRegistrationShapeToTheIntendedOverloadWithoutAmbiguity()
+        {
+            // COMPILE-TIME proof that the per-receiver overloads leave every call shape unambiguous, in BOTH
+            // directions. maxConcurrentCalls sits IMMEDIATELY AFTER the required path parameter(s) and is itself
+            // REQUIRED and NON-NULLABLE, so overload resolution separates the two candidates by the TYPE of the
+            // argument in that position: an int reaches only the new overload, a string reaches only the old one,
+            // and a call that omits the position entirely is not applicable to the new overload at all — so
+            // CS0121 never arises. A `null` argument in that position is what a NULLABLE parameter would have
+            // made ambiguous; it is pinned separately below, in
+            // MustBindAPositionalNullToTheOriginalOverloadOnEveryRegistrationMethod.
+            // Because the parameter is no longer trailing, the remaining parameters keep their defaults (CS1737
+            // does not fire), which is what makes the one-knob call site spell ONE extra argument, not four.
+            // Compiling IS the assertion for the binding; the stamped value says WHICH overload ran — an
+            // inherited 7 means the original overload, a stated value means the per-receiver one.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+
+                // Omitted entirely: only the original overload is applicable.
+                sb.AddQueueReceiver<FirstCommand>("legacy-queue");
+                // A string in the second position does not convert to int?, so only the original applies.
+                sb.AddQueueReceiver<FirstCommand>("errors-positional-queue", "errors");
+                // Named arguments of the original shape only: the new overload cannot be satisfied.
+                sb.AddQueueReceiver<FirstCommand>("named-legacy-queue", errorQueuePath: "errors", description: "d");
+                // An int in the second position does not convert to string, so only the new overload applies.
+                sb.AddQueueReceiver<SecondCommand>("stated-positional-queue", 2);
+                // Named, with every remaining parameter left at its default — the one-knob call site.
+                sb.AddQueueReceiver<SecondCommand>("stated-named-queue", maxConcurrentCalls: 3);
+
+                // Same reasoning one position later for the topic-shaped pair.
+                sb.AddTopicSubscription<FirstEvent>("legacy-topic", "legacy-sub", transactionMode: TransactionMode.ReceiveOnly);
+                sb.AddTopicSubscription<FirstEvent>("errors-topic", "errors-positional-sub", "errors");
+                sb.AddTopicSubscription<SecondEvent>("stated-topic", "stated-positional-sub", 4);
+                sb.AddTopicSubscription<SecondEvent>("stated-named-topic", "stated-named-sub", maxConcurrentCalls: 5);
+
+                // The fully-positional original shape: the trailing 10 is an int that cannot convert to
+                // TransactionMode?, so the new overload is not applicable and this still binds the original.
+                sb.AddSessionQueueReceiver<FirstCommand>("legacy-session-queue", null, null, null, 10);
+                sb.AddSessionQueueReceiver<SecondCommand>("stated-session-queue", 6);
+
+                sb.AddSessionTopicSubscription<FirstEvent>("legacy-session-topic", "legacy-session-sub");
+                sb.AddSessionTopicSubscription<SecondEvent>("stated-session-topic", "stated-session-sub", 8);
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+
+            // The global really is 7, so each stated value below is an override rather than a coincidence.
+            provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls.Should().Be(7);
+
+            StatedReceiver(discoveredRegistry, "legacy-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "errors-positional-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "named-legacy-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "stated-positional-queue").MaxConcurrentCalls.Should().Be(2);
+            StatedReceiver(discoveredRegistry, "stated-named-queue").MaxConcurrentCalls.Should().Be(3);
+
+            StatedReceiver(discoveredRegistry, "legacy-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "errors-positional-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "stated-positional-sub").MaxConcurrentCalls.Should().Be(4);
+            StatedReceiver(discoveredRegistry, "stated-named-sub").MaxConcurrentCalls.Should().Be(5);
+
+            StatedReceiver(discoveredRegistry, "legacy-session-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "stated-session-queue").MaxConcurrentCalls.Should().Be(6);
+
+            StatedReceiver(discoveredRegistry, "legacy-session-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "stated-session-sub").MaxConcurrentCalls.Should().Be(8);
+        }
+
+        [Fact]
+        public async Task MustBindAPositionalNullToTheOriginalOverloadOnEveryRegistrationMethod()
+        {
+            // SOURCE-COMPATIBILITY pin, and a COMPILE-LEVEL one. A `null` literal converts to `string` and to
+            // `int?` with neither a better conversion target, so a per-receiver parameter typed `int?` makes every
+            // call below CS0121 — an existing consumer passing a positional null in the errorQueuePath slot would
+            // stop compiling on upgrade. The parameter is a NON-NULLABLE `int` precisely so `null` has no
+            // conversion to it and these calls stay applicable to the original overload only.
+            //
+            // Do NOT "simplify" these call sites by naming the arguments or dropping the nulls: the ARGUMENT
+            // SHAPES are the assertion, and this file stops compiling the moment anyone reintroduces a nullable or
+            // reference type in that slot. The runtime assertions say WHICH overload ran — inheriting the global 7
+            // means the original one did.
+            //
+            // KNOWN RESIDUAL, deliberately not pinned: the literal `default` in the same position converts to
+            // every candidate type and stays ambiguous. A test cannot assert a compile error, so it is recorded in
+            // the CHANGELOG instead; such a call must state a typed value or omit the argument.
+            await using var provider = BuildServices(sb =>
+            {
+                sb.WithMaxConcurrentCalls(7);
+
+                sb.AddQueueReceiver<FirstCommand>("null-queue", null);
+                sb.AddQueueReceiver<FirstCommand>("null-described-queue", null, "desc");
+
+                sb.AddSessionQueueReceiver<FirstCommand>("null-session-queue", null);
+                sb.AddSessionQueueReceiver<FirstCommand>("null-described-session-queue", null, "desc");
+
+                sb.AddTopicSubscription<FirstEvent>("null-topic", "null-sub", null);
+                sb.AddTopicSubscription<FirstEvent>("null-described-topic", "null-described-sub", null, "desc");
+
+                sb.AddSessionTopicSubscription<FirstEvent>("null-session-topic", "null-session-sub", null);
+                sb.AddSessionTopicSubscription<FirstEvent>("null-described-session-topic", "null-described-session-sub", null, "desc");
+            }).BuildServiceProvider();
+
+            var discoveredRegistry = provider.GetRequiredService<IDiscoveredReceiverRegistry>();
+
+            provider.GetRequiredService<ServiceBusOptions>().MaxConcurrentCalls.Should().Be(7);
+
+            StatedReceiver(discoveredRegistry, "null-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-described-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-session-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-described-session-queue").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-described-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-session-sub").MaxConcurrentCalls.Should().Be(7);
+            StatedReceiver(discoveredRegistry, "null-described-session-sub").MaxConcurrentCalls.Should().Be(7);
+        }
+
+        [Fact]
+        public void MustThrowWhenOneReceiverPathIsRegisteredWithTwoDifferentStatedValues()
+        {
+            // Two registrations of the SAME canonical receiving path stating DIFFERENT values have no defensible
+            // resolution, so registration fails loudly naming the path and both values — the same posture the
+            // cross-entity single-top-level-entity guard takes rather than silently picking one.
+            Action build = () => BuildServices(sb =>
+            {
+                sb.AddQueueReceiver<FirstCommand>("dup-queue", 3);
+                sb.AddQueueReceiver<SecondCommand>("dup-queue", 5);
+            });
+
+            build.Should()
+                .Throw<InvalidOperationException>()
+                .WithMessage("*MaxConcurrentCalls*")
+                .WithMessage("*dup-queue*")
+                .WithMessage("*3*")
+                .WithMessage("*5*");
+        }
+
+        [Fact]
+        public void MustThrowWhenAStatedMaxConcurrentCallsIsBelowOne()
+        {
+            // A STATED per-receiver value is rejected at REGISTRATION, where the call site that stated it is still
+            // in view. The INHERITED global path is NOT validated here: core receiver init stays the single sink
+            // for the at-least-1 floor.
+            Action build = () => BuildServices(sb =>
+                sb.AddSessionQueueReceiver<FirstCommand>("session-queue", 0));
+
+            build.Should()
+                .Throw<ArgumentOutOfRangeException>()
+                .And.ParamName.Should().Be("maxConcurrentCalls");
+        }
+
+        [Fact]
+        public void MustAnswerTheFirstNonNullStatedValueWhenANullEntryWasAppendedFirst()
+        {
+            // The discovery fold appends a DUPLICATE registry entry for a receiver it already saw, carrying a null
+            // stated value. A positional first-match lookup would let such a null MASK the value the receiver
+            // actually stated, so the lookup answers the first NON-NULL value instead of the first entry. Driven
+            // straight at the registry because the masking order is a registry-internal ordering, not something a
+            // single host build can arrange.
+            var registry = new global::Chatter.MessageBrokers.AzureServiceBus.DependencyInjection.ServiceBusReceiverRegistry();
+            registry.Register("dup-queue", "dup-queue", null);
+            registry.Register("dup-queue", "dup-queue", null, maxConcurrentCalls: 4);
+
+            registry.StatedMaxConcurrentCalls("dup-queue", "dup-queue").Should().Be(4);
+        }
+
+        [Fact]
+        public void MustNotTreatEqualOrUnstatedValuesAsAConflict()
+        {
+            // Equal stated values agree and a null states nothing, so neither can conflict. Only two DIFFERENT
+            // stated values are unresolvable — which is what the throw is reserved for.
+            var registry = new global::Chatter.MessageBrokers.AzureServiceBus.DependencyInjection.ServiceBusReceiverRegistry();
+
+            Action registerAgreeingEntries = () =>
+            {
+                registry.Register("agreeing-queue", "agreeing-queue", null, maxConcurrentCalls: 4);
+                registry.Register("agreeing-queue", "agreeing-queue", null, maxConcurrentCalls: 4);
+                registry.Register("agreeing-queue", "agreeing-queue", null);
+            };
+
+            registerAgreeingEntries.Should().NotThrow();
+            registry.StatedMaxConcurrentCalls("agreeing-queue", "agreeing-queue").Should().Be(4);
+        }
+
+        // The live ReceiverOptions instance a named receiver path resolved to — the SAME instance
+        // BrokeredMessageReceiver reads MaxConcurrentCalls from at init.
+        private static ReceiverOptions StatedReceiver(IDiscoveredReceiverRegistry discoveredRegistry, string messageReceiverPath)
+            => discoveredRegistry.DiscoveredReceivers.Single(r => r.MessageReceiverPath == messageReceiverPath);
 
         // ----------------------------------------------------------------- default-infrastructure resolution (multi-broker)
 
