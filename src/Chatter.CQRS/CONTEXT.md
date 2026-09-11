@@ -11,7 +11,7 @@ _Avoid_: read request.
 
 **Read Model**: The data shape returned by a Query, optimized for retrieval rather than mutation.
 
-**Event**: A message representing something that happened, dispatchable to zero or many handlers.
+**Event**: A message representing something that happened, dispatchable to zero or many handlers. Its handlers are not isolated from one another: they are invoked in turn and the first one that throws ends the dispatch, rethrowing unchanged so no later handler runs. See ADR-0012.
 
 **Domain Event**: An Event originating from an internal aggregate, handled within the originating domain.
 
@@ -39,7 +39,7 @@ _Avoid_: listener (a reserved alias — the .NET BCL subscription type is always
 ## Relationships
 
 - An Aggregate is changed by Commands and produces Domain Events.
-- A Command is dispatched to exactly one handler; an Event fans out to many.
+- A Command is dispatched to exactly one handler; an Event fans out to many, and that fan-out is a single unit of work that ends at the first handler to throw. See ADR-0012.
 - Commands and Events go through the Message Dispatcher; Queries go through the separate Query Dispatcher.
 - A Command Pipeline wraps all Command handlers.
 - A Domain Event may be promoted to an Integration Event, published outward via the External Dispatcher (replaced by a broker module).

@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.15.1] - 2026-09-10
+
+### Fixed
+
+- Three documentation sites promised that event dispatch invokes every registered handler, with no statement anywhere of what happens if one fails: `EventDispatcher`'s XML remark, the package README's fan-out paragraph, and `CONTEXT.md`'s Event term. The actual contract, unchanged by this release, is that each resolved `IMessageHandler<TEvent>` is awaited in resolution order and the first handler that throws propagates out of `Dispatch` — it is logged once and rethrown unchanged — and no subsequent handler is invoked. This release corrects those three documentation sites and adds `MustNotInvokeSubsequentHandlersOnceAHandlerRaisesException`, a permanent characterization test pinning that a first handler runs, a third does not, and the faulting handler's own exception instance surfaces unwrapped; no production code changed and dispatch semantics have not moved. An application that needs each subscriber to run independently of its siblings must give that subscriber its own delivery — its own broker subscription or queue — rather than have one dispatch carry several handlers. This matches the shipped default of comparable .NET libraries: MediatR's default notification publisher — the closest match to Chatter's shape, an in-process fan-out with no transport underneath — NServiceBus's treatment of multiple handlers in one endpoint as a single unit of work, and Rebus. The accepted cost is that handler invocation order is registration order, which for a handler the assembly scan discovers is scan order: that order is stable within a process, while which siblings are skipped follows whichever handler threw on the delivery, so a deterministic failure skips the same set every time and a transient one shifts it; an application that has not deliberately ordered its registrations gets an order it did not choose and which can differ across builds, and re-registering an already-scanned handler does not reposition it — it registers that handler a second time. ADR-0012 records the decision (#331).
+
 ## [0.15.0] - 2026-09-10
 
 ### Changed

@@ -90,6 +90,24 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         }
 
         [Fact]
+        public async Task MustNotInvokeSubsequentHandlersOnceAHandlerRaisesException()
+        {
+            var invokedHandler = new Mock<IMessageHandler<IMessage>>();
+            var faultingHandler = new Mock<IMessageHandler<IMessage>>();
+            var subsequentHandler = new Mock<IMessageHandler<IMessage>>();
+            var handlerException = new InvalidOperationException("event handler failed");
+            faultingHandler.Setup(p => p.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>())).ThrowsAsync(handlerException);
+            var listOfRegisteredHandlers = new[] { invokedHandler.Object, faultingHandler.Object, subsequentHandler.Object }.TakeWhile(_ => true);
+            _serviceProvider.Setup(p => p.GetService(typeof(IEnumerable<IMessageHandler<IMessage>>))).Returns(listOfRegisteredHandlers);
+
+            var thrown = await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, null)).Should().ThrowAsync<InvalidOperationException>();
+
+            invokedHandler.Verify(p => p.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>()), Times.Once());
+            subsequentHandler.Verify(p => p.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>()), Times.Never());
+            thrown.Which.Should().BeSameAs(handlerException);
+        }
+
+        [Fact]
         public async Task MustRenderAConstructedGenericEventTypeTheWayInterpolationRenderedIt()
         {
             var genericHandler = new Mock<IMessageHandler<GenericEvent<Payload>>>();
