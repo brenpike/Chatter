@@ -310,6 +310,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // marks each hold so ONE warning is raised per busy episode. LOG-ONLY by decision (ADR-0014): a slot whose
         // session lock lapsed while its worker is still running is NOT reclaimed, because reclaiming it would race
         // the live worker and make that worker's settlement unroutable.
+        // Reachability, which bounds what this can report: it runs once per ReceiveAsync pass and from nowhere else,
+        // and the core pull loop enters ReceiveAsync only while holding one of its MaxConcurrentCalls permits —
+        // sized from the same value as this multiplexer's slot count — so the sweep cannot run at all while every
+        // slot is busy at once. It sweeps ALL slots rather than only the one about to yield, so a stale hold is
+        // reported on a pass any free sibling drives. The state no pass reports is a total stall of every slot.
         private List<(string sessionId, TimeSpan heldFor, DateTimeOffset lockedUntil)> CollectNewlyStaleSessionHolds()
         {
             List<(string, TimeSpan, DateTimeOffset)> staleSessionHolds = null;

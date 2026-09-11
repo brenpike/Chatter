@@ -159,6 +159,39 @@ What the multiplexer does instead is say so. When a held session's lock has expi
 occupied, it logs a WARNING naming the receiver path, the `SessionId` and how long the session has been parked,
 and frees nothing. The condition becomes observable without becoming a second, racing owner of the slot.
 
+**The check is CONDITIONAL, and its trigger states the bound exactly.** The sweep runs on a pass of the
+multiplexer's `ReceiveAsync` loop and from nowhere else — there is no timer and no second caller. The core pull
+loop enters that call only while holding a `MaxConcurrentCalls` permit, which it takes BEFORE every receive
+(`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs:676`), and that
+semaphore is sized from the same `MaxConcurrentCalls` the multiplexer sizes its slot count from. So the check is
+unavailable precisely while all N slots are simultaneously occupied: every permit is held, the loop parks in
+`WaitAsync`, and no pass runs. It is available as soon as any ONE slot is free, and it then reports a stale hold
+on ANY slot, because the sweep iterates every slot rather than only the one about to yield — with N = 3 and slot
+0 stuck on an expired lock while slots 1 and 2 keep cycling, the warning is raised on a pass driven by a
+sibling. Every delivery release is also immediately followed by the permit release and completes the freed
+signal that sits in every await set, so a stale-check pass follows every worker completion within one turn.
+
+KNOWN LIMITATION: the undetected state is a TOTAL stall — all N slots occupied at once with no worker ever
+releasing — and not a single stuck handler, which N - 1 cycling siblings raise the warning for. An instrumented
+host still sees the total stall from outside the log: N receive spans that never close and a flat
+`messaging.client.consumed.messages`. This is recorded as the present bound of the backstop, not as a defect
+this decision undertakes to fix.
+
+Three ways of removing that bound were considered and rejected:
+
+- **An independent timer inside the multiplexer.** It adds a second concurrent actor to a class whose
+  correctness already rests on its `INVARIANT:` comments, plus a cadence constant that is de-facto
+  configuration and an injectable clock to make the cadence testable — all to emit a log line.
+- **Checking staleness on delivery release.** Provably redundant: the permit release and freed-signal wake that
+  follow every release already drive a sweep within one turn, so the check would run at moments it already runs.
+- **Reusing the child's existing session-lock renewal loop as the ticker.** That loop STOPS at
+  `MaxSessionLockRenewalDuration`, which is one lock duration BEFORE the lock it last renewed actually lapses,
+  so it would still need a fresh delay and a time seam of its own. Its production half also cannot be driven
+  test-first: `ServiceBusSessionReceiver` is sealed, with no accessible constructor and no model-factory entry
+  point, so the renewal loop's session-facing side has no test double.
+
+The backstop stays LOG-ONLY on every one of these readings: it never reclaims a slot.
+
 ### `ServiceBusReceiver` closes the inner receiver before nulling it
 
 `ServiceBusReceiver.ReceiveMessageAsync` catches `ObjectDisposedException` when the inner receiver is closing
