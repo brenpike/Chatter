@@ -21,8 +21,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
     // delivery-count probe and a delivery whose Receive Attempts is unreadable. The ladder awaits that probe before
     // it settles anything, so a probe that throws leaves the delivery UNSETTLED — neither negatively acknowledged
     // nor deadlettered — and the infrastructure redelivers it forever while the receiver keeps reporting healthy.
-    // Each case here asserts the delivery was DEADLETTERED, which is the only observable escape available to a
-    // member the interface gives no logger.
+    // Each theory case here asserts the delivery was DEADLETTERED, which is the only observable escape available to a
+    // member the interface gives no logger. The facts hold the other side of the rule: an integral Receive Attempts
+    // that is in range — whatever width it arrives boxed as — is countable and must take the redelivery branch.
     public class WhenDeliveryCountHeaderIsUnusable : Testing.Core.Context
     {
         private static readonly TimeSpan Watchdog = TimeSpan.FromSeconds(15);
@@ -32,8 +33,9 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
             yield return new object[] { false, null, "an absent Receive Attempts" };
             yield return new object[] { true, null, "a null Receive Attempts" };
             yield return new object[] { true, "3", "a string Receive Attempts" };
-            yield return new object[] { true, 3L, "a long Receive Attempts" };
             yield return new object[] { true, new byte[] { 0, 0, 0, 3 }, "a byte[] Receive Attempts" };
+            yield return new object[] { true, 3d, "a non-integral Receive Attempts" };
+            yield return new object[] { true, (long)int.MaxValue + 1, "an out-of-range Receive Attempts" };
         }
 
         [Theory]
@@ -80,6 +82,28 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingBrokeredMessageReceiver
 
             infraReceiver.CallLog.Should().NotContain(ReceiverCall.Deadletter,
                 "a readable Receive Attempts below the maximum must still take the redelivery branch, so the sentinel never swallows a countable delivery");
+        }
+
+        [Fact]
+        public async Task MustNackTheDeliveryWhenReceiveAttemptsIsALongBelowMax()
+        {
+            var infraReceiver = new InMemoryMessagingInfrastructureReceiver(expectedMessageCount: 1);
+            var probe = new InheritsTheDefaultDeliveryCountProbe(infraReceiver);
+            infraReceiver.Enqueue(BuildContext(keyIsPresent: true, receiveAttempts: 1L));
+
+            var sut = CreateSut(probe, ThrowingDispatcher());
+
+            using var cts = new CancellationTokenSource();
+            var loop = Task.Run(() => sut.StartReceiver(BuildReceiverOptions(), cts.Token));
+
+            using var watchdog = new CancellationTokenSource(Watchdog);
+            await WaitUntilAsync(() => infraReceiver.CallLog.Contains(ReceiverCall.Nack), watchdog.Token);
+
+            cts.Cancel();
+            await loop;
+
+            infraReceiver.CallLog.Should().NotContain(ReceiverCall.Deadletter,
+                "an outbox replay materializes Receive Attempts as a long, so a long below the maximum must take the redelivery branch exactly as the int does");
         }
 
         private static Mock<IReceivedMessageDispatcher> ThrowingDispatcher()

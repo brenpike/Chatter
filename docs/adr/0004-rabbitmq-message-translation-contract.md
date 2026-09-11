@@ -122,8 +122,9 @@ keeps the RabbitMQ adapter from silently losing it on a round trip.
 - **DECISION-D — CorrelationId dual-home.** The CorrelationId is written to **both** the native
   frame field and a header copy on send, for wire compatibility with consumers that read either.
   Inbound the native frame is authoritative; when absent (delivered only as a header) the decoded
-  header copy (byte[]->string) is the source, so the core's unguarded `(string)` cast at the
-  `InboundBrokeredMessage` ctor holds either way.
+  header copy (byte[]->string) is the source, so the core's type-tested `string` read at the
+  `InboundBrokeredMessage` ctor sees the real value either way — an undecoded `byte[]` reads as
+  `null` there, silently losing the correlation id rather than faulting.
 - **DECISION-E — persistence hardcoded.** `Persistent = true` is hardcoded on send and republish so
   a message survives a broker restart on a durable queue; the delivered delivery-mode is never
   carried.

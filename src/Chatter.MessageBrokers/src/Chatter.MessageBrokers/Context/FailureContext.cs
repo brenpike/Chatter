@@ -40,6 +40,18 @@ namespace Chatter.MessageBrokers.Context
         /// The description of the error
         /// </summary>
         public Exception Failure { get; }
+        /// <summary>
+        /// How many times the failed delivery had been received when the failure occurred.
+        /// </summary>
+        /// <remarks>
+        /// A value of <see cref="int.MaxValue"/> is the uncountable-delivery sentinel, NOT a real attempt count: the
+        /// receiving infrastructure held no usable Receive Attempts value for this delivery, so how many times it had
+        /// been received is unknown here. Such a delivery is being deadlettered on its FIRST handler error rather than
+        /// retried, which is the only way a registered recovery action is handed the sentinel.
+        /// An application's registered recovery action must therefore not do ARITHMETIC on this value — not
+        /// subtracting from it, not computing a backoff from it, not treating it as an attempt number — because the
+        /// sentinel means "uncountable", while every such computation would answer with a number regardless.
+        /// </remarks>
         public int DeliveryCount { get; }
         public TransactionContext TransactionContext { get; }
         public ContextContainer Container { get; } = new ContextContainer();

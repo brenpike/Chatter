@@ -269,9 +269,11 @@ stateDiagram-v2
 ## 6. Delivery counting
 
 The core reads the per-message attempt count via the default `MessageDeliveryCountAsync`, which
-casts `MessageContext.ReceiveAttempts` **unguarded** — so **stamping that key is mandatory**, not
-optional, on every received message. Both counting strategies converge on stamping that single value
-(ADR 0001).
+honours `MessageContext.ReceiveAttempts` only when it is present and usable and otherwise answers
+with the `int.MaxValue` dead-letter sentinel — so **stamping that key is mandatory**, not optional,
+on every received message: an absent or unusable value costs the delivery its entire retry budget
+and deadletters it on the first handler error. Both counting strategies converge on stamping that
+single value (ADR 0001).
 
 A `QueueType` option selects the strategy (default **Quorum**, recommended):
 
@@ -293,7 +295,7 @@ flowchart TD
     Q -- Classic --> XCH["read header<br/>x-chatter-delivery-count"]
     XDC --> Count["attempts = count + 1"]
     XCH --> Count
-    Count --> Stamp["stamp MessageContext.ReceiveAttempts<br/>(MANDATORY — core casts unguarded)"]
+    Count --> Stamp["stamp MessageContext.ReceiveAttempts<br/>(MANDATORY — absent or unusable falls to the core's dead-letter sentinel)"]
     Stamp --> Decide{"attempts > maxReceiveAttempts?"}
     Decide -- no, handler succeeded --> Ack["BasicAck"]
     Decide -- "no, handler failed" --> Redeliver["Quorum: BasicNack(requeue)<br/>Classic: republish w/ incremented header + ack original"]

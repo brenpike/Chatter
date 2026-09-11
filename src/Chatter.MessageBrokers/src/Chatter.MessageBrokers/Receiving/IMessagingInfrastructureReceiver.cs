@@ -109,14 +109,22 @@ namespace Chatter.MessageBrokers.Receiving
         /// <param name="context">The delivery to count. May be null.</param>
         /// <param name="cancellationToken">The receiver's token, cancelled when the receiver is torn down.</param>
         /// <returns>
-        /// The stored count when Receive Attempts is present AND is an <see cref="int"/>; otherwise
+        /// The stored count when Receive Attempts is present AND is an integral value — <see cref="sbyte"/>,
+        /// <see cref="byte"/>, <see cref="short"/>, <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>,
+        /// <see cref="long"/> or <see cref="ulong"/> — lying within <c>[0, int.MaxValue]</c>; otherwise
         /// <see cref="int.MaxValue"/>, the dead-letter sentinel.
         /// </returns>
         /// <remarks>
         /// INVARIANT: this probe is TOTAL. It answers with the dead-letter sentinel — a count no configured
         /// MaxReceiveAttempts can sit above — for a null context, a null message, an absent Receive Attempts, a null
-        /// Receive Attempts, or one boxed as anything other than an <see cref="int"/>; only a native <see cref="int"/>
-        /// is this infrastructure's own count, and a value of any other shape is unusable rather than coerced.
+        /// Receive Attempts, a non-integral one (<see cref="decimal"/>, <see cref="double"/>, <see cref="float"/>, a
+        /// string, a byte[]), or an integral one outside <c>[0, int.MaxValue]</c>. Any integral width IS this
+        /// infrastructure's own count, because Receive Attempts is stamped as an <see cref="int"/> but arrives as a
+        /// <see cref="long"/> once a delivery has been replayed from an outbox — the same tolerance
+        /// <see cref="Sending.OutboundBrokeredMessage"/> already applies when it reads the key back.
+        /// INVARIANT: the range is checked BEFORE the value is narrowed. A narrowing conversion of an out-of-range
+        /// integral throws <see cref="OverflowException"/>, and a probe that throws is the exact fault this member is
+        /// written to avoid.
         /// It answers instead of throwing because the Brokered Message Receiver awaits it INSIDE the generic
         /// processing-error recovery ladder, BEFORE the ladder decides between negatively acknowledging and
         /// deadlettering the delivery. A probe that threw there aborted the settlement the ladder was about to make,
@@ -133,14 +141,26 @@ namespace Chatter.MessageBrokers.Receiving
         {
             var messageContext = context?.BrokeredMessage?.MessageContext;
 
-            if (messageContext != null
-                && messageContext.TryGetValue(MessageContext.ReceiveAttempts, out var storedReceiveAttempts)
-                && storedReceiveAttempts is int deliveryCount)
+            if (messageContext == null
+                || !messageContext.TryGetValue(MessageContext.ReceiveAttempts, out var storedReceiveAttempts))
             {
-                return Task.FromResult(deliveryCount);
+                return Task.FromResult(int.MaxValue);
             }
 
-            return Task.FromResult(int.MaxValue);
+            var deliveryCount = storedReceiveAttempts switch
+            {
+                sbyte attempts => attempts >= 0 ? attempts : int.MaxValue,
+                byte attempts => attempts,
+                short attempts => attempts >= 0 ? attempts : int.MaxValue,
+                ushort attempts => attempts,
+                int attempts => attempts >= 0 ? attempts : int.MaxValue,
+                uint attempts => attempts <= int.MaxValue ? (int)attempts : int.MaxValue,
+                long attempts => attempts >= 0 && attempts <= int.MaxValue ? (int)attempts : int.MaxValue,
+                ulong attempts => attempts <= int.MaxValue ? (int)attempts : int.MaxValue,
+                _ => int.MaxValue,
+            };
+
+            return Task.FromResult(deliveryCount);
         }
 
         TransactionScope CreateLocalTransaction(TransactionContext context)
