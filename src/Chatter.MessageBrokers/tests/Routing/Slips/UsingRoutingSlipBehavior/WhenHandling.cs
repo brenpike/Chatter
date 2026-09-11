@@ -109,6 +109,26 @@ namespace Chatter.MessageBrokers.Tests.Routing.Slips.UsingRoutingSlipBehavior
                 Times.Once);
         }
 
+        [Fact]
+        public async Task MustInvokeNextOnceWithoutSendingWhenSlipValueIsMalformed()
+        {
+            // A slip value that parses to a JSON null used to surface as "found" with a null slip, which
+            // then NRE'd at theSlip.Route. A malformed slip is treated as no slip at all.
+            var messageContext = new Dictionary<string, object>
+            {
+                [MessageContext.RoutingSlip] = "null"
+            };
+            var context = CreateBrokerContext(messageContext);
+            IncludeDispatcher(context);
+            var nextCount = 0;
+            CommandHandlerDelegate next = () => { nextCount++; return Task.CompletedTask; };
+
+            await _sut.Handle(_message, context, next);
+
+            nextCount.Should().Be(1);
+            _dispatcher.Invocations.Should().BeEmpty();
+        }
+
         private class FakeMessage : ICommand { }
     }
 }

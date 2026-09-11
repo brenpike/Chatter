@@ -74,13 +74,14 @@ namespace Chatter.MessageBrokers.Receiving
         internal InboundBrokeredMessage UpdateVia(string via)
         {
             var key = MessageBrokers.MessageContext.Via;
-            if (MessageContextImpl.ContainsKey(key))
+            // INVARIANT: a stored 'via' that is not a string reads as absent, so the receiver being
+            // visited replaces it rather than being appended to an uncastable value.
+            var currentVia = GetMessageContextByKey<string>(key);
+            if (currentVia != null)
             {
-                var currentVia = (string)MessageContext[key];
                 if (!(string.IsNullOrWhiteSpace(via)))
                 {
-                    currentVia += "," + via;
-                    MessageContextImpl[key] = currentVia;
+                    MessageContextImpl[key] = currentVia + "," + via;
                 }
             }
             else
@@ -92,9 +93,11 @@ namespace Chatter.MessageBrokers.Receiving
 
         private T GetMessageContextByKey<T>(string key)
         {
+            // INVARIANT: application properties arrive off the wire and carry no type guarantee, so a value
+            // of an unexpected type is read as absent rather than faulting the receive with an invalid cast.
             if (MessageContextImpl.TryGetValue(key, out var output))
             {
-                return (T)output;
+                return output is T typedOutput ? typedOutput : default;
             }
             else
             {

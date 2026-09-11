@@ -102,8 +102,46 @@ namespace Chatter.MessageBrokers.Receiving
         /// </remarks>
         bool WritesToErrorQueue => false;
 
+        /// <summary>
+        /// How many times <paramref name="context"/>'s delivery has been received, read from the
+        /// <see cref="MessageContext.ReceiveAttempts"/> the infrastructure stored on it.
+        /// </summary>
+        /// <param name="context">The delivery to count. May be null.</param>
+        /// <param name="cancellationToken">The receiver's token, cancelled when the receiver is torn down.</param>
+        /// <returns>
+        /// The stored count when Receive Attempts is present AND is an <see cref="int"/>; otherwise
+        /// <see cref="int.MaxValue"/>, the dead-letter sentinel.
+        /// </returns>
+        /// <remarks>
+        /// INVARIANT: this probe is TOTAL. It answers with the dead-letter sentinel — a count no configured
+        /// MaxReceiveAttempts can sit above — for a null context, a null message, an absent Receive Attempts, a null
+        /// Receive Attempts, or one boxed as anything other than an <see cref="int"/>; only a native <see cref="int"/>
+        /// is this infrastructure's own count, and a value of any other shape is unusable rather than coerced.
+        /// It answers instead of throwing because the Brokered Message Receiver awaits it INSIDE the generic
+        /// processing-error recovery ladder, BEFORE the ladder decides between negatively acknowledging and
+        /// deadlettering the delivery. A probe that threw there aborted the settlement the ladder was about to make,
+        /// so the delivery was neither negatively acknowledged nor deadlettered: the infrastructure redelivered it,
+        /// the next delivery hit the same unreadable header, and the very probe meant to detect an exhausted delivery
+        /// was the thing preventing it — forever, while the receiver went on reporting healthy.
+        /// The sentinel — rather than a count of zero, which would redeliver just as endlessly — routes such a
+        /// delivery to the deadletter branch on its FIRST failure. That is the only escape observable from here:
+        /// application properties arrive off the wire with no type guarantee, and this interface carries no logger to
+        /// report the unusable value through, so the delivery must leave the receiving path where it can be
+        /// inspected.
+        /// </remarks>
         Task<int> MessageDeliveryCountAsync(MessageBrokerContext context, CancellationToken cancellationToken)
-            => Task.FromResult((int)context?.BrokeredMessage?.MessageContext[MessageContext.ReceiveAttempts]);
+        {
+            var messageContext = context?.BrokeredMessage?.MessageContext;
+
+            if (messageContext != null
+                && messageContext.TryGetValue(MessageContext.ReceiveAttempts, out var storedReceiveAttempts)
+                && storedReceiveAttempts is int deliveryCount)
+            {
+                return Task.FromResult(deliveryCount);
+            }
+
+            return Task.FromResult(int.MaxValue);
+        }
 
         TransactionScope CreateLocalTransaction(TransactionContext context)
             => null;

@@ -2,6 +2,7 @@
 using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Routing.Options;
+using Microsoft.Extensions.Logging;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -14,11 +15,22 @@ namespace Chatter.MessageBrokers.Routing.Slips
             mhc.Container.Include(routingSlip);
         }
 
+        /// <summary>
+        /// Gets the routing slip carried by <paramref name="mhc"/>. A malformed slip is reported as no slip,
+        /// silently. Use the <see cref="ILogger"/> overload to get an operator signal when that happens.
+        /// </summary>
         public static bool TryGetRoutingSlip(this IMessageHandlerContext mhc, out RoutingSlip routingSlip)
+            => mhc.TryGetRoutingSlip(null, out routingSlip);
+
+        /// <summary>
+        /// Gets the routing slip carried by <paramref name="mhc"/>, warning through <paramref name="logger"/>
+        /// when the slip is malformed.
+        /// </summary>
+        public static bool TryGetRoutingSlip(this IMessageHandlerContext mhc, ILogger logger, out RoutingSlip routingSlip)
         {
             if (mhc is IMessageBrokerContext mbc)
             {
-                if (mbc.TryGetRoutingSlip(out var rs))
+                if (mbc.TryGetRoutingSlip(logger, out var rs))
                 {
                     routingSlip = rs;
                     return true;

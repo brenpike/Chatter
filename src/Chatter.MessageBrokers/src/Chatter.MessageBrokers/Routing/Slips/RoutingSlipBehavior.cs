@@ -26,7 +26,7 @@ namespace Chatter.MessageBrokers.Routing.Slips
                 return;
             }
 
-            if (!(messageBrokerContext.TryGetRoutingSlip(out var theSlip)))
+            if (!(messageBrokerContext.TryGetRoutingSlip(_logger, out var theSlip)))
             {
                 _logger.LogTrace($"No routing slip found. Continuing pipeline execution.");
                 await next().ConfigureAwait(false);
