@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.15.2] - 2026-09-10
+
+### Fixed
+
+- Two statements that shipped in 0.15.1's event fan-out documentation were wrong, and are corrected in the three documentation sites that carry them — the package README's "When a handler throws" section, `EventDispatcher`'s XML remark, and ADR-0012's Decision; no production code changed and dispatch semantics have not moved. The first advised that a subscriber which must run independently of its siblings be given its own delivery — its own broker subscription or queue — as though that alone isolated it. Handlers are resolved from the service provider by event type, not by the delivery that triggered the dispatch. A second broker subscription or queue for the same event in the same host therefore does not isolate one subscriber: each delivery re-runs the entire fan-out, invoking every sibling handler again and duplicating their side effects. A separate delivery is necessary but not sufficient. A subscriber runs independently of its siblings only when it has its own delivery — its own broker subscription or queue — and is dispatched by a separate endpoint or host whose service provider registers that subscriber as the only handler for the event. The second said a throwing handler's exception is logged once, which holds for the dispatcher and not for the delivery: the dispatcher logs the exception once and rethrows it unchanged, but the dispatcher's one error record is not the delivery's total. When the event arrived through a `BrokeredMessageReceiver`, the receiver logs the rethrown exception again before rethrowing it in turn, so a failed broker-delivered dispatch leaves at least two error records: one from `EventDispatcher` and at least one more from `BrokeredMessageReceiver`. When an event is dispatched directly through `IMessageDispatcher`, with no receiver around the dispatch, the dispatcher's one record is the only error record Chatter writes for that dispatch. The 0.15.1 entry below is left as shipped; where it says the exception "is logged once" and that a subscriber needs only "its own delivery", this entry supersedes it (#331).
+
 ## [0.15.1] - 2026-09-10
 
 ### Fixed
