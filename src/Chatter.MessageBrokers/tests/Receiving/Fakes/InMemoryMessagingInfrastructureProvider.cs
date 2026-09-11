@@ -7,14 +7,14 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
 {
     /// <summary>
     /// In-memory test double for <see cref="IMessagingInfrastructureProvider"/>.
-    /// Returns the supplied <see cref="InMemoryMessagingInfrastructureReceiver"/> from
+    /// Returns the receiver supplied at construction from
     /// <see cref="GetReceiver"/> and provides a real <see cref="DefaultBrokeredMessagePathBuilder"/>
     /// via <see cref="GetInfrastructure"/> so
     /// <c>BrokeredMessageReceiver.StartReceiverImpl</c> can resolve the message receiving path.
     /// </summary>
     public sealed class InMemoryMessagingInfrastructureProvider : IMessagingInfrastructureProvider
     {
-        private readonly InMemoryMessagingInfrastructureReceiver _receiver;
+        private readonly IMessagingInfrastructureReceiver _receiver;
         private readonly IMessagingInfrastructure _infrastructure;
 
         // INVARIANT: optional opt-in gate that holds the SYNCHRONOUS GetReceiver until ReleaseGetReceiverGate is called,
@@ -26,7 +26,17 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         private TaskCompletionSource<bool> _getReceiverGate;
         private TaskCompletionSource<bool> _getReceiverGateEntered;
 
+        /// <summary>Convenience overload for the common case of the in-memory receiver double.</summary>
         public InMemoryMessagingInfrastructureProvider(InMemoryMessagingInfrastructureReceiver receiver)
+            : this((IMessagingInfrastructureReceiver)receiver)
+        {
+        }
+
+        /// <summary>
+        /// Serves any <see cref="IMessagingInfrastructureReceiver"/>, so a test can feed a double that declares only
+        /// the port itself — the sealed in-memory double cannot express that — through the same provider.
+        /// </summary>
+        public InMemoryMessagingInfrastructureProvider(IMessagingInfrastructureReceiver receiver)
         {
             _receiver = receiver ?? throw new System.ArgumentNullException(nameof(receiver));
 
@@ -73,7 +83,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         public IMessagingInfrastructure GetInfrastructure(string type)
             => _infrastructure;
 
-        /// <summary>Returns the <see cref="InMemoryMessagingInfrastructureReceiver"/> supplied at construction.</summary>
+        /// <summary>Returns the <see cref="IMessagingInfrastructureReceiver"/> supplied at construction.</summary>
         public IMessagingInfrastructureReceiver GetReceiver(string type)
         {
             // When a test arms the gate, signal entry and then block here — the SUT has advanced past the

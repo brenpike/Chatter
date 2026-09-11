@@ -15,7 +15,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
     /// starting the receiver loop; the double drains them in order and signals
     /// <see cref="Drained"/> when the last message has been returned.
     /// </summary>
-    public sealed class InMemoryMessagingInfrastructureReceiver : IMessagingInfrastructureReceiver
+    public sealed class InMemoryMessagingInfrastructureReceiver : IMessagingInfrastructureReceiver, IDeliveryReleaseSignal
     {
         private readonly ConcurrentQueue<MessageBrokerContext> _messageQueue = new ConcurrentQueue<MessageBrokerContext>();
         private readonly List<ReceiverCall> _callLog = new List<ReceiverCall>();
@@ -65,6 +65,19 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         private const int UnsetTransactionStatus = -1;
         private bool _localTransactionArmed;
         private int _localTransactionStatus = UnsetTransactionStatus;
+
+        // INVARIANT: optional opt-in gate that holds DeliveryReleased — the receiver's delivery-release signal —
+        // inside the hook until ReleaseDeliveryReleasedGate is called, plus an entry-signal the test awaits. Parks the
+        // worker AFTER the settlement answer but BEFORE the concurrency slot is returned, which is the window that
+        // makes the hook's ORDERING observable without a wall-clock sleep. Default null (disarmed) so existing tests
+        // are unaffected; armed via ArmDeliveryReleasedGate.
+        private TaskCompletionSource<bool> _deliveryReleasedGate;
+        private TaskCompletionSource<bool> _deliveryReleasedGateEntered;
+
+        // INVARIANT: optional opt-in fault that makes EVERY DeliveryReleased call raise it after recording the call,
+        // so a test can drive a capability that violates the must-not-throw contract. Default null (disarmed) so
+        // existing tests are unaffected; armed via ArmDeliveryReleasedFailure.
+        private Exception _deliveryReleasedFailure;
 
         private TaskCompletionSource<bool> _disposeAsyncGate;
         private TaskCompletionSource<bool> _disposeAsyncGateEntered;
@@ -219,6 +232,29 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         /// <summary>Releases the gate armed by <see cref="ArmGateThenThrowOnceOnDisposeAsync"/> so the parked first DisposeAsync proceeds to throw once.</summary>
         public void ReleaseDisposeAsyncGate() => _disposeAsyncGate?.TrySetResult(true);
 
+        /// <summary>
+        /// Arms an opt-in gate that holds <see cref="DeliveryReleased"/> inside the hook until
+        /// <see cref="ReleaseDeliveryReleasedGate"/> is called, pinning the worker after the delivery's settlement
+        /// answer and before its concurrency slot is returned. Returns the entry-signal the test awaits so the
+        /// interleave is wall-clock-free: it completes once <see cref="DeliveryReleased"/> has been ENTERED.
+        /// </summary>
+        public Task ArmDeliveryReleasedGate()
+        {
+            _deliveryReleasedGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _deliveryReleasedGateEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return _deliveryReleasedGateEntered.Task;
+        }
+
+        /// <summary>Releases the gate armed by <see cref="ArmDeliveryReleasedGate"/> so the parked hook returns.</summary>
+        public void ReleaseDeliveryReleasedGate() => _deliveryReleasedGate?.TrySetResult(true);
+
+        /// <summary>
+        /// Arms <see cref="DeliveryReleased"/> to raise <paramref name="deliveryReleasedFailure"/> on every call, after
+        /// recording the call, so a test can exercise a capability that throws where the contract forbids it.
+        /// </summary>
+        public void ArmDeliveryReleasedFailure(Exception deliveryReleasedFailure)
+            => _deliveryReleasedFailure = deliveryReleasedFailure ?? throw new ArgumentNullException(nameof(deliveryReleasedFailure));
+
         // ------------------------------------------------------------------ IMessagingInfrastructureReceiver
 
         public async Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
@@ -311,6 +347,32 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
             return scope;
         }
 
+        // ------------------------------------------------------------------ IDeliveryReleaseSignal
+
+        /// <summary>
+        /// Records <see cref="ReceiverCall.DeliveryReleased"/>, then honours whichever opt-in hook is armed: the gate
+        /// parks the caller INSIDE the hook until the test releases it, and the failure raises after the call has been
+        /// recorded. Disarmed by default, so the hook is a pure call-log entry for every existing test.
+        /// </summary>
+        public void DeliveryReleased(MessageBrokerContext context)
+        {
+            RecordCall(ReceiverCall.DeliveryReleased);
+
+            // Signal entry BEFORE blocking so the awaiting test observes the hook has been entered; block via
+            // GetAwaiter().GetResult() because the hook is void, matching the provider fake's GetReceiver gate idiom.
+            var gate = _deliveryReleasedGate;
+            if (gate != null)
+            {
+                _deliveryReleasedGateEntered?.TrySetResult(true);
+                gate.Task.GetAwaiter().GetResult();
+            }
+
+            if (_deliveryReleasedFailure != null)
+            {
+                throw _deliveryReleasedFailure;
+            }
+        }
+
         // ------------------------------------------------------------------ IAsyncDisposable / IDisposable
 
         public async ValueTask DisposeAsync()
@@ -382,6 +444,7 @@ namespace Chatter.MessageBrokers.Tests.Receiving.Fakes
         Nack,
         Deadletter,
         Stop,
-        Dispose
+        Dispose,
+        DeliveryReleased
     }
 }
