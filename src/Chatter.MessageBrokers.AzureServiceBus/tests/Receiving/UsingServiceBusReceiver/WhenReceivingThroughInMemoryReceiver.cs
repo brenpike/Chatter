@@ -130,6 +130,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             var result = await sut.ReceiveMessageAsync(new TransactionContext("receiver"), CancellationToken.None);
 
             result.Should().BeNull();
+            // The discarded receiver is CLOSED before the field is nulled for the lazy rebuild: a session
+            // receiver left unclosed orphans its held sessions, its lock-renewal loops and its armed receives,
+            // which keep locking sessions no worker will ever process (ADR-0014).
+            inMemory.CloseCount.Should().Be(1);
         }
 
         [Fact]

@@ -14,7 +14,7 @@ using System.Transactions;
 
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
-    internal class ServiceBusReceiver : IMessagingInfrastructureReceiver
+    internal class ServiceBusReceiver : IMessagingInfrastructureReceiver, IDeliveryReleaseSignal
     {
         // INVARIANT: the Azure Service Bus SDK rejects a deadletter error description longer than 4096
         // UTF-16 chars with ArgumentOutOfRangeException (Parameter 'deadLetterErrorDescription'), so the
@@ -105,13 +105,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             if (_receiverRegistry != null && _receiverRegistry.RequiresSession(options.MessageReceiverPath, options.SendingPath))
             {
                 var sessionEntityPath = ServiceBusSessionEntityPath.Create(options.SendingPath, options.MessageReceiverPath);
-                return new AzureSdkSessionMessageReceiverAdapter(_client,
-                                                                 sessionEntityPath,
-                                                                 receiveMode,
-                                                                 _serviceBusOptions.PrefetchCount,
-                                                                 _serviceBusOptions.SessionIdleTimeout,
-                                                                 _serviceBusOptions.MaxSessionLockRenewalDuration,
-                                                                 _logger);
+
+                // In SESSION mode MaxConcurrentCalls means CONCURRENT SESSIONS (ADR-0014): above one, the
+                // multiplexer holds that many sessions by owning one single-session child each, and each child
+                // still serves its own session's messages one at a time. At one, the bare adapter is used
+                // directly with no multiplexer in the path, so today's object graph is unchanged.
+                if (options.MaxConcurrentCalls > 1)
+                {
+                    return new SessionReceiverMultiplexer(options.MaxConcurrentCalls,
+                                                          () => CreateSessionChildReceiver(sessionEntityPath, receiveMode),
+                                                          options.MessageReceiverPath,
+                                                          _logger);
+                }
+
+                return CreateSessionChildReceiver(sessionEntityPath, receiveMode);
             }
 
             return new AzureSdkMessageReceiverAdapter(_client,
@@ -120,6 +127,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                       _serviceBusOptions.PrefetchCount,
                                                       _logger);
         }
+
+        // The single-session adapter, built identically whether it is used bare (N = 1) or as one of the
+        // multiplexer's children (N > 1).
+        private AzureSdkSessionMessageReceiverAdapter CreateSessionChildReceiver(ServiceBusSessionEntityPath sessionEntityPath, ServiceBusReceiveMode receiveMode)
+            => new AzureSdkSessionMessageReceiverAdapter(_client,
+                                                         sessionEntityPath,
+                                                         receiveMode,
+                                                         _serviceBusOptions.PrefetchCount,
+                                                         _serviceBusOptions.SessionIdleTimeout,
+                                                         _serviceBusOptions.MaxSessionLockRenewalDuration,
+                                                         _logger);
 
         internal IServiceBusMessageReceiver InnerReceiver
         {
@@ -174,12 +192,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
             catch (ObjectDisposedException e) when (!cancellationToken.IsCancellationRequested && _innerReceiver.IsClosedOrClosing)
             {
+                // The discarded receiver is captured and cleared in ONE lock so two threads landing here cannot
+                // both close it, and the next receive lazily rebuilds it.
+                IServiceBusMessageReceiver discardedReceiver;
                 lock (_syncLock)
                 {
+                    discardedReceiver = _innerReceiver;
                     _innerReceiver = null;
                 }
 
                 _logger.LogWarning(e, "Service Bus receiver connection was closed.");
+                CloseDiscardedReceiver(discardedReceiver);
 
                 return null;
             }
@@ -216,13 +239,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             transactionContext.Container.Include(this.InnerReceiver);
 
-            // Session path only: include the held SDK session receiver so the session-state extension and
-            // session settlement can resolve it during handling. Non-session receivers leave the container
-            // unchanged (the held receiver is null when no session adapter is in use).
-            if (this.InnerReceiver is AzureSdkSessionMessageReceiverAdapter sessionAdapter
-                && sessionAdapter.HeldSessionReceiver != null)
+            // Session path only: include the session receiver that delivered THIS message so the session-state
+            // extension and session settlement can resolve it during handling. The port answers per message, so
+            // one check covers both shapes — a receiver holding one session answers with that session, a
+            // multiplexer answers with the session belonging to this message. Non-session receivers leave the
+            // container unchanged, as does a session receiver that holds no session for this message.
+            if (this.InnerReceiver is IServiceBusSessionMessageReceiver sessionReceiver
+                && sessionReceiver.SessionReceiverFor(message) is { } heldSessionReceiver)
             {
-                transactionContext.Container.Include(sessionAdapter.HeldSessionReceiver);
+                transactionContext.Container.Include(heldSessionReceiver);
             }
 
             if (_options.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
@@ -285,6 +310,45 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             await this.InnerReceiver.DeadLetterAsync(msg, deadLetterReason, CapDeadLetterErrorDescription(deadLetterErrorDescription));
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully deadlettered");
             return SettlementResult.Settled();
+        }
+
+        /// <summary>
+        /// Tells the inner session receiver that the worker is finished with this delivery, so the session slot the
+        /// delivery occupied can be freed. A non-session inner receiver is a no-op.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: this reads the inner receiver FIELD, never the lazily-constructing <see cref="InnerReceiver"/>
+        /// property. The signal fires on teardown paths too, and the property would build a brand-new receiver —
+        /// accepting sessions of its own — only to tell it about a delivery it never handled.
+        /// This MUST NOT throw (<see cref="IDeliveryReleaseSignal"/>): a null field, a null context and a context
+        /// carrying no received message are each answered by doing nothing.
+        /// </remarks>
+        public void DeliveryReleased(MessageBrokerContext context)
+        {
+            if (_innerReceiver is IServiceBusSessionMessageReceiver sessionReceiver
+                && context != null
+                && context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
+            {
+                sessionReceiver.DeliveryReleased(msg);
+            }
+        }
+
+        // Closes a receiver being discarded after an ObjectDisposedException, WITHOUT awaiting it on the receive
+        // path. A discarded session receiver that is never closed orphans the sessions it holds, their lock-renewal
+        // loops and their armed receives, which keep locking sessions no worker will ever process while the rebuilt
+        // receiver competes with its own abandoned predecessor for them.
+        private void CloseDiscardedReceiver(IServiceBusMessageReceiver discardedReceiver)
+        {
+            if (discardedReceiver == null)
+            {
+                return;
+            }
+
+            _ = discardedReceiver.CloseAsync().ContinueWith(
+                closeAttempt => _logger.LogWarning(closeAttempt.Exception, "Failure closing the discarded Azure Service Bus receiver"),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         // Why a PeekLock settlement could not happen: the delivery the settlement targets is absent from the
