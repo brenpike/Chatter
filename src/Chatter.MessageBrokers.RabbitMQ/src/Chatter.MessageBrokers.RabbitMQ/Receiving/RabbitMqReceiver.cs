@@ -37,9 +37,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// is reported as a FAILED settlement: it was attempted and did not happen.
     /// INVARIANT: <see cref="MessageContext.ReceiveAttempts"/> is stamped (as <see cref="int"/>) on every
     /// received message — the core's default <c>MessageDeliveryCountAsync</c> honours the stored value only when it
-    /// is present AND a native <see cref="int"/>, and otherwise answers with the <see cref="int.MaxValue"/>
-    /// dead-letter sentinel. An unstamped or mistyped delivery therefore keeps no retry budget at all and
-    /// deadletters on its first handler error.
+    /// is present AND an integral value (<see cref="sbyte"/>, <see cref="byte"/>, <see cref="short"/>,
+    /// <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/>, <see cref="ulong"/>) lying
+    /// within <c>[0, int.MaxValue]</c>, and otherwise answers with the <see cref="int.MaxValue"/> dead-letter
+    /// sentinel. An unstamped delivery, or one carrying a non-integral or out-of-range value, therefore keeps no
+    /// retry budget at all and deadletters on its first handler error.
     /// INVARIANT (TransactionMode.None at-most-once): under <see cref="TransactionMode.None"/> the consumer is
     /// registered with autoAck:true — the AMQP ReceiveAndDelete equivalent the sibling ASB adapter uses — so the
     /// broker removes the delivery as it pushes it, BEFORE the handler runs, closing the crash/kill-window
@@ -260,8 +262,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             headers[RabbitMqMessageContext.ChannelEpoch] = received.ChannelEpoch;
             headers[MessageContext.InfrastructureType] = RabbitMqMessageContext.InfrastructureType;
             // MANDATORY: stamped on EVERY message as an int. The core's default MessageDeliveryCountAsync honours
-            // this value only when it is present AND a native int, and otherwise answers with the int.MaxValue
-            // dead-letter sentinel — so an absent or non-int value costs the delivery its entire retry budget and
+            // this value only when it is present AND integral (sbyte, byte, short, ushort, int, uint, long, ulong)
+            // within [0, int.MaxValue], and otherwise answers with the int.MaxValue dead-letter sentinel — so an
+            // absent, non-integral or out-of-range value costs the delivery its entire retry budget and
             // deadletters it on the first handler error.
             headers[MessageContext.ReceiveAttempts] = receiveAttempts;
 
