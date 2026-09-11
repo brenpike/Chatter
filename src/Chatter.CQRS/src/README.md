@@ -158,7 +158,7 @@ Design rationale — and why the cache is left static and documented rather than
 
 ### Events: Domain vs Integration
 
-An `IEvent` is dispatched through the same `IMessageDispatcher` but is fanned out to **all** registered `IMessageHandler<TEvent>` handlers (event handlers are appended during scanning rather than replaced). Handlers are invoked sequentially.
+An `IEvent` is dispatched through the same `IMessageDispatcher` but is fanned out to **all** registered `IMessageHandler<TEvent>` handlers (event handlers are appended during scanning rather than replaced). Handlers are invoked sequentially, and the fan-out stops at the first handler that throws — see below.
 
 - A **Domain Event** is handled in-process within the originating domain.
 - An **Integration Event** is published outward to other services. Cross-service publishing requires broker infrastructure provided by the Chatter Message Brokers modules.
@@ -175,6 +175,16 @@ public class SendConfirmationEmail : IMessageHandler<OrderCreated>
         => /* ... */ Task.CompletedTask;
 }
 ```
+
+#### When a handler throws
+
+Event handlers are not isolated from one another. The first handler that throws ends the dispatch: the exception is logged once and rethrown **unchanged** — never wrapped, never joined to another handler's exception — and no subsequent handler is invoked. Handlers that already ran are not rolled back, and handler order is assembly-scan order, so *which* of the remaining handlers were skipped is not something an application controls.
+
+If a subscriber must run independently of its siblings, give it its own delivery — its own broker subscription or queue — rather than adding it to a fan-out that is a single unit of work. Within one dispatch, a handler that must not be able to strand its siblings has to contain its own failures.
+
+A redelivered event re-runs the fan-out from the start, including handlers that already succeeded: the reliability inbox is command-scoped and does not deduplicate events. Event handlers must therefore be idempotent or roll back.
+
+The decision to keep this behavior, the survey of comparable libraries behind it, and the cost it accepts are recorded in [ADR-0012](https://github.com/brenpike/Chatter/blob/master/docs/adr/0012-event-fan-out-failure-semantics.md).
 
 ### Message Context
 
