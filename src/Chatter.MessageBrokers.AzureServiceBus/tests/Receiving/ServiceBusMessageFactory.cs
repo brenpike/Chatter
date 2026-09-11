@@ -15,7 +15,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
                                                                 int deliveryCount = 1,
                                                                 Guid? lockToken = null,
                                                                 TimeSpan? timeToLive = null,
-                                                                DateTimeOffset? enqueuedTime = null)
+                                                                DateTimeOffset? enqueuedTime = null,
+                                                                string sessionId = null)
         {
             var ttl = timeToLive ?? TimeSpan.FromMinutes(5);
             var enqueued = enqueuedTime ?? DateTimeOffset.UtcNow;
@@ -23,6 +24,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
             return ServiceBusModelFactory.ServiceBusReceivedMessage(
                 body: new BinaryData(body ?? new byte[] { 1 }),
                 messageId: messageId,
+                sessionId: sessionId,
                 contentType: contentType,
                 timeToLive: ttl,
                 deliveryCount: deliveryCount,
