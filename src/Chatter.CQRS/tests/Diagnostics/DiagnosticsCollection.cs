@@ -45,6 +45,21 @@ namespace Chatter.CQRS.Tests.Diagnostics
     }
 
     /// <summary>
+    /// A Command whose handler always fails with a GENERIC exception type, so tests can observe whether
+    /// <c>exception.type</c> is rendered as <see cref="Type.FullName"/> or <see cref="Type.ToString"/> —
+    /// the two spellings diverge only for generic types.
+    /// </summary>
+    public sealed class GenericFailingCommand : ICommand { }
+
+    /// <summary>The GENERIC exception a <see cref="ThrowingGenericMessageHandler{TMessage}"/> raises.</summary>
+    public sealed class DiagnosticsProbeException<T> : Exception
+    {
+        public DiagnosticsProbeException(string message)
+            : base(message)
+        { }
+    }
+
+    /// <summary>
     /// A handler that captures the ambient <see cref="Activity"/> observed while the message was handled, so a
     /// test can tell whether Chatter pushed a span of its own around the handler.
     /// </summary>
@@ -70,6 +85,14 @@ namespace Chatter.CQRS.Tests.Diagnostics
         public Task Handle(TMessage message, IMessageHandlerContext context) => throw Failure;
     }
 
+    /// <summary>A handler that always throws a GENERIC <see cref="DiagnosticsProbeException{T}"/>, the same instance on every invocation.</summary>
+    public sealed class ThrowingGenericMessageHandler<TMessage> : IMessageHandler<TMessage> where TMessage : IMessage
+    {
+        public DiagnosticsProbeException<string> Failure { get; } = new DiagnosticsProbeException<string>("The handled message failed deliberately.");
+
+        public Task Handle(TMessage message, IMessageHandlerContext context) => throw Failure;
+    }
+
     /// <summary>
     /// A real Message Dispatcher over a real service provider, so the diagnostics tests exercise the whole
     /// dispatch path rather than a mocked stand-in for it.
@@ -87,11 +110,13 @@ namespace Chatter.CQRS.Tests.Diagnostics
             CommandHandler = new AmbientActivityRecordingHandler<TracedCommand>();
             EventMessageHandler = new AmbientActivityRecordingHandler<TracedEvent>();
             FailingCommandHandler = new ThrowingMessageHandler<FailingCommand>();
+            GenericFailingCommandHandler = new ThrowingGenericMessageHandler<GenericFailingCommand>();
 
             var services = new ServiceCollection();
             services.AddSingleton<IMessageHandler<TracedCommand>>(CommandHandler);
             services.AddSingleton<IMessageHandler<TracedEvent>>(EventMessageHandler);
             services.AddSingleton<IMessageHandler<FailingCommand>>(FailingCommandHandler);
+            services.AddSingleton<IMessageHandler<GenericFailingCommand>>(GenericFailingCommandHandler);
             services.AddSingleton<IDispatchMessages>(provider => new CommandDispatcher(provider, NullLogger<CommandDispatcher>.Instance));
             services.AddSingleton<IDispatchMessages>(provider => new EventDispatcher(provider, NullLogger<EventDispatcher>.Instance));
             services.AddSingleton<IMessageDispatcherProvider, MessageDispatcherProvider>();
@@ -111,11 +136,15 @@ namespace Chatter.CQRS.Tests.Diagnostics
 
         public ThrowingMessageHandler<FailingCommand> FailingCommandHandler { get; }
 
+        public ThrowingGenericMessageHandler<GenericFailingCommand> GenericFailingCommandHandler { get; }
+
         public Task DispatchCommand() => Dispatcher.Dispatch(new TracedCommand());
 
         public Task DispatchEvent() => Dispatcher.Dispatch(new TracedEvent());
 
         public Task DispatchFailingCommand() => Dispatcher.Dispatch(new FailingCommand());
+
+        public Task DispatchGenericFailingCommand() => Dispatcher.Dispatch(new GenericFailingCommand());
 
         public void Dispose() => _serviceProvider.Dispose();
     }

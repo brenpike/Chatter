@@ -229,6 +229,33 @@ a **metrics-only** application (D2 as amended, and the `IsEnabled` consequence r
 `HasListeners()` guards, so no span is started for an application that subscribed to instruments
 only. Pinned by `WhenReceivingWithMetricsOnly`.
 
+**AMENDED — `exception.type` follows the PLATFORM's spelling; `error.type` follows CHATTER's, and the
+two are allowed to differ.** `exception.*` on a span event is a SHARED surface: its de-facto .NET
+spelling is whatever `Activity.AddException` writes, because every neighbour that records an exception
+event into the same trace — ASP.NET Core, `HttpClient`, the Azure SDK, `RabbitMQ.Client`, OpenTelemetry
+.NET's own handling — goes through that one API. The `net8.0` branch of `ActivityOutcome`, which has no
+`AddException`, therefore hand-writes `Type.ToString()` to match it. `error.type` is NOT that surface:
+it is Chatter's own classification of a failed operation, and its neighbours are Chatter's own signals —
+the `dispatch` span tag and the `chatter.cqrs.dispatch.duration` histogram dimension — which cannot
+disagree, because `ActivityOutcome.ResolveErrorType` is the single place that renders the value and
+`ChatterDiagnostics.RecordDispatchDuration` takes it already resolved. This decision's
+one-concept-one-name rule is therefore satisfied WITHIN each surface rather than across the two:
+nothing joins a span-event attribute to a histogram dimension, so the two spellings differing costs no
+query, no panel and no alert. This is the ruling recorded above applied a second time — that paragraph
+accepts a Chatter span carrying `messaging.operation.type` beside an ASB SDK span carrying
+`messaging.operation` because "that is the SDK's convention lag, not a Chatter inconsistency", and the
+same reading says an attribute on a SHARED surface takes its spelling from that surface, not from
+Chatter's internal vocabulary. The consequence, stated plainly: for a GENERIC exception type
+`exception.type` and `error.type` carry different strings by design, on every target framework; for a
+non-generic type they are identical. The REJECTED alternative was to pin `Type.FullName` on both
+frameworks by passing the tag explicitly to `AddException` — technically feasible, since
+`AddException` de-duplicates per key and so a caller-supplied tag suppresses the BCL default — and it
+is rejected because it would change what `net10.0` emits TODAY and render ONE exception type TWO ways
+inside ONE trace. What the alignment buys is narrower than a guarantee: the DEFAULT `exception.type`
+value now matches on both target frameworks, and on `net9.0` and later a registered
+`ActivityListener.ExceptionRecorder` can still override it — a callback `net8.0` has no API for. Pinned
+by `WhenAGenericExceptionIsRecorded.MustSpellTheExceptionTypeIdenticallyOnEveryTargetFramework`.
+
 **Attribute names are NOT compile-time API.** They are emitted telemetry data, not a type surface.
 The expectation recorded here is that Chatter's attribute names track the pinned semconv version and
 **may change in a minor release** when the pin advances. Applications that hard-code attribute names

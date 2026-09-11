@@ -74,9 +74,12 @@ namespace Chatter.CQRS.Diagnostics
 #else
         private static void AddExceptionEvent(Activity activity, Exception exception)
         {
+            // Type.ToString(), not Type.FullName: this is the spelling Activity.AddException writes on net9.0+,
+            // and the two differ for a generic exception type. Matching it keeps exception.type identical on
+            // every target framework.
             var exceptionTags = new ActivityTagsCollection
             {
-                { ChatterTelemetryTags.ExceptionType, exception.GetType().FullName },
+                { ChatterTelemetryTags.ExceptionType, exception.GetType().ToString() },
                 { ChatterTelemetryTags.ExceptionMessage, exception.Message },
                 { ChatterTelemetryTags.ExceptionStackTrace, exception.ToString() }
             };
