@@ -4,7 +4,7 @@ CQRS architecture via the mediator pattern: dispatch and handling of Commands, Q
 
 ## Language
 
-**Command**: A message that changes the state of an aggregate, dispatched to exactly one handler.
+**Command**: A message that changes the state of an aggregate, dispatched to exactly one handler. Exactly one handler is what the assembly scan REGISTERS, not something it verifies: command handlers are registered with a replace strategy, so when two scanned types handle the same Command the last one scanned survives and the earlier one is displaced with no error and no log, in a scan order derived from assembly load order and each assembly's type-definition order, neither of which is specified. `ThrowOnDuplicateCommandHandlers()` is the opt-in check that fails composition instead; it is off unless called, and it sees only what the scan sees. See ADR-0017.
 
 **Query**: A message that retrieves data (a read model) without mutating state.
 _Avoid_: read request.
@@ -24,7 +24,7 @@ _Avoid_: middleware.
 
 **Message Context**: Per-dispatch contextual data flowing alongside a message through dispatch and handling.
 
-**Context Container**: The type-keyed bag of contextual data a Message Context carries (`ContextContainer`), optionally chained to an inherited container so a lookup that misses falls through to the parent. It is unsynchronized: concurrent use is undefined. See ADR-0011.
+**Context Container**: The type-keyed bag of contextual data a Message Context carries (`ContextContainer`), optionally chained to an inherited container so a lookup that misses falls through to the parent. It is unsynchronized: concurrent use is undefined. See ADR-0011. A lookup finds a value only when it is present under the key AND assignable to the requested type: a present value of another type reads as absent from `TryGet` and throws `InvalidCastException` from `Get`, while a stored `null` is present for a reference or nullable type and a mismatch for a non-nullable value type. A key present in the local container is answered from it whatever its type, so a local mismatch does not fall through to the parent. See ADR-0018.
 
 **Message Dispatcher**: Routes a Command (to one handler) or an Event (to many) — `IMessageDispatcher`.
 _Avoid_: mediator (used as the pattern name, not the type).
