@@ -228,9 +228,16 @@ is answered here rather than treated as a bug.
   constraint: exposing the frozen set adds a new public `IChatterBuilder` member, which expands the API
   surface; wrapping the filter instead narrows what `AddMessageBrokers` scans for receivers and breaks the
   same-instance pin at `tests/DependencyInjection/UsingChatterBuilder/WhenGettingProperties.cs:37`. The
-  impact is bounded: namespace or unbounded mode only, and in the false-POSITIVE direction only — an
-  assembly loaded between the two applications can make an opt-in check fail a composition that registered
-  cleanly. It can never produce a false negative for what was registered.
+  impact is bounded to namespace or unbounded mode; the DIRECTION is not bounded. A set that GROWS between
+  the two applications makes the check fail a composition that registered cleanly. A set that SHRINKS leaves
+  the check silent about a displacement that really happened, and nothing forbids one:
+  `IAssemblyFilterSourceProvider` and `IAssemblySourceFilter` are public interfaces
+  (`IAssemblyFilterSourceProvider.cs:7`, `AssemblySourceFilter.cs:12`) and `ChatterBuilder.Create` accepts
+  any `IAssemblySourceFilter` (`ChatterBuilder.cs:35`), while the default provider reads
+  `AppDomain.CurrentDomain.GetAssemblies()` (`CurrentAppDomainAssemblyProvider.cs:17`), from which a
+  collectible `AssemblyLoadContext.Unload()` removes assemblies. An earlier revision of this bullet bounded
+  the impact to "the false-POSITIVE direction only" and claimed it "can never produce a false negative for
+  what was registered". Neither is earned, and both are DELETED here rather than softened.
 - **Events are out of scope by design.** `AddEventHandlers` uses `RegistrationStrategy.Append`
   (`CqrsExtensions.cs:168`), so several handlers for one Event all register and all run; that is the
   documented fan-out contract (see ADR-0012), not a displacement. Pinned by
