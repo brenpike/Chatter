@@ -9,10 +9,8 @@ using Xunit;
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingBeginDialogConversationCommand
 {
     // Behavior-pinning tests: characterize the SQL emitted by BeginDialogConversationCommand.Create()
-    // AS-IS. Create() only builds the command (CreateCommand + properties + CommandText) and never
+    // Create() only builds the command (CreateCommand + properties + CommandText) and never
     // opens the connection, so an unopened SqlConnection() is a valid argument.
-    // INVARIANT: Create() mutates _targetServiceName (bracket-strip) in place and so is NOT idempotent;
-    // every test constructs a fresh instance and calls Create() exactly once.
     public class WhenCreatingCommand : Testing.Core.Context
     {
         private static SqlCommand Create(
@@ -58,9 +56,39 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingBeginDialog
                 .Should().Contain("FROM SERVICE [Already] ");
 
         [Fact]
-        public void MustStripBracketsFromTargetServiceNameParameterValue()
+        public void MustEscapeClosingBracketInInitiatorServiceName()
+            => Create("TargetSvc", initiatorServiceName: "x]; DROP TABLE t; --").CommandText
+                .Should().Contain("FROM SERVICE [x]]; DROP TABLE t; --] ");
+
+        [Fact]
+        public void MustEscapeInitiatorThatIsNotAWellFormedQuotedIdentifier()
+            => Create("TargetSvc", initiatorServiceName: "[x] TO SERVICE y").CommandText
+                .Should().Contain("FROM SERVICE [[x]] TO SERVICE y] ");
+
+        [Fact]
+        public void MustQuoteDottedInitiatorServiceNameAsASingleIdentifier()
+            => Create("TargetSvc", initiatorServiceName: "//company.com/service").CommandText
+                .Should().Contain("FROM SERVICE [//company.com/service] ");
+
+        [Fact]
+        public void MustUnquoteWellFormedQuotedTargetServiceNameParameterValue()
+            => Create("[Target]").Parameters["@targetService"].Value
+                .Should().Be("Target");
+
+        [Fact]
+        public void MustPassThroughTargetServiceNameThatIsNotAWellFormedQuotedIdentifier()
             => Create("[Target]Svc").Parameters["@targetService"].Value
-                .Should().Be("TargetSvc");
+                .Should().Be("[Target]Svc");
+
+        [Fact]
+        public void MustPreserveClosingBracketInsideTargetServiceNameParameterValue()
+            => Create("my]service").Parameters["@targetService"].Value
+                .Should().Be("my]service");
+
+        [Fact]
+        public void MustPassThroughNullTargetServiceNameParameterValue()
+            => Create(null, initiatorServiceName: "MyInitiator").Parameters["@targetService"].Value
+                .Should().BeNull();
 
         [Fact]
         public void MustAlwaysAddTargetServiceParameter()
@@ -147,6 +175,28 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingBeginDialog
             var command = Create("TargetSvc", lifetime: 60);
             command.CommandText.Should().Contain(" , LIFETIME = @lifetime");
             command.Parameters.Cast<SqlParameter>().Should().Contain(p => p.ParameterName == "@lifetime");
+        }
+
+        [Fact]
+        public void MustEmitTheSameCommandWhenCreateIsCalledTwiceOnOneInstance()
+        {
+            var command = new BeginDialogConversationCommand(new SqlConnection(), "[Target]", "[Already]");
+
+            var first = command.Create();
+            var second = command.Create();
+
+            second.CommandText.Should().Be(first.CommandText);
+            second.Parameters["@targetService"].Value.Should().Be(first.Parameters["@targetService"].Value);
+        }
+
+        [Fact]
+        public void MustLeaveTargetServiceNameFieldUntouchedByCreate()
+        {
+            var command = new BeginDialogConversationCommand(new SqlConnection(), "[Target]");
+
+            command.Create();
+
+            command._targetServiceName.Should().Be("[Target]");
         }
 
         [Fact]

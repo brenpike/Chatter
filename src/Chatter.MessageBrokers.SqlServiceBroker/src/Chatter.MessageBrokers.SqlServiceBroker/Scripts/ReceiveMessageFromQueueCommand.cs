@@ -65,7 +65,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
                          "CASE WHEN SUBSTRING(message_body, 1, 2) = 0x1F8B " +
                          "THEN CAST(decompress(message_body) AS VARBINARY(MAX)) " +
                          "ELSE message_body END as message_body " +
-                         $"FROM {_queueName}");
+                         $"FROM {SqlIdentifier.QuoteMultiPart(_queueName)}");
 
             if (_conversationHandle != default)
             {
