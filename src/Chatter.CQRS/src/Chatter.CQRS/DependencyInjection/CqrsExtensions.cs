@@ -98,7 +98,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <exception cref="InvalidOperationException">Thrown when a command is handled by more than one scanned handler</exception>
         public static IChatterBuilder ThrowOnDuplicateCommandHandlers(this IChatterBuilder chatterBuilder)
         {
-            var ambiguousCommands = FindAmbiguousCommands(chatterBuilder.AssemblySourceFilter.Apply());
+            var ambiguousCommands = FindCommandsWithCompetingHandlers(chatterBuilder.AssemblySourceFilter.Apply());
 
             if (ambiguousCommands.Count > 0)
             {
@@ -108,17 +108,20 @@ namespace Microsoft.Extensions.DependencyInjection
             return chatterBuilder;
         }
 
-        private static IReadOnlyList<KeyValuePair<Type, IReadOnlyList<Type>>> FindAmbiguousCommands(IEnumerable<Assembly> assemblies)
-            => assemblies
-                .SelectMany(AssemblySourceFilter.SafeGetLoadableTypes)
-                .Distinct()
-                .Where(type => type.IsClass && !type.IsAbstract && type.IsValidMessageHandler(typeof(ICommand)))
-                .SelectMany(handler => handler.GetMessageHandlerInterfacesFor(typeof(ICommand))
-                    .Select(handlerInterface => new { HandlerInterface = handlerInterface, Handler = handler }))
-                .GroupBy(candidate => candidate.HandlerInterface, candidate => candidate.Handler)
+        /// <summary>
+        /// Finds every command handled by more than one scanned handler by probing the command handler scan into a
+        /// throwaway <see cref="IServiceCollection"/> with an appending strategy, so that every competing handler
+        /// survives instead of displacing the one before it. INVARIANT: the probe must derive its candidates from the
+        /// same scan <see cref="AddCommandHandlers"/> uses, never from a re-derived type filter, otherwise the check
+        /// reports handlers that are never registered.
+        /// </summary>
+        private static IReadOnlyList<KeyValuePair<Type, IReadOnlyList<Type>>> FindCommandsWithCompetingHandlers(IEnumerable<Assembly> assemblies)
+            => ScanCommandHandlers(new ServiceCollection(), assemblies, RegistrationStrategy.Append)
+                .Where(descriptor => descriptor.ImplementationType is not null)
+                .GroupBy(descriptor => descriptor.ServiceType, descriptor => descriptor.ImplementationType)
                 .Select(handlersForCommand => new KeyValuePair<Type, IReadOnlyList<Type>>(
                     handlersForCommand.Key.GetGenericArguments()[0],
-                    handlersForCommand.OrderBy(handler => handler.FullName, StringComparer.Ordinal).ToList()))
+                    handlersForCommand.Distinct().OrderBy(handler => handler.FullName, StringComparer.Ordinal).ToList()))
                 .Where(ambiguousCommand => ambiguousCommand.Value.Count >= 2)
                 .OrderBy(ambiguousCommand => ambiguousCommand.Key.FullName, StringComparer.Ordinal)
                 .ToList();
@@ -169,12 +172,20 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         internal static IServiceCollection AddCommandHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+            => ScanCommandHandlers(services, assemblies, RegistrationStrategy.Replace());
+
+        /// <summary>
+        /// The sole command handler scan. Every command handler candidate set in this assembly comes from here, so
+        /// that the registration and the <see cref="ThrowOnDuplicateCommandHandlers(IChatterBuilder)"/> check always
+        /// select the same types and differ only by <paramref name="strategy"/>.
+        /// </summary>
+        private static IServiceCollection ScanCommandHandlers(IServiceCollection services, IEnumerable<Assembly> assemblies, RegistrationStrategy strategy)
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
                         .Where(handler => IsValidMessageHandler(handler, typeof(ICommand))))
-                   .UsingRegistrationStrategy(RegistrationStrategy.Replace())
+                   .UsingRegistrationStrategy(strategy)
                    .As(handler => handler.GetMessageHandlerInterfacesFor(typeof(ICommand)))
                    .WithTransientLifetime());
             return services;

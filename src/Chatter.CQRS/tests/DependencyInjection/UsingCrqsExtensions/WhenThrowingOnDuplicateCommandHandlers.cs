@@ -8,7 +8,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using System;
+using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -120,6 +122,68 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().NotThrow();
         }
 
+        [Fact]
+        public void MustNotReportACompilerGeneratedHandlerBecauseItIsNeverRegistered()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeFirstCommandHandler), typeof(FakeCompilerGeneratedCommandHandler)).Creation;
+            var services = new ServiceCollection();
+            var chatterBuilder = services.AddChatterCqrs(Mock.Of<IConfiguration>(),
+                                                          messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
+
+            services.Should().NotContain(sd => sd.ImplementationType == typeof(FakeCompilerGeneratedCommandHandler));
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().NotThrow();
+        }
+
+        /// <summary>
+        /// Characterization pin, not a red-first test: the handler scan uses Scrutor's
+        /// <c>AddClasses(Action&lt;IImplementationTypeFilter&gt;)</c> overload, which scans with
+        /// <c>publicOnly: false</c>, so non-public handlers are registered and therefore reported.
+        /// Locks that ground truth so a Scrutor upgrade breaks this test instead of silently
+        /// narrowing both the registration and the check.
+        /// </summary>
+        [Fact]
+        public void MustRegisterAndReportNonPublicCompetingHandlers()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeFirstCommandHandler), typeof(FakeSecondCommandHandler)).Creation;
+            var services = new ServiceCollection();
+            var chatterBuilder = services.AddChatterCqrs(Mock.Of<IConfiguration>(),
+                                                          messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
+
+            typeof(FakeFirstCommandHandler).IsPublic.Should().BeFalse();
+            services.Should().ContainSingle(sd => sd.ServiceType == typeof(IMessageHandler<FakeCommand>))
+                    .Which.ImplementationType.Should().Be(typeof(FakeSecondCommandHandler));
+
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers())
+                         .Should().Throw<InvalidOperationException>()
+                         .Which.Message.Should().Contain(typeof(FakeFirstCommandHandler).FullName)
+                         .And.Contain(typeof(FakeSecondCommandHandler).FullName);
+        }
+
+        [Fact]
+        public void MustNotReportOneHandlerReachableFromTwoScannedAssemblies()
+        {
+            var firstAssembly = New.Common().Assembly.WithTypes(typeof(FakeFirstCommandHandler)).Creation;
+            var secondAssembly = New.Common().Assembly.WithTypes(typeof(FakeFirstCommandHandler)).Creation;
+            var chatterBuilder = new ServiceCollection().AddChatterCqrs(Mock.Of<IConfiguration>(),
+                                                                        messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly, secondAssembly));
+
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().NotThrow();
+        }
+
+        [Fact]
+        public void MustLeaveTheApplicationServiceCollectionUntouched()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeFirstCommandHandler)).Creation;
+            var services = new ServiceCollection();
+            var chatterBuilder = services.AddChatterCqrs(Mock.Of<IConfiguration>(),
+                                                          messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
+            var descriptorsBeforeCheck = services.ToList();
+
+            chatterBuilder.ThrowOnDuplicateCommandHandlers();
+
+            services.Should().Equal(descriptorsBeforeCheck);
+        }
+
         private static int PositionOf(string message, Type type)
             => message.IndexOf(type.FullName, StringComparison.Ordinal);
 
@@ -137,6 +201,12 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         }
 
         private class FakeSecondCommandHandler : IMessageHandler<FakeCommand>
+        {
+            public Task Handle(FakeCommand message, IMessageHandlerContext context) => throw new NotImplementedException();
+        }
+
+        [CompilerGenerated]
+        private class FakeCompilerGeneratedCommandHandler : IMessageHandler<FakeCommand>
         {
             public Task Handle(FakeCommand message, IMessageHandlerContext context) => throw new NotImplementedException();
         }

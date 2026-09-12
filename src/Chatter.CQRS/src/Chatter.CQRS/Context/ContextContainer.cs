@@ -155,8 +155,8 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The type of context to get or add.</typeparam>
         /// <returns>
-        /// The value already present in the container - including a stored <see langword="null"/> - or <see cref="default{T}"/>,
-        /// which is stored in the container before being returned.
+        /// The value found by the same presence gate documented on <see cref="GetOrAdd{T}(Func{T})"/>'s <c>returns</c>, or
+        /// <see cref="default{T}"/>, which is stored in the container before being returned.
         /// </returns>
         public T GetOrDefault<T>()
             => GetOrAdd<T>(() => default);
@@ -169,8 +169,10 @@ namespace Chatter.CQRS.Context
         /// <param name="factoryMethod">The factory to create <typeparamref name="T"/> if not found in the container.</param>
         /// <returns>
         /// The value already present in the container - including a stored <see langword="null"/> - or the value created by
-        /// <paramref name="factoryMethod"/>. <paramref name="factoryMethod"/> is invoked only when no value is present for
-        /// <typeparamref name="T"/>, and its result is stored even when it is <see langword="null"/> or a default value type.
+        /// <paramref name="factoryMethod"/>. Presence is decided by the same gate as <see cref="TryGet{T}(out T)"/>:
+        /// <paramref name="factoryMethod"/> runs whenever that gate reports no value for <typeparamref name="T"/>, which
+        /// includes a value present under the key but not assignable to <typeparamref name="T"/> - that value is overwritten
+        /// by the factory's result, which is stored even when it is <see langword="null"/> or a default value type.
         /// </returns>
         public T GetOrAdd<T>(Func<T> factoryMethod)
         {
@@ -190,9 +192,10 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The type of context to get or add.</typeparam>
         /// <returns>
-        /// The non-<see langword="null"/> value already present in the container, otherwise a new instance of
-        /// <typeparamref name="T"/> which is stored in the container before being returned. Unlike <see cref="GetOrAdd{T}(Func{T})"/>,
-        /// a stored <see langword="null"/> is replaced with a new instance.
+        /// The non-<see langword="null"/> value found by the same presence gate documented on
+        /// <see cref="GetOrAdd{T}(Func{T})"/>'s <c>returns</c>, otherwise a new instance of <typeparamref name="T"/> which is
+        /// stored in the container before being returned. Unlike <see cref="GetOrAdd{T}(Func{T})"/>, a stored
+        /// <see langword="null"/> is replaced with a new instance.
         /// </returns>
         public T GetOrNew<T>() where T : class, new()
         {
