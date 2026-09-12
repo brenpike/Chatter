@@ -4,7 +4,7 @@ CQRS architecture via the mediator pattern: dispatch and handling of Commands, Q
 
 ## Language
 
-**Command**: A message that changes the state of an aggregate, dispatched to exactly one handler. Exactly one handler is what the assembly scan REGISTERS, not something it verifies: command handlers are registered with a replace strategy, so when two scanned types handle the same Command the last one scanned survives and the earlier one is displaced with no error and no log, in a scan order derived from assembly load order and each assembly's type-definition order, neither of which is specified. `ThrowOnDuplicateCommandHandlers()` is the opt-in check that fails composition instead; it is off unless called, and it sees only what the scan sees. See ADR-0017.
+**Command**: A message that changes the state of an aggregate, dispatched to exactly one handler. Exactly one handler is what the assembly scan REGISTERS, not something it verifies: command handlers are registered with a replace strategy, so when two scanned types handle the same Command the last one scanned survives and the earlier one is displaced with no error and no log, in a scan order derived from assembly load order and each assembly's type-definition order, neither of which is specified. `ThrowOnDuplicateCommandHandlers()` is the opt-in check that fails composition instead; it is off unless called, and it re-applies the same `AssemblySourceFilter` the registration applied. See ADR-0017.
 
 **Query**: A message that retrieves data (a read model) without mutating state.
 _Avoid_: read request.

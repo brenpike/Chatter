@@ -65,7 +65,7 @@ services.AddChatterCqrs(configuration, typeof(CreateOrderHandler))
         .ThrowOnDuplicateCommandHandlers();
 ```
 
-The check is **off unless you call it**: no `AddChatterCqrs` overload invokes it, so an application that never calls it composes exactly as it did before. It also sees only what the scan sees — a handler registered by hand before `AddChatterCqrs`, or registered by another module after it, is not compared against the scanned ones. Duplicate **event** handlers are not reported either: event handlers are appended rather than replaced, so several handlers for one event all register and all run. Duplicate **query** handlers need no such flag — query handlers are registered with a *throw* strategy, so a second registration for the same closed `IQueryHandler<TQuery, TResult>` fails the scan itself.
+The check is **off unless you call it**: no `AddChatterCqrs` overload invokes it, so an application that never calls it composes exactly as it did before. A handler registered by hand before `AddChatterCqrs`, or registered by another module after it, is not compared against the scanned ones. Duplicate **event** handlers are not reported either: event handlers are appended rather than replaced, so several handlers for one event all register and all run. Duplicate **query** handlers need no such flag — query handlers are registered with a *throw* strategy, so a second registration for the same closed `IQueryHandler<TQuery, TResult>` fails the scan itself.
 
 Why the check is opt-in, and why turning it on by default would be a major-version change, is recorded in [ADR-0017](https://github.com/brenpike/Chatter/blob/master/docs/adr/0017-opt-in-strict-command-handler-registration.md).
 
