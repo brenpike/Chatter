@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-11
+
+### Changed
+
+- Bundled dependency uplift to Chatter.MessageBrokers 0.29.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it). No adapter code changed in this release: the only edits under `src/` correct code comments that described how the core reads an inbound header value, which is now a type test yielding a default rather than a hard cast. Adapter behaviour does not move with the uplift — `RabbitMqReceiver` already stamped `MessageContext.ReceiveAttempts` as an `int` on every delivery, which the core's widened delivery-count probe reads exactly as the previous one did.
+
 ## [0.4.1] - 2026-09-02
 
 ### Changed
