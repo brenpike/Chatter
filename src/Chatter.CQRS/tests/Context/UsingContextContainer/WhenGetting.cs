@@ -1,6 +1,7 @@
 ﻿using Chatter.CQRS.Context;
 using FluentAssertions;
 using Moq;
+using System;
 using System.Collections.Generic;
 using Xunit;
 
@@ -33,6 +34,29 @@ namespace Chatter.CQRS.Tests.Context.UsingContextContainer
         [Fact]
         public void MustThrowExceptionWhenTypeDoesntExist()
             => FluentActions.Invoking(() => _sut.Get<int>()).Should().Throw<KeyNotFoundException>();
+
+        [Fact]
+        public void MustThrowInvalidCastExceptionNamingKeyAndBothTypesWhenStoredValueIsNotAssignableToRequestedType()
+        {
+            _sut.Include("MismatchKey", "not an int");
+            FluentActions.Invoking(() => _sut.Get<int>("MismatchKey"))
+                         .Should().Throw<InvalidCastException>()
+                         .Where(e => e.Message.Contains("MismatchKey")
+                                     && e.Message.Contains(typeof(string).FullName)
+                                     && e.Message.Contains(typeof(int).FullName)
+                                     && !e.Message.Contains("No item found"));
+        }
+
+        [Fact]
+        public void MustThrowInvalidCastExceptionNamingNullWhenStoredNullIsReadAsNonNullableValueType()
+        {
+            _sut.Include<object>("NullKey", null);
+            FluentActions.Invoking(() => _sut.Get<Guid>("NullKey"))
+                         .Should().Throw<InvalidCastException>()
+                         .Where(e => e.Message.Contains("NullKey")
+                                     && e.Message.Contains("null")
+                                     && e.Message.Contains(typeof(Guid).FullName));
+        }
 
         [Fact]
         public void MustGetContextWhenFullQualifiedNamespaceOfTypeExists()

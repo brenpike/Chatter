@@ -103,6 +103,20 @@ namespace Chatter.CQRS.Tests.Context.UsingContextContainer
         }
 
         [Fact]
+        public void MustInvokeFactoryMethodAndOverwriteWhenAValueOfAnotherTypeIsStoredUnderTheTypeKey()
+        {
+            _sut.Include(typeof(AnotherFakeContext).FullName, "not an AnotherFakeContext");
+            var newContext = new AnotherFakeContext();
+            var invocationCount = 0;
+            var c1 = _sut.GetOrAdd(() => { invocationCount++; return newContext; });
+            var doesExistAfter = _sut.TryGet<AnotherFakeContext>(out var ctx);
+            Assert.Same(newContext, c1);
+            Assert.Equal(1, invocationCount);
+            Assert.True(doesExistAfter);
+            Assert.Same(newContext, ctx);
+        }
+
+        [Fact]
         public void MustInvokeNullProducingFactoryMethodExactlyOnce()
         {
             var invocationCount = 0;
