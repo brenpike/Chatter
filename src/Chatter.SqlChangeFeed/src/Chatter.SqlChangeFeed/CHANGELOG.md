@@ -6,6 +6,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-09-12
+
+### Changed
+
+- Bundled dependency uplift to Chatter.MessageBrokers.SqlServiceBroker 0.14.2 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
+### Fixed
+
+- `EnableConversationEncryption()` was a silent no-op for the same reason as the underlying `Chatter.MessageBrokers.SqlServiceBroker` fix: the option never reached `BEGIN DIALOG`, so every dialog was begun with `WITH ENCRYPTION = OFF` regardless of configuration. It now takes effect. **An application that had already called `EnableConversationEncryption()` was silently getting unencrypted dialogs and will now genuinely require dialog security provisioned server-side.** The configured change feed queue name (`WithChangeFeedQueueName`) also inherits the underlying quoting fix: a dotted value is now read as `schema.queue`, with each part quoted separately, and a one-part name that legitimately contains a dot must be pre-bracketed (`[my.queue]`); an already-bracketed name is accepted verbatim.
+
 ## [0.14.1] - 2026-09-02
 
 ### Changed

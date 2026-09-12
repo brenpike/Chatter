@@ -12,6 +12,25 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.14.2] - 2026-09-12
+
+### Changed
+
+- The target service name passed to `BEGIN DIALOG` is no longer bracket-stripped unconditionally. It is now unquoted only when it is a well-formed quoted identifier, and otherwise passed through intact: `[Target]` still binds as `Target`; `my]service` now binds intact where it was previously corrupted to `myservice`; `[Target]Svc` now binds verbatim where it previously became `TargetSvc`. A configured target service name containing brackets will bind a different value than before.
+- An initiator service name that is null, empty, or whitespace now throws `ArgumentException`, where it previously emitted `FROM SERVICE []`. Because the constructor defaults the initiator to the target when no initiator is supplied, this also fires for a null or blank target.
+- A null target service name supplied alongside an explicit initiator now binds a null `@targetService` parameter instead of throwing `NullReferenceException`.
+- A queue name with an empty part (e.g. `dbo.`, `.MyQueue`) now throws `ArgumentException` at command-build time instead of emitting broken SQL.
+- A dotted queue name is now read as `schema.queue`, with each part quoted separately. A one-part queue name that legitimately contains a dot must be pre-bracketed in configuration (`[my.queue]`); an already-bracketed name is accepted verbatim, so existing pre-bracketed configuration is unaffected.
+- `BeginDialogConversationCommand.Create()` no longer mutates the instance's public `_targetServiceName` field, so a caller reading that field after `Create()` no longer sees a rewritten value.
+
+### Fixed
+
+- `UseConversationEncryption()` was a silent no-op: the option never reached `BEGIN DIALOG`, so every dialog was begun with `WITH ENCRYPTION = OFF` regardless of configuration. It now takes effect. **An application that had already called `UseConversationEncryption()` was silently getting unencrypted dialogs and will now genuinely require dialog security provisioned server-side.** (#356)
+
+### Security
+
+- Two T-SQL identifier positions that were built by raw string interpolation are now bracket-quoted: the `RECEIVE` queue name (`ReceiveMessageFromQueueCommand`) and the `BEGIN DIALOG` initiator service name (`BeginDialogConversationCommand`). A name containing `]` could previously terminate the identifier early and append arbitrary T-SQL, on a connection that typically holds `RECEIVE`/`SEND` rights on the target database. Value positions (`TO SERVICE`, `ON CONTRACT`) were never affected — they were already bound as `SqlParameter`s. See `docs/adr/0016-sql-identifier-quoting-via-round-trip-parse.md` for the quoting rule. (#355)
+
 ## [0.14.1] - 2026-09-02
 
 ### Changed
