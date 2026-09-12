@@ -13,10 +13,9 @@ review pass surfaced one more *semantic field translated inconsistently across b
 field lifted onto a native frame field outbound but read from a header inbound, a content-type
 written on send but ignored on receive, a TTL encoded one way and never reconstituted. This ADR
 records the structural fix: a **single bidirectional translation contract** through which all
-three boundaries route, so a field's native-vs-header home is declared **once** and is necessarily
-symmetric across them. Its CLR<->wire coercion is **not** declared once: the header arm's inbound
-decode and its outbound encode live in separate declarations, so the symmetry this ADR claimed for
-coercion is specified but not implemented (issue #465).
+three boundaries route. `ToRepublishAmqp` does not walk the field-map table: it re-applies each
+carried native by name instead (issue #465). The header arm's outbound encode and its inbound
+decode are declared in separate places, with nothing pairing them (issue #465).
 
 ## Considered Options
 
@@ -46,12 +45,16 @@ coercion is specified but not implemented (issue #465).
 
 Adopt option (iii): `RabbitMqMessageTranslator` is the single bidirectional translation contract.
 
+**As built:** `ToAmqp` and `ToCore` walk the table; `ToRepublishAmqp` does not (issue #465).
+
 ### The field-map table
 
 The table holds the fields that have a **native AMQP frame home AND a core concept**. Each
-descriptor declares the field's AMQP home, its core binding, and its coercion:
+descriptor declares the field's AMQP home and its core binding. `MessageId`, `ContentType` and
+`CorrelationId` are the three descriptors; `TimeToLive` / `Expiration` is **not** a descriptor and
+is handled by a dedicated arm at each boundary:
 
-| Field | AMQP home | Core OUT (send source) | Core IN key (receive sink) | Coercion / notes |
+| Field | AMQP home | Core OUT (send source) | Core IN key (receive sink) | Notes |
 | --- | --- | --- | --- | --- |
 | MessageId | native `BasicProperties.MessageId` | `OutboundBrokeredMessage.MessageId` | none (carried on the `MessageBrokerContext` itself) | string-shaped on the wire |
 | ContentType | native `BasicProperties.ContentType` | actual-serialization stamp (`MessageContext.ContentType`), sender's resolved-converter fallback | `MessageContext.ContentType` | GAP B: receive surfaces the delivered content-type so the receiver picks the inbound body converter from it |
@@ -64,20 +67,20 @@ There is no per-key allowlist gate in the translator — the marshaller's single
 **`HeaderDisposition` map** (`_dispositions`, keyed by core context key) is the sole declaration of
 how a header named after a core key is projected into the core context (GAP F:
 table/disposition-driven, not a per-key branch), and the translator's descriptors own the
-native-home keys, so a header field cannot drift its home. That map is **inbound only**: the
-outbound encode is not keyed by header key at all — it is `CoerceOutboundValue`'s per-CLR-type arms,
-plus one per-key outbound special case (`EncodeExpiryTimeUtc`).
+native-home keys. That map is **inbound only**: the outbound encode is not keyed by header key at
+all — it is `CoerceOutboundValue`'s per-CLR-type arms, plus two per-key outbound arms: the
+unconditional `TimeToLive` drop and `EncodeExpiryTimeUtc`.
 
 **SPECIFIED BUT NOT IMPLEMENTED — issue #465.** This ADR specified the header coercion as
 **bidirectional-symmetric per descriptor**: one descriptor per header key carrying an `Encode`
 (core CLR -> field-table-legal wire form) **and** a `Decode` (received wire value -> the SAME
-original CLR type), declared once and paired by construction. No such paired descriptor was built.
+original CLR type), declared once and paired. No such paired descriptor was built.
 What shipped declares the two directions in **separate** places keyed differently — inbound by core
 key in `_dispositions`, outbound by CLR type in `CoerceOutboundValue` — so nothing pairs them. The
-ten string-typed routing/failure keys encode string-identity outbound and decode
-`byte[]`/`string` -> `string` inbound (the prior behaviour). **ExpiryTimeUtc** — a non-string
-(`DateTime`) core key with a header home — is handled at both ends, but by two independent
-declarations rather than one:
+ten string-typed routing/failure keys encode string-identity outbound and inbound decode to a
+`string` or drop the key — the decode is type-total: any non-null wire value becomes a `string`.
+**ExpiryTimeUtc** — a non-string (`DateTime`) core key with a header home — is handled at both
+ends, but by two independent declarations rather than one:
 
 | Header key | Outbound encode | Inbound decode | Notes |
 | --- | --- | --- | --- |
@@ -92,16 +95,14 @@ non-string CLR type — it was encoded `DateTime` -> ISO string outbound but sta
 `RefreshTimeToLive`'s `(DateTime?)` cast threw `InvalidCastException` (the same class as the prior
 CorrelationId `byte[]` cast bug, for a non-string CLR type). Only the **inbound** half of that
 closure shipped: `_dispositions` is asserted complete over the core key registry at type init, so a
-new core key cannot ship without an explicit inbound disposition. The pairing is what is missing —
-with Encode and Decode declared in separate places, a header key **can** still be added with an
-outbound encode and no matching inbound decode, so this asymmetry **can** recur on a new
-byte/field/path (issue #465).
+new core key cannot ship without an explicit inbound disposition. The pairing is what is missing:
+the two directions are declared in separate places and nothing ties them together (issue #465).
 
 OPTION (a) — **keep ExpiryTimeUtc as a header field** (rather than dropping it or mapping it onto a
 native frame field) — was chosen because ExpiryTimeUtc is the absolute-expiry-**instant** concept,
 which is distinct from the relative TTL the contract already lifts onto `BasicProperties.Expiration`
 (GAP A); it is not redundant with that native Expiration. Dropping it would re-open a cross-boundary
-asymmetry: the sibling Azure Service Bus adapter surfaces the broker's `ExpiresAtUtc` into the core
+asymmetry: the sibling Azure Service Bus adapter surfaces the broker's expiry instant into the core
 `ExpiryTimeUtc` key inbound, so ExpiryTimeUtc is a real inbound core key in the suite, and parity
 keeps the RabbitMQ adapter from silently losing it on a round trip.
 
@@ -117,11 +118,11 @@ keeps the RabbitMQ adapter from silently losing it on a round trip.
   the delivered ContentType — GAP B — and the dual-home CorrelationId with header fallback),
   reconstitute the native Expiration into `MessageContext.TimeToLive` (GAP A). The C-family
   natives stay only on the captured facts (DECISION-B), never in the core context.
-- **`ToRepublishAmqp` (republish = `ToCore` ∘ `ToAmqp` in spirit).** Rebuild the outbound AMQP
-  representation from the captured `NativeFacts` + carried headers through the same native-frame +
-  header-table construction the send path uses, re-applying every carried native (including the
-  C-family). `Persistent = true` hardcoded; Expiration preserved only on the nack-redelivery hop,
-  dropped on the deadletter hop.
+- **`ToRepublishAmqp` (republish).** Rebuild the outbound AMQP representation from the captured
+  `NativeFacts` + carried headers. The merged header bag goes through the same marshaller call the
+  send path uses, but each carried native (including the C-family) is re-applied **by name** rather
+  than through the field-map table (issue #465). `Persistent = true` hardcoded; Expiration
+  preserved only on the nack-redelivery hop, dropped on the deadletter hop.
 
 ### Locked decisions
 
@@ -148,26 +149,24 @@ standalone boundary but the header arm of this single contract.
 
 > What class of future finding does this make impossible, and why?
 
-**"A semantic field translated inconsistently across boundaries."** It is closed by construction
-because a field's home, core binding, and coercion are declared in **one descriptor** that all
-three boundaries walk. A new field is a single descriptor and is **necessarily symmetric** across
-send / receive / republish — there is no second place to forget to mirror it, so a send/receive
-home mismatch or a stamped-on-send-dropped-on-receive asymmetry cannot be expressed. This names
-and eliminates the class rather than completing the handled set: the next field cannot reopen the
-asymmetry shape on a new byte/field/path because there is no per-boundary copy left to diverge.
+**Verdict: FAILED for the native-frame class (issue #465).** The intended answer was *"a semantic
+field translated inconsistently across boundaries"*, to be closed by one descriptor that all three
+boundaries walk. As built, `ToRepublishAmqp` does not walk the table, the descriptor carries no
+coercion, and `ContentType`'s outbound assignment plus the `TimeToLive` / `Expiration` arms live
+per boundary — so per-boundary copies remain and this gate **fails** for the native-frame class.
 
 ## Consequences
 
-- The seven core<->AMQP translation asymmetries are closed as a class: GAP A (TTL reconstitute on
-  receive), GAP B (content-type drives inbound body-converter selection), the C-family carry-only
-  natives (DECISION-B), GAP D (CorrelationId dual-home), GAP E (persistence hardcoded), and GAP F
-  (table/descriptor-driven header decode, no per-key allowlist branch in the translator).
-- Adding a native-home field with a core concept is one descriptor in the field-map table; adding
-  a header-home core key is one entry in the marshaller's inbound `_dispositions` map plus, when its
-  CLR type is not field-table-legal, a separate outbound encode — the paired `Encode`/`Decode`
-  descriptor this ADR specified was never built (issue #465). Neither requires touching the three
-  boundary methods, and a core key cannot be added without an inbound disposition (type-init
-  assertion), but nothing forces a matching outbound encode.
+- The core<->AMQP translation asymmetries this ADR set out to fix are each fixed: GAP A (TTL
+  reconstitute on receive), GAP B (content-type drives inbound body-converter selection), the
+  C-family carry-only natives (DECISION-B), GAP D (CorrelationId dual-home), GAP E (persistence
+  hardcoded), and GAP F (table/descriptor-driven header decode, no per-key allowlist branch in the
+  translator).
+- Adding a native-home field with a core concept touches the field-map table and, because
+  `ToRepublishAmqp` does not walk that table, the republish path as well (issue #465); adding a
+  header-home core key is one entry in the marshaller's inbound `_dispositions` map plus, when its
+  CLR type is not field-table-legal, a separate outbound encode. A core key cannot be added without
+  an inbound disposition (type-init assertion), but nothing forces a matching outbound encode.
 - **Cross-references.** ADR 0001 (classic-queue delivery-count counting) stays **out of this
   table**: `ReceiveAttempts` / the `x-chatter-delivery-count` republish counter are owned by the
   receiver's delivery-counting path, not the field-map, because they are computed per-delivery
