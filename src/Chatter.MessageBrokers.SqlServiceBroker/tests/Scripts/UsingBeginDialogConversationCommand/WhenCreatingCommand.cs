@@ -51,7 +51,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingBeginDialog
                 .Should().Contain("FROM SERVICE [MyInitiator] ");
 
         [Fact]
-        public void MustNotDoubleBracketInitiatorThatAlreadyStartsWithBracket()
+        public void MustNotDoubleQuoteInitiatorThatIsAlreadyAWellFormedQuotedIdentifier()
             => Create("TargetSvc", initiatorServiceName: "[Already]").CommandText
                 .Should().Contain("FROM SERVICE [Already] ");
 
