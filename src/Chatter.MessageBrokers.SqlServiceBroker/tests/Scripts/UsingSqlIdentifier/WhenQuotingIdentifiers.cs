@@ -19,6 +19,24 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingSqlIdentifi
         public void MustEscapeWholeValueWhenInteriorBracketIsNotDoubled()
             => SqlIdentifier.Quote("[x]; DROP TABLE t; --").Should().Be("[[x]]; DROP TABLE t; --]");
 
+        // A trailing "]]" is identifier content, not a terminator, so a value whose only closing
+        // bracket is that escaped pair is UNTERMINATED and must never be trusted as already-quoted.
+        [Fact]
+        public void MustEscapeWholeValueWhenTheFinalBracketIsAnEscapedPairRatherThanATerminator()
+            => SqlIdentifier.Quote("[x]]").Should().Be("[[x]]]]]");
+
+        [Fact]
+        public void MustEscapeWholeValueWhenAnUnterminatedNameEndsInAnEscapedPair()
+            => SqlIdentifier.Quote("[name]]").Should().Be("[[name]]]]]");
+
+        [Fact]
+        public void MustEscapeWholeValueWhenAPayloadFollowsAnEscapedPair()
+            => SqlIdentifier.Quote("[x]];payload]]").Should().Be("[[x]]]];payload]]]]]");
+
+        [Fact]
+        public void MustEscapeAnUnterminatedEscapedPairPartOfAMultiPartName()
+            => SqlIdentifier.QuoteMultiPart("[dbo].[x]]").Should().Be("[dbo].[[x]]]]]");
+
         [Fact]
         public void MustNotSplitOnDots()
             => SqlIdentifier.Quote("//company.com/service").Should().Be("[//company.com/service]");
