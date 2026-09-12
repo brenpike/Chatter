@@ -102,6 +102,15 @@ This package is a **transport over existing SQL Service Broker objects** — it 
 | `EndDialogConversationCommand` | `END CONVERSATION @handle [WITH ERROR ... DESCRIPTION ...] [WITH CLEANUP]` | Sender (when `EndConversationAfterDispatch`), and receiver on ack/deadletter/`EndDialog`. |
 | `ReceiveMessageFromQueueCommand` | `WAITFOR (RECEIVE TOP(1) ... FROM <queue>) [, TIMEOUT ...]` | Receiver, to dequeue. |
 
+> Note: the queue name is **bracket-quoted** into the emitted `RECEIVE` statement rather than interpolated
+> raw. A dotted name (e.g. `dbo.MyQueue`) is read as `schema.queue` and each part is quoted separately
+> (`[dbo].[MyQueue]`). A one-part queue name that legitimately contains a dot must be **pre-bracketed** in
+> configuration — `[my.queue]` — which is then passed through unsplit instead of being split on the dot.
+> An already-bracketed queue name (`[MyQueue]` or `[dbo].[MyQueue]`) is accepted verbatim, so existing
+> pre-bracketed configuration keeps working unchanged. A configured name that resolves to an empty part
+> (e.g. `dbo.` or `.MyQueue`) throws an `ArgumentException` when the command is built, instead of reaching
+> the server as written.
+
 You are responsible for provisioning the Service Broker schema **manually** (or via your own migration tooling) before using this package. At minimum you need:
 
 - `ALTER DATABASE [Db] SET ENABLE_BROKER;` on the target database.

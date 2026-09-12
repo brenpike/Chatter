@@ -35,8 +35,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
     // SqlServiceBrokerSender reads to BEGIN DIALOG / SEND. A handler-driven brokerContext.Send does NOT inherit
     // those stamps automatically, so the forwarding handler stamps the SAME SSB headers (InitiatorServiceName,
     // ContractName, MessageTypeName) on its SendOptions, mirroring the harness's CreateSsbSendOptions, and sends
-    // to the BARE ForwardDestinationServiceName (BeginDialogConversationCommand strips brackets and uses it as
-    // "TO SERVICE", so the destination must name the SERVICE, not the queue).
+    // to the BARE ForwardDestinationServiceName — it must name the SERVICE, not the queue.
     //
     // The fact is gated by [RequiresDockerFact] and SKIPPED (never failed) when Docker is absent so a plain
     // `dotnet test` stays green; the nightly SQL Server CI lane (`--filter Category=Integration`) runs it for real.

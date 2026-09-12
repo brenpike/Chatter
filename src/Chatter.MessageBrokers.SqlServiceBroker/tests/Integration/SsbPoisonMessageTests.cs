@@ -185,7 +185,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
 
             // BEGIN DIALOG FROM the shared initiator service TO the PoisonSet target service on the //Chatter
             // contract — the same dialog Chatter's sender would open, but here we drive it raw so we control the
-            // body. BeginDialogConversationCommand strips brackets from the target and uses it as TO SERVICE.
+            // body.
             var beginDialog = new BeginDialogConversationCommand(
                 connection,
                 targetServiceName: ServiceBrokerProvisioning.PoisonSet.TargetServiceName,

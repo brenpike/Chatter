@@ -45,9 +45,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             string DeadLetterQueueName,
             string DeadLetterServiceName)
         {
-            // Bracket-quoted target queue identifier suitable for direct interpolation into the receiver's
-            // "FROM {queue}" RECEIVE statement. The STEP-004 fixture sets ReceiverOptions.MessageReceiverPath to
-            // this value for the owning test class.
+            // Bracket-quoted target queue identifier. The receiver's SqlIdentifier.QuoteMultiPart accepts an
+            // already-well-formed quoted identifier verbatim, so this round-trips unchanged into the "FROM
+            // {queue}" RECEIVE statement. The STEP-004 fixture sets ReceiverOptions.MessageReceiverPath to this
+            // value for the owning test class.
             public string TargetQueuePathBracketed => "[" + TargetQueueName + "]";
         }
 
