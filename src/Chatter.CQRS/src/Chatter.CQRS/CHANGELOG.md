@@ -12,6 +12,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.16.0] - 2026-09-12
+
+### Added
+
+- `ThrowOnDuplicateCommandHandlers()` is a new opt-in `IChatterBuilder` extension, off unless called: no existing `AddChatterCqrs` overload or `AddCommandHandlers` invokes it, and composing without it behaves exactly as before — the assembly scan's `RegistrationStrategy.Replace()` still silently keeps the last handler scanned for a Command two types both implement. Calling it re-applies the SAME `AssemblySourceFilter` instance the registration used and throws one `InvalidOperationException` naming every Command handled by two or more scanned types and all of their competing handlers, ordered ordinally by Command full name and then by handler full name so the message is stable across runs of the same defect. Candidates are drawn from the existing `AssemblySourceFilter.SafeGetLoadableTypes`, filtered to closed, non-abstract `ICommand` handlers — the same predicate the scan itself applies — so the check never reports a type Scrutor would not have registered, and a class handling both a Command and an Event contributes one Command-handler entry and is never ambiguous with itself. It does not see a handler registered by hand before `AddChatterCqrs` and then displaced by the scan, and it does not see a handler another module registers after `AddChatterCqrs` returns — it is a snapshot of the scan set at the moment it is called. Events are unaffected: `AddEventHandlers`'s `RegistrationStrategy.Append` lets several handlers for one Event register and run, which is the documented fan-out contract (ADR-0012), not a displacement, and this check does not flag it. Queries already fail loudly on a duplicate registration through `RegistrationStrategy.Throw` and need no equivalent flag. ADR-0017 records the decision, including the standing rule that turning this check on by default is reserved for a MAJOR release (#449).
+
+### Changed
+
+- `ContextContainer.TryGet<T>` and `Get<T>` now share a tri-state lookup — `Missing`, `Found`, or `TypeMismatch` — instead of a blind cast, and "found" means a value is present AND assignable to `T`. `TryGet` returns `true` only on `Found`; on `Missing` or `TypeMismatch` it returns `false` with `result` set to `default(T)`, and never throws. `Get` still throws `KeyNotFoundException` on `Missing`, with its message text unchanged, and now throws `InvalidCastException` on `TypeMismatch` naming the key, the stored value's type — or `null` when the stored value is `null` — and the requested type; that mismatch case previously never reached `Get`'s own exception construction, because it escaped earlier from the blind cast inside `TryGet`. A stored `null` is unchanged and REMAINS a present value for a reference or nullable `T`; it is a `TypeMismatch` only when `T` is a non-nullable value type, the same rule this container has followed since ADR-0011 and #332, not a new one (#451).
+- `GetOrAdd<T>` gates on `TryGet<T>`, so a foreign-typed value stored under a type key that used to make `TryGet` throw now makes `TryGet` return `false`, and `GetOrAdd` runs its factory and overwrites that value in place — the one case in this change where a lookup that used to fault now mutates the container instead of merely reporting differently. `GetOrDefault<T>()` inherits this through `GetOrAdd`, and `GetOrNew<T>()` inherits the same overwrite-on-mismatch behaviour through its own `TryGet` gate (#451).
+- ADR-0017 records the duplicate-command-handler decision above; ADR-0018 records the tri-state lookup and the deliberate `TryGet`/`Get` asymmetry — `TryGet` absorbs a type mismatch as `false` because a `Try`-method that throws breaks its own contract, while `Get` still throws because a caller reaching for it wants to be told (#449, #451).
+
+### Fixed
+
+- `ContextContainer.TryGet<T>` executed a blind cast and could escape with `InvalidCastException` when the stored value under a key was not assignable to `T`, or with `NullReferenceException` when a stored `null` was read as a non-nullable value type `T` — both undocumented, and both violating the one contract a `Try`-method promises: a boolean answer, never a throw. Both are gone under the tri-state lookup above; the same two situations now return `false` with `result` set to `default(T)` (#451).
+
 ## [0.15.2] - 2026-09-10
 
 ### Fixed
