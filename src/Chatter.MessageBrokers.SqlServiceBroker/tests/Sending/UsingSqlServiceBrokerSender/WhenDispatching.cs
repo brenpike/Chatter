@@ -291,6 +291,64 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Sending.UsingSqlServiceB
                 "source must be consulted once on the new-connection path even when EndConversationAfterDispatch is false");
         }
 
+        // --- Options -> BEGIN DIALOG passthrough, via the construction seam --------------------------
+        //
+        // CreateBeginDialogConversationCommand builds the dialog command WITHOUT executing it, so the
+        // options-to-SQL passthrough is assertable on an unopened SqlConnection (CreateCommand works there;
+        // only BeginTransactionAsync/ExecuteNonQueryAsync need a live server).
+
+        private static SqlServiceBrokerOptions OptionsWith(bool conversationEncryption, int conversationLifetimeInSeconds = 0)
+            => new SqlServiceBrokerOptions(
+                connectionString: "Server=(local);Database=test;Integrated Security=true;",
+                messageBodyType: "application/json; charset=utf-16",
+                conversationLifetimeInSeconds: conversationLifetimeInSeconds,
+                coversationEncryption: conversationEncryption);
+
+        private static string BeginDialogCommandTextFor(SqlServiceBrokerOptions options)
+        {
+            var sender = CreateSender(new InMemorySqlConnectionSource(), options);
+            using var connection = new SqlConnection();
+            using var command = sender.CreateBeginDialogConversationCommand(
+                connection,
+                transaction: null,
+                brokeredMessage: Message(),
+                initiatorService: "InitiatorSvc",
+                serviceContractName: "TestContract").Create();
+            return command.CommandText;
+        }
+
+        [Fact]
+        public void MustEmitEncryptionOnWhenConversationEncryptionEnabled()
+        {
+            // UseConversationEncryption() sets SqlServiceBrokerOptions.ConversationEncryption; the sender must
+            // carry it into the dialog or the option is a silent no-op.
+            BeginDialogCommandTextFor(OptionsWith(conversationEncryption: true))
+                .Should().Contain("WITH ENCRYPTION = ON",
+                    "ConversationEncryption = true must reach the BEGIN DIALOG statement");
+        }
+
+        [Fact]
+        public void MustEmitEncryptionOffWhenConversationEncryptionDisabled()
+        {
+            BeginDialogCommandTextFor(OptionsWith(conversationEncryption: false))
+                .Should().Contain("WITH ENCRYPTION = OFF",
+                    "ConversationEncryption defaults to false and must emit an unencrypted dialog");
+        }
+
+        [Fact]
+        public void MustEmitLifetimeWhenConversationLifetimeConfiguredAlongsideEncryption()
+        {
+            // INVARIANT: encryption and lifetime are distinct BEGIN DIALOG arguments — passing encryption must
+            // not displace the lifetime the sender already forwarded.
+            var commandText = BeginDialogCommandTextFor(
+                OptionsWith(conversationEncryption: true, conversationLifetimeInSeconds: 42));
+
+            commandText.Should().Contain("LIFETIME = @lifetime",
+                "ConversationLifetimeInSeconds must still reach the emitted LIFETIME clause");
+            commandText.Should().Contain("WITH ENCRYPTION = ON",
+                "the encryption argument must sit alongside lifetime, not in place of it");
+        }
+
         // ----------------------------------------------------------------------------------------------
         // REACHABLE-vs-DEFERRED LEDGER (so reviewers know exactly what unit scope pins here):
         //
@@ -308,6 +366,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Sending.UsingSqlServiceB
         //     never reuses a context transaction — source consulted once.
         //   * EndConversationAfterDispatch = false origin path: source consulted once + fail-fast propagates
         //     regardless of the option (the End-Dialog loop-body effect stays DEFERRED, see below).
+        //   * Options -> BEGIN DIALOG passthrough, via the internal CreateBeginDialogConversationCommand seam
+        //     (construction only, no execution): ConversationEncryption reaches WITH ENCRYPTION = ON/OFF and
+        //     ConversationLifetimeInSeconds still reaches the LIFETIME clause alongside it.
         //
         // DEFERRED to the end-to-end suite (require a live Service Broker / a real SqlTransaction, which
         // cannot be manufactured without a live connection):
