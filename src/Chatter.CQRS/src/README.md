@@ -56,6 +56,19 @@ services.AddChatterCqrs(
 
 `AddChatterCqrs` returns an `IChatterBuilder`, which exposes the `Services`, `Configuration`, and `AssemblySourceFilter` used by other Chatter modules (such as the message brokers) to extend the registration.
 
+#### Failing composition when two handlers claim one command
+
+`ThrowOnDuplicateCommandHandlers()` is an opt-in check on the returned `IChatterBuilder`. It re-reads the same assembly source filter `AddChatterCqrs` scanned, and throws a single `InvalidOperationException` naming every command that more than one scanned handler handles, together with all of that command's competing handler types:
+
+```csharp
+services.AddChatterCqrs(configuration, typeof(CreateOrderHandler))
+        .ThrowOnDuplicateCommandHandlers();
+```
+
+The check is **off unless you call it**: no `AddChatterCqrs` overload invokes it, so an application that never calls it composes exactly as it did before. A handler registered by hand before `AddChatterCqrs`, or registered by another module after it, is not compared against the scanned ones. Duplicate **event** handlers are not reported either: event handlers are appended rather than replaced, so several handlers for one event all register and all run. Duplicate **query** handlers need no such flag — query handlers are registered with a *throw* strategy, so a second registration for the same closed `IQueryHandler<TQuery, TResult>` fails the scan itself.
+
+Why the check is opt-in, and why turning it on by default would be a major-version change, is recorded in [ADR-0017](https://github.com/brenpike/Chatter/blob/master/docs/adr/0017-opt-in-strict-command-handler-registration.md).
+
 ### 2. Define a command and its handler
 
 ```csharp
@@ -105,7 +118,7 @@ public class OrdersController
 
 ### Commands
 
-A `ICommand` is dispatched through `IMessageDispatcher` to a single `IMessageHandler<TCommand>`. During scanning, command handlers are registered with a *replace* strategy, enforcing that a command resolves to exactly one handler.
+A `ICommand` is dispatched through `IMessageDispatcher` to a single `IMessageHandler<TCommand>`. During scanning, command handlers are registered with a *replace* strategy: when two scanned types handle the same command, the last one scanned is the registration that survives and the earlier one is displaced with no error and no log. Scan order is derived from assembly load order and the order an assembly defines its types, neither of which is specified. Dispatch then resolves that single surviving registration. Call `ThrowOnDuplicateCommandHandlers()` to fail composition instead.
 
 ```csharp
 Task Dispatch<TMessage>(TMessage message) where TMessage : IMessage;
@@ -225,6 +238,12 @@ public Task Handle(CreateOrder message, IMessageHandlerContext context)
 ```
 
 A `ContextContainer` can be created with an inherited container, in which case lookups fall through to the parent. When you dispatch without supplying a context, `MessageDispatcher` creates a fresh `MessageHandlerContext` and seeds the container with the active `IMessageDispatcher` and `IExternalDispatcher`.
+
+Lookups are type-checked: a value is found only when it is present under the key **and** assignable to `T`. A present value that is not assignable to `T` reads as `false` from `TryGet`, leaving the `out` parameter at `default(T)`, and throws `InvalidCastException` from `Get`, naming the key, the stored type and `T`; `Get` keeps throwing `KeyNotFoundException` when the key is absent, so the two failures stay distinguishable. A stored `null` is a **present** value when `T` is a reference or nullable type, and a mismatch when `T` is a non-nullable value type. A key present in the local container is answered from it whatever its type, so a local mismatch does not fall through to the inherited container.
+
+`GetOrAdd`, `GetOrDefault` and `GetOrNew` all gate on `TryGet<T>`, so a value of another type stored under the `typeof(T).FullName` key is reported absent and is **overwritten** by the value each of them then creates and stores. `Include<T>(string, T)` will write any value under any string, including one equal to some `typeof(T).FullName`.
+
+Why `TryGet` reports a mismatch while `Get` throws on one is recorded in [ADR-0018](https://github.com/brenpike/Chatter/blob/master/docs/adr/0018-context-container-lookup-is-type-checked.md).
 
 #### Threading
 

@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS.Context;
 using Moq;
+using System;
 using Xunit;
 
 namespace Chatter.CQRS.Tests.Context.UsingContextContainer
@@ -37,6 +38,111 @@ namespace Chatter.CQRS.Tests.Context.UsingContextContainer
             var c1Failure = _sut.TryGet<int>(out var c1);
             Assert.False(c1Failure);
             Assert.Equal(default, c1);
+        }
+
+        [Fact]
+        public void MustReturnFalseAndDefaultOutParameterWhenStoredValueIsNotAssignableToRequestedType()
+        {
+            _sut.Include("MismatchKey", "not an int");
+            var c1Failure = _sut.TryGet<int>("MismatchKey", out var c1);
+            Assert.False(c1Failure);
+            Assert.Equal(0, c1);
+        }
+
+        [Fact]
+        public void MustReturnFalseAndDefaultOutParameterWhenStoredNullIsReadAsNonNullableValueType()
+        {
+            _sut.Include<object>("NullKey", null);
+            var c1Failure = _sut.TryGet<Guid>("NullKey", out var c1);
+            Assert.False(c1Failure);
+            Assert.Equal(default, c1);
+        }
+
+        [Fact]
+        public void MustReturnTrueAndNullOutParameterWhenStoredNullIsReadAsReferenceType()
+        {
+            _sut.Include<object>("NullKey", null);
+            var c1Success = _sut.TryGet<string>("NullKey", out var c1);
+            Assert.True(c1Success);
+            Assert.Null(c1);
+        }
+
+        [Fact]
+        public void MustReturnTrueAndNullOutParameterWhenStoredNullIsReadAsNullableValueType()
+        {
+            _sut.Include<object>("NullKey", null);
+            var c1Success = _sut.TryGet<int?>("NullKey", out var c1);
+            Assert.True(c1Success);
+            Assert.Null(c1);
+        }
+
+        [Fact]
+        public void MustReturnTrueAndValueOutParameterWhenStoredValueTypeIsReadAsNullableValueType()
+        {
+            _sut.Include("NumberKey", 5);
+            var c1Success = _sut.TryGet<int?>("NumberKey", out var c1);
+            Assert.True(c1Success);
+            Assert.Equal(5, c1);
+        }
+
+        [Fact]
+        public void MustReturnTrueAndContextViaOutParameterWhenStoredValueIsReadAsBaseTypeOrInterface()
+        {
+            var derived = new DerivedFakeContext();
+            _sut.Include("DerivedKey", derived);
+            var c1Success = _sut.TryGet<FakeContext>("DerivedKey", out var c1);
+            var c2Success = _sut.TryGet<IFakeContextMarker>("DerivedKey", out var c2);
+            Assert.True(c1Success);
+            Assert.Same(derived, c1);
+            Assert.True(c2Success);
+            Assert.Same(derived, c2);
+        }
+
+        [Fact]
+        public void MustReturnFalseWhenLocallyStoredValueOfAnotherTypeShadowsInheritedContext()
+        {
+            _sut.Include("Key", 5);
+            var c1Failure = _sut.TryGet<string>("Key", out var c1);
+            Assert.False(c1Failure);
+            Assert.Null(c1);
+        }
+
+        [Fact]
+        public void MustReturnFalseWhenInheritedContextValueIsNotAssignableToRequestedType()
+        {
+            var c1Failure = _sut.TryGet<int>("Key", out var c1);
+            Assert.False(c1Failure);
+            Assert.Equal(0, c1);
+        }
+
+        [Fact]
+        public void MustReturnTrueAndEqualValueForAStringKeyedStructWrittenByTheOutboxPath()
+        {
+            // Pins the in-repo pair: UnitOfWork.cs:35 writes Include("CurrentTransactionId", Guid) and
+            // OutboxProcessingBehavior.cs:28 reads TryGet<Guid>("CurrentTransactionId", out _).
+            var transactionId = Guid.NewGuid();
+            _sut.Include("CurrentTransactionId", transactionId);
+            var c1Success = _sut.TryGet<Guid>("CurrentTransactionId", out var c1);
+            Assert.True(c1Success);
+            Assert.Equal(transactionId, c1);
+        }
+
+        [Fact]
+        public void MustRoundTripReferenceValueAndStoredNullContextUnderTheTypeKey()
+        {
+            var anotherFakeContext = new AnotherFakeContext();
+            _sut.Include(anotherFakeContext);
+            _sut.Include(42);
+            var referenceSuccess = _sut.TryGet<AnotherFakeContext>(out var reference);
+            var valueSuccess = _sut.TryGet<int>(out var value);
+            _sut.Include<AnotherFakeContext>(null);
+            var storedNullSuccess = _sut.TryGet<AnotherFakeContext>(out var storedNull);
+            Assert.True(referenceSuccess);
+            Assert.Same(anotherFakeContext, reference);
+            Assert.True(valueSuccess);
+            Assert.Equal(42, value);
+            Assert.True(storedNullSuccess);
+            Assert.Null(storedNull);
         }
 
         [Fact]
@@ -79,4 +185,8 @@ namespace Chatter.CQRS.Tests.Context.UsingContextContainer
             Assert.True(c2Success);
         }
     }
+
+    public interface IFakeContextMarker { }
+
+    public class DerivedFakeContext : FakeContext, IFakeContextMarker { }
 }

@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -89,6 +90,57 @@ namespace Microsoft.Extensions.DependencyInjection
         public static IChatterBuilder AddChatterCqrs(this IServiceCollection services, IConfiguration configuration, string handlerNamespaceSelector)
             => services.AddChatterCqrs(configuration, null, b => b.WithNamespaceSelector(handlerNamespaceSelector));
 
+        /// <summary>
+        /// Fails composition when more than one handler is found for the same command.
+        /// </summary>
+        /// <param name="chatterBuilder">The <see cref="IChatterBuilder"/> whose <see cref="IAssemblySourceFilter"/> defines the assemblies that are checked</param>
+        /// <returns>The same <see cref="IChatterBuilder"/> instance</returns>
+        /// <exception cref="InvalidOperationException">Thrown when a command is handled by more than one scanned handler</exception>
+        public static IChatterBuilder ThrowOnDuplicateCommandHandlers(this IChatterBuilder chatterBuilder)
+        {
+            var ambiguousCommands = FindCommandsWithCompetingHandlers(chatterBuilder.AssemblySourceFilter.Apply());
+
+            if (ambiguousCommands.Count > 0)
+            {
+                throw new InvalidOperationException(DescribeAmbiguousCommands(ambiguousCommands));
+            }
+
+            return chatterBuilder;
+        }
+
+        /// <summary>
+        /// Finds every command handled by more than one scanned handler by probing the command handler scan into a
+        /// throwaway <see cref="IServiceCollection"/> with an appending strategy, so that every competing handler
+        /// survives instead of displacing the one before it. INVARIANT: the probe must derive its candidates from the
+        /// same scan <see cref="AddCommandHandlers"/> uses, never from a re-derived type filter, otherwise the check
+        /// reports handlers that are never registered.
+        /// </summary>
+        private static IReadOnlyList<KeyValuePair<Type, IReadOnlyList<Type>>> FindCommandsWithCompetingHandlers(IEnumerable<Assembly> assemblies)
+            => ScanCommandHandlers(new ServiceCollection(), assemblies, RegistrationStrategy.Append)
+                .Where(descriptor => descriptor.ImplementationType is not null)
+                .GroupBy(descriptor => descriptor.ServiceType, descriptor => descriptor.ImplementationType)
+                .Select(handlersForCommand => new KeyValuePair<Type, IReadOnlyList<Type>>(
+                    handlersForCommand.Key.GetGenericArguments()[0],
+                    handlersForCommand.Distinct().OrderBy(handler => handler.FullName, StringComparer.Ordinal).ToList()))
+                .Where(ambiguousCommand => ambiguousCommand.Value.Count >= 2)
+                .OrderBy(ambiguousCommand => ambiguousCommand.Key.FullName, StringComparer.Ordinal)
+                .ToList();
+
+        private static string DescribeAmbiguousCommands(IReadOnlyList<KeyValuePair<Type, IReadOnlyList<Type>>> ambiguousCommands)
+        {
+            var description = new StringBuilder("More than one command handler was found for the same command. Command handlers are registered using a replace strategy, so only the last handler scanned is registered, and the scan order is derived from assembly load order and the order in which an assembly defines its types, neither of which is specified.");
+
+            foreach (var ambiguousCommand in ambiguousCommands)
+            {
+                description.Append(Environment.NewLine)
+                           .Append(ambiguousCommand.Key.FullName)
+                           .Append(" is handled by ")
+                           .Append(string.Join(", ", ambiguousCommand.Value.Select(handler => handler.FullName)));
+            }
+
+            return description.ToString();
+        }
+
         internal static IChatterBuilder AddCommandPipeline(this IChatterBuilder chatterBuilder, Action<CommandPipelineBuilder> pipelineBuilder)
         {
             var pipeline = chatterBuilder.Services.CreatePipelineBuilder();
@@ -120,12 +172,20 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         internal static IServiceCollection AddCommandHandlers(this IServiceCollection services, IEnumerable<Assembly> assemblies)
+            => ScanCommandHandlers(services, assemblies, RegistrationStrategy.Replace());
+
+        /// <summary>
+        /// The sole command handler scan. Every command handler candidate set in this assembly comes from here, so
+        /// that the registration and the <see cref="ThrowOnDuplicateCommandHandlers(IChatterBuilder)"/> check always
+        /// select the same types and differ only by <paramref name="strategy"/>.
+        /// </summary>
+        private static IServiceCollection ScanCommandHandlers(IServiceCollection services, IEnumerable<Assembly> assemblies, RegistrationStrategy strategy)
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
                         .Where(handler => IsValidMessageHandler(handler, typeof(ICommand))))
-                   .UsingRegistrationStrategy(RegistrationStrategy.Replace())
+                   .UsingRegistrationStrategy(strategy)
                    .As(handler => handler.GetMessageHandlerInterfacesFor(typeof(ICommand)))
                    .WithTransientLifetime());
             return services;

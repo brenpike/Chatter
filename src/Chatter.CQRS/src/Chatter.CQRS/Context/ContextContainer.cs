@@ -32,6 +32,7 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The tyoe of context to find in the container</typeparam>
         /// <exception cref="KeyNotFoundException">If no context of <typeparamref name="T"/> is found in the container</exception>
+        /// <exception cref="InvalidCastException">If a value is present but is not assignable to <typeparamref name="T"/></exception>
         /// <returns>The context of <typeparamref name="T"/> if found in the container</returns>
         /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
         public T Get<T>() 
@@ -42,14 +43,24 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The type of context to find in the container</typeparam>
         /// <exception cref="KeyNotFoundException">If no context of <typeparamref name="T"/> is found in the container</exception>
+        /// <exception cref="InvalidCastException">If a value is present under <paramref name="fullQualifiedNamespaceOfType"/> but is not assignable to <typeparamref name="T"/></exception>
         /// <param name="fullQualifiedNamespaceOfType">The fully qualified type name of the context object to get from the container</param>
         /// <returns>The context of <typeparamref name="T"/> if found in the container</returns>
         /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
         public T Get<T>(string fullQualifiedNamespaceOfType)
         {
-            if (!TryGet(fullQualifiedNamespaceOfType, out T result))
+            var outcome = FindTypedValue(fullQualifiedNamespaceOfType, out T result, out var storedValue);
+
+            if (outcome == LookupOutcome.Missing)
             {
                 throw new KeyNotFoundException("No item found in container with key: " + fullQualifiedNamespaceOfType);
+            }
+
+            if (outcome == LookupOutcome.TypeMismatch)
+            {
+                throw new InvalidCastException("Item found in container with key: " + fullQualifiedNamespaceOfType
+                    + " is of type " + (storedValue?.GetType().FullName ?? "null")
+                    + " which is not assignable to " + typeof(T).FullName);
             }
 
             return result;
@@ -62,9 +73,13 @@ namespace Chatter.CQRS.Context
         /// <param name="result">The context of <typeparamref name="T"/> if it exists in the container</param>
         /// <returns>True if the context of <typeparamref name="T"/> was found in the container, false otherwise</returns>
         /// <remarks>
-        /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
+        /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>.
+        /// Found means a value is present and assignable to <typeparamref name="T"/>. A stored <see langword="null"/> is present when
+        /// <typeparamref name="T"/> is a reference or nullable type, and is a mismatch when <typeparamref name="T"/> is a non-nullable
+        /// value type. A present value which is not assignable to <typeparamref name="T"/> returns false with <paramref name="result"/>
+        /// set to <see cref="default{T}"/>.
         /// </remarks>
-        public bool TryGet<T>(out T result) 
+        public bool TryGet<T>(out T result)
             => TryGet(typeof(T).FullName, out result);
 
         /// <summary>
@@ -74,22 +89,47 @@ namespace Chatter.CQRS.Context
         /// <param name="fullQualifiedNamespaceOfType">The fully qualified type name of the context object to get from the container</param>
         /// <param name="result">The context of <typeparamref name="T"/> if it exists in the container</param>
         /// <returns>True if the context of <typeparamref name="T"/> was found in the container, false otherwise</returns>
-        /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>
+        /// If this context container was created with inherited context, the inherited context will also be searched for context of <typeparamref name="T"/>.
+        /// Found means a value is present under <paramref name="fullQualifiedNamespaceOfType"/> and assignable to <typeparamref name="T"/>.
+        /// A stored <see langword="null"/> is present when <typeparamref name="T"/> is a reference or nullable type, and is a mismatch when
+        /// <typeparamref name="T"/> is a non-nullable value type. A present value which is not assignable to <typeparamref name="T"/> returns
+        /// false with <paramref name="result"/> set to <see cref="default{T}"/>.
         public bool TryGet<T>(string fullQualifiedNamespaceOfType, out T result)
+            => FindTypedValue(fullQualifiedNamespaceOfType, out result, out _) == LookupOutcome.Found;
+
+        private enum LookupOutcome
+        {
+            Missing,
+            Found,
+            TypeMismatch
+        }
+
+        private LookupOutcome FindTypedValue<T>(string fullQualifiedNamespaceOfType, out T result, out object storedValue)
         {
             if (_context.TryGetValue(fullQualifiedNamespaceOfType, out var value))
             {
-                result = (T)value;
-                return true;
+                storedValue = value;
+
+                if (value is T typedValue)
+                {
+                    result = typedValue;
+                    return LookupOutcome.Found;
+                }
+
+                result = default;
+                // INVARIANT: a stored null is a present value for a reference or nullable T, but not for a
+                // non-nullable value type T. See ADR-0011.
+                return value is null && default(T) is null ? LookupOutcome.Found : LookupOutcome.TypeMismatch;
             }
 
             if (_inheritedContext != null)
             {
-                return _inheritedContext.TryGet(fullQualifiedNamespaceOfType, out result);
+                return _inheritedContext.FindTypedValue(fullQualifiedNamespaceOfType, out result, out storedValue);
             }
 
             result = default;
-            return false;
+            storedValue = null;
+            return LookupOutcome.Missing;
         }
 
         /// <summary>
@@ -115,8 +155,8 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The type of context to get or add.</typeparam>
         /// <returns>
-        /// The value already present in the container - including a stored <see langword="null"/> - or <see cref="default{T}"/>,
-        /// which is stored in the container before being returned.
+        /// The value found by the same presence gate documented on <see cref="GetOrAdd{T}(Func{T})"/>'s <c>returns</c>, or
+        /// <see cref="default{T}"/>, which is stored in the container before being returned.
         /// </returns>
         public T GetOrDefault<T>()
             => GetOrAdd<T>(() => default);
@@ -129,8 +169,10 @@ namespace Chatter.CQRS.Context
         /// <param name="factoryMethod">The factory to create <typeparamref name="T"/> if not found in the container.</param>
         /// <returns>
         /// The value already present in the container - including a stored <see langword="null"/> - or the value created by
-        /// <paramref name="factoryMethod"/>. <paramref name="factoryMethod"/> is invoked only when no value is present for
-        /// <typeparamref name="T"/>, and its result is stored even when it is <see langword="null"/> or a default value type.
+        /// <paramref name="factoryMethod"/>. Presence is decided by the same gate as <see cref="TryGet{T}(out T)"/>:
+        /// <paramref name="factoryMethod"/> runs whenever that gate reports no value for <typeparamref name="T"/>, which
+        /// includes a value present under the key but not assignable to <typeparamref name="T"/> - that value is overwritten
+        /// by the factory's result, which is stored even when it is <see langword="null"/> or a default value type.
         /// </returns>
         public T GetOrAdd<T>(Func<T> factoryMethod)
         {
@@ -150,9 +192,10 @@ namespace Chatter.CQRS.Context
         /// </summary>
         /// <typeparam name="T">The type of context to get or add.</typeparam>
         /// <returns>
-        /// The non-<see langword="null"/> value already present in the container, otherwise a new instance of
-        /// <typeparamref name="T"/> which is stored in the container before being returned. Unlike <see cref="GetOrAdd{T}(Func{T})"/>,
-        /// a stored <see langword="null"/> is replaced with a new instance.
+        /// The non-<see langword="null"/> value found by the same presence gate documented on
+        /// <see cref="GetOrAdd{T}(Func{T})"/>'s <c>returns</c>, otherwise a new instance of <typeparamref name="T"/> which is
+        /// stored in the container before being returned. Unlike <see cref="GetOrAdd{T}(Func{T})"/>, a stored
+        /// <see langword="null"/> is replaced with a new instance.
         /// </returns>
         public T GetOrNew<T>() where T : class, new()
         {
