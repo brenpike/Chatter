@@ -8,14 +8,12 @@ using Xunit;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingReceiveMessageFromQueueCommand
 {
-    // Behavior-pinning tests: characterize the SQL emitted by ReceiveMessageFromQueueCommand.Create()
-    // AS-IS, including the raw (non-bracket-escaped) queue-name interpolation. Create() only calls
-    // _connection.CreateCommand(), sets properties, and builds CommandText; it never opens the
-    // connection, so an unopened SqlConnection() is a valid argument.
+    // Behavior-pinning tests: characterize the SQL emitted by ReceiveMessageFromQueueCommand.Create().
+    // Create() only calls _connection.CreateCommand(), sets properties, and builds CommandText; it
+    // never opens the connection, so an unopened SqlConnection() is a valid argument.
     public class WhenCreatingCommand : Testing.Core.Context
     {
         // INVARIANT: this is the exact base query for the default branch (Guid.Empty handle, timeout<=0).
-        // The queue name is interpolated raw with no bracket escaping.
         private const string BaseQueryForDefaults =
             "WAITFOR (RECEIVE TOP(1) " +
             "conversation_group_id, conversation_handle, " +
@@ -24,10 +22,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingReceiveMess
             "CASE WHEN SUBSTRING(message_body, 1, 2) = 0x1F8B " +
             "THEN CAST(decompress(message_body) AS VARBINARY(MAX)) " +
             "ELSE message_body END as message_body " +
-            "FROM TestQueue)";
+            "FROM [TestQueue])";
 
         private static SqlCommand CreateCommandWith(int timeout = -1, Guid conversationHandle = default)
             => new ReceiveMessageFromQueueCommand(new SqlConnection(), "TestQueue", timeout, conversationHandle).Create();
+
+        private static SqlCommand CreateCommandForQueue(string queueName)
+            => new ReceiveMessageFromQueueCommand(new SqlConnection(), queueName).Create();
 
         [Fact]
         public void MustEmitExactBaseQueryForDefaultHandleAndDefaultTimeout()
@@ -42,8 +43,42 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingReceiveMess
             => CreateCommandWith().CommandType.Should().Be(CommandType.Text);
 
         [Fact]
-        public void MustInterpolateQueueNameRawWithoutBracketEscaping()
-            => CreateCommandWith().CommandText.Should().EndWith("FROM TestQueue)");
+        public void MustBracketQuoteQueueName()
+            => CreateCommandWith().CommandText.Should().EndWith("FROM [TestQueue])");
+
+        [Fact]
+        public void MustEscapeClosingBracketInQueueNameAsSingleIdentifier()
+            => CreateCommandForQueue("q]; DROP TABLE x--").CommandText
+                .Should().EndWith("FROM [q]]; DROP TABLE x--])");
+
+        [Fact]
+        public void MustEmitAlreadyBracketedQueueNameUnchanged()
+            => CreateCommandForQueue("[TestQueue]").CommandText
+                .Should().EndWith("FROM [TestQueue])");
+
+        [Fact]
+        public void MustQuoteEachPartOfSchemaQualifiedQueueName()
+            => CreateCommandForQueue("dbo.MyQueue").CommandText
+                .Should().EndWith("FROM [dbo].[MyQueue])");
+
+        [Fact]
+        public void MustNotSplitBracketedQueueNameContainingPeriod()
+            => CreateCommandForQueue("[my.queue]").CommandText
+                .Should().EndWith("FROM [my.queue])");
+
+        [Fact]
+        public void MustEmitIdenticalCommandTextOnRepeatedCreate()
+        {
+            var command = new ReceiveMessageFromQueueCommand(new SqlConnection(), "dbo.MyQueue");
+            command.Create().CommandText.Should().Be(command.Create().CommandText);
+        }
+
+        [Fact]
+        public void MustThrowForQueueNameWithEmptyPart()
+        {
+            var command = new ReceiveMessageFromQueueCommand(new SqlConnection(), "dbo.");
+            command.Invoking(c => c.Create()).Should().Throw<ArgumentException>();
+        }
 
         [Fact]
         public void MustNotEmitWhereClauseForDefaultConversationHandle()
@@ -80,7 +115,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Scripts.UsingReceiveMess
         [Fact]
         public void MustEmitTimeoutClauseAfterClosingParenForPositiveTimeout()
             => CreateCommandWith(timeout: 5).CommandText
-                .Should().Contain("FROM TestQueue), TIMEOUT @timeoutInMilliseconds");
+                .Should().Contain("FROM [TestQueue]), TIMEOUT @timeoutInMilliseconds");
 
         [Fact]
         public void MustAddTimeoutParameterForPositiveTimeout()

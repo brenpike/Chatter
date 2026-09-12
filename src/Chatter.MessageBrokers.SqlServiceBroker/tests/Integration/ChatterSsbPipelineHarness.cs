@@ -199,9 +199,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         // Sends a command through Chatter's dispatcher to the OWNING object set's target service, stamping the
         // SSBMessageContext headers the SqlServiceBrokerSender reads to BEGIN DIALOG / SEND on the SHARED
         // initiator service + //Chatter contract + //Chatter/BrokeredMessage message type. destinationPath is
-        // the BARE target service name (_objectSet.TargetServiceName): BeginDialogConversationCommand strips
-        // brackets from the target and uses it as "TO SERVICE", so the destination must name the target SERVICE,
-        // not the queue. Routing to the per-class target service is what makes cross-test isolation real — each
+        // the BARE target service name (_objectSet.TargetServiceName) — it must name the target SERVICE, not
+        // the queue. Routing to the per-class target service is what makes cross-test isolation real — each
         // class sends to its own service so a stale message can never bleed into another class's queue. The
         // initiator stamp + contract + message type stay shared (the send side is common across all classes).
         // Opens and disposes its own scope around the send.
@@ -211,9 +210,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         // Destination-override Send: routes the command to destinationServiceName instead of the owning object
         // set's default TargetServiceName, so a forward/dest scenario (C10) can deliver to a service OTHER than
         // the one the harness receives on (e.g. ServiceBrokerProvisioning.ForwardDestinationServiceName).
-        // destinationServiceName is the BARE target service name (no brackets): BeginDialogConversationCommand
-        // strips brackets and uses it as "TO SERVICE", so it must name the target SERVICE, not the queue. The
-        // SSB initiator stamp + contract + message type stay shared (the send side is common across all classes).
+        // destinationServiceName is the BARE target service name (no brackets) — it must name the target
+        // SERVICE, not the queue. The SSB initiator stamp + contract + message type stay shared (the send side
+        // is common across all classes).
         public async Task SendAsync<TMessage>(TMessage message, string destinationServiceName) where TMessage : ICommand
         {
             if (string.IsNullOrWhiteSpace(destinationServiceName))
@@ -238,8 +237,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         // The IEvent analogue of SendAsync: publishes an event through Chatter's dispatcher
         // (IBrokeredMessageDispatcher.Publish) to the owning object set's target service, stamping the same SSB
         // initiator/contract/message-type headers SendAsync stamps so the publish routes through Chatter's SSB
-        // BEGIN DIALOG / SEND path. Like SendAsync, destinationPath is the BARE target service name (brackets are
-        // stripped by BeginDialogConversationCommand). Opens and disposes its own scope around the publish.
+        // BEGIN DIALOG / SEND path. Like SendAsync, destinationPath is the BARE target service name (no
+        // brackets). Opens and disposes its own scope around the publish.
         public Task PublishAsync<TEvent>(TEvent message) where TEvent : class, IEvent
             => PublishAsync(message, _objectSet.TargetServiceName);
 

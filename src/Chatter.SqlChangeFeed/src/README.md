@@ -225,6 +225,17 @@ Because every precondition is checked first, a refused install leaves no partial
 | `WithCompressedMessageBody()` / `WithUncompressedMessageBody()` | Toggle message-body compression (default compressed). |
 | `WithMessageBodyType(string)` / `WithApplicationJsonUtf16CharsetMessageBodyType()` | Set the message body content type (default `application/json; charset=utf-16`). |
 
+> **A change feed queue name must be a single unqualified identifier — no dot, no brackets.** The two sides
+> read the configured value differently and neither side can be worked around from the other. The Change Feed
+> Migration installs it as **one** object inside the configured schema (`CREATE QUEUE [schema].[<the configured
+> value>]`), and a bracket in the value is escaped as a literal name character, so
+> `WithChangeFeedQueueName("[my.queue]")` installs a queue whose name really is `[my.queue]`. The receiver
+> instead reads the value as a possibly schema-qualified path — `dbo.MyQueue` is read as `schema.queue` — and
+> never qualifies it with the configured schema. So a value carrying a dot or a bracket makes the receiver poll
+> an object the migration never created, and pre-bracketing does not fix it. This is **not** new in 0.14.2:
+> before the receiver bracket-quoted the queue name it interpolated it raw, and T-SQL parses an unquoted `a.b`
+> as `schema.object` in exactly the same way.
+
 > **Configured names now reach the installed topology.** Previously `WithChangeFeedQueueName` bound only the receiver while the Change Feed Migration provisioned a default-named queue, so a consumer who set a queue name got a receiver reading a queue the migration never created. `WithChangeFeedDeadLetterServiceName` was dropped before it reached anything: the public `SqlChangeFeedOptions.ChangeFeedDeadLetterServiceName` property was never assigned during `Build()`, so both the migration and the receiver fell back to the generated name. Both configured names now flow through to the objects the migration installs, so **a consumer who already set either one will see the effective object name change** on the next migration run. The conversation *service* name stays derived from the row type in every case; that derived service is created on the configured queue, and the Trigger routes to the service rather than to the queue.
 
 > **A diverged topology is refused, not installed over.** Because a configured name changes the objects the migration installs, a database still carrying the objects a *previous* configuration installed is a divergence the migration cannot detect by name: a `SERVICE` records its queue binding in `sys.services.service_queue_id`, and no name-existence guard reads that column. Before it creates or alters any Service Broker object, the install Stored Procedure now checks those bindings and **refuses the run with a named error** when the derived conversation service is bound to a queue other than the configured one, or when a service other than the configured dead-letter service is bound to this change feed's dead-letter queue. The refusal is **non-destructive and does not repair the divergence** — see [Re-running the migration](#re-running-the-migration-and-watched-table-schema-drift) for the remedy.

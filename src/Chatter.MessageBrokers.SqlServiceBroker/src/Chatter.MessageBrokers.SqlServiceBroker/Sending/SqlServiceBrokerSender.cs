@@ -133,7 +133,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Sending
         }
 
         private Task<Guid> BeginConversation(SqlConnection connection, SqlTransaction transaction, OutboundBrokeredMessage brokeredMessage, object initiatorService, object serviceContractName)
-            => new BeginDialogConversationCommand(connection, brokeredMessage.Destination, (string)initiatorService, (string)serviceContractName, _options.ConversationLifetimeInSeconds, transaction: transaction).ExecuteAsync();
+            => CreateBeginDialogConversationCommand(connection, transaction, brokeredMessage, initiatorService, serviceContractName).ExecuteAsync();
+
+        /// <summary>
+        /// Builds the <see cref="BeginDialogConversationCommand"/> a dispatch begins its dialog with. Construction only —
+        /// no execution — so the options-to-dialog passthrough is assertable without a live Service Broker.
+        /// </summary>
+        internal BeginDialogConversationCommand CreateBeginDialogConversationCommand(SqlConnection connection, SqlTransaction transaction, OutboundBrokeredMessage brokeredMessage, object initiatorService, object serviceContractName)
+            => new BeginDialogConversationCommand(connection, brokeredMessage.Destination, (string)initiatorService, (string)serviceContractName, _options.ConversationLifetimeInSeconds, _options.ConversationEncryption, transaction: transaction);
 
         public Task Dispatch(OutboundBrokeredMessage brokeredMessage, TransactionContext transactionContext)
             => Dispatch(new[] { brokeredMessage }, transactionContext);

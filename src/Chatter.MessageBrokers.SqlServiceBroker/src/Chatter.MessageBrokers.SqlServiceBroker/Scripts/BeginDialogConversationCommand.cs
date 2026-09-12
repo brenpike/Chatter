@@ -60,15 +60,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
             beginConvoCommand.Connection = _connection;
             beginConvoCommand.CommandType = CommandType.Text;
 
-            if (!_initiatorServiceName.StartsWith("["))
-            {
-                _initiatorServiceName = "[" + _initiatorServiceName + "]";
-            }
-
-            _targetServiceName = _targetServiceName.Replace("]", "").Replace("[", "");
+            // INVARIANT: a Service Broker service name is a single identifier, never schema-qualified,
+            // so the dots and slashes of a URL-shaped name must not be split into parts.
+            var initiatorServiceName = SqlIdentifier.Quote(_initiatorServiceName);
+            var targetServiceName = SqlIdentifier.Unquote(_targetServiceName);
 
             var query = new StringBuilder($"BEGIN DIALOG @conversationHandle " +
-                                          $"FROM SERVICE {_initiatorServiceName} " +
+                                          $"FROM SERVICE {initiatorServiceName} " +
                                           $"TO SERVICE @targetService");
 
             if (!string.IsNullOrWhiteSpace(_serviceContractName))
@@ -77,7 +75,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Scripts
                 beginConvoCommand.Parameters.Add(new SqlParameter("@contractName", _serviceContractName));
             }
 
-            beginConvoCommand.Parameters.Add(new SqlParameter("@targetService", _targetServiceName));
+            beginConvoCommand.Parameters.Add(new SqlParameter("@targetService", targetServiceName));
             beginConvoCommand.Parameters.Add("@conversationHandle", SqlDbType.UniqueIdentifier).Direction = ParameterDirection.Output;
 
             query.Append($" WITH ENCRYPTION = ");
