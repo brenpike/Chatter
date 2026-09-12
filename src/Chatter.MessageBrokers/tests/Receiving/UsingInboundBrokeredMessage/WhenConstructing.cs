@@ -80,6 +80,17 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingInboundBrokeredMessage
             => CreateSut().CorrelationId.Should().BeNull();
 
         [Fact]
+        public void MustReadNullCorrelationIdWhenMessageContextValueIsNotAString()
+        {
+            // INVARIANT: a correlation id that arrived off the wire as some other type reads as absent;
+            // it must never fault the receive before an error can be settled.
+            var context = new Dictionary<string, object> { [MessageContext.CorrelationId] = 42 };
+            InboundBrokeredMessage sut = null;
+            FluentActions.Invoking(() => sut = CreateSut(messageContext: context)).Should().NotThrow();
+            sut.CorrelationId.Should().BeNull();
+        }
+
+        [Fact]
         public void MustThrowNullReferenceWhenBodyConverterIsNull()
         {
             // INVARIANT: although the constructor defaults BodyConverter to a JsonBodyConverter when null,

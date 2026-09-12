@@ -61,6 +61,17 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingInboundBrokeredMessage
         }
 
         [Fact]
+        public void MustReplaceViaWhenStoredValueIsNotAString()
+        {
+            // INVARIANT: a 'via' that arrived off the wire as some other type is treated as absent,
+            // so the receiver being visited replaces it instead of faulting the receive.
+            var context = new Dictionary<string, object> { [MessageContext.Via] = 42 };
+            var sut = CreateSut(context);
+            FluentActions.Invoking(() => sut.UpdateVia("receiver-b")).Should().NotThrow();
+            sut.Via.Should().Be("receiver-b");
+        }
+
+        [Fact]
         public void MustStampFailureDetails()
         {
             var sut = CreateSut();

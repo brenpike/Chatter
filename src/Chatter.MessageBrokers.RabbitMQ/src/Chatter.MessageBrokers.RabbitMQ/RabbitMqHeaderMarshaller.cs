@@ -30,8 +30,10 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// The three dispositions: <see cref="HeaderDisposition.DecodeString"/> is type-total — output is always
     /// <c>string</c> or <c>null</c> (drop): byte[] is UTF-8 decoded, string passes through, null drops the key,
     /// and any other wire type is coerced via <c>Convert.ToString(InvariantCulture)</c> rather than passed
-    /// through verbatim (eliminates the class "non-declared-CLR-type value under a core key" that crashes the
-    /// core's unguarded <c>(string)</c> cast). The inbound receive path casts these keys straight to <c>string</c>.
+    /// through verbatim (eliminates the class "non-declared-CLR-type value under a core key", which the core's
+    /// type-tested read answers with <c>default</c> — the delivered value is lost silently rather than faulting).
+    /// The inbound receive path reads these keys as <c>string</c> through that type test, so only a genuine
+    /// <c>string</c> reaches a reader with its value intact.
     /// This includes CorrelationId and ContentType — string-typed DECISION-D dual-home keys whose decoded header
     /// copy must survive in the core context as a fallback for the translator's native-frame assignment (the
     /// translator re-sources them from the native frame when present and overwrites; when the native frame is
@@ -69,7 +71,7 @@ namespace Chatter.MessageBrokers.RabbitMQ
         private enum HeaderDisposition
         {
             // Rehydrate the wire value (byte[] AMQP longstr from a real broker, or string from an in-process double)
-            // to a string; the core casts these keys straight to (string).
+            // to a string; the core reads these keys as (string) and answers any other type with default.
             DecodeString,
             // Parse the wire value back to a DateTime; null-drop on a malformed/unparseable value so the core's
             // null-guard short-circuits cleanly (NEVER stamp a bogus DateTime, NEVER throw).
@@ -82,12 +84,13 @@ namespace Chatter.MessageBrokers.RabbitMQ
         // INVARIANT: an EXPLICIT disposition for EVERY core MessageContext key. The reflected core-key set (see the
         // static initializer) is asserted to be a SUBSET of these entries' keys at type init; a reflected core key
         // missing here throws naming the offender, so a new core key cannot ship without an explicit disposition.
-        // DecodeString (12): the string-typed routing/failure keys the inbound receive path casts straight to (string)
+        // DecodeString (12): the string-typed routing/failure keys the inbound receive path reads as (string)
         //   and a real broker surfaces as a byte[] longstr — plus CorrelationId and ContentType, which are
         //   string-typed DECISION-D dual-home keys: the translator re-sources them from the native frame when present
         //   (overwrites), and falls back to the decoded header copy when the native frame is absent. Drop would remove
-        //   that fallback copy; DecodeString preserves it safely (byte[]→string is exactly the (string) cast the core
-        //   uses) and eliminates raw byte[] under a core key.
+        //   that fallback copy; DecodeString preserves it safely (byte[]→string is exactly the (string) the core's
+        //   type-tested read expects, so the value survives instead of reading as default) and eliminates raw byte[]
+        //   under a core key.
         // DecodeDateTime (1): ExpiryTimeUtc, a non-string (DateTime) core key.
         // Drop (4): TimeToLive (lifted onto native Expiration), ReceiveAttempts (numeric delivery-count path owned by
         //   RabbitMqReceiver), IsError (receiver-derived), ChatterBaseHeader (the "Chatter" namespace prefix, not a
@@ -314,7 +317,8 @@ namespace Chatter.MessageBrokers.RabbitMQ
         // DEFAULT (any other wire type, e.g. int/bool/AMQP table) → Convert.ToString(value, InvariantCulture)
         //   to coerce rather than pass through verbatim. This is the inbound mirror of CoerceOutboundValue's
         //   catch-all: both render odd types to invariant string. Eliminates the class
-        //   "non-declared-CLR-type value under a core key" that crashed the core's unguarded (string) cast.
+        //   "non-declared-CLR-type value under a core key", which the core's type-tested read answers with
+        //   default — losing the delivered value silently rather than faulting.
         private static object DecodeStringTypedValue(object value)
         {
             switch (value)

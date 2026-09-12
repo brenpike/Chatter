@@ -28,6 +28,15 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingInboundBrokeredMessage
         }
 
         [Fact]
+        public void MustReportIsErrorFalseWhenKeyIsNotABoolean()
+        {
+            // INVARIANT: an error flag that arrived off the wire as some other type reads as false
+            // rather than faulting the read.
+            var context = new Dictionary<string, object> { [MessageContext.IsError] = "true" };
+            CreateSut(context).IsError.Should().BeFalse();
+        }
+
+        [Fact]
         public void MustReportIsSuccessAsNegationOfIsError()
         {
             var errored = new Dictionary<string, object> { [MessageContext.IsError] = true };

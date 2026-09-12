@@ -590,8 +590,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
         }
 
         // (b) NEXT LANDMINE: a delivery carrying a raw Chatter.IsError longstr byte[] header must not surface a byte[]
-        // under IsError. InboundBrokeredMessage.IsError reads the key as (bool) via GetMessageContextByKey<bool>, which
-        // returns default(bool) == false on an absent key; a byte[] under the key would fault that cast. We prove the
+        // under IsError. InboundBrokeredMessage.IsError reads the key as (bool) via GetMessageContextByKey<bool>, whose
+        // type-tested read yields default(bool) == false on an absent key AND on a byte[] under the key. We prove the
         // load-bearing invariant — the key is dropped — directly at the translator seam (InboundBrokeredMessage's ctor
         // is internal to Chatter.MessageBrokers and not constructable here).
         [Fact]
@@ -604,10 +604,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
                 headers);
 
             coreContext.Should().NotContainKey(MessageContext.IsError,
-                "IsError is receiver-derived; a foreign copy is dropped so the core's (bool) cast reads default(false)");
+                "IsError is receiver-derived; a foreign copy is dropped so the core's (bool) read yields default(false)");
 
             // Mirror InboundBrokeredMessage.IsError's read path: an absent key yields default(bool) == false, never a
-            // byte[] cast.
+            // byte[].
             coreContext.TryGetValue(MessageContext.IsError, out var raw).Should().BeFalse();
             var isError = raw is bool flag ? flag : default;
             isError.Should().BeFalse();

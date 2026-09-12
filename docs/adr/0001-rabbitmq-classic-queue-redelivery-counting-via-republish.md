@@ -20,7 +20,7 @@ A `QueueType` option selects the strategy (default `Quorum`).
 - **Quorum strategy** reads the native `x-delivery-count` header, which RabbitMQ increments per redelivery.
 - **Classic strategy** uses a header-stamped republish counter: on retry the adapter republishes the message to its own queue with a custom `x-chatter-delivery-count` header incremented by 1, then acks the original. The count lives in the message itself, so it survives reconnect, redelivery, and multi-replica horizontal scaling.
 
-Both strategies stamp `MessageContext.ReceiveAttempts`. The core casts this value unguarded in its default `MessageDeliveryCountAsync`, so stamping it is mandatory, not optional.
+Both strategies stamp `MessageContext.ReceiveAttempts`. The core's default `MessageDeliveryCountAsync` honours this value only when it is present and usable, and otherwise answers with the `int.MaxValue` dead-letter sentinel — an absent or unusable value therefore costs the delivery its entire retry budget and deadletters it on the first handler error. Stamping it is mandatory, not optional.
 
 ## Consequences
 

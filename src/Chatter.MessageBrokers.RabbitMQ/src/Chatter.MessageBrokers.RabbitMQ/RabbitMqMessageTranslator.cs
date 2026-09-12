@@ -102,7 +102,8 @@ namespace Chatter.MessageBrokers.RabbitMQ
                 coreInKey: MessageContext.ContentType),
 
             // CorrelationId: DUAL-HOME (DECISION-D) — native frame field AND a header copy. Inbound surfaces into
-            // MessageContext.CorrelationId (the core casts it straight to string at InboundBrokeredMessage ctor).
+            // MessageContext.CorrelationId (the core reads it as a string at InboundBrokeredMessage ctor, and a
+            // value of any other type reads as null there).
             new NativeFieldDescriptor(
                 name: "CorrelationId",
                 coreOut: msg => msg.CorrelationId,
@@ -258,8 +259,9 @@ namespace Chatter.MessageBrokers.RabbitMQ
             // Native-home descriptors with a core concept: the native frame value (carried on the facts) is
             // authoritative. When the frame is absent (e.g. the dual-home CorrelationId delivered ONLY as a header —
             // DECISION-D), fall back to the header copy already in coreContext, decoded byte[]->string via the
-            // marshaller helper so the core's unguarded (string) cast (InboundBrokeredMessage casts CorrelationId at
-            // ctor) holds either way.
+            // marshaller helper so the core's type-tested string read (InboundBrokeredMessage reads CorrelationId at
+            // ctor) sees the real value either way — an undecoded byte[] would read as null there, silently dropping
+            // the correlation id rather than faulting.
             foreach (var descriptor in _fieldMap)
             {
                 if (descriptor.CoreInKey is null)

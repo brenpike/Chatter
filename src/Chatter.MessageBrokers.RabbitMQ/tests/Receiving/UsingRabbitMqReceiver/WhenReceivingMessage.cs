@@ -440,7 +440,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             context.BrokeredMessage.MessageId.Should().NotBeNullOrEmpty();
         }
 
-        // --- ReceiveAttempts stamping (the MANDATORY int the core's default MessageDeliveryCountAsync casts) ---
+        // --- ReceiveAttempts stamping (MANDATORY: the core's default MessageDeliveryCountAsync answers an absent
+        //     or unusable value with the int.MaxValue dead-letter sentinel, costing the delivery its retry budget) ---
 
         [Fact]
         public async Task MustStampReceiveAttemptsAsInt()
