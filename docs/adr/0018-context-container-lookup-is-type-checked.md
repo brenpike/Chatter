@@ -154,23 +154,34 @@ unchanged here, and this decision adds no new public type.
 ### What the type-keyed overloads can and cannot hit
 
 `Get<T>()` and `TryGet<T>(out T)` delegate to the string-keyed overloads with `typeof(T).FullName`
-(`:38-39`, `:82-83`), and `Include<T>(T t)` writes under the same key (`:140-141`). A mismatch therefore
-cannot arise from type-keyed WRITES ALONE: the key is derived from `T` and the value was stored as `T`. It
-can still arise on a type-keyed READ, because `Include<T>(string, T)` (`:149-150`) will write any value under
-any string, including a string equal to some `typeof(T).FullName`. That is precisely the situation
-`MustInvokeFactoryMethodAndOverwriteWhenAValueOfAnotherTypeIsStoredUnderTheTypeKey` constructs. The claim is
-the narrow one and should not be widened into "the type-keyed overloads cannot reach this bug".
+(`:38-39`, `:82-83`), and `Include<T>(T t)` writes under the same key (`:140-141`). That key is a NAME, not
+a type IDENTITY. `Type.FullName` is not injective: two distinct types declared in different assemblies under
+the same `Namespace.TypeName` produce the same string and so share one slot in the
+`IDictionary<string, object>` backing store (`:20`). A mismatch is therefore reachable from type-keyed WRITES
+ALONE — `Include<X.A>(a1)` followed by `GetOrAdd<Y.A>(() => a2)` reads the slot `X.A` wrote — and the
+create-if-absent overwrite recorded under *Consequences* needs no string-keyed write to reach it.
+
+This decision changed the DIRECTION of that failure rather than introducing it. At `bfda47a` the blind
+`(T)value` cast threw `InvalidCastException` on the collision: broken, but LOUD. At HEAD the type-checked
+lookup reports the colliding value ABSENT, so `GetOrAdd`'s factory runs and `Include(createdValue)`
+overwrites it: broken, and SILENT. The collision predates this change and never served a caller correctly.
+It is carried as a tracked deferral under *Consequences*.
+
+A mismatch is separately reachable on a type-keyed READ with no collision at all, because
+`Include<T>(string, T)` (`:149-150`) will write any value under any string, including a string equal to some
+`typeof(T).FullName`. That is the situation
+`MustInvokeFactoryMethodAndOverwriteWhenAValueOfAnotherTypeIsStoredUnderTheTypeKey` constructs.
 
 ## Consequences
 
 - **`GetOrAdd<T>` over a foreign-typed value under the type key now RUNS the factory and OVERWRITES it**,
-  where it previously threw out of the blind cast. `GetOrAdd` gates on `TryGet<T>` (`:175-185`), a mismatch is
+  where it previously threw out of the blind cast. `GetOrAdd` gates on `TryGet<T>` (`:177-187`), a mismatch is
   now `false`, and `Include(createdValue)` writes to the same key the foreign value occupies — so the foreign
   value is gone afterwards. This is the only shape in which the fix overwrites stored data rather than
   merely reporting differently, and it is stated rather than hidden;
   `MustInvokeFactoryMethodAndOverwriteWhenAValueOfAnotherTypeIsStoredUnderTheTypeKey` asserts the factory ran
   exactly once and that the container holds the new value afterwards. `GetOrDefault<T>()` inherits it through
-  `GetOrAdd` (`:161-162`) and `GetOrNew<T>()` inherits it through its own `TryGet<T>` gate (`:197-207`).
+  `GetOrAdd` (`:161-162`) and `GetOrNew<T>()` inherits it through its own `TryGet<T>` gate (`:200-210`).
   Nothing in this repository writes a foreign type under a `typeof(T).FullName` key outside that test.
 - **`TryGet` returning `false` now HIDES a genuine programming error at the call site that makes it.** A
   handler that reads the wrong `T` for a key gets `false` and a `default`, and will most likely take its
@@ -195,6 +206,30 @@ the narrow one and should not be widened into "the type-keyed overloads cannot r
   branch — a string-keyed struct round trip, which the invariant above forbids regressing and
   `MustReturnTrueAndEqualValueForAStringKeyedStructWrittenByTheOutboxPath` pins inside `Chatter.CQRS`'s own
   tests.
+- **Deferred (tracked) — the type key is a NAME, not a type identity** (issue
+  [#469](https://github.com/brenpike/Chatter/issues/469)). Every type-keyed member derives its key from
+  `typeof(T).FullName`, which is not injective, so two distinct types declared in different assemblies under
+  the same `Namespace.TypeName` collide on one slot and the overwrite above is reachable from type-keyed
+  writes alone. Triggering it needs a caller-owned duplicate `Namespace.TypeName` across two loaded
+  assemblies, with BOTH types used as context keys in the SAME per-dispatch container; every create-if-absent
+  site in this repository keys on a `Chatter.*` type — `IExternalDispatcher` and `IMessageDispatcher`
+  (`src/Chatter.CQRS/src/Chatter.CQRS/MessageDispatcher.cs:29-30`), `TransactionContext`
+  (`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/UnitOfWorkBehavior.cs:19`,
+  `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs:1062`) and
+  `IPersistanceTransaction`
+  (`src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageOutbox.cs:110`)
+  — so the path is unreachable unless a caller declares types inside Chatter's own namespaces. After an
+  overwrite the victim's reads are still loud: `Get<T>()` throws `InvalidCastException` and `TryGet<T>`
+  returns `false`. The one end-to-end-silent shape is two `GetOrNew<T>()` callers thrashing, each handed a
+  fresh instance and losing the other's state, bounded to one dispatch with nothing persisted and nothing
+  leaked across messages. Closure is deferred because coexistence of the two types requires two slots, two
+  slots require two keys, and the type-keyed key is OBSERVABLE through `Include<T>(string, T)` and
+  `Get<T>(string)` — so re-keying on `Type` identity or the assembly-qualified name changes reads that
+  SUCCEED today, which the governing invariant forbids and which would be a MAJOR. The alternative, a
+  first-wins `FullName` slot with an assembly-qualified fallback slot, is a lookup-semantics redesign
+  spanning inherited-chain shadowing, interop with the string-keyed overloads, the stored-`null` rule and
+  first-write ordering; it needs its own ADR and test matrix. Making `GetOrAdd` throw on a mismatch was
+  costed and declined: it does not close the class, and it contradicts the decision recorded above.
 - **A future contributor reaching for "just make `TryGet` throw again" is reaching for Option 1**, which was
   costed and declined here. The route to loudness is `Get<T>()`, and it is the route the container already
   offers.
@@ -208,6 +243,8 @@ the narrow one and should not be widened into "the type-keyed overloads cannot r
 - Issue #333 — *`ContextContainer` is an unsynchronized `Dictionary` mutated per dispatch — concurrent
   dispatches sharing a context race*. The other defect on this same type, answered by ADR-0011; nothing here
   changes its answer, and the tri-state lookup adds no synchronization.
+- Issue #469 — *`ContextContainer` keys type identity on `typeof(T).FullName`, which is a name, not an
+  identity*. The deferred finding carried as a tracked consequence above.
 - Epic #301 — *Chatter.CQRS: handler registration correctness and per-dispatch hot path*. The parent epic, and
   the reason the nullability test is confined to the stored-`null` branch instead of running on every lookup.
 - ADR-0011 — *Context Container: unsynchronized, documented rather than synchronized*. Cited, not amended:
