@@ -917,6 +917,73 @@ case_version_substring_collision() {
 }
 
 # --------------------------------------------------------------------------------------------
+# Prerelease-label case cases. `dotnet pack` rewrites a ProjectReference sibling's version
+# NUMERICALLY on its way into the nuspec - leading zeros stripped, a trailing-zero fourth part
+# dropped, build metadata removed - but it copies the prerelease LABEL through verbatim, case and
+# all. The flat-container index is always lowercase. Label case is therefore the one spelling
+# divergence the toolchain can actually deliver between the two sides of the membership test, and
+# a version that differs from the published one only by it is published, not absent.
+# --------------------------------------------------------------------------------------------
+
+case_declared_prerelease_label_is_uppercase() {
+  local case_name='declared prerelease label is uppercase, the index lists it lowercase'
+  local package_dir="$work_dir/prerelease-upper/packages" fixture_dir="$work_dir/prerelease-upper/feed"
+  local output_file="$work_dir/prerelease-upper/output.txt" guard_exit
+
+  mkdir -p "$package_dir" "$fixture_dir" "$work_dir/prerelease-upper"
+  create_nupkg "$package_dir" Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:1.2.3-RC.1 >/dev/null
+  write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 1.2.2 1.2.3-rc.1
+
+  start_fixture_feed "$fixture_dir"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 0 "$guard_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" 'is published' "$output_file"
+}
+
+case_declared_prerelease_label_is_lowercase() {
+  # The discriminator between a normalizer on both sides of the compare and one on either side
+  # alone: lowering only the declared version, or only the index entries, passes the case above
+  # and fails this one.
+  local case_name='declared prerelease label is lowercase, the index lists it uppercase'
+  local package_dir="$work_dir/prerelease-lower/packages" fixture_dir="$work_dir/prerelease-lower/feed"
+  local output_file="$work_dir/prerelease-lower/output.txt" guard_exit
+
+  mkdir -p "$package_dir" "$fixture_dir" "$work_dir/prerelease-lower"
+  create_nupkg "$package_dir" Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:1.2.3-rc.1 >/dev/null
+  write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 1.2.2 1.2.3-RC.1
+
+  start_fixture_feed "$fixture_dir"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 0 "$guard_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" 'is published' "$output_file"
+}
+
+case_prerelease_labels_differ_beyond_case() {
+  # The negative control on the two above. Folding case must not become folding the label away:
+  # 1.2.3-RC.2 and 1.2.3-rc.1 are different versions, and the second being published says nothing
+  # about the first.
+  local case_name='declared prerelease differs from the published one by more than case'
+  local package_dir="$work_dir/prerelease-distinct/packages" fixture_dir="$work_dir/prerelease-distinct/feed"
+  local output_file="$work_dir/prerelease-distinct/output.txt" guard_exit
+
+  mkdir -p "$package_dir" "$fixture_dir" "$work_dir/prerelease-distinct"
+  create_nupkg "$package_dir" Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:1.2.3-RC.2 >/dev/null
+  write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 1.2.2 1.2.3-rc.1
+
+  start_fixture_feed "$fixture_dir"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 1 "$guard_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" '1.2.3-RC.2' "$output_file"
+  assert_output_contains "$case_name" "$version_absent_phrase" "$output_file"
+}
+
+# --------------------------------------------------------------------------------------------
 # Nuspec-shape cases. A nuspec is an XML document, and `dotnet pack` is not the only producer of
 # one: every shape below is legal XML that a line-oriented byte scan reads differently from the
 # way a restoring NuGet client reads it. Each declares Chatter.MessageBrokers 0.29.0, which the
@@ -1656,6 +1723,9 @@ run_behavioural_cases() {
   case_endpoint_unreachable
   case_no_chatter_dependencies
   case_version_substring_collision
+  case_declared_prerelease_label_is_uppercase
+  case_declared_prerelease_label_is_lowercase
+  case_prerelease_labels_differ_beyond_case
   case_dependency_attributes_reversed
   case_dependency_attributes_wrapped_across_lines
   case_namespace_prefixed_elements

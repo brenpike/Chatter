@@ -408,6 +408,19 @@ jobs:
               return 0
 
 
+          def normalize_version(value):
+              # The one spelling divergence the toolchain can deliver between a packed nuspec and a
+              # flat-container index is prerelease-label CASE: `dotnet pack` copies a label through
+              # verbatim while the index is always lowercase. Folded here so BOTH sides of the
+              # membership test below pass through it, and over the whole string rather than the
+              # label alone - numeric parts have no case, so lowering them is identity, and
+              # splitting on `-` to reach the label would be hand-parsing a version this guard
+              # otherwise never parses. Case-folding an identifier is already the rule on either
+              # side of this reader: the `chatter.` prefix test above lowers a dependency id, and
+              # the bash side lowers that same id to build the flat-container path.
+              return value.strip().lower()
+
+
           def check_index_membership(index_body_path, wanted_version):
               try:
                   with open(index_body_path, "rb") as handle:
@@ -423,9 +436,13 @@ jobs:
                       or any(not isinstance(entry, str) for entry in published_versions)):
                   return report_anomaly("the flat-container index's \"versions\" is not a list of "
                                         "version strings")
+              # INVARIANT: normalized only AFTER the list-of-strings check above. Normalizing
+              # first would raise AttributeError on a non-string entry and leave through exit 1,
+              # reclassifying a document this guard could not read as a version it read as absent.
+              normalized_versions = [normalize_version(entry) for entry in published_versions]
               # Published means membership of that one list. The same characters appearing anywhere
               # else in the document - a note, a "cancelled" list, an object key - mean nothing.
-              return 0 if wanted_version in published_versions else 1
+              return 0 if normalize_version(wanted_version) in normalized_versions else 1
 
 
           def main(argv):
@@ -518,6 +535,8 @@ jobs:
             dependency_id="${dependency_record%% *}"
             dependency_version="${dependency_record##* }"
             # Flat-container paths are lowercased; a mixed-case id 404s against a published package.
+            # The declared version is case-folded too, but inside the reader - see
+            # normalize_version, the only place both sides of that comparison exist.
             lowered_id="$(tr '[:upper:]' '[:lower:]' <<<"$dependency_id")"
             index_url="$FLATCONTAINER_BASE_URL/$lowered_id/index.json"
             outcome=''
@@ -529,10 +548,12 @@ jobs:
                 # Decided on membership of the parsed "versions" list, never on a text search over
                 # the response bytes: a 200 is a CDN response, and the version characters can occur
                 # anywhere in one without that version being published.
-                # INVARIANT: the flat-container index normalizes every version to 3-part SemVer.
-                # Each Chatter <Version> is already 3-part, so the nuspec string and the index
-                # entry are the same characters and compare directly. A 2-part or 4-part version
-                # would have to be normalized before this membership test meant anything.
+                # INVARIANT: both sides of that membership test pass through one normalizer, so
+                # neither string is compared as it arrived. Case is the only divergence the
+                # toolchain can deliver: `dotnet pack` and the flat-container index already agree
+                # on every numeric spelling - leading zeros, a trailing-zero fourth part and build
+                # metadata are all stripped before either string exists - while a prerelease label
+                # keeps its case through `dotnet pack` and loses it in the index.
                 index_status=0
                 python3 "$guard_reader" index "$index_body" "$dependency_version" || index_status=$?
                 if [ "$index_status" -eq 0 ]; then
