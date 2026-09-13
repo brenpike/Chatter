@@ -312,18 +312,63 @@ case returns 404. *Published* means membership of that one list: the same charac
 in the response — a note, another array, an object key — are not a publication, which is precisely what a
 text search over the response bytes could not tell apart. A body that is not JSON, is not an object, carries
 no `versions` key, or whose `versions` is not a list of strings is a document the guard did not understand
-and exits 2. Flat-container normalizes versions (leading zeros stripped, a fourth zero segment dropped); all
-nine modules use three-part SemVer, so the nuspec string and the index entry are the same characters and
-compare directly, and that assumption is pinned in a comment next to the membership test rather than left
-implicit.
+and exits 2. Neither string in that membership test is compared as it arrived: both pass through one
+normalizer, for the reasons recorded in the next section.
 
-Two inverse risks follow from that same assumption, and both fail CLOSED. A ranged declaration —
-`version="[0.16.0, )"` — is refused by `require_field`'s whitespace rule
-(`.github/workflows/messagebrokers-cicd.yml:264-271`) and exits 2. A four-part version is emitted verbatim,
-never matches the flat-container's normalized list, and exits 1. Both measured against the shipped reader.
-Neither is reachable while every sibling reference is a `ProjectReference` and every module `<Version>` is
-three-part, which holds across all nine today; the condition that makes them reachable is converting a sibling
-`ProjectReference` to a ranged or floating `PackageReference`.
+### One normalizer on both sides, and why that divergence class has exactly one member
+
+`normalize_version` (`.github/workflows/messagebrokers-cicd.yml:411`) is `value.strip().lower()`, and the
+membership test (`:445`) applies it to the declared version AND to every entry of the index's `versions`
+array. ONE function, BOTH sides. A normalizer on one side alone is not a weaker version of this; it is a
+different and wrong guard, green on a nuspec whose label is uppercase against a lowercase index and red on
+the mirror document. The harness drives both directions for exactly that reason.
+
+It folds the WHOLE string rather than the prerelease label alone. Numeric parts have no case, so lowering
+them is identity, while splitting on `-` to reach the label would be hand-parsing a version this guard
+otherwise never parses — which is the exact primitive the guard exists to remove. Case-folding an identifier
+is already the rule on either side of this reader: the `chatter.` prefix test lowers a dependency id
+(`:310`), and the bash side lowers that same id to build the flat-container path (`:540`).
+
+**The ORDERING is load-bearing.** Normalization happens AFTER the list-of-strings validation of `versions`,
+never before it. Normalizing first would raise `AttributeError` on a non-string entry and leave the reader
+through exit 1 — silently reclassifying *this is not a document the guard could read* as *this version is
+absent from the feed*, which inverts the 1-versus-2 split on exactly the document that split exists for. The
+constraint is stated as an `INVARIANT:` comment at the site (`:439-441`) rather than left to reading order.
+
+**The class closes at exactly one member: prerelease-label case.** `dotnet pack`, writing a
+`ProjectReference` sibling's `<Version>` into the nuspec dependency entry, was measured to normalize:
+
+| declared `<Version>` | emitted `<dependency version=...>` |
+| --- | --- |
+| `1.02.3` | `1.2.3` — leading zeros stripped |
+| `1.2.3.0` | `1.2.3` — trailing-zero fourth component stripped |
+| `1.2.3+build7` | `1.2.3` — build metadata stripped |
+| `1.2.3.4` | `1.2.3.4` — a genuine fourth component preserved verbatim |
+| `1.02.3-RC.1` | `1.2.3-RC.1` — number normalized, LABEL CASE PRESERVED |
+
+The flat-container index is always lowercase: zero non-lowercase entries across 685 versions of
+`Newtonsoft.Json` and `Serilog`. So every NUMERIC spelling is already identical on both sides before the
+comparison exists — pack strips what the index strips — and a genuine four-part version is preserved verbatim
+on both sides and matches, which the feed confirms: `castle.core` lists `3.0.0.2001` and
+`microsoft.data.sqlclient` lists `1.0.19239.1`. Prerelease label case is the only spelling divergence the
+toolchain can deliver, so it is the only one the normalizer folds.
+
+That is the paragraph that should stop a future reader reopening this as complete-the-known-set. The claim is
+scoped: the class closes at one member FOR VERSION-SPELLING DIVERGENCE, under today's toolchain. It is not a
+claim that the guard has no residual — issue #476 is open and forward-looking.
+
+The divergence was latent rather than live. Chatter has never shipped a prerelease: 211 versions across the
+nine package indexes, none carrying a prerelease label, and no prerelease git tag. The guard would have met
+this on the first one.
+
+One inverse risk follows from the same reading, and it fails CLOSED. A ranged declaration —
+`version="[0.16.0, )"` — carries a space, so `UNSAFE_FIELD_CHARACTERS` (`:192`) matches it inside
+`require_field` (`:264-271`), reached from `read_dependency` (`:316-317`), and the `ValueError` leaves through
+`report_anomaly` at exit 2. Measured against the shipped reader. A space-free range — `version="[0.16.0,)"` —
+passes `require_field` instead and falls through to the membership test as a version string the index does not
+list, so it exits 1: a different code, the same refusal to publish. Neither is reachable while every sibling
+reference is a `ProjectReference`, which holds across all nine today; the condition that makes them reachable
+is converting a sibling `ProjectReference` to a ranged or floating `PackageReference`.
 
 The dependency set is read the same way, and exhaustively: `<dependencies>` holds either `<group>`
 elements — the form `dotnet pack` emits for a multi-targeted package — or bare `<dependency>` elements, the
@@ -445,8 +490,9 @@ fired.
 - **A blocked deploy can idle roughly 645 seconds of runner time before failing — once, not once per
   sibling.** The deadline is a total across the whole step and the guard exits at the first absent sibling, so
   the worst case is one budget however many `Chatter.*` dependencies a package declares. The number is not
-  600: the deadline is tested AFTER the fetch (`.github/workflows/messagebrokers-cicd.yml:527`, `curl
-  --max-time 30`) and BEFORE an unconditional `sleep "$DEPENDENCY_GUARD_POLL_SECONDS"` (`:555-556`), so a
+  600: the deadline is tested AFTER the fetch (`.github/workflows/messagebrokers-cicd.yml:576`, the fetch
+  itself at `:546` carrying `curl --max-time 30`) and BEFORE an unconditional
+  `sleep "$DEPENDENCY_GUARD_POLL_SECONDS"` (`:577`), so a
   check passing an instant inside the deadline still buys one poll interval and one fetch timeout before the
   next one breaks — budget plus 15 plus 30. The harness does not bound that number and must not be read as
   doing so: `case_poll_budget_bounds_total_wall_time` allows 1.5x the budget, a tolerance sized to separate
@@ -520,10 +566,10 @@ fired.
   closes its parent epic #309 (CI/CD supply chain), of which it is the last open child.
 - `.github/workflows/messagebrokers-cicd.yml` — reference structure for all nine: the duplicate-release guard
   at `:52-68` consumed at `:116`, the 7-day artifact retention at `:92,98`, the `deploy` job INVARIANT at
-  `:100-111`, and the guard step `Assert declared Chatter dependencies are published` at `:130-578` (sentinel
-  comments at `:136` and `:578`), sitting between `Download package artifact` (`:125`) and the `deploy` job's
-  own `Setup .NET` (`:579` — not the `package` job's at `:43`), and therefore ahead of `NuGet login (OIDC)`
-  (`:587`) and `Push NuGet packages` (`:592`).
+  `:100-111`, and the guard step `Assert declared Chatter dependencies are published` at `:130-599` (sentinel
+  comments at `:136` and `:599`), sitting between `Download package artifact` (`:125`) and the `deploy` job's
+  own `Setup .NET` (`:600` — not the `package` job's at `:43`), and therefore ahead of `NuGet login (OIDC)`
+  (`:608`) and `Push NuGet packages` (`:613`).
 - `.github/scripts/assert-nupkg-provenance.sh:6-7` — the existing exit-1-versus-exit-2 invariant this guard's
   exit codes mirror. The same file's `:107`, `:115`, `:150-151`, `:173` and `:197` still carry the primitive
   this guard removed, deferred to issue #475.
@@ -535,14 +581,17 @@ fired.
   the bounded-impact reasoning recorded in the Consequences above, and the gap pinned in the harness by
   `case_unmodelled_container_with_only_unmodelled_children`.
 - `.github/scripts/tests/deploy-dependency-guard.test.sh` and `.github/scripts/tests/fixture-feed.py` — the
-  hermetic offline harness, **77 assertions, all green**. Nine are structural: extraction strips only a
+  hermetic offline harness, **84 assertions, all green**. Nine are structural: extraction strips only a
   terminal CR, the nine-workflow CD set, marker coverage, the byte-identical assertion, the identical
   pre-sentinel regions, `bash -n` over every extracted body, and three over the checked-in packed nuspec
-  fixture. Sixty-eight are behavioural across 37 cases driving the real extracted body. Feed-shaped: all
+  fixture. Seventy-five are behavioural across 40 cases driving the real extracted body. Feed-shaped: all
   dependencies published; declared version absent; dependency never published; index `5xx`; endpoint
   unreachable; a `200` with a non-JSON body; a `200` mentioning the version outside the `versions` array; a
-  `200` with no `versions` key; a `versions` that is not a list of strings; a version substring collision; and
-  the poll budget bounding total wall time to one budget rather than one per dependency. Document-shaped:
+  `200` with no `versions` key; a `versions` that is not a list of strings; a version substring collision; a
+  declared prerelease label whose case differs from the published entry's, driven in BOTH directions so that a
+  normalizer applied to one side alone fails one of them; a declared prerelease differing from the published
+  one by more than case, the negative control that keeps folding case from becoming folding the label away;
+  and the poll budget bounding total wall time to one budget rather than one per dependency. Document-shaped:
   zero `Chatter.*` dependencies; dependency attributes reversed; attributes wrapped across lines;
   namespace-prefixed elements; a commented-out `<id>` that must not become the package identity;
   dependencies without target-framework groups; a dependency in open/close rather than self-closing form; a
@@ -555,10 +604,12 @@ fired.
   `.nuspec` entry behind a backslash-separated path; two archive entries sharing one root `.nuspec` name; a nuspec
   carrying no `xmlns` at all; every one of the six `ManifestSchemaUtility` namespaces read in turn; and the real
   shipped nuspec driven both ways, its
-  sibling present and absent. Four of these are the cases that ran RED against a body that shipped: a `200`
-  whose body is not JSON and a `200` mentioning the version outside the `versions` array exited 0 under the
-  pattern-matching body, and two `<dependencies>` elements and the backslash-separated entry exited 0 under
-  the parsing body that replaced it — every one of them letting the publish proceed. It uses a real local HTTP
+  sibling present and absent. Four of these ran RED against a body already written, every one of them letting
+  the publish proceed: a `200` whose body is not JSON and a `200` mentioning the version outside the
+  `versions` array exited 0 under the pattern-matching body, and two `<dependencies>` elements and the
+  backslash-separated entry exited 0 under the parsing body that replaced it. Two more ran RED in the opposite
+  direction: both directional prerelease-label cases exited 1 under the body that compared the two version
+  strings as they arrived, blocking a release whose sibling was in fact published. It uses a real local HTTP
   stub rather than `file://`, because `curl -w '%{http_code}'` reports `000` for `file://` and would defeat
   the status classifier the guard is built on.
 - `.github/scripts/tests/fixtures/chatter.messagebrokers.0.30.0.nuspec` — the one document in the harness
