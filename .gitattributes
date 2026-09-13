@@ -1,2 +1,6 @@
 # Shell scripts must keep LF endings so shebangs stay executable under core.autocrlf=true
 *.sh text eol=lf
+# Python scripts for the same reason: under core.autocrlf=true a fresh checkout would otherwise
+# materialize .github/scripts/tests/fixture-feed.py with CRLF. Harmless while the harness invokes
+# it as `python3 fixture-feed.py`, and a broken shebang the moment the stub is made executable.
+*.py text eol=lf

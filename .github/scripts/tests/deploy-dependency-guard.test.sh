@@ -343,9 +343,14 @@ assert_pre_sentinel_regions_identical() {
 }
 
 assert_guard_bodies_parse() {
-  # `bash -n` is the only local signal that a body lifted out of a YAML block scalar is still valid
-  # bash. A heredoc whose terminator is mis-indented inside that scalar parses as YAML, ships, and
-  # fails for the first time in a deploy job holding a publish credential.
+  # `bash -n` catches genuine syntax errors in a body lifted out of a YAML block scalar — a CRLF
+  # body, an unbalanced quote, an unclosed `if` — before any of them reach a deploy job holding a
+  # publish credential.
+  #
+  # It does NOT catch a mis-indented heredoc terminator. Measured on bash 5.0.17: indenting the
+  # `PY` terminator prints `warning: here-document ... delimited by end-of-file (wanted 'PY')` and
+  # exits 0, so the exit code this assertion reads is clean. The behavioural cases below are what
+  # catch that one, because the whole guard is swallowed into the heredoc and every case goes red.
   local body_file parse_log invalid=()
 
   if [ "${#body_files[@]}" -eq 0 ]; then
