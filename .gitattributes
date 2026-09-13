@@ -4,3 +4,7 @@
 # materialize .github/scripts/tests/fixture-feed.py with CRLF. Harmless while the harness invokes
 # it as `python3 fixture-feed.py`, and a broken shebang the moment the stub is made executable.
 *.py text eol=lf
+# Nuspec fixtures are byte-identical copies of published package manifests (incl. a UTF-8 BOM);
+# they exist to prove the guard's parser against a real-world document, so no line-ending
+# conversion may ever be applied in either direction.
+*.nuspec -text

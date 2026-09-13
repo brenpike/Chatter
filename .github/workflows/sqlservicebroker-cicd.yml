@@ -170,8 +170,14 @@ jobs:
           """Reads the two documents this guard decides on: the packed nuspec, and one
           flat-container index response.
 
-          Both are parsed, never scanned. An unreadable, ambiguous or unrecognised document exits 2
-          and says why, so "I found nothing" is never available as an outcome that reads as a pass.
+          Both are parsed, never scanned, and the nuspec is interpreted TOTALLY: every node the
+          reader relies on is located by an exact-cardinality lookup against a FULLY-QUALIFIED name,
+          and every node anywhere in the document that spells a name the reader models must occupy
+          the one position modelled for it. No lookup may resolve to "the first one", none may fall
+          back to "none found", and no element may be silently skipped. A document that admits more
+          than one reading is refused (exit 2) rather than answered from whichever reading came
+          first, so an empty dependency set is only ever emitted as the conclusion of an exhaustive
+          read of a positively identified manifest.
           """
           import json
           import re
@@ -184,6 +190,28 @@ jobs:
           # whitespace or a control character would make that read ambiguous. Rejected here rather
           # than quoted downstream.
           UNSAFE_FIELD_CHARACTERS = re.compile(r"[\s\x00-\x1f\x7f]")
+          # The six schema namespaces NuGet's ManifestSchemaUtility accepts, plus the empty one a
+          # legacy manifest carrying no xmlns resolves to. `2011/10` is absent from most published
+          # lists and is present here deliberately: a package keeps whichever schema was current
+          # when it was packed, and a short list would refuse a manifest NuGet restores. This is the
+          # ONLY place a namespace is compared against a list; the root's own namespace is what
+          # every other name in the document is then matched against.
+          MANIFEST_NAMESPACES = (
+              "",
+              "http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd",
+              "http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd",
+              "http://schemas.microsoft.com/packaging/2011/10/nuspec.xsd",
+              "http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd",
+              "http://schemas.microsoft.com/packaging/2013/01/nuspec.xsd",
+              "http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd",
+          )
+          # Every element name the reader gives meaning to. An element spelling one of these outside
+          # the position modelled for it - in a foreign namespace, or under an element the reader
+          # does not model at all - would make the dependency set depend on where the reader chose
+          # to look, so its presence is an anomaly rather than something to pass over.
+          MODELLED_LOCAL_NAMES = frozenset(
+              ("metadata", "id", "version", "dependencies", "group", "dependency"))
+          CHATTER_ID_PREFIX = "chatter."
 
 
           def report_anomaly(message):
@@ -191,29 +219,46 @@ jobs:
               return 2
 
 
-          def read_local_name(qualified_name):
-              # `{ns}dependency` and `dependency` are the same element, and a nuspec may be written
-              # with a default namespace, a prefixed one, or none at all.
-              return qualified_name.rpartition("}")[2]
+          def split_qualified_name(qualified_name):
+              # ElementTree spells a namespaced tag `{uri}local` and an unnamespaced one `local`.
+              if qualified_name.startswith("{"):
+                  namespace_uri, _, local_name = qualified_name[1:].partition("}")
+                  return namespace_uri, local_name
+              return "", qualified_name
 
 
-          def find_child_element(parent, local_name):
-              for child in parent:
-                  if read_local_name(child.tag) == local_name:
-                      return child
-              return None
+          def qualify(namespace_uri, local_name):
+              if not namespace_uri:
+                  return local_name
+              return "{%s}%s" % (namespace_uri, local_name)
 
 
-          def read_child_text(parent, local_name):
-              child = find_child_element(parent, local_name)
-              return None if child is None else child.text
+          def select_children(parent, namespace_uri, local_name):
+              qualified_name = qualify(namespace_uri, local_name)
+              return [child for child in parent if child.tag == qualified_name]
 
 
-          def read_attribute(element, local_name):
-              for name, value in element.attrib.items():
-                  if read_local_name(name) == local_name:
-                      return value
-              return None
+          def exactly_one(parent, namespace_uri, local_name):
+              matches = select_children(parent, namespace_uri, local_name)
+              if len(matches) != 1:
+                  raise ValueError("it carries %d <%s> element(s) where exactly one is required, so "
+                                   "which one states the fact is undecidable"
+                                   % (len(matches), local_name))
+              return matches[0]
+
+
+          def at_most_one(parent, namespace_uri, local_name):
+              matches = select_children(parent, namespace_uri, local_name)
+              if len(matches) > 1:
+                  raise ValueError("it carries %d <%s> elements where at most one is required, so "
+                                   "which one states the fact is undecidable"
+                                   % (len(matches), local_name))
+              return matches[0] if matches else None
+
+
+          def read_attribute(element, attribute_name):
+              # An unprefixed attribute sits in no namespace, so its name is matched exactly.
+              return element.attrib.get(attribute_name)
 
 
           def require_field(description, value):
@@ -227,36 +272,95 @@ jobs:
 
 
           def read_sole_nuspec_bytes(nupkg_path):
+              # NuGet's PackageHelper.IsManifest is `IsRoot && IsNuspec`, and IsRoot rejects a `\`
+              # separator as well as a `/` one because a zip entry name may carry either. Filtering
+              # on only one of them admits an entry the restoring client would never read as the
+              # manifest. `namelist()` also returns a duplicated entry name twice, and an archive
+              # whose manifest is decided by whichever copy the central directory resolves to is
+              # ambiguous, so cardinality is counted over the names rather than over a set of them.
               with zipfile.ZipFile(nupkg_path) as archive:
                   manifests = [name for name in archive.namelist()
-                               if name.lower().endswith(".nuspec") and "/" not in name]
+                               if name.lower().endswith(".nuspec")
+                               and "/" not in name and "\\" not in name]
                   if len(manifests) != 1:
                       raise ValueError("the archive holds %d root .nuspec entries and exactly one "
                                        "manifest is required" % len(manifests))
                   return archive.read(manifests[0])
 
 
-          def collect_chatter_dependencies(metadata):
-              # Every <dependency> under <dependencies>, at any depth, so the grouped form
-              # `dotnet pack` emits for a multi-targeted package and the flat form a
-              # single-targeted one emits are both read the same way.
+          def read_document_namespace(root):
+              # The document's namespace is derived from its own root rather than assumed, and every
+              # name below is then matched fully-qualified against it. A namespace URI is part of an
+              # element's name, not decoration on it.
+              namespace_uri, local_name = split_qualified_name(root.tag)
+              if local_name != "package":
+                  raise ValueError("its root element is <%s>, not <package>, so it is not a package "
+                                   "manifest" % local_name)
+              if namespace_uri not in MANIFEST_NAMESPACES:
+                  raise ValueError("its root element sits in the namespace %r, which is not a nuspec "
+                                   "schema" % namespace_uri)
+              return namespace_uri
+
+
+          def read_dependency(element, records):
+              dependency_id = require_field("dependency id", read_attribute(element, "id"))
+              if len(element) != 0:
+                  raise ValueError("its <dependency> for %s carries child elements, which no nuspec "
+                                   "schema models" % dependency_id)
+              if not dependency_id.lower().startswith(CHATTER_ID_PREFIX):
+                  return
+              declared_version = read_attribute(element, "version")
+              if declared_version is None or not declared_version.strip():
+                  raise ValueError("it declares %s with no version, so whether that sibling is "
+                                   "published cannot be determined" % dependency_id)
+              records.add((dependency_id,
+                           require_field("version of %s" % dependency_id, declared_version)))
+
+
+          def read_dependency_group(group, namespace_uri, records, modelled):
+              for child in group:
+                  modelled.add(id(child))
+                  if child.tag != qualify(namespace_uri, "dependency"):
+                      raise ValueError("its <group> carries <%s>, which is not a <dependency> in "
+                                       "this document's namespace" % child.tag)
+                  read_dependency(child, records)
+
+
+          def collect_chatter_dependencies(metadata, namespace_uri, modelled):
+              # <dependencies> holds either <group> elements - the form `dotnet pack` emits for a
+              # multi-targeted package - or bare <dependency> elements, the flat form a
+              # single-targeted one emits. Both are read, and every child is visited: an unmodelled
+              # construct under here is an anomaly, never something to continue past.
               records = set()
-              dependencies = find_child_element(metadata, "dependencies")
+              dependencies = at_most_one(metadata, namespace_uri, "dependencies")
               if dependencies is None:
                   return records
-              for element in dependencies.iter():
-                  if read_local_name(element.tag) != "dependency":
-                      continue
-                  dependency_id = require_field("dependency id", read_attribute(element, "id"))
-                  if not dependency_id.lower().startswith("chatter."):
-                      continue
-                  declared_version = read_attribute(element, "version")
-                  if declared_version is None or not declared_version.strip():
-                      raise ValueError("it declares %s with no version, so whether that sibling is "
-                                       "published cannot be determined" % dependency_id)
-                  records.add((dependency_id,
-                               require_field("version of %s" % dependency_id, declared_version)))
+              modelled.add(id(dependencies))
+              for child in dependencies:
+                  modelled.add(id(child))
+                  if child.tag == qualify(namespace_uri, "dependency"):
+                      read_dependency(child, records)
+                  elif child.tag == qualify(namespace_uri, "group"):
+                      read_dependency_group(child, namespace_uri, records, modelled)
+                  else:
+                      raise ValueError("its <dependencies> carries <%s>, which is neither a <group> "
+                                       "nor a <dependency> in this document's namespace" % child.tag)
               return records
+
+
+          def assert_declarations_are_all_modelled(root, modelled):
+              # The census that turns "I looked where I know to look and found nothing" into an
+              # anomaly: a node spelling a modelled name anywhere the reader did not visit - under
+              # <dependencyGroups>, or in a namespace the root did not declare - means the document
+              # states its dependencies somewhere this reader does not read.
+              for element in root.iter():
+                  if id(element) in modelled:
+                      continue
+                  _, local_name = split_qualified_name(element.tag)
+                  if local_name in MODELLED_LOCAL_NAMES:
+                      raise ValueError("it spells <%s> at a position no nuspec schema models, so "
+                                       "where it declares its dependencies is ambiguous"
+                                       % element.tag)
 
 
           def emit_nuspec_facts(nupkg_path):
@@ -265,26 +369,37 @@ jobs:
               except (OSError, ValueError, zipfile.BadZipFile) as error:
                   return report_anomaly("%s is not a readable package: %s" % (nupkg_path, error))
               try:
-                  # ElementTree drops comments, so a commented-out <id> is not document content and
-                  # can never be reported as the package identity.
+                  # Parsed from BYTES, never from a decoded str: every nuspec `dotnet pack` writes
+                  # opens with a UTF-8 BOM, which the parser consumes and a str decode would leave
+                  # sitting in front of the XML declaration. ElementTree also drops comments, so a
+                  # commented-out <id> is not document content and can never be read as the identity.
                   root = ElementTree.fromstring(nuspec_bytes)
               except ElementTree.ParseError as error:
                   return report_anomaly("the nuspec packed in %s is not well-formed XML: %s"
                                         % (nupkg_path, error))
-              metadata = find_child_element(root, "metadata")
-              if metadata is None:
-                  return report_anomaly("the nuspec packed in %s carries no <metadata> element"
-                                        % nupkg_path)
+              modelled = set([id(root)])
               try:
-                  package_id = require_field("id", read_child_text(metadata, "id"))
-                  package_version = require_field("version", read_child_text(metadata, "version"))
-                  dependencies = collect_chatter_dependencies(metadata)
+                  namespace_uri = read_document_namespace(root)
+                  metadata = exactly_one(root, namespace_uri, "metadata")
+                  modelled.add(id(metadata))
+                  id_element = exactly_one(metadata, namespace_uri, "id")
+                  version_element = exactly_one(metadata, namespace_uri, "version")
+                  modelled.add(id(id_element))
+                  modelled.add(id(version_element))
+                  package_id = require_field("id", id_element.text)
+                  package_version = require_field("version", version_element.text)
+                  dependencies = collect_chatter_dependencies(metadata, namespace_uri, modelled)
+                  assert_declarations_are_all_modelled(root, modelled)
               except ValueError as error:
                   return report_anomaly("the nuspec packed in %s cannot be trusted: %s"
                                         % (nupkg_path, error))
+              # The manifest identity is emitted FIRST and the bash side accepts no other fact ahead
+              # of it, so a dependency set - an empty one above all - can never be read off output
+              # that never positively identified a manifest.
+              #
               # Sorted and deduped: a multi-targeted package repeats one dependency per target
               # framework group, and the feed must be queried once for it, not once per group.
-              lines = ["package %s %s" % (package_id, package_version)]
+              lines = ["manifest %s %s" % (package_id, package_version)]
               for dependency_id, dependency_version in sorted(dependencies):
                   lines.append("dependency %s %s" % (dependency_id, dependency_version))
               lines.append("dependency-count %d" % len(dependencies))
@@ -336,8 +451,20 @@ jobs:
           declared_dependency_count=''
           dependency_records=()
           while read -r fact_kind fact_subject fact_value; do
+            # INVARIANT: the manifest identity is the first fact and nothing is accepted ahead of it.
+            # A dependency set - an empty one above all - read from output that never positively
+            # identified a manifest is a reading of an unidentified document, which is exactly the
+            # class this guard refuses rather than answers.
+            if [ -z "$package_id" ] && [ "$fact_kind" != 'manifest' ]; then
+              echo "The nuspec reader emitted '$fact_kind' before identifying a manifest; the declared dependency set is unknown." >&2
+              exit 2
+            fi
             case "$fact_kind" in
-              package)
+              manifest)
+                if [ -n "$package_id" ]; then
+                  echo "The nuspec reader identified more than one manifest; the declared dependency set is unknown." >&2
+                  exit 2
+                fi
                 package_id="$fact_subject"
                 package_version="$fact_value"
                 ;;
