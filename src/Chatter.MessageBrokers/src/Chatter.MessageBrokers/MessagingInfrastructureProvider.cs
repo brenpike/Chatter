@@ -18,7 +18,7 @@ namespace Chatter.MessageBrokers
         {
             _logger = logger ?? throw new System.ArgumentNullException(nameof(logger));
             _default = infrastructures.FirstOrDefault();
-            _logger.LogInformation($"Setting default {nameof(IMessagingInfrastructure)} to '{_default?.Type}'.");
+            _logger.LogInformation("Setting default IMessagingInfrastructure to '{defaultInfrastructureType}'.", _default?.Type);
             InitProviderLookup(infrastructures);
         }
 
@@ -27,7 +27,7 @@ namespace Chatter.MessageBrokers
             foreach (var infrastructure in infrastructures)
             {
                 _infrastructures[infrastructure.Type] = infrastructure;
-                _logger.LogTrace($"Added infrastructure of type '{infrastructure.Type}' to provider");
+                _logger.LogTrace("Added infrastructure of type '{infrastructureType}' to provider", infrastructure.Type);
             }
         }
 
@@ -40,7 +40,7 @@ namespace Chatter.MessageBrokers
 
             if (string.IsNullOrWhiteSpace(infrastructureType))
             {
-                _logger.LogTrace($"No '{nameof(infrastructureType)}' was provided to {nameof(GetInfrastructure)}. Using default infrastructure ({_default.Type}).");
+                _logger.LogTrace("No 'infrastructureType' was provided to GetInfrastructure. Using default infrastructure ({defaultInfrastructureType}).", _default.Type);
                 return _default;
             }
 
@@ -49,7 +49,7 @@ namespace Chatter.MessageBrokers
                 throw new KeyNotFoundException($"No {nameof(IMessagingInfrastructure)} was found for type '{infrastructureType}'.");
             }
 
-            _logger.LogTrace($"Found infrastructure for type '{infrastructureType}'.");
+            _logger.LogTrace("Found infrastructure for type '{infrastructureType}'.", infrastructureType);
             return infrastructure;
         }
 

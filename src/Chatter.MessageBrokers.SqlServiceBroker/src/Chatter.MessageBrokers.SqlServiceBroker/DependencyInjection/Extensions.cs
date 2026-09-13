@@ -56,7 +56,7 @@ namespace Microsoft.Extensions.DependencyInjection
                 return new MessagingInfrastructure(SSBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory);
             });
 
-            builder.Services.AddScoped<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
+            builder.Services.AddSingleton<IBrokeredMessageBodyConverter, JsonUnicodeBodyConverter>();
             builder.Services.AddSingleton(options);
 
             return builder;

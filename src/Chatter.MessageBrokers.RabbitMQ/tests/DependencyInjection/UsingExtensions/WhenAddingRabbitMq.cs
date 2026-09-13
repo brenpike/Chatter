@@ -139,13 +139,45 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             Single(services, pathBuilderType).Lifetime.Should().Be(ServiceLifetime.Singleton);
         }
 
+        // The core IBodyConverterFactory is a SINGLETON that captures every IBrokeredMessageBodyConverter provider, so
+        // a shorter-lived converter would throw "Cannot consume scoped service" under scope validation.
         [Fact]
-        public void MustRegisterBodyConverterAsScoped()
+        public void MustRegisterBodyConverterAsSingleton()
         {
             var services = BuildRegistration();
 
             Single(services, typeof(IBrokeredMessageBodyConverter))
-                .Lifetime.Should().Be(ServiceLifetime.Scoped);
+                .Lifetime.Should().Be(ServiceLifetime.Singleton);
+        }
+
+        private static ServiceProvider BuildScopeValidatingProviderOverRealCore()
+            => BuildRegistrationOverRealCore(null)
+                .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        [Fact]
+        public void MustResolveRabbitMqBodyConverterFromRootProviderUnderScopeValidation()
+        {
+            using var provider = BuildScopeValidatingProviderOverRealCore();
+            var contentType = new RabbitMqBodyConverter().ContentType;
+
+            var converter = provider.GetRequiredService<IBodyConverterFactory>().CreateBodyConverter(contentType);
+
+            converter.Should().BeOfType<RabbitMqBodyConverter>();
+        }
+
+        [Fact]
+        public void MustResolveSameRabbitMqBodyConverterAcrossScopesUnderScopeValidation()
+        {
+            using var provider = BuildScopeValidatingProviderOverRealCore();
+            using var sendingScope = provider.GetRequiredService<IServiceScopeFactory>().CreateScope();
+            using var receivingScope = provider.GetRequiredService<IServiceScopeFactory>().CreateScope();
+            var contentType = new RabbitMqBodyConverter().ContentType;
+
+            var sendingConverter = sendingScope.ServiceProvider.GetRequiredService<IBodyConverterFactory>().CreateBodyConverter(contentType);
+            var receivingConverter = receivingScope.ServiceProvider.GetRequiredService<IBodyConverterFactory>().CreateBodyConverter(contentType);
+
+            sendingConverter.Should().BeOfType<RabbitMqBodyConverter>();
+            sendingConverter.Should().BeSameAs(receivingConverter);
         }
 
         // The RabbitMqBodyConverter is registered as an IBrokeredMessageBodyConverter PROVIDER so the core
