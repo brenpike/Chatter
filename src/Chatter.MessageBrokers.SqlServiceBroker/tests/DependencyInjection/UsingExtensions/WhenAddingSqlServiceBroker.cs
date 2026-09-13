@@ -57,8 +57,65 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.DependencyInjection.Usin
             return services;
         }
 
+        // Runs AddSqlServiceBroker behind the REAL core registration path (AddChatterCqrs -> AddMessageBrokers), which
+        // registers the singleton IBodyConverterFactory and the core converters, and builds a scope-validating
+        // provider as a host does. Assembly scanning is scoped to the Chatter.CQRS assembly, which carries no
+        // [BrokeredMessage]-decorated types, so receiver discovery is deterministically empty.
+        private static ServiceProvider BuildScopeValidatingProviderOverRealCore()
+        {
+            var services = new ServiceCollection();
+            var noBrokeredMessageAssembly = typeof(Chatter.CQRS.IMessage).Assembly;
+
+            services.AddChatterCqrs(EmptyConfig(), noBrokeredMessageAssembly)
+                    .AddMessageBrokers(
+                        optionsBuilder: null,
+                        receiverHandlerSourceBuilder: b => b.WithExplicitAssemblies(noBrokeredMessageAssembly))
+                    .AddSqlServiceBroker(o => o.AddSqlServiceBrokerOptions(_connectionString));
+
+            return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        }
+
         private static ServiceDescriptor Single(IServiceCollection services, Type serviceType)
             => services.Single(d => d.ServiceType == serviceType);
+
+        [Fact]
+        public void MustRegisterBodyConverterAsSingleton()
+        {
+            // The core IBodyConverterFactory is a SINGLETON that captures every IBrokeredMessageBodyConverter
+            // provider, so a shorter-lived converter would throw "Cannot consume scoped service" under scope validation.
+            var services = BuildRegistration();
+
+            var descriptor = Single(services, typeof(IBrokeredMessageBodyConverter));
+
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationType.Should().Be<JsonUnicodeBodyConverter>();
+        }
+
+        [Fact]
+        public void MustResolveJsonUnicodeBodyConverterFromRootProviderUnderScopeValidation()
+        {
+            using var provider = BuildScopeValidatingProviderOverRealCore();
+            var contentType = new JsonUnicodeBodyConverter().ContentType;
+
+            var converter = provider.GetRequiredService<IBodyConverterFactory>().CreateBodyConverter(contentType);
+
+            converter.Should().BeOfType<JsonUnicodeBodyConverter>();
+        }
+
+        [Fact]
+        public void MustResolveSameJsonUnicodeBodyConverterAcrossScopesUnderScopeValidation()
+        {
+            using var provider = BuildScopeValidatingProviderOverRealCore();
+            using var sendingScope = provider.GetRequiredService<IServiceScopeFactory>().CreateScope();
+            using var receivingScope = provider.GetRequiredService<IServiceScopeFactory>().CreateScope();
+            var contentType = new JsonUnicodeBodyConverter().ContentType;
+
+            var sendingConverter = sendingScope.ServiceProvider.GetRequiredService<IBodyConverterFactory>().CreateBodyConverter(contentType);
+            var receivingConverter = receivingScope.ServiceProvider.GetRequiredService<IBodyConverterFactory>().CreateBodyConverter(contentType);
+
+            sendingConverter.Should().BeOfType<JsonUnicodeBodyConverter>();
+            sendingConverter.Should().BeSameAs(receivingConverter);
+        }
 
         [Fact]
         public void MustRegisterMessagingInfrastructureAsSingletonViaFactory()

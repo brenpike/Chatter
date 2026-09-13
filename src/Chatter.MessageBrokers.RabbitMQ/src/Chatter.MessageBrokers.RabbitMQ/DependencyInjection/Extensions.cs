@@ -88,7 +88,7 @@ namespace Microsoft.Extensions.DependencyInjection
             // BodyConverterFactory enumerates it and keys it under its ContentType. The sender and receiver no longer
             // depend on the concrete converter — they resolve through IBodyConverterFactory keyed on
             // RabbitMqOptions.MessageBodyType — so no concrete registration is needed.
-            builder.Services.AddScoped<IBrokeredMessageBodyConverter, RabbitMqBodyConverter>();
+            builder.Services.AddSingleton<IBrokeredMessageBodyConverter, RabbitMqBodyConverter>();
             builder.Services.AddSingleton(options);
 
             return builder;
