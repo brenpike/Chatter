@@ -42,6 +42,12 @@ workflow_dir="$repo_root/.github/workflows"
 guard_begin_marker='# BEGIN dependency-publish guard (docs/adr/0019)'
 guard_end_marker='# END dependency-publish guard (docs/adr/0019)'
 
+# The step header above the BEGIN sentinel. Everything between this anchor and that sentinel — the
+# step name, `shell:`, the comment explaining why the step precedes `Setup .NET`, and the env seam
+# block — is shipped nine times just as the body is, but sits outside the sentinels and so escapes
+# the byte-identical assertion unless it is compared separately.
+guard_step_anchor='- name: Assert declared Chatter dependencies are published'
+
 # Nine packable modules, nine CD workflows, per CLAUDE.md § Versioning. A tenth module CD added
 # without the guard trips this count. Raise it deliberately alongside a tenth guard copy; never
 # delete the assertion.
@@ -53,6 +59,11 @@ expected_cd_workflow_count=9
 # message.
 version_absent_phrase='is not present at'
 never_published_phrase='has never been published'
+# An empty sibling-dependency set must be a stated fact, not the residue of a search that found
+# nothing. A guard that cannot tell "this package declares no Chatter dependencies" from "my scan
+# matched nothing" fails open on every nuspec shape it does not recognise, so the empty case is
+# required to say so out loud.
+confirmed_empty_phrase='declares no Chatter dependencies to verify'
 
 # The guard reads its poll window from env with production-safe defaults (600s / 15s). These are
 # operator-tunable seams, not test-only scaffolding; nothing in the `deploy` job sets them, so
@@ -108,9 +119,9 @@ trap 'stop_fixture_feed; rm -rf "$work_dir"' EXIT
 
 assert_tooling_present() {
   local tool
-  # `unzip` and `curl` are the guard's own dependencies, `awk` extracts the body and `python3`
-  # runs the feed stub. Absent any of them the harness asserts nothing.
-  for tool in awk curl python3 unzip; do
+  # `curl` is the guard's own dependency, `awk` extracts the body, and `python3` both runs the feed
+  # stub and parses the nuspec inside the guard. Absent any of them the harness asserts nothing.
+  for tool in awk curl python3; do
     command -v "$tool" >/dev/null 2>&1 \
       || fail_infrastructure "'$tool' is not on PATH; the deploy dependency guard assertions did not run"
   done
@@ -147,15 +158,31 @@ extract_guard_body() {
   local workflow="$1"
   # This repo runs `core.autocrlf=true` and `.gitattributes` pins only `*.sh text eol=lf`, so
   # `.github/workflows/*.yml` materializes CRLF in a developer's working tree even though it is
-  # LF in git. A CRLF body is a bash syntax error, so without stripping CR here this harness would
-  # go RED on a CRLF checkout and stay GREEN in CI (where autocrlf is off) — the harness must be
-  # indifferent to checkout line-ending config rather than depend on every checkout being
-  # configured correctly.
+  # LF in git. A CRLF body is a bash syntax error, so without normalizing line endings here this
+  # harness would go RED on a CRLF checkout and stay GREEN in CI (where autocrlf is off) — the
+  # harness must be indifferent to checkout line-ending config rather than depend on every checkout
+  # being configured correctly.
+  #
+  # INVARIANT: only the TERMINAL CR is removed. `tr -d '\r'` would delete CR anywhere, which makes
+  # two bodies differing by an embedded CR compare byte-identical and so blunts the one assertion
+  # mitigating nine copies of this script. An embedded CR is a real difference and must survive to
+  # break that comparison.
   awk -v begin_marker="$guard_begin_marker" -v end_marker="$guard_end_marker" '
     index($0, begin_marker) { capturing = 1; next }
     index($0, end_marker)   { capturing = 0; next }
-    capturing               { print }
-  ' "$workflow" | tr -d '\r'
+    capturing               { sub(/\r$/, ""); print }
+  ' "$workflow"
+}
+
+extract_pre_sentinel_region() {
+  local workflow="$1"
+  # The step header through the BEGIN sentinel inclusive. Captured separately from the body so the
+  # nine-copy duplication is covered over its whole extent rather than only between the sentinels.
+  awk -v anchor="$guard_step_anchor" -v begin_marker="$guard_begin_marker" '
+    index($0, anchor)       { capturing = 1 }
+    capturing               { sub(/\r$/, ""); print }
+    index($0, begin_marker) { if (capturing) exit }
+  ' "$workflow"
 }
 
 count_marker_occurrences() {
@@ -257,6 +284,90 @@ assert_bodies_byte_identical() {
   diff -u "$reference" "${body_files[1]}" >&2 || true
 }
 
+assert_extraction_strips_only_terminal_cr() {
+  # A self-test of the extractor the byte-identical assertion above is built on. If extraction
+  # deleted every CR, two bodies that genuinely differ by an embedded CR would compare equal and
+  # that assertion would pass over real drift.
+  local case_name='guard body extraction strips the terminal CR and preserves an embedded one'
+  local fixture_dir="$work_dir/cr-extraction"
+  local fixture="$fixture_dir/synthetic-cicd.yml"
+  local expected="$fixture_dir/expected.txt" actual="$fixture_dir/actual.txt"
+
+  mkdir -p "$fixture_dir"
+  {
+    printf '      run: |\n'
+    printf '        %s\r\n' "$guard_begin_marker"
+    printf '        terminal-cr-line\r\n'
+    printf '        embedded\rcr-line\n'
+    printf '        %s\r\n' "$guard_end_marker"
+  } >"$fixture"
+  printf '        terminal-cr-line\n' >"$expected"
+  printf '        embedded\rcr-line\n' >>"$expected"
+
+  extract_guard_body "$fixture" >"$actual"
+  if cmp -s "$expected" "$actual"; then
+    report_pass "$case_name"
+    return 0
+  fi
+  report_fail "$case_name"
+  diff -u <(od -c "$expected") <(od -c "$actual") >&2 || true
+}
+
+assert_pre_sentinel_regions_identical() {
+  local workflow workflow_name region_file reference='' divergent=() missing=()
+
+  for workflow in ${cd_workflows[@]+"${cd_workflows[@]}"}; do
+    workflow_name="$(basename "$workflow")"
+    region_file="$work_dir/guard-header-$workflow_name.txt"
+    extract_pre_sentinel_region "$workflow" | strip_uniform_indent >"$region_file"
+    if [ ! -s "$region_file" ] || ! grep -qF -- "$guard_begin_marker" "$region_file"; then
+      missing+=("$workflow_name")
+      continue
+    fi
+    if [ -z "$reference" ]; then
+      reference="$region_file"
+      continue
+    fi
+    cmp -s "$reference" "$region_file" || divergent+=("$workflow_name")
+  done
+
+  if [ "${#missing[@]}" -eq 0 ] && [ "${#divergent[@]}" -eq 0 ] && [ -n "$reference" ]; then
+    report_pass 'the guard step header through the BEGIN sentinel is byte-identical across all CD workflows'
+    return 0
+  fi
+
+  report_fail "the guard step header diverges: ${#missing[@]} workflow(s) missing the region (${missing[*]-none}), ${#divergent[@]} divergent (${divergent[*]-none})"
+  if [ -n "$reference" ] && [ "${#divergent[@]}" -gt 0 ]; then
+    diff -u "$reference" "$work_dir/guard-header-${divergent[0]}.txt" >&2 || true
+  fi
+}
+
+assert_guard_bodies_parse() {
+  # `bash -n` is the only local signal that a body lifted out of a YAML block scalar is still valid
+  # bash. A heredoc whose terminator is mis-indented inside that scalar parses as YAML, ships, and
+  # fails for the first time in a deploy job holding a publish credential.
+  local body_file parse_log invalid=()
+
+  if [ "${#body_files[@]}" -eq 0 ]; then
+    report_skip 'guard bodies parse under `bash -n`: no body was extracted, nothing to parse'
+    return 0
+  fi
+
+  parse_log="$work_dir/guard-body-parse.log"
+  : >"$parse_log"
+  for body_file in "${body_files[@]}"; do
+    bash -n "$body_file" 2>>"$parse_log" || invalid+=("$(basename "$body_file")")
+  done
+
+  if [ "${#invalid[@]}" -eq 0 ]; then
+    report_pass "all ${#body_files[@]} extracted guard bodies parse under \`bash -n\`"
+    return 0
+  fi
+
+  report_fail "${#invalid[@]} extracted guard body/bodies are not valid bash: ${invalid[*]}"
+  sed 's/^/        /' "$parse_log" >&2
+}
+
 # --------------------------------------------------------------------------------------------
 # Fixtures: nupkgs built at test time, and flat-container index documents for the stub feed.
 # --------------------------------------------------------------------------------------------
@@ -321,6 +432,60 @@ with zipfile.ZipFile(sys.argv[1], "w") as archive:
   printf '%s' "$nupkg_path"
 }
 
+pack_nupkg_entries() {
+  # Packs an arbitrary entry set into the archive at $1; the remaining arguments are (entry name,
+  # source path) pairs. `zip` names an entry after its source file, and these fixtures need
+  # archives holding zero or two root `.nuspec` entries, so python3's zipfile is used here
+  # unconditionally rather than as a fallback.
+  local nupkg_path="$1"
+  shift
+  mkdir -p "$(dirname "$nupkg_path")"
+  python3 -c 'import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as archive:
+    entries = sys.argv[2:]
+    for position in range(0, len(entries), 2):
+        archive.write(entries[position + 1], entries[position])' "$nupkg_path" "$@"
+}
+
+create_nupkg_from_nuspec_text() {
+  # Packs one nupkg whose nuspec is the literal bytes given, so a fixture can carry a nuspec shape
+  # `write_nuspec` never emits — reordered attributes, a namespace prefix, a truncated document.
+  # `write_nuspec` stays the well-formed path every other case is built on.
+  local package_dir="$1" fixture_slug="$2" package_id="$3" package_version="$4" nuspec_text="$5"
+  local stage_dir nuspec_name nupkg_path
+
+  stage_dir="$work_dir/stage-$fixture_slug"
+  nuspec_name="$package_id.nuspec"
+  nupkg_path="$package_dir/$package_id.$package_version.nupkg"
+  mkdir -p "$stage_dir" "$package_dir"
+  printf '%s' "$nuspec_text" >"$stage_dir/$nuspec_name"
+  pack_nupkg_entries "$nupkg_path" "$nuspec_name" "$stage_dir/$nuspec_name"
+  printf '%s' "$nupkg_path"
+}
+
+shape_nuspec_document() {
+  # The well-formed surround the nuspec-shape fixtures share: only the sibling dependency
+  # declaration varies, so a failure names the shape rather than an unrelated difference. Every
+  # shape declares Chatter.MessageBrokers 0.29.0, the version the shipped incident referenced and
+  # the one the shape fixtures' index deliberately omits.
+  local dependency_block="$1"
+
+  printf '<?xml version="1.0" encoding="utf-8"?>\n'
+  printf '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">\n'
+  printf '  <metadata>\n'
+  printf '    <id>Chatter.MessageBrokers.SqlServiceBroker</id>\n'
+  printf '    <version>0.14.2</version>\n'
+  printf '    <description>deploy-dependency-guard fixture</description>\n'
+  printf '    <dependencies>\n'
+  printf '      <group targetFramework="net8.0">\n'
+  printf '        <dependency id="Microsoft.Extensions.Logging.Abstractions" version="8.0.3" exclude="Build,Analyzers" />\n'
+  printf '%s\n' "$dependency_block"
+  printf '      </group>\n'
+  printf '    </dependencies>\n'
+  printf '  </metadata>\n'
+  printf '</package>\n'
+}
+
 add_symbol_package_sibling() {
   # ./dist/nuget holds the .snupkg beside the .nupkg. A guard globbing anything looser than
   # `*.nupkg` would find two packages where one was packed.
@@ -348,6 +513,16 @@ write_flat_container_index() {
     done
     printf '  ]\n}\n'
   } >"$index_path"
+}
+
+write_raw_feed_body() {
+  # Writes a feed fixture that the stub returns verbatim: `<id>.json` for a literal index document
+  # the array writer above cannot express, `<id>.body` for a 200 under a non-JSON content type.
+  # A 200 from the real feed is a CDN response, not a promise of well-formed JSON.
+  local fixture_path="$1" document_text="$2"
+
+  mkdir -p "$(dirname "$fixture_path")"
+  printf '%s' "$document_text" >"$fixture_path"
 }
 
 start_fixture_feed() {
@@ -428,12 +603,54 @@ assert_output_contains() {
 
 assert_output_lacks() {
   local case_name="$1" needle="$2" output_file="$3"
+  local reason="${4:-the never-published and version-absent failures are different operator problems and must read differently}"
   if grep -qF -- "$needle" "$output_file"; then
-    report_fail "$case_name: message must not contain \"$needle\"; the never-published and version-absent failures are different operator problems and must read differently"
+    report_fail "$case_name: message must not contain \"$needle\"; $reason"
     print_guard_output "$output_file"
     return 0
   fi
-  report_pass "$case_name: message is distinct from the version-absent failure"
+  report_pass "$case_name: message does not contain \"$needle\""
+}
+
+# Set by run_nuspec_shape_case and run_index_document_case. Those drivers start and stop the
+# fixture feed, so they cannot be invoked in a command substitution the way run_guard_body is: the
+# stub's pid would be recorded in a subshell and the EXIT trap would never reap it.
+driven_case_exit=''
+
+run_nuspec_shape_case() {
+  # Packs a nupkg whose nuspec is the given literal text, against an index listing 0.28.0 and
+  # 0.30.0 but never the 0.29.0 every shape fixture declares. A guard that reads the nuspec as an
+  # XML document sees that dependency in every shape and fails; a guard that scans raw bytes with
+  # a line-oriented text tool sees it in only some of them and publishes the rest.
+  local fixture_slug="$1" nuspec_text="$2" output_file="$3"
+  local case_dir="$work_dir/$fixture_slug"
+  local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
+
+  mkdir -p "$case_dir" "$package_dir" "$fixture_dir"
+  create_nupkg_from_nuspec_text "$package_dir" "$fixture_slug" \
+    Chatter.MessageBrokers.SqlServiceBroker 0.14.2 "$nuspec_text" >/dev/null
+  write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 0.28.0 0.30.0
+
+  start_fixture_feed "$fixture_dir"
+  driven_case_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+}
+
+run_index_document_case() {
+  # Packs a well-formed nupkg declaring Chatter.MessageBrokers 0.30.0 and answers its index query
+  # with the given document. The package is never the problem in these cases: what the feed
+  # returned is.
+  local fixture_slug="$1" fixture_name="$2" document_text="$3" output_file="$4"
+  local case_dir="$work_dir/$fixture_slug"
+  local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
+
+  mkdir -p "$case_dir" "$package_dir" "$fixture_dir"
+  create_nupkg "$package_dir" Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:0.30.0 >/dev/null
+  write_raw_feed_body "$fixture_dir/$fixture_name" "$document_text"
+
+  start_fixture_feed "$fixture_dir"
+  driven_case_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
 }
 
 case_all_dependencies_published() {
@@ -552,6 +769,10 @@ case_no_chatter_dependencies() {
   guard_exit="$(run_guard_body "$package_dir" 'http://127.0.0.1:1' "$output_file")"
 
   assert_guard_exit "$case_name" 0 "$guard_exit" "$output_file" || return 0
+  # An empty sibling set must be reported as a confirmed reading of the nuspec. Silence here is
+  # indistinguishable from a scan that failed to understand the document, which is precisely how a
+  # guard ships an unrestorable package while printing nothing alarming.
+  assert_output_contains "$case_name" "$confirmed_empty_phrase" "$output_file"
 }
 
 case_version_substring_collision() {
@@ -573,6 +794,340 @@ case_version_substring_collision() {
   assert_output_contains "$case_name" '0.3.0' "$output_file"
 }
 
+# --------------------------------------------------------------------------------------------
+# Nuspec-shape cases. A nuspec is an XML document, and `dotnet pack` is not the only producer of
+# one: every shape below is legal XML that a line-oriented byte scan reads differently from the
+# way a restoring NuGet client reads it. Each declares Chatter.MessageBrokers 0.29.0, which the
+# index does not list, so any shape the guard fails to understand publishes an unrestorable
+# package while exiting 0.
+# --------------------------------------------------------------------------------------------
+
+case_dependency_attributes_reversed() {
+  local case_name='dependency declares version before id'
+  local output_file="$work_dir/shape-reversed/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-reversed"
+  # Attribute order carries no meaning in XML; a pattern that requires id before version invents
+  # an ordering rule the format does not have.
+  nuspec_text="$(shape_nuspec_document \
+    '        <dependency version="0.29.0" id="Chatter.MessageBrokers" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-reversed "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" '0.29.0' "$output_file"
+}
+
+case_dependency_attributes_wrapped_across_lines() {
+  local case_name='dependency attributes wrap across lines'
+  local output_file="$work_dir/shape-wrapped/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-wrapped"
+  # Line breaks inside a tag are insignificant whitespace. A scan that reads one element per line
+  # is asserting a formatting convention, not reading the document.
+  nuspec_text="$(shape_nuspec_document \
+"        <dependency
+          id=\"Chatter.MessageBrokers\"
+          version=\"0.29.0\"
+          exclude=\"Build,Analyzers\" />")"
+
+  run_nuspec_shape_case shape-wrapped "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" '0.29.0' "$output_file"
+}
+
+case_namespace_prefixed_elements() {
+  local case_name='nuspec uses a prefixed namespace'
+  local output_file="$work_dir/shape-prefixed/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-prefixed"
+  # `<n:dependency>` and `<dependency>` are the same element in the same namespace. So are
+  # `<n:id>` and `<id>`, which is why the failure must still name the package being published.
+  nuspec_text="$(printf '%s\n' \
+    '<?xml version="1.0" encoding="utf-8"?>' \
+    '<n:package xmlns:n="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">' \
+    '  <n:metadata>' \
+    '    <n:id>Chatter.MessageBrokers.SqlServiceBroker</n:id>' \
+    '    <n:version>0.14.2</n:version>' \
+    '    <n:description>deploy-dependency-guard fixture</n:description>' \
+    '    <n:dependencies>' \
+    '      <n:group targetFramework="net8.0">' \
+    '        <n:dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />' \
+    '      </n:group>' \
+    '    </n:dependencies>' \
+    '  </n:metadata>' \
+    '</n:package>')"
+
+  run_nuspec_shape_case shape-prefixed "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" 'Chatter.MessageBrokers.SqlServiceBroker' "$output_file"
+  assert_output_contains "$case_name" '0.29.0' "$output_file"
+}
+
+case_commented_out_id_is_not_the_package_id() {
+  local case_name='an XML comment above the metadata carries a decoy id'
+  local output_file="$work_dir/shape-decoy/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-decoy"
+  # Comment content is not document content. A first-match byte scan reports the failure against a
+  # package that is not being published, sending the operator to the wrong pipeline.
+  nuspec_text="$(printf '%s\n' \
+    '<?xml version="1.0" encoding="utf-8"?>' \
+    '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">' \
+    '  <!-- <id>DECOY</id> -->' \
+    '  <metadata>' \
+    '    <id>Chatter.MessageBrokers.SqlServiceBroker</id>' \
+    '    <version>0.14.2</version>' \
+    '    <description>deploy-dependency-guard fixture</description>' \
+    '    <dependencies>' \
+    '      <group targetFramework="net8.0">' \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />' \
+    '      </group>' \
+    '    </dependencies>' \
+    '  </metadata>' \
+    '</package>')"
+
+  run_nuspec_shape_case shape-decoy "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" 'Chatter.MessageBrokers.SqlServiceBroker' "$output_file"
+  assert_output_lacks "$case_name" 'DECOY' "$output_file" \
+    'a commented-out element is not the package identity and must never be reported as it'
+}
+
+case_dependencies_without_groups() {
+  local case_name='dependencies are declared without target framework groups'
+  local output_file="$work_dir/shape-ungrouped/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-ungrouped"
+  # The flat form a single-targeted package packs. Passing today; pinned so the parse replacing
+  # the byte scan does not narrow to the grouped form alone.
+  nuspec_text="$(printf '%s\n' \
+    '<?xml version="1.0" encoding="utf-8"?>' \
+    '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">' \
+    '  <metadata>' \
+    '    <id>Chatter.MessageBrokers.SqlServiceBroker</id>' \
+    '    <version>0.14.2</version>' \
+    '    <description>deploy-dependency-guard fixture</description>' \
+    '    <dependencies>' \
+    '      <dependency id="Microsoft.Extensions.Logging.Abstractions" version="8.0.3" />' \
+    '      <dependency id="Chatter.MessageBrokers" version="0.29.0" />' \
+    '    </dependencies>' \
+    '  </metadata>' \
+    '</package>')"
+
+  run_nuspec_shape_case shape-ungrouped "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" '0.29.0' "$output_file"
+}
+
+case_dependency_in_open_close_form() {
+  local case_name='dependency is written in open/close rather than self-closing form'
+  local output_file="$work_dir/shape-openclose/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-openclose"
+  # Equivalent to the self-closing form. Passing today; pinned as a regression.
+  nuspec_text="$(shape_nuspec_document \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0"></dependency>')"
+
+  run_nuspec_shape_case shape-openclose "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" '0.29.0' "$output_file"
+}
+
+case_chatter_dependency_without_version() {
+  local case_name='a Chatter dependency declares no version'
+  local output_file="$work_dir/shape-noversion/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-noversion"
+  # A sibling dependency with no version range cannot be checked for publication, so its status is
+  # unknown — an infrastructure outcome. Dropping it silently is the fail-open this guard exists
+  # to prevent.
+  nuspec_text="$(shape_nuspec_document \
+    '        <dependency id="Chatter.MessageBrokers" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-noversion "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" 'Chatter.MessageBrokers' "$output_file"
+}
+
+case_nuspec_is_truncated() {
+  local case_name='the packed nuspec is truncated'
+  local output_file="$work_dir/shape-truncated/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-truncated"
+  # A nuspec that will not parse says nothing about the dependency set. Treating "I could not read
+  # it" as "it declares nothing" is the same fail-open with a different cause.
+  nuspec_text="$(printf '%s\n' \
+    '<?xml version="1.0" encoding="utf-8"?>' \
+    '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">' \
+    '  <metadata>' \
+    '    <id>Chatter.MessageBrokers.SqlServiceBroker</id>' \
+    '    <version>0.14.2</version>' \
+    '    <dependencies>' \
+    '      <group targetFramework="net8.0">' \
+    '        <dependency id="Chatter.Mess')"
+
+  run_nuspec_shape_case shape-truncated "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_nupkg_holds_two_nuspec_entries() {
+  local case_name='the nupkg holds two root .nuspec entries'
+  local case_dir="$work_dir/shape-two-nuspecs"
+  local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
+  local stage_dir="$case_dir/stage" output_file="$case_dir/output.txt"
+  local nupkg_path guard_exit
+
+  mkdir -p "$package_dir" "$fixture_dir" "$stage_dir"
+  # Which of the two is the manifest is undecidable, so the archive is ambiguous and must be
+  # refused. Both declare a published version, so a guard that concatenates them reads one clean
+  # dependency set and publishes.
+  write_nuspec "$stage_dir/Chatter.MessageBrokers.SqlServiceBroker.nuspec" \
+    Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:0.30.0
+  write_nuspec "$stage_dir/Chatter.MessageBrokers.SqlServiceBroker.Extra.nuspec" \
+    Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:0.30.0
+  nupkg_path="$package_dir/Chatter.MessageBrokers.SqlServiceBroker.0.14.3.nupkg"
+  pack_nupkg_entries "$nupkg_path" \
+    'Chatter.MessageBrokers.SqlServiceBroker.nuspec' "$stage_dir/Chatter.MessageBrokers.SqlServiceBroker.nuspec" \
+    'Chatter.MessageBrokers.SqlServiceBroker.Extra.nuspec' "$stage_dir/Chatter.MessageBrokers.SqlServiceBroker.Extra.nuspec"
+  write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 0.28.0 0.30.0
+
+  start_fixture_feed "$fixture_dir"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 2 "$guard_exit" "$output_file" || return 0
+}
+
+case_nupkg_holds_no_nuspec_entry() {
+  local case_name='the nupkg holds no .nuspec entry'
+  local case_dir="$work_dir/shape-no-nuspec"
+  local package_dir="$case_dir/packages" stage_dir="$case_dir/stage"
+  local output_file="$case_dir/output.txt" nupkg_path guard_exit
+
+  mkdir -p "$package_dir" "$stage_dir"
+  # A nupkg with no manifest is not a package. The endpoint is unreachable so a guard that reaches
+  # the feed at all fails this case on that ground too; the point is that it must refuse before
+  # ever getting there, with its own diagnosis rather than an archiver's exit code.
+  printf '%s\n' '<?xml version="1.0" encoding="utf-8"?><Types />' >"$stage_dir/content-types.xml"
+  nupkg_path="$package_dir/Chatter.MessageBrokers.SqlServiceBroker.0.14.3.nupkg"
+  pack_nupkg_entries "$nupkg_path" '[Content_Types].xml' "$stage_dir/content-types.xml"
+
+  guard_exit="$(run_guard_body "$package_dir" 'http://127.0.0.1:1' "$output_file")"
+
+  assert_guard_exit "$case_name" 2 "$guard_exit" "$output_file" || return 0
+}
+
+# --------------------------------------------------------------------------------------------
+# Index-document cases. A 200 from the flat-container is a CDN response, not a guarantee of a JSON
+# document listing versions. Deciding publication by searching the raw response for a quoted
+# version string answers "does this text appear anywhere in whatever came back", which is a
+# different question from "is this version published".
+# --------------------------------------------------------------------------------------------
+
+case_index_returns_non_json_body() {
+  local case_name='index answers 200 with a non-JSON body'
+  local output_file="$work_dir/index-html/output.txt" document_text
+
+  mkdir -p "$work_dir/index-html"
+  # An HTML error page that happens to quote the version. Publication status is unknown here, and
+  # unknown is an infrastructure outcome — never a green light.
+  document_text="$(printf '%s\n' \
+    '<!DOCTYPE html>' \
+    '<html><head><title>503 Service Unavailable</title></head>' \
+    '<body><h1>Origin unavailable</h1>' \
+    '<p>The request for version "0.30.0" could not be served.</p>' \
+    '</body></html>')"
+
+  run_index_document_case index-html chatter.messagebrokers.body "$document_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_index_mentions_version_outside_versions_array() {
+  local case_name='index mentions the version outside the versions array'
+  local output_file="$work_dir/index-note/output.txt" document_text
+
+  mkdir -p "$work_dir/index-note"
+  # The version appears in the document, quoted, twice — and in neither place is it a member of
+  # "versions". Only membership of that one list means published. The quoted occurrence inside
+  # "cancelled" is what a raw text search finds, and it is the opposite of published.
+  document_text='{"versions":["0.28.0"],"note":"0.30.0 was cancelled","cancelled":["0.30.0"]}'
+
+  run_index_document_case index-note chatter.messagebrokers.json "$document_text" "$output_file"
+
+  assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" '0.30.0' "$output_file"
+  assert_output_contains "$case_name" "$version_absent_phrase" "$output_file"
+}
+
+case_index_lacks_versions_key() {
+  local case_name='index answers 200 with JSON carrying no versions key'
+  local output_file="$work_dir/index-nokey/output.txt" document_text
+
+  mkdir -p "$work_dir/index-nokey"
+  # Valid JSON, wrong document. Nothing about publication can be concluded, so this is
+  # infrastructure, not a verdict that the version is absent.
+  document_text='{"note":"this is not a flat-container index"}'
+
+  run_index_document_case index-nokey chatter.messagebrokers.json "$document_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_index_versions_is_not_a_string_list() {
+  local case_name='index versions is not a list of strings'
+  local output_file="$work_dir/index-shape/output.txt" document_text
+
+  mkdir -p "$work_dir/index-shape"
+  # The key is present and the version appears as an object key rather than a list entry. A raw
+  # text search cannot tell the two apart and reads this as published.
+  document_text='{"versions":{"0.30.0":true}}'
+
+  run_index_document_case index-shape chatter.messagebrokers.json "$document_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_poll_budget_is_total_not_per_dependency() {
+  local case_name='the poll budget is a total across dependencies'
+  local case_dir="$work_dir/budget"
+  local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
+  local request_log="$case_dir/requests.log" output_file="$case_dir/output.txt"
+  local guard_exit query_count
+
+  mkdir -p "$package_dir" "$fixture_dir" "$case_dir"
+  : >"$request_log"
+  # Two absent siblings and a budget of two seconds. The deadline is computed once, before the
+  # first dependency, so by the time the second is reached the budget is spent and it gets exactly
+  # one look. A per-dependency deadline would poll it again and double a ten-minute wait per
+  # sibling in production.
+  create_nupkg "$package_dir" Chatter.SqlChangeFeed 0.15.0 \
+    Chatter.CQRS:0.29.0 Chatter.MessageBrokers:0.29.0 >/dev/null
+  write_flat_container_index "$fixture_dir/chatter.cqrs.json" 0.16.0
+  write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 0.28.0 0.30.0
+
+  start_fixture_feed "$fixture_dir" '' "$request_log"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 1 "$guard_exit" "$output_file" || return 0
+
+  query_count="$(grep -cFx '/chatter.messagebrokers/index.json' "$request_log" || true)"
+  if [ "$query_count" -eq 1 ]; then
+    report_pass "$case_name: the second dependency was queried once, on an exhausted budget"
+  else
+    report_fail "$case_name: expected 1 flat-container query for chatter.messagebrokers, saw $query_count; the poll deadline is a total budget shared by every dependency, not one budget each"
+  fi
+}
+
 run_behavioural_cases() {
   if [ -z "$guard_body_file" ]; then
     report_skip 'behavioural cases: no guard body could be extracted from any CD workflow, so there is nothing to execute (the marker assertions above are the failing signal)'
@@ -587,16 +1142,34 @@ run_behavioural_cases() {
   case_endpoint_unreachable
   case_no_chatter_dependencies
   case_version_substring_collision
+  case_dependency_attributes_reversed
+  case_dependency_attributes_wrapped_across_lines
+  case_namespace_prefixed_elements
+  case_commented_out_id_is_not_the_package_id
+  case_dependencies_without_groups
+  case_dependency_in_open_close_form
+  case_chatter_dependency_without_version
+  case_nuspec_is_truncated
+  case_nupkg_holds_two_nuspec_entries
+  case_nupkg_holds_no_nuspec_entry
+  case_index_returns_non_json_body
+  case_index_mentions_version_outside_versions_array
+  case_index_lacks_versions_key
+  case_index_versions_is_not_a_string_list
+  case_poll_budget_is_total_not_per_dependency
 }
 
 assert_tooling_present
 [ -f "$fixture_feed" ] || fail_infrastructure "fixture feed stub not found at $fixture_feed; the deploy dependency guard assertions did not run"
 
 printf 'Structural assertions over %s:\n' "$workflow_dir"
+assert_extraction_strips_only_terminal_cr
 collect_guard_bodies
 assert_cd_workflow_set
 assert_marker_coverage
 assert_bodies_byte_identical
+assert_pre_sentinel_regions_identical
+assert_guard_bodies_parse
 
 run_behavioural_cases
 

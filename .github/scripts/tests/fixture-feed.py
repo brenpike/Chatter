@@ -15,7 +15,9 @@ the all-deps-present case rather than silently passing it.
 
 Usage: fixture-feed.py --fixture-dir DIR [--fail-id ID] [--log-file FILE]
   --fixture-dir: directory of `<lowercased-id>.json` flat-container index documents; an id with
-                 no file present answers 404, which is the "never published" case
+                 no file present answers 404, which is the "never published" case. An id with a
+                 `<lowercased-id>.body` file instead answers 200 with those bytes verbatim under a
+                 non-JSON content type, which is how a CDN error page reaches the guard.
   --fail-id:     lowercased id that answers 500, which is the transport/infrastructure case
   --log-file:    appends one request path per line, so a caller can assert how many times an id
                  was queried (the multi-framework dedupe assertion)
@@ -43,13 +45,15 @@ def build_handler(fixture_dir, fail_id, log_file):
             with open(log_file, "a", encoding="utf-8") as handle:
                 handle.write(self.path + "\n")
 
-        def respond(self, status, body):
-            payload = body.encode("utf-8")
+        def respond_bytes(self, status, payload, content_type):
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+
+        def respond(self, status, body):
+            self.respond_bytes(status, body.encode("utf-8"), "application/json")
 
         def do_GET(self):
             self.record_request()
@@ -64,11 +68,19 @@ def build_handler(fixture_dir, fail_id, log_file):
                 return
 
             index_path = fixture_dir / (package_id + ".json")
-            if not index_path.is_file():
-                self.respond(404, '{"error":"package id not found"}')
+            if index_path.is_file():
+                self.respond(200, index_path.read_text(encoding="utf-8"))
                 return
 
-            self.respond(200, index_path.read_text(encoding="utf-8"))
+            # nuget.org's flat-container sits behind a CDN that can answer 200 with an HTML error
+            # page, so a 200 is not a promise of a JSON index. A `.body` fixture is returned
+            # byte-for-byte under a non-JSON content type to reproduce exactly that.
+            body_path = fixture_dir / (package_id + ".body")
+            if body_path.is_file():
+                self.respond_bytes(200, body_path.read_bytes(), "text/html; charset=utf-8")
+                return
+
+            self.respond(404, '{"error":"package id not found"}')
 
     return FlatContainerHandler
 
