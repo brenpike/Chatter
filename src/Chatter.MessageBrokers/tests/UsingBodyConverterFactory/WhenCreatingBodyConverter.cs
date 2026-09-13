@@ -24,7 +24,7 @@ namespace Chatter.MessageBrokers.Tests.UsingBodyConverterFactory
         }
 
         [Fact]
-        public void MustReturnFreshJsonBodyConverterForUnknownContentType()
+        public void MustReturnJsonBodyConverterForUnknownContentType()
         {
             var sut = new BodyConverterFactory(new List<IBrokeredMessageBodyConverter>());
 
@@ -32,14 +32,37 @@ namespace Chatter.MessageBrokers.Tests.UsingBodyConverterFactory
         }
 
         [Fact]
-        public void MustReturnDistinctJsonBodyConverterInstancesForUnknownContentType()
+        public void MustReturnSameJsonBodyConverterInstanceForEveryUnknownContentType()
         {
             var sut = new BodyConverterFactory(new List<IBrokeredMessageBodyConverter>());
 
             var first = sut.CreateBodyConverter("application/unknown");
-            var second = sut.CreateBodyConverter("application/unknown");
+            var repeated = sut.CreateBodyConverter("application/unknown");
+            var otherUnknown = sut.CreateBodyConverter("application/also-unknown");
 
-            first.Should().NotBeSameAs(second);
+            repeated.Should().BeSameAs(first, "the fallback is created once per factory, not once per message");
+            otherUnknown.Should().BeSameAs(first, "every unknown content type shares the one fallback");
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public void MustReturnTheSharedFallbackForNullOrBlankContentType(string contentType)
+        {
+            var sut = new BodyConverterFactory(new List<IBrokeredMessageBodyConverter>());
+            var fallback = sut.CreateBodyConverter("application/unknown");
+
+            sut.CreateBodyConverter(contentType).Should().BeSameAs(fallback);
+        }
+
+        [Fact]
+        public void MustNotSubstituteARegisteredJsonConverterForAnUnknownContentType()
+        {
+            var registeredJson = new JsonBodyConverter();
+            var sut = new BodyConverterFactory(new IBrokeredMessageBodyConverter[] { registeredJson });
+
+            sut.CreateBodyConverter("application/unknown").Should().NotBeSameAs(registeredJson, "the fallback belongs to the factory; a caller-registered application/json converter answers only for its own content type");
         }
 
         [Fact]
