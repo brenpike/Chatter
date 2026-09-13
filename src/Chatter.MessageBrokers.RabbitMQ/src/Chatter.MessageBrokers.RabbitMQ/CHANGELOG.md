@@ -6,6 +6,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-13
+
+### Changed
+
+- `AddRabbitMq` registers `RabbitMqBodyConverter` as `Singleton` where it was `Scoped`, matching the process-lifetime `IBodyConverterFactory` in `Chatter.MessageBrokers` 0.30.0. With a `Scoped` converter the singleton factory becomes a captive dependency: resolving it throws `InvalidOperationException` wherever scope validation is enabled, which is the default in the Development environment. `Chatter.MessageBrokers.RabbitMQ` and `Chatter.MessageBrokers` must be upgraded together. (#342)
+- Bundled dependency uplift to Chatter.MessageBrokers 0.30.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
+
 ## [0.4.2] - 2026-09-11
 
 ### Changed

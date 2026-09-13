@@ -16,7 +16,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Changed
 
-- `AddSqlServiceBroker` registers `JsonUnicodeBodyConverter` as `Singleton` (previously `Scoped`), matching the process-lifetime `IBodyConverterFactory` in `Chatter.MessageBrokers`. Without it, a host with scope validation enabled (the default in the Development environment) fails at startup with `InvalidOperationException` ("Cannot consume scoped service ... from singleton 'IBodyConverterFactory'") once paired with that release. Upgrade together with `Chatter.MessageBrokers`. (#342)
+- `AddSqlServiceBroker` registers `JsonUnicodeBodyConverter` as `Singleton` (previously `Scoped`), matching the process-lifetime `IBodyConverterFactory` in `Chatter.MessageBrokers`. Without it, a host with scope validation enabled (the default in the Development environment) fails at startup with `InvalidOperationException` ("Cannot consume scoped service ... from singleton 'IBodyConverterFactory'") once paired with that release. Upgrade together with `Chatter.MessageBrokers` 0.30.0. (#342)
+- Bundled dependency uplift to Chatter.MessageBrokers 0.30.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it).
 
 ## [0.14.2] - 2026-09-12
 
