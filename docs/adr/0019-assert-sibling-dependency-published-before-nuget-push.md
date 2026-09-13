@@ -87,19 +87,44 @@ suppressed references, or framework-specific groups. Multi-TFM packages repeat t
 `net8.0` and `net10.0` groups; the set is deduped before querying.
 
 **Every obligation the guard discharges is decided on a node or a value read out of a parsed document, never
-on a byte pattern found in some bytes.** This is the class the guard's shape eliminates, and it is worth
-naming as a class rather than as the list of shapes that now happen to be handled. Under a pattern-matching
-guard every obligation was keyed on *a pattern appeared in a stream*, and the absence of a match was
-indistinguishable from a clean pass: `grep` found no `Chatter.*` dependency, therefore this package declares
-none, therefore publish. There is no third outcome available now. Each obligation is keyed on a node or a
-value read from a parsed document; an empty result is a parser-reported, counted, positively-terminated fact
-that says *this document declares nothing*, and every document the parser could not read exits 2. Nothing
-reads as success by failing to find something.
+on a byte pattern found in some bytes, and never at a document position the document itself did not uniquely
+determine.** Two classes are eliminated, in two passes, and each is named as a class rather than as the list
+of shapes that now happen to be handled — the second was found only because naming the first as a class made
+its survival checkable.
 
-Five instances of that primitive died together, and they are named so a future reader can check that none
-came back: selecting the nuspec entry inside the `.nupkg`, reading the package `<id>`, reading the package
-`<version>`, collecting the `<dependency>` set, and testing flat-container membership. All five are now
-`zipfile`, `xml.etree.ElementTree` and `json` reads.
+**Shape coincidence.** Under a pattern-matching guard every obligation was keyed on *a pattern appeared in a
+stream*, and the absence of a match was indistinguishable from a clean pass: `grep` found no `Chatter.*`
+dependency, therefore this package declares none, therefore publish. Five instances died together, and they
+are named so a future reader can check that none came back: selecting the nuspec entry inside the `.nupkg`,
+reading the package `<id>`, reading the package `<version>`, collecting the `<dependency>` set, and testing
+flat-container membership. All five are now `zipfile`, `xml.etree.ElementTree` and `json` reads.
+
+**Permissive selection.** A fact is read from a document position chosen permissively — first match wins,
+unmatched nodes skipped, absent nodes answer "none", archive filter looser than the consumer's — so the
+guard's answer is one reading among several the document admits, and the reading that yields the fewest
+dependencies is indistinguishable from a correct one. Parsing alone does not close this. A parser selects
+permissively exactly as a `grep` does, and the first remediation carried that primitive across intact (see
+below).
+
+The second class is closed by interpreting the nuspec **totally**. Every lookup is `exactly_one` or
+`at_most_one`, raising on any other cardinality, so no fact is read off "the first one" and no absent node
+answers "none". Traversal under `<dependencies>` is exhaustive to full depth, with every element required to
+be a node the reader models: an unmodelled child raises rather than being passed over, and that includes a
+`<dependency>` carrying child elements, which no nuspec schema models. One namespace is in play — the root's
+own — and every other name in the document is matched fully-qualified against it. The archive filter is
+NuGet's own `IsManifest`. A whole-document census closes the remainder as ONE rule rather than a pair of
+special cases: any element anywhere in the document spelling a name the reader models — `metadata`, `id`,
+`version`, `dependencies`, `group`, `dependency` — that the modelled walk did not visit raises, which refuses
+a `<dependencies>` nested under a container no schema defines and a `<dependencies>` subtree redeclaring a
+foreign namespace with the same sentence. And the reader emits a `manifest` identity fact FIRST, which the
+bash side requires ahead of any other fact, so a dependency set — an empty one above all — can never be read
+off output that never positively identified a manifest.
+
+An empty result is therefore a parser-reported, counted, positively-terminated fact that says *this document
+declares nothing*, reached by an exhaustive read of a positively identified manifest. Every document that
+admits a second reading, and every document the parser could not read at all, exits 2. Nothing reads as
+success by failing to find something, and nothing reads as success by having looked in only one of the places
+the document could have put it.
 
 **The failure mode is unpublished-and-loud, chosen over published-and-permanent.** A failed guard leaves the
 deploy job red, GitHub notifying, the nupkg artifact retained for 7 days
@@ -108,21 +133,113 @@ and the job re-runnable. Re-running a failed run preserves the original `push` e
 re-evaluates unchanged. That is recoverable. A published package with an unresolvable dependency is not:
 nuget.org allows unlist and deprecate, never delete.
 
-### Why this shape — the guard could already have shipped the incident it exists to prevent
+### Why this shape — twice, and the second time because the first remediation did not close it
+
+**This guard has been remediated twice, and the first remediation was NON-CLOSING. Why it was is the most
+useful thing this document records.** It changed the MECHANISM and carried the PRIMITIVE across intact:
+`grep` became `xml.etree.ElementTree`, and the key every obligation was decided on stayed *did I find any
+dependency nodes?* — it never became *did I positively identify this document as the nuspec NuGet will
+consume?* The fail-open relocated into the parser rather than being removed. Both passes are recorded below,
+each with the evidence that ended it.
 
 The first version of this guard proved all five obligations by pattern coincidence. Local adversarial review
 returned a root cluster over it — findings `6059c0d0…`, `93fc852a…` and `224c08c0…` — and demonstrated the
 same framing recurring in a fourth instance in the same body that no finding had reported. Same-framing
 recurrence is the signal that the instances are symptoms and the primitive is the defect.
 
-The decisive evidence is not the cluster, though. It is what two harness cases proved about the old body: on
-a `200` response that was **not** the expected document, that body **exited 0**, which in a `deploy` job means
-the push proceeds. An index whose `versions` array held only `"0.28.0"` while the rest of the payload read
-`"0.30.0 was cancelled"` passed. So did a CDN HTML error page that merely quoted the version in its prose.
-That is the exact incident class this ADR exists to prevent — an unrestorable package reaching a feed that
-permits no deletion — reachable *through* the control written to prevent it. A guard that can pass on a
-document it never understood is worse than no guard, because it also supplies confidence. That, and not the
-finding count, is why the primitive was replaced rather than the instances patched.
+The decisive evidence was not the cluster. It is what two harness cases proved about that body: on a `200`
+response that was **not** the expected document, it **exited 0**, which in a `deploy` job means the push
+proceeds. An index whose `versions` array held only `"0.28.0"` while the rest of the payload read `"0.30.0
+was cancelled"` passed. So did a CDN HTML error page that merely quoted the version in its prose. That is the
+exact incident class this ADR exists to prevent — an unrestorable package reaching a feed that permits no
+deletion — reachable *through* the control written to prevent it. A guard that can pass on a document it
+never understood is worse than no guard, because it also supplies confidence.
+
+The class named in that first pass — text-scan coincidence — was real, and it is gone. It was simply the
+wrong boundary to have drawn around the cluster. A parser that takes the first `<dependencies>`, passes over
+a child it does not recognise, answers "none" for an absent node, and filters archive entries more loosely
+than the restoring client is selecting permissively, exactly as the `grep` was. The cluster was about
+permissive selection, of which scanning text is one instance.
+
+A second adversarial review found two documents on which the parsing guard still failed open. Both are
+divergences from NuGet's own reader, verified against its source rather than argued from first principles,
+and both were measured against the parsing body before it was replaced.
+
+**Duplicate `<dependencies>`.** `NuspecReader.GetDependencyGroups()` resolves the metadata namespace and then
+calls `MetadataNode.Elements(XName.Get(Dependencies, ns))` — plural. NuGet enumerates EVERY `<dependencies>`
+element under `<metadata>` and unions the groups found across them. The parsing guard took the first. A
+document carrying an empty `<dependencies />` followed by a populated one therefore emitted
+`dependency-count 0` at exit 0 — measured — and published, while the restoring client read the union and
+failed. What makes this the headline of the class rather than one more malformed shape on a list: **that
+document has a correct `package` root, one uniform namespace and exactly one `<metadata>`**, so a
+root-element check alone does NOT catch it, and nothing about it is malformed. It is a document that admits
+two readings, and the guard answered from the one that publishes. That is also why the second remediation is
+not another completion of a known set. The decision taken is to **refuse** such a document with exit 2 rather
+than mirror NuGet's union: `dotnet pack` never emits two, and interpreting an ambiguous document is the
+primitive being removed, not a behaviour to reimplement more faithfully.
+
+**`IsRoot` is slash AND backslash.** NuGet's `PackageHelper.IsManifest` is `IsRoot(path) && IsNuspec(path)`,
+and `IsRoot` is `path.IndexOfAny(Slashes) == -1` over `new char[] { '/', '\\' }`. The parsing guard tested
+only `/`. An archive whose sole nuspec-ish entry is `sub\decoy.nuspec` was therefore read as the manifest and
+answered — measured, at exit 0 — from a document the restoring client never sees, because `GetNuspecFile`
+finds zero manifests in that archive and throws.
+
+### The root-namespace accept-list, as shipped rather than as planned
+
+The plan for this remediation argued that a namespace accept-list should be REJECTED, on the grounds that a
+document consistently in one unrecognised namespace is read the same way by the guard as by NuGet, so
+root-derived matching alone buys everything a list would. Implementation found that irreconcilable with the
+harness. A document consistently in a foreign namespace — correct root local name, one uniform namespace, one
+`<metadata>`, one `<dependencies>` — is read cleanly by root-derived matching and lands on exit 1 for the
+absent sibling. The harness requires exit 2, because a manifest whose schema NuGet does not accept is a
+document the guard did not understand, not an assertion anyone has been shown. Measured both ways on that
+fixture: rc 2 with the root-namespace check, rc 0 without it.
+
+What SHIPPED is therefore a root-only accept-list: the six namespaces `ManifestSchemaUtility` accepts —
+`2010/07`, `2011/08`, `2011/10`, `2012/06`, `2013/01` and `2013/05`, each
+`http://schemas.microsoft.com/packaging/<version>/nuspec.xsd` — plus the empty string a legacy nuspec
+carrying no `xmlns` resolves to. It is consulted at EXACTLY ONE site, the root. Nothing below the root
+consults it; every other name in the document is matched fully-qualified against the root's own namespace.
+
+The argument against accept-lists is recorded too, because it is not wrong, only not decisive: a hand-written
+list is likely wrong on arrival and stale on the next schema. `2011/10` is absent from most published
+summaries of the nuspec schemas and is in the guard deliberately, because the six were read off
+`ManifestSchemaUtility` rather than off those summaries. The residual is stated plainly: a seventh NuGet
+schema exits 2 until the list is updated. That is FAIL-CLOSED — a red deploy with the artifact retained 7
+days — never a bad publish, which is the only direction this guard is permitted to fail in.
+
+### The harness could not have caught any of this, and its fixture builders are the reason
+
+The previous harness had 49 green assertions over the parsing guard, and not one of them could have failed on
+either divergence, because no fixture it was able to build expressed one. `write_nuspec` and
+`shape_nuspec_document` BOTH hardcoded
+`<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">` over one `<metadata>` holding
+one `<dependencies>`, and parameterized only the dependency block. Root element, namespace and element
+cardinality were not arguments they took. The blind spot was enforced by the fixture builders' SIGNATURES
+rather than by the choice of cases, so extending the case list alone would not have helped. Both builders had
+to be rebased onto a shared `emit_nuspec_document` taking `--root`, `--namespace`, `--child-namespace`,
+`--metadata-copies`, `--id-copies`, `--version-copies`, `--dependencies-copies` and `--extra-metadata-block`
+before any of the new cases could be written at all.
+
+The general lesson is the one worth keeping: **a harness authored against an implementation inherits that
+implementation's blind spots unless its fixture builders can express documents the implementation does not
+handle.** A case list is auditable at a glance; the fixture builders' parameter list is what decides which
+cases that list is even able to contain.
+
+### Why there is no third strike of this shape
+
+Not "unlikely" — structurally unreachable, under the assumptions this document states. After an exhaustive
+traversal of a fully-modelled subtree, plus a whole-document census that raises on any element spelling a
+modelled name at a position the walk did not visit, there is no unexamined node left in the document to hold
+a `Chatter.*` dependency the guard failed to report. A future NuGet schema gaining a new dependency-bearing
+construct does not arrive as a node the guard quietly skips; it arrives as an unmodelled element, and an
+unmodelled element raises. So a third instance of this class cannot be a fail-open. It can only be a
+fail-closed red deploy on a document the guard declines to interpret, which is the outcome it is built to
+produce whenever it does not know.
+
+That is a claim about the named class under the stated assumptions — direct dependencies only, versions
+published before the guard landed uncovered, peer identity trusted. It is not a claim that no fail-open of
+any kind is possible.
 
 ### Why the body is inline YAML and not `.github/scripts/*.sh`
 
@@ -183,10 +300,13 @@ nine modules use three-part SemVer, so the nuspec string and the index entry are
 compare directly, and that assumption is pinned in a comment next to the membership test rather than left
 implicit.
 
-The dependency set is read the same way. Every `<dependency>` under `<dependencies>` at any depth is
-collected, so the grouped form `dotnet pack` emits for a multi-targeted package and the flat form a
-single-targeted one emits are read identically, and element or attribute order, namespace prefixes, and
-self-closing versus open/close form are all invisible to a parser that reads nodes. The `Chatter.` prefix
+The dependency set is read the same way, and exhaustively: `<dependencies>` holds either `<group>`
+elements — the form `dotnet pack` emits for a multi-targeted package — or bare `<dependency>` elements, the
+flat form a single-targeted one emits, both are read, and every child of both is required to be one of those
+two nodes in this document's own namespace. It is NOT a walk at any depth that collects whatever it
+recognises: an element it does not model raises rather than being passed over, because a construct nobody
+modelled is where an unreported dependency would sit. Element and attribute order, namespace prefixes, and
+self-closing versus open/close form remain invisible to a parser that reads nodes. The `Chatter.` prefix
 test is **case-insensitive**, a deliberate widening over the case-sensitive match it replaces: an id is
 matched on what NuGet considers the same package, not on how the nuspec happened to capitalize it.
 
@@ -246,7 +366,12 @@ a real assertion failure. The 1-versus-2 split mirrors the invariant already sta
 Parsing extends exit 2 to every document the guard could not read, and that extension follows from the same
 invariant: a guard that could not discharge its obligation must not read as a pass. So exit 2 covers a
 `.nupkg` that is not a readable archive; an archive holding anything other than exactly one root `.nuspec`
-entry; a nuspec that is not well-formed XML, carries no `<metadata>`, or declares no `<id>` or `<version>`; a
+entry, or one whose sole `.nuspec` entry is not at the archive root under NuGet's own `IsManifest` rule, or
+one holding two entries under a single root `.nuspec` name; a nuspec that is not well-formed XML, whose root
+is not `<package>`, or whose root sits in a namespace no nuspec schema defines; one carrying no `<metadata>`
+or declaring no `<id>` or `<version>`; one carrying more than one of `<metadata>`, `<id>`, `<version>` or
+`<dependencies>`, because which of them states the fact is then undecidable; one spelling a modelled element
+at a position no schema models, including inside a subtree that redeclares a foreign namespace; a
 `Chatter.*` `<dependency>` declaring no version, because whether *that* sibling is published cannot be
 determined at all; reader output that is not positively terminated or whose record count disagrees with the
 count it declared; and a `200` that is not a flat-container index. None of these is an assertion failure —
@@ -306,20 +431,31 @@ fired.
 - **The guard proves publication, not correctness.** It does not verify that the declared version is the
   version the dependent was compiled against, only that it exists. A package pinned at a real-but-wrong
   version still passes.
-- **Parsing closes shape-coincidence, not peer identity.** The guard now understands the documents it reads,
-  but it still trusts that the endpoint it reached is the endpoint it meant — DNS and TLS — and still trusts
-  nuget.org's own semantics for what membership of a flat-container `versions` array means. A response from
+- **Total parsing closes shape coincidence and selection ambiguity, not peer identity.** The guard now
+  understands the documents it reads and refuses the ones that admit more than one reading, but it still
+  trusts that the endpoint it reached is the endpoint it meant — DNS and TLS — and still trusts nuget.org's
+  own semantics for what membership of a flat-container `versions` array means. A response from
   the wrong peer, correctly shaped, is still believed. That residual is out of this guard's reach and is
   recorded rather than claimed closed.
-- **The identical pattern-coincidence primitive survives in `.github/scripts/assert-nupkg-provenance.sh`** at
-  `:107`, `:115`, `:150-151`, `:173` and `:197` — `sed`/`grep` over nuspec text and `unzip -Z1` output where
-  a parse belongs. It is deliberately NOT fixed here, and it is tracked as
+- **The same primitive survives in `.github/scripts/assert-nupkg-provenance.sh`** at `:107`, `:115`,
+  `:150-151`, `:173` and `:197` — `sed`/`grep` over nuspec text and `unzip -Z1` output where a parse belongs.
+  Issue #475 names that class *string coincidence*; on the evidence above the name should widen to *permissive
+  selection*, because a parse alone would not close it. The bounded-impact judgement is UNCHANGED: it is
+  deliberately NOT fixed here, and it is tracked as
   <https://github.com/brenpike/Chatter/issues/475> so the deferral cannot be silently dropped. The fix-now /
   defer split is bounded impact, not convenience: this guard body runs in the ONLY job holding
   `id-token: write`, and its fail-open terminates in `dotnet nuget push` of an unrestorable package to a
   registry that permits no deletion. The provenance script runs with a checkout in `supply-chain-gates.yml`,
   holds no publish credential, and its fail-open ships a package with poorer supply-chain metadata —
   permanent too, but materially less severe, and not reached through a credential.
+- **The guard is deliberately stricter than NuGet on an ambiguous manifest.** Two `<dependencies>` elements
+  are a union to `NuspecReader`, and exit 2 here. `dotnet pack` never emits them, so the cost is zero on
+  every document this repository produces, and the alternative is reimplementing NuGet's resolution closely
+  enough to be trusted — which is the primitive this guard exists to remove.
+- **A nuspec in a seventh NuGet schema namespace would block every release of that module.** The root
+  namespace is checked against the six `ManifestSchemaUtility` URIs plus the empty legacy one, and an
+  unrecognised seventh exits 2. Retuning is a one-line list edit in nine files; the failure direction is a red
+  deploy with the artifact retained, never a publish.
 - **No `src/**` file changes, so no package version moves and no CHANGELOG entry is due.** The nine
   `CHANGELOG.md` files live inside `src/<Module>/src/<Module>/` and sit under the CD path filters, which is a
   second reason not to touch them for a workflow-only change.
@@ -337,32 +473,55 @@ fired.
   closes its parent epic #309 (CI/CD supply chain), of which it is the last open child.
 - `.github/workflows/messagebrokers-cicd.yml` — reference structure for all nine: the duplicate-release guard
   at `:52-68` consumed at `:116`, the 7-day artifact retention at `:92,98`, the `deploy` job INVARIANT at
-  `:100-111`, and the guard step `Assert declared Chatter dependencies are published` at `:130-451` (sentinel
-  comments at `:136` and `:451`), sitting between `Download package artifact` (`:125`) and `Setup .NET`
-  (`:452`), and therefore ahead of `NuGet login (OIDC)` (`:460`) and `Push NuGet packages` (`:465`).
+  `:100-111`, and the guard step `Assert declared Chatter dependencies are published` at `:130-578` (sentinel
+  comments at `:136` and `:578`), sitting between `Download package artifact` (`:125`) and the `deploy` job's
+  own `Setup .NET` (`:579` — not the `package` job's at `:43`), and therefore ahead of `NuGet login (OIDC)`
+  (`:587`) and `Push NuGet packages` (`:592`).
 - `.github/scripts/assert-nupkg-provenance.sh:6-7` — the existing exit-1-versus-exit-2 invariant this guard's
-  exit codes mirror. The same file's `:107`, `:115`, `:150-151`, `:173` and `:197` still carry the
-  pattern-coincidence primitive this guard removed, deferred to issue #475.
+  exit codes mirror. The same file's `:107`, `:115`, `:150-151`, `:173` and `:197` still carry the primitive
+  this guard removed, deferred to issue #475.
 - Issue #475 — *`assert-nupkg-provenance.sh` proves its obligations by string coincidence, not by parsing*.
   The tracked home for the deferred half of the same class, with the bounded-impact reasoning recorded in the
-  Consequences above.
+  Consequences above. Its title names the narrower class; the work it tracks is permissive selection.
 - `.github/scripts/tests/deploy-dependency-guard.test.sh` and `.github/scripts/tests/fixture-feed.py` — the
-  hermetic offline harness, **49 assertions, all green**. Seven are structural: tooling present, extraction
-  strips only a terminal CR, the nine-workflow CD set, marker coverage, the byte-identical assertion, the
-  identical pre-sentinel regions, and `bash -n` over every extracted body. Twenty-two are behavioural, driving
-  the real extracted body: all dependencies published; declared version absent; dependency never published;
-  index `5xx`; endpoint unreachable; zero `Chatter.*` dependencies; version substring collision; dependency
-  attributes reversed; attributes wrapped across lines; namespace-prefixed elements; a commented-out `<id>`
-  that must not become the package identity; dependencies without target-framework groups; a dependency in
-  open/close rather than self-closing form; a `Chatter.*` dependency with no version; a truncated nuspec; a
-  `.nupkg` holding two root `.nuspec` entries; one holding none; a `200` with a non-JSON body; a `200`
-  mentioning the version outside the `versions` array; a `200` with no `versions` key; a `versions` that is
-  not a list of strings; and the poll budget bounding total wall time to one budget rather than one per
-  dependency. Two of those — a `200` whose body is not JSON at all and a `200` mentioning the version outside
-  the `versions` array — are the cases that ran RED against the previous pattern-matching body by exiting 0
-  and letting the publish proceed. It uses a real local HTTP
+  hermetic offline harness, **76 assertions, all green**. Nine are structural: extraction strips only a
+  terminal CR, the nine-workflow CD set, marker coverage, the byte-identical assertion, the identical
+  pre-sentinel regions, `bash -n` over every extracted body, and three over the checked-in packed nuspec
+  fixture. Sixty-seven are behavioural across 35 cases driving the real extracted body. Feed-shaped: all
+  dependencies published; declared version absent; dependency never published; index `5xx`; endpoint
+  unreachable; a `200` with a non-JSON body; a `200` mentioning the version outside the `versions` array; a
+  `200` with no `versions` key; a `versions` that is not a list of strings; a version substring collision; and
+  the poll budget bounding total wall time to one budget rather than one per dependency. Document-shaped:
+  zero `Chatter.*` dependencies; dependency attributes reversed; attributes wrapped across lines;
+  namespace-prefixed elements; a commented-out `<id>` that must not become the package identity;
+  dependencies without target-framework groups; a dependency in open/close rather than self-closing form; a
+  `Chatter.*` dependency with no version; a truncated nuspec; a `.nupkg` holding two root `.nuspec` entries;
+  one holding none; a root element that is not `<package>`; duplicated `<metadata>`, `<id>`, `<version>` and
+  `<dependencies>`; a foreign document namespace; a `<dependencies>` subtree redeclaring a foreign namespace;
+  a `<dependencies>` under an element no schema models; a sole `.nuspec` entry behind a backslash-separated
+  path; two archive entries sharing one root `.nuspec` name; a nuspec carrying no `xmlns` at all; every one of
+  the six `ManifestSchemaUtility` namespaces read in turn; and the real shipped nuspec driven both ways, its
+  sibling present and absent. Four of these are the cases that ran RED against a body that shipped: a `200`
+  whose body is not JSON and a `200` mentioning the version outside the `versions` array exited 0 under the
+  pattern-matching body, and two `<dependencies>` elements and the backslash-separated entry exited 0 under
+  the parsing body that replaced it — every one of them letting the publish proceed. It uses a real local HTTP
   stub rather than `file://`, because `curl -w '%{http_code}'` reports `000` for `file://` and would defeat
   the status classifier the guard is built on.
+- `.github/scripts/tests/fixtures/chatter.messagebrokers.0.30.0.nuspec` — the one document in the harness
+  `dotnet pack` actually wrote, checked in verbatim out of `chatter.messagebrokers.0.30.0.nupkg`: 1642 bytes,
+  opening with a UTF-8 BOM and declaring `Chatter.CQRS 0.16.0` in both target-framework groups.
+  `.gitattributes` pins `*.nuspec -text`, so no checkout, line-ending normalization or editor rewrite can
+  touch those bytes, and
+  three structural assertions re-check the BOM, both groups and the declared sibling on every run. The BOM is
+  the point: `ElementTree.fromstring` consumes it when handed BYTES, so a refactor that decoded to `str` first
+  would break on every shipped package, and this fixture is the only thing in the harness that would notice.
+- NuGet.Client `dev`, read for the two divergences recorded above:
+  `src/NuGet.Core/NuGet.Packaging/NuspecReader.cs` — `GetDependencyGroups()` calling
+  `MetadataNode.Elements(XName.Get(Dependencies, ns))` and unioning across every match;
+  `src/NuGet.Core/NuGet.Packaging/PackageExtraction/PackageHelper.cs` — `IsManifest = IsRoot && IsNuspec`
+  with `Slashes = { '/', '\\' }`; and
+  `src/NuGet.Core/NuGet.Packaging/PackageCreation/Authoring/ManifestSchemaUtility.cs` — the six schema
+  namespaces the root accept-list carries.
 - `.github/workflows/supply-chain-gates.yml` — where the harness runs, unfiltered by path so a workflows-only
   change still exercises it.
 - Commits `1d3b8e7` (PR #466, the `0.29.0` bump whose CD run `34671797737` was cancelled) and `bfda47a`
