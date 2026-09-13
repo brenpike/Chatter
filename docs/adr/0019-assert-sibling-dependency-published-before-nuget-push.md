@@ -226,20 +226,37 @@ implementation's blind spots unless its fixture builders can express documents t
 handle.** A case list is auditable at a glance; the fixture builders' parameter list is what decides which
 cases that list is even able to contain.
 
-### Why there is no third strike of this shape
+### Why a third strike of this shape is not reachable under today's NuGet schema
 
-Not "unlikely" — structurally unreachable, under the assumptions this document states. After an exhaustive
-traversal of a fully-modelled subtree, plus a whole-document census that raises on any element spelling a
-modelled name at a position the walk did not visit, there is no unexamined node left in the document to hold
-a `Chatter.*` dependency the guard failed to report. A future NuGet schema gaining a new dependency-bearing
-construct does not arrive as a node the guard quietly skips; it arrives as an unmodelled element, and an
-unmodelled element raises. So a third instance of this class cannot be a fail-open. It can only be a
-fail-closed red deploy on a document the guard declines to interpret, which is the outcome it is built to
-produce whenever it does not know.
+The census earns less than "structurally unreachable", and saying exactly what it does earn is the point of
+this section. `assert_declarations_are_all_modelled` (`.github/workflows/messagebrokers-cicd.yml:351-363`) is
+a RELOCATED-MODELLED-NAME rule, not an unmodelled-element rule: an element the modelled walk never visited
+raises only if it spells one of the six `MODELLED_LOCAL_NAMES` (`:212-213`) — `metadata`, `id`, `version`,
+`dependencies`, `group`, `dependency`. An unvisited element spelling anything else is passed over in silence.
+Measured against the shipped reader, three documents exit **0** while carrying a `Chatter.*` dependency it
+never reports: an unmodelled container holding only unmodelled-named children;
+`<packageDependencies><requires package="Chatter.CQRS" atLeast="0.16.0"/></packageDependencies>`; and an
+attribute-borne `<frameworkReferences dependsOn="Chatter.CQRS/0.16.0"/>`. Even `<dependencyGroups>` — the
+shape the census comment names — is refused through its `<group>` and `<dependency>` descendants and NOT
+because the container itself is unknown: the same element carrying only unmodelled-named children exits 0.
 
-That is a claim about the named class under the stated assumptions — direct dependencies only, versions
-published before the guard landed uncovered, peer identity trusted. It is not a claim that no fail-open of
-any kind is possible.
+What is earned is worth stating positively, because it is strong. **The guard is SOUND against today's NuGet
+schema.** Restore reads dependencies from exactly one position, `metadata/dependencies`, and that subtree is
+traversed exhaustively with every child required to be a node the reader models. A document carrying a
+dependency in any of the positions above therefore declares nothing NuGet would restore, so the bypass
+construction — a package publishing while a sibling it really depends on is absent from the feed — is not
+satisfiable. Every position a `dotnet pack` output can put a dependency in is read or refused.
+
+The residual is FORWARD-LOOKING: a future NuGet schema introducing a dependency-bearing construct spelled with
+a seventh name would be skipped silently rather than raising. Closing it means replacing the six-name census
+with a positive allowlist of modelled positions, deferred to
+<https://github.com/brenpike/Chatter/issues/476> and pinned in the harness by
+`case_unmodelled_container_with_only_unmodelled_children`, whose exit-0 assertion is written to flip to exit 2
+when that rework lands.
+
+That is a claim about the named class under the stated assumptions — direct dependencies only, today's schema,
+versions published before the guard landed uncovered, peer identity trusted. It is not a claim that no
+fail-open of any kind is possible.
 
 ### Why the body is inline YAML and not `.github/scripts/*.sh`
 
@@ -299,6 +316,14 @@ and exits 2. Flat-container normalizes versions (leading zeros stripped, a fourt
 nine modules use three-part SemVer, so the nuspec string and the index entry are the same characters and
 compare directly, and that assumption is pinned in a comment next to the membership test rather than left
 implicit.
+
+Two inverse risks follow from that same assumption, and both fail CLOSED. A ranged declaration —
+`version="[0.16.0, )"` — is refused by `require_field`'s whitespace rule
+(`.github/workflows/messagebrokers-cicd.yml:264-271`) and exits 2. A four-part version is emitted verbatim,
+never matches the flat-container's normalized list, and exits 1. Both measured against the shipped reader.
+Neither is reachable while every sibling reference is a `ProjectReference` and every module `<Version>` is
+three-part, which holds across all nine today; the condition that makes them reachable is converting a sibling
+`ProjectReference` to a ranged or floating `PackageReference`.
 
 The dependency set is read the same way, and exhaustively: `<dependencies>` holds either `<group>`
 elements — the form `dotnet pack` emits for a multi-targeted package — or bare `<dependency>` elements, the
@@ -417,10 +442,16 @@ fired.
   `needs.package.outputs.should_publish == 'true'` (`.github/workflows/messagebrokers-cicd.yml:116`), so a
   push with no version bump never reaches it. The only always-on CI addition is the hermetic offline harness,
   which never touches nuget.org and therefore cannot flake on it.
-- **A blocked deploy can idle up to 600 seconds of runner time before failing — once, not once per sibling.**
-  The deadline is a total across the whole step and the guard exits at the first absent sibling, so the worst
-  case is one budget however many `Chatter.*` dependencies a package declares. Accepted, and retunable through
-  the documented env seam.
+- **A blocked deploy can idle roughly 645 seconds of runner time before failing — once, not once per
+  sibling.** The deadline is a total across the whole step and the guard exits at the first absent sibling, so
+  the worst case is one budget however many `Chatter.*` dependencies a package declares. The number is not
+  600: the deadline is tested AFTER the fetch (`.github/workflows/messagebrokers-cicd.yml:527`, `curl
+  --max-time 30`) and BEFORE an unconditional `sleep "$DEPENDENCY_GUARD_POLL_SECONDS"` (`:555-556`), so a
+  check passing an instant inside the deadline still buys one poll interval and one fetch timeout before the
+  next one breaks — budget plus 15 plus 30. The harness does not bound that number and must not be read as
+  doing so: `case_poll_budget_bounds_total_wall_time` allows 1.5x the budget, a tolerance sized to separate
+  one budget from two on a loaded machine, and 1.5x never separates 600 from 645. Accepted, and retunable
+  through the documented env seam.
 - **Nine copies of one guard body, bash plus its embedded `python3` reader, must stay identical.** The
   byte-identical assertion in the harness is the mechanism and it covers the reader too, because the reader is
   part of the body; a tenth CD workflow added later trips the "exactly nine" count, which must be updated
@@ -448,6 +479,22 @@ fired.
   registry that permits no deletion. The provenance script runs with a checkout in `supply-chain-gates.yml`,
   holds no publish credential, and its fail-open ships a package with poorer supply-chain metadata —
   permanent too, but materially less severe, and not reached through a credential.
+- **The whole-document census enumerates six element names; it does not interpret the manifest against NuGet's
+  accepted element set.** `assert_declarations_are_all_modelled`
+  (`.github/workflows/messagebrokers-cicd.yml:351-363`) raises only where an unvisited element spells one of
+  `MODELLED_LOCAL_NAMES` (`:212-213`), so an unmodelled container holding only unmodelled-named children, a
+  `<packageDependencies><requires package="Chatter.CQRS" atLeast="0.16.0"/></packageDependencies>` block, and
+  an attribute-borne `<frameworkReferences dependsOn="Chatter.CQRS/0.16.0"/>` each exit 0 with their
+  `Chatter.*` dependency unreported — all three measured against the shipped reader. The root cause is the
+  permissive selection this guard exists to remove, surviving as a negative rule over six names where a
+  positive allowlist of modelled POSITIONS belongs. It is deliberately NOT fixed here and is tracked as
+  <https://github.com/brenpike/Chatter/issues/476> so the deferral cannot be silently dropped. The
+  bounded-impact judgement: none of the three is reachable as a bad publish under today's NuGet schema, because
+  restore reads dependencies only from `metadata/dependencies`, so a document shaped like any of them declares
+  nothing NuGet would restore. The exposure is forward-looking — a future schema gaining a seventh
+  dependency-bearing name — and it is pinned in the harness by
+  `case_unmodelled_container_with_only_unmodelled_children`, whose exit-0 assertion is written to invert when
+  the rework lands rather than to be deleted.
 - **The guard is deliberately stricter than NuGet on an ambiguous manifest.** Two `<dependencies>` elements
   are a union to `NuspecReader`, and exit 2 here. `dotnet pack` never emits them, so the cost is zero on
   every document this repository produces, and the alternative is reimplementing NuGet's resolution closely
@@ -483,11 +530,15 @@ fired.
 - Issue #475 — *`assert-nupkg-provenance.sh` proves its obligations by string coincidence, not by parsing*.
   The tracked home for the deferred half of the same class, with the bounded-impact reasoning recorded in the
   Consequences above. Its title names the narrower class; the work it tracks is permissive selection.
+- Issue #476 — *Dependency guard enumerates dependency-bearing positions instead of interpreting the manifest
+  against NuGet's accepted element set*. The tracked home for the six-name census's forward-looking gap, with
+  the bounded-impact reasoning recorded in the Consequences above, and the gap pinned in the harness by
+  `case_unmodelled_container_with_only_unmodelled_children`.
 - `.github/scripts/tests/deploy-dependency-guard.test.sh` and `.github/scripts/tests/fixture-feed.py` — the
-  hermetic offline harness, **76 assertions, all green**. Nine are structural: extraction strips only a
+  hermetic offline harness, **77 assertions, all green**. Nine are structural: extraction strips only a
   terminal CR, the nine-workflow CD set, marker coverage, the byte-identical assertion, the identical
   pre-sentinel regions, `bash -n` over every extracted body, and three over the checked-in packed nuspec
-  fixture. Sixty-seven are behavioural across 35 cases driving the real extracted body. Feed-shaped: all
+  fixture. Sixty-eight are behavioural across 37 cases driving the real extracted body. Feed-shaped: all
   dependencies published; declared version absent; dependency never published; index `5xx`; endpoint
   unreachable; a `200` with a non-JSON body; a `200` mentioning the version outside the `versions` array; a
   `200` with no `versions` key; a `versions` that is not a list of strings; a version substring collision; and
@@ -498,9 +549,12 @@ fired.
   `Chatter.*` dependency with no version; a truncated nuspec; a `.nupkg` holding two root `.nuspec` entries;
   one holding none; a root element that is not `<package>`; duplicated `<metadata>`, `<id>`, `<version>` and
   `<dependencies>`; a foreign document namespace; a `<dependencies>` subtree redeclaring a foreign namespace;
-  a `<dependencies>` under an element no schema models; a sole `.nuspec` entry behind a backslash-separated
-  path; two archive entries sharing one root `.nuspec` name; a nuspec carrying no `xmlns` at all; every one of
-  the six `ManifestSchemaUtility` namespaces read in turn; and the real shipped nuspec driven both ways, its
+  a modelled element name recurring at a position the walk never visits — `<group>` and `<dependency>` under
+  `<dependencyGroups>`, refused for the names they spell and NOT because their container is unknown; the same
+  container holding only unmodelled-named children, exiting 0 as the pinned known gap tracked by issue #476; a sole
+  `.nuspec` entry behind a backslash-separated path; two archive entries sharing one root `.nuspec` name; a nuspec
+  carrying no `xmlns` at all; every one of the six `ManifestSchemaUtility` namespaces read in turn; and the real
+  shipped nuspec driven both ways, its
   sibling present and absent. Four of these are the cases that ran RED against a body that shipped: a `200`
   whose body is not JSON and a `200` mentioning the version outside the `versions` array exited 0 under the
   pattern-matching body, and two `<dependencies>` elements and the backslash-separated entry exited 0 under
