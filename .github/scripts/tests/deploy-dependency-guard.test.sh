@@ -35,6 +35,16 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 fixture_feed="$script_dir/fixture-feed.py"
 workflow_dir="$repo_root/.github/workflows"
 
+# The one nuspec this harness does not generate: the document `dotnet pack` shipped inside
+# chatter.messagebrokers.0.30.0.nupkg, extracted from the published package and checked in
+# verbatim, BOM and all. Its facts are constants here so the index fixtures driving it and the
+# self-check guarding it cannot drift apart from the file.
+real_nuspec_fixture="$script_dir/fixtures/chatter.messagebrokers.0.30.0.nuspec"
+real_nuspec_package_id='Chatter.MessageBrokers'
+real_nuspec_package_version='0.30.0'
+real_nuspec_sibling_id='Chatter.CQRS'
+real_nuspec_sibling_version='0.16.0'
+
 # The sentinel comments bracketing the guard body inside each workflow's `run: |` block. They are
 # ordinary bash comments as well as extraction anchors, so they survive into the shipped step and
 # point a reader at the decision record. `awk` between sentinels is used rather than `yq`, which is
@@ -377,24 +387,107 @@ assert_guard_bodies_parse() {
 # Fixtures: nupkgs built at test time, and flat-container index documents for the stub feed.
 # --------------------------------------------------------------------------------------------
 
+# The namespace `dotnet pack` writes, and the identity a decoy element carries. A decoy is given a
+# recognisable id and an out-of-range version so a guard that reads one reports something no
+# operator could mistake for the package being published.
+default_nuspec_namespace='http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd'
+decoy_package_id='DECOY.Package'
+decoy_package_version='9.9.9'
+
+emit_nuspec_document() {
+  # The well-formed surround every generated nuspec fixture shares. Root element name, namespace
+  # URI and element cardinality are PARAMETERS rather than literals: the fail-opens this harness
+  # must be able to see all live in exactly those three places. A reader that never checks the root,
+  # never checks the namespace, or takes the first of a repeated element is choosing one of several
+  # readings the document admits, and the reading that yields the fewest dependencies is the one
+  # that publishes. A builder that can only emit `<package xmlns="…2013/05…">` with one of each
+  # child cannot express a document in those shapes, so the blind spot would be enforced by this
+  # function's signature.
+  #
+  # Leading `--option value` pairs, then the package id, version, and dependency block:
+  #   --root NAME               root element local name (default `package`)
+  #   --namespace URI           default xmlns on the root; the empty string emits no xmlns at all
+  #   --child-namespace URI     xmlns redeclared on <dependencies>, so that subtree sits in a
+  #                             different namespace from the root while local names still match
+  #   --metadata-copies N       N>1 emits a decoy <metadata> ahead of the real one
+  #   --id-copies N             N>1 emits a decoy <id> ahead of the real one
+  #   --version-copies N        N>1 emits a decoy <version> ahead of the real one
+  #   --dependencies-copies N   N>1 emits an empty <dependencies /> ahead of the populated one
+  #   --extra-metadata-block X  literal XML inserted into <metadata> before the dependencies
+  local root_element='package'
+  local namespace_uri="$default_nuspec_namespace"
+  local child_namespace_uri=''
+  local metadata_copies=1 id_copies=1 version_copies=1 dependencies_copies=1
+  local extra_metadata_block=''
+  local root_attribute='' dependencies_attribute=''
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --root)                 root_element="$2"; shift 2 ;;
+      --namespace)            namespace_uri="$2"; shift 2 ;;
+      --child-namespace)      child_namespace_uri="$2"; shift 2 ;;
+      --metadata-copies)      metadata_copies="$2"; shift 2 ;;
+      --id-copies)            id_copies="$2"; shift 2 ;;
+      --version-copies)       version_copies="$2"; shift 2 ;;
+      --dependencies-copies)  dependencies_copies="$2"; shift 2 ;;
+      --extra-metadata-block) extra_metadata_block="$2"; shift 2 ;;
+      --*) fail_infrastructure "unknown nuspec shape option '$1'; the deploy dependency guard assertions did not run" ;;
+      *) break ;;
+    esac
+  done
+
+  local package_id="$1" package_version="$2" dependency_block="$3"
+
+  [ -z "$namespace_uri" ] || root_attribute=" xmlns=\"$namespace_uri\""
+  [ -z "$child_namespace_uri" ] || dependencies_attribute=" xmlns=\"$child_namespace_uri\""
+
+  printf '<?xml version="1.0" encoding="utf-8"?>\n'
+  printf '<%s%s>\n' "$root_element" "$root_attribute"
+  if [ "$metadata_copies" -gt 1 ]; then
+    printf '  <metadata>\n'
+    printf '    <id>%s</id>\n' "$decoy_package_id"
+    printf '    <version>%s</version>\n' "$decoy_package_version"
+    printf '    <description>decoy metadata</description>\n'
+    printf '    <dependencies />\n'
+    printf '  </metadata>\n'
+  fi
+  printf '  <metadata>\n'
+  [ "$id_copies" -le 1 ] || printf '    <id>%s</id>\n' "$decoy_package_id"
+  printf '    <id>%s</id>\n' "$package_id"
+  [ "$version_copies" -le 1 ] || printf '    <version>%s</version>\n' "$decoy_package_version"
+  printf '    <version>%s</version>\n' "$package_version"
+  printf '    <description>deploy-dependency-guard fixture</description>\n'
+  [ -z "$extra_metadata_block" ] || printf '%s\n' "$extra_metadata_block"
+  [ "$dependencies_copies" -le 1 ] || printf '    <dependencies />\n'
+  printf '    <dependencies%s>\n' "$dependencies_attribute"
+  [ -z "$dependency_block" ] || printf '%s\n' "$dependency_block"
+  printf '    </dependencies>\n'
+  printf '  </metadata>\n'
+  printf '</%s>\n' "$root_element"
+}
+
 write_nuspec() {
   # Reproduces the shape `dotnet pack` emits for a multi-targeted Chatter module: one <group> per
   # target framework, each repeating the identical dependency set. The real
   # Chatter.MessageBrokers.SqlServiceBroker 0.14.2 nuspec declares Chatter.MessageBrokers 0.29.0 in
   # both its net8.0 and net10.0 groups, so a guard that does not dedupe queries the feed twice.
+  #
+  # Leading `--option value` pairs are document-shape options, forwarded verbatim to
+  # emit_nuspec_document, so an archive-level fixture can also vary root, namespace or cardinality.
+  local shape_options=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --*) shape_options+=("$1" "$2"); shift 2 ;;
+      *) break ;;
+    esac
+  done
+
   local nuspec_path="$1" package_id="$2" package_version="$3"
   shift 3
   local dependencies=("$@")
-  local target_framework dependency dependency_id dependency_version
+  local target_framework dependency dependency_id dependency_version dependency_block
 
-  {
-    printf '<?xml version="1.0" encoding="utf-8"?>\n'
-    printf '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">\n'
-    printf '  <metadata>\n'
-    printf '    <id>%s</id>\n' "$package_id"
-    printf '    <version>%s</version>\n' "$package_version"
-    printf '    <description>deploy-dependency-guard fixture</description>\n'
-    printf '    <dependencies>\n'
+  dependency_block="$(
     for target_framework in net8.0 net10.0; do
       printf '      <group targetFramework="%s">\n' "$target_framework"
       # Every fixture carries a non-Chatter dependency, so the `Chatter.` prefix filter has
@@ -408,10 +501,10 @@ write_nuspec() {
       done
       printf '      </group>\n'
     done
-    printf '    </dependencies>\n'
-    printf '  </metadata>\n'
-    printf '</package>\n'
-  } >"$nuspec_path"
+  )"
+
+  emit_nuspec_document ${shape_options[@]+"${shape_options[@]}"} \
+    "$package_id" "$package_version" "$dependency_block" >"$nuspec_path"
 }
 
 create_nupkg() {
@@ -468,27 +561,51 @@ create_nupkg_from_nuspec_text() {
   printf '%s' "$nupkg_path"
 }
 
+create_nupkg_from_nuspec_file() {
+  # Packs one nupkg whose nuspec is the given file's bytes, copied rather than routed through a
+  # shell variable. `$(cat …)` strips trailing newlines and a shell variable is a poor carrier for
+  # a byte-exact document, and byte-exactness is the entire point of the checked-in real nuspec:
+  # its UTF-8 BOM and its two target-framework groups are the fixture.
+  local package_dir="$1" fixture_slug="$2" package_id="$3" package_version="$4" nuspec_source="$5"
+  local stage_dir nuspec_name nupkg_path
+
+  stage_dir="$work_dir/stage-$fixture_slug"
+  nuspec_name="$package_id.nuspec"
+  nupkg_path="$package_dir/$package_id.$package_version.nupkg"
+  mkdir -p "$stage_dir" "$package_dir"
+  cp "$nuspec_source" "$stage_dir/$nuspec_name"
+  pack_nupkg_entries "$nupkg_path" "$nuspec_name" "$stage_dir/$nuspec_name"
+  printf '%s' "$nupkg_path"
+}
+
 shape_nuspec_document() {
   # The well-formed surround the nuspec-shape fixtures share: only the sibling dependency
   # declaration varies, so a failure names the shape rather than an unrelated difference. Every
   # shape declares Chatter.MessageBrokers 0.29.0, the version the shipped incident referenced and
   # the one the shape fixtures' index deliberately omits.
-  local dependency_block="$1"
+  #
+  # Leading `--option value` pairs are document-shape options forwarded to emit_nuspec_document,
+  # so a shape fixture can vary the root element, the namespace, or how many times an element the
+  # reader looks for occurs. An empty dependency block emits the group carrying only the non-Chatter
+  # dependency, which is what a document hiding its siblings somewhere the reader does not look
+  # needs.
+  local shape_options=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --*) shape_options+=("$1" "$2"); shift 2 ;;
+      *) break ;;
+    esac
+  done
 
-  printf '<?xml version="1.0" encoding="utf-8"?>\n'
-  printf '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">\n'
-  printf '  <metadata>\n'
-  printf '    <id>Chatter.MessageBrokers.SqlServiceBroker</id>\n'
-  printf '    <version>0.14.2</version>\n'
-  printf '    <description>deploy-dependency-guard fixture</description>\n'
-  printf '    <dependencies>\n'
-  printf '      <group targetFramework="net8.0">\n'
-  printf '        <dependency id="Microsoft.Extensions.Logging.Abstractions" version="8.0.3" exclude="Build,Analyzers" />\n'
-  printf '%s\n' "$dependency_block"
-  printf '      </group>\n'
-  printf '    </dependencies>\n'
-  printf '  </metadata>\n'
-  printf '</package>\n'
+  local dependency_block="$1"
+  local group_block='        <dependency id="Microsoft.Extensions.Logging.Abstractions" version="8.0.3" exclude="Build,Analyzers" />'
+
+  [ -z "$dependency_block" ] || group_block="$group_block
+$dependency_block"
+
+  emit_nuspec_document ${shape_options[@]+"${shape_options[@]}"} \
+    Chatter.MessageBrokers.SqlServiceBroker 0.14.2 \
+    "$(printf '      <group targetFramework="net8.0">\n%s\n      </group>' "$group_block")"
 }
 
 add_symbol_package_sibling() {
@@ -1154,6 +1271,353 @@ case_poll_budget_bounds_total_wall_time() {
   fi
 }
 
+# --------------------------------------------------------------------------------------------
+# Permissive-selection cases. Each document below is well-formed XML that admits more than one
+# reading, and each fact the guard decides on is read from a position it chose permissively: a root
+# element it never checked, a namespace it never checked, or the FIRST of an element that occurs
+# more than once. When a document admits several readings, the one yielding the fewest dependencies
+# is indistinguishable from a correct one — and that reading is the one that publishes. None of
+# these documents can be answered honestly, so every one of them must be refused (exit 2) rather
+# than answered from a guess.
+# --------------------------------------------------------------------------------------------
+
+case_root_element_is_not_package() {
+  local case_name='the nuspec root element is not <package>'
+  local output_file="$work_dir/shape-foreign-root/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-foreign-root"
+  # A document whose root is not <package> is not a manifest, whatever its children are named. A
+  # reader that descends straight to <metadata> never asks what document it is holding, so any file
+  # carrying the right child names is read as one.
+  nuspec_text="$(shape_nuspec_document --root notpackage \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-foreign-root "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_metadata_is_duplicated() {
+  local case_name='the nuspec carries two <metadata> elements, a decoy first'
+  local output_file="$work_dir/shape-two-metadata/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-two-metadata"
+  # Which <metadata> is the package's is undecidable, so the document is ambiguous. Taking the first
+  # is a choice, not a reading: the decoy declares no dependencies, so the whole sibling set of the
+  # second one disappears and the guard reports a package identity that is not being published.
+  nuspec_text="$(shape_nuspec_document --metadata-copies 2 \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-two-metadata "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_dependencies_is_duplicated() {
+  local case_name='the nuspec carries two <dependencies> elements, an empty one first'
+  local output_file="$work_dir/shape-two-dependencies/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-two-dependencies"
+  # The headline of this class, and the one a root-element check alone does not catch: this document
+  # has the correct root, one uniform namespace and exactly one <metadata>. NuGet's own
+  # NuspecReader.GetDependencyGroups() enumerates EVERY <dependencies> under the metadata node and
+  # unions the groups, so a restoring client sees Chatter.MessageBrokers 0.29.0 here. A reader that
+  # takes the first sees an empty element, concludes the package declares nothing, and publishes.
+  nuspec_text="$(shape_nuspec_document --dependencies-copies 2 \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-two-dependencies "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_id_is_duplicated() {
+  local case_name='the nuspec carries two <id> elements, a decoy first'
+  local output_file="$work_dir/shape-two-ids/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-two-ids"
+  # The identity the guard prints is the identity an operator acts on. Read from the first of two,
+  # it names a package that is not being published and sends them to the wrong pipeline.
+  nuspec_text="$(shape_nuspec_document --id-copies 2 \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-two-ids "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_version_is_duplicated() {
+  local case_name='the nuspec carries two <version> elements, a decoy first'
+  local output_file="$work_dir/shape-two-versions/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-two-versions"
+  # Same ambiguity on the other half of the identity: the version reported is the one the operator
+  # goes looking for in the feed afterwards.
+  nuspec_text="$(shape_nuspec_document --version-copies 2 \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-two-versions "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_document_namespace_is_foreign() {
+  local case_name='every element sits in a namespace that is not a nuspec schema'
+  local output_file="$work_dir/shape-foreign-namespace/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-foreign-namespace"
+  # Matching on local names alone makes the namespace URI decorative, so `{urn:something-else}id`
+  # and `{…/2013/05…}id` are read as the same element. They are not: a namespace is part of an
+  # element's name, and a document in a foreign namespace is a different document that happens to
+  # spell its elements the same way.
+  nuspec_text="$(shape_nuspec_document --namespace 'http://example.invalid/not-a-nuspec-schema' \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-foreign-namespace "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_dependencies_namespace_is_foreign() {
+  local case_name='the <dependencies> subtree redeclares a foreign namespace'
+  local output_file="$work_dir/shape-mixed-namespace/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-mixed-namespace"
+  # A correct root with one subtree moved into another namespace. NuGet resolves <dependencies>
+  # against the ROOT's namespace and would find none here, while a local-name reader finds the
+  # sibling — the two disagree about what this package declares, which is precisely a document that
+  # cannot be answered honestly. This is also the distinction the prefixed-namespace fixture must
+  # not blur: there, `n:package` EXPANDS to the same 2013/05 URI as every child, and the document is
+  # uniform; here the spelling looks uniform and the expanded URIs differ.
+  nuspec_text="$(shape_nuspec_document --child-namespace 'http://example.invalid/not-a-nuspec-schema' \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-mixed-namespace "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_dependencies_under_unmodelled_element() {
+  local case_name='dependency-shaped children sit under an element the reader does not model'
+  local output_file="$work_dir/shape-dependency-groups/output.txt"
+  local nuspec_text unmodelled_block
+
+  mkdir -p "$work_dir/shape-dependency-groups"
+  # <dependencyGroups> is not a nuspec element, and that is the point: the guard looks in exactly one
+  # place, so a document declaring its siblings anywhere else reads as declaring none. "I looked
+  # where I know to look and found nothing" is a different fact from "this package declares no
+  # Chatter dependencies", and only the second may ever exit 0.
+  unmodelled_block="$(printf '%s\n' \
+    '    <dependencyGroups>' \
+    '      <group targetFramework="net8.0">' \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />' \
+    '      </group>' \
+    '    </dependencyGroups>')"
+  nuspec_text="$(shape_nuspec_document --extra-metadata-block "$unmodelled_block" '')"
+
+  run_nuspec_shape_case shape-dependency-groups "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_sole_nuspec_entry_is_not_at_the_archive_root() {
+  local case_name='the only .nuspec entry sits under a backslash-separated path'
+  local case_dir="$work_dir/shape-backslash-entry"
+  local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
+  local stage_dir="$case_dir/stage" output_file="$case_dir/output.txt"
+  local nupkg_path guard_exit
+
+  mkdir -p "$package_dir" "$fixture_dir" "$stage_dir"
+  # NuGet's PackageHelper.IsManifest is `IsRoot && IsNuspec`, and IsRoot rejects a `\` separator as
+  # well as a `/` one, because a zip entry name may carry either. An archive filter that excludes
+  # only `/` therefore admits an entry NuGet would never read as the manifest, and this archive has
+  # no manifest at its root at all. The decoy declares a published version, so today this archive
+  # is answered from a document the restoring client will never see, and it publishes.
+  #
+  # The entry name reaches the archive verbatim because this harness runs on a POSIX runner, where
+  # `zipfile` only rewrites os.sep: on Windows the same call would store `sub/decoy.nuspec` and the
+  # case would silently degrade into the `/` one the guard already refuses.
+  write_nuspec "$stage_dir/decoy.nuspec" \
+    Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:0.30.0
+  nupkg_path="$package_dir/Chatter.MessageBrokers.SqlServiceBroker.0.14.3.nupkg"
+  pack_nupkg_entries "$nupkg_path" 'sub\decoy.nuspec' "$stage_dir/decoy.nuspec"
+  write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 0.28.0 0.30.0
+
+  start_fixture_feed "$fixture_dir"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 2 "$guard_exit" "$output_file" || return 0
+}
+
+case_nupkg_holds_two_entries_of_one_nuspec_name() {
+  local case_name='the nupkg holds two entries under one root .nuspec name'
+  local case_dir="$work_dir/shape-duplicate-entry-name"
+  local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
+  local stage_dir="$case_dir/stage" output_file="$case_dir/output.txt"
+  local nupkg_path guard_exit
+
+  mkdir -p "$package_dir" "$fixture_dir" "$stage_dir"
+  # A zip archive may carry the same entry name twice: `namelist()` returns both, while `read(name)`
+  # hands back whichever the central directory resolves to. The two copies here declare different
+  # sibling versions — one published, one not — so the verdict genuinely depends on which copy is
+  # read, and an archive whose manifest is decided that way must be refused rather than answered.
+  write_nuspec "$stage_dir/published.nuspec" \
+    Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:0.30.0
+  write_nuspec "$stage_dir/absent.nuspec" \
+    Chatter.MessageBrokers.SqlServiceBroker 0.14.3 Chatter.MessageBrokers:0.29.0
+  nupkg_path="$package_dir/Chatter.MessageBrokers.SqlServiceBroker.0.14.3.nupkg"
+  # zipfile warns on a duplicate entry name. The duplicate IS this fixture, so the warning is
+  # silenced for this one pack rather than left to read as harness noise.
+  (
+    export PYTHONWARNINGS='ignore::UserWarning'
+    pack_nupkg_entries "$nupkg_path" \
+      'Chatter.MessageBrokers.SqlServiceBroker.nuspec' "$stage_dir/published.nuspec" \
+      'Chatter.MessageBrokers.SqlServiceBroker.nuspec' "$stage_dir/absent.nuspec"
+  )
+  write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 0.28.0 0.30.0
+
+  start_fixture_feed "$fixture_dir"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 2 "$guard_exit" "$output_file" || return 0
+}
+
+# --------------------------------------------------------------------------------------------
+# Shapes a real nuspec is allowed to take. These pass today and must keep passing: refusing an
+# ambiguous document is only worth anything if the documents NuGet actually produces are still read.
+# --------------------------------------------------------------------------------------------
+
+case_nuspec_carries_no_namespace() {
+  local case_name='the nuspec declares no namespace at all'
+  local output_file="$work_dir/shape-no-namespace/output.txt" nuspec_text
+
+  mkdir -p "$work_dir/shape-no-namespace"
+  # Legacy nuspecs carry no xmlns, and NuGet reads them. A namespace check that demands a schema URI
+  # rather than accepting the documented set plus none would reject packages that restore today.
+  nuspec_text="$(shape_nuspec_document --namespace '' \
+    '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+  run_nuspec_shape_case shape-no-namespace "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" '0.29.0' "$output_file"
+}
+
+case_every_manifest_schema_namespace_is_read() {
+  local schema_version namespace_uri case_name fixture_slug output_file nuspec_text
+
+  # NuGet's ManifestSchemaUtility accepts SIX schema namespaces, and a package keeps whichever one
+  # was current when it was packed. `2011/10` is missing from most commonly-cited lists and is
+  # included here deliberately: a namespace check built from a four- or five-entry list would reject
+  # a document NuGet restores.
+  for schema_version in 2010/07 2011/08 2011/10 2012/06 2013/01 2013/05; do
+    namespace_uri="http://schemas.microsoft.com/packaging/$schema_version/nuspec.xsd"
+    case_name="nuspec declares the $schema_version schema namespace"
+    fixture_slug="shape-ns-${schema_version//\//-}"
+    output_file="$work_dir/$fixture_slug/output.txt"
+
+    mkdir -p "$work_dir/$fixture_slug"
+    nuspec_text="$(shape_nuspec_document --namespace "$namespace_uri" \
+      '        <dependency id="Chatter.MessageBrokers" version="0.29.0" exclude="Build,Analyzers" />')"
+
+    run_nuspec_shape_case "$fixture_slug" "$nuspec_text" "$output_file"
+
+    assert_guard_exit "$case_name" 1 "$driven_case_exit" "$output_file" || continue
+  done
+}
+
+case_real_packed_nuspec_sibling_absent() {
+  local case_name='the real packed nuspec declares a sibling the index does not list'
+  local case_dir="$work_dir/real-nuspec-absent"
+  local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
+  local output_file="$case_dir/output.txt" guard_exit
+
+  mkdir -p "$package_dir" "$fixture_dir"
+  # The document that actually shipped inside chatter.messagebrokers.0.30.0.nupkg: a UTF-8 BOM, the
+  # <license>/<readme>/<repository> elements no generated fixture carries, and two target-framework
+  # groups each declaring Chatter.CQRS 0.16.0. Every other nuspec here is a forgery written to probe
+  # one seam; this one is the evidence that the guard still reads what `dotnet pack` emits.
+  create_nupkg_from_nuspec_file "$package_dir" real-nuspec-absent \
+    "$real_nuspec_package_id" "$real_nuspec_package_version" "$real_nuspec_fixture" >/dev/null
+  write_flat_container_index "$fixture_dir/chatter.cqrs.json" 0.15.0 0.17.0
+
+  start_fixture_feed "$fixture_dir"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 1 "$guard_exit" "$output_file" || return 0
+  assert_output_contains "$case_name" "$real_nuspec_sibling_id" "$output_file"
+  assert_output_contains "$case_name" "$real_nuspec_sibling_version" "$output_file"
+  assert_output_contains "$case_name" "$version_absent_phrase" "$output_file"
+}
+
+case_real_packed_nuspec_sibling_published() {
+  local case_name='the real packed nuspec declares a sibling the index lists'
+  local case_dir="$work_dir/real-nuspec-published"
+  local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
+  local request_log="$case_dir/requests.log" output_file="$case_dir/output.txt"
+  local guard_exit query_count
+
+  mkdir -p "$package_dir" "$fixture_dir"
+  : >"$request_log"
+  create_nupkg_from_nuspec_file "$package_dir" real-nuspec-published \
+    "$real_nuspec_package_id" "$real_nuspec_package_version" "$real_nuspec_fixture" >/dev/null
+  write_flat_container_index "$fixture_dir/chatter.cqrs.json" 0.15.0 0.16.0 0.17.0
+
+  start_fixture_feed "$fixture_dir" '' "$request_log"
+  guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  stop_fixture_feed
+
+  assert_guard_exit "$case_name" 0 "$guard_exit" "$output_file" || return 0
+  # The shipped document declares Chatter.CQRS 0.16.0 in BOTH target-framework groups, so the dedupe
+  # this harness asserts on generated fixtures is asserted here against a real one.
+  query_count="$(grep -cFx '/chatter.cqrs/index.json' "$request_log" || true)"
+  if [ "$query_count" -eq 1 ]; then
+    report_pass "$case_name: the sibling declared in both real groups was queried once (deduped)"
+  else
+    report_fail "$case_name: expected 1 flat-container query for chatter.cqrs, saw $query_count; the shipped nuspec declares it in both target-framework groups and must be queried once"
+  fi
+}
+
+assert_checked_in_nuspec_fixture_is_intact() {
+  # A self-check of the one nuspec this harness does not generate: the document `dotnet pack`
+  # shipped inside chatter.messagebrokers.0.30.0.nupkg, checked in verbatim. The three properties
+  # pinned here are the ones an editor silently drops, and each is load-bearing.
+  #
+  # The UTF-8 BOM: `ElementTree.fromstring` handles a BOM when it is handed BYTES, and every real
+  # nuspec `dotnet pack` writes carries one. A refactor that decoded to `str` first would break on
+  # every shipped package, and this fixture is the only thing that would notice.
+  local case_name='the checked-in packed nuspec fixture is intact'
+  local leading_bytes group_count
+
+  if [ ! -f "$real_nuspec_fixture" ]; then
+    report_fail "$case_name: $real_nuspec_fixture is missing, so the shipped-document case asserts nothing"
+    return 0
+  fi
+
+  leading_bytes="$(head -c 3 "$real_nuspec_fixture" | od -An -tx1 | tr -d '[:space:]')"
+  if [ "$leading_bytes" = 'efbbbf' ]; then
+    report_pass "$case_name: it still begins with the UTF-8 BOM"
+  else
+    report_fail "$case_name: it begins $leading_bytes, not the UTF-8 BOM efbbbf; the shipped bytes have been rewritten"
+  fi
+
+  group_count="$(grep -cF '<group targetFramework=' "$real_nuspec_fixture" || true)"
+  if [ "$group_count" -eq 2 ]; then
+    report_pass "$case_name: it still carries both target-framework groups"
+  else
+    report_fail "$case_name: it carries $group_count target-framework group(s), expected 2; the dedupe assertion needs the sibling declared twice"
+  fi
+
+  if grep -qF "id=\"$real_nuspec_sibling_id\" version=\"$real_nuspec_sibling_version\"" "$real_nuspec_fixture"; then
+    report_pass "$case_name: it still declares $real_nuspec_sibling_id $real_nuspec_sibling_version"
+  else
+    report_fail "$case_name: it no longer declares $real_nuspec_sibling_id $real_nuspec_sibling_version, so the index fixtures driving it are aimed at the wrong sibling"
+  fi
+}
+
 run_behavioural_cases() {
   if [ -z "$guard_body_file" ]; then
     report_skip 'behavioural cases: no guard body could be extracted from any CD workflow, so there is nothing to execute (the marker assertions above are the failing signal)'
@@ -1178,6 +1642,20 @@ run_behavioural_cases() {
   case_nuspec_is_truncated
   case_nupkg_holds_two_nuspec_entries
   case_nupkg_holds_no_nuspec_entry
+  case_root_element_is_not_package
+  case_metadata_is_duplicated
+  case_dependencies_is_duplicated
+  case_id_is_duplicated
+  case_version_is_duplicated
+  case_document_namespace_is_foreign
+  case_dependencies_namespace_is_foreign
+  case_dependencies_under_unmodelled_element
+  case_sole_nuspec_entry_is_not_at_the_archive_root
+  case_nupkg_holds_two_entries_of_one_nuspec_name
+  case_nuspec_carries_no_namespace
+  case_every_manifest_schema_namespace_is_read
+  case_real_packed_nuspec_sibling_absent
+  case_real_packed_nuspec_sibling_published
   case_index_returns_non_json_body
   case_index_mentions_version_outside_versions_array
   case_index_lacks_versions_key
@@ -1196,6 +1674,7 @@ assert_marker_coverage
 assert_bodies_byte_identical
 assert_pre_sentinel_regions_identical
 assert_guard_bodies_parse
+assert_checked_in_nuspec_fixture_is_intact
 
 run_behavioural_cases
 
