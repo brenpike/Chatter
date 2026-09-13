@@ -1,5 +1,8 @@
 using FluentAssertions;
 using System;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.UsingBrokeredMessageAttributeProvider
@@ -185,6 +188,43 @@ namespace Chatter.MessageBrokers.Tests.UsingBrokeredMessageAttributeProvider
                 .Should().Throw<NullReferenceException>();
             FluentActions.Invoking(() => descriptionCaller.GetBrokeredMessageDescription<UndecoratedMessage>())
                 .Should().Throw<NullReferenceException>();
+        }
+
+        [Fact]
+        public void MustNotKeepCollectibleMessageTypeAliveAfterGettingItsDetails()
+        {
+            var collectibleMessageType = GetDetailsOfCollectibleMessageType(_sut);
+
+            for (var attempt = 0; attempt < 10 && collectibleMessageType.IsAlive; attempt++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
+
+            collectibleMessageType.IsAlive.Should().BeFalse();
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static WeakReference GetDetailsOfCollectibleMessageType(BrokeredMessageAttributeProvider sut)
+        {
+            var assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(
+                new AssemblyName($"CollectibleMessages{Guid.NewGuid():N}"),
+                AssemblyBuilderAccess.RunAndCollect);
+            var typeBuilder = assemblyBuilder
+                .DefineDynamicModule("CollectibleMessages")
+                .DefineType("CollectibleMessage", TypeAttributes.Public | TypeAttributes.Class);
+            var attributeConstructor = typeof(BrokeredMessageAttribute).GetConstructor(
+                new[] { typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string) });
+            typeBuilder.SetCustomAttribute(new CustomAttributeBuilder(
+                attributeConstructor,
+                new object[] { "collectible-sending", "collectible-receiving", null, null, "", null }));
+            var messageType = typeBuilder.CreateType();
+
+            messageType.IsCollectible.Should().BeTrue();
+            sut.GetMessageName(messageType).Should().Be("collectible-sending");
+
+            return new WeakReference(messageType);
         }
     }
 }

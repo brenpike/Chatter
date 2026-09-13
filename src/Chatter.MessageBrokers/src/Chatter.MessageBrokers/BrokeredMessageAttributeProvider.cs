@@ -11,8 +11,12 @@ namespace Chatter.MessageBrokers
     {
         private static readonly ConcurrentDictionary<Type, BrokeredMessageAttribute> _brokeredMessageAttributesByType = new();
 
+        // Collectible types bypass the process-lifetime cache: a strong Type key would keep their
+        // AssemblyLoadContext from unloading.
         private static BrokeredMessageAttribute GetBrokeredMessageAttribute(Type type)
-            => _brokeredMessageAttributesByType.GetOrAdd(type, static t => t.TryGetBrokeredMessageAttribute());
+            => type is { IsCollectible: true }
+                ? type.TryGetBrokeredMessageAttribute()
+                : _brokeredMessageAttributesByType.GetOrAdd(type, static t => t.TryGetBrokeredMessageAttribute());
 
         public string GetBrokeredMessageDescription<T>()
         {
