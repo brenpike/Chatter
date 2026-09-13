@@ -1,5 +1,7 @@
-﻿using System.Text;
+﻿using System;
+using System.Text;
 using System.Text.Json;
+using System.Text.Unicode;
 
 namespace Chatter.MessageBrokers
 {
@@ -8,7 +10,13 @@ namespace Chatter.MessageBrokers
         public string ContentType => "application/json";
 
         public TBody Convert<TBody>(byte[] body)
-            => JsonSerializer.Deserialize<TBody>(Stringify(body), ChatterJson.Options);
+        {
+            ArgumentNullException.ThrowIfNull(body);
+
+            return Utf8.IsValid(body)
+                ? JsonSerializer.Deserialize<TBody>(body.AsSpan(), ChatterJson.Options)
+                : JsonSerializer.Deserialize<TBody>(Stringify(body), ChatterJson.Options);
+        }
 
         public byte[] Convert(object body)
             => GetBytes(Stringify(body));
