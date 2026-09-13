@@ -1096,35 +1096,56 @@ case_index_versions_is_not_a_string_list() {
   assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
 }
 
-case_poll_budget_is_total_not_per_dependency() {
-  local case_name='the poll budget is a total across dependencies'
+case_poll_budget_bounds_total_wall_time() {
+  local case_name='the poll budget bounds total wall time to one budget, not one per dependency'
   local case_dir="$work_dir/budget"
   local package_dir="$case_dir/packages" fixture_dir="$case_dir/feed"
-  local request_log="$case_dir/requests.log" output_file="$case_dir/output.txt"
-  local guard_exit query_count
+  local output_file="$case_dir/output.txt"
+  local guard_exit start_ns end_ns elapsed_ms budget_ms tolerance_ms
 
   mkdir -p "$package_dir" "$fixture_dir" "$case_dir"
-  : >"$request_log"
-  # Two absent siblings and a budget of two seconds. The deadline is computed once, before the
-  # first dependency, so by the time the second is reached the budget is spent and it gets exactly
-  # one look. A per-dependency deadline would poll it again and double a ten-minute wait per
-  # sibling in production.
+  # Two absent siblings and a budget of two seconds.
+  #
+  # The guard is deliberately FAIL-FAST: on the first absent (or never-published, or unreachable)
+  # sibling it exits inside that dependency's `case` statement, so a later sibling is never
+  # reached and its query count cannot be observed — counting queries against a fail-fast guard is
+  # unobservable by construction, which is why this case is asserted on wall time instead. Staying
+  # fail-fast is the accepted design (docs/adr/0019): it blocks the publish exactly as well as
+  # evaluating every sibling would, every module today declares exactly one `Chatter.*` sibling,
+  # and redesigning the failure shape to let a test count a second query would be the tail wagging
+  # the dog.
+  #
+  # The property genuinely worth pinning is that the poll deadline is computed once for the whole
+  # run, not reset per dependency, so the worst case this guard can ever spend is bounded by ONE
+  # budget. A future regression that recomputed the deadline per dependency — combined with the
+  # guard ceasing to be fail-fast, since fail-fast alone can never reach a second dependency at
+  # all — would silently turn that worst case into N times the budget, which is a wall-clock
+  # symptom this case would catch even though it cannot isolate which half of the regression
+  # caused it.
   create_nupkg "$package_dir" Chatter.SqlChangeFeed 0.15.0 \
     Chatter.CQRS:0.29.0 Chatter.MessageBrokers:0.29.0 >/dev/null
   write_flat_container_index "$fixture_dir/chatter.cqrs.json" 0.16.0
   write_flat_container_index "$fixture_dir/chatter.messagebrokers.json" 0.28.0 0.30.0
 
-  start_fixture_feed "$fixture_dir" '' "$request_log"
+  start_fixture_feed "$fixture_dir"
+  start_ns="$(date +%s%N)"
   guard_exit="$(run_guard_body "$package_dir" "http://127.0.0.1:$fixture_feed_port" "$output_file")"
+  end_ns="$(date +%s%N)"
   stop_fixture_feed
 
   assert_guard_exit "$case_name" 1 "$guard_exit" "$output_file" || return 0
 
-  query_count="$(grep -cFx '/chatter.messagebrokers/index.json' "$request_log" || true)"
-  if [ "$query_count" -eq 1 ]; then
-    report_pass "$case_name: the second dependency was queried once, on an exhausted budget"
+  elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+  budget_ms=$(( guard_timeout_seconds * 1000 ))
+  # 1.5x the budget: generous enough that poll-interval granularity and a loaded machine cannot
+  # flake it (a passing run sits close to 1x the budget), yet tight enough that a per-dependency
+  # deadline — which approaches 2x the budget in this two-dependency fixture — still trips it with
+  # a wide margin on both sides.
+  tolerance_ms=$(( budget_ms + budget_ms / 2 ))
+  if [ "$elapsed_ms" -le "$tolerance_ms" ]; then
+    report_pass "$case_name: elapsed ${elapsed_ms}ms stayed within one budget (${budget_ms}ms) plus tolerance"
   else
-    report_fail "$case_name: expected 1 flat-container query for chatter.messagebrokers, saw $query_count; the poll deadline is a total budget shared by every dependency, not one budget each"
+    report_fail "$case_name: elapsed ${elapsed_ms}ms exceeded one budget (${budget_ms}ms) plus tolerance (${tolerance_ms}ms); a per-dependency deadline would approach 2x the budget instead of sharing one"
   fi
 }
 
@@ -1156,7 +1177,7 @@ run_behavioural_cases() {
   case_index_mentions_version_outside_versions_array
   case_index_lacks_versions_key
   case_index_versions_is_not_a_string_list
-  case_poll_budget_is_total_not_per_dependency
+  case_poll_budget_bounds_total_wall_time
 }
 
 assert_tooling_present

@@ -130,7 +130,7 @@ jobs:
       - name: Assert declared Chatter dependencies are published
         shell: bash
         # Deliberately ahead of `Setup .NET` and therefore ahead of `NuGet login (OIDC)`: the guard
-        # needs only curl, unzip and grep, so no publish credential is ever minted for a package
+        # needs only curl and python3, so no publish credential is ever minted for a package
         # that would be unrestorable. See docs/adr/0019.
         run: |
           # BEGIN dependency-publish guard (docs/adr/0019)
@@ -143,6 +143,13 @@ jobs:
           FLATCONTAINER_BASE_URL="${FLATCONTAINER_BASE_URL:-https://api.nuget.org/v3-flatcontainer}"
           DEPENDENCY_GUARD_TIMEOUT_SECONDS="${DEPENDENCY_GUARD_TIMEOUT_SECONDS:-600}"
           DEPENDENCY_GUARD_POLL_SECONDS="${DEPENDENCY_GUARD_POLL_SECONDS:-15}"
+          # Every obligation below is decided on a node or a value read out of a parsed document,
+          # so python3 is a hard requirement rather than a convenience. Absent, the guard says it
+          # could not run instead of passing a package whose manifest it never read.
+          command -v python3 >/dev/null 2>&1 || {
+            echo "python3 is not on PATH, so the packed nuspec cannot be read; the dependency-publish guard did not run." >&2
+            exit 2
+          }
           shopt -s nullglob
           # `*.nupkg`, never `*nupkg`: IncludeSymbols drops the .snupkg into this same directory,
           # and the looser glob would find two packages where one was packed.
@@ -151,44 +158,265 @@ jobs:
             echo "Expected exactly one .nupkg in $PACKAGE_DIR, found ${#packages[@]}." >&2
             exit 2
           fi
+          # The reader below is written out by this step, not checked out and not loaded from
+          # `.github/scripts/*.sh`: the `deploy` job deliberately carries no `actions/checkout`, so
+          # there is no working tree for a script to come from, and that INVARIANT is untouched
+          # here. The heredoc delimiter is quoted, so the shell interpolates nothing into the
+          # program and every input it reads arrives as argv.
+          guard_reader="$(mktemp)"
+          guard_facts="$(mktemp)"
+          trap 'rm -f "$guard_reader" "$guard_facts"' EXIT
+          cat >"$guard_reader" <<'PY'
+          """Reads the two documents this guard decides on: the packed nuspec, and one
+          flat-container index response.
+
+          Both are parsed, never scanned. An unreadable, ambiguous or unrecognised document exits 2
+          and says why, so "I found nothing" is never available as an outcome that reads as a pass.
+          """
+          import json
+          import re
+          import sys
+          import xml.etree.ElementTree as ElementTree
+          import zipfile
+
+          FACTS_TERMINATOR = "end-of-guard-facts"
+          # The bash side reads each record as two whitespace-separated fields, so a field carrying
+          # whitespace or a control character would make that read ambiguous. Rejected here rather
+          # than quoted downstream.
+          UNSAFE_FIELD_CHARACTERS = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+          def report_anomaly(message):
+              sys.stderr.write(message + "\n")
+              return 2
+
+
+          def read_local_name(qualified_name):
+              # `{ns}dependency` and `dependency` are the same element, and a nuspec may be written
+              # with a default namespace, a prefixed one, or none at all.
+              return qualified_name.rpartition("}")[2]
+
+
+          def find_child_element(parent, local_name):
+              for child in parent:
+                  if read_local_name(child.tag) == local_name:
+                      return child
+              return None
+
+
+          def read_child_text(parent, local_name):
+              child = find_child_element(parent, local_name)
+              return None if child is None else child.text
+
+
+          def read_attribute(element, local_name):
+              for name, value in element.attrib.items():
+                  if read_local_name(name) == local_name:
+                      return value
+              return None
+
+
+          def require_field(description, value):
+              if value is None or not value.strip():
+                  raise ValueError("the nuspec declares no %s" % description)
+              trimmed = value.strip()
+              if UNSAFE_FIELD_CHARACTERS.search(trimmed):
+                  raise ValueError("the nuspec %s %r carries whitespace or a control character"
+                                   % (description, trimmed))
+              return trimmed
+
+
+          def read_sole_nuspec_bytes(nupkg_path):
+              with zipfile.ZipFile(nupkg_path) as archive:
+                  manifests = [name for name in archive.namelist()
+                               if name.lower().endswith(".nuspec") and "/" not in name]
+                  if len(manifests) != 1:
+                      raise ValueError("the archive holds %d root .nuspec entries and exactly one "
+                                       "manifest is required" % len(manifests))
+                  return archive.read(manifests[0])
+
+
+          def collect_chatter_dependencies(metadata):
+              # Every <dependency> under <dependencies>, at any depth, so the grouped form
+              # `dotnet pack` emits for a multi-targeted package and the flat form a
+              # single-targeted one emits are both read the same way.
+              records = set()
+              dependencies = find_child_element(metadata, "dependencies")
+              if dependencies is None:
+                  return records
+              for element in dependencies.iter():
+                  if read_local_name(element.tag) != "dependency":
+                      continue
+                  dependency_id = require_field("dependency id", read_attribute(element, "id"))
+                  if not dependency_id.lower().startswith("chatter."):
+                      continue
+                  declared_version = read_attribute(element, "version")
+                  if declared_version is None or not declared_version.strip():
+                      raise ValueError("it declares %s with no version, so whether that sibling is "
+                                       "published cannot be determined" % dependency_id)
+                  records.add((dependency_id,
+                               require_field("version of %s" % dependency_id, declared_version)))
+              return records
+
+
+          def emit_nuspec_facts(nupkg_path):
+              try:
+                  nuspec_bytes = read_sole_nuspec_bytes(nupkg_path)
+              except (OSError, ValueError, zipfile.BadZipFile) as error:
+                  return report_anomaly("%s is not a readable package: %s" % (nupkg_path, error))
+              try:
+                  # ElementTree drops comments, so a commented-out <id> is not document content and
+                  # can never be reported as the package identity.
+                  root = ElementTree.fromstring(nuspec_bytes)
+              except ElementTree.ParseError as error:
+                  return report_anomaly("the nuspec packed in %s is not well-formed XML: %s"
+                                        % (nupkg_path, error))
+              metadata = find_child_element(root, "metadata")
+              if metadata is None:
+                  return report_anomaly("the nuspec packed in %s carries no <metadata> element"
+                                        % nupkg_path)
+              try:
+                  package_id = require_field("id", read_child_text(metadata, "id"))
+                  package_version = require_field("version", read_child_text(metadata, "version"))
+                  dependencies = collect_chatter_dependencies(metadata)
+              except ValueError as error:
+                  return report_anomaly("the nuspec packed in %s cannot be trusted: %s"
+                                        % (nupkg_path, error))
+              # Sorted and deduped: a multi-targeted package repeats one dependency per target
+              # framework group, and the feed must be queried once for it, not once per group.
+              lines = ["package %s %s" % (package_id, package_version)]
+              for dependency_id, dependency_version in sorted(dependencies):
+                  lines.append("dependency %s %s" % (dependency_id, dependency_version))
+              lines.append("dependency-count %d" % len(dependencies))
+              lines.append(FACTS_TERMINATOR)
+              sys.stdout.write("\n".join(lines) + "\n")
+              return 0
+
+
+          def check_index_membership(index_body_path, wanted_version):
+              try:
+                  with open(index_body_path, "rb") as handle:
+                      document = json.loads(handle.read().decode("utf-8"))
+              except (OSError, UnicodeDecodeError, ValueError) as error:
+                  return report_anomaly("the flat-container answered 200 with something that is not "
+                                        "a JSON document: %s" % error)
+              if not isinstance(document, dict) or "versions" not in document:
+                  return report_anomaly("the flat-container answered 200 with a JSON document "
+                                        "carrying no \"versions\" key, so it is not an index")
+              published_versions = document["versions"]
+              if (not isinstance(published_versions, list)
+                      or any(not isinstance(entry, str) for entry in published_versions)):
+                  return report_anomaly("the flat-container index's \"versions\" is not a list of "
+                                        "version strings")
+              # Published means membership of that one list. The same characters appearing anywhere
+              # else in the document - a note, a "cancelled" list, an object key - mean nothing.
+              return 0 if wanted_version in published_versions else 1
+
+
+          def main(argv):
+              if len(argv) == 3 and argv[1] == "nuspec":
+                  return emit_nuspec_facts(argv[2])
+              if len(argv) == 4 and argv[1] == "index":
+                  return check_index_membership(argv[2], argv[3])
+              return report_anomaly("usage: nuspec <nupkg-path> | index <body-path> <version>")
+
+
+          if __name__ == "__main__":
+              sys.exit(main(sys.argv))
+          PY
           # The packed nuspec is the only honest source of the shipped dependency set, because it
           # is the document the restoring client reads. A csproj scan or a hand-maintained list can
           # disagree with the artifact that is about to be pushed.
-          nuspec="$(unzip -p "${packages[0]}" '*.nuspec')"
-          package_id="$(sed -n 's@.*<id>\(.*\)</id>.*@\1@p' <<<"$nuspec" | head -n1)"
-          package_version="$(sed -n 's@.*<version>\(.*\)</version>.*@\1@p' <<<"$nuspec" | head -n1)"
-          # dotnet pack emits one <group targetFramework=...> per TFM, each repeating the identical
-          # dependency set, so `sort -u` collapses the multi-targeted duplicates to one query.
-          declared_dependencies="$(grep -o '<dependency [^>]*>' <<<"$nuspec" \
-            | sed -n 's@.*id="\([^"]*\)".*version="\([^"]*\)".*@\1 \2@p' \
-            | grep '^Chatter\.' | sort -u || true)"
+          if ! python3 "$guard_reader" nuspec "${packages[0]}" >"$guard_facts"; then
+            echo "The packed nuspec could not be read as a document, so the declared dependency set is unknown." >&2
+            exit 2
+          fi
+          package_id=''
+          package_version=''
+          declared_dependency_count=''
+          dependency_records=()
+          while read -r fact_kind fact_subject fact_value; do
+            case "$fact_kind" in
+              package)
+                package_id="$fact_subject"
+                package_version="$fact_value"
+                ;;
+              dependency)
+                dependency_records+=("$fact_subject $fact_value")
+                ;;
+              dependency-count)
+                declared_dependency_count="$fact_subject"
+                ;;
+              end-of-guard-facts)
+                ;;
+              *)
+                echo "The nuspec reader emitted an unrecognised fact '$fact_kind'; the declared dependency set is unknown." >&2
+                exit 2
+                ;;
+            esac
+          done <"$guard_facts"
+          # Positively terminated, and counted. The reader's own sentinel must be the last line and
+          # the count it declared must equal the number of records read, so output truncated by a
+          # reader that died mid-write cannot be mistaken for "this package declares nothing".
+          if [ "$(tail -n1 "$guard_facts")" != 'end-of-guard-facts' ]; then
+            echo "The nuspec reader's output is not terminated, so the declared dependency set is unknown." >&2
+            exit 2
+          fi
+          if [ -z "$package_id" ] || [ -z "$package_version" ]; then
+            echo "The nuspec reader reported no package identity, so there is nothing to verify against." >&2
+            exit 2
+          fi
+          if [ -z "$declared_dependency_count" ] || [ "${#dependency_records[@]}" -ne "$declared_dependency_count" ]; then
+            echo "The nuspec reader declared $declared_dependency_count dependency record(s) but emitted ${#dependency_records[@]}." >&2
+            exit 2
+          fi
+          if [ "${#dependency_records[@]}" -eq 0 ]; then
+            echo "$package_id $package_version declares no Chatter dependencies to verify."
+            exit 0
+          fi
+          echo "$package_id $package_version declares ${#dependency_records[@]} Chatter dependencies to verify."
           print_recovery_guidance() {
             echo "Publishing anyway ships a package no consumer can restore, and nuget.org allows no deletion." >&2
             echo "Recovery: approve and complete the dependency's own production-* deployment, then re-run the failed jobs here." >&2
             echo "The packed artifact is retained for 7 days, so a re-run inside that window pushes the same bytes." >&2
           }
+          # INVARIANT: one deadline for the whole step, computed here and never reset per sibling.
+          # The budget is a TOTAL across siblings, not one budget each; a per-sibling deadline
+          # would multiply a ten-minute wait by the number of declared siblings. The guard is also
+          # deliberately fail-fast: the first sibling resolving to anything other than `present`
+          # exits inside the case below, so a later sibling is never reached. Blocking the publish
+          # takes one unpublished sibling, not all of them.
           deadline=$(( $(date +%s) + DEPENDENCY_GUARD_TIMEOUT_SECONDS ))
-          while read -r dependency_id dependency_version; do
-            [ -n "$dependency_id" ] || continue
+          for dependency_record in "${dependency_records[@]}"; do
+            dependency_id="${dependency_record%% *}"
+            dependency_version="${dependency_record##* }"
             # Flat-container paths are lowercased; a mixed-case id 404s against a published package.
             lowered_id="$(tr '[:upper:]' '[:lower:]' <<<"$dependency_id")"
             index_url="$FLATCONTAINER_BASE_URL/$lowered_id/index.json"
             outcome=''
+            http_status=''
             while : ; do
               index_body="$(mktemp)"
               http_status="$(curl -sSL --max-time 30 -o "$index_body" -w '%{http_code}' "$index_url" 2>/dev/null)" || http_status='000'
               if [ "$http_status" = '200' ]; then
-                # Matched quoted so a declared 0.3.0 cannot substring-match a published 10.3.0.
+                # Decided on membership of the parsed "versions" list, never on a text search over
+                # the response bytes: a 200 is a CDN response, and the version characters can occur
+                # anywhere in one without that version being published.
                 # INVARIANT: the flat-container index normalizes every version to 3-part SemVer.
                 # Each Chatter <Version> is already 3-part, so the nuspec string and the index
                 # entry are the same characters and compare directly. A 2-part or 4-part version
-                # would have to be normalized before this comparison meant anything.
-                if grep -qF "\"$dependency_version\"" "$index_body"; then
+                # would have to be normalized before this membership test meant anything.
+                index_status=0
+                python3 "$guard_reader" index "$index_body" "$dependency_version" || index_status=$?
+                if [ "$index_status" -eq 0 ]; then
                   outcome='present'
                   rm -f "$index_body"
                   break
+                elif [ "$index_status" -eq 1 ]; then
+                  outcome='absent'
+                else
+                  outcome='unreachable'
                 fi
-                outcome='absent'
               elif [ "$http_status" = '404' ]; then
                 outcome='never-published'
               else
@@ -215,11 +443,11 @@ jobs:
                 exit 1
                 ;;
               *)
-                echo "Could not reach $index_url after ${DEPENDENCY_GUARD_TIMEOUT_SECONDS}s (last HTTP status $http_status); whether $dependency_id $dependency_version is published is unknown." >&2
+                echo "Could not read a flat-container index from $index_url after ${DEPENDENCY_GUARD_TIMEOUT_SECONDS}s (last HTTP status $http_status); whether $dependency_id $dependency_version is published is unknown." >&2
                 exit 2
                 ;;
             esac
-          done <<<"$declared_dependencies"
+          done
           # END dependency-publish guard (docs/adr/0019)
       - name: Setup .NET
         # No `cache:`/`cache-dependency-path:` here: the lock-file glob those options resolve
