@@ -76,5 +76,115 @@ namespace Chatter.MessageBrokers.Tests.UsingBrokeredMessageAttributeProvider
         public void MustThrowWhenGettingDescriptionForUndecoratedType()
             => FluentActions.Invoking(() => _sut.GetBrokeredMessageDescription<UndecoratedMessage>())
                 .Should().Throw<NullReferenceException>();
+
+        [Fact]
+        public void MustReturnSameSendingPathAcrossInstancesAndOverloads()
+        {
+            var first = new BrokeredMessageAttributeProvider();
+            var second = new BrokeredMessageAttributeProvider();
+
+            first.GetMessageName<DecoratedMessage>().Should().Be("sending");
+            first.GetMessageName(typeof(DecoratedMessage)).Should().Be("sending");
+            second.GetMessageName<DecoratedMessage>().Should().Be("sending");
+            second.GetMessageName(typeof(DecoratedMessage)).Should().Be("sending");
+        }
+
+        [Fact]
+        public void MustReturnSameReceiverNameAcrossInstances()
+        {
+            var first = new BrokeredMessageAttributeProvider();
+            var second = new BrokeredMessageAttributeProvider();
+
+            first.GetReceiverName<DecoratedMessage>().Should().Be("receiving");
+            second.GetReceiverName<DecoratedMessage>().Should().Be("receiving");
+        }
+
+        [Fact]
+        public void MustReturnSameErrorQueueNameAcrossInstances()
+        {
+            var first = new BrokeredMessageAttributeProvider();
+            var second = new BrokeredMessageAttributeProvider();
+
+            first.GetErrorQueueName<DecoratedMessage>().Should().Be("errorQueue");
+            second.GetErrorQueueName<DecoratedMessage>().Should().Be("errorQueue");
+        }
+
+        [Fact]
+        public void MustReturnSameDescriptionAcrossInstances()
+        {
+            var first = new BrokeredMessageAttributeProvider();
+            var second = new BrokeredMessageAttributeProvider();
+
+            first.GetBrokeredMessageDescription<DecoratedMessage>().Should().Be("description");
+            second.GetBrokeredMessageDescription<DecoratedMessage>().Should().Be("description");
+        }
+
+        [Fact]
+        public void MustReturnSameInfrastructureTypeAcrossInstances()
+        {
+            var first = new BrokeredMessageAttributeProvider();
+            var second = new BrokeredMessageAttributeProvider();
+
+            first.GetInfrastructureType<DecoratedMessage>().Should().Be("infra");
+            second.GetInfrastructureType<DecoratedMessage>().Should().Be("infra");
+        }
+
+        [Fact]
+        public void MustFallBackToReceiverNameForDescriptionAcrossInstancesWhenDescriptionIsNotSet()
+        {
+            var first = new BrokeredMessageAttributeProvider();
+            var second = new BrokeredMessageAttributeProvider();
+
+            first.GetBrokeredMessageDescription<DecoratedMessageWithoutDescription>().Should().Be("receiving");
+            second.GetBrokeredMessageDescription<DecoratedMessageWithoutDescription>().Should().Be("receiving");
+        }
+
+        [Fact]
+        public void MustReturnEqualMessageNameWhenTypeOverloadCalledFirstThenGenericOnDifferentInstance()
+        {
+            var first = new BrokeredMessageAttributeProvider();
+            var second = new BrokeredMessageAttributeProvider();
+
+            var viaType = first.GetMessageName(typeof(DecoratedMessage));
+            var viaGeneric = second.GetMessageName<DecoratedMessage>();
+
+            viaGeneric.Should().Be(viaType);
+        }
+
+        [Fact]
+        public void MustReturnNullForAllMembersAcrossInstancesWhenTypeIsNotDecorated()
+        {
+            var first = new BrokeredMessageAttributeProvider();
+            var second = new BrokeredMessageAttributeProvider();
+
+            first.GetMessageName<UndecoratedMessage>().Should().BeNull();
+            second.GetMessageName<UndecoratedMessage>().Should().BeNull();
+
+            first.GetMessageName(typeof(UndecoratedMessage)).Should().BeNull();
+            second.GetMessageName(typeof(UndecoratedMessage)).Should().BeNull();
+
+            first.GetReceiverName<UndecoratedMessage>().Should().BeNull();
+            second.GetReceiverName<UndecoratedMessage>().Should().BeNull();
+
+            first.GetErrorQueueName<UndecoratedMessage>().Should().BeNull();
+            second.GetErrorQueueName<UndecoratedMessage>().Should().BeNull();
+
+            first.GetInfrastructureType<UndecoratedMessage>().Should().BeNull();
+            second.GetInfrastructureType<UndecoratedMessage>().Should().BeNull();
+        }
+
+        [Fact]
+        public void MustThrowWhenGettingDescriptionForUndecoratedTypeAfterNullSafeMemberCachesNullOnRepeatedCalls()
+        {
+            var nullSafeCaller = new BrokeredMessageAttributeProvider();
+            nullSafeCaller.GetMessageName<UndecoratedMessage>().Should().BeNull();
+
+            var descriptionCaller = new BrokeredMessageAttributeProvider();
+
+            FluentActions.Invoking(() => descriptionCaller.GetBrokeredMessageDescription<UndecoratedMessage>())
+                .Should().Throw<NullReferenceException>();
+            FluentActions.Invoking(() => descriptionCaller.GetBrokeredMessageDescription<UndecoratedMessage>())
+                .Should().Throw<NullReferenceException>();
+        }
     }
 }

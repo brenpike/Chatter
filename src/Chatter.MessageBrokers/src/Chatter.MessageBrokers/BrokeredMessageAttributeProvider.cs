@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Collections.Concurrent;
 
 namespace Chatter.MessageBrokers
 {
@@ -8,9 +9,14 @@ namespace Chatter.MessageBrokers
     /// </summary>
     class BrokeredMessageAttributeProvider : IBrokeredMessageAttributeDetailProvider
     {
+        private static readonly ConcurrentDictionary<Type, BrokeredMessageAttribute> _brokeredMessageAttributesByType = new();
+
+        private static BrokeredMessageAttribute GetBrokeredMessageAttribute(Type type)
+            => _brokeredMessageAttributesByType.GetOrAdd(type, static t => t.TryGetBrokeredMessageAttribute());
+
         public string GetBrokeredMessageDescription<T>()
         {
-            var operationDescription = typeof(T).TryGetBrokeredMessageAttribute().MessageDescription;
+            var operationDescription = GetBrokeredMessageAttribute(typeof(T)).MessageDescription;
             return string.IsNullOrWhiteSpace(operationDescription) ? GetReceiverName<T>() : operationDescription;
         }
 
@@ -28,15 +34,15 @@ namespace Chatter.MessageBrokers
         /// <typeparam name="T">A class decorated with a <see cref="BrokeredMessageAttribute"/></typeparam>
         /// <returns><see cref="BrokeredMessageAttribute.ReceiverName"/></returns>
         public string GetReceiverName<T>()
-            => typeof(T).TryGetBrokeredMessageAttribute()?.ReceiverName;
+            => GetBrokeredMessageAttribute(typeof(T))?.ReceiverName;
 
         public string GetMessageName(Type type)
-            => type.TryGetBrokeredMessageAttribute()?.SendingPath;
+            => GetBrokeredMessageAttribute(type)?.SendingPath;
 
         public string GetErrorQueueName<T>()
-            => typeof(T).TryGetBrokeredMessageAttribute()?.ErrorQueueName;
+            => GetBrokeredMessageAttribute(typeof(T))?.ErrorQueueName;
 
         public string GetInfrastructureType<T>()
-            => typeof(T).TryGetBrokeredMessageAttribute()?.InfrastructureType;
+            => GetBrokeredMessageAttribute(typeof(T))?.InfrastructureType;
     }
 }
