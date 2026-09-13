@@ -1,7 +1,9 @@
 using FluentAssertions;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
+using System.Text.Json;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
@@ -370,6 +372,59 @@ namespace Chatter.MessageBrokers.Tests.UsingJsonBodyConverter
             var result = _sut.Convert<ObjectPositionBoolPoco>(bytes);
 
             result.Flag.Should().BeOfType<bool>().And.Be(true);
+        }
+
+        private static T DeserializeThroughDecodedString<T>(byte[] body)
+            => JsonSerializer.Deserialize<T>(Encoding.UTF8.GetString(body), ChatterJson.Options);
+
+        [Fact]
+        public void MustDeserializeNonAsciiAndAstralCharactersLikeDecodedStringPath()
+        {
+            const string expectedName = "héllo 日本 \U0001F600";
+            var bytes = _sut.GetBytes("{\"Name\":\"héllo 日本 \U0001F600\",\"Value\":7}");
+            bytes.Should().ContainInOrder(new byte[] { 0xF0, 0x9F, 0x98, 0x80 });
+
+            var result = _sut.Convert<BodyPoco>(bytes);
+
+            result.Name.Should().Be(expectedName)
+                .And.Be(DeserializeThroughDecodedString<BodyPoco>(bytes).Name);
+            result.Value.Should().Be(7);
+        }
+
+        [Fact]
+        public void MustRejectUtf8BomPrefixedBodyLikeDecodedStringPath()
+        {
+            var bytes = new byte[] { 0xEF, 0xBB, 0xBF }
+                .Concat(_sut.GetBytes("{\"Name\":\"abc\",\"Value\":42}"))
+                .ToArray();
+
+            Action decodedStringPath = () => DeserializeThroughDecodedString<BodyPoco>(bytes);
+            Action convert = () => _sut.Convert<BodyPoco>(bytes);
+
+            var decodedStringPathMessage = decodedStringPath.Should().Throw<JsonException>().Which.Message;
+            convert.Should().Throw<JsonException>().WithMessage(decodedStringPathMessage);
+        }
+
+        [Fact]
+        public void MustSubstituteReplacementCharacterForInvalidUtf8InsideStringValue()
+        {
+            var bytes = _sut.GetBytes("{\"Name\":\"a")
+                .Concat(new byte[] { 0xFF })
+                .Concat(_sut.GetBytes("b\"}"))
+                .ToArray();
+
+            var result = _sut.Convert<BodyPoco>(bytes);
+
+            result.Name.Should().Be("a�b")
+                .And.Be(DeserializeThroughDecodedString<BodyPoco>(bytes).Name);
+        }
+
+        [Fact]
+        public void MustThrowArgumentNullExceptionForNullBody()
+        {
+            Action act = () => _sut.Convert<BodyPoco>((byte[])null);
+
+            act.Should().Throw<ArgumentNullException>();
         }
     }
 }
