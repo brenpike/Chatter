@@ -145,11 +145,17 @@ strip_uniform_indent() {
 
 extract_guard_body() {
   local workflow="$1"
+  # This repo runs `core.autocrlf=true` and `.gitattributes` pins only `*.sh text eol=lf`, so
+  # `.github/workflows/*.yml` materializes CRLF in a developer's working tree even though it is
+  # LF in git. A CRLF body is a bash syntax error, so without stripping CR here this harness would
+  # go RED on a CRLF checkout and stay GREEN in CI (where autocrlf is off) — the harness must be
+  # indifferent to checkout line-ending config rather than depend on every checkout being
+  # configured correctly.
   awk -v begin_marker="$guard_begin_marker" -v end_marker="$guard_end_marker" '
     index($0, begin_marker) { capturing = 1; next }
     index($0, end_marker)   { capturing = 0; next }
     capturing               { print }
-  ' "$workflow"
+  ' "$workflow" | tr -d '\r'
 }
 
 count_marker_occurrences() {

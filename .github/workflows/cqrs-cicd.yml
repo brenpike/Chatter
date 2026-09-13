@@ -104,6 +104,11 @@ jobs:
   # checkout back for any reason. The job id and name stay `deploy` because `tag` declares
   # `needs: deploy`; renaming would silently repoint it at packaging and let a tag land without
   # a push.
+  # INVARIANT: the dependency-publish guard in this job's first step is inline bash rather than
+  # a `.github/scripts/*.sh` for exactly that reason - with no checkout there is no script for
+  # it to load. Nine byte-identical copies, one per module CD workflow, are the accepted cost of
+  # keeping the checkout out; `.github/scripts/tests/deploy-dependency-guard.test.sh` buys that
+  # cost back by extracting every copy and asserting they are byte-identical.
   deploy:
     name: deploy
     runs-on: ubuntu-latest
@@ -122,6 +127,100 @@ jobs:
         with:
           name: nupkg-cqrs
           path: ./dist/nuget
+      - name: Assert declared Chatter dependencies are published
+        shell: bash
+        # Deliberately ahead of `Setup .NET` and therefore ahead of `NuGet login (OIDC)`: the guard
+        # needs only curl, unzip and grep, so no publish credential is ever minted for a package
+        # that would be unrestorable. See docs/adr/0019.
+        run: |
+          # BEGIN dependency-publish guard (docs/adr/0019)
+          # Operator-tunable seams, each carrying its production default inline. Nothing in this
+          # job sets them, so an untouched deploy always runs the defaults below; they exist so an
+          # operator can widen the wait from a re-run, and so
+          # .github/scripts/tests/deploy-dependency-guard.test.sh can collapse a ten-minute window
+          # into seconds.
+          PACKAGE_DIR="${PACKAGE_DIR:-./dist/nuget}"
+          FLATCONTAINER_BASE_URL="${FLATCONTAINER_BASE_URL:-https://api.nuget.org/v3-flatcontainer}"
+          DEPENDENCY_GUARD_TIMEOUT_SECONDS="${DEPENDENCY_GUARD_TIMEOUT_SECONDS:-600}"
+          DEPENDENCY_GUARD_POLL_SECONDS="${DEPENDENCY_GUARD_POLL_SECONDS:-15}"
+          shopt -s nullglob
+          # `*.nupkg`, never `*nupkg`: IncludeSymbols drops the .snupkg into this same directory,
+          # and the looser glob would find two packages where one was packed.
+          packages=("$PACKAGE_DIR"/*.nupkg)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "Expected exactly one .nupkg in $PACKAGE_DIR, found ${#packages[@]}." >&2
+            exit 2
+          fi
+          # The packed nuspec is the only honest source of the shipped dependency set, because it
+          # is the document the restoring client reads. A csproj scan or a hand-maintained list can
+          # disagree with the artifact that is about to be pushed.
+          nuspec="$(unzip -p "${packages[0]}" '*.nuspec')"
+          package_id="$(sed -n 's@.*<id>\(.*\)</id>.*@\1@p' <<<"$nuspec" | head -n1)"
+          package_version="$(sed -n 's@.*<version>\(.*\)</version>.*@\1@p' <<<"$nuspec" | head -n1)"
+          # dotnet pack emits one <group targetFramework=...> per TFM, each repeating the identical
+          # dependency set, so `sort -u` collapses the multi-targeted duplicates to one query.
+          declared_dependencies="$(grep -o '<dependency [^>]*>' <<<"$nuspec" \
+            | sed -n 's@.*id="\([^"]*\)".*version="\([^"]*\)".*@\1 \2@p' \
+            | grep '^Chatter\.' | sort -u || true)"
+          print_recovery_guidance() {
+            echo "Publishing anyway ships a package no consumer can restore, and nuget.org allows no deletion." >&2
+            echo "Recovery: approve and complete the dependency's own production-* deployment, then re-run the failed jobs here." >&2
+            echo "The packed artifact is retained for 7 days, so a re-run inside that window pushes the same bytes." >&2
+          }
+          deadline=$(( $(date +%s) + DEPENDENCY_GUARD_TIMEOUT_SECONDS ))
+          while read -r dependency_id dependency_version; do
+            [ -n "$dependency_id" ] || continue
+            # Flat-container paths are lowercased; a mixed-case id 404s against a published package.
+            lowered_id="$(tr '[:upper:]' '[:lower:]' <<<"$dependency_id")"
+            index_url="$FLATCONTAINER_BASE_URL/$lowered_id/index.json"
+            outcome=''
+            while : ; do
+              index_body="$(mktemp)"
+              http_status="$(curl -sSL --max-time 30 -o "$index_body" -w '%{http_code}' "$index_url" 2>/dev/null)" || http_status='000'
+              if [ "$http_status" = '200' ]; then
+                # Matched quoted so a declared 0.3.0 cannot substring-match a published 10.3.0.
+                # INVARIANT: the flat-container index normalizes every version to 3-part SemVer.
+                # Each Chatter <Version> is already 3-part, so the nuspec string and the index
+                # entry are the same characters and compare directly. A 2-part or 4-part version
+                # would have to be normalized before this comparison meant anything.
+                if grep -qF "\"$dependency_version\"" "$index_body"; then
+                  outcome='present'
+                  rm -f "$index_body"
+                  break
+                fi
+                outcome='absent'
+              elif [ "$http_status" = '404' ]; then
+                outcome='never-published'
+              else
+                outcome='unreachable'
+              fi
+              rm -f "$index_body"
+              # CDN indexing lags a push by seconds to minutes, so a miss is re-polled up to the
+              # deadline rather than failing on the first look.
+              [ "$(date +%s)" -lt "$deadline" ] || break
+              sleep "$DEPENDENCY_GUARD_POLL_SECONDS"
+            done
+            case "$outcome" in
+              present)
+                echo "$dependency_id $dependency_version is published; $package_id $package_version may reference it."
+                ;;
+              absent)
+                echo "$package_id $package_version declares $dependency_id $dependency_version, which is not present at $index_url after ${DEPENDENCY_GUARD_TIMEOUT_SECONDS}s." >&2
+                print_recovery_guidance
+                exit 1
+                ;;
+              never-published)
+                echo "$package_id $package_version declares $dependency_id $dependency_version, but $index_url returned 404, so that id has never been published under any version." >&2
+                print_recovery_guidance
+                exit 1
+                ;;
+              *)
+                echo "Could not reach $index_url after ${DEPENDENCY_GUARD_TIMEOUT_SECONDS}s (last HTTP status $http_status); whether $dependency_id $dependency_version is published is unknown." >&2
+                exit 2
+                ;;
+            esac
+          done <<<"$declared_dependencies"
+          # END dependency-publish guard (docs/adr/0019)
       - name: Setup .NET
         # No `cache:`/`cache-dependency-path:` here: the lock-file glob those options resolve
         # needs a working tree, and this job deliberately has none.

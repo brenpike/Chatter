@@ -60,7 +60,7 @@ resolving a different assembly. Both outcomes are wrong, and only one of them is
 
 - **Option 4 — Assert in the `deploy` job, but skip the publish when the assertion fails.** Rejected. Setting
   `should_publish=false` would make the failure silent and green. The existing duplicate-release guard
-  (`.github/workflows/messagebrokers-cicd.yml:52-68`, consumed at `:111`) skips legitimately, because "no
+  (`.github/workflows/messagebrokers-cicd.yml:52-68`, consumed at `:116`) skips legitimately, because "no
   version bump on this push" is a normal outcome for a workflow that also triggers on shared packaging
   configuration. An unpublished dependency is not a normal outcome. It is a release that must not proceed.
 
@@ -96,7 +96,7 @@ nuget.org allows unlist and deprecate, never delete.
 ### Why the body is inline YAML and not `.github/scripts/*.sh`
 
 The `deploy` job carries a hard INVARIANT, identical in all nine files
-(`.github/workflows/messagebrokers-cicd.yml:100-106`): it has no `actions/checkout`, and that absence is the
+(`.github/workflows/messagebrokers-cicd.yml:100-111`): it has no `actions/checkout`, and that absence is the
 closure mechanism. It is the only job granted `id-token: write`, so with no working tree there is no repo
 source, no test assemblies, no test-only dependency graph, and no `.github/scripts/*.sh` for anything to load
 alongside the publish credential. Calling a script from this job requires restoring the checkout the invariant
@@ -199,7 +199,7 @@ fired.
   that package restorable; nuget.org has no deletion and the guard runs before a push, not after one. `0.14.2`
   stays unlisted and deprecated, and `0.14.3` remains its replacement. The guard prevents the next one.
 - **No new PR-time network gate exists.** The guard runs only inside `deploy`, which itself runs only when
-  `needs.package.outputs.should_publish == 'true'` (`.github/workflows/messagebrokers-cicd.yml:111`), so a
+  `needs.package.outputs.should_publish == 'true'` (`.github/workflows/messagebrokers-cicd.yml:116`), so a
   push with no version bump never reaches it. The only always-on CI addition is the hermetic offline harness,
   which never touches nuget.org and therefore cannot flake on it.
 - **A blocked deploy can idle up to 600 seconds of runner time before failing.** Accepted, and retunable
@@ -226,9 +226,9 @@ fired.
   answers, and whose `severity: low` / low-reachability self-rating this ADR records as falsified. Closing it
   closes its parent epic #309 (CI/CD supply chain), of which it is the last open child.
 - `.github/workflows/messagebrokers-cicd.yml` — reference structure for all nine: the duplicate-release guard
-  at `:52-68` consumed at `:111`, the 7-day artifact retention at `:92,98`, the `deploy` job INVARIANT at
-  `:100-106`, and the guard's insertion point between `Download package artifact` (`:120`) and
-  `NuGet login (OIDC)` (`:133`).
+  at `:52-68` consumed at `:116`, the 7-day artifact retention at `:92,98`, the `deploy` job INVARIANT at
+  `:100-111`, and the guard's insertion point between `Download package artifact` (`:125`) and
+  `NuGet login (OIDC)` (`:232`).
 - `.github/scripts/assert-nupkg-provenance.sh:6-7` — the existing exit-1-versus-exit-2 invariant this guard's
   exit codes mirror.
 - `.github/scripts/tests/deploy-dependency-guard.test.sh` and `.github/scripts/tests/fixture-feed.py` — the
