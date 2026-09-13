@@ -1398,15 +1398,16 @@ case_dependencies_namespace_is_foreign() {
 }
 
 case_dependencies_under_unmodelled_element() {
-  local case_name='dependency-shaped children sit under an element the reader does not model'
+  local case_name='a modelled element name recurs at a position the reader never visits'
   local output_file="$work_dir/shape-dependency-groups/output.txt"
   local nuspec_text unmodelled_block
 
   mkdir -p "$work_dir/shape-dependency-groups"
-  # <dependencyGroups> is not a nuspec element, and that is the point: the guard looks in exactly one
-  # place, so a document declaring its siblings anywhere else reads as declaring none. "I looked
-  # where I know to look and found nothing" is a different fact from "this package declares no
-  # Chatter dependencies", and only the second may ever exit 0.
+  # This is not a probe of <dependencyGroups> itself - the reader never asks whether that name
+  # is known. Its <group> and <dependency> descendants are the modelled names the census watches
+  # for; because the reader's walk never visits them, the census meets them unmodelled and raises.
+  # An unmodelled container has no bearing on the outcome here - only its modelled-named children
+  # do, at a position the walk didn't reach.
   unmodelled_block="$(printf '%s\n' \
     '    <dependencyGroups>' \
     '      <group targetFramework="net8.0">' \
@@ -1418,6 +1419,29 @@ case_dependencies_under_unmodelled_element() {
   run_nuspec_shape_case shape-dependency-groups "$nuspec_text" "$output_file"
 
   assert_guard_exit "$case_name" 2 "$driven_case_exit" "$output_file" || return 0
+}
+
+case_unmodelled_container_with_only_unmodelled_children() {
+  local case_name='an unmodelled container holding only unmodelled-named children exits 0'
+  local output_file="$work_dir/shape-unmodelled-only/output.txt"
+  local nuspec_text unmodelled_block
+
+  mkdir -p "$work_dir/shape-unmodelled-only"
+  # PINNED KNOWN GAP, tracked as https://github.com/brenpike/Chatter/issues/476. The census
+  # (assert_declarations_are_all_modelled) is a relocated-modelled-name rule, not an
+  # unmodelled-element rule: it only raises when an unvisited element spells one of the six
+  # MODELLED_LOCAL_NAMES. <packageDependencies>/<requires> spell neither, so the walk skips them
+  # silently and the guard exits 0. This is not reachable under today's NuGet schema - restore reads
+  # dependencies only from <metadata><dependencies>, so a document shaped like this declares
+  # nothing NuGet would restore - which is why the gap is accepted rather than fixed now. When the
+  # deferred allowlist rework lands, this assertion is expected to FLIP to exit 2; invert it then,
+  # never delete it.
+  unmodelled_block='    <packageDependencies><requires package="Chatter.CQRS" atLeast="0.16.0" /></packageDependencies>'
+  nuspec_text="$(shape_nuspec_document --extra-metadata-block "$unmodelled_block" '')"
+
+  run_nuspec_shape_case shape-unmodelled-only "$nuspec_text" "$output_file"
+
+  assert_guard_exit "$case_name" 0 "$driven_case_exit" "$output_file" || return 0
 }
 
 case_sole_nuspec_entry_is_not_at_the_archive_root() {
@@ -1650,6 +1674,7 @@ run_behavioural_cases() {
   case_document_namespace_is_foreign
   case_dependencies_namespace_is_foreign
   case_dependencies_under_unmodelled_element
+  case_unmodelled_container_with_only_unmodelled_children
   case_sole_nuspec_entry_is_not_at_the_archive_root
   case_nupkg_holds_two_entries_of_one_nuspec_name
   case_nuspec_carries_no_namespace
