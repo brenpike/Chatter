@@ -12,6 +12,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.14.4] - 2026-09-14
+
+### Changed
+
+- `JsonUnicodeBodyConverter` now serializes and deserializes through the public serialization methods on `Chatter.MessageBrokers` instead of reaching into that package's shared serializer configuration. This is an internal call-site change: the serialized output is byte-identical, the payload encoding is unchanged (this package still writes and reads its UTF-16 `application/json; charset=utf-16` wire format), and there is no consumer-visible behaviour change. (#302)
+- Bundled dependency uplift to Chatter.MessageBrokers 0.31.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it). Install this release together with `Chatter.MessageBrokers` 0.31.0: that release makes the shared serializer configuration inaccessible to other packages, so a 0.14.3 or earlier build of this package composed against it by NuGet would fail at runtime. Republishing this package with a `Chatter.MessageBrokers` 0.31.0 floor is what prevents that composition.
+
 ## [0.14.3] - 2026-09-13
 
 ### Changed

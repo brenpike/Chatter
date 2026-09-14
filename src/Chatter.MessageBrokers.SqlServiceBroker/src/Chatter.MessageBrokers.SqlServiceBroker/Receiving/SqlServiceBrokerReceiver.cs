@@ -186,12 +186,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
 
                     messagePayload = brokeredMessage.Body;
                     messageId = brokeredMessage.MessageId;
-                    // The envelope was deserialized via System.Text.Json (JsonUnicodeBodyConverter) through
-                    // ChatterJson.Options, where the global MaterializingObjectConverter already restored
-                    // OutboundBrokeredMessage.MessageContext's object-typed values to CLR types. So an
-                    // upstream-stamped non-string header (e.g. a numeric ReceiveAttempts from a prior SSB hop)
-                    // does not throw InvalidCastException on the downstream GetMessageContextByKey<T> casts —
-                    // no per-seam materialization needed, only the null-guard.
+                    // The envelope was deserialized via JsonUnicodeBodyConverter, which reads through
+                    // Chatter's shared brokered-message serialization, where the global
+                    // MaterializingObjectConverter already restored OutboundBrokeredMessage.MessageContext's
+                    // object-typed values to CLR types. So an upstream-stamped non-string header (e.g. a
+                    // numeric ReceiveAttempts from a prior SSB hop) does not throw InvalidCastException on
+                    // the downstream GetMessageContextByKey<T> casts — no per-seam materialization needed,
+                    // only the null-guard.
                     headers = brokeredMessage.MessageContext ?? new Dictionary<string, object>();
 
                     // Resolve the inner-body converter from the envelope's own ContentType header so the
