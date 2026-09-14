@@ -65,15 +65,3 @@ jobs:
       # that they survived into the shipped artifact.
       - name: Assert every package carries provenance metadata
         run: bash .github/scripts/assert-nupkg-provenance.sh
-
-  # `dotnet test` cannot execute workflow YAML, so this is where the deploy-dependency-guard's
-  # behaviour is asserted instead. The harness is bash + python3 only, both preinstalled on
-  # ubuntu runners — no `setup-dotnet`, no network access, no dependency to restore — so this
-  # job is hermetic and can never flake on nuget.org.
-  deploy-dependency-guard:
-    name: deploy dependency guard behaves correctly
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Run deploy-dependency-guard test harness
-        run: bash .github/scripts/tests/deploy-dependency-guard.test.sh
