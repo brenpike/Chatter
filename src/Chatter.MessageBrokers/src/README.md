@@ -130,11 +130,11 @@ The same operations are available as extension methods on `IMessageHandlerContex
 
 ## Serialization and wire parity
 
-The Body Converters in this module read and write brokered message bodies through one shared `System.Text.Json` configuration, `ChatterJson.Options`. Sharing a single instance is what makes the bytes on the wire, and the tolerance applied when reading them back, a property of the module rather than of whichever call site happened to serialize.
+The Body Converters in this module read and write brokered message bodies through one shared `System.Text.Json` configuration internal to the module. Sharing a single configuration is what makes the bytes on the wire, and the tolerance applied when reading them back, a property of the module rather than of whichever call site happened to serialize. To serialize a body differently, supply your own Body Converter — see [Brokered Message](#brokered-message).
 
 ### Enum and boolean reading is deliberately lenient
 
-Reading is more permissive than `System.Text.Json`'s own defaults, on purpose. The shared options restore read-parity with `Newtonsoft.Json`, which earlier versions of Chatter serialized with, so that a body written by one version of an application still deserializes in another. During a rolling deploy both versions are on the queue at the same time, and a message must not become undeliverable merely because the two ends disagree about how tolerant a reader ought to be.
+Reading is more permissive than `System.Text.Json`'s own defaults, on purpose. The shared configuration restores read-parity with `Newtonsoft.Json`, which earlier versions of Chatter serialized with, so that a body written by one version of an application still deserializes in another. During a rolling deploy both versions are on the queue at the same time, and a message must not become undeliverable merely because the two ends disagree about how tolerant a reader ought to be.
 
 Writing is not lenient and is unchanged: an enum is written as its numeric value and a boolean as a bare `true` / `false` token, byte-identical to what both `Newtonsoft.Json` and the `System.Text.Json` defaults produce.
 
@@ -175,25 +175,6 @@ Note the `{"Status":999}` row. Deserialization is a wire-format concern and appl
 ### The leniency is intentional and will not be tightened
 
 None of the above is an oversight awaiting a fix, and none of it will be narrowed. Tightening a read — rejecting an undefined enum value, say, or refusing a quoted boolean — would make a message written by one version undeserializable by another, which is exactly the rolling-deploy break the parity exists to prevent. The rejection would also land on the receiving side, turning a producer's wire change into a poison message on a queue the producer does not own.
-
-### The shared options are closed and cannot be modified
-
-`ChatterJson.Options` is a closed contract. It is sealed at construction, so a caller cannot register a converter on it or change any of its settings; attempting to do either throws `InvalidOperationException`.
-
-This is deliberate. The settings above are not a default that happens to suit this module — they *are* the wire-parity contract that lets one version of an application exchange Brokered Messages with another during a rolling deploy. Because every serialization site in the module shares the one instance, a single mutation anywhere in the process would silently redefine that contract for every message the process sends or receives, including messages already sitting on a queue written by a version that never saw the change.
-
-Serialization is customised through the Body Converter seam instead: implement `IBrokeredMessageBodyConverter` and select it with `IBodyConverterFactory`, which is keyed by content type. That seam is scoped to the message types you route through it, so it changes your own bytes without changing anyone else's.
-
-If you were previously modifying the shared options, copy-construct your own instance and modify the copy:
-
-```csharp
-var options = new JsonSerializerOptions(ChatterJson.Options);
-options.Converters.Add(new MyConverter());
-```
-
-The copy starts from the same configuration, is modifiable, and leaves `ChatterJson.Options` untouched. Pass it to your own `IBrokeredMessageBodyConverter`.
-
-That migration reaches message **bodies**, and only message bodies. Everything else this module serializes through the shared options — a Routing Slip attached to a message, the Message Context an outbox row persists and a relay materializes back — calls `ChatterJson.Options` directly and has no per-application override. That is deliberate: those bytes are the module's own infrastructure format, and an application that redefined them process-wide would be writing headers and rows that its own peers, running the unmodified module, could no longer read. If you were mutating the shared options to change one of those, this release withdraws that capability and there is no replacement for it. It was never dependable in any case — `System.Text.Json` seals an options instance the first time it is used, so such a mutation only ever took effect when it ran before the first message was serialized.
 
 ## Reliability
 
