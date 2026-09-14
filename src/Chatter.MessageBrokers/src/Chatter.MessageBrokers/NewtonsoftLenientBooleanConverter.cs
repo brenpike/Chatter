@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -84,8 +86,20 @@ namespace Chatter.MessageBrokers
                     return ParseQuotedBoolean(reader.GetString());
 
                 case JsonTokenType.Number:
-                    // Newtonsoft tolerated an integer 1/0 for a bool member.
-                    var number = reader.GetInt64();
+                    // Newtonsoft tolerated an integer 1/0 for a bool member. A numeric token with no
+                    // Int64 representation (fractional, exponent-bearing, or out of range) is rejected
+                    // as the unconvertible value it is, naming that value the way the sibling failure
+                    // modes here do — the reader's own parse failure names nothing.
+                    if (!reader.TryGetInt64(out var number))
+                    {
+                        var rawNumberText = reader.HasValueSequence
+                            ? Encoding.UTF8.GetString(reader.ValueSequence.ToArray())
+                            : Encoding.UTF8.GetString(reader.ValueSpan);
+
+                        throw new JsonException(
+                            $"The JSON value '{rawNumberText}' could not be converted to System.Boolean.");
+                    }
+
                     if (number == 1)
                     {
                         return true;

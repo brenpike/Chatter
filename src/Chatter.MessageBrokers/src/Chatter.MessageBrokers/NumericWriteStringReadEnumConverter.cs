@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -30,6 +32,13 @@ namespace Chatter.MessageBrokers
             var converterType = typeof(EnumConverter<>).MakeGenericType(typeToConvert);
             return (JsonConverter)Activator.CreateInstance(converterType);
         }
+
+        // The raw text of the current number token, so a numeric value with no integral representation
+        // is named in the failure the way an unparseable enum name is.
+        private static string ReadRawNumberText(ref Utf8JsonReader reader)
+            => reader.HasValueSequence
+                ? Encoding.UTF8.GetString(reader.ValueSequence.ToArray())
+                : Encoding.UTF8.GetString(reader.ValueSpan);
 
         private sealed class EnumConverter<TEnum> : JsonConverter<TEnum>
             where TEnum : struct, Enum
@@ -80,10 +89,22 @@ namespace Chatter.MessageBrokers
             {
                 if (UnderlyingType == typeof(ulong))
                 {
-                    return (TEnum)Enum.ToObject(typeof(TEnum), reader.GetUInt64());
+                    if (!reader.TryGetUInt64(out var unsignedValue))
+                    {
+                        throw new JsonException(
+                            $"The JSON value '{ReadRawNumberText(ref reader)}' could not be converted to {typeof(TEnum)}.");
+                    }
+
+                    return (TEnum)Enum.ToObject(typeof(TEnum), unsignedValue);
                 }
 
-                return (TEnum)Enum.ToObject(typeof(TEnum), reader.GetInt64());
+                if (!reader.TryGetInt64(out var signedValue))
+                {
+                    throw new JsonException(
+                        $"The JSON value '{ReadRawNumberText(ref reader)}' could not be converted to {typeof(TEnum)}.");
+                }
+
+                return (TEnum)Enum.ToObject(typeof(TEnum), signedValue);
             }
         }
     }
