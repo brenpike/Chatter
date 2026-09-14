@@ -113,7 +113,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             var outboxMessage = new OutboxMessage
             {
                 MessageId = outboundBrokeredMessage.MessageId,
-                MessageContext = System.Text.Json.JsonSerializer.Serialize(outboundBrokeredMessage.MessageContext, Chatter.MessageBrokers.ChatterJson.Options),
+                MessageContext = Chatter.MessageBrokers.ChatterJson.Serialize(outboundBrokeredMessage.MessageContext),
                 Destination = outboundBrokeredMessage.Destination,
                 MessageBody = outboundBrokeredMessage.Stringify(),
                 MessageContentType = outboundBrokeredMessage.ContentType,

@@ -12,6 +12,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.6.1] - 2026-09-14
+
+### Changed
+
+- `BrokeredMessageOutbox<TContext>` now serializes the outbound message context through `Chatter.MessageBrokers`'s public `ChatterJson.Serialize` method instead of reaching into the internal `ChatterJson.Options` field directly. The persisted outbox payload is byte-identical, so existing outbox rows round-trip unchanged and there is no behaviour change for consumers of this package.
+- Bundled dependency uplift to Chatter.MessageBrokers 0.31.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it). This uplift must be taken together with this release: `Chatter.MessageBrokers` 0.31.0 removes the internal grant this package previously used to reach `ChatterJson.Options`, so an older `Chatter.MessageBrokers.Reliability.EntityFramework` binary composed against `Chatter.MessageBrokers` 0.31.0 or later would fail at runtime. Republishing this package with a `Chatter.MessageBrokers` >= 0.31.0 floor closes that gap.
+
 ## [0.6.0] - 2026-09-02
 
 ### Changed
