@@ -176,6 +176,23 @@ Note the `{"Status":999}` row. Deserialization is a wire-format concern and appl
 
 None of the above is an oversight awaiting a fix, and none of it will be narrowed. Tightening a read — rejecting an undefined enum value, say, or refusing a quoted boolean — would make a message written by one version undeserializable by another, which is exactly the rolling-deploy break the parity exists to prevent. The rejection would also land on the receiving side, turning a producer's wire change into a poison message on a queue the producer does not own.
 
+### The shared options are closed and cannot be modified
+
+`ChatterJson.Options` is a closed contract. It is sealed at construction, so a caller cannot register a converter on it or change any of its settings; attempting to do either throws `InvalidOperationException`.
+
+This is deliberate. The settings above are not a default that happens to suit this module — they *are* the wire-parity contract that lets one version of an application exchange Brokered Messages with another during a rolling deploy. Because every serialization site in the module shares the one instance, a single mutation anywhere in the process would silently redefine that contract for every message the process sends or receives, including messages already sitting on a queue written by a version that never saw the change.
+
+Serialization is customised through the Body Converter seam instead: implement `IBrokeredMessageBodyConverter` and select it with `IBodyConverterFactory`, which is keyed by content type. That seam is scoped to the message types you route through it, so it changes your own bytes without changing anyone else's.
+
+If you were previously modifying the shared options, copy-construct your own instance and modify the copy:
+
+```csharp
+var options = new JsonSerializerOptions(ChatterJson.Options);
+options.Converters.Add(new MyConverter());
+```
+
+The copy starts from the same configuration, is modifiable, and leaves `ChatterJson.Options` untouched. Pass it to your own `IBrokeredMessageBodyConverter`.
+
 ## Reliability
 
 ### Outbox
