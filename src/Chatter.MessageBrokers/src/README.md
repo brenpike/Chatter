@@ -193,6 +193,8 @@ options.Converters.Add(new MyConverter());
 
 The copy starts from the same configuration, is modifiable, and leaves `ChatterJson.Options` untouched. Pass it to your own `IBrokeredMessageBodyConverter`.
 
+That migration reaches message **bodies**, and only message bodies. Everything else this module serializes through the shared options — a Routing Slip attached to a message, the Message Context an outbox row persists and a relay materializes back — calls `ChatterJson.Options` directly and has no per-application override. That is deliberate: those bytes are the module's own infrastructure format, and an application that redefined them process-wide would be writing headers and rows that its own peers, running the unmodified module, could no longer read. If you were mutating the shared options to change one of those, this release withdraws that capability and there is no replacement for it. It was never dependable in any case — `System.Text.Json` seals an options instance the first time it is used, so such a mutation only ever took effect when it ran before the first message was serialized.
+
 ## Reliability
 
 ### Outbox
