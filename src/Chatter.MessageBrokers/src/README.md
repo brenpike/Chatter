@@ -128,6 +128,54 @@ The same operations are available as extension methods on `IMessageHandlerContex
 ### Routing & Forwarding
 `IRouteBrokeredMessages` (default `BrokeredMessageRouter`) resolves destinations and routes outbound messages to the infrastructure. `ForwardingRouter` (`IForwardMessages`) handles forwarding inbound messages; `ReplyRouter` (`IReplyRouter`) handles reply-to routing. Message IDs are produced by `IMessageIdGenerator` (default `GuidIdGenerator`; `CombGuidIdGenerator` and `HashedBodyGuidGenerator` are also provided).
 
+## Serialization and wire parity
+
+The Body Converters in this module read and write brokered message bodies through one shared `System.Text.Json` configuration, `ChatterJson.Options`. Sharing a single instance is what makes the bytes on the wire, and the tolerance applied when reading them back, a property of the module rather than of whichever call site happened to serialize.
+
+### Enum and boolean reading is deliberately lenient
+
+Reading is more permissive than `System.Text.Json`'s own defaults, on purpose. The shared options restore read-parity with `Newtonsoft.Json`, which earlier versions of Chatter serialized with, so that a body written by one version of an application still deserializes in another. During a rolling deploy both versions are on the queue at the same time, and a message must not become undeliverable merely because the two ends disagree about how tolerant a reader ought to be.
+
+Writing is not lenient and is unchanged: an enum is written as its numeric value and a boolean as a bare `true` / `false` token, byte-identical to what both `Newtonsoft.Json` and the `System.Text.Json` defaults produce.
+
+For a property typed as an enum, all of these are accepted on read:
+
+| JSON value | Read as |
+| --- | --- |
+| `{"Status":1}` | the member whose value is `1` |
+| `{"Status":"Booked"}` | the member named `Booked` |
+| `{"Status":"booked"}` | the same member — names are matched case-insensitively |
+| `{"Status":999}` | `999`, whether or not a member is declared with that value |
+| `{"Status":"999"}` | the same, quoted as a string |
+| `{"Status":"-1"}` | `-1`, for an enum with a signed underlying type |
+| `{"Status":"Booked,Cancelled"}` | both members combined — Newtonsoft's comma syntax, accepted whether or not the enum is `[Flags]` |
+
+A string that names no declared member and is not a number — `{"Status":"NotARealStatus"}` — is a genuine error and throws `JsonException`.
+
+For a property typed `bool` or `bool?`, all of these are accepted on read:
+
+| JSON value | Read as |
+| --- | --- |
+| `{"Enabled":true}` | `true` |
+| `{"Enabled":"true"}` | `true`, quoted — matched case-insensitively, so `"TRUE"` and `"False"` read too |
+| `{"Enabled":" true "}` | `true` — surrounding whitespace is trimmed |
+| `{"Enabled":"1"}` / `{"Enabled":"0"}` | `true` / `false` |
+| `{"Enabled":1}` / `{"Enabled":0}` | `true` / `false`, as bare numbers |
+
+A `bool?` reads JSON `null` as `null`. Any other quoted value — `{"Enabled":"notabool"}` — throws `JsonException`.
+
+Each row above is pinned by a test: `WhenSerializing` and `WhenLenientlyReadingEnumsAndBooleans` under `tests/Serialization/UsingChatterJson`, and `WhenConverting` under `tests/UsingJsonBodyConverter`.
+
+### Deserialization does not validate enum membership
+
+Note the `{"Status":999}` row. Deserialization is a wire-format concern and applies no domain rule, so an undefined numeric value round-trips straight into the enum-typed property and the value you are handed names no declared member.
+
+**A message handler must validate enum membership itself.** Do not assume a deserialized enum value is one of the members you declared; check it — with `Enum.IsDefined`, or with a guard on the domain type the value feeds — before branching on it. The handler is the only thing that knows what an unrecognised value means for its own work: whether it came from a newer version and should be deadlettered, or whether it can be safely ignored.
+
+### The leniency is intentional and will not be tightened
+
+None of the above is an oversight awaiting a fix, and none of it will be narrowed. Tightening a read — rejecting an undefined enum value, say, or refusing a quoted boolean — would make a message written by one version undeserializable by another, which is exactly the rolling-deploy break the parity exists to prevent. The rejection would also land on the receiving side, turning a producer's wire change into a poison message on a queue the producer does not own.
+
 ## Reliability
 
 ### Outbox

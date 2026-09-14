@@ -72,13 +72,9 @@ namespace Chatter.MessageBrokers.Tests.UsingBrokeredMessageAttributeProvider
         public void MustReturnNullInfrastructureTypeWhenTypeIsNotDecorated()
             => _sut.GetInfrastructureType<UndecoratedMessage>().Should().BeNull();
 
-        // INVARIANT: GetBrokeredMessageDescription uses the non-null-conditional
-        // TryGetBrokeredMessageAttribute() and dereferences MessageDescription, so it
-        // throws when the type is not decorated (unlike the other getters which use ?.).
         [Fact]
-        public void MustThrowWhenGettingDescriptionForUndecoratedType()
-            => FluentActions.Invoking(() => _sut.GetBrokeredMessageDescription<UndecoratedMessage>())
-                .Should().Throw<NullReferenceException>();
+        public void MustReturnNullDescriptionWhenTypeIsNotDecorated()
+            => _sut.GetBrokeredMessageDescription<UndecoratedMessage>().Should().BeNull();
 
         [Fact]
         public void MustReturnSameSendingPathAcrossInstancesAndOverloads()
@@ -177,17 +173,15 @@ namespace Chatter.MessageBrokers.Tests.UsingBrokeredMessageAttributeProvider
         }
 
         [Fact]
-        public void MustThrowWhenGettingDescriptionForUndecoratedTypeAfterNullSafeMemberCachesNullOnRepeatedCalls()
+        public void MustReturnNullDescriptionForUndecoratedTypeAfterNullSafeMemberCachesNullOnRepeatedCalls()
         {
             var nullSafeCaller = new BrokeredMessageAttributeProvider();
             nullSafeCaller.GetMessageName<UndecoratedMessage>().Should().BeNull();
 
             var descriptionCaller = new BrokeredMessageAttributeProvider();
 
-            FluentActions.Invoking(() => descriptionCaller.GetBrokeredMessageDescription<UndecoratedMessage>())
-                .Should().Throw<NullReferenceException>();
-            FluentActions.Invoking(() => descriptionCaller.GetBrokeredMessageDescription<UndecoratedMessage>())
-                .Should().Throw<NullReferenceException>();
+            descriptionCaller.GetBrokeredMessageDescription<UndecoratedMessage>().Should().BeNull();
+            descriptionCaller.GetBrokeredMessageDescription<UndecoratedMessage>().Should().BeNull();
         }
 
         [Fact]
