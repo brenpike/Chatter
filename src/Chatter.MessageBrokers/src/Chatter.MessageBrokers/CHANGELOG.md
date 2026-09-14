@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+### Changed
+
+### Fixed
+
+## [0.31.0] - 2026-09-13
+
+### Changed
+
+- **`ChatterJson.Options` is now sealed at construction: mutating it — adding a converter, or reassigning a setting — now throws `InvalidOperationException`.** The shared options are built once and closed with `JsonSerializerOptions.MakeReadOnly()`, so the process-wide wire contract those settings pin can no longer be changed from anywhere the instance is reachable. This is a RUNTIME break only: `Options`'s declared type, accessibility, name and staticness are unchanged, so code that registers a converter on it or reassigns one of its settings still compiles — it now throws when that line runs. Pinned by `MustExposeTheSharedOptionsAsReadOnly`, `MustRefuseToRegisterAConverterOnTheSharedOptions` and `MustRefuseToReconfigureTheSharedOptions`. **Migration:** a caller that mutated the shared options must instead copy-construct its own instance — `var options = new JsonSerializerOptions(ChatterJson.Options);` — modify that copy, and supply it through its own `IBrokeredMessageBodyConverter`, selected by `IBodyConverterFactory`; pinned by `MustSupportCopyConstructingAModifiableInstanceFromTheSharedOptions` (#347).
+- **A numeric token with no integral representation now names the offending value in the `JsonException` it raises, instead of naming only the target type.** The lenient enum and boolean read paths reach for an integral value through the STJ reader's own integral accessor; a fractional, exponent-bearing, or out-of-range token — for example `{"Enabled":1.5}` — raised `FormatException` from that accessor, and `JsonSerializer` rewrote it into a valueless "The JSON value could not be converted to X" before it reached the caller. The value is now read a way that lets the message name it, e.g. `'1.5'`. The accepted value set does not move: every numeric form that deserialized before still deserializes and every form that threw before still throws `JsonException` — callers were never able to observe a `FormatException` here, since `JsonSerializer.Deserialize` already rewrites any reader `FormatException` into `JsonException` with the read path appended, on every overload this library uses, so there is nothing to migrate. Pinned by `MustThrowJsonExceptionForNumericBooleanThatIsNotInt64Representable`, `MustThrowJsonExceptionForNumericEnumThatIsNotInt64Representable`, `MustThrowJsonExceptionForNumericEnumThatIsNotUInt64Representable` and `MustStillReadIntegerBooleanForms` (#345).
+- **The lenient enum and boolean read behaviour of the shared options is now documented in `src/README.md` and pinned by characterization tests. No behaviour change.** Deserializing through `ChatterJson.Options` has always tolerated an undefined numeric enum value (bare or quoted), a negative numeric string for a signed enum, Newtonsoft's comma-separated combined-flags syntax regardless of `[Flags]`, and a quoted boolean padded with whitespace — none of it validated against enum membership, so an undefined value round-trips rather than being rejected, and a message handler that cares must validate it itself. The leniency is deliberate Newtonsoft read-parity and is not going to be tightened, because tightening it would break wire compatibility between consumer versions during a rolling deploy — a body a newer producer writes must still deserialize on an older consumer still running the previous converter version. Pinned by `MustReadUndefinedNumericEnumValue`, `MustReadUndefinedNumericEnumValueWrittenAsString`, `MustReadNegativeNumericEnumValueWrittenAsString`, `MustReadCommaSeparatedEnumNamesAsCombinedValue` and `MustReadQuotedBooleanWithSurroundingWhitespace` (#346).
+- **Why this is a MINOR rather than a PATCH or a MAJOR.** `ChatterJson.Options` withdraws an ACCEPT: code that registered a converter on, or reassigned a setting of, the shared options compiled and ran before this release and now throws `InvalidOperationException` at that call site. No public signature, type, accessibility or name changed, so read from signatures alone this is a PATCH; breaking a runtime behaviour a consumer could have relied on is a MAJOR trigger, and under SemVer's `0.x` allowance this package takes it as a MINOR, exactly as prior 0.x releases have, which is why the migration path is named above. #345 and #346 are non-breaking and ride the same release (#345, #346, #347).
+
+### Fixed
+
+- **`GetBrokeredMessageDescription<T>()` returns `null` for a message type carrying no `BrokeredMessageAttribute`, matching its four sibling attribute getters (`GetMessageName`, `GetReceiverName`, `GetErrorQueueName`, `GetInfrastructureType`), instead of throwing `NullReferenceException`.** It read the attribute's `MessageDescription` off a possibly-null attribute without the null-conditional `?.` every other getter already uses, so an undecorated type threw where every other lookup on it answered `null`. Pinned by `MustReturnNullDescriptionWhenTypeIsNotDecorated` and `MustReturnNullDescriptionForUndecoratedTypeAfterNullSafeMemberCachesNullOnRepeatedCalls` — the latter renamed from the 0.30.0 release's `MustThrowWhenGettingDescriptionForUndecoratedTypeAfterNullSafeMemberCachesNullOnRepeatedCalls`, which had recorded the throw this release removes (#344).
+
 ## [0.30.0] - 2026-09-13
 
 ### Changed
