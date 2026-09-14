@@ -8,18 +8,20 @@ namespace Chatter.MessageBrokers
     /// <summary>
     /// Shared System.Text.Json serializer options for all Chatter.MessageBrokers serialization sites.
     /// </summary>
-    public static class ChatterJson
+    internal static class ChatterJson
     {
-        // CLOSED CONTRACT: Options is constructed once, sealed at construction and reused. It is
-        // NOT an extension point: the instance is read-only, so a caller cannot add a converter to
-        // it or reconfigure it, and every converter registered below is internal and therefore
-        // invisible to a caller that would try. The supported seam for custom serialization is an
-        // IBrokeredMessageBodyConverter selected by IBodyConverterFactory, keyed by content type.
-        // Sealing protects the cross-version wire-parity contract documented on the settings below:
-        // a process-wide mutation would silently change that contract for every message the process
-        // sends or receives. Caching the single instance is also the pattern STJ prescribes — it
-        // documents per-call options construction as a performance cliff.
-        public static readonly JsonSerializerOptions Options = CreateOptions();
+        // Module-internal: these options are shared by Chatter.MessageBrokers and its sibling broker
+        // packages (see Properties/AssemblyInfo.cs) and are not part of any public API surface. The
+        // seam for custom serialization is an IBrokeredMessageBodyConverter selected by
+        // IBodyConverterFactory, keyed by content type — a converter supplies its own
+        // JsonSerializerOptions rather than reconfiguring these.
+        //
+        // Constructed once and reused: STJ documents per-call options construction as a performance
+        // cliff, because the type-metadata cache is keyed to the options instance. MakeReadOnly() is
+        // applied at construction so that a serialization site inside this trust boundary cannot
+        // reconfigure the shared instance and silently change the wire-parity contract documented on
+        // the settings below for every message the process sends or receives.
+        internal static readonly JsonSerializerOptions Options = CreateOptions();
 
         private static JsonSerializerOptions CreateOptions()
         {

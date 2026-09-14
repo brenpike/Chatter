@@ -7,18 +7,16 @@ using Xunit;
 namespace Chatter.MessageBrokers.Tests.Serialization.UsingChatterJson
 {
     // ====================================================================================
-    // GOLDEN CONFIGURATION for the shared ChatterJson.Options.
+    // GOLDEN CONFIGURATION for the module-internal ChatterJson.Options.
     //
-    // Options is a CLOSED contract: it is sealed at construction and is not an extension
-    // point. Two things must therefore hold and stay held. First, the instance really is
-    // read-only, so no caller can redefine the wire contract process-wide for every message
-    // sent or received. Second, the settings that MAKE UP that contract are pinned here by
-    // value, so a change to any one of them has to be a deliberate edit to this file rather
-    // than a silent drift in what goes on the wire.
+    // The settings that make up the wire contract are pinned here by value, so a change to
+    // any one of them has to be a deliberate edit to this file rather than a silent drift in
+    // what goes on the wire.
     //
-    // The supported seam for custom serialization is an IBrokeredMessageBodyConverter
-    // selected by IBodyConverterFactory; a caller wanting different System.Text.Json settings
-    // copy-constructs its own instance from this one (pinned below).
+    // The read-only assertions below guard the same drift from the other direction: a
+    // serialization site inside this trust boundary cannot reconfigure the shared instance at
+    // runtime. Custom serialization is done with an IBrokeredMessageBodyConverter selected by
+    // IBodyConverterFactory, which supplies its own options.
     // ====================================================================================
     public class WhenPinningTheSharedOptionsConfiguration : Testing.Core.Context
     {
@@ -117,22 +115,6 @@ namespace Chatter.MessageBrokers.Tests.Serialization.UsingChatterJson
             // The non-public-setter and non-public-parameterless-constructor modifiers hang off
             // this resolver; losing it drops both read-parity behaviours silently.
             ChatterJson.Options.TypeInfoResolver.Should().NotBeNull();
-        }
-
-        [Fact]
-        public void MustSupportCopyConstructingAModifiableInstanceFromTheSharedOptions()
-        {
-            // The documented migration for a caller that used to mutate the shared options.
-            var copy = new JsonSerializerOptions(ChatterJson.Options);
-
-            copy.IsReadOnly.Should().BeFalse();
-            copy.Encoder.Should().BeSameAs(ChatterJson.Options.Encoder);
-            copy.Converters.Should().HaveCount(3);
-
-            var addConverter = () => copy.Converters.Add(new JsonStringEnumConverter());
-
-            addConverter.Should().NotThrow();
-            ChatterJson.Options.Converters.Should().HaveCount(3);
         }
     }
 }
