@@ -130,7 +130,18 @@ The same operations are available as extension methods on `IMessageHandlerContex
 
 ## Serialization and wire parity
 
-The Body Converters in this module read and write brokered message bodies through one shared `System.Text.Json` configuration internal to the module. Sharing a single configuration is what makes the bytes on the wire, and the tolerance applied when reading them back, a property of the module rather than of whichever call site happened to serialize. To serialize a body differently, supply your own Body Converter — see [Brokered Message](#brokered-message).
+The Body Converters in this module read and write brokered message bodies through one shared `System.Text.Json` configuration. Sharing a single configuration is what makes the bytes on the wire, and the tolerance applied when reading them back, a property of the module rather than of whichever call site happened to serialize.
+
+That configuration is internal to the package and is not reachable from outside it: it appears in no public signature, and an application has no handle on it to inspect or reconfigure. What is published is the capability it backs — `ChatterJson.Serialize<TValue>(TValue value)` and `ChatterJson.Deserialize<TValue>(string json)`. Call those to produce bytes this library reads back identically, and to read bytes it wrote, with the leniency described below applied:
+
+```csharp
+var json = ChatterJson.Serialize(myMessage);
+var roundTripped = ChatterJson.Deserialize<MyMessage>(json);
+```
+
+`Serialize` writes the members of the type you DECLARE rather than those of the runtime type, so a base-typed variable holding a derived instance writes the base's members only.
+
+To CHANGE the format rather than match it, supply your own Body Converter: an `IBrokeredMessageBodyConverter`, selected by `IBodyConverterFactory` on the brokered message's content type, carries its own `JsonSerializerOptions` — see [Brokered Message](#brokered-message). That is the seam for a different wire format; the two methods above are the seam for this one.
 
 ### Enum and boolean reading is deliberately lenient
 

@@ -17,8 +17,8 @@ using System.Runtime.CompilerServices;
 // one — publish a capability instead.
 
 // Carries: the internal AddBuiltOptions extension (Configuration/BuiltOptions.cs), consumed at
-// Options/ServiceBusOptionsBuilder.cs. Does NOT use ChatterJson. Removal is tracked by its own
-// issue; publishing an options-registration capability is the intended replacement.
+// Options/ServiceBusOptionsBuilder.cs. Does NOT use ChatterJson. Removal is tracked by issue #478;
+// publishing an options-registration capability is the intended replacement.
 [assembly: InternalsVisibleTo("Chatter.MessageBrokers.AzureServiceBus")]
 
 // Carries: BrokeredMessageRouter (Routing/BrokeredMessageRouter.cs — implicitly internal, it
