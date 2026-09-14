@@ -6,14 +6,14 @@ using System.Text.Json.Serialization.Metadata;
 namespace Chatter.MessageBrokers
 {
     /// <summary>
-    /// Shared System.Text.Json serializer options for all Chatter.MessageBrokers serialization sites.
+    /// Serializes to and deserializes from Chatter's brokered-message wire format.
     /// </summary>
-    internal static class ChatterJson
+    public static class ChatterJson
     {
-        // Module-internal: these options are shared by Chatter.MessageBrokers and its sibling broker
-        // packages (see Properties/AssemblyInfo.cs) and are not part of any public API surface. The
-        // seam for custom serialization is an IBrokeredMessageBodyConverter selected by
-        // IBodyConverterFactory, keyed by content type — a converter supplies its own
+        // The capability is public; the configuration that backs it is not. Options is internal, so
+        // it appears in no public signature — pinned by MustKeepTheSerializerConfigurationOffThePublicSurface.
+        // The seam for custom serialization is an IBrokeredMessageBodyConverter
+        // selected by IBodyConverterFactory, keyed by content type — a converter supplies its own
         // JsonSerializerOptions rather than reconfiguring these.
         //
         // Constructed once and reused: STJ documents per-call options construction as a performance
@@ -22,6 +22,20 @@ namespace Chatter.MessageBrokers
         // reconfigure the shared instance and silently change the wire-parity contract documented on
         // the settings below for every message the process sends or receives.
         internal static readonly JsonSerializerOptions Options = CreateOptions();
+
+        /// <summary>
+        /// Serializes <paramref name="value"/> to Chatter's brokered-message wire format, writing the
+        /// members of <typeparamref name="TValue"/> as declared by the caller.
+        /// </summary>
+        public static string Serialize<TValue>(TValue value)
+            => JsonSerializer.Serialize(value, Options);
+
+        /// <summary>
+        /// Deserializes <paramref name="json"/> from Chatter's brokered-message wire format into a
+        /// <typeparamref name="TValue"/>, applying the read-leniency parity documented below.
+        /// </summary>
+        public static TValue Deserialize<TValue>(string json)
+            => JsonSerializer.Deserialize<TValue>(json, Options);
 
         private static JsonSerializerOptions CreateOptions()
         {
