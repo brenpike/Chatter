@@ -22,10 +22,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 - The enqueue (`SendToOutbox`) and the processed stamp (both `UpdateProcessedDate` overloads) are now stage-only; they no longer save.
 - The durability precondition that already governed inbox markers now governs outbox rows as well: an enqueue with no surrounding unit of work is staged, not persisted.
+- `UnitOfWork<TContext>.ExecuteAsync` — and `BrokeredMessageOutbox<TContext>`'s explicit `IUnitOfWork.ExecuteAsync` — no longer commit, roll back or dispose a transaction they did not begin. A transaction the unit of work adopts from a caller is participated in (changes are still saved into it) but left open. Migration: a consumer who opened their own transaction on the same `DbContext` around dispatch must now commit or roll it back themselves, on both the success path and the failure path. Previously the library did it for them.
 
 ### Fixed
 
 - #480 — the outbox was a commit-capable participant that is not the unit of work, calling `SaveChangesAsync` from inside the unit of work's execution strategy, so a retrying strategy could silently discard work the handler had already performed.
+- The library committing and disposing a caller-owned transaction mid-flight. A consumer who opened a transaction on the same `DbContext` around dispatch had it committed and disposed before their own code resumed.
+- A `NullReferenceException` replacing the real `DbUpdateConcurrencyException` when the conflicted outbox row had been concurrently deleted, because the compensating `GetDatabaseValuesAsync` read returned null and was indexed immediately. The original concurrency exception now propagates.
 
 ## [0.7.0] - 2026-09-14
 
