@@ -179,6 +179,57 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
                 typeof(UnitOfWorkBehavior<TestCommand>));
         }
 
+        // A keyed ICommandBehavior<> descriptor belongs to whoever registered it under that key. It is
+        // invisible to the non-keyed resolution the pipeline performs, so the reliability extensions must
+        // neither count it as the unit of work behavior already being present nor move it. Registering it
+        // BEFORE any reliability extension call is what gives this teeth: had it been counted, the real unit
+        // of work behavior would never have been registered and could not appear in the resolved sequence.
+        //
+        // Scope, stated plainly. This test is GREEN against the code as it stood before the IsKeyedService
+        // guard, because Microsoft.Extensions.DependencyInjection.Abstractions 8.0.2 and later - the versions
+        // this repository resolves on both target frameworks - return null from ServiceDescriptor.Implementation-
+        // Type for a keyed descriptor. At 8.0.0 that same property throws InvalidOperationException instead.
+        // Consumers bind that assembly from the ASP.NET Core shared framework at the host's patch level rather
+        // than from the restored package, so an unpatched 8.0.0 host plus any keyed ICommandBehavior<>
+        // registration crashes. This is a host-patch-level regression guard, not a reproduction of a failure
+        // reachable in this repository today.
+        //
+        // The guard it pins adds a FOURTH attribute to an inferential predicate: command behavior service
+        // type, then exact open generic, then implementation type, then not keyed. It closes that one crash.
+        // It does not address the recurrence class, which is tracked separately.
+        [Fact]
+        public void MustLeaveAKeyedCommandBehaviorOutOfTheReliabilityBehaviorSet()
+        {
+            var services = new ServiceCollection();
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), builder =>
+            {
+                builder.Services.AddKeyedScoped(typeof(ICommandBehavior<>), "application-key", typeof(UnitOfWorkBehavior<>));
+                builder.WithInboxBehavior<TestDbContext>();
+                builder.WithOutboxProcessingBehavior<TestDbContext>();
+            });
+            services.AddLogging();
+            services.AddScoped(_ => Mock.Of<IUnitOfWork>());
+            services.AddScoped(_ => Mock.Of<IBrokeredMessageInbox>());
+            services.AddScoped(_ => Mock.Of<IOutboxProcessor>());
+
+            var keyedBehaviors = services
+                .Where(descriptor => descriptor.IsKeyedService && descriptor.ServiceType == typeof(ICommandBehavior<>))
+                .ToList();
+
+            keyedBehaviors.Should().ContainSingle()
+                .Which.KeyedImplementationType.Should().Be(typeof(UnitOfWorkBehavior<>));
+
+            using var provider = services.BuildServiceProvider();
+            using var scope = provider.CreateScope();
+
+            var sequence = scope.ServiceProvider
+                .GetRequiredService<IEnumerable<ICommandBehavior<TestCommand>>>()
+                .Select(behavior => behavior.GetType())
+                .ToList();
+
+            sequence.Should().Equal(_orderIndependentSequence);
+        }
+
         private sealed class TestCommand : ICommand
         {
         }

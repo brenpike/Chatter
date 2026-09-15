@@ -117,9 +117,16 @@ namespace Microsoft.Extensions.DependencyInjection
 
         // The command behavior service type is what keeps this away from the IUnitOfWork -> UnitOfWork<TContext>
         // descriptor, and the exact open generic match is what leaves an application's own closed-generic
-        // registration - which serves a single command type - out of the reliability behavior set.
+        // registration - which serves a single command type - out of the reliability behavior set. A keyed
+        // descriptor is left out too: it is invisible to the non-keyed resolution the pipeline performs, so it
+        // is never part of the sequence these extensions order.
+        // INVARIANT: the IsKeyedService test must stay ahead of the ImplementationType read. Microsoft.Extensions
+        // .DependencyInjection.Abstractions 8.0.0 throws InvalidOperationException from ImplementationType for a
+        // keyed descriptor, and consumers bind that assembly at their ASP.NET Core host's patch level, so
+        // reordering these operands reintroduces the crash on an unpatched host without failing anything here.
         private static bool IsBehaviorDescriptorFor(ServiceDescriptor descriptor, Type openGenericBehaviorType)
-            => descriptor.ServiceType.IsGenericType
+            => !descriptor.IsKeyedService
+                && descriptor.ServiceType.IsGenericType
                 && descriptor.ServiceType.GetGenericTypeDefinition() == typeof(ICommandBehavior<>)
                 && descriptor.ImplementationType == openGenericBehaviorType;
     }
