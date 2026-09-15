@@ -7,6 +7,7 @@ EF Core persistence implementing the inbox/outbox reliability ports and unit-of-
 **Brokered Message Outbox**: EF-backed store of outgoing messages, persisted in the same transaction as local state for reliable publish.
 
 **Brokered Message Inbox**: EF-backed store of received message ids enforcing once-only, idempotent handling.
+_Avoid_: "closed by construction" / "commit capability denied" for `BrokeredMessageInbox<TContext>`'s `DbSet<InboxMessage>` field — it does not: the reflection guard (`MustNotDeclareADbContextField`) denies a declared `DbContext` field, not the commit capability itself; EF's `DbSet<T>` declares `IInfrastructure<IServiceProvider>`, the runtime `InternalDbSet<T>` implements `IInfrastructure<DbContext>` and holds a private `DbContext` field, and `SaveChangesAsync` is reachable through that handle with no reflection and no internal-type cast.
 
 **Unit of Work**: Coordinates a single atomic commit spanning domain state and inbox/outbox writes.
 

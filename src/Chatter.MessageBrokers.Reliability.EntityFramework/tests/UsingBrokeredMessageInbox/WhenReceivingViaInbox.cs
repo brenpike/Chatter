@@ -156,26 +156,27 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             act.Should().Throw<ArgumentNullException>();
         }
 
-        // INVARIANT: BrokeredMessageInbox holds no commit-capable handle. The eliminated class is an
-        // inbox-owned commit point: while the inbox held a DbContext field, any edit could call
-        // SaveChangesAsync on it, flushing and accepting the handler's pending changes before
-        // UnitOfWorkBehavior's transaction commits, so a failed commit would roll the rows back while
-        // the change tracker still reported them Unchanged and the retry would not reissue them.
-        // Holding only a DbSet<InboxMessage> — which exposes AddAsync and AnyAsync and no
-        // SaveChangesAsync — makes that commit point unrepresentable rather than merely absent. This
-        // test is what fails the build if a DbContext-typed field ever returns; it is not redundant
-        // with MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId, which pins the
-        // current behaviour rather than the absence of the capability. See
+        // INVARIANT: BrokeredMessageInbox declares no DbContext-assignable field. This guard buys a
+        // narrowed declared surface — no _context.SaveChangesAsync(...) in the type's own vocabulary
+        // — and a regression tripwire against reintroducing a DbContext field, the exact path the
+        // reverted inbox self-save took. It does not make a commit impossible: DbSet<T> transitively
+        // reaches the DbContext (EF Core 10.0.0: DbSet<T> declares IInfrastructure<IServiceProvider>;
+        // the runtime InternalDbSet<T> implements IInfrastructure<DbContext> and holds a private
+        // DbContext field), so a commit is reachable from the retained DbSet<InboxMessage> with no
+        // reflection and no internal-type cast. What actually enforces that the marker is committed
+        // exactly once by UnitOfWorkBehavior's single SaveChangesAsync is the canonical resolved order
+        // [OutboxProcessingBehavior, UnitOfWorkBehavior, InboxBehavior] plus the characterization test
+        // MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId. See
         // docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
         [Fact]
-        public void MustNotHoldACommitCapableHandle()
+        public void MustNotDeclareADbContextField()
         {
-            var commitCapableFields = typeof(BrokeredMessageInbox<DbContext>)
+            var dbContextFields = typeof(BrokeredMessageInbox<DbContext>)
                 .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
                 .Where(field => typeof(DbContext).IsAssignableFrom(field.FieldType))
                 .Select(field => $"{field.FieldType.Name} {field.Name}");
 
-            commitCapableFields.Should().BeEmpty();
+            dbContextFields.Should().BeEmpty();
         }
     }
 }

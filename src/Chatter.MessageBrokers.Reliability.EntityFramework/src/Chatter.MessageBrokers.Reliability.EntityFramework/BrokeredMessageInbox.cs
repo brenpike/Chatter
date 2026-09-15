@@ -15,10 +15,19 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
     /// <typeparam name="TContext">The DbContext where the inbox presides</typeparam>
     public class BrokeredMessageInbox<TContext> : IBrokeredMessageInbox, IInboxDeduplicator where TContext : DbContext
     {
-        // INVARIANT: the inbox holds a DbSet, never the DbContext itself. DbSet exposes AddAsync and
-        // AnyAsync and no SaveChangesAsync, so an inbox-owned commit point is unrepresentable rather
-        // than merely absent. MustNotHoldACommitCapableHandle fails the build if a DbContext-typed
-        // field ever returns. See
+        // INVARIANT: ReceiveViaInbox calls DbSet.AddAsync and no SaveChangesAsync, so the relational
+        // inbox never commits its own marker. The marker is committed exactly once, by
+        // UnitOfWorkBehavior's single SaveChangesAsync inside the transaction, together with the
+        // handler's work. This is enforced by the canonical resolved order
+        // [OutboxProcessingBehavior, UnitOfWorkBehavior, InboxBehavior] and by the characterization
+        // test MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId -- not by the
+        // declared type of this field. Holding a DbSet<InboxMessage> buys a narrowed declared
+        // surface (no _context.SaveChangesAsync(...) in this type's own vocabulary), and
+        // MustNotDeclareADbContextField is a regression tripwire against reintroducing a
+        // DbContext-typed field, the exact path the reverted self-save took. It does not make a
+        // commit unreachable: under Microsoft.EntityFrameworkCore 10.0.0 the runtime
+        // InternalDbSet<T> implements IInfrastructure<DbContext>, so the owning DbContext is still
+        // obtainable from this handle. See
         // docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
         private readonly DbSet<InboxMessage> _inbox;
         private readonly ILogger<BrokeredMessageInbox<TContext>> _logger;
@@ -40,7 +49,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// Receives a message and verifies if it's been handled previously by checking the inbox.
         /// INVARIANT: this method adds the inbox message to the <typeparamref name="TContext"/> and
         /// never self-commits it; the marker is committed exactly once by UnitOfWorkBehavior's single
-        /// SaveChangesAsync, which is what makes the marker and the handler's work atomic. See
+        /// SaveChangesAsync, which is what makes the marker and the handler's work atomic.
+        /// The guarantee holds when all three extension methods are called with the same
+        /// <typeparamref name="TContext"/>. IUnitOfWork resolves to the TContext of the LAST call to
+        /// any of the three; IBrokeredMessageInbox resolves to the TContext of the last
+        /// WithInboxBehavior&lt;TContext&gt;(). If they differ, the unit of work commits a different
+        /// DbContext than the one holding the marker. See
         /// docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
         /// </summary>
         /// <typeparam name="TMessage">The type of message being received</typeparam>
