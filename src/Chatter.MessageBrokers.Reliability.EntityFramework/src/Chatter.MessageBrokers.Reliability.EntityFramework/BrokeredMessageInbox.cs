@@ -28,10 +28,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         /// <summary>
         /// Receives a message and verifies if it's been handled previously by checking the inbox.
-        /// The inbox persists its own message via the <typeparamref name="TContext"/> once the handler
-        /// succeeds, so the record is durable when this method returns rather than relying on a later
-        /// save by the surrounding pipeline. Cancellation is taken from
-        /// <paramref name="messageBrokerContext"/>.
+        /// INVARIANT: this method adds the inbox message to the <typeparamref name="TContext"/> and
+        /// never self-commits it; the marker is committed exactly once by UnitOfWorkBehavior's single
+        /// SaveChangesAsync, which is what makes the marker and the handler's work atomic. See
+        /// docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
         /// </summary>
         /// <typeparam name="TMessage">The type of message being received</typeparam>
         /// <param name="message">The message being received</param>
@@ -71,7 +71,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 _logger.LogDebug("Message handler executed successfully from inbox");
                 _logger.LogTrace($"Adding inbox message with id '{inboxMessage.MessageId}' and date received '{inboxMessage.ReceivedByInboxAtUtc}'.");
                 await inbox.AddAsync(inboxMessage);
-                await _context.SaveChangesAsync(messageBrokerContext.CancellationToken);
                 _logger.LogTrace($"Message with id '{messageId}' added to inbox.");
             }
             catch (Exception ex)

@@ -69,6 +69,8 @@ Regardless of which order you call `WithInboxBehavior<TContext>()`, `WithOutboxP
 
 This guarantee is independent of call order and call count — calling the extension methods in any sequence, or calling one of them more than once, always produces the same nesting. A behavior your application registers between the extension calls keeps the pipeline slot it was registered into, but may end up on a different side of the reliability behaviors than before.
 
+> **Scope:** this ordering guarantee covers only descriptors registered through `WithUnitOfWorkBehavior<TContext>()`, `WithInboxBehavior<TContext>()`, and `WithOutboxProcessingBehavior<TContext>()`. Later direct `WithBehavior` calls, and closed-generic, factory, keyed, or decorated registrations of these behavior types, are intentionally outside normalization and are not reordered.
+
 ### Configuring the DbContext
 
 The inbox and outbox entities — `InboxMessage` and `OutboxMessage` (from `Chatter.MessageBrokers.Reliability.Inbox` / `.Outbox`) — must be mapped onto your `DbContext`. This package ships `IEntityTypeConfiguration<>` classes for both. Apply them in `OnModelCreating`:
@@ -108,7 +110,7 @@ There is no separate "Chatter DbContext" — you supply your own, and the inbox/
 - If the id is already present, the handler is skipped (the message was already processed).
 - Otherwise the handler runs, and on success an `InboxMessage` row is added recording the id and `ReceivedByInboxAtUtc`.
 
-If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible). The inbox writes its own `InboxMessage` row via `SaveChangesAsync` rather than relying on an external save; because the package guarantees the inbox behavior runs inside the unit of work (see [Reliability Behavior Order](#reliability-behavior-order)), that save enlists in the ambient transaction, so the handler's effects and the inbox record still commit together.
+If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible). The inbox add participates in the surrounding unit of work, so the handler's effects and the inbox record commit together — the inbox never saves on its own.
 
 ### Outbox (reliable publish)
 
