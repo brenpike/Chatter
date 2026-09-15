@@ -116,12 +116,12 @@ If the incoming message has no message id, the inbox simply executes the handler
 
 ### Outbox (reliable publish)
 
-`BrokeredMessageOutbox<TContext>` implements the transactional outbox. Outgoing messages are serialized and written as `OutboxMessage` rows *inside the same transaction* as the work that produced them, so a message is never published unless the local state change commits. Each row captures the serialized body, message context (JSON), destination, content type, send time, and a `BatchId` (the current transaction id).
+`BrokeredMessageOutbox<TContext>` implements the transactional outbox. Outgoing messages are serialized and staged as `OutboxMessage` rows via `SendToOutbox`. Each row captures the serialized body, message context (JSON), destination, content type, send time, and a `BatchId` (the current transaction id). `SendToOutbox` participates in the surrounding unit of work, so the staged row and the work that produced it commit together — the outbox never saves on its own, and a message is never published unless the local state change commits. An enqueue with no surrounding unit of work is staged, not persisted. This holds under the same-`TContext` precondition in [Reliability Behavior Order](#reliability-behavior-order).
 
 Processing then drains the outbox separately:
 
 - `GetUnprocessedMessagesFromOutbox` / `GetUnprocessedBatch(batchId)` return rows whose `ProcessedFromOutboxAtUtc` is `null`.
-- After a row is dispatched, `UpdateProcessedDate` stamps `ProcessedFromOutboxAtUtc`. This column is an **optimistic concurrency token**, so two processors racing on the same row produce a `DbUpdateConcurrencyException` — the loser logs and treats the row as already processed rather than double-publishing.
+- After a row is dispatched, `UpdateProcessedDate` stages the `ProcessedFromOutboxAtUtc` stamp. This column is an **optimistic concurrency token**, so two processors racing on the same row produce a `DbUpdateConcurrencyException` when the surrounding unit of work commits; the outbox's `IUnitOfWork.ExecuteAsync`, which wraps that commit, catches it and treats the row as already processed rather than double-publishing.
 
 ### Unit of Work / Persistance Transaction
 

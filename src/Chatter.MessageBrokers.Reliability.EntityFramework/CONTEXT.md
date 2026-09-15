@@ -4,7 +4,7 @@ EF Core persistence implementing the inbox/outbox reliability ports and unit-of-
 
 ## Language
 
-**Brokered Message Outbox**: EF-backed store of outgoing messages, persisted in the same transaction as local state for reliable publish.
+**Brokered Message Outbox**: EF-backed store of outgoing messages. `SendToOutbox` and both `UpdateProcessedDate` overloads only stage `OutboxMessage` rows into the EF context — neither saves. An enqueue is committed by the unit of work wrapping the handler, the same single `SaveChangesAsync` that commits the Brokered Message Inbox marker. A drain's processed stamp is committed by the outbox's own `IUnitOfWork.ExecuteAsync` (`UnitOfWork<TContext>.CompleteAsync`), which runs after the handler's transaction has already committed. An enqueue outside any surrounding unit of work is staged, never persisted — symmetric with the inbox.
 
 **Brokered Message Inbox**: EF-backed store of received message ids enforcing once-only, idempotent handling.
 _Avoid_: "closed by construction" / "commit capability denied" for `BrokeredMessageInbox<TContext>`'s `DbSet<InboxMessage>` field — it does not: the reflection guard (`MustNotDeclareADbContextField`) denies a declared `DbContext` field, not the commit capability itself; EF's `DbSet<T>` declares `IInfrastructure<IServiceProvider>`, the runtime `InternalDbSet<T>` implements `IInfrastructure<DbContext>` and holds a private `DbContext` field, and `SaveChangesAsync` is reachable through that handle with no reflection and no internal-type cast.

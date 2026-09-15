@@ -12,6 +12,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.8.0] - 2026-09-15
+
+### Removed
+
+- The public `BrokeredMessageOutbox<TContext>.SaveOutboxAsync` member. Migration: callers that relied on it to persist should let the surrounding unit of work commit, or call `DbContext.SaveChangesAsync` themselves.
+
+### Changed
+
+- The enqueue (`SendToOutbox`) and the processed stamp (both `UpdateProcessedDate` overloads) are now stage-only; they no longer save.
+- The durability precondition that already governed inbox markers now governs outbox rows as well: an enqueue with no surrounding unit of work is staged, not persisted.
+
+### Fixed
+
+- #480 — the outbox was a commit-capable participant that is not the unit of work, calling `SaveChangesAsync` from inside the unit of work's execution strategy, so a retrying strategy could silently discard work the handler had already performed.
+
 ## [0.7.0] - 2026-09-14
 
 ### Changed
