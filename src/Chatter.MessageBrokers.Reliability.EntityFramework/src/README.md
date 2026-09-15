@@ -64,12 +64,14 @@ The available pipeline extension methods (`Microsoft.Extensions.DependencyInject
 Regardless of which order you call `WithInboxBehavior<TContext>()`, `WithOutboxProcessingBehavior<TContext>()`, and `WithUnitOfWorkBehavior<TContext>()` — and no matter how many times you call them — the package always resolves the three reliability behaviors into the same nesting: **outbox processing wraps the unit of work, which wraps the inbox**.
 
 - The pipeline composes last-to-first, so the first-resolved behavior ends up outermost.
-- The inbox marker must commit or roll back together with the handler's work, so it sits inside the unit of work.
+- The inbox marker sits inside the unit of work so that, given the precondition below, it commits or rolls back together with the handler's work.
 - Outbox processing dispatches to the broker after the handler returns and must only dispatch committed rows, so it sits outside the unit of work.
 
 This guarantee is independent of call order and call count — calling the extension methods in any sequence, or calling one of them more than once, always produces the same nesting. A behavior your application registers between the extension calls keeps the pipeline slot it was registered into, but may end up on a different side of the reliability behaviors than before.
 
 > **Scope:** this ordering guarantee covers only descriptors registered through `WithUnitOfWorkBehavior<TContext>()`, `WithInboxBehavior<TContext>()`, and `WithOutboxProcessingBehavior<TContext>()`. Later direct `WithBehavior` calls, and closed-generic, factory, keyed, or decorated registrations of these behavior types, are intentionally outside normalization and are not reordered.
+
+> **Precondition (durability, not ordering):** the ordering above is independent of `TContext`, but the commit-together guarantee is not. The guarantee holds when all three extension methods are called with the same `TContext`. `IUnitOfWork` resolves to the `TContext` of the LAST call to any of the three; `IBrokeredMessageInbox` resolves to the `TContext` of the last `WithInboxBehavior<TContext>()`. If they differ, the unit of work commits a different `DbContext` than the one holding the marker.
 
 ### Configuring the DbContext
 
@@ -110,7 +112,7 @@ There is no separate "Chatter DbContext" — you supply your own, and the inbox/
 - If the id is already present, the handler is skipped (the message was already processed).
 - Otherwise the handler runs, and on success an `InboxMessage` row is added recording the id and `ReceivedByInboxAtUtc`.
 
-If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible). The inbox add participates in the surrounding unit of work, so the handler's effects and the inbox record commit together — the inbox never saves on its own.
+If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible). The inbox add participates in the surrounding unit of work, so the handler's effects and the inbox record commit together — the inbox never saves on its own. This holds under the same-`TContext` precondition in [Reliability Behavior Order](#reliability-behavior-order).
 
 ### Outbox (reliable publish)
 
