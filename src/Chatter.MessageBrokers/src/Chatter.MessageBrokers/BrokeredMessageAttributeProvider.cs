@@ -20,7 +20,7 @@ namespace Chatter.MessageBrokers
 
         public string GetBrokeredMessageDescription<T>()
         {
-            var operationDescription = GetBrokeredMessageAttribute(typeof(T)).MessageDescription;
+            var operationDescription = GetBrokeredMessageAttribute(typeof(T))?.MessageDescription;
             return string.IsNullOrWhiteSpace(operationDescription) ? GetReceiverName<T>() : operationDescription;
         }
 

@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker
 {
@@ -8,7 +7,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
         public string ContentType => "application/json; charset=utf-16";
 
         public TBody Convert<TBody>(byte[] body)
-            => JsonSerializer.Deserialize<TBody>(Stringify(body), ChatterJson.Options);
+            => ChatterJson.Deserialize<TBody>(Stringify(body));
 
         public byte[] Convert(object body)
             => GetBytes(Stringify(body));
@@ -17,7 +16,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker
             => Encoding.Unicode.GetString(body);
 
         public string Stringify(object body)
-            => JsonSerializer.Serialize(body, ChatterJson.Options);
+            => ChatterJson.Serialize(body);
 
         public byte[] GetBytes(string body)
             => Encoding.Unicode.GetBytes(body);

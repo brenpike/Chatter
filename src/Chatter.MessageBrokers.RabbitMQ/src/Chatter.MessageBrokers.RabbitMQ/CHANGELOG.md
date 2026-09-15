@@ -6,6 +6,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-14
+
+### Changed
+
+- `RabbitMqBodyConverter` now serializes and deserializes through `Chatter.MessageBrokers`'s public `ChatterJson.Serialize`/`ChatterJson.Deserialize` methods instead of reaching into the internal `ChatterJson.Options` field directly. Output is byte-identical and there is no behaviour change for consumers of this package.
+- Bundled dependency uplift to Chatter.MessageBrokers 0.31.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it). This uplift must be taken together with this release: `Chatter.MessageBrokers` 0.31.0 removes the internal grant this package previously used to reach `ChatterJson.Options`, so an older `Chatter.MessageBrokers.RabbitMQ` binary composed against `Chatter.MessageBrokers` 0.31.0 or later would fail at runtime. Republishing this package with a `Chatter.MessageBrokers` >= 0.31.0 floor closes that gap.
+
 ## [0.4.3] - 2026-09-13
 
 ### Changed

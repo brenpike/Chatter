@@ -66,6 +66,9 @@ _Avoid_: reading it as authenticity or as a trust boundary — no broker Chatter
 
 **Body Converter**: Serializes/deserializes a brokered message body to/from a domain message type.
 
+**Wire Serialization** (`ChatterJson`): The module's brokered-message JSON wire format, published as a CAPABILITY — `ChatterJson.Serialize<TValue>` and `ChatterJson.Deserialize<TValue>` — rather than as the `System.Text.Json` configuration that produces it, which is internal to the package and appears in no public signature. It is the format every serialization site in this module already uses (Body Converters, Routing Slip attach and detach, `MessageContext` materialization, outbox and inbox persistence), so calling it is how anything outside those sites — an application, or a sibling Chatter package — produces bytes this module reads back identically. It is a MATCHING seam, not an extension point: changing the format is the Body Converter's job.
+_Avoid_: reading it as a configuration surface ("reconfigure Chatter's serializer" names nothing a caller can reach, since the shared options are not published); reaching for the internal options across an `InternalsVisibleTo` grant — the sanctioned door is the published capability, not the internal primitive (ADR-0010 D6).
+
 **Two-Tier Reliability**: the reliability port supports two coexisting persistence models — a relational ambient-transaction tier and a NoSQL/document stage-then-commit tier — sharing the enqueue, inbox, and transaction-context seam.
 
 **Relational Tier**: the ambient-transaction reliability model (Unit of Work wraps the whole handler in an open transaction; polling outbox dispatch).
