@@ -18,6 +18,7 @@ EF Core persistence implementing the inbox/outbox reliability ports and unit-of-
 - All types are generic over the consumer's own `DbContext` (`TContext : DbContext`) — no separate Chatter context; entity configs are applied in the consumer's `OnModelCreating`.
 - Wired through the Command Pipeline as behaviors (`WithInboxBehavior<TContext>()`, `WithOutboxProcessingBehavior<TContext>()`, `WithUnitOfWorkBehavior<TContext>()`), not a standalone DI registration.
 - The Unit of Work commits domain changes together with Outbox/Inbox writes via a Persistance Transaction (`IPersistanceTransaction`).
+- Outbox processing wraps the Unit of Work, which wraps the Inbox — this order is package-guaranteed, not derived from the order the pipeline extension methods are called in.
 
 ## Example dialogue
 

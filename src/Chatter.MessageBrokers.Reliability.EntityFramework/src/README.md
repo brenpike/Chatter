@@ -57,6 +57,18 @@ The available pipeline extension methods (`Microsoft.Extensions.DependencyInject
 | `WithInboxBehavior<TContext>()` | Adds the unit of work, replaces `IBrokeredMessageInbox` with `BrokeredMessageInbox<TContext>`, and adds the `InboxBehavior`. |
 | `WithOutboxProcessingBehavior<TContext>()` | Adds the `OutboxProcessingBehavior`, replaces `IBrokeredMessageOutbox` with `BrokeredMessageOutbox<TContext>` and `IRouteBrokeredMessages` with the outbox router, and adds the unit of work. |
 
+> The order in which you call these methods does not affect the resolved pipeline order — see [Reliability Behavior Order](#reliability-behavior-order) below.
+
+### Reliability Behavior Order
+
+Regardless of which order you call `WithInboxBehavior<TContext>()`, `WithOutboxProcessingBehavior<TContext>()`, and `WithUnitOfWorkBehavior<TContext>()` — and no matter how many times you call them — the package always resolves the three reliability behaviors into the same nesting: **outbox processing wraps the unit of work, which wraps the inbox**.
+
+- The pipeline composes last-to-first, so the first-resolved behavior ends up outermost.
+- The inbox marker must commit or roll back together with the handler's work, so it sits inside the unit of work.
+- Outbox processing dispatches to the broker after the handler returns and must only dispatch committed rows, so it sits outside the unit of work.
+
+This guarantee is independent of call order and call count — calling the extension methods in any sequence, or calling one of them more than once, always produces the same nesting. A behavior your application registers between the extension calls keeps the pipeline slot it was registered into, but may end up on a different side of the reliability behaviors than before.
+
 ### Configuring the DbContext
 
 The inbox and outbox entities — `InboxMessage` and `OutboxMessage` (from `Chatter.MessageBrokers.Reliability.Inbox` / `.Outbox`) — must be mapped onto your `DbContext`. This package ships `IEntityTypeConfiguration<>` classes for both. Apply them in `OnModelCreating`:
@@ -96,7 +108,7 @@ There is no separate "Chatter DbContext" — you supply your own, and the inbox/
 - If the id is already present, the handler is skipped (the message was already processed).
 - Otherwise the handler runs, and on success an `InboxMessage` row is added recording the id and `ReceivedByInboxAtUtc`.
 
-If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible). The inbox add participates in the surrounding unit of work, so the handler's effects and the inbox record commit together.
+If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible). The inbox writes its own `InboxMessage` row via `SaveChangesAsync` rather than relying on an external save; because the package guarantees the inbox behavior runs inside the unit of work (see [Reliability Behavior Order](#reliability-behavior-order)), that save enlists in the ambient transaction, so the handler's effects and the inbox record still commit together.
 
 ### Outbox (reliable publish)
 

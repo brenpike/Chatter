@@ -12,6 +12,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.7.0] - 2026-09-14
+
+### Changed
+
+- `BrokeredMessageInbox<TContext>.ReceiveViaInbox` now saves its own `InboxMessage` row. Inside a unit of work the save enlists in the ambient transaction, so atomicity is unchanged. The row is now accepted into the context rather than left pending, so a consumer inspecting the change tracker for a pending `InboxMessage` will no longer find one.
+- `WithUnitOfWorkBehavior`, `WithInboxBehavior` and `WithOutboxProcessingBehavior` now guarantee a fixed resolved order — outbox processing wraps the unit of work, which wraps the inbox — regardless of call order or call count. Migration: consumers who called `WithInboxBehavior` before `WithOutboxProcessingBehavior` previously resolved inbox, outbox, unit-of-work and need no code change. Consumers who register their own behaviours between the reliability extension calls keep their behaviour's slot, but its position relative to the reliability behaviours may differ from before.
+
+### Fixed
+
+- Reliability behaviours could resolve in an order that depended on call order or call count, rather than the intended outbox-wraps-unit-of-work-wraps-inbox order (#379).
+
+No schema change and no migration is required for this release.
+
 ## [0.6.1] - 2026-09-14
 
 ### Changed
