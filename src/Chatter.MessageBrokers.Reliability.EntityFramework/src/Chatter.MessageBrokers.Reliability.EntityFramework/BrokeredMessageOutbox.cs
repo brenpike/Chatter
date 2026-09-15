@@ -110,20 +110,32 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 {
                     if (entry.Entity is OutboxMessage)
                     {
-                        var dbVal = await entry.GetDatabaseValuesAsync(cancellationToken);
-                        if (dbVal is null)
+                        // INVARIANT: compensation is best-effort diagnostics only. Every failure it can raise - the
+                        // database read on a degraded connection, a cancelled token, a rejected state change - is
+                        // swallowed so that the DbUpdateConcurrencyException rethrown below stays the reported cause.
+                        // The catch is deliberately broad: narrowing it to today's exception types would re-admit the
+                        // masking on tomorrow's.
+                        try
                         {
-                            _logger.LogWarning(ce, "Conflicted outbox message row was deleted from the outbox, nothing to resync");
-                            continue;
+                            var dbVal = await entry.GetDatabaseValuesAsync(cancellationToken);
+                            if (dbVal is null)
+                            {
+                                _logger.LogWarning(ce, "Conflicted outbox message row was deleted from the outbox, nothing to resync");
+                                continue;
+                            }
+
+                            var processedTime = dbVal[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)];
+                            var messageId = dbVal[nameof(OutboxMessage.Id)];
+
+                            _logger.LogWarning(ce, $"Outbox message with id '{messageId}' was already processed at '{processedTime}'");
+
+                            entry.OriginalValues.SetValues(dbVal);
+                            entry.State = EntityState.Unchanged;
                         }
-
-                        var processedTime = dbVal[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)];
-                        var messageId = dbVal[nameof(OutboxMessage.Id)];
-
-                        _logger.LogWarning(ce, $"Outbox message with id '{messageId}' was already processed at '{processedTime}'");
-
-                        entry.OriginalValues.SetValues(dbVal);
-                        entry.State = EntityState.Unchanged;
+                        catch (Exception compensationFailure)
+                        {
+                            _logger.LogWarning(compensationFailure, "Failed to resync a conflicted outbox message after a concurrency conflict; reporting the concurrency conflict instead");
+                        }
                     }
                 }
 

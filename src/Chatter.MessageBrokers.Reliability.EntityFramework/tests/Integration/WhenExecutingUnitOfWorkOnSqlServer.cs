@@ -295,6 +295,65 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             persisted.Should().BeNull("the outer transaction was still uncommitted, so its owner's rollback discards the nested write");
         }
 
+        // (j) the #480 combination: the OUTER unit of work begins the transaction and the NESTED one adopts it.
+        // Fact (i) pre-opens the transaction, so both of its levels are adopters and this pairing never runs there.
+        // The outer invocation owns the transaction, so its commit is the single commit point for all three writes.
+        [RequiresDockerFact]
+        public async Task MustCommitOuterTransactionWhenANestedUnitOfWorkAdoptsIt()
+        {
+            var harness = await CreateHarnessAsync();
+            using var context = harness.CreateContext();
+            var sut = CreateUnitOfWork(context);
+
+            OutboxMessage outerMessage = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            OutboxMessage nestedMessage = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            OutboxMessage postNestedMessage = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+
+            Guid outerTransactionId = Guid.Empty;
+            Guid nestedTransactionId = Guid.Empty;
+            var hasActiveTransactionAfterNested = false;
+            Guid? ambientTransactionIdAfterNested = null;
+
+            await sut.ExecuteAsync(async outerCancellationToken =>
+            {
+                await context.Set<OutboxMessage>().AddAsync(outerMessage, outerCancellationToken);
+                outerTransactionId = sut.CurrentTransaction.TransactionId;
+
+                await sut.ExecuteAsync(async nestedCancellationToken =>
+                {
+                    await context.Set<OutboxMessage>().AddAsync(nestedMessage, nestedCancellationToken);
+                    nestedTransactionId = sut.CurrentTransaction.TransactionId;
+                }, null, outerCancellationToken);
+
+                hasActiveTransactionAfterNested = sut.HasActiveTransaction;
+                ambientTransactionIdAfterNested = context.Database.CurrentTransaction?.TransactionId;
+
+                await context.Set<OutboxMessage>().AddAsync(postNestedMessage, outerCancellationToken);
+            }, null);
+
+            nestedTransactionId.Should().Be(outerTransactionId, "the nested unit of work adopts the transaction the outer one began");
+            outerTransactionId.Should().NotBe(Guid.Empty);
+
+            // INVARIANT: RelationalTransaction.CommitAsync clears the context's current transaction, so a nested
+            // commit and a nested dispose both leave this pair null - one pair discriminates both failure modes.
+            hasActiveTransactionAfterNested.Should().BeTrue("a nested unit of work must not close the transaction the outer one began");
+            ambientTransactionIdAfterNested.Should().Be(outerTransactionId);
+
+            sut.HasActiveTransaction.Should().BeFalse("the outer unit of work began the transaction, so it commits and disposes it");
+
+            using var freshContext = harness.CreateContext();
+            var persistedMessageIds = await freshContext.Set<OutboxMessage>()
+                .Where(m => m.MessageId == outerMessage.MessageId
+                    || m.MessageId == nestedMessage.MessageId
+                    || m.MessageId == postNestedMessage.MessageId)
+                .Select(m => m.MessageId)
+                .ToListAsync();
+
+            persistedMessageIds.Should().BeEquivalentTo(
+                new[] { outerMessage.MessageId, nestedMessage.MessageId, postNestedMessage.MessageId },
+                "the transaction stayed usable after the nested call and the outer commit is the single commit point for every write");
+        }
+
         private async Task<SqlServerOutboxContextHarness> CreateHarnessAsync()
         {
             var connectionString = await _fixture.CreateDatabaseAsync("ef_outbox_uow");

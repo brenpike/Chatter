@@ -106,6 +106,29 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             await raceLoser.Should().ThrowAsync<DbUpdateConcurrencyException>();
         }
 
+        [RequiresDockerFact]
+        public async Task MustSurfaceConcurrencyExceptionWhenCompensatingReadThrows()
+        {
+            var (harness, messageId) = await CreateHarnessWithOneUnprocessedMessageAsync();
+
+            using var winningContext = harness.CreateContext();
+            using var losingContext = harness.CreateContext(new FailingCompensationReadInterceptor());
+            var winningStore = new BrokeredMessageOutbox<SqlServerOutboxContext>(winningContext, CreateLoggerFactory());
+            var losingStore = new BrokeredMessageOutbox<SqlServerOutboxContext>(losingContext, CreateLoggerFactory());
+
+            // CRITICAL ORDERING: both contexts must load the row at its original ProcessedFromOutboxAtUtc == null
+            // value BEFORE either saves, otherwise there is no conflict to compensate for.
+            var winningMessage = await winningContext.Set<OutboxMessage>().SingleAsync(m => m.MessageId == messageId);
+            var losingMessage = await losingContext.Set<OutboxMessage>().SingleAsync(m => m.MessageId == messageId);
+
+            await ClaimAsync(winningStore, winningMessage);
+
+            // The losing context's compensating read fails on a degraded connection. The ORIGINAL concurrency
+            // exception must still be what propagates - the read's own failure must not replace it.
+            Func<Task> raceLoser = () => ClaimAsync(losingStore, losingMessage);
+            await raceLoser.Should().ThrowAsync<DbUpdateConcurrencyException>();
+        }
+
         // The store stages the claim; the save that races is the unit of work's own CompleteAsync, so a claim must be
         // driven through IUnitOfWork.ExecuteAsync for the concurrency conflict to surface at all.
         private static Task ClaimAsync(BrokeredMessageOutbox<SqlServerOutboxContext> store, OutboxMessage message)
