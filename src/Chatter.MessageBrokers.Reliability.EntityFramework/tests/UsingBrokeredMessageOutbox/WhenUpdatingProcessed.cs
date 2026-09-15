@@ -35,9 +35,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             await _sut.UpdateProcessedDate((OutboxMessage)message);
 
-            var persisted = (await _dbContext.Set<OutboxMessage>().ToListAsync()).Single();
-            persisted.ProcessedFromOutboxAtUtc.Should().NotBeNull();
-            persisted.ProcessedFromOutboxAtUtc.Value.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
+            var tracked = _dbContext.ChangeTracker.Entries<OutboxMessage>()
+                .Where(e => e.State == EntityState.Modified)
+                .Select(e => e.Entity)
+                .Single();
+            tracked.ProcessedFromOutboxAtUtc.Should().NotBeNull();
+            tracked.ProcessedFromOutboxAtUtc.Value.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
         }
 
         [Fact]
@@ -50,28 +53,28 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             await _sut.UpdateProcessedDate(new[] { first, second });
 
-            var persisted = await _dbContext.Set<OutboxMessage>().ToListAsync();
-            persisted.Should().OnlyContain(m => m.ProcessedFromOutboxAtUtc != null);
+            var tracked = _dbContext.ChangeTracker.Entries<OutboxMessage>()
+                .Where(e => e.State == EntityState.Modified)
+                .Select(e => e.Entity)
+                .ToList();
+            tracked.Should().HaveCount(2);
+            tracked.Should().OnlyContain(m => m.ProcessedFromOutboxAtUtc != null);
         }
 
+        // INVARIANT: the claim is staged, not committed. UpdateProcessedDate leaves the entry Modified and the
+        // stored row untouched until the surrounding unit of work saves, so an AsNoTracking reload — which
+        // materializes a fresh instance from the store rather than returning the mutated tracked one — still
+        // reports the message as unprocessed.
         [Fact]
-        public async Task MustExcludeMessageFromUnprocessedAfterUpdate()
+        public async Task MustLeaveStoredMessageUnprocessedUntilTheUnitOfWorkCommits()
         {
             var message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
             _context.ThatHasOutboxMessage(message);
 
             await _sut.UpdateProcessedDate((OutboxMessage)message);
 
-            var unprocessed = await _sut.GetUnprocessedMessagesFromOutbox();
-            unprocessed.Should().BeEmpty();
-        }
-
-        [Fact]
-        public async Task MustReturnZeroFromSaveOutboxOnCleanContext()
-        {
-            var rowCount = await _sut.SaveOutboxAsync();
-
-            rowCount.Should().Be(0);
+            var stored = (await _dbContext.Set<OutboxMessage>().AsNoTracking().ToListAsync()).Single();
+            stored.ProcessedFromOutboxAtUtc.Should().BeNull();
         }
     }
 }

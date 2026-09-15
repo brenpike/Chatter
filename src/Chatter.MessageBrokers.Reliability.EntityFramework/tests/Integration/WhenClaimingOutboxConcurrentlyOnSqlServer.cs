@@ -15,8 +15,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
 {
     // CRITERION 1: exactly-once outbox claim under optimistic concurrency, proven over a real SQL Server database
     // with the PRODUCTION model (Id PK + ProcessedFromOutboxAtUtc concurrency token). Two stores load the SAME
-    // unprocessed row, both try to claim it (UpdateProcessedDate), and exactly one commits while the loser throws
-    // DbUpdateConcurrencyException (the rethrow at BrokeredMessageOutbox.SaveOutboxAsync).
+    // unprocessed row, both stage a claim (UpdateProcessedDate) inside their own unit of work, and exactly one
+    // commits while the loser throws DbUpdateConcurrencyException (the rethrow at
+    // BrokeredMessageOutbox's IUnitOfWork.ExecuteAsync).
     [Trait("Category", "Integration")]
     [Collection(EfReliabilitySqlServerCollection.Name)]
     public class WhenClaimingOutboxConcurrentlyOnSqlServer : Testing.Core.Context
@@ -47,10 +48,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             secondMessage.ProcessedFromOutboxAtUtc.Should().BeNull();
 
             // First claim commits.
-            await firstStore.UpdateProcessedDate(firstMessage);
+            await ClaimAsync(firstStore, firstMessage);
 
             // Second claim races on the same now-stale row and must lose with a concurrency exception.
-            Func<Task> secondClaim = () => secondStore.UpdateProcessedDate(secondMessage);
+            Func<Task> secondClaim = () => ClaimAsync(secondStore, secondMessage);
             await secondClaim.Should().ThrowAsync<DbUpdateConcurrencyException>();
         }
 
@@ -68,9 +69,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
                 var firstMessage = await firstContext.Set<OutboxMessage>().SingleAsync(m => m.MessageId == messageId);
                 var secondMessage = await secondContext.Set<OutboxMessage>().SingleAsync(m => m.MessageId == messageId);
 
-                await firstStore.UpdateProcessedDate(firstMessage);
+                await ClaimAsync(firstStore, firstMessage);
 
-                Func<Task> secondClaim = () => secondStore.UpdateProcessedDate(secondMessage);
+                Func<Task> secondClaim = () => ClaimAsync(secondStore, secondMessage);
                 await secondClaim.Should().ThrowAsync<DbUpdateConcurrencyException>();
             }
 
@@ -79,6 +80,11 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             var reloaded = await verifyContext.Set<OutboxMessage>().SingleAsync(m => m.MessageId == messageId);
             reloaded.ProcessedFromOutboxAtUtc.Should().NotBeNull();
         }
+
+        // The store stages the claim; the save that races is the unit of work's own CompleteAsync, so a claim must be
+        // driven through IUnitOfWork.ExecuteAsync for the concurrency conflict to surface at all.
+        private static Task ClaimAsync(BrokeredMessageOutbox<SqlServerOutboxContext> store, OutboxMessage message)
+            => ((IUnitOfWork)store).ExecuteAsync(ct => store.UpdateProcessedDate(message, ct), null, default);
 
         private async Task<(SqlServerOutboxContextHarness Harness, string MessageId)> CreateHarnessWithOneUnprocessedMessageAsync()
         {

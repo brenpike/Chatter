@@ -49,13 +49,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 UpdateProcessedDate(set, message);
             }
 
-            return SaveOutboxAsync(cancellationToken);
+            return Task.CompletedTask;
         }
 
         public Task UpdateProcessedDate(OutboxMessage outboxMessage, CancellationToken cancellationToken = default)
         {
             UpdateProcessedDate(_context.Set<OutboxMessage>(), outboxMessage);
-            return SaveOutboxAsync(cancellationToken);
+            return Task.CompletedTask;
         }
 
         private void UpdateProcessedDate(DbSet<OutboxMessage> outbox, OutboxMessage outboxMessage)
@@ -71,37 +71,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             foreach (var obm in outboundBrokeredMessages)
             {
                 await SendToOutboxImpl(outbox, obm, transactionContext, cancellationToken).ConfigureAwait(false);
-            }
-
-            await SaveOutboxAsync(cancellationToken);
-        }
-
-        public async Task<int> SaveOutboxAsync(CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                var rowCnt = await _context.SaveChangesAsync(cancellationToken);
-                _logger.LogTrace($"'{rowCnt}' outbox message(s) saved.");
-                return rowCnt;
-            }
-            catch (DbUpdateConcurrencyException ce)
-            {
-                foreach (var entry in ce.Entries)
-                {
-                    if (entry.Entity is OutboxMessage)
-                    {
-                        var dbVal = await entry.GetDatabaseValuesAsync(cancellationToken);
-                        var processedTime = dbVal[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)];
-                        var messageId = dbVal[nameof(OutboxMessage.Id)];
-
-                        _logger.LogWarning(ce, $"Outbox message with id '{messageId}' was already processed at '{processedTime}'");
-
-                        entry.OriginalValues.SetValues(dbVal);
-                        entry.State = EntityState.Unchanged;
-                    }
-                }
-
-                throw;
             }
         }
 
@@ -129,7 +98,31 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             _logger.LogTrace($"Outbox message added to outbox. MessageId: '{outboxMessage.MessageId}', BatchId: {outboxMessage.BatchId}");
         }
 
-        Task IUnitOfWork.ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken)
-            => _unitOfWork.ExecuteAsync(cf => operation(cf), transactionContext, cancellationToken);
+        async Task IUnitOfWork.ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _unitOfWork.ExecuteAsync(cf => operation(cf), transactionContext, cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException ce)
+            {
+                foreach (var entry in ce.Entries)
+                {
+                    if (entry.Entity is OutboxMessage)
+                    {
+                        var dbVal = await entry.GetDatabaseValuesAsync(cancellationToken);
+                        var processedTime = dbVal[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)];
+                        var messageId = dbVal[nameof(OutboxMessage.Id)];
+
+                        _logger.LogWarning(ce, $"Outbox message with id '{messageId}' was already processed at '{processedTime}'");
+
+                        entry.OriginalValues.SetValues(dbVal);
+                        entry.State = EntityState.Unchanged;
+                    }
+                }
+
+                throw;
+            }
+        }
     }
 }

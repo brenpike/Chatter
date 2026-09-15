@@ -39,15 +39,26 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             => new OutboundBrokeredMessage(messageId, new byte[] { 1, 2, 3 }, new Dictionary<string, object>(), destination, _bodyConverter.Object)
                 .WithCorrelationId(FixedCorrelationId);
 
+        private List<OutboxMessage> StagedMessages()
+            => _dbContext.ChangeTracker.Entries<OutboxMessage>()
+                .Where(entry => entry.State == EntityState.Added)
+                .Select(entry => entry.Entity)
+                .ToList();
+
+        // INVARIANT: SendToOutbox adds the outbox row via DbSet.AddAsync but never calls SaveChangesAsync. The row
+        // is only tracked as Added; it is not written to the store until the surrounding unit of work saves, so a
+        // fresh query returns nothing.
         [Fact]
-        public async Task MustPersistOneOutboxMessagePerOutboundMessage()
+        public async Task MustStageOneOutboxMessagePerOutboundMessage()
         {
             var outbound = CreateOutbound();
 
             await _sut.SendToOutbox(new[] { outbound }, null);
 
+            StagedMessages().Should().HaveCount(1);
+
             var persisted = await _dbContext.Set<OutboxMessage>().ToListAsync();
-            persisted.Should().HaveCount(1);
+            persisted.Should().BeEmpty();
         }
 
         [Fact]
@@ -57,10 +68,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             await _sut.SendToOutbox(new[] { outbound }, null);
 
-            var persisted = (await _dbContext.Set<OutboxMessage>().ToListAsync()).Single();
-            persisted.MessageId.Should().Be(outbound.MessageId);
-            persisted.Destination.Should().Be(outbound.Destination);
-            persisted.MessageContentType.Should().Be(outbound.ContentType);
+            var staged = StagedMessages().Single();
+            staged.MessageId.Should().Be(outbound.MessageId);
+            staged.Destination.Should().Be(outbound.Destination);
+            staged.MessageContentType.Should().Be(outbound.ContentType);
         }
 
         [Fact]
@@ -70,14 +81,14 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             await _sut.SendToOutbox(new[] { outbound }, null);
 
-            var persisted = (await _dbContext.Set<OutboxMessage>().ToListAsync()).Single();
-            // This literal pins the CURRENT Newtonsoft wire form of the persisted MessageContext.
+            var staged = StagedMessages().Single();
+            // This literal pins the CURRENT Newtonsoft wire form of the staged MessageContext.
             // The OutboundBrokeredMessage ctor injects two headers in this order: ContentType
             // (from the body converter) then CorrelationId (pinned via WithCorrelationId so the
             // wire form is deterministic). MUST be updated when the Phase-2 STJ port intentionally
             // changes the serialized form.
             var expectedWire = $"{{\"{MessageContext.ContentType}\":\"application/json\",\"{MessageContext.CorrelationId}\":\"{FixedCorrelationId}\"}}";
-            persisted.MessageContext.Should().Be(expectedWire);
+            staged.MessageContext.Should().Be(expectedWire);
         }
 
         [Fact]
@@ -87,8 +98,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             await _sut.SendToOutbox(new[] { outbound }, null);
 
-            var persisted = (await _dbContext.Set<OutboxMessage>().ToListAsync()).Single();
-            persisted.MessageBody.Should().Be(outbound.Stringify());
+            var staged = StagedMessages().Single();
+            staged.MessageBody.Should().Be(outbound.Stringify());
         }
 
         [Fact]
@@ -98,9 +109,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             await _sut.SendToOutbox(new[] { outbound }, null);
 
-            var persisted = (await _dbContext.Set<OutboxMessage>().ToListAsync()).Single();
-            persisted.SentToOutboxAtUtc.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
-            persisted.ProcessedFromOutboxAtUtc.Should().BeNull();
+            var staged = StagedMessages().Single();
+            staged.SentToOutboxAtUtc.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
+            staged.ProcessedFromOutboxAtUtc.Should().BeNull();
         }
 
         [Fact]
@@ -110,14 +121,16 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             await _sut.SendToOutbox(new[] { outbound }, null);
 
-            var persisted = (await _dbContext.Set<OutboxMessage>().ToListAsync()).Single();
-            persisted.BatchId.Should().Be(Guid.Empty);
+            var staged = StagedMessages().Single();
+            staged.BatchId.Should().Be(Guid.Empty);
         }
 
         [Fact]
-        public async Task MustPersistNothingButStillSaveWhenEnumerableIsEmpty()
+        public async Task MustStageNothingWhenEnumerableIsEmpty()
         {
             await _sut.SendToOutbox(Enumerable.Empty<OutboundBrokeredMessage>(), null);
+
+            StagedMessages().Should().BeEmpty();
 
             var persisted = await _dbContext.Set<OutboxMessage>().ToListAsync();
             persisted.Should().BeEmpty();
