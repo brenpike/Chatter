@@ -50,11 +50,16 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// INVARIANT: this method adds the inbox message to the <typeparamref name="TContext"/> and
         /// never self-commits it; the marker is committed exactly once by UnitOfWorkBehavior's single
         /// SaveChangesAsync, which is what makes the marker and the handler's work atomic.
-        /// The guarantee holds when all three extension methods are called with the same
-        /// <typeparamref name="TContext"/>. IUnitOfWork resolves to the TContext of the LAST call to
-        /// any of the three; IBrokeredMessageInbox resolves to the TContext of the last
-        /// WithInboxBehavior&lt;TContext&gt;(). If they differ, the unit of work commits a different
-        /// DbContext than the one holding the marker. See
+        /// The guarantee holds whenever every reliability extension call names the same
+        /// <typeparamref name="TContext"/>, including a lone WithInboxBehavior&lt;TContext&gt;()
+        /// call, which registers the matching unit of work itself. IUnitOfWork resolves to the
+        /// TContext of the last call to any of WithUnitOfWorkBehavior&lt;TContext&gt;(),
+        /// WithInboxBehavior&lt;TContext&gt;(), or WithOutboxProcessingBehavior&lt;TContext&gt;();
+        /// IBrokeredMessageInbox resolves to the TContext of the last
+        /// WithInboxBehavior&lt;TContext&gt;(). It is void only when a later
+        /// WithUnitOfWorkBehavior or WithOutboxProcessingBehavior call names a different
+        /// TContext, leaving the unit of work committing a different DbContext than the one
+        /// holding the marker. See
         /// docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
         /// </summary>
         /// <typeparam name="TMessage">The type of message being received</typeparam>
