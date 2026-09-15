@@ -75,7 +75,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
                 await secondClaim.Should().ThrowAsync<DbUpdateConcurrencyException>();
             }
 
-            // Reload in a fresh context: the row is processed exactly once (single claim, no silent double-dispatch).
+            // Reload in a fresh context: the processed stamp committed exactly once, because the concurrency token
+            // rejected the loser's claim. This pins the single CLAIM only - ClaimAsync drives no dispatcher, and the
+            // real drain publishes to the broker before it stamps, so duplicate publication is outside what this proves.
             using var verifyContext = harness.CreateContext();
             var reloaded = await verifyContext.Set<OutboxMessage>().SingleAsync(m => m.MessageId == messageId);
             reloaded.ProcessedFromOutboxAtUtc.Should().NotBeNull();

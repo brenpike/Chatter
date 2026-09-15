@@ -121,7 +121,7 @@ If the incoming message has no message id, the inbox simply executes the handler
 Processing then drains the outbox separately:
 
 - `GetUnprocessedMessagesFromOutbox` / `GetUnprocessedBatch(batchId)` return rows whose `ProcessedFromOutboxAtUtc` is `null`.
-- After a row is dispatched, `UpdateProcessedDate` stages the `ProcessedFromOutboxAtUtc` stamp. This column is an **optimistic concurrency token**, so two processors racing on the same row produce a `DbUpdateConcurrencyException` when the surrounding unit of work commits; the outbox's `IUnitOfWork.ExecuteAsync`, which wraps that commit, catches it and treats the row as already processed rather than double-publishing.
+- After a row is dispatched, `UpdateProcessedDate` stages the `ProcessedFromOutboxAtUtc` stamp. This column is an **optimistic concurrency token**, so two processors racing on the same row produce a `DbUpdateConcurrencyException` when the surrounding unit of work commits; the outbox's `IUnitOfWork.ExecuteAsync`, which wraps that commit, logs the time the winner recorded, resyncs the losing entry against the stored row, and rethrows. The token guarantees the processed stamp is committed exactly once. It does **not** prevent a duplicate publish: `OutboxProcessor` dispatches the row to the broker *before* it stamps, so both racers have already published by the time either commit conflicts. Duplicate delivery is the accepted cost of this at-least-once drain, and handlers are expected to be idempotent.
 
 ### Unit of Work / Persistance Transaction
 
