@@ -10,6 +10,7 @@ using Moq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -153,6 +154,29 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             Action act = () => new BrokeredMessageInbox<DbContext>(_context, _logger, null);
 
             act.Should().Throw<ArgumentNullException>();
+        }
+
+        // INVARIANT: BrokeredMessageInbox declares no DbContext-assignable field. This guard buys a
+        // narrowed declared surface — no _context.SaveChangesAsync(...) in the type's own vocabulary
+        // — and a regression tripwire against reintroducing a DbContext field, the exact path the
+        // reverted inbox self-save took. It does not make a commit impossible: DbSet<T> transitively
+        // reaches the DbContext (EF Core 10.0.0: DbSet<T> declares IInfrastructure<IServiceProvider>;
+        // the runtime InternalDbSet<T> implements IInfrastructure<DbContext> and holds a private
+        // DbContext field), so a commit is reachable from the retained DbSet<InboxMessage> with no
+        // reflection and no internal-type cast. What actually enforces that the marker is committed
+        // exactly once by UnitOfWorkBehavior's single SaveChangesAsync is the canonical resolved order
+        // [OutboxProcessingBehavior, UnitOfWorkBehavior, InboxBehavior] plus the characterization test
+        // MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId. See
+        // docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
+        [Fact]
+        public void MustNotDeclareADbContextField()
+        {
+            var dbContextFields = typeof(BrokeredMessageInbox<DbContext>)
+                .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
+                .Where(field => typeof(DbContext).IsAssignableFrom(field.FieldType))
+                .Select(field => $"{field.FieldType.Name} {field.Name}");
+
+            dbContextFields.Should().BeEmpty();
         }
     }
 }

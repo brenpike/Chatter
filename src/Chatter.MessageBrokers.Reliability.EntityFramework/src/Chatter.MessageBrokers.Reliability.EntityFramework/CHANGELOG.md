@@ -12,6 +12,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.7.0] - 2026-09-14
+
+### Changed
+
+- `WithUnitOfWorkBehavior`, `WithInboxBehavior` and `WithOutboxProcessingBehavior` now guarantee a fixed resolved order — outbox processing wraps the unit of work, which wraps the inbox — regardless of call order or call count. Migration: consumers who called `WithInboxBehavior` before `WithOutboxProcessingBehavior` previously resolved inbox, outbox, unit-of-work and need no code change. Consumers who register their own behaviours between the reliability extension calls keep their behaviour's slot, but its position relative to the reliability behaviours may differ from before. This guarantee covers only descriptors registered through `WithUnitOfWorkBehavior<TContext>()`, `WithInboxBehavior<TContext>()` and `WithOutboxProcessingBehavior<TContext>()`; later direct `WithBehavior` calls, and closed-generic, factory, keyed, or decorated registrations of these behaviour types, are intentionally outside normalization and are not reordered.
+- **Precondition (durability, not ordering):** the ordering above is independent of `TContext`, but the commit-together guarantee is not. The guarantee holds whenever every reliability extension call names the same `TContext`, including a lone `WithInboxBehavior<TContext>()` call, which registers the matching unit of work itself. `IUnitOfWork` resolves to the `TContext` of the last call to any of `WithUnitOfWorkBehavior<TContext>()`, `WithInboxBehavior<TContext>()`, or `WithOutboxProcessingBehavior<TContext>()`; `IBrokeredMessageInbox` resolves to the `TContext` of the last `WithInboxBehavior<TContext>()`. It is void only when a later `WithUnitOfWorkBehavior` or `WithOutboxProcessingBehavior` call names a different `TContext`, leaving the unit of work committing a different `DbContext` than the one holding the marker.
+
+### Fixed
+
+- Reliability behaviours could resolve in an order that depended on call order or call count, rather than the intended outbox-wraps-unit-of-work-wraps-inbox order (#379).
+- Keyed registrations of the reliability behaviour types are now skipped before `ServiceDescriptor.ImplementationType` is read. That property throws on a keyed descriptor in `Microsoft.Extensions.DependencyInjection.Abstractions` 8.0.0 and returns `null` from 8.0.2 onward, and that assembly ships inside the ASP.NET Core shared framework, so which of the two a consumer hits follows their host's patch level rather than the restored package version. This repo resolves 8.0.2 and 10.0.x, so no failure was reachable here; the exposure was for consumers on unpatched 8.0.x hosts. The documented guarantee that keyed registrations are outside normalization and are not reordered now holds across the whole supported 8.0.x range instead of only on patched hosts.
+
+No schema change and no migration is required for this release.
+
 ## [0.6.1] - 2026-09-14
 
 ### Changed

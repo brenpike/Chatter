@@ -7,6 +7,7 @@ EF Core persistence implementing the inbox/outbox reliability ports and unit-of-
 **Brokered Message Outbox**: EF-backed store of outgoing messages, persisted in the same transaction as local state for reliable publish.
 
 **Brokered Message Inbox**: EF-backed store of received message ids enforcing once-only, idempotent handling.
+_Avoid_: "closed by construction" / "commit capability denied" for `BrokeredMessageInbox<TContext>`'s `DbSet<InboxMessage>` field — it does not: the reflection guard (`MustNotDeclareADbContextField`) denies a declared `DbContext` field, not the commit capability itself; EF's `DbSet<T>` declares `IInfrastructure<IServiceProvider>`, the runtime `InternalDbSet<T>` implements `IInfrastructure<DbContext>` and holds a private `DbContext` field, and `SaveChangesAsync` is reachable through that handle with no reflection and no internal-type cast.
 
 **Unit of Work**: Coordinates a single atomic commit spanning domain state and inbox/outbox writes.
 
@@ -18,6 +19,7 @@ EF Core persistence implementing the inbox/outbox reliability ports and unit-of-
 - All types are generic over the consumer's own `DbContext` (`TContext : DbContext`) — no separate Chatter context; entity configs are applied in the consumer's `OnModelCreating`.
 - Wired through the Command Pipeline as behaviors (`WithInboxBehavior<TContext>()`, `WithOutboxProcessingBehavior<TContext>()`, `WithUnitOfWorkBehavior<TContext>()`), not a standalone DI registration.
 - The Unit of Work commits domain changes together with Outbox/Inbox writes via a Persistance Transaction (`IPersistanceTransaction`).
+- Outbox processing wraps the Unit of Work, which wraps the Inbox — this order is package-guaranteed, not derived from the order the pipeline extension methods are called in. The guarantee covers only descriptors registered through `WithUnitOfWorkBehavior<TContext>()`, `WithInboxBehavior<TContext>()`, and `WithOutboxProcessingBehavior<TContext>()`; later direct `WithBehavior` calls, and closed-generic, factory, keyed, or decorated registrations of these behavior types, are outside normalization.
 
 ## Example dialogue
 
