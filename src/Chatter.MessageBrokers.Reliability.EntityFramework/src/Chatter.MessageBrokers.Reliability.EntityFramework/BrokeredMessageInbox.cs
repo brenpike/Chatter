@@ -15,15 +15,25 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
     /// <typeparam name="TContext">The DbContext where the inbox presides</typeparam>
     public class BrokeredMessageInbox<TContext> : IBrokeredMessageInbox, IInboxDeduplicator where TContext : DbContext
     {
-        private readonly TContext _context;
+        // INVARIANT: the inbox holds a DbSet, never the DbContext itself. DbSet exposes AddAsync and
+        // AnyAsync and no SaveChangesAsync, so an inbox-owned commit point is unrepresentable rather
+        // than merely absent. MustNotHoldACommitCapableHandle fails the build if a DbContext-typed
+        // field ever returns. See
+        // docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
+        private readonly DbSet<InboxMessage> _inbox;
         private readonly ILogger<BrokeredMessageInbox<TContext>> _logger;
         private readonly ReliabilityOptions _options;
 
         public BrokeredMessageInbox(TContext context, ILogger<BrokeredMessageInbox<TContext>> logger, ReliabilityOptions options)
         {
-            _context = context ?? throw new ArgumentNullException(nameof(context));
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _options = options ?? throw new ArgumentNullException(nameof(options));
+            _inbox = context.Set<InboxMessage>();
         }
 
         /// <summary>
@@ -50,9 +60,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             _logger.LogTrace($"Checking inbox for brokered message with message id '{messageId}'.");
 
-            var inbox = _context.Set<InboxMessage>();
-
-            if (await inbox.AnyAsync(m => m.MessageId == messageId))
+            if (await _inbox.AnyAsync(m => m.MessageId == messageId))
             {
                 _logger.LogTrace($"Message with id '{messageId}' found in inbox. Message will not be handled.");
                 return;
@@ -70,7 +78,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
                 _logger.LogDebug("Message handler executed successfully from inbox");
                 _logger.LogTrace($"Adding inbox message with id '{inboxMessage.MessageId}' and date received '{inboxMessage.ReceivedByInboxAtUtc}'.");
-                await inbox.AddAsync(inboxMessage);
+                await _inbox.AddAsync(inboxMessage);
                 _logger.LogTrace($"Message with id '{messageId}' added to inbox.");
             }
             catch (Exception ex)
@@ -81,6 +89,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         }
 
         public Task<bool> HasBeenReceived(string messageId, CancellationToken cancellationToken = default)
-            => _context.Set<InboxMessage>().AnyAsync(m => m.MessageId == messageId, cancellationToken);
+            => _inbox.AnyAsync(m => m.MessageId == messageId, cancellationToken);
     }
 }

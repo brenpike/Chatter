@@ -10,6 +10,7 @@ using Moq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -153,6 +154,28 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             Action act = () => new BrokeredMessageInbox<DbContext>(_context, _logger, null);
 
             act.Should().Throw<ArgumentNullException>();
+        }
+
+        // INVARIANT: BrokeredMessageInbox holds no commit-capable handle. The eliminated class is an
+        // inbox-owned commit point: while the inbox held a DbContext field, any edit could call
+        // SaveChangesAsync on it, flushing and accepting the handler's pending changes before
+        // UnitOfWorkBehavior's transaction commits, so a failed commit would roll the rows back while
+        // the change tracker still reported them Unchanged and the retry would not reissue them.
+        // Holding only a DbSet<InboxMessage> — which exposes AddAsync and AnyAsync and no
+        // SaveChangesAsync — makes that commit point unrepresentable rather than merely absent. This
+        // test is what fails the build if a DbContext-typed field ever returns; it is not redundant
+        // with MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId, which pins the
+        // current behaviour rather than the absence of the capability. See
+        // docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
+        [Fact]
+        public void MustNotHoldACommitCapableHandle()
+        {
+            var commitCapableFields = typeof(BrokeredMessageInbox<DbContext>)
+                .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
+                .Where(field => typeof(DbContext).IsAssignableFrom(field.FieldType))
+                .Select(field => $"{field.FieldType.Name} {field.Name}");
+
+            commitCapableFields.Should().BeEmpty();
         }
     }
 }
