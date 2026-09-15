@@ -104,13 +104,19 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             {
                 await _unitOfWork.ExecuteAsync(cf => operation(cf), transactionContext, cancellationToken);
             }
-            catch (DbUpdateConcurrencyException ce)
+            catch (DbUpdateConcurrencyException ce) when (ce.Entries.Any(e => e.Entity is OutboxMessage))
             {
                 foreach (var entry in ce.Entries)
                 {
                     if (entry.Entity is OutboxMessage)
                     {
                         var dbVal = await entry.GetDatabaseValuesAsync(cancellationToken);
+                        if (dbVal is null)
+                        {
+                            _logger.LogWarning(ce, "Conflicted outbox message row was deleted from the outbox, nothing to resync");
+                            continue;
+                        }
+
                         var processedTime = dbVal[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)];
                         var messageId = dbVal[nameof(OutboxMessage.Id)];
 

@@ -83,6 +83,29 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             reloaded.ProcessedFromOutboxAtUtc.Should().NotBeNull();
         }
 
+        [RequiresDockerFact]
+        public async Task MustSurfaceConcurrencyExceptionWhenConflictedRowWasDeleted()
+        {
+            var (harness, messageId) = await CreateHarnessWithOneUnprocessedMessageAsync();
+
+            using var deletingContext = harness.CreateContext();
+            using var claimingContext = harness.CreateContext();
+            var claimingStore = new BrokeredMessageOutbox<SqlServerOutboxContext>(claimingContext, CreateLoggerFactory());
+
+            // CRITICAL ORDERING: the claiming context must load the row BEFORE the deleting context removes it, so the
+            // claim races against a row that no longer exists.
+            var claimedMessage = await claimingContext.Set<OutboxMessage>().SingleAsync(m => m.MessageId == messageId);
+
+            var doomedMessage = await deletingContext.Set<OutboxMessage>().SingleAsync(m => m.MessageId == messageId);
+            deletingContext.Set<OutboxMessage>().Remove(doomedMessage);
+            await deletingContext.SaveChangesAsync();
+
+            // The compensating read finds no database values for the deleted row. The ORIGINAL concurrency exception
+            // must still be what propagates.
+            Func<Task> raceLoser = () => ClaimAsync(claimingStore, claimedMessage);
+            await raceLoser.Should().ThrowAsync<DbUpdateConcurrencyException>();
+        }
+
         // The store stages the claim; the save that races is the unit of work's own CompleteAsync, so a claim must be
         // driven through IUnitOfWork.ExecuteAsync for the concurrency conflict to surface at all.
         private static Task ClaimAsync(BrokeredMessageOutbox<SqlServerOutboxContext> store, OutboxMessage message)

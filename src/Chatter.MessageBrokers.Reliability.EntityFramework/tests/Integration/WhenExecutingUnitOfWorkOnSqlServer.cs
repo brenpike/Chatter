@@ -164,6 +164,137 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             containedTransactionId.Should().NotBe(Guid.Empty);
         }
 
+        // (f) a transaction the unit of work did not begin is never committed by it. The owner's rollback after
+        // ExecuteAsync returns discards the staged row, which would be impossible had ExecuteAsync committed it.
+        // INVARIANT: the owner's rollback is what makes this observable. A fresh context cannot read the staged row
+        // while the adopted transaction is still open - the uncommitted write holds locks under READ COMMITTED, so
+        // such a read blocks rather than returning nothing.
+        [RequiresDockerFact]
+        public async Task MustNotCommitAdoptedTransactionWhenOperationSucceeds()
+        {
+            var harness = await CreateHarnessAsync();
+            using var context = harness.CreateContext();
+            var sut = CreateUnitOfWork(context);
+
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+
+            await using var existingTransaction = await context.Database.BeginTransactionAsync();
+
+            await sut.ExecuteAsync(async ct =>
+            {
+                await context.Set<OutboxMessage>().AddAsync(message, ct);
+            }, null);
+
+            sut.HasActiveTransaction.Should().BeTrue("the unit of work did not begin the transaction, so it must leave it open for its owner");
+
+            await existingTransaction.RollbackAsync();
+
+            using var freshContext = harness.CreateContext();
+            var persisted = await freshContext.Set<OutboxMessage>()
+                .SingleOrDefaultAsync(m => m.MessageId == message.MessageId);
+            persisted.Should().BeNull("the owner's rollback discards the staged row, which is only possible if the unit of work never committed it");
+        }
+
+        // (g) dispose path: an adopted transaction is still usable after ExecuteAsync returns, and the row the
+        // operation staged was flushed into it by the unit of work's SaveChangesAsync, so the owner's commit persists it.
+        [RequiresDockerFact]
+        public async Task MustLeaveAdoptedTransactionUsableAfterOperationSucceeds()
+        {
+            var harness = await CreateHarnessAsync();
+            using var context = harness.CreateContext();
+            var sut = CreateUnitOfWork(context);
+
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+
+            await using var existingTransaction = await context.Database.BeginTransactionAsync();
+
+            await sut.ExecuteAsync(async ct =>
+            {
+                await context.Set<OutboxMessage>().AddAsync(message, ct);
+            }, null);
+
+            Func<Task> commit = () => existingTransaction.CommitAsync();
+            await commit.Should().NotThrowAsync("the unit of work must not dispose a transaction it did not begin");
+
+            using var freshContext = harness.CreateContext();
+            var persisted = await freshContext.Set<OutboxMessage>()
+                .SingleOrDefaultAsync(m => m.MessageId == message.MessageId);
+            persisted.Should().NotBeNull("SaveChangesAsync still flushed the staged row into the adopted transaction");
+        }
+
+        // (h) an operation throw does NOT roll an adopted transaction back. The original exception instance
+        // propagates and the owner's own earlier write survives its commit.
+        [RequiresDockerFact]
+        public async Task MustNotRollBackAdoptedTransactionWhenOperationThrows()
+        {
+            var harness = await CreateHarnessAsync();
+            using var context = harness.CreateContext();
+            var sut = CreateUnitOfWork(context);
+
+            OutboxMessage ownerMessage = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            var operationException = new InvalidOperationException("operation failed");
+
+            await using var existingTransaction = await context.Database.BeginTransactionAsync();
+            await context.Set<OutboxMessage>().AddAsync(ownerMessage);
+            await context.SaveChangesAsync();
+
+            Func<Task> act = () => sut.ExecuteAsync(_ => throw operationException, null);
+
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Should().BeSameAs(operationException);
+
+            sut.HasActiveTransaction.Should().BeTrue("the unit of work must not close a transaction it did not begin");
+
+            await existingTransaction.CommitAsync();
+
+            using var freshContext = harness.CreateContext();
+            var persisted = await freshContext.Set<OutboxMessage>()
+                .SingleOrDefaultAsync(m => m.MessageId == ownerMessage.MessageId);
+            persisted.Should().NotBeNull("the owner's write survives because the unit of work did not roll its transaction back");
+        }
+
+        // (i) a nested unit of work over the same context leaves the outer transaction open and uncommitted once
+        // both units of work return.
+        [RequiresDockerFact]
+        public async Task MustLeaveOuterTransactionOpenWhenANestedUnitOfWorkCompletes()
+        {
+            var harness = await CreateHarnessAsync();
+            using var context = harness.CreateContext();
+            var sut = CreateUnitOfWork(context);
+
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+
+            await using var existingTransaction = await context.Database.BeginTransactionAsync();
+            var existingTransactionId = existingTransaction.TransactionId;
+
+            var hasActiveTransactionAfterNested = false;
+            Guid observedTransactionIdAfterNested = Guid.Empty;
+
+            await sut.ExecuteAsync(async outerCancellationToken =>
+            {
+                await sut.ExecuteAsync(async nestedCancellationToken =>
+                {
+                    await context.Set<OutboxMessage>().AddAsync(message, nestedCancellationToken);
+                }, null, outerCancellationToken);
+
+                hasActiveTransactionAfterNested = sut.HasActiveTransaction;
+                observedTransactionIdAfterNested = sut.CurrentTransaction.TransactionId;
+            }, null);
+
+            hasActiveTransactionAfterNested.Should().BeTrue("a nested unit of work must not close the transaction the outer one is running in");
+            observedTransactionIdAfterNested.Should().Be(existingTransactionId);
+
+            sut.HasActiveTransaction.Should().BeTrue();
+            context.Database.CurrentTransaction.TransactionId.Should().Be(existingTransactionId);
+
+            await existingTransaction.RollbackAsync();
+
+            using var freshContext = harness.CreateContext();
+            var persisted = await freshContext.Set<OutboxMessage>()
+                .SingleOrDefaultAsync(m => m.MessageId == message.MessageId);
+            persisted.Should().BeNull("the outer transaction was still uncommitted, so its owner's rollback discards the nested write");
+        }
+
         private async Task<SqlServerOutboxContextHarness> CreateHarnessAsync()
         {
             var connectionString = await _fixture.CreateDatabaseAsync("ef_outbox_uow");
