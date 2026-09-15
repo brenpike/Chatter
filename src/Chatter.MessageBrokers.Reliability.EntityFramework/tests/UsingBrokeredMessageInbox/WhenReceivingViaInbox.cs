@@ -9,7 +9,6 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -47,11 +46,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
                 converter.Object);
         }
 
-        // INVARIANT: ReceiveViaInbox adds the inbox message via DbSet.AddAsync but never calls
-        // SaveChangesAsync. AS-IS the new inbox row is only tracked as Added; it is not persisted
-        // to the store, so a fresh query returns nothing until the surrounding context is saved.
+        // INVARIANT: ReceiveViaInbox persists its own inbox message. It calls SaveChangesAsync
+        // immediately after DbSet.AddAsync, so the inbox row is durable by the time the call
+        // returns and does not depend on a later save by the surrounding pipeline. The save
+        // accepts changes on success, so no InboxMessage is left in the Added state for an
+        // outer unit of work to insert a second time.
         [Fact]
-        public async Task MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId()
+        public async Task MustInvokeHandlerAndPersistInboxMessageForFreshMessageId()
         {
             var messageId = Guid.NewGuid().ToString();
             var context = CreateContext(messageId);
@@ -65,15 +66,13 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             handlerInvoked.Should().BeTrue();
 
-            var tracked = _dbContext.ChangeTracker.Entries<InboxMessage>()
-                .Where(e => e.State == EntityState.Added)
-                .Select(e => e.Entity)
-                .Single();
-            tracked.MessageId.Should().Be(messageId);
-            tracked.ReceivedByInboxAtUtc.Should().NotBeNull();
-
             var persisted = await _dbContext.Set<InboxMessage>().ToListAsync();
-            persisted.Should().BeEmpty();
+            var received = persisted.Should().ContainSingle().Which;
+            received.MessageId.Should().Be(messageId);
+            received.ReceivedByInboxAtUtc.Should().NotBeNull();
+
+            _dbContext.ChangeTracker.Entries<InboxMessage>()
+                .Should().NotContain(e => e.State == EntityState.Added);
         }
 
         [Fact]
