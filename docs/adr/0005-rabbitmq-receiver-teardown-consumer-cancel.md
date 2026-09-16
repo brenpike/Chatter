@@ -29,6 +29,8 @@ Two constraints shape the fix:
 
 3. **Receiver ordering.** `RabbitMqReceiver.StopReceiver` calls `_connectionSource.StopReceivingAsync(...)` FIRST (cancel the consumer so no new delivery races the buffer completion), THEN `_buffer.Writer.TryComplete()` (so the blocking `ReceiveMessageAsync` pull drains and unblocks). `Dispose`/`DisposeAsync` ESCALATE to the source's full teardown (`Dispose()`/`DisposeAsync()`, connection + publish pool) then complete the buffer; the source's single-admission lifecycle CAS makes the DI container's own later disposal of the singleton a clean no-op.
 
+   **Superseded in part by ADR-0019 (2026-09-16):** dispose no longer escalates to the connection source's teardown — `Dispose`/`DisposeAsync` now run the same surgical `StopReceivingAsync` this section's `StopReceiver` ordering describes, and the container that created the singleton source disposes it.
+
 4. **Prefetched-unacked contract.** Prefetched-but-unacked deliveries are NOT acked on stop — they are left for broker redelivery. This is consistent with the ADR-0002 epoch guard, which already no-ops a settle after the channel is torn down: cancelling the consumer / disposing the channel requeues the broker's unacked deliveries, so the message remains on the queue rather than being false-acked or stranded.
 
 ## Deadlock-freedom
