@@ -209,6 +209,14 @@ This mirrors the `Chatter.MessageBrokers.SqlServiceBroker` manual-provisioning s
 
 The dead-letter and error queues configured on a receiver are the one exception to "assumes they exist" without a runtime check: at startup the adapter **verifies** their existence with a passive declare (asking the broker whether the queue exists, which provisions nothing) and fails fast, naming the missing queue, rather than starting and silently stalling on the first poison message. This is verification, not provisioning — the adapter still never declares a queue, exchange, or binding.
 
+#### Broker permissions for the poison-destination check
+
+The passive declare creates nothing, but it is still an authorised operation. On **RabbitMQ 4.3.1 and later** a passive declare requires the connecting user to hold **at least one** of `configure`, `write`, or `read` on the target queue — any one is sufficient. (A *non*-passive declare specifically requires `configure`; this adapter never issues one.) Older brokers require no permission for a passive declare.
+
+Grant the receiver's user any one of those three permissions on each configured dead-letter and error queue name. This is a **new requirement** as of 0.5.0: before the existence check the adapter issued no `queue.declare` at all, so a least-privilege user whose permission patterns matched none of the poison-destination names could still deadletter — a poison republish goes through the default exchange and is authorised against the *exchange*, not the destination queue. Such a user now fails at startup with `ACCESS_REFUSED`. That failure propagates unwrapped, so it is clearly distinguishable from the missing-queue failure, which is reported as an `InvalidOperationException` naming the queue and the option that configured it.
+
+`TransactionMode.None` receivers probe nothing — they drop poison messages rather than republishing them — so they need no permission on any poison destination.
+
 ### What you must provision
 
 For each registered queue receiver, provision at minimum:

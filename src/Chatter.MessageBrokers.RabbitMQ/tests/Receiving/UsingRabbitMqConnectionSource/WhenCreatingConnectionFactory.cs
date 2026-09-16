@@ -1,7 +1,9 @@
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Chatter.MessageBrokers.RabbitMQ.Receiving;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using RabbitMQ.Client;
+using System;
 using System.Net.Security;
 using Xunit;
 
@@ -118,6 +120,63 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
             probe.SslEnabled.Should().BeTrue();
             probe.SslServerName.Should().NotBe("discrete-name");
             probe.HostName.Should().Be("uri-host");
+        }
+
+        // --- trust-boundary guard: TLS is never SILENTLY dropped in favour of a plaintext URI ---
+        //
+        // RabbitMqOptionsBuilder.Build() rejects this same combination at registration, but RabbitMqOptions is a
+        // public MUTABLE type that AddRabbitMq registers as a singleton and that the caller may keep a reference to,
+        // so the registration-time check can be stepped around entirely: by assigning the properties directly
+        // (below), or by mutating the very instance Build() returned. CreateConnectionFactory is the ONLY production
+        // path to a real connection, so these pin the invariant where the transport is actually decided — a TLS
+        // request can never resolve to a cleartext connection carrying the URI's credentials.
+
+        [Fact]
+        public void MustRejectTlsRequestedAlongsideAPlaintextUri()
+        {
+            var options = new RabbitMqOptions(uri: "amqp://user:pass@uri-host/vhost", hostName: "discrete-host");
+            options.UseTls = true;
+
+            Action act = () => Probe(options);
+
+            act.Should().Throw<InvalidOperationException>().WithMessage("*amqps*");
+        }
+
+        [Fact]
+        public void MustRejectTlsRequestedAlongsideAUriMutatedToPlaintextAfterBuild()
+        {
+            var options = new RabbitMqOptionsBuilder(new ServiceCollection())
+                .AddRabbitMqOptions(new RabbitMqOptions(uri: "amqps://user:pass@uri-host/vhost"))
+                .WithTls()
+                .Build();
+
+            // Build() accepted the amqps URI; the caller still holds the registered instance and downgrades it.
+            options.Uri = "amqp://user:pass@uri-host/vhost";
+
+            Action act = () => Probe(options);
+
+            act.Should().Throw<InvalidOperationException>().WithMessage("*amqps*");
+        }
+
+        [Fact]
+        public void MustRejectTlsRequestedAlongsideAnUnparsableUri()
+        {
+            var options = new RabbitMqOptions(uri: "not-a-uri", hostName: "discrete-host");
+            options.UseTls = true;
+
+            Action act = () => Probe(options);
+
+            act.Should().Throw<InvalidOperationException>().WithMessage("*amqps*");
+        }
+
+        [Fact]
+        public void MustLeaveAPlaintextUriUntouchedWhenTlsIsNotRequested()
+        {
+            var probe = Probe(new RabbitMqOptions(uri: "amqp://user:pass@uri-host/vhost"));
+
+            probe.SslEnabled.Should().BeFalse();
+            probe.HostName.Should().Be("uri-host");
+            probe.Port.Should().Be(DefaultAmqpPort);
         }
     }
 }

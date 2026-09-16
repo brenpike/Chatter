@@ -614,6 +614,27 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                 TopologyRecoveryEnabled = false
             };
 
+            // TRUST BOUNDARY: a TLS request is NEVER silently dropped in favour of a plaintext URI.
+            // RabbitMqOptionsBuilder.Build() rejects this same combination at registration, but that is an EARLY
+            // check over a PUBLIC MUTABLE RabbitMqOptions that AddRabbitMq registers as a singleton and the caller
+            // may still hold a reference to — so setting UseTls, or swapping an accepted amqps URI for a plaintext
+            // one, AFTER Build() slips straight past it, as does constructing RabbitMqOptions directly. This method
+            // is the ONLY production path to a real connection, so re-asserting the invariant HERE — where the
+            // transport is actually decided — makes "TLS requested, cleartext transport used, URI credentials on the
+            // wire" UNREPRESENTABLE rather than merely unobserved. The two checks are deliberate defence in depth,
+            // not duplication: Build() fails fast at registration with the friendlier ArgumentException, and if the
+            // two ever drift THIS one governs the connection that is actually opened. It is not matched by the retry
+            // or circuit-breaker exception predicates, so a misconfiguration fails loud instead of being retried.
+            // Unreachable for any configuration that does not opt into TLS, so a consumer who never sets UseTls
+            // observes byte-identical behaviour.
+            if (_options.UseTls && !string.IsNullOrWhiteSpace(_options.Uri) && !IsAmqpsUri(_options.Uri))
+            {
+                throw new InvalidOperationException(
+                    "TLS was requested (RabbitMqOptions.UseTls) but the configured connection URI is not an 'amqps' URI. "
+                    + "The URI takes precedence over the discrete connection settings, so the connection would be plaintext. "
+                    + "Supply an 'amqps' URI or remove the URI.");
+            }
+
             // The AMQP URI takes precedence over the discrete host/credential settings (RabbitMqOptions.Uri
             // contract). When a URI is supplied it fully determines host, vhost, and credentials, so the discrete
             // settings MUST NOT overwrite the URI-parsed values — otherwise stale host-based options carried alongside
@@ -656,6 +677,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
             return factory;
         }
+
+        // An UNPARSABLE URI is NOT amqps, so a TLS request carried alongside one is rejected by the trust-boundary
+        // guard above rather than reaching the client. Mirrors RabbitMqOptionsBuilder's registration-time check.
+        private static bool IsAmqpsUri(string uri)
+            => Uri.TryCreate(uri, UriKind.Absolute, out var parsed)
+               && string.Equals(parsed.Scheme, "amqps", StringComparison.OrdinalIgnoreCase);
 
         // INVARIANT (permit conservation): invoked only by RabbitMqPublishChannelRental.DisposeAsync to return a
         // rented channel. The permit acquired in AcquirePublishChannelAsync is ALWAYS released here — exactly once
