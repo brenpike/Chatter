@@ -111,8 +111,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
         {
             var (harness, messageId) = await CreateHarnessWithOneUnprocessedMessageAsync();
 
+            var failingRead = new FailingCompensationReadInterceptor();
             using var winningContext = harness.CreateContext();
-            using var losingContext = harness.CreateContext(new FailingCompensationReadInterceptor());
+            using var losingContext = harness.CreateContext(failingRead);
             var winningStore = new BrokeredMessageOutbox<SqlServerOutboxContext>(winningContext, CreateLoggerFactory());
             var losingStore = new BrokeredMessageOutbox<SqlServerOutboxContext>(losingContext, CreateLoggerFactory());
 
@@ -127,6 +128,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             // exception must still be what propagates - the read's own failure must not replace it.
             Func<Task> raceLoser = () => ClaimAsync(losingStore, losingMessage);
             await raceLoser.Should().ThrowAsync<DbUpdateConcurrencyException>();
+
+            // WITHOUT THIS THE TEST IS VACUOUS: a compensating read that was never made to fail also ends in
+            // DbUpdateConcurrencyException, so the assertion above passes whether or not the guard was exercised.
+            // Assert the fault was actually injected, exactly once, for the single conflicted entry.
+            failingRead.InjectedFailureCount.Should().Be(1,
+                "the guard is only proven if the compensating read was actually made to fail");
         }
 
         // The store stages the claim; the save that races is the unit of work's own CompleteAsync, so a claim must be

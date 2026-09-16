@@ -17,10 +17,23 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support
     /// because a modification batch may be dispatched through either one.
     ///
     /// Attach it to the LOSING context only; a seeding or winning context must use the plain harness overload.
+    ///
+    /// INVARIANT: <see cref="InjectedFailureCount"/> is what makes a test using this hook non-vacuous. Both the
+    /// guarded and the unguarded compensation end in <c>DbUpdateConcurrencyException</c> when no failure is
+    /// injected, so asserting that exception alone cannot tell "the guard held" from "the fault never fired".
+    /// The arming and SELECT heuristics match provider-generated SQL, which is not this repository's to keep
+    /// stable, so a test MUST assert this count rather than trust that the injection happened.
     /// </summary>
     public sealed class FailingCompensationReadInterceptor : DbCommandInterceptor
     {
         private bool _armed;
+        private int _injectedFailureCount;
+
+        /// <summary>
+        /// How many reads this interceptor actually failed. Zero means the hook never fired and any test relying
+        /// on it proved nothing.
+        /// </summary>
+        public int InjectedFailureCount => _injectedFailureCount;
 
         public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command,
                                                                                   CommandEventData eventData,
@@ -40,6 +53,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support
             // SELECT @@ROWCOUNT - arms without failing itself.
             if (_armed && command.CommandText.Contains("SELECT", StringComparison.OrdinalIgnoreCase))
             {
+                _injectedFailureCount++;
                 throw new CompensationReadFailedException();
             }
 
