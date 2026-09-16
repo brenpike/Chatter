@@ -102,6 +102,37 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             Single(services, ConnectionSourceType()).Lifetime.Should().Be(ServiceLifetime.Singleton);
         }
 
+        // INVARIANT: the CONTAINER owns the connection source. AddRabbitMq registers it by SERVICE TYPE plus
+        // IMPLEMENTATION TYPE, so MSDI constructs the instance and the root provider therefore disposes it at process
+        // shutdown — that is what releases the AMQP connection. No consumer has to escalate its own Dispose to the
+        // singleton to get the connection closed. RabbitMqConnectionSource implements both IDisposable and
+        // IAsyncDisposable, so the sync and async container teardown paths both reach it. The real source is used
+        // deliberately (not a spy) because the claim under test is the REAL registration's ownership; it is never
+        // connected, so disposal performs no broker I/O.
+        [Fact]
+        public async Task MustDisposeContainerCreatedConnectionSourceWithRootProvider()
+        {
+            var services = BuildRegistration();
+
+            // The registration SHAPE is what makes the container the owner: a refactor to an ImplementationInstance
+            // registration would hand ownership back to the caller and the root provider would stop disposing it.
+            var descriptor = Single(services, ConnectionSourceType());
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationType.Should().Be<RabbitMqConnectionSource>();
+            descriptor.ImplementationInstance.Should().BeNull();
+
+            var provider = services.BuildServiceProvider();
+            var source = provider.GetRequiredService<IRabbitMqConnectionSource>();
+            source.Should().BeOfType<RabbitMqConnectionSource>();
+
+            provider.Dispose();
+
+            Func<Task> acquirePublishChannel = () => source.AcquirePublishChannelAsync(CancellationToken.None);
+            await acquirePublishChannel.Should().ThrowAsync<ObjectDisposedException>(
+                "the root provider disposes the source it created, so the AMQP connection is released at process "
+                + "shutdown without any consumer escalating a dispose to the singleton");
+        }
+
         [Fact]
         public void MustRegisterReceiverAndSenderAsScoped()
         {
@@ -411,13 +442,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
         // --- Hosted-receiver factory must NOT dispose the singleton source at factory return -------------
 
         // REGRESSION (codex P1, PR #194): the IMessagingInfrastructure receiver factory delegate must NOT
-        // open-resolve-and-DISPOSE a transient scope per Create() call. RabbitMqReceiver
-        // (IMessagingInfrastructureReceiver : IDisposable) ESCALATES its Dispose to the SINGLETON
-        // IRabbitMqConnectionSource's full teardown, so a per-call `using var scope` would dispose the
-        // returned receiver — and with it the shared singleton source — before InitializeAsync ever runs,
-        // and normal receiver startup would get back an already-disposed source (ObjectDisposedException).
-        // The receiver scope must live for the (singleton) infrastructure lifetime. This is the deliberate
-        // divergence from the SqlServiceBroker/ASB folds, whose Scoped source makes the per-call dispose a no-op.
+        // open-resolve-and-DISPOSE a transient scope per Create() call. The core drives the returned receiver
+        // through InitializeAsync, then StopReceivingAsync, then Dispose — all AFTER the delegate returns — so a
+        // per-call `using var scope` would dispose the Scoped receiver at factory return and hand the core an
+        // already-disposed receiver. The receiver scope must live for the (singleton) infrastructure lifetime.
+        // The spy below records disposal of the SINGLETON IRabbitMqConnectionSource so these tests also pin that
+        // nothing on the receiver-resolution path tears down the process-wide source: the container created the
+        // production source and the root provider is what disposes it, at process shutdown.
         private static IServiceProvider BuildProviderWithSpyConnectionSource(out SpyRabbitMqConnectionSource spy)
         {
             var services = new ServiceCollection();
@@ -426,7 +457,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             builder.AddRabbitMq(o => o.AddRabbitMqOptions(hostName: "localhost"));
 
             // Swap the production singleton source for a disposal-recording spy (still a SINGLETON + IDisposable,
-            // faithfully reproducing the production lifecycle the receiver's Dispose escalates to).
+            // so any dispose reaching the process-wide source on the receiver-resolution path is recorded).
             var capturedSpy = new SpyRabbitMqConnectionSource();
             for (var i = services.Count - 1; i >= 0; i--)
             {
@@ -455,8 +486,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
 
             receiver.Should().NotBeNull();
             spy.DisposeCount.Should().Be(0, "the receiver factory must keep its scope alive for the receiver "
-                + "lifetime — disposing it would tear down the shared singleton connection source before "
-                + "InitializeAsync runs");
+                + "lifetime, and nothing on that path may tear down the shared singleton connection source "
+                + "before the core drives InitializeAsync");
         }
 
         [Fact]
@@ -473,10 +504,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
 
         // REGRESSION (issue #367): RabbitMqReceiver is registered Scoped and is publicly resolvable, so ANY consumer
         // scope that resolves it — a health check, a stray injection into a request-scoped service — is disposed by
-        // MSDI at scope end. Before the dispose escalation was gated on an initialization claim, that stray scope
-        // tore down the SINGLETON connection source and killed the whole process's RabbitMQ messaging, sender
-        // included, with the failure surfacing far from its cause as ObjectDisposedException on a later publish.
-        // The scope here never initializes the receiver, so the shared source must be left both undisposed and
+        // MSDI at scope end. A receiver dispose that reached the SINGLETON connection source would kill the whole
+        // process's RabbitMQ messaging, sender included, with the failure surfacing far from its cause as
+        // ObjectDisposedException on a later publish. The shared source must therefore be left both undisposed and
         // USABLE — proven positively by it still handing out a publish channel rental.
         [Fact]
         public async Task MustNotDisposeSingletonConnectionSourceWhenAStrayScopeResolvesTheReceiver()
@@ -488,15 +518,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
                 strayScope.ServiceProvider.GetRequiredService<RabbitMqReceiver>().Should().NotBeNull();
             }
 
-            spy.DisposeCount.Should().Be(0, "a scope that merely resolved the receiver never initialized it, so its "
-                + "disposal must not tear down the process-wide connection source");
+            spy.DisposeCount.Should().Be(0, "a consumer scope that merely resolved the receiver must not tear down "
+                + "the process-wide connection source when it is disposed");
             await using var rental = await spy.AcquirePublishChannelAsync(CancellationToken.None);
             rental.Channel.Should().NotBeNull("the sender's publish path must survive a stray receiver scope");
         }
 
         // A disposal-recording IRabbitMqConnectionSource spy. Implements BOTH IDisposable (the sync container
-        // teardown path RabbitMqReceiver.Dispose escalates to) and IAsyncDisposable, matching the production
-        // source, and mirrors its post-teardown contract: AcquirePublishChannelAsync throws ObjectDisposedException
+        // teardown path) and IAsyncDisposable, matching the production source, and mirrors its post-teardown
+        // contract: AcquirePublishChannelAsync throws ObjectDisposedException
         // once disposed, so a "still usable" assertion cannot go green against a torn-down source.
         private sealed class SpyRabbitMqConnectionSource : IRabbitMqConnectionSource, IDisposable
         {

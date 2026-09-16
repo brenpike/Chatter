@@ -13,22 +13,30 @@ using Xunit;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 {
-    // Broker-free proof that the receiver's dispose ESCALATION to the shared singleton IRabbitMqConnectionSource is
-    // gated on an INITIALIZATION CLAIM (closes issue #367). RabbitMqReceiver is registered Scoped and is publicly
-    // resolvable, and MSDI disposes scoped IDisposables at scope end — so ANY consumer scope that merely resolves the
-    // receiver (a health check, a stray injection into a request-scoped service) used to tear down the process-wide
-    // AMQP connection and drain the publish channel pool, killing the sender too. The failure then surfaced far from
-    // its cause, as ObjectDisposedException on a later publish or settlement. The claim is latched at the TOP of
-    // InitializeAsync, so the receiver the core actually initialized keeps today's FULL terminal teardown (the core's
-    // BrokeredMessageReceiver terminal path calls DisposeAsync and must still release the connection), while an
-    // uninitialized instance disposes as a surgical no-op.
+    // Broker-free proof that the receiver's dispose is a SURGICAL STOP and NEVER a teardown of the shared singleton
+    // IRabbitMqConnectionSource (closes issue #367). Two distinct ways the old escalating dispose killed process-wide
+    // messaging, both closed here:
+    //   1. RabbitMqReceiver is registered Scoped and is publicly resolvable, and MSDI disposes scoped IDisposables at
+    //      scope end — so ANY consumer scope that merely resolves the receiver (a health check, a stray injection into
+    //      a request-scoped service) tore down the AMQP connection and drained the publish channel pool.
+    //   2. The core's BrokeredMessageReceiver.StartReceiver returns the receiver itself as an IAsyncDisposable and its
+    //      hosted service await-usings it, so a NORMAL receiver shutdown reached DisposeAsync on the INITIALIZED
+    //      receiver — closing the connection and draining the publish pool that the SENDER shares, while hosted
+    //      services stopping later were still publishing.
+    // Either way the failure surfaced far from its cause, as ObjectDisposedException on a later publish. Dispose now
+    // does exactly what StopReceiver does — cancel this receiver's consumer and tear down the RECEIVE CHANNEL only,
+    // then complete the buffer — matching the sibling ASB adapter, whose DisposeAsync never touches the shared
+    // ServiceBusClient. The initialization claim latched at the TOP of InitializeAsync no longer grants any authority
+    // over the source's lifetime: it only records that THIS instance registered a consumer, so only this instance has
+    // a consumer to cancel. An instance a stray scope merely resolved stops nothing at all.
     public class WhenDisposingReceiver : Testing.Core.Context
     {
         private const string ReceiverPath = "orders-queue";
         private const string ErrorPath = "orders-error";
 
-        // An UNCLAIMED receiver — resolved by a stray scope and never initialized — must leave the shared singleton
-        // source alone on the synchronous container-dispose path.
+        // An UNCLAIMED receiver — resolved by a stray scope and never initialized — registered no consumer, so it has
+        // nothing to stop and must leave the shared singleton source entirely alone on the synchronous
+        // container-dispose path.
         [Fact]
         public void MustNotDisposeConnectionSourceWhenNeverInitialized()
         {
@@ -40,6 +48,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             connectionSource.DisposeCount.Should().Be(0,
                 "a receiver that never initialized owns no share of the singleton source's lifetime, so its dispose "
                 + "must not tear down the process-wide connection and publish pool");
+            connectionSource.StopCount.Should().Be(0,
+                "an uninitialized receiver registered no consumer, so there is nothing for it to stop");
         }
 
         [Fact]
@@ -52,6 +62,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             connectionSource.DisposeCount.Should().Be(0,
                 "the async dispose path must be gated on the same initialization claim as the sync path");
+            connectionSource.StopCount.Should().Be(0,
+                "the async dispose path must likewise stop nothing for a receiver that registered no consumer");
         }
 
         // The whole point of the gate: after a stray scope disposes an uninitialized receiver the shared source is
@@ -67,40 +79,67 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             await using var rental = await connectionSource.AcquirePublishChannelAsync(CancellationToken.None);
             rental.Channel.Should().NotBeNull(
                 "the sender's publish path must survive a stray uninitialized receiver's disposal");
+            connectionSource.StopCount.Should().Be(0,
+                "nothing was consuming, so nothing was stopped");
         }
 
-        // REGRESSION GUARD for the terminal path: the core's BrokeredMessageReceiver teardown calls DisposeAsync on
-        // the infrastructure receiver, and that is the ONLY thing that releases the AMQP connection at process
-        // shutdown. A CLAIMED receiver must keep escalating, byte for byte with today's behaviour.
+        // THE SHUTDOWN GUARD: the core's BrokeredMessageReceiver.StartReceiver returns the receiver as an
+        // IAsyncDisposable and its hosted service await-usings it, so this path runs on EVERY receiver shutdown — not
+        // only at process teardown. Disposing the shared singleton source here would close the AMQP connection and
+        // drain the publish pool underneath a sender that later-stopping hosted services are still using. Dispose must
+        // stop THIS receiver's consumer and nothing else.
         [Fact]
-        public async Task MustDisposeConnectionSourceAsynchronouslyWhenInitialized()
+        public async Task MustStopReceivingWithoutDisposingConnectionSourceAsynchronouslyWhenInitialized()
         {
             var connectionSource = new DisposalRecordingConnectionSource();
             var receiver = await CreateInitializedReceiverAsync(connectionSource);
 
             await receiver.DisposeAsync();
 
-            connectionSource.AsyncDisposeCount.Should().Be(1,
-                "the initialized receiver owns the terminal teardown that releases the connection at shutdown");
+            connectionSource.AsyncDisposeCount.Should().Be(0,
+                "the singleton source is shared with the sender, so no receiver may tear it down");
+            connectionSource.StopCount.Should().Be(1,
+                "dispose must perform the surgical receive-side stop instead");
         }
 
-        // The sync path prefers the source's synchronous teardown (the container's sync dispose path), unchanged.
+        // The sync container-dispose path makes the same surgical stop, blocking on it.
         [Fact]
-        public async Task MustDisposeConnectionSourceSynchronouslyWhenInitialized()
+        public async Task MustStopReceivingWithoutDisposingConnectionSourceSynchronouslyWhenInitialized()
         {
             var connectionSource = new DisposalRecordingConnectionSource();
             var receiver = await CreateInitializedReceiverAsync(connectionSource);
 
             receiver.Dispose();
 
-            connectionSource.SyncDisposeCount.Should().Be(1,
-                "the sync dispose path must still prefer the source's synchronous teardown for a claimed receiver");
+            connectionSource.SyncDisposeCount.Should().Be(0,
+                "the synchronous container-dispose path must not tear down the shared source either");
+            connectionSource.StopCount.Should().Be(1,
+                "the sync path must block on the same surgical receive-side stop");
         }
 
-        // A receiver whose InitializeAsync THREW is ALREADY claimed — the latch sits above every startup gate — so its
-        // dispose still escalates, exactly as it did before the claim existed. Nothing about a failed startup changes.
+        // The whole point, proven positively on the CLAIMED path: after an initialized receiver is disposed the shared
+        // source is still LIVE, so the sender keeps publishing. The double mirrors the production source by throwing
+        // ObjectDisposedException from AcquirePublishChannelAsync once torn down, so this cannot go green against a
+        // disposed source.
         [Fact]
-        public async Task MustDisposeConnectionSourceWhenInitializationThrew()
+        public async Task MustLeaveConnectionSourceUsableWhenInitialized()
+        {
+            var connectionSource = new DisposalRecordingConnectionSource();
+            var receiver = await CreateInitializedReceiverAsync(connectionSource);
+
+            await receiver.DisposeAsync();
+
+            await using var rental = await connectionSource.AcquirePublishChannelAsync(CancellationToken.None);
+            rental.Channel.Should().NotBeNull(
+                "a hosted service that stops after the receiver must still be able to publish");
+        }
+
+        // A receiver whose InitializeAsync THREW is ALREADY claimed — the latch sits above every startup gate. That
+        // still matters: the source stores the consume-registration delegate BEFORE the receive channel is ensured, so
+        // a fault mid-registration leaves the delegate stored and only the stop clears it. Dispose must therefore run
+        // the stop — and still never dispose the shared source.
+        [Fact]
+        public async Task MustStopReceivingWithoutDisposingConnectionSourceWhenInitializationThrew()
         {
             var connectionSource = new DisposalRecordingConnectionSource();
             var receiver = CreateReceiver(connectionSource);
@@ -115,8 +154,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             await receiver.DisposeAsync();
 
-            connectionSource.AsyncDisposeCount.Should().Be(1,
-                "the claim is latched above the startup gates, so a failed initialization still owns the teardown");
+            connectionSource.DisposeCount.Should().Be(0,
+                "a failed startup grants no authority over the shared singleton source's lifetime");
+            connectionSource.StopCount.Should().Be(1,
+                "the claim is latched above the startup gates, so a failed initialization still runs the stop that "
+                + "clears any consume registration the source already stored");
         }
 
         [Fact]
@@ -143,6 +185,55 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             Func<Task> disposeAgain = async () => await receiver.DisposeAsync();
 
             await disposeAgain.Should().NotThrowAsync("double-dispose must stay idempotent");
+            connectionSource.DisposeCount.Should().Be(0,
+                "no number of disposals of a receiver may tear down the shared singleton source");
+        }
+
+        // The surgical stop reaches the real seam: over the in-memory source, disposing an initialized receiver
+        // cancels the AMQP consumer that BasicConsumeAsync registered and tears the receive channel down — the same
+        // teardown StopReceiver performs.
+        [Fact]
+        public async Task MustCancelConsumerAndTearDownReceiveChannelOnDispose()
+        {
+            var harness = ReceiverHarness.Create();
+            var receiveChannel = harness.ConnectionSource.ReceiveChannel;
+
+            await harness.Receiver.DisposeAsync();
+
+            receiveChannel.CancelledConsumerTags.Should().ContainSingle()
+                .Which.Should().Be("in-memory-consumer-tag",
+                    "dispose must cancel the AMQP consumer this receiver registered");
+            receiveChannel.Disposed.Should().BeTrue("dispose must tear down the receive channel");
+            harness.ConnectionSource.ReceivingStopped.Should().BeTrue("the source must record the terminal stop");
+        }
+
+        // SURGICAL over the real seam: dispose must leave the connection and publish pool intact so the sender — which
+        // shares the singleton source and may stop later — keeps publishing.
+        [Fact]
+        public async Task MustNotTearDownPublishPathOnDispose()
+        {
+            var harness = ReceiverHarness.Create();
+
+            await harness.Receiver.DisposeAsync();
+
+            await using var rental = await harness.ConnectionSource.AcquirePublishChannelAsync(CancellationToken.None);
+            rental.Should().NotBeNull("the sender's publish path must still work after the receiver is disposed");
+            rental.Channel.Should().NotBeNull("a publish channel must still be acquirable after dispose");
+        }
+
+        // A delivery the broker might still try to push AFTER dispose is safely DROPPED (the consumer is cancelled and
+        // the channel torn down) rather than thrown into the completed buffer writer.
+        [Fact]
+        public async Task MustNotThrowWhenDeliveryPushedAfterDispose()
+        {
+            var harness = ReceiverHarness.Create();
+
+            await harness.Receiver.DisposeAsync();
+
+            Func<Task> pushAfterDispose = () => harness.PushAsync(deliveryTag: 99);
+
+            await pushAfterDispose.Should().NotThrowAsync(
+                "a delivery pushed after dispose must be dropped, not forced into a completed buffer writer");
         }
 
         private static RabbitMqReceiver CreateReceiver(DisposalRecordingConnectionSource connectionSource)
@@ -171,10 +262,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         }
 
         // A disposal-recording source, defined HERE rather than on the shared InMemoryRabbitMqConnectionSource so the
-        // sibling suites' publish-channel assertions stay untouched. Implements BOTH IDisposable (the synchronous
-        // container teardown path the receiver's Dispose prefers) and IAsyncDisposable, matching the production
-        // source, and mirrors its post-teardown contract: AcquirePublishChannelAsync throws ObjectDisposedException
-        // once disposed, so "still usable" cannot go green against a torn-down source.
+        // sibling suites' publish-channel assertions stay untouched. Implements BOTH IDisposable and IAsyncDisposable,
+        // matching the production source, so a receiver that reached for EITHER teardown would be caught; and it
+        // mirrors the production post-teardown contract — AcquirePublishChannelAsync throws ObjectDisposedException
+        // once disposed — so "still usable" cannot go green against a torn-down source.
         private sealed class DisposalRecordingConnectionSource : IRabbitMqConnectionSource, IDisposable
         {
             private readonly RabbitMqPublishChannelRentalFactory _rentalFactory = new RabbitMqPublishChannelRentalFactory();
@@ -182,6 +273,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             public int SyncDisposeCount { get; private set; }
             public int AsyncDisposeCount { get; private set; }
             public int DisposeCount => SyncDisposeCount + AsyncDisposeCount;
+
+            // Counts the SURGICAL receive-side teardown, so a test distinguishes "stopped consuming" from "tore down
+            // the shared connection and publish pool".
+            public int StopCount { get; private set; }
 
             public long CurrentReceiveChannelEpoch => 0;
 
@@ -197,7 +292,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                                             CancellationToken cancellationToken)
                 => Task.CompletedTask;
 
-            public Task StopReceivingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+            public Task StopReceivingAsync(CancellationToken cancellationToken)
+            {
+                StopCount++;
+                return Task.CompletedTask;
+            }
 
             public Task<TResult> RunOnReceiveChannelAsync<TResult>(Func<IChannel, long, Task<TResult>> operation,
                                                                    CancellationToken cancellationToken)

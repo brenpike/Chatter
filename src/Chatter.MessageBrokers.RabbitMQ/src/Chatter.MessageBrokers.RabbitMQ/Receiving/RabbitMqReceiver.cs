@@ -75,9 +75,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // sibling ASB adapter uses for None. Resolved ONCE in InitializeAsync from the (core-normalized) options
         // and read by RegisterConsumerAsync on every (re)registration and by the settlement no-op guard.
         private bool _autoAck;
-        // INVARIANT (dispose escalation is CLAIMED, never ambient): only the instance the core actually drove through
-        // InitializeAsync owns a share of the SINGLETON connection source's lifetime, so only that instance's dispose
-        // escalates to the source's full teardown. Latched once at the top of InitializeAsync.
+        // INVARIANT (the claim records a CONSUMER REGISTRATION, never authority over the shared source): true once the
+        // core drove THIS instance through InitializeAsync, which hands the SINGLETON connection source this
+        // receiver's consume-registration delegate. Only such an instance has a consumer to cancel, so only its
+        // dispose runs the surgical receive-side stop; an instance a stray scope merely resolved stops nothing. It
+        // conveys no ownership of the source's lifetime — no receiver disposes the source (see Dispose/DisposeAsync).
+        // Latched once at the top of InitializeAsync.
         private bool _initializationClaimed;
 
         public RabbitMqReceiver(IRabbitMqConnectionSource connectionSource,
@@ -95,13 +98,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
 
-            // CLAIM THE SOURCE'S LIFETIME. This receiver is registered Scoped and is publicly resolvable, and the DI
-            // container disposes scoped IDisposables at scope end — so a stray scope that merely RESOLVES it (a health
-            // check, an injection into a request-scoped service) would otherwise escalate its dispose to the SINGLETON
-            // connection source and tear down process-wide messaging, sender included. The claim is what separates the
-            // one instance the core drove through startup — which owns the terminal teardown — from every merely
-            // resolved instance, whose dispose is a no-op. Latched ABOVE every startup gate below, so a receiver whose
-            // initialization THROWS is still claimed and still escalates, exactly as it did before this gate existed.
+            // CLAIM THE CONSUMER REGISTRATION. This receiver is registered Scoped and is publicly resolvable, and the
+            // DI container disposes scoped IDisposables at scope end — so a stray scope that merely RESOLVES it (a
+            // health check, an injection into a request-scoped service) would otherwise reach the SHARED source's
+            // teardown on dispose. The claim separates the one instance the core drove through startup — the only one
+            // that hands the source a consume-registration delegate, and so the only one with a consumer to cancel —
+            // from every merely resolved instance, whose dispose stops nothing.
+            // Latched ABOVE every startup gate below, and it must stay there: StartReceivingAsync stores the
+            // registration delegate BEFORE it ensures the receive channel, so an initialization that faults
+            // mid-registration leaves the delegate stored. Only the stop clears it; without it a later connection
+            // recovery would re-register a consumer that writes into a completed buffer.
             _initializationClaimed = true;
 
             // TransactionMode.None is at-most-once ("if an error occurs after a message is received, it will be
@@ -685,21 +691,30 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         public TransactionScope CreateLocalTransaction(TransactionContext context)
             => null;
 
-        // For the CLAIMED instance (the one InitializeAsync latched) Dispose ESCALATES beyond StopReceiver's surgical
-        // receive teardown to the source's FULL teardown (connection + publish pool), then completes the buffer. That
-        // escalation is what releases the AMQP connection on the core's terminal teardown path, which disposes the
-        // infrastructure receiver. The source's Dispose()/DisposeAsync() share one single-admission lifecycle CAS and
-        // are idempotent, so the DI container's own later disposal of the singleton source is a clean no-op. Terminal:
-        // a disposed receiver does not restart.
-        // An UNCLAIMED instance — resolved from a scope but never initialized — disposes as a surgical no-op instead,
-        // because the singleton source is not its to tear down (see the claim in InitializeAsync).
-        // The seam is IAsyncDisposable; the production source ALSO implements IDisposable for the synchronous
-        // container-dispose path, so the sync Dispose() prefers the source's synchronous teardown when available.
+        // INVARIANT (dispose NEVER tears down the shared source): disposing THIS receiver means releasing what THIS
+        // receiver holds — its AMQP consumer and the receive channel — which is exactly the surgical teardown
+        // StopReceiver performs. The IRabbitMqConnectionSource is a SINGLETON the SENDER shares: its connection and
+        // publish-channel pool outlive any one receiver, and the DI container disposes the singleton at host shutdown.
+        // This is not merely a stray-scope concern — the core's BrokeredMessageReceiver.StartReceiver returns the
+        // infrastructure receiver itself as the IAsyncDisposable its hosted service await-usings, so this path runs on
+        // EVERY receiver shutdown. Disposing the source here closed the connection and drained the publish pool
+        // underneath hosted services that stop later and are still publishing, faulting their sends with
+        // ObjectDisposedException. The sibling ASB adapter disposes only its OWN inner receiver, never the shared
+        // ServiceBusClient; this matches it.
+        // An UNCLAIMED instance — resolved from a scope but never initialized — registered no consumer, so it only
+        // completes its buffer (see the claim in InitializeAsync). StopReceivingAsync is gate-serialized and
+        // idempotent, so stop-then-dispose and double-dispose are clean no-ops. Terminal either way: a disposed
+        // receiver does not restart.
         public void Dispose()
         {
-            if (_initializationClaimed && _connectionSource is IDisposable syncDisposable)
+            if (_initializationClaimed)
             {
-                syncDisposable.Dispose();
+                // Blocking on the async stop is deliberate and safe here: the connection source awaits with
+                // ConfigureAwait(false) throughout, so there is no captured context to deadlock against, and the core
+                // sets the same precedent in its own Dispose(bool). In production a claimed instance is always
+                // disposed through DisposeAsync (the core's path) — the long-lived receiver scope is never disposed —
+                // so this path exists only for a synchronous container teardown.
+                _connectionSource.StopReceivingAsync(CancellationToken.None).GetAwaiter().GetResult();
             }
 
             _buffer?.Writer.TryComplete();
@@ -709,7 +724,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         {
             if (_initializationClaimed)
             {
-                await _connectionSource.DisposeAsync().ConfigureAwait(false);
+                await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
             }
 
             _buffer?.Writer.TryComplete();

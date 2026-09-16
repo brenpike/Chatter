@@ -64,8 +64,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 "a delivery pushed after a terminal stop must be dropped, not forced into a completed buffer writer");
         }
 
-        // Stop-then-dispose is idempotent: disposing after a stop must not throw (the source's single-admission
-        // lifecycle CAS makes the escalated dispose a clean no-op against the already-stopped receive channel).
+        // Stop-then-dispose is idempotent: dispose performs the SAME surgical stop, and StopReceivingAsync is
+        // gate-serialized and idempotent, so a second run finds a torn-down channel + cleared registration and
+        // no-ops without throwing.
         [Fact]
         public async Task MustNotThrowWhenStopThenDispose()
         {

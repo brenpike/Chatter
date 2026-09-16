@@ -59,19 +59,18 @@ namespace Microsoft.Extensions.DependencyInjection
                 // descriptor (NOT resolved from the container by the shared MessagingInfrastructureFactory
                 // type), so each broker keeps its own factory under multi-broker registration.
                 //
-                // LIFETIME DIVERGENCE from the SqlServiceBroker / Azure Service Bus folds: those folds
-                // open-resolve-and-DISPOSE a transient scope per Create() call because their scoped receiver's
-                // Dispose is a no-op for the (Scoped) connection source. RabbitMQ deliberately makes
-                // IRabbitMqConnectionSource a SINGLETON (one IConnection per process), and RabbitMqReceiver
-                // (IMessagingInfrastructureReceiver : IDisposable) escalates its Dispose to the singleton
-                // source's FULL teardown ONCE the core has driven it through InitializeAsync — which happens
-                // AFTER this factory delegate returns the receiver. From that moment the scope that owns the
-                // receiver owns a share of the singleton source's lifetime, so disposing it would tear down
-                // process-wide messaging (the sender included) and later publishes would throw
-                // ObjectDisposedException. The receiver scope must therefore live for the infrastructure's
-                // (singleton) lifetime. RejectMultipleReceivers guarantees at most one RabbitMQ receiver, so a
-                // single long-lived scope created once here is correct. The sender (IMessagingInfrastructureDispatcher,
-                // NOT disposable, no Dispose) is unaffected, so its delegate keeps the dispose-per-call shape.
+                // SCOPE DIVERGENCE from the SqlServiceBroker / Azure Service Bus folds: those folds
+                // open-resolve-and-DISPOSE a transient scope per Create() call. RabbitMQ must NOT, because the
+                // core drives the returned receiver through its own lifecycle — InitializeAsync, then
+                // StopReceivingAsync, then Dispose — all of which happen AFTER this factory delegate returns.
+                // A per-call `using var scope` would dispose the Scoped receiver the moment the delegate
+                // returned, so the core would be handed an already-disposed receiver. The scoped instance must
+                // therefore outlive the factory call, which means the scope that owns it must live for the
+                // infrastructure's (singleton) lifetime. RejectMultipleReceivers guarantees at most one RabbitMQ
+                // receiver, so a single long-lived scope created once here is correct. The sender
+                // (IMessagingInfrastructureDispatcher, NOT disposable, no Dispose) is unaffected, so its delegate
+                // keeps the dispose-per-call shape. The singleton IRabbitMqConnectionSource's own teardown is not
+                // this scope's concern: the container created it, so the root provider disposes it at shutdown.
                 var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
                 var receiverScope = scopeFactory.CreateScope();
                 var infrastructureFactory = new MessagingInfrastructureFactory(
