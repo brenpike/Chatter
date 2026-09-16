@@ -59,9 +59,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             // lazy producer's per-yield side effects. Do not reintroduce one.
             var dispatchTasks = new List<Task>();
 
-            // INVARIANT: the scope outlives every send it covers. The sends are awaited INSIDE the using,
-            // so the scope is disposed only once all of them have finished; returning the Task.WhenAll
-            // unawaited would dispose the scope while sends were still in flight.
+            // INVARIANT: on the path where every send is started, the scope outlives them all. The sends are
+            // awaited INSIDE the using, so the scope is disposed only once all of them have finished;
+            // returning the Task.WhenAll unawaited would dispose the scope while sends were still in flight.
+            // NOT an unconditional guarantee: if the loop below faults part-way — a throw from the sequence
+            // itself, from _senderFactory.Create, or from AsAzureServiceBusMessage — the using disposes the
+            // scope with the already-started sends neither awaited nor observed, and the caller sees the
+            // enumeration fault instead of a completed or failed dispatch. That fault path is PRE-EXISTING
+            // and is not widened here; awaiting inside the using narrowed premature disposal from every
+            // dispatch to this one path. The dispatcher's failure contract is tracked in #489.
             //TODO: this won't work if leveraging partitioning - won't be able to send messages to multiple partitions in one transactionscope...
             using var scope = _scopeFactory.Create(transactionContext?.TransactionMode ?? TransactionMode.None);
 
