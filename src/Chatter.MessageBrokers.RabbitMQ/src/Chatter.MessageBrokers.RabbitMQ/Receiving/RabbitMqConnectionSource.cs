@@ -601,7 +601,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             }
         }
 
-        private ConnectionFactory CreateConnectionFactory()
+        // internal rather than private purely as a test seam (InternalsVisibleTo); no public surface is added.
+        internal ConnectionFactory CreateConnectionFactory()
         {
             var factory = new ConnectionFactory
             {
@@ -637,6 +638,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             if (!string.IsNullOrWhiteSpace(_options.Password))
             {
                 factory.Password = _options.Password;
+            }
+
+            // TLS for the discrete path, opt-in and default-off (RabbitMqOptions.UseTls). Applied only here, AFTER
+            // the URI early-return, so URI precedence is preserved. ONLY Enabled and ServerName are set: every other
+            // SslOption member — notably AcceptablePolicyErrors — is left at its strict default, so certificate
+            // validation is never weakened. The client's own URI handling is LAXER (an amqps scheme relaxes
+            // AcceptablePolicyErrors to tolerate a certificate name mismatch); that relaxation is deliberately not
+            // copied. A ServerName that does not match the broker's certificate FAILS the handshake by design.
+            if (_options.UseTls)
+            {
+                factory.Ssl.Enabled = true;
+                factory.Ssl.ServerName = string.IsNullOrWhiteSpace(_options.TlsServerName)
+                    ? _options.HostName
+                    : _options.TlsServerName;
             }
 
             return factory;

@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -124,6 +125,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                     "destination and be redelivered indefinitely. Configure a dead-letter or error queue before receiving.");
             }
 
+            // The gate above proves a poison destination was NAMED; this one proves it EXISTS.
+            await AssertPoisonDestinationsExistAsync(cancellationToken).ConfigureAwait(false);
+
             // Prefetch must keep enough unacknowledged deliveries in flight to saturate the core's workers, so
             // floor it at MaxConcurrentCalls. The bounded buffer mirrors that prefetch so the consumer never
             // accepts more than the broker is willing to leave unacknowledged.
@@ -148,6 +152,61 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // detect a recycled channel. The epoch is NOT closed over once at InitializeAsync — it is the per-call
             // parameter the source supplies, so a post-recovery re-registration stamps the post-recovery epoch.
             await _connectionSource.StartReceivingAsync(RegisterConsumerAsync, cancellationToken).ConfigureAwait(false);
+        }
+
+        // FAIL FAST AT REGISTRATION (existence half): the neither-configured gate only proves a poison destination
+        // was NAMED. This module PROVISIONS NO TOPOLOGY, so a dead-letter/error queue named in configuration but
+        // never declared externally does not exist on the broker — and DeadletterMessageAsync's mandatory:true
+        // republish then faults with a PublishException. The core's TryDeadletterWithRecoveryAsync CATCHES that,
+        // logs it, and leaves the ORIGINAL delivery unsettled; at the default Prefetch of 1 that unacked delivery
+        // holds the receiver's only broker credit, so the receiver STALLS INDEFINITELY on the first poison message
+        // and the misconfiguration surfaces only as a log line. Probing existence here, BEFORE StartReceivingAsync
+        // registers the AMQP consumer, turns that silent stall into a loud startup failure naming the queue.
+        // EXCEPTION: TransactionMode.None is at-most-once — a poison message is dropped (acked), never republished
+        // — so it requires no poison destination and probes none, mirroring the neither-configured gate's own
+        // exception.
+        // CHANNEL CHOICE: a PASSIVE declare PROVISIONS NOTHING (it only asks the broker whether the queue exists),
+        // so the no-topology invariant holds. It runs on a channel rented from the publish pool, never on the
+        // receive channel, because a FAILED passive declare CLOSES its channel — killing the receive channel would
+        // take the receiver down with it. The rental's return path disposes a closed channel instead of re-pooling
+        // it while ALWAYS releasing the permit, so the pool self-heals after a failed probe.
+        private async Task AssertPoisonDestinationsExistAsync(CancellationToken cancellationToken)
+        {
+            if (_options.TransactionMode == TransactionMode.None)
+            {
+                return;
+            }
+
+            await using var rental = await _connectionSource.AcquirePublishChannelAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath))
+            {
+                await AssertQueueExistsAsync(rental.Channel, _options.DeadLetterQueuePath, nameof(ReceiverOptions.DeadLetterQueuePath), cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_options.ErrorQueuePath))
+            {
+                await AssertQueueExistsAsync(rental.Channel, _options.ErrorQueuePath, nameof(ReceiverOptions.ErrorQueuePath), cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // INVARIANT: ONLY a 404 NOT_FOUND means the queue does not exist. Every other fault — connection refused,
+        // access refused, resource locked — propagates UNWRAPPED, so an infrastructure problem is never masked as a
+        // missing queue (which would send an operator to declare a queue that already exists).
+        private async Task AssertQueueExistsAsync(IChannel channel, string queue, string optionName, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await channel.QueueDeclarePassiveAsync(queue, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationInterruptedException ex) when (ex.ShutdownReason?.ReplyCode == Constants.NotFound)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot start the RabbitMQ receiver for queue '{_options.MessageReceiverPath}': the configured poison destination " +
+                    $"'{queue}' ({optionName}) does not exist on the broker. This adapter provisions no topology, so the queue must be " +
+                    "declared externally before receiving. A poison message that exhausts MaxReceiveAttempts would otherwise fault its " +
+                    "deadletter republish, leaving the original delivery unsettled and stalling the receiver indefinitely.", ex);
+            }
         }
 
         // INVARIANT: invoked by the connection source under the receive gate on every (re)creation of the receive

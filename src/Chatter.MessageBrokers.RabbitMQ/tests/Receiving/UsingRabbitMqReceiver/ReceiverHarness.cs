@@ -6,6 +6,7 @@ using Chatter.MessageBrokers.Receiving;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -26,6 +27,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         public InMemoryRabbitMqConnectionSource ConnectionSource { get; } = new InMemoryRabbitMqConnectionSource();
         public RabbitMqReceiver Receiver { get; }
 
+        // The queue names the receiver's startup poison-destination existence gate passively declared during
+        // InitializeAsync, in declare order. Captured here because the gate legitimately rents a PUBLISH channel,
+        // and the settlement suites assert their republishes off ConnectionSource.PublishChannels — so the
+        // startup probe's recording is lifted out (see the ctor) and surfaced through this property instead.
+        public IReadOnlyList<string> StartupPassiveDeclares { get; }
+
         private ReceiverHarness(RabbitMqOptions options, ReceiverOptions receiverOptions)
         {
             // The real core factory over the RabbitMQ + core JSON converters, so the receiver resolves the same
@@ -37,6 +44,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             });
             Receiver = new RabbitMqReceiver(ConnectionSource, options, bodyConverterFactory, Mock.Of<ILogger<RabbitMqReceiver>>());
             Receiver.InitializeAsync(receiverOptions, CancellationToken.None).GetAwaiter().GetResult();
+
+            // Lift the startup existence gate's publish-channel recording off the source: the gate rents a publish
+            // channel to run its passive declares, and every settlement suite asserts its republishes off
+            // ConnectionSource.PublishChannels (Single() / BeEmpty()). Snapshot the probed queue names onto
+            // StartupPassiveDeclares, then drop the startup channel so PublishChannels witnesses only the
+            // republishes the test itself provoked.
+            StartupPassiveDeclares = ConnectionSource.PublishChannels
+                .SelectMany(channel => channel.PassiveDeclaredQueues)
+                .ToList();
+            ConnectionSource.PublishChannels.Clear();
         }
 
         public static ReceiverHarness Create(QueueType queueType = QueueType.Quorum,
@@ -64,9 +81,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         // Drives ONLY InitializeAsync against a fresh receiver, returning the thrown exception (or null), so a test
         // can assert the receiver REJECTS a misconfiguration at registration time — before any delivery is consumed —
         // without the ctor's GetAwaiter().GetResult() surfacing the throw as a harness-construction failure.
-        public static System.Exception CaptureInitException(string deadLetterQueuePath, string errorQueuePath)
+        // <paramref name="configure"/> runs against the fresh source BEFORE InitializeAsync, so a test can arm a
+        // RecordingChannel fault (via OnPublishChannelCreated) and keep a reference to the source in order to assert
+        // what the rejected initialization left behind — e.g. that no consumer was ever registered.
+        public static System.Exception CaptureInitException(string deadLetterQueuePath,
+                                                            string errorQueuePath,
+                                                            System.Action<InMemoryRabbitMqConnectionSource> configure = null)
         {
             var connectionSource = new InMemoryRabbitMqConnectionSource();
+            configure?.Invoke(connectionSource);
             var bodyConverterFactory = new BodyConverterFactory(new IBrokeredMessageBodyConverter[]
             {
                 new RabbitMqBodyConverter(),
