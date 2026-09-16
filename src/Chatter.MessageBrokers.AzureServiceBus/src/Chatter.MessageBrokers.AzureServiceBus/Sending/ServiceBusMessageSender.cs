@@ -78,7 +78,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
                 dispatchTasks.Add(sender.SendMessageAsync(message));
             }
 
-            await Task.WhenAll(dispatchTasks);
+            // INVARIANT: the continuation below completes and disposes the transaction scope, so it must never
+            // be posted back to the caller's synchronization context. A caller that waits synchronously on a
+            // single-threaded context would otherwise block the only thread able to run it, hanging the dispatch.
+            await Task.WhenAll(dispatchTasks).ConfigureAwait(false);
 
             scope.Complete();
         }
