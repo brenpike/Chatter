@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1] - 2026-09-15
+
+### Fixed
+
+- In PeekLock session mode, a settlement no longer reports `Settled` when the session it targeted has already been released. Previously, if the held session was released before settlement ran, the session adapter returned a completed task without touching the broker, and the receiver still reported a successful settlement — so the message was redelivered, and a poison message that was never actually dead-lettered re-entered circulation while the system reported it contained. The internal receive port now reports whether a settlement reached the broker, and a delivery the receiver can no longer reach is reported as a FAILED settlement and logged. Upgraders should note this makes a previously-silent redelivery visible: watch for the new log line and the changed `SettlementResult` on this path (#374).
+- Batch dispatch now awaits its sends inside the transaction scope that governs them, rather than returning them unawaited. Previously the scope was created with `using var` in a synchronous method and the send tasks were returned to the caller unawaited, so the scope could dispose while sends were still in flight (#377).
+
+### Security
+
+- `ServiceBusOptions.ConnectionString` now carries `[JsonIgnore]`, matching the other secret-bearing members of the type. Serializing the bound options object — as consumers routinely do in diagnostics endpoints and startup log dumps — no longer emits the connection string or its `SharedAccessKey`. Configuration binding is unaffected: the `Microsoft.Extensions.Configuration` binder does not honour `[JsonIgnore]`, so setting `ConnectionString` from appsettings continues to work exactly as before (#375).
+
 ## [2.4.0] - 2026-09-11
 
 ### Added
