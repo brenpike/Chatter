@@ -471,11 +471,38 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             spy.DisposeCount.Should().Be(0);
         }
 
+        // REGRESSION (issue #367): RabbitMqReceiver is registered Scoped and is publicly resolvable, so ANY consumer
+        // scope that resolves it — a health check, a stray injection into a request-scoped service — is disposed by
+        // MSDI at scope end. Before the dispose escalation was gated on an initialization claim, that stray scope
+        // tore down the SINGLETON connection source and killed the whole process's RabbitMQ messaging, sender
+        // included, with the failure surfacing far from its cause as ObjectDisposedException on a later publish.
+        // The scope here never initializes the receiver, so the shared source must be left both undisposed and
+        // USABLE — proven positively by it still handing out a publish channel rental.
+        [Fact]
+        public async Task MustNotDisposeSingletonConnectionSourceWhenAStrayScopeResolvesTheReceiver()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out var spy);
+
+            using (var strayScope = provider.GetRequiredService<IServiceScopeFactory>().CreateScope())
+            {
+                strayScope.ServiceProvider.GetRequiredService<RabbitMqReceiver>().Should().NotBeNull();
+            }
+
+            spy.DisposeCount.Should().Be(0, "a scope that merely resolved the receiver never initialized it, so its "
+                + "disposal must not tear down the process-wide connection source");
+            await using var rental = await spy.AcquirePublishChannelAsync(CancellationToken.None);
+            rental.Channel.Should().NotBeNull("the sender's publish path must survive a stray receiver scope");
+        }
+
         // A disposal-recording IRabbitMqConnectionSource spy. Implements BOTH IDisposable (the sync container
         // teardown path RabbitMqReceiver.Dispose escalates to) and IAsyncDisposable, matching the production
-        // source. All AMQP operations throw — the regression test only resolves and reads ReceiveInfrastructure.
+        // source, and mirrors its post-teardown contract: AcquirePublishChannelAsync throws ObjectDisposedException
+        // once disposed, so a "still usable" assertion cannot go green against a torn-down source.
         private sealed class SpyRabbitMqConnectionSource : IRabbitMqConnectionSource, IDisposable
         {
+            private readonly Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.RabbitMqPublishChannelRentalFactory _rentalFactory =
+                new Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.RabbitMqPublishChannelRentalFactory();
+
             public int DisposeCount { get; private set; }
 
             public long CurrentReceiveChannelEpoch => 0;
@@ -498,7 +525,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
                 => throw new NotImplementedException();
 
             public Task<RabbitMqPublishChannelRental> AcquirePublishChannelAsync(CancellationToken cancellationToken)
-                => throw new NotImplementedException();
+            {
+                if (DisposeCount > 0)
+                {
+                    throw new ObjectDisposedException(nameof(SpyRabbitMqConnectionSource));
+                }
+
+                return Task.FromResult(_rentalFactory.Create(
+                    new Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.RecordingChannel()));
+            }
         }
 
         private sealed class StubDiscoveredReceiverRegistry : IDiscoveredReceiverRegistry

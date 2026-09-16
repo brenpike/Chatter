@@ -63,11 +63,12 @@ namespace Microsoft.Extensions.DependencyInjection
                 // open-resolve-and-DISPOSE a transient scope per Create() call because their scoped receiver's
                 // Dispose is a no-op for the (Scoped) connection source. RabbitMQ deliberately makes
                 // IRabbitMqConnectionSource a SINGLETON (one IConnection per process), and RabbitMqReceiver
-                // (IMessagingInfrastructureReceiver : IDisposable) ESCALATES its Dispose to the singleton
-                // source's FULL teardown. A per-call `using var scope` would therefore dispose the returned
-                // receiver — and with it the shared singleton source — before InitializeAsync ever runs,
-                // so receiver startup would get back an already-disposed source and throw
-                // ObjectDisposedException. The receiver scope must instead live for the infrastructure's
+                // (IMessagingInfrastructureReceiver : IDisposable) escalates its Dispose to the singleton
+                // source's FULL teardown ONCE the core has driven it through InitializeAsync — which happens
+                // AFTER this factory delegate returns the receiver. From that moment the scope that owns the
+                // receiver owns a share of the singleton source's lifetime, so disposing it would tear down
+                // process-wide messaging (the sender included) and later publishes would throw
+                // ObjectDisposedException. The receiver scope must therefore live for the infrastructure's
                 // (singleton) lifetime. RejectMultipleReceivers guarantees at most one RabbitMQ receiver, so a
                 // single long-lived scope created once here is correct. The sender (IMessagingInfrastructureDispatcher,
                 // NOT disposable, no Dispose) is unaffected, so its delegate keeps the dispose-per-call shape.

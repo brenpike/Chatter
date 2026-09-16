@@ -75,6 +75,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // sibling ASB adapter uses for None. Resolved ONCE in InitializeAsync from the (core-normalized) options
         // and read by RegisterConsumerAsync on every (re)registration and by the settlement no-op guard.
         private bool _autoAck;
+        // INVARIANT (dispose escalation is CLAIMED, never ambient): only the instance the core actually drove through
+        // InitializeAsync owns a share of the SINGLETON connection source's lifetime, so only that instance's dispose
+        // escalates to the source's full teardown. Latched once at the top of InitializeAsync.
+        private bool _initializationClaimed;
 
         public RabbitMqReceiver(IRabbitMqConnectionSource connectionSource,
                                 RabbitMqOptions rabbitOptions,
@@ -90,6 +94,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         public async Task InitializeAsync(ReceiverOptions options, CancellationToken cancellationToken)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
+
+            // CLAIM THE SOURCE'S LIFETIME. This receiver is registered Scoped and is publicly resolvable, and the DI
+            // container disposes scoped IDisposables at scope end — so a stray scope that merely RESOLVES it (a health
+            // check, an injection into a request-scoped service) would otherwise escalate its dispose to the SINGLETON
+            // connection source and tear down process-wide messaging, sender included. The claim is what separates the
+            // one instance the core drove through startup — which owns the terminal teardown — from every merely
+            // resolved instance, whose dispose is a no-op. Latched ABOVE every startup gate below, so a receiver whose
+            // initialization THROWS is still claimed and still escalates, exactly as it did before this gate existed.
+            _initializationClaimed = true;
 
             // TransactionMode.None is at-most-once ("if an error occurs after a message is received, it will be
             // lost"). The handler-failure path already drops (acks) under None, but a process CRASH/KILL while the
@@ -672,15 +685,19 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         public TransactionScope CreateLocalTransaction(TransactionContext context)
             => null;
 
-        // Dispose ESCALATES beyond StopReceiver's surgical receive teardown to the source's FULL teardown (connection
-        // + publish pool), then completes the buffer. The source's Dispose()/DisposeAsync() share one single-admission
-        // lifecycle CAS and are idempotent, so the DI container's own later disposal of the singleton source is a
-        // clean no-op. Terminal: a disposed receiver does not restart.
+        // For the CLAIMED instance (the one InitializeAsync latched) Dispose ESCALATES beyond StopReceiver's surgical
+        // receive teardown to the source's FULL teardown (connection + publish pool), then completes the buffer. That
+        // escalation is what releases the AMQP connection on the core's terminal teardown path, which disposes the
+        // infrastructure receiver. The source's Dispose()/DisposeAsync() share one single-admission lifecycle CAS and
+        // are idempotent, so the DI container's own later disposal of the singleton source is a clean no-op. Terminal:
+        // a disposed receiver does not restart.
+        // An UNCLAIMED instance — resolved from a scope but never initialized — disposes as a surgical no-op instead,
+        // because the singleton source is not its to tear down (see the claim in InitializeAsync).
         // The seam is IAsyncDisposable; the production source ALSO implements IDisposable for the synchronous
         // container-dispose path, so the sync Dispose() prefers the source's synchronous teardown when available.
         public void Dispose()
         {
-            if (_connectionSource is IDisposable syncDisposable)
+            if (_initializationClaimed && _connectionSource is IDisposable syncDisposable)
             {
                 syncDisposable.Dispose();
             }
@@ -690,7 +707,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 
         public async ValueTask DisposeAsync()
         {
-            await _connectionSource.DisposeAsync().ConfigureAwait(false);
+            if (_initializationClaimed)
+            {
+                await _connectionSource.DisposeAsync().ConfigureAwait(false);
+            }
+
             _buffer?.Writer.TryComplete();
         }
     }
