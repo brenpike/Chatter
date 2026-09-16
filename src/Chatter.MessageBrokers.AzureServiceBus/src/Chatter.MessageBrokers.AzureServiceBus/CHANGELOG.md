@@ -13,7 +13,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Security
 
-- `ServiceBusOptions.ConnectionString` now carries `[JsonIgnore]`, matching the other secret-bearing members of the type. Serializing the bound options object — as consumers routinely do in diagnostics endpoints and startup log dumps — no longer emits the connection string or its `SharedAccessKey`. Configuration binding is unaffected: the `Microsoft.Extensions.Configuration` binder does not honour `[JsonIgnore]`, so setting `ConnectionString` from appsettings continues to work exactly as before (#375).
+- `ServiceBusOptions.ConnectionString` now carries `System.Text.Json`'s `[JsonIgnore]`, matching the other secret-bearing members of the type (`RetryOptions`, `TokenCredential`). Serializing the bound options object **with `System.Text.Json`** — as consumers routinely do in diagnostics endpoints and startup log dumps — no longer emits the connection string or its `SharedAccessKey`. The attribute gates that one serializer and is not a general secret boundary: a consumer that renders the options object through a different serializer, or through reflection-based structured-log destructuring, must still redact `ConnectionString` itself. Configuration binding is unaffected: the `Microsoft.Extensions.Configuration` binder does not honour `[JsonIgnore]`, so setting `ConnectionString` from appsettings continues to work exactly as before (#375).
 
 ## [2.4.0] - 2026-09-11
 
