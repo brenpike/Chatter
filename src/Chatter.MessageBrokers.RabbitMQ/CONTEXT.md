@@ -29,9 +29,9 @@ _Avoid_: gating the Error Queue write on the Settlement Outcome (a truthful Sett
 
 **Delivery Count Strategy**: How redeliveries are counted — Quorum (native `x-delivery-count`, recommended) or Classic (header-stamped republish counter). See ADR 0001.
 
-**RabbitMq Options**: Configuration for the connection, prefetch, queue type, and body settings, supplied via the options builder.
+**RabbitMq Options**: Configuration for the connection, prefetch, queue type, TLS, and body settings, supplied via the options builder. TLS (`UseTls` / `TlsServerName` / `WithTls(...)`) applies only to the discrete host/credential connection path — an `amqps://` connection URI already enables TLS and takes precedence — and offers no surface to weaken or disable certificate validation.
 
-**Topology Ownership**: This package provisions nothing — Exchanges, Queues, Bindings, and DLX are created externally (IaC in production, Dockerfile in development), mirroring the SQL Service Broker manual-provisioning stance.
+**Topology Ownership**: This package provisions nothing — Exchanges, Queues, Bindings, and DLX are created externally (IaC in production, Dockerfile in development), mirroring the SQL Service Broker manual-provisioning stance. A receiver's configured Dead-Letter / Error Queue is passively verified to exist at startup before it begins receiving; that verification is not provisioning — the adapter asks the broker whether the queue exists and declares nothing, so a missing queue still fails startup by name rather than being created.
 
 ## Relationships
 

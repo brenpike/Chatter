@@ -6,6 +6,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-15
+
+### Added
+
+- `UseTls` and `TlsServerName` on `RabbitMqOptions`, and `WithTls(serverName)` on `RabbitMqOptionsBuilder` — TLS for the discrete host/credential connection path. Default-off and discrete-path only: an `amqps://` connection URI already enabled TLS and continues to take precedence, and requesting TLS alongside a plaintext URI now fails at `Build()` instead of silently connecting in the clear. No certificate-validation-disabling surface is offered — the discrete path validates **strictly**, which is stricter than the client's own `amqps` URI handling (that relaxes `AcceptablePolicyErrors` to tolerate a certificate name mismatch). (#369)
+
+### Changed
+
+- A receiver configured with a dead-letter or error queue that does not exist on the broker now **fails at startup**, naming the missing queue, instead of starting and then stalling forever on the first poison message (the deadletter republish previously faulted silently, leaving the original delivery unsettled and its broker credit exhausted). Migration: declare the queue externally before the application starts, or correct the configured name. The module still provisions no topology — it passively verifies existence and never declares. (#366)
+
+### Fixed
+
+- Disposing a `RabbitMqReceiver` resolved from an unrelated consumer scope no longer tears down the process-singleton connection source and the sender's publish channel pool. Only a receiver that was actually initialized by the core now escalates its dispose to that teardown, so process shutdown is unchanged. (#367)
+
 ## [0.4.4] - 2026-09-14
 
 ### Changed
