@@ -12,6 +12,25 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.8.0] - 2026-09-15
+
+### Removed
+
+- The public `BrokeredMessageOutbox<TContext>.SaveOutboxAsync` member. Migration: callers that relied on it to persist should let the surrounding unit of work commit, or call `DbContext.SaveChangesAsync` themselves.
+
+### Changed
+
+- The enqueue (`SendToOutbox`) and the processed stamp (both `UpdateProcessedDate` overloads) are now stage-only; they no longer save.
+- The durability precondition that already governed inbox markers now governs outbox rows as well: an enqueue with no surrounding unit of work is staged, not persisted.
+- `UnitOfWork<TContext>.ExecuteAsync` — and `BrokeredMessageOutbox<TContext>`'s explicit `IUnitOfWork.ExecuteAsync` — no longer commit, roll back or dispose a transaction they did not begin. A transaction the unit of work adopts from a caller is participated in (changes are still saved into it) but left open. Migration: a consumer who opened their own transaction on the same `DbContext` around dispatch must now commit or roll it back themselves, on both the success path and the failure path. Previously the library did it for them. Boundary: that adoption path exists only under a non-retrying execution strategy. If you have configured `EnableRetryOnFailure`, EF's execution strategy throws `InvalidOperationException` before the operation runs rather than adopting your transaction — whether it is open on the `DbContext`, enlisted on it, or an ambient `TransactionScope` — identically on `net8.0` and `net10.0`. EF Core's default SQL Server strategy does not retry, so default-strategy consumers are unaffected. This release documents that boundary; it does not detect or work around it.
+
+### Fixed
+
+- #480 — the outbox was a commit-capable participant that is not the unit of work, calling `SaveChangesAsync` from inside the unit of work's execution strategy, so a retrying strategy could silently discard work the handler had already performed.
+- The library committing and disposing a caller-owned transaction mid-flight. A consumer who opened a transaction on the same `DbContext` around dispatch had it committed and disposed before their own code resumed.
+- A `NullReferenceException` replacing the real `DbUpdateConcurrencyException` when the conflicted outbox row had been concurrently deleted, because the compensating `GetDatabaseValuesAsync` read returned null and was indexed immediately. The original concurrency exception now propagates.
+- A failing compensating `GetDatabaseValuesAsync` read no longer replaces the original `DbUpdateConcurrencyException` either. The per-entry resync is best-effort diagnostics: a read that throws is logged and the concurrency exception propagates as the reported cause.
+
 ## [0.7.0] - 2026-09-14
 
 ### Changed

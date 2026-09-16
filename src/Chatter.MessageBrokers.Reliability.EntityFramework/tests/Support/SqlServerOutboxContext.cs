@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.Reliability.EntityFramework;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support
 {
@@ -51,10 +52,11 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support
             return harness;
         }
 
-        public SqlServerOutboxContext CreateContext()
+        public SqlServerOutboxContext CreateContext(params IInterceptor[] interceptors)
         {
             var options = new DbContextOptionsBuilder<SqlServerOutboxContext>()
                 .UseSqlServer(_connectionString)
+                .AddInterceptors(interceptors)
                 .Options;
 
             return new SqlServerOutboxContext(options);

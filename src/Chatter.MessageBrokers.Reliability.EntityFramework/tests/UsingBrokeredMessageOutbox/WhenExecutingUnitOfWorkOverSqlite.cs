@@ -88,8 +88,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
         // INVARIANT: when a transaction is already open on the context, BeginAsync returns the existing
         // CurrentTransaction rather than starting a second one. The operation therefore observes the
-        // pre-existing TransactionId. ExecuteAsync still commits and disposes that transaction on success,
-        // so HasActiveTransaction is false once it returns - the reuse evidence is the id seen inside the operation.
+        // pre-existing TransactionId - the reuse evidence is the id seen inside the operation.
         [Fact]
         public async Task MustReuseExistingTransactionWhenOneIsAlreadyOpen()
         {

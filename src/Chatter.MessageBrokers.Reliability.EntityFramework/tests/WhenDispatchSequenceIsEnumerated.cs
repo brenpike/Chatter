@@ -69,15 +69,18 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests
         }
 
         [Fact]
-        public async Task MustPersistExactlyOneOutboxMessagePerOutboundMessage()
+        public async Task MustStageExactlyOneOutboxMessagePerOutboundMessage()
         {
             var probe = Probe("msg-0", "msg-1", "msg-2");
 
             await _sut.SendToOutbox(probe, null);
 
-            var persisted = await _dbContext.Set<OutboxMessage>().ToListAsync();
-            persisted.Should().HaveCount(3);
-            persisted.Select(message => message.MessageId).Should().BeEquivalentTo(new[] { "msg-0", "msg-1", "msg-2" });
+            var staged = _dbContext.ChangeTracker.Entries<OutboxMessage>()
+                .Where(entry => entry.State == EntityState.Added)
+                .Select(entry => entry.Entity)
+                .ToList();
+            staged.Should().HaveCount(3);
+            staged.Select(message => message.MessageId).Should().BeEquivalentTo(new[] { "msg-0", "msg-1", "msg-2" });
         }
 
         [Fact]
@@ -88,7 +91,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests
             await _sut.SendToOutbox(probe, null);
 
             probe.EnumeratorRequestCount.Should().Be(1);
-            (await _dbContext.Set<OutboxMessage>().ToListAsync()).Should().BeEmpty();
+            _dbContext.ChangeTracker.Entries<OutboxMessage>().Should().BeEmpty();
         }
     }
 }
