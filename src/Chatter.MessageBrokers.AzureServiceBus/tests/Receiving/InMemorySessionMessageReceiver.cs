@@ -36,6 +36,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
         public CancellationToken LastReceiveToken { get; private set; }
 
         public bool IsClosedOrClosing { get; set; }
+
+        // The outcome every settle call answers, so a test can drive a child whose session was released before
+        // settlement ran and observe what the multiplexer forwards.
+        public ServiceBusSettlementOutcome SettlementOutcome { get; set; } = ServiceBusSettlementOutcome.Settled;
         public ServiceBusSessionReceiver HeldSessionReceiver => null;
         public string HeldSessionId { get; set; }
         public DateTimeOffset? HeldSessionLockedUntil { get; set; }
@@ -109,17 +113,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
             }
         }
 
-        public Task CompleteAsync(ServiceBusReceivedMessage message)
+        public Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message)
         {
             lock (_syncLock)
             {
                 CompletedMessages.Add(message);
             }
 
-            return Task.CompletedTask;
+            return Task.FromResult(SettlementOutcome);
         }
 
-        public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
+        public Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
         {
             lock (_syncLock)
             {
@@ -127,17 +131,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
                 AbandonPropertiesToModify.Add(propertiesToModify);
             }
 
-            return Task.CompletedTask;
+            return Task.FromResult(SettlementOutcome);
         }
 
-        public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
+        public Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
         {
             lock (_syncLock)
             {
                 DeadLetteredMessages.Add((message, deadLetterReason, deadLetterErrorDescription));
             }
 
-            return Task.CompletedTask;
+            return Task.FromResult(SettlementOutcome);
         }
 
         public Task CloseAsync()

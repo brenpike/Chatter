@@ -164,52 +164,61 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        public Task CompleteAsync(ServiceBusReceivedMessage message)
+        public async Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message)
         {
-            if (_receiveMode != ServiceBusReceiveMode.PeekLock)
+            if (!TrySettlingSession(out var session, out var shortCircuit))
             {
-                return Task.CompletedTask;
+                return shortCircuit;
             }
 
-            var session = HeldSessionReceiver;
-            if (session == null)
-            {
-                return Task.CompletedTask;
-            }
-
-            return session.CompleteMessageAsync(message);
+            await session.CompleteMessageAsync(message).ConfigureAwait(false);
+            return ServiceBusSettlementOutcome.Settled;
         }
 
-        public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
+        public async Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
         {
-            if (_receiveMode != ServiceBusReceiveMode.PeekLock)
+            if (!TrySettlingSession(out var session, out var shortCircuit))
             {
-                return Task.CompletedTask;
+                return shortCircuit;
             }
 
-            var session = HeldSessionReceiver;
-            if (session == null)
-            {
-                return Task.CompletedTask;
-            }
-
-            return session.AbandonMessageAsync(message, propertiesToModify);
+            await session.AbandonMessageAsync(message, propertiesToModify).ConfigureAwait(false);
+            return ServiceBusSettlementOutcome.Settled;
         }
 
-        public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
+        public async Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
+        {
+            if (!TrySettlingSession(out var session, out var shortCircuit))
+            {
+                return shortCircuit;
+            }
+
+            await session.DeadLetterMessageAsync(message, deadLetterReason, deadLetterErrorDescription).ConfigureAwait(false);
+            return ServiceBusSettlementOutcome.Settled;
+        }
+
+        // Answers the session a settlement must run on, or the outcome to report instead of running one.
+        // INVARIANT: a released session yields DeliveryUnreachable, NEVER a silent success — the broker still
+        // holds the delivery, so reporting it settled would have the delivery processed twice (and, for
+        // deadletter, leave a poison message circulating while the pipeline believes it was contained).
+        private bool TrySettlingSession(out ServiceBusSessionReceiver session, out ServiceBusSettlementOutcome shortCircuit)
         {
             if (_receiveMode != ServiceBusReceiveMode.PeekLock)
             {
-                return Task.CompletedTask;
+                session = null;
+                shortCircuit = ServiceBusSettlementOutcome.NotOwed;
+                return false;
             }
 
-            var session = HeldSessionReceiver;
+            session = HeldSessionReceiver;
             if (session == null)
             {
-                return Task.CompletedTask;
+                shortCircuit = ServiceBusSettlementOutcome.DeliveryUnreachable;
+                return false;
             }
 
-            return session.DeadLetterMessageAsync(message, deadLetterReason, deadLetterErrorDescription);
+            shortCircuit = ServiceBusSettlementOutcome.Settled;
+            return true;
         }
 
         public async Task CloseAsync()

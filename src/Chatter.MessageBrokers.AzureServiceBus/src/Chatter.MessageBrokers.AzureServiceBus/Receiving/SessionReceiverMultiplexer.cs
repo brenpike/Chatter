@@ -233,13 +233,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             freedSource.TrySetResult(true);
         }
 
-        public Task CompleteAsync(ServiceBusReceivedMessage message)
+        // The delivering child owns the session the delivery is locked against, so its answer is FORWARDED
+        // unchanged — the multiplexer never upgrades a child's unreachable delivery into a settlement.
+        public Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message)
             => DeliveringChildFor(message).CompleteAsync(message);
 
-        public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
+        public Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
             => DeliveringChildFor(message).AbandonAsync(message, propertiesToModify);
 
-        public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
+        public Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
             => DeliveringChildFor(message).DeadLetterAsync(message, deadLetterReason, deadLetterErrorDescription);
 
         /// <summary>
@@ -385,9 +387,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         }
 
         /// <remarks>
-        /// A message no child holds THROWS rather than returning a completed task. The settlement members return a
-        /// bare <see cref="Task"/>, so a completed task means SUCCESS — quietly returning one would have the receiver
-        /// record an acknowledgement that never happened and commit the local transaction for a delivery the broker
+        /// A message no child holds THROWS rather than answering an outcome, so the receiver never records an
+        /// acknowledgement that never happened and never commits the local transaction for a delivery the broker
         /// will redeliver. <see cref="InvalidOperationException"/> is deliberate: the module's retry and circuit
         /// breaker predicates match only <see cref="ServiceBusException"/>, so this is neither retried nor counted
         /// against the breaker, and the receiver's settlement recovery reports it as a failed settlement.

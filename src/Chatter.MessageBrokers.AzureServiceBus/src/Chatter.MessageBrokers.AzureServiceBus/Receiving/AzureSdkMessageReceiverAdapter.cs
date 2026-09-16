@@ -75,13 +75,26 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         public Task<ServiceBusReceivedMessage> ReceiveAsync(CancellationToken cancellationToken)
             => InnerReceiver.ReceiveMessageAsync(maxWaitTime: null, cancellationToken);
 
-        public Task CompleteAsync(ServiceBusReceivedMessage message) => InnerReceiver.CompleteMessageAsync(message);
+        // Every settle here reaches the SDK receiver directly: a non-session receiver settles against the
+        // long-lived receiver that delivered the message, so there is no released-session absence to report.
+        // A settlement the broker refuses THROWS rather than answering an outcome.
+        public async Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message)
+        {
+            await InnerReceiver.CompleteMessageAsync(message).ConfigureAwait(false);
+            return ServiceBusSettlementOutcome.Settled;
+        }
 
-        public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
-            => InnerReceiver.AbandonMessageAsync(message, propertiesToModify);
+        public async Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
+        {
+            await InnerReceiver.AbandonMessageAsync(message, propertiesToModify).ConfigureAwait(false);
+            return ServiceBusSettlementOutcome.Settled;
+        }
 
-        public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
-            => InnerReceiver.DeadLetterMessageAsync(message, deadLetterReason, deadLetterErrorDescription);
+        public async Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
+        {
+            await InnerReceiver.DeadLetterMessageAsync(message, deadLetterReason, deadLetterErrorDescription).ConfigureAwait(false);
+            return ServiceBusSettlementOutcome.Settled;
+        }
 
         public async Task CloseAsync()
         {

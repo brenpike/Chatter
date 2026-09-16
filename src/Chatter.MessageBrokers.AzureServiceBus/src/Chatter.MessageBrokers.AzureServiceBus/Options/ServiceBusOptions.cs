@@ -12,6 +12,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
     public class ServiceBusOptions
     {
         [Required(AllowEmptyStrings = false, ErrorMessage = "A service bus connection string is required.")]
+        [JsonIgnore]
         public string ConnectionString { get; set; }
         public int MaxConcurrentCalls { get; set; } = 1;
         public int PrefetchCount { get; set; } = 0;

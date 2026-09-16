@@ -185,11 +185,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
                 return Task.FromResult(_deliverable);
             }
 
-            public Task CompleteAsync(ServiceBusReceivedMessage message) => Task.CompletedTask;
+            public Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message)
+                => Task.FromResult(ServiceBusSettlementOutcome.Settled);
 
-            public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify) => Task.CompletedTask;
+            public Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
+                => Task.FromResult(ServiceBusSettlementOutcome.Settled);
 
-            public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription) => Task.CompletedTask;
+            public Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
+                => Task.FromResult(ServiceBusSettlementOutcome.Settled);
 
             public Task CloseAsync() => Task.CompletedTask;
         }

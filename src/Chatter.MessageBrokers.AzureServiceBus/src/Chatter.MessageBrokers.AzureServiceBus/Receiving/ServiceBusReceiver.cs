@@ -273,7 +273,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return SettlementResult.Failed(DescribeUnsettledDelivery("complete"));
             }
 
-            await this.InnerReceiver.CompleteAsync(msg);
+            var completion = await this.InnerReceiver.CompleteAsync(msg);
+            if (completion != ServiceBusSettlementOutcome.Settled)
+            {
+                return ReportUnsettledDelivery(completion, "complete");
+            }
+
             _logger.LogTrace($"Message '{msg.MessageId}' completed");
             return SettlementResult.Settled();
         }
@@ -290,7 +295,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return SettlementResult.Failed(DescribeUnsettledDelivery("abandon"));
             }
 
-            await this.InnerReceiver.AbandonAsync(msg, new Dictionary<string, object>(msg.ApplicationProperties));
+            var abandonment = await this.InnerReceiver.AbandonAsync(msg, new Dictionary<string, object>(msg.ApplicationProperties));
+            if (abandonment != ServiceBusSettlementOutcome.Settled)
+            {
+                return ReportUnsettledDelivery(abandonment, "abandon");
+            }
+
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully abandoned");
             return SettlementResult.Settled();
         }
@@ -307,7 +317,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return SettlementResult.Failed(DescribeUnsettledDelivery("deadletter"));
             }
 
-            await this.InnerReceiver.DeadLetterAsync(msg, deadLetterReason, CapDeadLetterErrorDescription(deadLetterErrorDescription));
+            var deadLettering = await this.InnerReceiver.DeadLetterAsync(msg, deadLetterReason, CapDeadLetterErrorDescription(deadLetterErrorDescription));
+            if (deadLettering != ServiceBusSettlementOutcome.Settled)
+            {
+                return ReportUnsettledDelivery(deadLettering, "deadletter");
+            }
+
             _logger.LogTrace($"Message '{msg.MessageId}' sucessfully deadlettered");
             return SettlementResult.Settled();
         }
@@ -350,6 +365,24 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
         }
+
+        // Maps a settle call that reported something OTHER than a settlement onto the outcome the core records.
+        // INVARIANT: never Settled — the infrastructure just said it did not settle the delivery, so answering
+        // Settled here would record an acknowledgement the broker never received.
+        private static SettlementResult ReportUnsettledDelivery(ServiceBusSettlementOutcome outcome, string settlementAction)
+            => outcome switch
+            {
+                ServiceBusSettlementOutcome.NotOwed => SettlementResult.NotRequired(NothingToSettleReason),
+                _ => SettlementResult.Failed(DescribeUnreachableDelivery(settlementAction)),
+            };
+
+        // Why a PeekLock settlement could not happen: the infrastructure can no longer reach the delivery the
+        // settlement targets — a session receiver whose held session was released before settlement ran no longer
+        // owns the lock, so the broker still holds the delivery and will redeliver it. Like the absent-delivery
+        // case this is DETERMINISTIC, so it is reported as a Failed outcome instead of being thrown for Recovery
+        // to retry.
+        private static string DescribeUnreachableDelivery(string settlementAction)
+            => $"Unable to {settlementAction} the Azure Service Bus message. The delivery could no longer be reached by the receiver that delivered it, so the PeekLock delivery was not settled.";
 
         // Why a PeekLock settlement could not happen: the delivery the settlement targets is absent from the
         // message broker context, so there is a lock to release and no message to release it with. This is
