@@ -5,6 +5,7 @@ using FluentAssertions;
 using Moq;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -52,7 +53,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
         // cold-start StartReceivingAsync (storing the registration delegate + consumer tag) so the source is in the
         // "receiving" state a stop tears down. Returns the receive channel the source committed.
         private static async Task<RabbitMqConnectionSource> NewReceivingSourceAsync(CancellableReceiveChannel receiveChannel,
-                                                                                    IConnection connection = null)
+                                                                                    IConnection connection = null,
+                                                                                    Action onConsumerRegistered = null)
         {
             var source = new RabbitMqConnectionSource(new RabbitMqOptions(hostName: "in-memory"));
             var connectionMock = connection;
@@ -67,7 +69,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
             SetCreateConnectionHook(source, _ => Task.FromResult(connectionMock));
 
             await source.StartReceivingAsync(
-                (channel, _, ct) => Task.FromResult("the-consumer-tag"), CancellationToken.None);
+                (channel, _, ct) =>
+                {
+                    onConsumerRegistered?.Invoke();
+                    return Task.FromResult("the-consumer-tag");
+                }, CancellationToken.None);
 
             return source;
         }
@@ -155,6 +161,115 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
             RegisterConsumer(source).Should().BeNull("the registration is still cleared after the swallowed cancel fault");
         }
 
+        // The channel-level 404 a BasicCancelAsync raises for an unknown consumer tag. BasicCancelAsync is called with
+        // noWait: false, so it WAITS for cancel-ok and this fault is genuinely reachable — it is the exemplar of a
+        // fault no type-enumerating catch filter had named.
+        private static OperationInterruptedException UnknownConsumerTag()
+            => new OperationInterruptedException(new ShutdownEventArgs(ShutdownInitiator.Peer,
+                                                                       replyCode: 404,
+                                                                       replyText: "NOT_FOUND - no consumer 'the-consumer-tag'",
+                                                                       cause: null,
+                                                                       cancellationToken: CancellationToken.None));
+
+        // TERMINAL STATE IS COMMITTED BEFORE THE I/O: a BasicCancelAsync fault of a type no filter names must still
+        // leave the source fully stopped. The stop is TOTAL — the exception type is never consulted on the commit
+        // path, so no type can be missing from a list.
+        [Fact]
+        public async Task MustCommitTerminalStateWhenBasicCancelThrowsAnUnexpectedFault()
+        {
+            var receiveChannel = new CancellableReceiveChannel(cancelFault: UnknownConsumerTag());
+            var source = await NewReceivingSourceAsync(receiveChannel);
+
+            Func<Task> stop = async () => await source.StopReceivingAsync(CancellationToken.None);
+
+            await stop.Should().NotThrowAsync("a stop that ran must not propagate a fault from the channel it abandoned");
+            receiveChannel.Disposed.Should().BeTrue("the abandoned channel is still disposed after an unexpected cancel fault");
+            ReceiveChannel(source).Should().BeNull("the receive channel is nulled before the cancel I/O, so a fault cannot restore it");
+            RegisterConsumer(source).Should().BeNull("the registration is cleared before the cancel I/O (terminal)");
+            ConsumerTag(source).Should().BeNull("the consumer tag is cleared before the cancel I/O (terminal)");
+        }
+
+        // The wait for cancel-ok can simply time out. Same commit guarantee, a different fault type — which is the
+        // point: the commit does not depend on which type arrives.
+        [Fact]
+        public async Task MustCommitTerminalStateWhenBasicCancelTimesOut()
+        {
+            var receiveChannel = new CancellableReceiveChannel(cancelFault: new TimeoutException("waiting for cancel-ok"));
+            var source = await NewReceivingSourceAsync(receiveChannel);
+
+            Func<Task> stop = async () => await source.StopReceivingAsync(CancellationToken.None);
+
+            await stop.Should().NotThrowAsync("a cancel-ok timeout must not propagate out of the stop");
+            receiveChannel.Disposed.Should().BeTrue("the abandoned channel is still disposed after a cancel timeout");
+            ReceiveChannel(source).Should().BeNull("the receive channel is nulled before the cancel I/O");
+            RegisterConsumer(source).Should().BeNull("the registration is cleared before the cancel I/O (terminal)");
+            ConsumerTag(source).Should().BeNull("the consumer tag is cleared before the cancel I/O (terminal)");
+        }
+
+        // WHY THE COMMIT CANNOT LIVE IN A finally: the finally body itself awaits DisposeAsync(), which can throw and
+        // would then supersede the very commit it was meant to guarantee. Committing BEFORE the I/O is unconditional,
+        // so even a faulting dispose leaves the source fully stopped.
+        [Fact]
+        public async Task MustCommitTerminalStateWhenReceiveChannelDisposeThrows()
+        {
+            var receiveChannel = new CancellableReceiveChannel(disposeFault: new InvalidOperationException("dispose faulted"));
+            var source = await NewReceivingSourceAsync(receiveChannel);
+
+            Func<Task> stop = async () => await source.StopReceivingAsync(CancellationToken.None);
+
+            await stop.Should().NotThrowAsync("a faulting channel dispose must not propagate out of the stop");
+            receiveChannel.Disposed.Should().BeTrue("the dispose was still attempted on the abandoned channel");
+            ReceiveChannel(source).Should().BeNull("the receive channel is nulled before the dispose, so a dispose fault cannot restore it");
+            RegisterConsumer(source).Should().BeNull("the registration is cleared before the dispose (terminal)");
+            ConsumerTag(source).Should().BeNull("the consumer tag is cleared before the dispose (terminal)");
+        }
+
+        private static readonly MethodInfo RecoveryHandler = typeof(RabbitMqConnectionSource)
+            .GetMethod("OnRecoverySucceededAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        // THE ELIMINATED CLASS: "a receive-side stop that runs but does not commit terminal state". The consequence of
+        // a non-committing stop is not the fault itself — it is that a LATER automatic-recovery callback finds the
+        // registration delegate still installed and puts a consumer BACK on a fresh channel, contradicting the
+        // one-way terminal semantics. Drives the PRODUCTION OnRecoverySucceededAsync through the same
+        // InternalsVisibleTo reflection seam WhenRecreatingReceiveChannelOnRecovery uses.
+        [Fact]
+        public async Task MustNotReRegisterConsumerOnRecoveryAfterACancelFault()
+        {
+            var receiveChannel = new CancellableReceiveChannel(cancelFault: UnknownConsumerTag());
+            var createdChannels = 0;
+            var connectionMock = new Mock<IConnection>();
+            connectionMock.SetupGet(c => c.IsOpen).Returns(true);
+            connectionMock.Setup(c => c.CreateChannelAsync(It.IsAny<CreateChannelOptions>(), It.IsAny<CancellationToken>()))
+                .Returns<CreateChannelOptions, CancellationToken>((_, _) =>
+                {
+                    createdChannels++;
+                    return Task.FromResult<IChannel>(receiveChannel);
+                });
+            var registrations = 0;
+            var source = await NewReceivingSourceAsync(receiveChannel,
+                                                       connectionMock.Object,
+                                                       onConsumerRegistered: () => registrations++);
+            var handler = (AsyncEventHandler<AsyncEventArgs>)Delegate.CreateDelegate(
+                typeof(AsyncEventHandler<AsyncEventArgs>), source, RecoveryHandler);
+
+            // The stop's own totality is pinned by MustCommitTerminalStateWhenBasicCancelThrowsAnUnexpectedFault; this
+            // test tolerates a propagating stop so the assertion that goes red is the RE-REGISTRATION one below.
+            try
+            {
+                await source.StopReceivingAsync(CancellationToken.None);
+            }
+            catch (OperationInterruptedException)
+            {
+            }
+
+            await handler(connectionMock.Object, new AsyncEventArgs(CancellationToken.None));
+
+            createdChannels.Should().Be(1,
+                "a recovery after a terminal stop must not create a replacement receive channel (only the cold start did)");
+            registrations.Should().Be(1,
+                "the stop cleared the registration delegate, so recovery has nothing to re-register (only the cold start registered)");
+        }
+
         // Idempotent double-stop: the second stop finds a null channel + null registration and no-ops (no second
         // cancel, no throw).
         [Fact]
@@ -186,15 +301,18 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
         }
 
         // A receive IChannel that records the cancelled consumer tag and its disposal, and can optionally fault its
-        // BasicCancelAsync to drive the AlreadyClosed/ObjectDisposed swallow arm. Reports IsOpen so the source's
+        // BasicCancelAsync (any exception type, so the stop's TOTAL guard can be driven by a fault that no
+        // type-enumerating filter would have named) and/or its DisposeAsync. Reports IsOpen so the source's
         // EnsureReceiveChannelAsync commits it. Every untested member throws so an untested path surfaces.
         private sealed class CancellableReceiveChannel : IChannel
         {
             private readonly Exception _cancelFault;
+            private readonly Exception _disposeFault;
 
-            public CancellableReceiveChannel(Exception cancelFault = null)
+            public CancellableReceiveChannel(Exception cancelFault = null, Exception disposeFault = null)
             {
                 _cancelFault = cancelFault;
+                _disposeFault = disposeFault;
             }
 
             public List<string> CancelledConsumerTags { get; } = new List<string>();
@@ -213,10 +331,22 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqConnectio
                 return Task.CompletedTask;
             }
 
-            public void Dispose() => Disposed = true;
+            public void Dispose()
+            {
+                Disposed = true;
+                if (_disposeFault is not null)
+                {
+                    throw _disposeFault;
+                }
+            }
+
             public ValueTask DisposeAsync()
             {
                 Disposed = true;
+                if (_disposeFault is not null)
+                {
+                    throw _disposeFault;
+                }
                 return default;
             }
 

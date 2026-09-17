@@ -536,9 +536,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
         }
 
         // The core reads IMessagingInfrastructure.ReceiveInfrastructure — a property that calls the factory's
-        // Create() on EVERY access — so "constructed once at a single site" only holds if every Create returns the
-        // SAME instance. A refactor to ActivatorUtilities-per-call would re-mint the very category deleted above:
-        // instances nobody initialized, each of them disposable, each reachable by whoever touched the property.
+        // Create() on EVERY access — so "one receiver per `AddRabbitMq` registration" only holds if every Create on
+        // that registration's infrastructure returns the SAME instance. A refactor to ActivatorUtilities-per-call
+        // would re-mint the very category deleted above: instances nobody initialized, each of them disposable,
+        // each reachable by whoever touched the property.
         [Fact]
         public void MustHandTheCoreTheSameReceiverInstanceOnEveryCreate()
         {
@@ -548,7 +549,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             var first = infrastructure.ReceiveInfrastructure;
             var second = infrastructure.ReceiveInfrastructure;
 
-            first.Should().BeSameAs(second, "exactly one receiver may exist in the process");
+            first.Should().BeSameAs(second, "every Create() call on one registration's infrastructure hands back the same receiver instance");
         }
 
         // Constructing the receiver at the singleton infrastructure's own composition site only works because EVERY

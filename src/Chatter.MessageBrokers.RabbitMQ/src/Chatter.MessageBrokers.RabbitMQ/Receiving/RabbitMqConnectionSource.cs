@@ -5,7 +5,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
-using RabbitMQ.Client.Exceptions;
 
 namespace Chatter.MessageBrokers.RabbitMQ.Receiving
 {
@@ -229,12 +228,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // mutually exclusive with channel (re)creation AND the recovery recreate BY CONSTRUCTION — a concurrent settle
         // or recovery either ran to completion before stop acquired the gate, or observes the stopped condition
         // (disposed channel + cleared _registerConsumer) after. Under the gate, as one atomic event:
-        //   1. BasicCancelAsync the stored consumer tag on the current receive channel (so no new delivery races the
-        //      teardown), guarded against AlreadyClosedException/ObjectDisposedException (mirrors the recovery swallow).
-        //   2. Dispose the receive channel and null it.
-        //   3. CLEAR _registerConsumer and _consumerTag — so a late OnRecoverySucceededAsync that wins the gate after
+        //   1. RELINQUISH: take local copies of the receive channel and consumer tag, then null _receiveChannel and
+        //      CLEAR _registerConsumer and _consumerTag — so a late OnRecoverySucceededAsync that wins the gate after
         //      this stop recreates a channel but re-registers NOTHING (RecreateReceiveChannelAsync's null guard), the
         //      TERMINAL one-way semantics the core receiver also enforces (no restart-after-stop).
+        //   2. BasicCancelAsync the stored consumer tag on the now-abandoned channel (so no new delivery races the
+        //      teardown), then dispose that channel.
+        // Step 1 runs BEFORE step 2 and nothing in it can throw, so the terminal commit is UNCONDITIONAL: a stop that
+        // runs can never leave the source still able to re-register a consumer, whatever the I/O in step 2 does.
         // DELIBERATELY DOES NOT TOUCH: _connection, the publish pool / _publishChannels, or the gates (GATE LIFETIME —
         // SemaphoreSlims are left for GC per the DisposeAsync invariant). It does NOT advance _lifecycle — the source
         // stays Live so the sender's publish path keeps working; only DisposeAsync advances the lifecycle.
@@ -248,29 +249,53 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             {
                 await RunReceiveGatedAsync(async ct =>
                 {
-                    if (_receiveChannel is not null)
-                    {
-                        if (!string.IsNullOrEmpty(_consumerTag))
-                        {
-                            try
-                            {
-                                await _receiveChannel.BasicCancelAsync(_consumerTag, noWait: false, cancellationToken: ct).ConfigureAwait(false);
-                            }
-                            catch (Exception cancelError) when (cancelError is AlreadyClosedException or ObjectDisposedException)
-                            {
-                                // The channel/connection is already gone (e.g. a drop raced the stop): the consumer is
-                                // implicitly cancelled, so cancelling it explicitly is a no-op, not an error.
-                            }
-                        }
-
-                        await _receiveChannel.DisposeAsync().ConfigureAwait(false);
-                        _receiveChannel = null;
-                    }
-
-                    // TERMINAL: clear the registration so a late recovery recreate re-registers nothing, and forget the
-                    // tag so a double-stop is a no-op. The connection and publish pool are deliberately untouched.
+                    // RELINQUISH BEFORE I/O: the terminal state is committed BEFORE the first call that can throw, so
+                    // no fault can leave the source still able to re-register a consumer. Nothing between the local
+                    // copies and the last clear can throw, so the commit is unconditional. A plain
+                    // `try { cancel } finally { dispose; clear }` would be STRICTLY WEAKER: the finally body itself
+                    // awaits DisposeAsync(), which can throw and would then SUPERSEDE the very commit it was meant to
+                    // guarantee. Safe because this whole body runs under _receiveChannelGate and no reader of these
+                    // fields exists outside the gate, so the intermediate state is unobservable. The connection and
+                    // publish pool are deliberately untouched.
+                    var channel = _receiveChannel;
+                    var consumerTag = _consumerTag;
+                    _receiveChannel = null;
                     _registerConsumer = null;
                     _consumerTag = null;
+
+                    if (channel is null)
+                    {
+                        return;
+                    }
+
+                    // TOTAL, NOT AN ENUMERATION: the exception type is NEVER consulted here, so no type can be missing
+                    // from a list. AlreadyClosedException/ObjectDisposedException — the channel/connection already gone
+                    // (e.g. a drop raced the stop), so the consumer is implicitly cancelled and cancelling it is a
+                    // no-op — are the EXEMPLARS the former catch filter named, never the definition: BasicCancelAsync
+                    // waits for cancel-ok (noWait: false), so TimeoutException, OperationInterruptedException (a 404
+                    // for an unknown consumer tag) and IOException are all reachable too, as is a fault from
+                    // DisposeAsync. Swallowing is correct BECAUSE the state above is already committed and this channel
+                    // is abandoned: disposing it cancels the consumer server-side whether or not the explicit cancel
+                    // completed, and a throw from the synchronous Dispose() path would abort the rest of host shutdown.
+                    // OperationCanceledException is swallowed with the rest — carving out a single type would make this
+                    // an enumeration again.
+                    try
+                    {
+                        try
+                        {
+                            if (!string.IsNullOrEmpty(consumerTag))
+                            {
+                                await channel.BasicCancelAsync(consumerTag, noWait: false, cancellationToken: ct).ConfigureAwait(false);
+                            }
+                        }
+                        finally
+                        {
+                            await channel.DisposeAsync().ConfigureAwait(false);
+                        }
+                    }
+                    catch
+                    {
+                    }
                 }, cancellationToken).ConfigureAwait(false);
             }
             catch (ObjectDisposedException)

@@ -1,4 +1,5 @@
 using Chatter.MessageBrokers;
+using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Chatter.MessageBrokers.RabbitMQ.Receiving;
 using Chatter.MessageBrokers.Receiving;
@@ -8,6 +9,7 @@ using Moq;
 using RabbitMQ.Client;
 using System;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -238,10 +240,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         }
 
         // Dispose runs the receive-side stop UNCONDITIONALLY — there is no per-instance initialization flag deciding
-        // whether it runs. Exactly one receiver exists per process (constructed at the single site in Extensions.cs;
-        // it is neither container-resolvable nor publicly constructible), so "is this the real receiver?" is no longer
-        // a question dispose has to answer. Stop-authority is the SOURCE's own registration state, which is what
-        // StopReceivingAsync clears. Asserted through ReceivingStopped, which ONLY StopReceivingAsync writes, so this
+        // whether it runs. One receiver exists per AddRabbitMq registration (constructed at the single site in
+        // Extensions.cs; it is neither container-resolvable nor publicly constructible), so "is this the real
+        // receiver?" is no longer a question dispose has to answer. Stop-authority is the SOURCE's own registration
+        // state, which is what StopReceivingAsync clears. Asserted through ReceivingStopped, which ONLY StopReceivingAsync writes, so this
         // fact goes red when dispose skips the stop.
         [Fact]
         public async Task MustStopReceivingWhenDisposedWithoutEverInitializing()
@@ -272,6 +274,59 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             connectionSource.ReceiveChannel.Should().BeNull(
                 "a recovery after a terminal stop (no registration delegate stored) must commit NO receive channel, "
                 + "so no consumerless channel is left behind");
+        }
+
+        // A dispose whose stop THROWS must still complete the buffer. IRabbitMqConnectionSource is a PUBLIC seam, so
+        // a consumer-supplied source may fault StopReceivingAsync for any reason; if the buffer completion were
+        // skipped when it does, the parked ReceiveMessageAsync pull would never return and HOST SHUTDOWN WOULD HANG
+        // — on the very path the core's hosted service await-usings. The fault must still propagate.
+        [Fact]
+        public async Task MustCompleteBufferWhenAsyncDisposeStopThrows()
+        {
+            var harness = ReceiverHarness.Create();
+            var stopFault = new InvalidOperationException("the connection source's stop faulted");
+            harness.ConnectionSource.StopFault = stopFault;
+            var parkedReceive = harness.ReceiveAsync();
+
+            Func<Task> dispose = async () => await harness.Receiver.DisposeAsync();
+
+            (await dispose.Should().ThrowAsync<InvalidOperationException>(
+                "a foreign connection source's stop failure must still surface to the caller"))
+                .Which.Should().BeSameAs(stopFault);
+            await AssertParkedReceiveUnblocksAsync(parkedReceive);
+        }
+
+        // The synchronous container-dispose path carries the same guarantee: it blocks on the stop via
+        // GetAwaiter().GetResult(), which rethrows the fault UNWRAPPED (not as an AggregateException), and the
+        // buffer must still be completed so no parked pull survives the throw.
+        [Fact]
+        public async Task MustCompleteBufferWhenSynchronousDisposeStopThrows()
+        {
+            var harness = ReceiverHarness.Create();
+            var stopFault = new InvalidOperationException("the connection source's stop faulted");
+            harness.ConnectionSource.StopFault = stopFault;
+            var parkedReceive = harness.ReceiveAsync();
+
+            Action dispose = () => harness.Receiver.Dispose();
+
+            dispose.Should().Throw<InvalidOperationException>(
+                "the blocking dispose path must surface a foreign connection source's stop failure too")
+                .Which.Should().BeSameAs(stopFault);
+            await AssertParkedReceiveUnblocksAsync(parkedReceive);
+        }
+
+        // Awaits the parked pull under a BOUNDED timeout: an unbounded await would turn a stranded reader into a
+        // HANGING test run instead of a failing assertion.
+        private static async Task AssertParkedReceiveUnblocksAsync(Task<MessageBrokerContext> parkedReceive)
+        {
+            var completed = await Task.WhenAny(parkedReceive, Task.Delay(TimeSpan.FromSeconds(5)));
+
+            completed.Should().BeSameAs(parkedReceive,
+                "completing the buffer writer must unblock the parked pull, so a teardown cannot hang host shutdown");
+
+            Func<Task> awaitParked = () => parkedReceive;
+            await awaitParked.Should().ThrowAsync<ChannelClosedException>(
+                "a completed buffer writer faults the parked read instead of leaving it waiting forever");
         }
 
         private static RabbitMqReceiver CreateReceiver(IRabbitMqConnectionSource connectionSource)

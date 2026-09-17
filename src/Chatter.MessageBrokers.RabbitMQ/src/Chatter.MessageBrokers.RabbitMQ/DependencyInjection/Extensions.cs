@@ -61,17 +61,22 @@ namespace Microsoft.Extensions.DependencyInjection
                 // SCOPE DIVERGENCE from the SqlServiceBroker / Azure Service Bus folds: those folds
                 // open-resolve-and-DISPOSE a transient scope per Create() call, because their receivers ARE
                 // container-published services. RabbitMQ's receiver is deliberately NOT published — there is no
-                // RabbitMqReceiver descriptor — and is constructed here, once, at this single site. Two
-                // consequences, both load-bearing:
+                // RabbitMqReceiver descriptor — and is constructed here, once per `AddRabbitMq` registration, at
+                // this single site. (A duplicate `AddRabbitMq` call registers a second `IMessagingInfrastructure`
+                // descriptor and constructs a second receiver, but that second instance is inert:
+                // ActivatorUtilities.CreateInstance does not enlist it for container disposal, and neither
+                // MessagingInfrastructure nor MessagingInfrastructureFactory is disposable, so nothing holds a
+                // dispose path to it.) Two consequences, both load-bearing:
                 //   1. No other scope can obtain a receiver instance, so there is no such thing as a receiver that
                 //      was never initialized yet can still reach the shared singleton source's teardown. That
                 //      category is what made the receiver's own dispose path need per-instance guarding.
                 //   2. The instance outlives this delegate, which it must: the core drives the returned receiver
                 //      through InitializeAsync, then StopReceivingAsync, then Dispose, all AFTER the delegate
                 //      returns. A per-call resolve-and-dispose scope would hand the core a disposed receiver.
-                // RejectMultipleReceivers guarantees at most one RabbitMQ receiver, so one instance is enough, and
-                // every constructor dependency (IRabbitMqConnectionSource, RabbitMqOptions, IBodyConverterFactory,
-                // ILogger<>) is a SINGLETON, so root resolution is legal under scope validation. The sender
+                // RejectMultipleReceivers guarantees at most one RabbitMQ receiver PER REGISTRATION, so one instance
+                // is enough for that registration, and every constructor dependency (IRabbitMqConnectionSource,
+                // RabbitMqOptions, IBodyConverterFactory, ILogger<>) is a SINGLETON, so root resolution is legal
+                // under scope validation. The sender
                 // (IMessagingInfrastructureDispatcher, NOT disposable, no Dispose) stays container-published and
                 // keeps the dispose-per-call scope shape. The singleton IRabbitMqConnectionSource's own teardown is
                 // not this delegate's concern: the container created it, so the root provider disposes it.

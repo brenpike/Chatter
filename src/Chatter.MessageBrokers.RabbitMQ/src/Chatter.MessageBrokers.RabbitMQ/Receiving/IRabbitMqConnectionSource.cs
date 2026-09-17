@@ -76,6 +76,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         /// interleave with <see cref="IAsyncDisposable.DisposeAsync"/> (whichever runs first wins; the other no-ops).
         /// Prefetched-but-unacked deliveries are left for broker redelivery — consistent with the epoch guard, which
         /// already no-ops a settle after the channel is torn down.
+        /// TERMINAL BY COMMIT-BEFORE-I/O: <see cref="RabbitMqConnectionSource"/> commits the stopped state — nulling the
+        /// receive channel and clearing the stored registration delegate and consumer tag — BEFORE the consumer-cancel
+        /// and channel-dispose I/O, and does not propagate a fault from that abandoned-channel I/O. So a stop that runs
+        /// against it can never leave it able to re-register a consumer on a later recovery.
         /// </remarks>
         /// <param name="cancellationToken">A token to cancel acquisition of the gate.</param>
         Task StopReceivingAsync(CancellationToken cancellationToken);

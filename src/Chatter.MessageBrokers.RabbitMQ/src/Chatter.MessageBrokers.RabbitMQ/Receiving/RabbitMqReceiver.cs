@@ -91,12 +91,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
 
-            // INVARIANT (stop-authority lives on the SOURCE, not on a per-instance flag): exactly ONE receiver exists
-            // per process — it is constructed at the single site in Extensions.cs, is neither container-resolvable nor
-            // publicly constructible, and the IMessagingInfrastructure factory hands that same instance back on every
-            // Create(). So "did the core drive THIS instance through startup?" is not a question any path here has to
-            // answer. What decides whether a stop has work to do is the source's own registration state
-            // (_registerConsumer / _consumerTag / _receiveChannel), which StopReceivingAsync reads and clears.
+            // INVARIANT (stop-authority lives on the SOURCE, not on a per-instance flag): ONE receiver exists per
+            // AddRabbitMq registration — it is constructed at the single site in Extensions.cs, is neither
+            // container-resolvable nor publicly constructible, and the IMessagingInfrastructure factory hands that
+            // same instance back on every Create(). So "did the core drive THIS instance through startup?" is not a
+            // question any path here has to answer. What decides whether a stop has work to do is the source's own
+            // registration state (_registerConsumer / _consumerTag / _receiveChannel), which StopReceivingAsync reads
+            // and clears.
             // This DISSOLVES ADR-0019 section 5's positional constraint rather than satisfying it. That section argued
             // an initialization latch had to sit ABOVE every startup gate below, because StartReceivingAsync stores the
             // registration delegate BEFORE it ensures the receive channel — so a startup that faults mid-registration
@@ -668,23 +669,45 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             => transactionContext?.TransactionMode == TransactionMode.None;
 
         // INVARIANT (TERMINAL receive teardown, mirrors core BrokeredMessageReceiver.StopReceiver — one-way, not
-        // restartable): cancel the AMQP consumer on the SHARED source FIRST so no new delivery can race the buffer
-        // completion (the source's StopReceivingAsync cancels the consumer and tears down the receive channel under
-        // its gate), THEN complete the buffer writer so the blocking ReceiveMessageAsync pull drains and unblocks.
+        // restartable): stop receiving and complete the buffer through StopReceivingAndCompleteBufferAsync, which
+        // owns the stop-then-complete ORDERING and its #494 known gap.
         // SURGICAL: StopReceivingAsync leaves the connection + publish pool intact (the singleton source is shared
         // with the sender, which keeps publishing). Prefetched-but-unacked deliveries are NOT acked here — they are
         // left for broker redelivery, consistent with the epoch guard that already no-ops a settle after the channel
         // is torn down. A delivery that buffered after the cancel but before completion is drained by the reader.
+        public Task StopReceiver()
+            => StopReceivingAndCompleteBufferAsync();
+
+        // Cancel the AMQP consumer on the SHARED source FIRST so no new delivery can race the buffer completion (the
+        // source's StopReceivingAsync cancels the consumer and tears down the receive channel under its gate), THEN
+        // complete the buffer writer so the blocking ReceiveMessageAsync pull drains and unblocks.
+        // INVARIANT (the parked reader is NEVER stranded): the completion runs in a finally, so a stop that THROWS
+        // still unblocks the pull. IRabbitMqConnectionSource is a PUBLIC seam and a consumer-supplied source may
+        // fault its stop for any reason; without the finally that fault skipped the completion, left
+        // ReceiveMessageAsync parked on the empty buffer forever, and HUNG HOST SHUTDOWN. There is deliberately NO
+        // catch: a foreign source's contract violation must still surface to the caller — it simply can no longer
+        // strand the reader.
+        // WHY ONE HELPER RATHER THAN THREE COPIES: StopReceiver, Dispose and DisposeAsync previously each held these
+        // same two bare statements, and that sameness was cosmetic — three copies of two statements carried no rule
+        // to get wrong. The finally changes the calculus: the duplication now carries a CORRECTNESS INVARIANT, and
+        // "every teardown path remembers its finally" maintained by convention is exactly the complete-the-known-set
+        // shape this adapter has been removing. One helper makes it structural instead of conventional.
         // KNOWN GAP (issue #494): a BufferDeliveryAsync write ALREADY PARKED on a full bounded buffer is not
         // quiesced by this sequence. Cancelling the consumer stops NEW pushes but does not un-park that write, and
         // TryComplete() then faults it with ChannelClosedException. Under autoAck:true — TransactionMode.None only —
         // the broker removed that delivery as it pushed it, so there is no redelivery and the message is LOST. Every
         // other mode keeps manual ack, so the unacked delivery is redelivered. The ordering above is deliberate and
         // #494 tracks the quiesce; do not reorder the stop and the completion to chase it.
-        public async Task StopReceiver()
+        private async Task StopReceivingAndCompleteBufferAsync()
         {
-            await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
-            _buffer?.Writer.TryComplete();
+            try
+            {
+                await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                _buffer?.Writer.TryComplete();
+            }
         }
 
         // CreateLocalTransaction returns null to match the core default; full-atomicity transaction handling is
@@ -702,8 +725,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // underneath hosted services that stop later and are still publishing, faulting their sends with
         // ObjectDisposedException. The sibling ASB adapter disposes only its OWN inner receiver, never the shared
         // ServiceBusClient; this matches it.
-        // Dispose, DisposeAsync and StopReceiver therefore run the SAME two steps unconditionally — stop, then complete
-        // the buffer. StopReceivingAsync is gate-serialized and idempotent, so stop-then-dispose and double-dispose are
+        // Dispose, DisposeAsync and StopReceiver therefore run the SAME helper unconditionally —
+        // StopReceivingAndCompleteBufferAsync, which stops then completes the buffer in a finally.
+        // StopReceivingAsync is gate-serialized and idempotent, so stop-then-dispose and double-dispose are
         // clean no-ops, and a stop issued when nothing was ever registered finds no delegate and no consumer tag to
         // cancel. Terminal either way: a disposed receiver does not restart.
         public void Dispose()
@@ -712,14 +736,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // ConfigureAwait(false) throughout, so there is no captured context to deadlock against, and the core
             // sets the same precedent in its own Dispose(bool). In production the receiver is always disposed through
             // DisposeAsync (the core's path), so this path exists only for a synchronous container teardown.
-            _connectionSource.StopReceivingAsync(CancellationToken.None).GetAwaiter().GetResult();
-            _buffer?.Writer.TryComplete();
+            StopReceivingAndCompleteBufferAsync().GetAwaiter().GetResult();
         }
 
         public async ValueTask DisposeAsync()
-        {
-            await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
-            _buffer?.Writer.TryComplete();
-        }
+            => await StopReceivingAndCompleteBufferAsync().ConfigureAwait(false);
     }
 }
