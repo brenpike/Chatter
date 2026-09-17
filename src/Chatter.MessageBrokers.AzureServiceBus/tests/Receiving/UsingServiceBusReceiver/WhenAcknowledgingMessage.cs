@@ -116,11 +116,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
                 return Task.FromResult(ServiceBusMessageFactory.ReceivedMessage());
             }
 
-            public Task CompleteAsync(ServiceBusReceivedMessage message) => throw _settlementFault;
+            public Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message) => throw _settlementFault;
 
-            public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify) => throw _settlementFault;
+            public Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify) => throw _settlementFault;
 
-            public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription) => throw _settlementFault;
+            public Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription) => throw _settlementFault;
 
             public Task CloseAsync() => Task.CompletedTask;
         }
@@ -185,6 +185,68 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             inMemory.CompletedMessages.Should().BeEmpty();
             inMemory.AbandonedMessages.Should().BeEmpty();
             inMemory.DeadLetteredMessages.Should().BeEmpty();
+        }
+
+        // A PeekLock session whose session was released before settlement ran leaves the broker still holding the
+        // delivery. Reporting Settled would have the core record an acknowledgement that never happened and let the
+        // broker redeliver a message the pipeline believes is done with — and, for deadletter, leave a poison
+        // message circulating while the system reports it contained.
+        [Theory]
+        [InlineData(AckOperation)]
+        [InlineData(NackOperation)]
+        [InlineData(DeadletterOperation)]
+        public async Task MustReportFailedWhenTheInfrastructureCouldNotReachTheDelivery(string operation)
+        {
+            var inMemory = new InMemoryServiceBusMessageReceiver
+            {
+                SettlementOutcome = ServiceBusSettlementOutcome.DeliveryUnreachable,
+            };
+            var (sut, context, transactionContext) = await ReceivedPeekLockMessageAsync(inMemory);
+
+            var result = await CreateSettlementCall(sut, operation, context, transactionContext)();
+
+            result.Outcome.Should().Be(SettlementOutcome.Failed);
+            result.IsSettled.Should().BeFalse();
+        }
+
+        [Theory]
+        [InlineData(AckOperation)]
+        [InlineData(NackOperation)]
+        [InlineData(DeadletterOperation)]
+        public async Task MustReportFailedNamingTheUnreachableDeliveryWhenTheInfrastructureCouldNotReachIt(string operation)
+        {
+            var inMemory = new InMemoryServiceBusMessageReceiver
+            {
+                SettlementOutcome = ServiceBusSettlementOutcome.DeliveryUnreachable,
+            };
+            var (sut, context, transactionContext) = await ReceivedPeekLockMessageAsync(inMemory);
+
+            var result = await CreateSettlementCall(sut, operation, context, transactionContext)();
+
+            // The reason must separate this from the no-message-in-context absence: the delivery IS in the
+            // context here, it is the receiver that can no longer reach it.
+            result.Reason.Should().Contain(operation == DeadletterOperation ? "deadletter" : operation == NackOperation ? "abandon" : "complete");
+            result.Reason.Should().Contain("could no longer be reached");
+        }
+
+        // ReceiveAndDelete reaching the infrastructure is not the same absence: Azure Service Bus removed the
+        // delivery on receipt, so nothing was owed. The receiver must not report that as a failure.
+        [Theory]
+        [InlineData(AckOperation)]
+        [InlineData(NackOperation)]
+        [InlineData(DeadletterOperation)]
+        public async Task MustReportNotRequiredWhenTheInfrastructureOwedNoSettlement(string operation)
+        {
+            var inMemory = new InMemoryServiceBusMessageReceiver
+            {
+                SettlementOutcome = ServiceBusSettlementOutcome.NotOwed,
+            };
+            var (sut, context, transactionContext) = await ReceivedPeekLockMessageAsync(inMemory);
+
+            var result = await CreateSettlementCall(sut, operation, context, transactionContext)();
+
+            result.Outcome.Should().Be(SettlementOutcome.NotRequired);
+            result.Reason.Should().NotBeNullOrWhiteSpace();
         }
 
         // The boundary between a RETURNED Failed and a THROWN fault: Recovery wraps the settlement call, so a

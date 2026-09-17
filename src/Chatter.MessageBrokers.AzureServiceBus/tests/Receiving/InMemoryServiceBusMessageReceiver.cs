@@ -31,6 +31,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
 
         public bool IsClosedOrClosing { get; set; }
 
+        // The outcome every settle call answers, so a test can drive the receiver's mapping of a settlement
+        // that never reached the broker as well as the settled path.
+        public ServiceBusSettlementOutcome SettlementOutcome { get; set; } = ServiceBusSettlementOutcome.Settled;
+
         public void EnqueueMessage(ServiceBusReceivedMessage message) => _receiveResults.Enqueue(() => message);
 
         public void EnqueueNull() => _receiveResults.Enqueue(() => null);
@@ -51,23 +55,23 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
             return Task.FromResult(next());
         }
 
-        public Task CompleteAsync(ServiceBusReceivedMessage message)
+        public Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message)
         {
             CompletedMessages.Add(message);
-            return Task.CompletedTask;
+            return Task.FromResult(SettlementOutcome);
         }
 
-        public Task AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
+        public Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify)
         {
             AbandonedMessages.Add(message);
             AbandonPropertiesToModify.Add(propertiesToModify);
-            return Task.CompletedTask;
+            return Task.FromResult(SettlementOutcome);
         }
 
-        public Task DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
+        public Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription)
         {
             DeadLetteredMessages.Add((message, deadLetterReason, deadLetterErrorDescription));
-            return Task.CompletedTask;
+            return Task.FromResult(SettlementOutcome);
         }
 
         public Task CloseAsync()

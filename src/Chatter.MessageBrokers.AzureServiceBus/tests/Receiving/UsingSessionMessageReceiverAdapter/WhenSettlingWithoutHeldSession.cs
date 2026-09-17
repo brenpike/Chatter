@@ -113,51 +113,55 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionMes
         }
 
         [Fact]
-        public async Task MustNoOpCompleteWhenNoSessionHeld()
+        public async Task MustReportCompleteUnreachableWhenNoSessionHeld()
         {
             var sut = CreateSut();
 
-            // No held session: CompleteAsync short-circuits to a completed task rather than touching a session
-            // receiver (which would require a live connection).
-            Func<Task> act = () => sut.CompleteAsync(AnyMessage());
+            // No held session under PeekLock: the delivery's lock is still held by the broker and this adapter
+            // can no longer reach it. Reporting Settled here would have the receiver record an acknowledgement
+            // that never happened, so the absence is reported as DeliveryUnreachable.
+            var outcome = await sut.CompleteAsync(AnyMessage());
 
-            await act.Should().NotThrowAsync();
+            outcome.Should().Be(ServiceBusSettlementOutcome.DeliveryUnreachable);
         }
 
         [Fact]
-        public async Task MustNoOpAbandonWhenNoSessionHeld()
+        public async Task MustReportAbandonUnreachableWhenNoSessionHeld()
         {
             var sut = CreateSut();
 
-            Func<Task> act = () => sut.AbandonAsync(AnyMessage(), new Dictionary<string, object>());
+            var outcome = await sut.AbandonAsync(AnyMessage(), new Dictionary<string, object>());
 
-            await act.Should().NotThrowAsync();
+            outcome.Should().Be(ServiceBusSettlementOutcome.DeliveryUnreachable);
         }
 
         [Fact]
-        public async Task MustNoOpDeadLetterWhenNoSessionHeld()
+        public async Task MustReportDeadLetterUnreachableWhenNoSessionHeld()
         {
+            // Materially the worst of the three: a poison message reported as contained while it is still in
+            // circulation. The released session must be reported, never papered over.
             var sut = CreateSut();
 
-            Func<Task> act = () => sut.DeadLetterAsync(AnyMessage(), "reason", "description");
+            var outcome = await sut.DeadLetterAsync(AnyMessage(), "reason", "description");
 
-            await act.Should().NotThrowAsync();
+            outcome.Should().Be(ServiceBusSettlementOutcome.DeliveryUnreachable);
         }
 
         [Fact]
-        public async Task MustNoOpSettleInReceiveAndDeleteMode()
+        public async Task MustReportSettlementNotOwedInReceiveAndDeleteMode()
         {
-            // In ReceiveAndDelete the settle calls short-circuit on receive-mode before any session lookup,
-            // so they complete without a connection even conceptually.
+            // In ReceiveAndDelete the settle calls short-circuit on receive-mode before any session lookup:
+            // Azure Service Bus removed the delivery on receipt, so no settlement was ever owed. That is a
+            // DIFFERENT answer from an unreachable delivery, which is why the port reports three states.
             var sut = CreateSut(ServiceBusReceiveMode.ReceiveAndDelete);
 
-            Func<Task> complete = () => sut.CompleteAsync(AnyMessage());
-            Func<Task> abandon = () => sut.AbandonAsync(AnyMessage(), new Dictionary<string, object>());
-            Func<Task> deadLetter = () => sut.DeadLetterAsync(AnyMessage(), "reason", "description");
+            var complete = await sut.CompleteAsync(AnyMessage());
+            var abandon = await sut.AbandonAsync(AnyMessage(), new Dictionary<string, object>());
+            var deadLetter = await sut.DeadLetterAsync(AnyMessage(), "reason", "description");
 
-            await complete.Should().NotThrowAsync();
-            await abandon.Should().NotThrowAsync();
-            await deadLetter.Should().NotThrowAsync();
+            complete.Should().Be(ServiceBusSettlementOutcome.NotOwed);
+            abandon.Should().Be(ServiceBusSettlementOutcome.NotOwed);
+            deadLetter.Should().Be(ServiceBusSettlementOutcome.NotOwed);
         }
 
         [Fact]

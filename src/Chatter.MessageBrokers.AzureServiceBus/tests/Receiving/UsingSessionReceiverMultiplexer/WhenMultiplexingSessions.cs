@@ -210,6 +210,38 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionRec
             _children[1].DeadLetteredMessages.Should().BeEmpty();
         }
 
+        // The child owns the session the delivery is locked against, so only the child knows whether the
+        // settlement reached Azure Service Bus. The multiplexer must FORWARD that answer — upgrading an
+        // unreachable delivery to a settlement is exactly the false acknowledgement this contract forbids.
+        [Fact]
+        public Task MustForwardTheDeliveringChildsSettledOutcome()
+            => AssertSettlementOutcomeIsForwardedAsync(ServiceBusSettlementOutcome.Settled);
+
+        [Fact]
+        public Task MustForwardTheDeliveringChildsNotOwedOutcome()
+            => AssertSettlementOutcomeIsForwardedAsync(ServiceBusSettlementOutcome.NotOwed);
+
+        [Fact]
+        public Task MustForwardTheDeliveringChildsUnreachableDeliveryOutcome()
+            => AssertSettlementOutcomeIsForwardedAsync(ServiceBusSettlementOutcome.DeliveryUnreachable);
+
+        // The outcome enum is internal to the adapter assembly, so it cannot appear on a public xUnit theory
+        // parameter (CS0051); the three facts above name their case and share this driver instead.
+        private async Task AssertSettlementOutcomeIsForwardedAsync(ServiceBusSettlementOutcome childOutcome)
+        {
+            var sut = CreateSut(maxConcurrentSessions: 2);
+            var delivered = await ArrangeBusyFirstChildAsync(sut);
+            _children[0].SettlementOutcome = childOutcome;
+
+            var completion = await sut.CompleteAsync(delivered);
+            var abandonment = await sut.AbandonAsync(delivered, new Dictionary<string, object>());
+            var deadLettering = await sut.DeadLetterAsync(delivered, "reason", "description");
+
+            completion.Should().Be(childOutcome);
+            abandonment.Should().Be(childOutcome);
+            deadLettering.Should().Be(childOutcome);
+        }
+
         [Fact]
         public async Task MustThrowWhenCompletingAMessageNoChildHolds()
         {
@@ -217,7 +249,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingSessionRec
 
             Func<Task> act = () => sut.CompleteAsync(UnknownMessage());
 
-            // A completed task would mean SUCCESS and have the receiver report a settlement that never happened.
+            // An answered outcome would have the receiver report a settlement that never happened.
             await act.Should().ThrowAsync<InvalidOperationException>()
                 .WithMessage($"*{_receiverPath}*")
                 .WithMessage("*unknown-message*");
