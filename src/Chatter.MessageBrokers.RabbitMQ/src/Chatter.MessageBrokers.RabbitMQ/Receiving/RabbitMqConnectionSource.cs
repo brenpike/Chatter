@@ -279,6 +279,15 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                     // completed, and a throw from the synchronous Dispose() path would abort the rest of host shutdown.
                     // OperationCanceledException is swallowed with the rest — carving out a single type would make this
                     // an enumeration again.
+                    // THE BOUND OF THAT JUSTIFICATION, STATED RATHER THAN LEFT IMPLIED: the server-side cancellation it
+                    // leans on is the DISPOSE's doing, so it does not hold when the dispose ALSO faults. In that one
+                    // case the channel can survive on the broker with its consumer live until the connection is
+                    // disposed or drops, and the deliveries it keeps pushing fault the receiver's already-completed
+                    // buffer writer. That residual is ACCEPTED, not overlooked: the container created this singleton,
+                    // so root-provider disposal tears the connection down and reclaims the channel with it; propagating
+                    // out of a teardown is strictly worse than leaking a channel a connection close will reclaim; and
+                    // the source has NO LOGGER, so the swallow is UNOBSERVABLE — adding one is a constructor change
+                    // that was deliberately scoped out of this fix.
                     try
                     {
                         try
