@@ -50,7 +50,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// report NOT-REQUIRED under None (the message is already gone, so no settlement is owed). Every other mode
     /// keeps manual ack (autoAck:false) and the epoch-guarded settlement + retry/deadletter paths.
     /// </remarks>
-    public sealed class RabbitMqReceiver : IMessagingInfrastructureReceiver
+    internal sealed class RabbitMqReceiver : IMessagingInfrastructureReceiver
     {
         // The native quorum-queue redelivery counter the broker increments per redelivery.
         private const string _nativeDeliveryCountHeader = "x-delivery-count";
@@ -75,13 +75,6 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // sibling ASB adapter uses for None. Resolved ONCE in InitializeAsync from the (core-normalized) options
         // and read by RegisterConsumerAsync on every (re)registration and by the settlement no-op guard.
         private bool _autoAck;
-        // INVARIANT (the claim records a CONSUMER REGISTRATION, never authority over the shared source): true once the
-        // core drove THIS instance through InitializeAsync, which hands the SINGLETON connection source this
-        // receiver's consume-registration delegate. Only such an instance has a consumer to cancel, so only its
-        // dispose runs the surgical receive-side stop; an instance a stray scope merely resolved stops nothing. It
-        // conveys no ownership of the source's lifetime — no receiver disposes the source (see Dispose/DisposeAsync).
-        // Latched once at the top of InitializeAsync.
-        private bool _initializationClaimed;
 
         public RabbitMqReceiver(IRabbitMqConnectionSource connectionSource,
                                 RabbitMqOptions rabbitOptions,
@@ -98,17 +91,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
 
-            // CLAIM THE CONSUMER REGISTRATION. This receiver is registered Scoped and is publicly resolvable, and the
-            // DI container disposes scoped IDisposables at scope end — so a stray scope that merely RESOLVES it (a
-            // health check, an injection into a request-scoped service) would otherwise reach the SHARED source's
-            // teardown on dispose. The claim separates the one instance the core drove through startup — the only one
-            // that hands the source a consume-registration delegate, and so the only one with a consumer to cancel —
-            // from every merely resolved instance, whose dispose stops nothing.
-            // Latched ABOVE every startup gate below, and it must stay there: StartReceivingAsync stores the
-            // registration delegate BEFORE it ensures the receive channel, so an initialization that faults
-            // mid-registration leaves the delegate stored. Only the stop clears it; without it a later connection
-            // recovery would re-register a consumer that writes into a completed buffer.
-            _initializationClaimed = true;
+            // INVARIANT (stop-authority lives on the SOURCE, not on a per-instance flag): exactly ONE receiver exists
+            // per process — it is constructed at the single site in Extensions.cs, is neither container-resolvable nor
+            // publicly constructible, and the IMessagingInfrastructure factory hands that same instance back on every
+            // Create(). So "did the core drive THIS instance through startup?" is not a question any path here has to
+            // answer. What decides whether a stop has work to do is the source's own registration state
+            // (_registerConsumer / _consumerTag / _receiveChannel), which StopReceivingAsync reads and clears.
+            // This DISSOLVES ADR-0019 section 5's positional constraint rather than satisfying it. That section argued
+            // an initialization latch had to sit ABOVE every startup gate below, because StartReceivingAsync stores the
+            // registration delegate BEFORE it ensures the receive channel — so a startup that faults mid-registration
+            // leaves a stored delegate that only a stop clears, and a latch set too late would dispose without
+            // stopping, letting a later recovery re-register a consumer that writes into a completed buffer. With the
+            // latch deleted there is no position to get wrong: dispose runs the stop unconditionally, so the stored
+            // delegate is cleared no matter where the fault landed. Deleting the latch is therefore SAFER than keeping
+            // it correctly positioned, not merely simpler.
 
             // TransactionMode.None is at-most-once ("if an error occurs after a message is received, it will be
             // lost"). The handler-failure path already drops (acks) under None, but a process CRASH/KILL while the
@@ -678,8 +674,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // SURGICAL: StopReceivingAsync leaves the connection + publish pool intact (the singleton source is shared
         // with the sender, which keeps publishing). Prefetched-but-unacked deliveries are NOT acked here — they are
         // left for broker redelivery, consistent with the epoch guard that already no-ops a settle after the channel
-        // is torn down. A delivery that buffered after the cancel but before completion is drained by the reader;
-        // BufferDeliveryAsync writes cannot strand because the cancel precedes the channel teardown that stops them.
+        // is torn down. A delivery that buffered after the cancel but before completion is drained by the reader.
+        // KNOWN GAP (issue #494): a BufferDeliveryAsync write ALREADY PARKED on a full bounded buffer is not
+        // quiesced by this sequence. Cancelling the consumer stops NEW pushes but does not un-park that write, and
+        // TryComplete() then faults it with ChannelClosedException. Under autoAck:true — TransactionMode.None only —
+        // the broker removed that delivery as it pushed it, so there is no redelivery and the message is LOST. Every
+        // other mode keeps manual ack, so the unacked delivery is redelivered. The ordering above is deliberate and
+        // #494 tracks the quiesce; do not reorder the stop and the completion to chase it.
         public async Task StopReceiver()
         {
             await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
@@ -701,32 +702,23 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         // underneath hosted services that stop later and are still publishing, faulting their sends with
         // ObjectDisposedException. The sibling ASB adapter disposes only its OWN inner receiver, never the shared
         // ServiceBusClient; this matches it.
-        // An UNCLAIMED instance — resolved from a scope but never initialized — registered no consumer, so it only
-        // completes its buffer (see the claim in InitializeAsync). StopReceivingAsync is gate-serialized and
-        // idempotent, so stop-then-dispose and double-dispose are clean no-ops. Terminal either way: a disposed
-        // receiver does not restart.
+        // Dispose, DisposeAsync and StopReceiver therefore run the SAME two steps unconditionally — stop, then complete
+        // the buffer. StopReceivingAsync is gate-serialized and idempotent, so stop-then-dispose and double-dispose are
+        // clean no-ops, and a stop issued when nothing was ever registered finds no delegate and no consumer tag to
+        // cancel. Terminal either way: a disposed receiver does not restart.
         public void Dispose()
         {
-            if (_initializationClaimed)
-            {
-                // Blocking on the async stop is deliberate and safe here: the connection source awaits with
-                // ConfigureAwait(false) throughout, so there is no captured context to deadlock against, and the core
-                // sets the same precedent in its own Dispose(bool). In production a claimed instance is always
-                // disposed through DisposeAsync (the core's path) — the long-lived receiver scope is never disposed —
-                // so this path exists only for a synchronous container teardown.
-                _connectionSource.StopReceivingAsync(CancellationToken.None).GetAwaiter().GetResult();
-            }
-
+            // Blocking on the async stop is deliberate and safe here: the connection source awaits with
+            // ConfigureAwait(false) throughout, so there is no captured context to deadlock against, and the core
+            // sets the same precedent in its own Dispose(bool). In production the receiver is always disposed through
+            // DisposeAsync (the core's path), so this path exists only for a synchronous container teardown.
+            _connectionSource.StopReceivingAsync(CancellationToken.None).GetAwaiter().GetResult();
             _buffer?.Writer.TryComplete();
         }
 
         public async ValueTask DisposeAsync()
         {
-            if (_initializationClaimed)
-            {
-                await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-
+            await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
             _buffer?.Writer.TryComplete();
         }
     }

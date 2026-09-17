@@ -16,8 +16,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
     // Broker-free proof that the receiver's dispose is a SURGICAL STOP and NEVER a teardown of the shared singleton
     // IRabbitMqConnectionSource (closes issue #367). Two distinct ways the old escalating dispose killed process-wide
     // messaging, both closed here:
-    //   1. RabbitMqReceiver is registered Scoped and is publicly resolvable, and MSDI disposes scoped IDisposables at
-    //      scope end — so ANY consumer scope that merely resolves the receiver (a health check, a stray injection into
+    //   1. RabbitMqReceiver was registered Scoped and publicly resolvable, and MSDI disposes scoped IDisposables at
+    //      scope end — so ANY consumer scope that merely resolved the receiver (a health check, a stray injection into
     //      a request-scoped service) tore down the AMQP connection and drained the publish channel pool.
     //   2. The core's BrokeredMessageReceiver.StartReceiver returns the receiver itself as an IAsyncDisposable and its
     //      hosted service await-usings it, so a NORMAL receiver shutdown reached DisposeAsync on the INITIALIZED
@@ -26,17 +26,16 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
     // Either way the failure surfaced far from its cause, as ObjectDisposedException on a later publish. Dispose now
     // does exactly what StopReceiver does — cancel this receiver's consumer and tear down the RECEIVE CHANNEL only,
     // then complete the buffer — matching the sibling ASB adapter, whose DisposeAsync never touches the shared
-    // ServiceBusClient. The initialization claim latched at the TOP of InitializeAsync no longer grants any authority
-    // over the source's lifetime: it only records that THIS instance registered a consumer, so only this instance has
-    // a consumer to cancel. An instance a stray scope merely resolved stops nothing at all.
+    // ServiceBusClient. Path 1 is now closed at the container: the receiver is not published into DI, so no scope can
+    // resolve one. With no stray instance to distinguish, the stop runs on every dispose path and the SOURCE decides
+    // whether there is a registered consumer to cancel.
     public class WhenDisposingReceiver : Testing.Core.Context
     {
         private const string ReceiverPath = "orders-queue";
         private const string ErrorPath = "orders-error";
 
-        // An UNCLAIMED receiver — resolved by a stray scope and never initialized — registered no consumer, so it has
-        // nothing to stop and must leave the shared singleton source entirely alone on the synchronous
-        // container-dispose path.
+        // A receiver that never initialized still runs the receive-side stop on the synchronous container-dispose
+        // path — and must still leave the shared singleton source's own lifetime entirely alone.
         [Fact]
         public void MustNotDisposeConnectionSourceWhenNeverInitialized()
         {
@@ -48,8 +47,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             connectionSource.DisposeCount.Should().Be(0,
                 "a receiver that never initialized owns no share of the singleton source's lifetime, so its dispose "
                 + "must not tear down the process-wide connection and publish pool");
-            connectionSource.StopCount.Should().Be(0,
-                "an uninitialized receiver registered no consumer, so there is nothing for it to stop");
+            connectionSource.StopCount.Should().Be(1,
+                "the surgical receive-side stop runs unconditionally; the source decides there is nothing registered "
+                + "to cancel");
         }
 
         [Fact]
@@ -61,13 +61,14 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             await receiver.DisposeAsync();
 
             connectionSource.DisposeCount.Should().Be(0,
-                "the async dispose path must be gated on the same initialization claim as the sync path");
-            connectionSource.StopCount.Should().Be(0,
-                "the async dispose path must likewise stop nothing for a receiver that registered no consumer");
+                "the async dispose path must leave the shared source's lifetime alone exactly as the sync path does");
+            connectionSource.StopCount.Should().Be(1,
+                "the async dispose path runs the same unconditional receive-side stop");
         }
 
-        // The whole point of the gate: after a stray scope disposes an uninitialized receiver the shared source is
-        // still LIVE, so the sender keeps publishing. Proven positively — a publish channel rental is still handed out.
+        // The whole point: the receive-side stop is SURGICAL, so after an uninitialized receiver is disposed the shared
+        // source is still LIVE and the sender keeps publishing. Proven positively — a publish channel rental is still
+        // handed out.
         [Fact]
         public async Task MustLeaveConnectionSourceUsableWhenNeverInitialized()
         {
@@ -79,8 +80,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             await using var rental = await connectionSource.AcquirePublishChannelAsync(CancellationToken.None);
             rental.Channel.Should().NotBeNull(
                 "the sender's publish path must survive a stray uninitialized receiver's disposal");
-            connectionSource.StopCount.Should().Be(0,
-                "nothing was consuming, so nothing was stopped");
+            connectionSource.StopCount.Should().Be(1,
+                "the stop that ran was the receive-side one, which leaves the connection and publish pool untouched");
         }
 
         // THE SHUTDOWN GUARD: the core's BrokeredMessageReceiver.StartReceiver returns the receiver as an
@@ -117,7 +118,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 "the sync path must block on the same surgical receive-side stop");
         }
 
-        // The whole point, proven positively on the CLAIMED path: after an initialized receiver is disposed the shared
+        // The whole point, proven positively on the initialized path: after an initialized receiver is disposed the shared
         // source is still LIVE, so the sender keeps publishing. The double mirrors the production source by throwing
         // ObjectDisposedException from AcquirePublishChannelAsync once torn down, so this cannot go green against a
         // disposed source.
@@ -134,10 +135,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 "a hosted service that stops after the receiver must still be able to publish");
         }
 
-        // A receiver whose InitializeAsync THREW is ALREADY claimed — the latch sits above every startup gate. That
-        // still matters: the source stores the consume-registration delegate BEFORE the receive channel is ensured, so
-        // a fault mid-registration leaves the delegate stored and only the stop clears it. Dispose must therefore run
-        // the stop — and still never dispose the shared source.
+        // A receiver whose InitializeAsync THREW must still run the stop on dispose: the source stores the
+        // consume-registration delegate BEFORE the receive channel is ensured, so a fault mid-registration leaves the
+        // delegate stored and only the stop clears it. An unconditional stop covers this no matter where the fault
+        // landed — and it still never disposes the shared source.
         [Fact]
         public async Task MustStopReceivingWithoutDisposingConnectionSourceWhenInitializationThrew()
         {
@@ -157,8 +158,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             connectionSource.DisposeCount.Should().Be(0,
                 "a failed startup grants no authority over the shared singleton source's lifetime");
             connectionSource.StopCount.Should().Be(1,
-                "the claim is latched above the startup gates, so a failed initialization still runs the stop that "
-                + "clears any consume registration the source already stored");
+                "dispose runs the stop unconditionally, so a failed initialization still clears any consume "
+                + "registration the source already stored");
         }
 
         [Fact]
@@ -172,7 +173,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
 
             await disposeAgain.Should().NotThrowAsync("double-dispose must stay idempotent");
             connectionSource.DisposeCount.Should().Be(0,
-                "a second dispose of an unclaimed receiver must remain a no-op");
+                "no number of disposals of an uninitialized receiver may tear down the shared singleton source");
         }
 
         [Fact]
@@ -236,7 +237,44 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 "a delivery pushed after dispose must be dropped, not forced into a completed buffer writer");
         }
 
-        private static RabbitMqReceiver CreateReceiver(DisposalRecordingConnectionSource connectionSource)
+        // Dispose runs the receive-side stop UNCONDITIONALLY — there is no per-instance initialization flag deciding
+        // whether it runs. Exactly one receiver exists per process (constructed at the single site in Extensions.cs;
+        // it is neither container-resolvable nor publicly constructible), so "is this the real receiver?" is no longer
+        // a question dispose has to answer. Stop-authority is the SOURCE's own registration state, which is what
+        // StopReceivingAsync clears. Asserted through ReceivingStopped, which ONLY StopReceivingAsync writes, so this
+        // fact goes red when dispose skips the stop.
+        [Fact]
+        public async Task MustStopReceivingWhenDisposedWithoutEverInitializing()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var receiver = CreateReceiver(connectionSource);
+
+            await receiver.DisposeAsync();
+
+            connectionSource.ReceivingStopped.Should().BeTrue(
+                "dispose must run the source's receive-side stop on every path, so no stored consume registration "
+                + "survives a receiver that never reached the end of InitializeAsync");
+        }
+
+        // The payoff of the unconditional stop: the stop cleared the source's registration delegate, so a LATE
+        // automatic recovery re-registers nothing and — per the no-consumerless-committed-channel rule — commits no
+        // receive channel at all. Without the stop the source would keep whatever registration it had stored and a
+        // recovery could put a consumer back on a receiver that is already disposed.
+        [Fact]
+        public async Task MustNotReRegisterConsumerOnRecoveryAfterDisposingAnUninitializedReceiver()
+        {
+            var connectionSource = new InMemoryRabbitMqConnectionSource();
+            var receiver = CreateReceiver(connectionSource);
+
+            await receiver.DisposeAsync();
+            await connectionSource.SimulateRecoveryAsync();
+
+            connectionSource.ReceiveChannel.Should().BeNull(
+                "a recovery after a terminal stop (no registration delegate stored) must commit NO receive channel, "
+                + "so no consumerless channel is left behind");
+        }
+
+        private static RabbitMqReceiver CreateReceiver(IRabbitMqConnectionSource connectionSource)
         {
             var bodyConverterFactory = new BodyConverterFactory(new IBrokeredMessageBodyConverter[]
             {
