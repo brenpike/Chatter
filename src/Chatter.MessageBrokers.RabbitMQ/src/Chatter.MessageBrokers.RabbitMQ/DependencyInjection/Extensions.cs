@@ -39,6 +39,13 @@ namespace Microsoft.Extensions.DependencyInjection
             // test expectations.
             RejectMultipleReceivers(builder.Services);
 
+            // AddIfNotRegistered below PRESERVES a consumer's own IRabbitMqConnectionSource descriptor at WHATEVER
+            // lifetime it was registered with, but the IMessagingInfrastructure factory resolves the receiver's
+            // source from the ROOT provider. A non-singleton override is therefore unusable — reject it here rather
+            // than at first resolution. Runs before the registration below so the guard reads the consumer's own
+            // descriptor, and after the other two guards to preserve their existing precedence.
+            RejectNonSingletonConnectionSourceOverride(builder.Services);
+
             // INVARIANT: one IConnection per process — IRabbitMqConnectionSource is a SINGLETON. This is the one
             // deliberate lifetime divergence from the SqlServiceBroker fold (whose ISqlConnectionSource is Scoped):
             // the AMQP connection, its serialized receive channel, and its pooled publish channels are process-wide
@@ -172,6 +179,25 @@ namespace Microsoft.Extensions.DependencyInjection
             }
         }
 
+        // Fails fast at registration when a consumer registered its own IRabbitMqConnectionSource at a lifetime
+        // other than Singleton. AddIfNotRegistered preserves a pre-existing descriptor as-is, so without this guard
+        // a Scoped or Transient override survives registration and is then resolved from the ROOT provider by the
+        // IMessagingInfrastructure factory: under host scope validation that throws "Cannot resolve scoped service
+        // from root provider" at first resolution, and without validation the instance is root-captured for the
+        // application's lifetime — silently breaking the one-IConnection-per-process invariant. Read directly off
+        // the IServiceCollection (no provider built), matching the other two guards. No-op when no override exists
+        // (AddRabbitMq registers the singleton itself) or when the override is already a Singleton.
+        private static void RejectNonSingletonConnectionSourceOverride(IServiceCollection services)
+        {
+            var existing = services.FirstOrDefault(d => d.ServiceType == typeof(IRabbitMqConnectionSource));
+            if (existing is null || existing.Lifetime == ServiceLifetime.Singleton)
+            {
+                return;
+            }
+
+            throw new NotSupportedException(string.Format(NonSingletonConnectionSourceMessage, existing.Lifetime));
+        }
+
         // A RabbitMQ receiver is one EXPLICITLY typed to RabbitMQ (always claimed) OR one left on the default
         // infrastructure (blank/empty InfrastructureType) ONLY WHEN RabbitMQ is the core's resolved default.
         private static bool IsRabbitMqReceiver(string infrastructureType, bool rabbitMqIsDefault)
@@ -182,6 +208,13 @@ namespace Microsoft.Extensions.DependencyInjection
             "RabbitMQ does not support TransactionMode.FullAtomicityViaInfrastructure: there is no atomic "
             + "receive-and-send across the consume and a downstream publish. Use TransactionMode.None or "
             + "TransactionMode.ReceiveOnly, and the Outbox for transactional send.";
+
+        private const string NonSingletonConnectionSourceMessage =
+            "A custom IRabbitMqConnectionSource must be registered as a SINGLETON, but one is registered as {0}. "
+            + "RabbitMQ owns ONE IConnection per process — its serialized receive channel and pooled publish "
+            + "channels are process-wide and must not be re-created per scope — and the receiver is constructed "
+            + "from the root provider, which cannot resolve a scoped or transient source. Register the override "
+            + "with ServiceLifetime.Singleton before calling AddRabbitMq.";
 
         private const string MultipleReceiversMessage =
             "RabbitMQ supports only a single queue receiver per process: the connection source owns one receive "

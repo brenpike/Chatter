@@ -439,6 +439,71 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             act.Should().NotThrow();
         }
 
+        // --- non-singleton IRabbitMqConnectionSource override rejection at registration ----------------
+
+        // ROOT (codex P2): AddIfNotRegistered PRESERVES any pre-existing IRabbitMqConnectionSource descriptor at
+        // WHATEVER lifetime the consumer chose, but the IMessagingInfrastructure factory delegate resolves the
+        // receiver's source from the ROOT provider. A SCOPED or TRANSIENT override therefore either fails the root
+        // resolution under ValidateScopes ("Cannot resolve scoped service from root provider") or, without
+        // validation, is captured by the root for the application's lifetime — a captured-dependency defect that
+        // also breaks the one-IConnection-per-process invariant the singleton lifetime exists to state. Reject it
+        // at registration instead, alongside the other two fail-fast guards.
+        [Fact]
+        public void MustThrowWhenAnExistingConnectionSourceOverrideIsScoped()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddScoped<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>());
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustThrowWhenAnExistingConnectionSourceOverrideIsTransient()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddTransient<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>());
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        // The guard rejects the LIFETIME, never the override itself: a singleton custom source is the supported
+        // extension point and must survive AddRabbitMq untouched — same instance, still the only descriptor.
+        [Fact]
+        public void MustPreserveASingletonConnectionSourceOverride()
+        {
+            var overrideSource = new SpyRabbitMqConnectionSource();
+
+            IServiceCollection services = null;
+            Action act = () => services = BuildRegistration(
+                s => s.AddSingleton<IRabbitMqConnectionSource>(overrideSource));
+
+            act.Should().NotThrow();
+
+            var descriptor = Single(services, ConnectionSourceType());
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationInstance.Should().BeSameAs(overrideSource);
+        }
+
+        // "Did not throw" on the singleton arm is ambiguous on its own — the guard reads the descriptor set and a
+        // MISS silently passes. Drive a scoped override through the REAL core registration path so the arm cannot
+        // go green on a read that found nothing, and pin that the rejection reaches a real host's wiring order.
+        [Fact]
+        public void MustRejectAScopedConnectionSourceOverrideRegisteredBeforeTheRealCore()
+        {
+            Action act = () =>
+            {
+                var services = new ServiceCollection();
+                services.AddScoped<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>();
+                services.AddChatterCqrs(EmptyConfig(), NoBrokeredMessageAssembly)
+                        .AddMessageBrokers(
+                            optionsBuilder: null,
+                            receiverHandlerSourceBuilder: b => b.WithExplicitAssemblies(NoBrokeredMessageAssembly))
+                        .AddRabbitMq(o => o.AddRabbitMqOptions(hostName: "localhost"));
+            };
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
         // --- Hosted-receiver factory must NOT dispose the singleton source at factory return -------------
 
         // REGRESSION (codex P1, PR #194): the IMessagingInfrastructure receiver factory delegate must NOT
