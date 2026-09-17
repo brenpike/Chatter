@@ -21,6 +21,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
         public const string QueueA = "queue.a";
         public const string QueueB = "queue.b";
 
+        // INVARIANT: this name has a queue entry of the same name in Integration/Config.json — the same
+        // both-files rule LeasableQueues states below.
+        //
+        // A DEDICATED queue (deliberately NOT in the leasable pool) for the message-lock renewal fact, whose
+        // Config.json entry pairs LockDuration PT10S with MaxDeliveryCount 2. That pairing is what makes the
+        // fact fail LOUDLY and FAST: if a slow handler's lock is ever lost, the broker redelivers on expiry and
+        // dead-letters on the second expiry within ~20 seconds, instead of the fact hanging until a timeout.
+        public const string LockRenewalQueue = "chatter.lockrenewal";
+
         // INVARIANT: every name in LeasableQueues has a queue entry of the same name in Integration/Config.json.
         // The emulator provisions entities declaratively at container start and rejects receivers for entities
         // it was never told about.
