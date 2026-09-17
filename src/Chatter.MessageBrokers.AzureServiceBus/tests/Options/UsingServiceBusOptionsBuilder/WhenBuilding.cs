@@ -965,6 +965,78 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
+        public void MustLeaveMaxMessageLockRenewalDurationAtDefaultWhenNotConfigured()
+        {
+            var options = Create(new ServiceCollection(), EmptyConfig())
+                .WithConnectionString(_sasConnectionString)
+                .Build();
+            options.MaxMessageLockRenewalDuration.Should().Be(TimeSpan.FromMinutes(5));
+        }
+
+        [Fact]
+        public void MustBindConfiguredMaxMessageLockRenewalDuration()
+        {
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:MaxMessageLockRenewalDuration"] = "00:10:00",
+            });
+            var options = Create(new ServiceCollection(), config).Build();
+            options.MaxMessageLockRenewalDuration.Should().Be(TimeSpan.FromMinutes(10));
+        }
+
+        [Fact]
+        public void MustPreferFluentMaxMessageLockRenewalDurationWhenSetBeforeUseConfig()
+        {
+            // F5: the fluent setter wins over the config-bound value regardless of the order the two
+            // sources were declared in — here the fluent call comes first.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:MaxMessageLockRenewalDuration"] = "00:10:00",
+            });
+            var options = Create(new ServiceCollection(), config)
+                .WithMaxMessageLockRenewalDuration(TimeSpan.FromMinutes(2))
+                .UseConfig()
+                .Build();
+            options.MaxMessageLockRenewalDuration.Should().Be(TimeSpan.FromMinutes(2));
+        }
+
+        [Fact]
+        public void MustPreferFluentMaxMessageLockRenewalDurationWhenSetAfterUseConfig()
+        {
+            // F5: the other direction — the config section is selected first and the fluent call follows.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:MaxMessageLockRenewalDuration"] = "00:10:00",
+            });
+            var options = Create(new ServiceCollection(), config)
+                .UseConfig()
+                .WithMaxMessageLockRenewalDuration(TimeSpan.FromMinutes(2))
+                .Build();
+            options.MaxMessageLockRenewalDuration.Should().Be(TimeSpan.FromMinutes(2));
+        }
+
+        [Fact]
+        public void MustPreferExplicitZeroMaxMessageLockRenewalDurationOverConfigValue()
+        {
+            // F5 nullable-backing-field guard: TimeSpan.Zero is a REAL, meaningful value — it switches
+            // message-lock renewal off — and is NOT "unset". A plain TimeSpan backing field could not tell
+            // a zero the caller wrote from a field nobody ever assigned, and would silently drop the
+            // explicit override, leaving the config-bound 10 minutes in place.
+            var config = ConfigWith(new Dictionary<string, string>
+            {
+                [$"{_sectionName}:ConnectionString"] = _sasConnectionString,
+                [$"{_sectionName}:MaxMessageLockRenewalDuration"] = "00:10:00",
+            });
+            var options = Create(new ServiceCollection(), config)
+                .WithMaxMessageLockRenewalDuration(TimeSpan.Zero)
+                .Build();
+            options.MaxMessageLockRenewalDuration.Should().Be(TimeSpan.Zero);
+        }
+
+        [Fact]
         public void MustNotApplyTokenCredentialWhenConnectionStringHasSas()
         {
             var options = Create(new ServiceCollection(), EmptyConfig())

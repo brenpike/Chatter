@@ -33,6 +33,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         /// Applies only to session-enabled receivers.
         /// </summary>
         public TimeSpan MaxSessionLockRenewalDuration { get; set; } = TimeSpan.FromMinutes(5);
+        /// <summary>
+        /// The ceiling on how long a non-session PeekLock message's lock is renewed while its handler
+        /// runs. Once reached, renewal stops and the lock is allowed to expire naturally. Zero or a
+        /// negative duration means the lock is never renewed at all.
+        /// </summary>
+        public TimeSpan MaxMessageLockRenewalDuration { get; set; } = TimeSpan.FromMinutes(5);
         internal RetryPolicyConfiguration RetryPolicy { get; set; }
         [JsonIgnore]
         public ServiceBusRetryOptions RetryOptions { get; internal set; }
