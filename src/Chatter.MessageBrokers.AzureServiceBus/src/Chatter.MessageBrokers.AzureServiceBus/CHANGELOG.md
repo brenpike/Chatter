@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-09-17
+
+### Added
+
+- `MaxMessageLockRenewalDuration` on `ServiceBusOptions`, and a matching `ServiceBusOptionsBuilder.WithMaxMessageLockRenewalDuration(...)` fluent method, control how long a non-session PeekLock receiver keeps renewing a message's lock while its handler is still running. The default is five minutes. A zero or negative value disables renewal entirely, restoring the pre-2.5.0 behaviour of never renewing a lock outside a session.
+
+### Fixed
+
+- Non-session PeekLock receivers now renew a message's lock while its handler is still running (#373). Previously, a handler that ran longer than the entity's configured lock duration lost the lock mid-processing; the broker redelivered the message while the original handler invocation was still in flight, and because every redelivery increments `DeliveryCount`, a message that was actually being handled successfully — and would eventually complete — could walk itself to `MaxDeliveryCount` and be dead-lettered as if it were poison. Renewal is bounded by `MaxMessageLockRenewalDuration` (see above), not unlimited: a handler that outlives that ceiling still loses its lock. This fix bounds and defers lock loss for long-running handlers; it does not eliminate it.
+
+  **Upgrade note:** lock renewal is now ON by default for every non-session PeekLock receiver. A deployment that configures nothing will behave differently after upgrading — a long-running handler now holds its lock for up to five minutes instead of only the entity's configured lock duration. To keep the pre-2.5.0 behaviour, set `MaxMessageLockRenewalDuration` to `00:00:00`.
+
+**Why this is a MINOR rather than a PATCH:** the release adds new public surface — the `MaxMessageLockRenewalDuration` option and its `WithMaxMessageLockRenewalDuration` builder method — alongside the defect fix above. Per Semantic Versioning, added backward-compatible functionality is a MINOR bump; the fix carries no signature or contract change and introduces no breaking change, so nothing here calls for more than MINOR.
+
 ## [2.4.1] - 2026-09-15
 
 ### Fixed
