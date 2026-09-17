@@ -65,19 +65,30 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             return services;
         }
 
-        // Mirrors the descriptor lookup RejectFullAtomicity performs (ServiceType == typeof(MessageBrokerOptions),
-        // ImplementationInstance narrowed with `as`). Returns null on exactly the misses the production read
-        // swallows: no descriptor, or a descriptor that is not an ImplementationInstance.
+        // Mirrors the EFFECTIVE descriptor lookup RejectFullAtomicity performs (ServiceType ==
+        // typeof(MessageBrokerOptions), LAST match because that is the one MSDI resolves for a single-service
+        // request, ImplementationInstance narrowed with `as`). Returns null on exactly the misses the production
+        // read swallows: no descriptor, or a descriptor that is not an ImplementationInstance.
         private static MessageBrokerOptions ReadGlobalOptionsOffDescriptors(IServiceCollection services)
-            => services.FirstOrDefault(d => d.ServiceType == typeof(MessageBrokerOptions))?
+            => services.LastOrDefault(d => d.ServiceType == typeof(MessageBrokerOptions))?
                        .ImplementationInstance as MessageBrokerOptions;
 
         private static ServiceDescriptor Single(IServiceCollection services, Type serviceType)
             => services.Single(d => d.ServiceType == serviceType);
 
+        // Deliberately NOT Single: the last-wins tests below register the same service type twice on purpose, and
+        // Single would throw InvalidOperationException on the duplicate — an exception easily mistaken for a guard
+        // rejection.
+        private static ServiceDescriptor Last(IServiceCollection services, Type serviceType)
+            => services.Last(d => d.ServiceType == serviceType);
+
         private static Type ConnectionSourceType()
             => typeof(RabbitMqMessageContext).Assembly.GetType(
                 "Chatter.MessageBrokers.RabbitMQ.Receiving.IRabbitMqConnectionSource", throwOnError: true);
+
+        private static Type ReceiverType()
+            => typeof(RabbitMqMessageContext).Assembly.GetType(
+                "Chatter.MessageBrokers.RabbitMQ.Receiving.RabbitMqReceiver", throwOnError: true);
 
         [Fact]
         public void MustRegisterMessagingInfrastructureAsSingletonViaFactory()
@@ -102,18 +113,45 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             Single(services, ConnectionSourceType()).Lifetime.Should().Be(ServiceLifetime.Singleton);
         }
 
+        // INVARIANT: the CONTAINER owns the connection source. AddRabbitMq registers it by SERVICE TYPE plus
+        // IMPLEMENTATION TYPE, so MSDI constructs the instance and the root provider therefore disposes it at process
+        // shutdown — that is what releases the AMQP connection. No consumer has to escalate its own Dispose to the
+        // singleton to get the connection closed. RabbitMqConnectionSource implements both IDisposable and
+        // IAsyncDisposable, so the sync and async container teardown paths both reach it. The real source is used
+        // deliberately (not a spy) because the claim under test is the REAL registration's ownership; it is never
+        // connected, so disposal performs no broker I/O.
         [Fact]
-        public void MustRegisterReceiverAndSenderAsScoped()
+        public async Task MustDisposeContainerCreatedConnectionSourceWithRootProvider()
         {
             var services = BuildRegistration();
 
-            var brokerAssembly = typeof(RabbitMqMessageContext).Assembly;
-            var receiverType = brokerAssembly.GetType(
-                "Chatter.MessageBrokers.RabbitMQ.Receiving.RabbitMqReceiver", throwOnError: true);
-            var senderType = brokerAssembly.GetType(
+            // The registration SHAPE is what makes the container the owner: a refactor to an ImplementationInstance
+            // registration would hand ownership back to the caller and the root provider would stop disposing it.
+            var descriptor = Single(services, ConnectionSourceType());
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationType.Should().Be<RabbitMqConnectionSource>();
+            descriptor.ImplementationInstance.Should().BeNull();
+
+            var provider = services.BuildServiceProvider();
+            var source = provider.GetRequiredService<IRabbitMqConnectionSource>();
+            source.Should().BeOfType<RabbitMqConnectionSource>();
+
+            provider.Dispose();
+
+            Func<Task> acquirePublishChannel = () => source.AcquirePublishChannelAsync(CancellationToken.None);
+            await acquirePublishChannel.Should().ThrowAsync<ObjectDisposedException>(
+                "the root provider disposes the source it created, so the AMQP connection is released at process "
+                + "shutdown without any consumer escalating a dispose to the singleton");
+        }
+
+        [Fact]
+        public void MustRegisterSenderAsScoped()
+        {
+            var services = BuildRegistration();
+
+            var senderType = typeof(RabbitMqMessageContext).Assembly.GetType(
                 "Chatter.MessageBrokers.RabbitMQ.Sending.RabbitMqSender", throwOnError: true);
 
-            Single(services, receiverType).Lifetime.Should().Be(ServiceLifetime.Scoped);
             Single(services, senderType).Lifetime.Should().Be(ServiceLifetime.Scoped);
         }
 
@@ -408,16 +446,252 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             act.Should().NotThrow();
         }
 
+        // --- non-singleton IRabbitMqConnectionSource override rejection at registration ----------------
+
+        // ROOT (codex P2): AddIfNotRegistered PRESERVES any pre-existing IRabbitMqConnectionSource descriptor at
+        // WHATEVER lifetime the consumer chose, but the IMessagingInfrastructure factory delegate resolves the
+        // receiver's source from the ROOT provider. A SCOPED or TRANSIENT override therefore either fails the root
+        // resolution under ValidateScopes ("Cannot resolve scoped service from root provider") or, without
+        // validation, is captured by the root for the application's lifetime — a captured-dependency defect that
+        // also breaks the one-IConnection-per-process invariant the singleton lifetime exists to state. Reject it
+        // at registration instead, alongside the other two fail-fast guards.
+        [Fact]
+        public void MustThrowWhenAnExistingConnectionSourceOverrideIsScoped()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddScoped<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>());
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        [Fact]
+        public void MustThrowWhenAnExistingConnectionSourceOverrideIsTransient()
+        {
+            Action act = () => BuildRegistration(services =>
+                services.AddTransient<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>());
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        // The guard rejects the LIFETIME, never the override itself: a singleton custom source is the supported
+        // extension point and must survive AddRabbitMq untouched — same instance, still the only descriptor.
+        [Fact]
+        public void MustPreserveASingletonConnectionSourceOverride()
+        {
+            var overrideSource = new SpyRabbitMqConnectionSource();
+
+            IServiceCollection services = null;
+            Action act = () => services = BuildRegistration(
+                s => s.AddSingleton<IRabbitMqConnectionSource>(overrideSource));
+
+            act.Should().NotThrow();
+
+            var descriptor = Single(services, ConnectionSourceType());
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationInstance.Should().BeSameAs(overrideSource);
+        }
+
+        // "Did not throw" on the singleton arm is ambiguous on its own — the guard reads the descriptor set and a
+        // MISS silently passes. Drive a scoped override through the REAL core registration path so the arm cannot
+        // go green on a read that found nothing, and pin that the rejection reaches a real host's wiring order.
+        [Fact]
+        public void MustRejectAScopedConnectionSourceOverrideRegisteredBeforeTheRealCore()
+        {
+            Action act = () =>
+            {
+                var services = new ServiceCollection();
+                services.AddScoped<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>();
+                services.AddChatterCqrs(EmptyConfig(), NoBrokeredMessageAssembly)
+                        .AddMessageBrokers(
+                            optionsBuilder: null,
+                            receiverHandlerSourceBuilder: b => b.WithExplicitAssemblies(NoBrokeredMessageAssembly))
+                        .AddRabbitMq(o => o.AddRabbitMqOptions(hostName: "localhost"));
+            };
+
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        // --- the guards must read the EFFECTIVE (last-registered) descriptor --------------------------
+        //
+        // ROOT: Microsoft DI resolves a single-service request from the LAST matching descriptor
+        // (CallSiteFactory.TryCreateExact hands back descriptor.Last). A guard that reads the FIRST match therefore
+        // reasons about a descriptor the container may never resolve — in BOTH directions: it lets an unsupportable
+        // effective registration through, and it rejects a supported one. Every test below registers the same
+        // service type TWICE, which is the only shape that can tell first-match and last-match apart, and each
+        // asserts the throw MESSAGE because three guards throw the same NotSupportedException type.
+
+        [Fact]
+        public void MustThrowWhenALaterGlobalTransactionModeIsFullAtomicity()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton(GlobalOptions(TransactionMode.None));
+                services.AddSingleton(GlobalOptions(TransactionMode.FullAtomicityViaInfrastructure));
+            });
+
+            act.Should().Throw<NotSupportedException>(
+                    "the LAST MessageBrokerOptions descriptor is the one the container resolves")
+                .WithMessage("*FullAtomicityViaInfrastructure*");
+        }
+
+        [Fact]
+        public void MustNotThrowWhenALaterGlobalTransactionModeSupersedesFullAtomicity()
+        {
+            IServiceCollection services = null;
+            Action act = () => services = BuildRegistration(s =>
+            {
+                s.AddSingleton(GlobalOptions(TransactionMode.FullAtomicityViaInfrastructure));
+                s.AddSingleton(GlobalOptions(TransactionMode.ReceiveOnly));
+            });
+
+            act.Should().NotThrow("the superseded FullAtomicity descriptor is never resolved");
+
+            // "Did not throw" alone is ambiguous — a read that finds nothing also passes. Assert the effective read
+            // SUCCEEDED and carried the superseding mode.
+            var effectiveOptions = ReadGlobalOptionsOffDescriptors(services);
+            effectiveOptions.Should().NotBeNull();
+            effectiveOptions.TransactionMode.Should().Be(TransactionMode.ReceiveOnly);
+        }
+
+        [Fact]
+        public void MustThrowWhenALaterRegistryHoldsAnAtomicRabbitMqReceiver()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IDiscoveredReceiverRegistry>(new StubDiscoveredReceiverRegistry());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                        TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                    }));
+            });
+
+            act.Should().Throw<NotSupportedException>()
+                .WithMessage("*FullAtomicityViaInfrastructure*");
+        }
+
+        [Fact]
+        public void MustThrowWhenALaterRegistryHoldsMoreThanOneRabbitMqReceiver()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IDiscoveredReceiverRegistry>(new StubDiscoveredReceiverRegistry());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        }));
+            });
+
+            act.Should().Throw<NotSupportedException>()
+                .WithMessage("*single queue receiver per process*");
+        }
+
+        [Fact]
+        public void MustNotThrowWhenALaterEmptyRegistrySupersedesALoadedOne()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                        }));
+                services.AddSingleton<IDiscoveredReceiverRegistry>(new StubDiscoveredReceiverRegistry());
+            });
+
+            act.Should().NotThrow(
+                "neither receiver guard may fire off a registry the container will never hand anyone");
+        }
+
+        [Fact]
+        public void MustThrowWhenALaterConnectionSourceOverrideIsScoped()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IRabbitMqConnectionSource>(new SpyRabbitMqConnectionSource());
+                services.AddScoped<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>();
+            });
+
+            act.Should().Throw<NotSupportedException>(
+                    "the scoped descriptor is the one resolved, and the root provider cannot resolve it")
+                .WithMessage("*Scoped*");
+        }
+
+        // Load-bearing beyond its own case: the final assertion turns "MSDI resolves the LAST descriptor" from a
+        // claim in a comment into a fact pinned by the real container.
+        [Fact]
+        public void MustNotThrowWhenASingletonConnectionSourceOverrideSupersedesAScopedOne()
+        {
+            var effectiveSource = new SpyRabbitMqConnectionSource();
+
+            IServiceCollection services = null;
+            Action act = () => services = BuildRegistration(s =>
+            {
+                s.AddScoped<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>();
+                s.AddSingleton<IRabbitMqConnectionSource>(effectiveSource);
+            });
+
+            act.Should().NotThrow("the effective registration is the singleton");
+
+            var descriptor = Last(services, ConnectionSourceType());
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationInstance.Should().BeSameAs(effectiveSource);
+
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<IRabbitMqConnectionSource>().Should().BeSameAs(
+                effectiveSource,
+                "Microsoft DI resolves a single-service request from the LAST matching descriptor");
+        }
+
+        // CHARACTERIZATION: the two IMessagingInfrastructure lookups are deliberately NOT last-wins reads. The core's
+        // MessagingInfrastructureProvider takes IEnumerable<IMessagingInfrastructure> — which captures EVERY
+        // descriptor in registration order — and picks FirstOrDefault() as the default broker. So for RabbitMQ
+        // attribution the only meaningful question is PRESENCE: if any infrastructure was registered before
+        // AddRabbitMq, RabbitMQ is not the default and a blank-InfrastructureType receiver is not RabbitMQ's to
+        // claim. Converting these reads to last-wins would regress exactly this case.
+        [Fact]
+        public void MustNotClaimADefaultAtomicReceiverWhenAnotherInfrastructureWasRegisteredFirst()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IMessagingInfrastructure>(new ForeignMessagingInfrastructure());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = string.Empty,
+                        TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                    }));
+            });
+
+            act.Should().NotThrow(
+                "the foreign infrastructure was registered first, so it — not RabbitMQ — is the core's default");
+        }
+
         // --- Hosted-receiver factory must NOT dispose the singleton source at factory return -------------
 
         // REGRESSION (codex P1, PR #194): the IMessagingInfrastructure receiver factory delegate must NOT
-        // open-resolve-and-DISPOSE a transient scope per Create() call. RabbitMqReceiver
-        // (IMessagingInfrastructureReceiver : IDisposable) ESCALATES its Dispose to the SINGLETON
-        // IRabbitMqConnectionSource's full teardown, so a per-call `using var scope` would dispose the
-        // returned receiver — and with it the shared singleton source — before InitializeAsync ever runs,
-        // and normal receiver startup would get back an already-disposed source (ObjectDisposedException).
-        // The receiver scope must live for the (singleton) infrastructure lifetime. This is the deliberate
-        // divergence from the SqlServiceBroker/ASB folds, whose Scoped source makes the per-call dispose a no-op.
+        // open-resolve-and-DISPOSE a transient scope per Create() call. The core drives the returned receiver
+        // through InitializeAsync, then StopReceivingAsync, then Dispose — all AFTER the delegate returns — so a
+        // per-call `using var scope` would dispose the receiver at factory return and hand the core an
+        // already-disposed receiver. The spy below records disposal of the SINGLETON IRabbitMqConnectionSource so
+        // these tests also pin that nothing on the receive-infrastructure path tears down the process-wide source:
+        // the container created the production source and the root provider is what disposes it, at shutdown.
         private static IServiceProvider BuildProviderWithSpyConnectionSource(out SpyRabbitMqConnectionSource spy)
         {
             var services = new ServiceCollection();
@@ -426,7 +700,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             builder.AddRabbitMq(o => o.AddRabbitMqOptions(hostName: "localhost"));
 
             // Swap the production singleton source for a disposal-recording spy (still a SINGLETON + IDisposable,
-            // faithfully reproducing the production lifecycle the receiver's Dispose escalates to).
+            // so any dispose reaching the process-wide source on the receiver-resolution path is recorded).
             var capturedSpy = new SpyRabbitMqConnectionSource();
             for (var i = services.Count - 1; i >= 0; i--)
             {
@@ -436,7 +710,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
                 }
             }
             services.AddSingleton<IRabbitMqConnectionSource>(capturedSpy);
-            // RabbitMqReceiver needs an IBodyConverterFactory and a logger to resolve from the container.
+            // The receiver is constructed by the infrastructure factory delegate via ActivatorUtilities, which
+            // resolves its IBodyConverterFactory and logger from the ROOT provider — both must therefore exist.
             services.AddSingleton<IBodyConverterFactory>(
                 new BodyConverterFactory(new IBrokeredMessageBodyConverter[] { new RabbitMqBodyConverter(), new JsonBodyConverter() }));
             services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
@@ -454,9 +729,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             var receiver = infrastructure.ReceiveInfrastructure;
 
             receiver.Should().NotBeNull();
-            spy.DisposeCount.Should().Be(0, "the receiver factory must keep its scope alive for the receiver "
-                + "lifetime — disposing it would tear down the shared singleton connection source before "
-                + "InitializeAsync runs");
+            spy.DisposeCount.Should().Be(0, "the receiver factory must hand the core a live receiver, and nothing "
+                + "on that path may tear down the shared singleton connection source before the core drives "
+                + "InitializeAsync");
         }
 
         [Fact]
@@ -471,9 +746,76 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             spy.DisposeCount.Should().Be(0);
         }
 
+        // --- the receiver is NOT a container-published service ------------------------------------------
+
+        // ROOT (issue #367): AddRabbitMq must publish NO descriptor for RabbitMqReceiver. The receiver's only
+        // legitimate consumer is the IMessagingInfrastructure factory delegate, which constructs the one instance
+        // itself; publishing the concrete type additionally created the category "a receiver instance nothing ever
+        // initialized, held by an arbitrary scope" — the category every per-instance latch check was patching.
+        [Fact]
+        public void MustNotRegisterTheReceiverInTheContainer()
+        {
+            var services = BuildRegistration();
+
+            services.Should().NotContain(
+                d => d.ServiceType == ReceiverType(),
+                "the receiver is constructed at its single call site, so no descriptor may offer it to anyone else");
+        }
+
+        // CLOSURE PROOF for the same root: with no descriptor, a consumer scope cannot obtain a receiver at all —
+        // neither the silent GetService nor the throwing GetRequiredService. A stray scope that cannot hold a
+        // receiver cannot dispose one, so no receiver dispose can ever reach the shared singleton source by that
+        // route. This supersedes the weaker "a stray scope's receiver must not dispose the source" guard.
+        [Fact]
+        public void MustNotResolveTheReceiverFromAConsumerScope()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out _);
+
+            using var consumerScope = provider.GetRequiredService<IServiceScopeFactory>().CreateScope();
+
+            consumerScope.ServiceProvider.GetService(ReceiverType()).Should().BeNull();
+            Action resolve = () => consumerScope.ServiceProvider.GetRequiredService(ReceiverType());
+            resolve.Should().Throw<InvalidOperationException>(
+                "no consumer scope may obtain a receiver instance — that category no longer exists");
+        }
+
+        // The core reads IMessagingInfrastructure.ReceiveInfrastructure — a property that calls the factory's
+        // Create() on EVERY access — so "one receiver per `AddRabbitMq` registration" only holds if every Create on
+        // that registration's infrastructure returns the SAME instance. A refactor to ActivatorUtilities-per-call
+        // would re-mint the very category deleted above: instances nobody initialized, each of them disposable,
+        // each reachable by whoever touched the property.
+        [Fact]
+        public void MustHandTheCoreTheSameReceiverInstanceOnEveryCreate()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out _);
+            var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
+
+            var first = infrastructure.ReceiveInfrastructure;
+            var second = infrastructure.ReceiveInfrastructure;
+
+            first.Should().BeSameAs(second, "every Create() call on one registration's infrastructure hands back the same receiver instance");
+        }
+
+        // Constructing the receiver at the singleton infrastructure's own composition site only works because EVERY
+        // RabbitMqReceiver constructor dependency — IRabbitMqConnectionSource, RabbitMqOptions, IBodyConverterFactory
+        // and ILogger<> — is a SINGLETON. Were one of them ever made Scoped, ValidateScopes would refuse the root
+        // resolution here rather than letting a captured-dependency defect reach a host.
+        [Fact]
+        public void MustConstructTheReceiverFromTheRootProviderUnderScopeValidation()
+        {
+            var services = BuildRegistrationOverRealCore(null);
+            // The bare core registration carries no logging; a real host's ILogger<> is likewise an open-generic
+            // singleton, which is what the sender already requires to dispatch at all.
+            services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
+
+            using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+            provider.GetRequiredService<IMessagingInfrastructure>().ReceiveInfrastructure.Should().NotBeNull();
+        }
+
         // A disposal-recording IRabbitMqConnectionSource spy. Implements BOTH IDisposable (the sync container
-        // teardown path RabbitMqReceiver.Dispose escalates to) and IAsyncDisposable, matching the production
-        // source. All AMQP operations throw — the regression test only resolves and reads ReceiveInfrastructure.
+        // teardown path) and IAsyncDisposable, matching the production source, so any dispose reaching the
+        // process-wide source on the receive-infrastructure path is recorded.
         private sealed class SpyRabbitMqConnectionSource : IRabbitMqConnectionSource, IDisposable
         {
             public int DisposeCount { get; private set; }

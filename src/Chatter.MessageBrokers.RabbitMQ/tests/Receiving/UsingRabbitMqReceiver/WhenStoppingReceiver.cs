@@ -1,6 +1,8 @@
+using Chatter.MessageBrokers.Context;
 using FluentAssertions;
 using System;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -64,8 +66,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
                 "a delivery pushed after a terminal stop must be dropped, not forced into a completed buffer writer");
         }
 
-        // Stop-then-dispose is idempotent: disposing after a stop must not throw (the source's single-admission
-        // lifecycle CAS makes the escalated dispose a clean no-op against the already-stopped receive channel).
+        // Stop-then-dispose is idempotent: dispose performs the SAME surgical stop, and StopReceivingAsync is
+        // gate-serialized and idempotent, so a second run finds a torn-down channel + cleared registration and
+        // no-ops without throwing.
         [Fact]
         public async Task MustNotThrowWhenStopThenDispose()
         {
@@ -107,6 +110,41 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
             harness.ConnectionSource.ReceiveChannel.Should().BeNull(
                 "a recovery after a terminal stop (no registration delegate stored) must commit NO receive channel, "
                 + "so no consumerless channel is left behind");
+        }
+
+        // A stop that THROWS must still complete the buffer. IRabbitMqConnectionSource is a PUBLIC seam, so a
+        // consumer-supplied source may fault StopReceivingAsync for any reason; if the buffer completion were
+        // skipped when it does, the parked ReceiveMessageAsync pull would never return and HOST SHUTDOWN WOULD
+        // HANG. The fault must still propagate — a foreign source's contract violation is never swallowed, it
+        // simply can no longer strand the reader.
+        [Fact]
+        public async Task MustCompleteBufferWhenStopThrows()
+        {
+            var harness = ReceiverHarness.Create();
+            var stopFault = new InvalidOperationException("the connection source's stop faulted");
+            harness.ConnectionSource.StopFault = stopFault;
+            var parkedReceive = harness.ReceiveAsync();
+
+            Func<Task> stop = () => harness.Receiver.StopReceiver();
+
+            (await stop.Should().ThrowAsync<InvalidOperationException>(
+                "a foreign connection source's stop failure must still surface to the caller"))
+                .Which.Should().BeSameAs(stopFault);
+            await AssertParkedReceiveUnblocksAsync(parkedReceive);
+        }
+
+        // Awaits the parked pull under a BOUNDED timeout: an unbounded await would turn a stranded reader into a
+        // HANGING test run instead of a failing assertion.
+        private static async Task AssertParkedReceiveUnblocksAsync(Task<MessageBrokerContext> parkedReceive)
+        {
+            var completed = await Task.WhenAny(parkedReceive, Task.Delay(TimeSpan.FromSeconds(5)));
+
+            completed.Should().BeSameAs(parkedReceive,
+                "completing the buffer writer must unblock the parked pull, so a teardown cannot hang host shutdown");
+
+            Func<Task> awaitParked = () => parkedReceive;
+            await awaitParked.Should().ThrowAsync<ChannelClosedException>(
+                "a completed buffer writer faults the parked read instead of leaving it waiting forever");
         }
     }
 }

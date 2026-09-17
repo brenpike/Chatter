@@ -97,8 +97,18 @@ Options are modeled by `RabbitMqOptions` and assembled with `RabbitMqOptionsBuil
 | `WithUri(string uri)` | Set the AMQP URI after initial configuration. |
 | `WithHostName(string hostName)` | Set the broker host name after initial configuration. |
 | `WithCredentials(string userName, string password)` | Set authentication credentials after initial configuration. |
+| `WithTls(string serverName = null)` | Connect the discrete host/credential path over TLS (default off). Sets `RabbitMqOptions.UseTls` and, optionally, `TlsServerName` (defaults to `HostName`). Ignored when a connection URI is configured. |
 
-`Build()` throws if neither a URI nor a host name is supplied, or if no `AddRabbitMqOptions(...)` call was made.
+`Build()` throws if neither a URI nor a host name is supplied, or if no `AddRabbitMqOptions(...)` call was made. `Build()` also throws if `WithTls(...)` is used alongside a configured connection URI that is not an `amqps://` URI — the URI takes precedence over the discrete settings, so that combination would otherwise connect in the clear.
+
+### TLS
+
+Two independent paths enable TLS, and only one takes effect at a time:
+
+- **Connection URI**: an `amqps://` URI enables TLS for that connection, handled entirely by the RabbitMQ client.
+- **Discrete settings**: `WithTls(serverName)` enables TLS for the discrete host/credential path, defaulting the validated server name to `HostName` and defaulting the port to `5671`. It has no effect when a connection URI is configured — the URI scheme determines the transport — and `Build()` rejects a `WithTls(...)` call made alongside a plaintext URI rather than silently dropping it.
+
+There is no option to disable or relax certificate validation on either path. The discrete path is deliberately **stricter** than the client's own `amqps` URI handling, which relaxes `AcceptablePolicyErrors` to tolerate a certificate name mismatch — the discrete path leaves every `SslOption` member other than `Enabled` and `ServerName` at its strict default, so a server name that does not match the broker's certificate fails the handshake.
 
 ### Receiver options
 
@@ -169,7 +179,7 @@ rmq.AddQueueReceiver<MyIntegrationEvent>(
     deadLetterQueuePath: "my-integration-event-deadletter");
 ```
 
-Both queues must be provisioned externally before the application starts (see [Required topology](#required-topology)).
+Both queues must be provisioned externally before the application starts (see [Required topology](#required-topology)). A configured dead-letter or error queue path is **verified** at receiver startup: the adapter passively declares the queue (an existence check, not a provisioning call — see [Required topology](#required-topology)) and fails fast, naming the missing queue, if it does not exist. Previously a missing poison destination surfaced only as a silent stall on the first poison message, once the deadletter republish faulted and left the original delivery unsettled.
 
 ## Transactions
 
@@ -196,6 +206,16 @@ Full multi-receiver support is tracked in [#195](https://github.com/brenpike/Cha
 This package is a **transport over existing RabbitMQ topology** — it **provisions nothing**. All exchanges, queues, bindings, and dead-letter routing must be created and owned externally before the application starts. The adapter assumes they exist.
 
 This mirrors the `Chatter.MessageBrokers.SqlServiceBroker` manual-provisioning stance.
+
+The dead-letter and error queues configured on a receiver are the one exception to "assumes they exist" without a runtime check: at startup the adapter **verifies** their existence with a passive declare (asking the broker whether the queue exists, which provisions nothing) and fails fast, naming the missing queue, rather than starting and silently stalling on the first poison message. This is verification, not provisioning — the adapter still never declares a queue, exchange, or binding.
+
+#### Broker permissions for the poison-destination check
+
+The passive declare creates nothing, but it is still an authorised operation. On **RabbitMQ 4.3.1 and later** a passive declare requires the connecting user to hold **at least one** of `configure`, `write`, or `read` on the target queue — any one is sufficient. (A *non*-passive declare specifically requires `configure`; this adapter never issues one.) Older brokers require no permission for a passive declare.
+
+Grant the receiver's user any one of those three permissions on each configured dead-letter and error queue name. This is a **new requirement** as of 0.5.0: before the existence check the adapter issued no `queue.declare` at all, so a least-privilege user whose permission patterns matched none of the poison-destination names could still deadletter — a poison republish goes through the default exchange and is authorised against the *exchange*, not the destination queue. Such a user now fails at startup with `ACCESS_REFUSED`. That failure propagates unwrapped, so it is clearly distinguishable from the missing-queue failure, which is reported as an `InvalidOperationException` naming the queue and the option that configured it.
+
+`TransactionMode.None` receivers probe nothing — they drop poison messages rather than republishing them — so they need no permission on any poison destination.
 
 ### What you must provision
 

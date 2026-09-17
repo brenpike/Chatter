@@ -53,6 +53,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         // source cancelled the registered consumer (rather than just disposing the channel) before completing.
         public List<string> CancelledConsumerTags { get; } = new List<string>();
 
+        // The queue names passively declared through this channel, in declare order, so the receiver's startup
+        // poison-destination existence gate can be asserted: WHICH queues it probed, and that it probed none at
+        // all under TransactionMode.None.
+        public List<string> PassiveDeclaredQueues { get; } = new List<string>();
+
         public ValueTask BasicAckAsync(ulong deliveryTag, bool multiple, CancellationToken cancellationToken = default)
         {
             Acks.Add(new AckRecord(deliveryTag, multiple, _sequencer.Next()));
@@ -115,6 +120,24 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             return Task.CompletedTask;
         }
 
+        // Opt-in passive-declare-fault seam, MIRRORING the PublishFault shape above: when non-null,
+        // QueueDeclarePassiveAsync records the probed queue (so recording assertions hold), then faults the
+        // returned task with this exception — modeling the broker's 404 NOT_FOUND channel close on a queue that
+        // was never declared externally. Default null = the queue exists and the probe succeeds.
+        public Exception PassiveDeclareFault { get; set; }
+
+        public Task<QueueDeclareOk> QueueDeclarePassiveAsync(string queue, CancellationToken cancellationToken = default)
+        {
+            PassiveDeclaredQueues.Add(queue);
+
+            if (PassiveDeclareFault is not null)
+            {
+                return Task.FromException<QueueDeclareOk>(PassiveDeclareFault);
+            }
+
+            return Task.FromResult(new QueueDeclareOk(queue, messageCount: 0, consumerCount: 0));
+        }
+
         // --- Unused IChannel surface: a production path reaching any of these is untested by design ---------
 
         public int ChannelNumber => throw new NotImplementedException();
@@ -149,7 +172,6 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         public Task ExchangeBindAsync(string destination, string source, string routingKey, IDictionary<string, object> arguments = null, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task ExchangeUnbindAsync(string destination, string source, string routingKey, IDictionary<string, object> arguments = null, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task<QueueDeclareOk> QueueDeclareAsync(string queue, bool durable, bool exclusive, bool autoDelete, IDictionary<string, object> arguments = null, bool passive = false, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
-        public Task<QueueDeclareOk> QueueDeclarePassiveAsync(string queue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task<uint> QueueDeleteAsync(string queue, bool ifUnused, bool ifEmpty, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task<uint> QueuePurgeAsync(string queue, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task QueueBindAsync(string queue, string exchange, string routingKey, IDictionary<string, object> arguments = null, bool noWait = false, CancellationToken cancellationToken = default) => throw new NotImplementedException();

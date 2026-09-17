@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.RabbitMQ.Configuration;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -49,7 +50,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
     /// report NOT-REQUIRED under None (the message is already gone, so no settlement is owed). Every other mode
     /// keeps manual ack (autoAck:false) and the epoch-guarded settlement + retry/deadletter paths.
     /// </remarks>
-    public sealed class RabbitMqReceiver : IMessagingInfrastructureReceiver
+    internal sealed class RabbitMqReceiver : IMessagingInfrastructureReceiver
     {
         // The native quorum-queue redelivery counter the broker increments per redelivery.
         private const string _nativeDeliveryCountHeader = "x-delivery-count";
@@ -90,6 +91,22 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
 
+            // INVARIANT (stop-authority lives on the SOURCE, not on a per-instance flag): ONE receiver exists per
+            // AddRabbitMq registration — it is constructed at the single site in Extensions.cs, is neither
+            // container-resolvable nor publicly constructible, and the IMessagingInfrastructure factory hands that
+            // same instance back on every Create(). So "did the core drive THIS instance through startup?" is not a
+            // question any path here has to answer. What decides whether a stop has work to do is the source's own
+            // registration state (_registerConsumer / _consumerTag / _receiveChannel), which StopReceivingAsync reads
+            // and clears.
+            // This DISSOLVES ADR-0019 section 5's positional constraint rather than satisfying it. That section argued
+            // an initialization latch had to sit ABOVE every startup gate below, because StartReceivingAsync stores the
+            // registration delegate BEFORE it ensures the receive channel — so a startup that faults mid-registration
+            // leaves a stored delegate that only a stop clears, and a latch set too late would dispose without
+            // stopping, letting a later recovery re-register a consumer that writes into a completed buffer. With the
+            // latch deleted there is no position to get wrong: dispose runs the stop unconditionally, so the stored
+            // delegate is cleared no matter where the fault landed. Deleting the latch is therefore SAFER than keeping
+            // it correctly positioned, not merely simpler.
+
             // TransactionMode.None is at-most-once ("if an error occurs after a message is received, it will be
             // lost"). The handler-failure path already drops (acks) under None, but a process CRASH/KILL while the
             // handler runs leaves a manual-ack delivery UNacked, so the broker redelivers it on reconnect — that is
@@ -124,6 +141,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
                     "destination and be redelivered indefinitely. Configure a dead-letter or error queue before receiving.");
             }
 
+            // The gate above proves a poison destination was NAMED; this one proves it EXISTS.
+            await AssertPoisonDestinationsExistAsync(cancellationToken).ConfigureAwait(false);
+
             // Prefetch must keep enough unacknowledged deliveries in flight to saturate the core's workers, so
             // floor it at MaxConcurrentCalls. The bounded buffer mirrors that prefetch so the consumer never
             // accepts more than the broker is willing to leave unacknowledged.
@@ -148,6 +168,61 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             // detect a recycled channel. The epoch is NOT closed over once at InitializeAsync — it is the per-call
             // parameter the source supplies, so a post-recovery re-registration stamps the post-recovery epoch.
             await _connectionSource.StartReceivingAsync(RegisterConsumerAsync, cancellationToken).ConfigureAwait(false);
+        }
+
+        // FAIL FAST AT REGISTRATION (existence half): the neither-configured gate only proves a poison destination
+        // was NAMED. This module PROVISIONS NO TOPOLOGY, so a dead-letter/error queue named in configuration but
+        // never declared externally does not exist on the broker — and DeadletterMessageAsync's mandatory:true
+        // republish then faults with a PublishException. The core's TryDeadletterWithRecoveryAsync CATCHES that,
+        // logs it, and leaves the ORIGINAL delivery unsettled; at the default Prefetch of 1 that unacked delivery
+        // holds the receiver's only broker credit, so the receiver STALLS INDEFINITELY on the first poison message
+        // and the misconfiguration surfaces only as a log line. Probing existence here, BEFORE StartReceivingAsync
+        // registers the AMQP consumer, turns that silent stall into a loud startup failure naming the queue.
+        // EXCEPTION: TransactionMode.None is at-most-once — a poison message is dropped (acked), never republished
+        // — so it requires no poison destination and probes none, mirroring the neither-configured gate's own
+        // exception.
+        // CHANNEL CHOICE: a PASSIVE declare PROVISIONS NOTHING (it only asks the broker whether the queue exists),
+        // so the no-topology invariant holds. It runs on a channel rented from the publish pool, never on the
+        // receive channel, because a FAILED passive declare CLOSES its channel — killing the receive channel would
+        // take the receiver down with it. The rental's return path disposes a closed channel instead of re-pooling
+        // it while ALWAYS releasing the permit, so the pool self-heals after a failed probe.
+        private async Task AssertPoisonDestinationsExistAsync(CancellationToken cancellationToken)
+        {
+            if (_options.TransactionMode == TransactionMode.None)
+            {
+                return;
+            }
+
+            await using var rental = await _connectionSource.AcquirePublishChannelAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(_options.DeadLetterQueuePath))
+            {
+                await AssertQueueExistsAsync(rental.Channel, _options.DeadLetterQueuePath, nameof(ReceiverOptions.DeadLetterQueuePath), cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_options.ErrorQueuePath))
+            {
+                await AssertQueueExistsAsync(rental.Channel, _options.ErrorQueuePath, nameof(ReceiverOptions.ErrorQueuePath), cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // INVARIANT: ONLY a 404 NOT_FOUND means the queue does not exist. Every other fault — connection refused,
+        // access refused, resource locked — propagates UNWRAPPED, so an infrastructure problem is never masked as a
+        // missing queue (which would send an operator to declare a queue that already exists).
+        private async Task AssertQueueExistsAsync(IChannel channel, string queue, string optionName, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await channel.QueueDeclarePassiveAsync(queue, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationInterruptedException ex) when (ex.ShutdownReason?.ReplyCode == Constants.NotFound)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot start the RabbitMQ receiver for queue '{_options.MessageReceiverPath}': the configured poison destination " +
+                    $"'{queue}' ({optionName}) does not exist on the broker. This adapter provisions no topology, so the queue must be " +
+                    "declared externally before receiving. A poison message that exhausts MaxReceiveAttempts would otherwise fault its " +
+                    "deadletter republish, leaving the original delivery unsettled and stalling the receiver indefinitely.", ex);
+            }
         }
 
         // INVARIANT: invoked by the connection source under the receive gate on every (re)creation of the receive
@@ -594,18 +669,45 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
             => transactionContext?.TransactionMode == TransactionMode.None;
 
         // INVARIANT (TERMINAL receive teardown, mirrors core BrokeredMessageReceiver.StopReceiver — one-way, not
-        // restartable): cancel the AMQP consumer on the SHARED source FIRST so no new delivery can race the buffer
-        // completion (the source's StopReceivingAsync cancels the consumer and tears down the receive channel under
-        // its gate), THEN complete the buffer writer so the blocking ReceiveMessageAsync pull drains and unblocks.
+        // restartable): stop receiving and complete the buffer through StopReceivingAndCompleteBufferAsync, which
+        // owns the stop-then-complete ORDERING and its #494 known gap.
         // SURGICAL: StopReceivingAsync leaves the connection + publish pool intact (the singleton source is shared
         // with the sender, which keeps publishing). Prefetched-but-unacked deliveries are NOT acked here — they are
         // left for broker redelivery, consistent with the epoch guard that already no-ops a settle after the channel
-        // is torn down. A delivery that buffered after the cancel but before completion is drained by the reader;
-        // BufferDeliveryAsync writes cannot strand because the cancel precedes the channel teardown that stops them.
-        public async Task StopReceiver()
+        // is torn down. A delivery that buffered after the cancel but before completion is drained by the reader.
+        public Task StopReceiver()
+            => StopReceivingAndCompleteBufferAsync();
+
+        // Cancel the AMQP consumer on the SHARED source FIRST so no new delivery can race the buffer completion (the
+        // source's StopReceivingAsync cancels the consumer and tears down the receive channel under its gate), THEN
+        // complete the buffer writer so the blocking ReceiveMessageAsync pull drains and unblocks.
+        // INVARIANT (the parked reader is NEVER stranded): the completion runs in a finally, so a stop that THROWS
+        // still unblocks the pull. IRabbitMqConnectionSource is a PUBLIC seam and a consumer-supplied source may
+        // fault its stop for any reason; without the finally that fault skipped the completion, left
+        // ReceiveMessageAsync parked on the empty buffer forever, and HUNG HOST SHUTDOWN. There is deliberately NO
+        // catch: a foreign source's contract violation must still surface to the caller — it simply can no longer
+        // strand the reader.
+        // WHY ONE HELPER RATHER THAN THREE COPIES: StopReceiver, Dispose and DisposeAsync previously each held these
+        // same two bare statements, and that sameness was cosmetic — three copies of two statements carried no rule
+        // to get wrong. The finally changes the calculus: the duplication now carries a CORRECTNESS INVARIANT, and
+        // "every teardown path remembers its finally" maintained by convention is exactly the complete-the-known-set
+        // shape this adapter has been removing. One helper makes it structural instead of conventional.
+        // KNOWN GAP (issue #494): a BufferDeliveryAsync write ALREADY PARKED on a full bounded buffer is not
+        // quiesced by this sequence. Cancelling the consumer stops NEW pushes but does not un-park that write, and
+        // TryComplete() then faults it with ChannelClosedException. Under autoAck:true — TransactionMode.None only —
+        // the broker removed that delivery as it pushed it, so there is no redelivery and the message is LOST. Every
+        // other mode keeps manual ack, so the unacked delivery is redelivered. The ordering above is deliberate and
+        // #494 tracks the quiesce; do not reorder the stop and the completion to chase it.
+        private async Task StopReceivingAndCompleteBufferAsync()
         {
-            await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
-            _buffer?.Writer.TryComplete();
+            try
+            {
+                await _connectionSource.StopReceivingAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                _buffer?.Writer.TryComplete();
+            }
         }
 
         // CreateLocalTransaction returns null to match the core default; full-atomicity transaction handling is
@@ -613,26 +715,31 @@ namespace Chatter.MessageBrokers.RabbitMQ.Receiving
         public TransactionScope CreateLocalTransaction(TransactionContext context)
             => null;
 
-        // Dispose ESCALATES beyond StopReceiver's surgical receive teardown to the source's FULL teardown (connection
-        // + publish pool), then completes the buffer. The source's Dispose()/DisposeAsync() share one single-admission
-        // lifecycle CAS and are idempotent, so the DI container's own later disposal of the singleton source is a
-        // clean no-op. Terminal: a disposed receiver does not restart.
-        // The seam is IAsyncDisposable; the production source ALSO implements IDisposable for the synchronous
-        // container-dispose path, so the sync Dispose() prefers the source's synchronous teardown when available.
+        // INVARIANT (dispose NEVER tears down the shared source): disposing THIS receiver means releasing what THIS
+        // receiver holds — its AMQP consumer and the receive channel — which is exactly the surgical teardown
+        // StopReceiver performs. The IRabbitMqConnectionSource is a SINGLETON the SENDER shares: its connection and
+        // publish-channel pool outlive any one receiver, and the DI container disposes the singleton at host shutdown.
+        // This is not merely a stray-scope concern — the core's BrokeredMessageReceiver.StartReceiver returns the
+        // infrastructure receiver itself as the IAsyncDisposable its hosted service await-usings, so this path runs on
+        // EVERY receiver shutdown. Disposing the source here closed the connection and drained the publish pool
+        // underneath hosted services that stop later and are still publishing, faulting their sends with
+        // ObjectDisposedException. The sibling ASB adapter disposes only its OWN inner receiver, never the shared
+        // ServiceBusClient; this matches it.
+        // Dispose, DisposeAsync and StopReceiver therefore run the SAME helper unconditionally —
+        // StopReceivingAndCompleteBufferAsync, which stops then completes the buffer in a finally.
+        // StopReceivingAsync is gate-serialized and idempotent, so stop-then-dispose and double-dispose are
+        // clean no-ops, and a stop issued when nothing was ever registered finds no delegate and no consumer tag to
+        // cancel. Terminal either way: a disposed receiver does not restart.
         public void Dispose()
         {
-            if (_connectionSource is IDisposable syncDisposable)
-            {
-                syncDisposable.Dispose();
-            }
-
-            _buffer?.Writer.TryComplete();
+            // Blocking on the async stop is deliberate and safe here: the connection source awaits with
+            // ConfigureAwait(false) throughout, so there is no captured context to deadlock against, and the core
+            // sets the same precedent in its own Dispose(bool). In production the receiver is always disposed through
+            // DisposeAsync (the core's path), so this path exists only for a synchronous container teardown.
+            StopReceivingAndCompleteBufferAsync().GetAwaiter().GetResult();
         }
 
         public async ValueTask DisposeAsync()
-        {
-            await _connectionSource.DisposeAsync().ConfigureAwait(false);
-            _buffer?.Writer.TryComplete();
-        }
+            => await StopReceivingAndCompleteBufferAsync().ConfigureAwait(false);
     }
 }

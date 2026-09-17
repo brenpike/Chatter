@@ -142,6 +142,12 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
         // WITHOUT touching the fake connection or the publish pool (AcquirePublishChannelAsync keeps working, so a
         // sender still publishes after the receiver stops). Idempotent: a double-stop finds a null channel + null
         // delegate and no-ops.
+        // Opt-in stop-fault seam, MIRRORING the RecordingChannel.PublishFault / PassiveDeclareFault shapes: when
+        // non-null, StopReceivingAsync performs its FULL existing teardown and THEN throws this exception.
+        // IRabbitMqConnectionSource is a PUBLIC seam, so a consumer-supplied source may fault its stop for any
+        // reason; this models that. Default null leaves every existing test's stop byte-identical.
+        public Exception StopFault { get; set; }
+
         public async Task StopReceivingAsync(CancellationToken cancellationToken)
         {
             if (ReceiveChannel is not null)
@@ -158,6 +164,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving
             _registerConsumer = null;
             _consumerTag = null;
             ReceivingStopped = true;
+
+            if (StopFault is not null)
+            {
+                throw StopFault;
+            }
         }
 
         // True once StopReceivingAsync has terminally stopped receiving, so a test can assert the stop happened

@@ -120,6 +120,19 @@ namespace Chatter.MessageBrokers.RabbitMQ.Configuration
         }
 
         /// <summary>
+        /// Connects the discrete host/credential settings over TLS. Certificate validation is always strict:
+        /// no option weakens or disables it. Has no effect when a connection URI is configured — the URI scheme
+        /// determines the transport — and <see cref="Build"/> rejects a TLS request made alongside a plaintext URI.
+        /// </summary>
+        /// <param name="serverName">The server name the broker's certificate is validated against. Defaults to the configured host name.</param>
+        public RabbitMqOptionsBuilder WithTls(string serverName = null)
+        {
+            _rabbitMqOptions.UseTls = true;
+            _rabbitMqOptions.TlsServerName = serverName;
+            return this;
+        }
+
+        /// <summary>
         /// Registers a receiver for <typeparamref name="TMessage"/> bound to the supplied queue.
         /// </summary>
         public RabbitMqOptionsBuilder AddQueueReceiver<TMessage>(string queueName,
@@ -152,7 +165,23 @@ namespace Chatter.MessageBrokers.RabbitMQ.Configuration
                 throw new ArgumentNullException(nameof(_rabbitMqOptions.MessageBodyType), "A message body type is required.");
             }
 
+            // A configured URI takes precedence over the discrete settings, so a TLS request carried alongside a
+            // plaintext URI would be silently dropped and the credentials sent in the clear. Reject it instead.
+            // Unreachable for any configuration that does not opt into TLS.
+            if (_rabbitMqOptions.UseTls
+                && !string.IsNullOrWhiteSpace(_rabbitMqOptions.Uri)
+                && !IsAmqpsUri(_rabbitMqOptions.Uri))
+            {
+                throw new ArgumentException(
+                    "TLS was requested but the configured connection URI is not an 'amqps' URI. The URI takes precedence over the discrete connection settings, so the connection would be plaintext. Supply an 'amqps' URI or remove the URI.",
+                    nameof(_rabbitMqOptions.Uri));
+            }
+
             return _rabbitMqOptions;
         }
+
+        private static bool IsAmqpsUri(string uri)
+            => Uri.TryCreate(uri, UriKind.Absolute, out var parsed)
+               && string.Equals(parsed.Scheme, "amqps", StringComparison.OrdinalIgnoreCase);
     }
 }

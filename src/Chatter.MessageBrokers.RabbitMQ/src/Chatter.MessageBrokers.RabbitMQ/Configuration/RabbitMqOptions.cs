@@ -39,6 +39,17 @@ namespace Chatter.MessageBrokers.RabbitMQ.Configuration
         /// The queue type receivers declare their queues as. Defaults to <see cref="QueueType.Quorum"/>.
         /// </summary>
         public QueueType QueueType { get; set; } = QueueType.Quorum;
+        /// <summary>
+        /// Whether the discrete host/credential settings connect over TLS. The default is false. Ignored when
+        /// <see cref="Uri"/> is set — the URI scheme determines the transport — and a TLS request alongside a
+        /// plaintext URI is rejected when the options are built. Certificate validation is always strict.
+        /// </summary>
+        public bool UseTls { get; set; }
+        /// <summary>
+        /// The server name the broker's certificate is validated against when <see cref="UseTls"/> is set.
+        /// Defaults to <see cref="HostName"/> when not supplied.
+        /// </summary>
+        public string TlsServerName { get; set; }
 
         public RabbitMqOptions(string uri = null,
                                string hostName = null,

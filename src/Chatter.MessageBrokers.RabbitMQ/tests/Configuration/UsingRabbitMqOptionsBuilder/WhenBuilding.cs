@@ -197,6 +197,69 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Configuration.UsingRabbitMqOptio
             builder.Build().QueueType.Should().Be(QueueType.Classic);
         }
 
+        // --- TLS (additive, default-off) ---
+
+        [Fact]
+        public void MustApplyWithTlsAndReturnBuilder()
+        {
+            var builder = NewBuilder().AddRabbitMqOptions(hostName: "localhost");
+            builder.WithTls().Should().BeSameAs(builder);
+            var options = builder.Build();
+            options.UseTls.Should().BeTrue();
+            options.TlsServerName.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustApplyWithTlsServerName()
+        {
+            var options = NewBuilder()
+                .AddRabbitMqOptions(hostName: "localhost")
+                .WithTls("certificate-common-name")
+                .Build();
+            options.UseTls.Should().BeTrue();
+            options.TlsServerName.Should().Be("certificate-common-name");
+        }
+
+        [Fact]
+        public void MustThrowNullReferenceExceptionWhenWithTlsCalledBeforeAddOptions()
+        {
+            Action act = () => NewBuilder().WithTls();
+            act.Should().Throw<NullReferenceException>();
+        }
+
+        // A caller who asked for TLS and supplied a plaintext URI must not silently connect in the clear: the URI
+        // takes precedence over the discrete settings, so the requested TLS would be dropped.
+        [Fact]
+        public void MustThrowArgumentExceptionWhenTlsRequestedWithPlaintextUri()
+        {
+            Action act = () => NewBuilder()
+                .AddRabbitMqOptions(uri: "amqp://localhost:5672")
+                .WithTls()
+                .Build();
+            act.Should().Throw<ArgumentException>();
+        }
+
+        [Fact]
+        public void MustThrowArgumentExceptionWhenTlsRequestedWithUnparsableUri()
+        {
+            Action act = () => NewBuilder()
+                .AddRabbitMqOptions(uri: "not-a-uri")
+                .WithTls()
+                .Build();
+            act.Should().Throw<ArgumentException>();
+        }
+
+        // An amqps URI already carries TLS, so the flag is a harmless no-op rather than a conflict.
+        [Fact]
+        public void MustBuildWhenTlsRequestedWithAmqpsUri()
+        {
+            var options = NewBuilder()
+                .AddRabbitMqOptions(uri: "amqps://localhost:5671")
+                .WithTls()
+                .Build();
+            options.UseTls.Should().BeTrue();
+        }
+
         // --- RabbitMqOptions ctor defaults ---
 
         [Fact]
@@ -206,6 +269,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Configuration.UsingRabbitMqOptio
             options.MessageBodyType.Should().Be(DefaultMessageBodyType);
             options.Prefetch.Should().Be(1);
             options.QueueType.Should().Be(QueueType.Quorum);
+            options.UseTls.Should().BeFalse();
+            options.TlsServerName.Should().BeNull();
         }
     }
 }
