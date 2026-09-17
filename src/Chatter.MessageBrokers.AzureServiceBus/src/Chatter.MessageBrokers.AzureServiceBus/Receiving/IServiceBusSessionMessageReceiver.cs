@@ -19,13 +19,5 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// </summary>
         /// <param name="message">The message whose delivering session receiver is being resolved.</param>
         ServiceBusSessionReceiver SessionReceiverFor(ServiceBusReceivedMessage message);
-
-        /// <summary>
-        /// Signals that the worker is finished with <paramref name="message"/>'s delivery, whether or not it was
-        /// settled. An implementation holding exactly one session has no slot to free and treats this as a no-op;
-        /// an implementation holding N sessions frees the session slot the delivery occupied.
-        /// </summary>
-        /// <param name="message">The delivery the worker has finished with.</param>
-        void DeliveryReleased(ServiceBusReceivedMessage message);
     }
 }

@@ -144,6 +144,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
             return Task.FromResult(SettlementOutcome);
         }
 
+        // No-op: a single-session child has no slot to free and no per-message renewal of its own — its session
+        // rolls on drain, idle, or lock loss instead.
+        public void DeliveryReleased(ServiceBusReceivedMessage message)
+        {
+        }
+
         public Task CloseAsync()
         {
             lock (_syncLock)

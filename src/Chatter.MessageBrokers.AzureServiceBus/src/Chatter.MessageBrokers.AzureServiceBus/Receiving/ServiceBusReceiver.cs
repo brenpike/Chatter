@@ -125,6 +125,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                       options.MessageReceiverPath,
                                                       receiveMode,
                                                       _serviceBusOptions.PrefetchCount,
+                                                      _serviceBusOptions.MaxMessageLockRenewalDuration,
                                                       _logger);
         }
 
@@ -328,8 +329,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         }
 
         /// <summary>
-        /// Tells the inner session receiver that the worker is finished with this delivery, so the session slot the
-        /// delivery occupied can be freed. A non-session inner receiver is a no-op.
+        /// Tells the inner receiver that the worker is finished with this delivery. Every inner receiver has
+        /// something to end with it: a session receiver frees the session slot the delivery occupied, a non-session
+        /// receiver ends the delivery's message-lock renewal.
         /// </summary>
         /// <remarks>
         /// INVARIANT: this reads the inner receiver FIELD, never the lazily-constructing <see cref="InnerReceiver"/>
@@ -340,11 +342,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// </remarks>
         public void DeliveryReleased(MessageBrokerContext context)
         {
-            if (_innerReceiver is IServiceBusSessionMessageReceiver sessionReceiver
+            var innerReceiver = _innerReceiver;
+            if (innerReceiver != null
                 && context != null
                 && context.Container.TryGet<ServiceBusReceivedMessage>(out var msg))
             {
-                sessionReceiver.DeliveryReleased(msg);
+                innerReceiver.DeliveryReleased(msg);
             }
         }
 
