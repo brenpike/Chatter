@@ -169,6 +169,44 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingMessageLoc
             _delays.RenewalTokens.Should().BeEmpty("a closed registry starts no loop at all");
         }
 
+        [Fact]
+        public async Task ItStillAwaitsAStoppedDeliverysRenewalOnClose()
+        {
+            var sut = CreateSut();
+            var delivery = ServiceBusMessageFactory.ReceivedMessage(messageId: "stopped-mid-renewal");
+            var renewal = new ParkedRenewal();
+            var renewalToken = StartRenewal(sut, delivery, renewal.RenewAsync);
+            _delays.Release(renewalToken);
+            (await CompletedWithin(renewal.Entered, _waitTimeout)).Should().BeTrue("the loop must be inside the broker's renew call before the delivery is stopped");
+
+            sut.Stop(delivery);
+            var close = sut.CloseAsync();
+
+            close.IsCompleted.Should().BeFalse("a stopped delivery whose renewal is still awaiting the broker must remain visible to teardown, or close reports done and the adapter closes the SDK receiver under a live renewal");
+
+            renewal.Complete();
+
+            (await CompletedWithin(close, _waitTimeout)).Should().BeTrue("close completes once the stopped delivery's renewal has actually ended");
+        }
+
+        [Fact]
+        public async Task ItSharesOneCompletionAcrossOverlappingCloses()
+        {
+            var sut = CreateSut();
+            StartRenewal(sut, "renewing", _ => Task.CompletedTask);
+
+            var firstClose = sut.CloseAsync();
+            var secondClose = sut.CloseAsync();
+
+            firstClose.IsCompleted.Should().BeFalse("close does not complete while a renewal loop it cancelled is still running");
+            secondClose.IsCompleted.Should().BeFalse("a second close that returned early would let its caller close the SDK receiver while the first close is still awaiting a renewal");
+
+            _delays.ReleaseAll();
+
+            (await CompletedWithin(firstClose, _waitTimeout)).Should().BeTrue("close completes once every renewal loop it cancelled has ended");
+            (await CompletedWithin(secondClose, _waitTimeout)).Should().BeTrue("every close of one registry shares the one completion");
+        }
+
         private static async Task<bool> CompletedWithin(Task pending, TimeSpan timeout)
             => await Task.WhenAny(pending, Task.Delay(timeout)).ConfigureAwait(false) == pending;
 
@@ -289,6 +327,28 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingMessageLoc
                 _renewed.TrySetResult(true);
                 return Task.CompletedTask;
             }
+        }
+
+        /// <summary>
+        /// One delivery's renew delegate that PARKS INSIDE the broker call until the test completes it. That is
+        /// the state a renewal is in when a stop or a close races a renewal already in flight — the interleaving a
+        /// renewal that only parks on its delay can never reach.
+        /// </summary>
+        private sealed class ParkedRenewal
+        {
+            private readonly TaskCompletionSource<bool> _entered = new TaskCompletionSource<bool>();
+            private readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
+
+            /// <summary>Completes once the loop has actually entered the renew call and parked there.</summary>
+            public Task Entered => _entered.Task;
+
+            public Task RenewAsync(CancellationToken renewalToken)
+            {
+                _entered.TrySetResult(true);
+                return _completion.Task;
+            }
+
+            public void Complete() => _completion.TrySetResult(true);
         }
 
         private sealed class ParkedDelay
