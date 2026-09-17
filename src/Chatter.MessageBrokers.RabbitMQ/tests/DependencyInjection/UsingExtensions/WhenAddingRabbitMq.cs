@@ -65,15 +65,22 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             return services;
         }
 
-        // Mirrors the descriptor lookup RejectFullAtomicity performs (ServiceType == typeof(MessageBrokerOptions),
-        // ImplementationInstance narrowed with `as`). Returns null on exactly the misses the production read
-        // swallows: no descriptor, or a descriptor that is not an ImplementationInstance.
+        // Mirrors the EFFECTIVE descriptor lookup RejectFullAtomicity performs (ServiceType ==
+        // typeof(MessageBrokerOptions), LAST match because that is the one MSDI resolves for a single-service
+        // request, ImplementationInstance narrowed with `as`). Returns null on exactly the misses the production
+        // read swallows: no descriptor, or a descriptor that is not an ImplementationInstance.
         private static MessageBrokerOptions ReadGlobalOptionsOffDescriptors(IServiceCollection services)
-            => services.FirstOrDefault(d => d.ServiceType == typeof(MessageBrokerOptions))?
+            => services.LastOrDefault(d => d.ServiceType == typeof(MessageBrokerOptions))?
                        .ImplementationInstance as MessageBrokerOptions;
 
         private static ServiceDescriptor Single(IServiceCollection services, Type serviceType)
             => services.Single(d => d.ServiceType == serviceType);
+
+        // Deliberately NOT Single: the last-wins tests below register the same service type twice on purpose, and
+        // Single would throw InvalidOperationException on the duplicate — an exception easily mistaken for a guard
+        // rejection.
+        private static ServiceDescriptor Last(IServiceCollection services, Type serviceType)
+            => services.Last(d => d.ServiceType == serviceType);
 
         private static Type ConnectionSourceType()
             => typeof(RabbitMqMessageContext).Assembly.GetType(
@@ -502,6 +509,178 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             };
 
             act.Should().Throw<NotSupportedException>();
+        }
+
+        // --- the guards must read the EFFECTIVE (last-registered) descriptor --------------------------
+        //
+        // ROOT: Microsoft DI resolves a single-service request from the LAST matching descriptor
+        // (CallSiteFactory.TryCreateExact hands back descriptor.Last). A guard that reads the FIRST match therefore
+        // reasons about a descriptor the container may never resolve — in BOTH directions: it lets an unsupportable
+        // effective registration through, and it rejects a supported one. Every test below registers the same
+        // service type TWICE, which is the only shape that can tell first-match and last-match apart, and each
+        // asserts the throw MESSAGE because three guards throw the same NotSupportedException type.
+
+        [Fact]
+        public void MustThrowWhenALaterGlobalTransactionModeIsFullAtomicity()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton(GlobalOptions(TransactionMode.None));
+                services.AddSingleton(GlobalOptions(TransactionMode.FullAtomicityViaInfrastructure));
+            });
+
+            act.Should().Throw<NotSupportedException>(
+                    "the LAST MessageBrokerOptions descriptor is the one the container resolves")
+                .WithMessage("*FullAtomicityViaInfrastructure*");
+        }
+
+        [Fact]
+        public void MustNotThrowWhenALaterGlobalTransactionModeSupersedesFullAtomicity()
+        {
+            IServiceCollection services = null;
+            Action act = () => services = BuildRegistration(s =>
+            {
+                s.AddSingleton(GlobalOptions(TransactionMode.FullAtomicityViaInfrastructure));
+                s.AddSingleton(GlobalOptions(TransactionMode.ReceiveOnly));
+            });
+
+            act.Should().NotThrow("the superseded FullAtomicity descriptor is never resolved");
+
+            // "Did not throw" alone is ambiguous — a read that finds nothing also passes. Assert the effective read
+            // SUCCEEDED and carried the superseding mode.
+            var effectiveOptions = ReadGlobalOptionsOffDescriptors(services);
+            effectiveOptions.Should().NotBeNull();
+            effectiveOptions.TransactionMode.Should().Be(TransactionMode.ReceiveOnly);
+        }
+
+        [Fact]
+        public void MustThrowWhenALaterRegistryHoldsAnAtomicRabbitMqReceiver()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IDiscoveredReceiverRegistry>(new StubDiscoveredReceiverRegistry());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                        TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                    }));
+            });
+
+            act.Should().Throw<NotSupportedException>()
+                .WithMessage("*FullAtomicityViaInfrastructure*");
+        }
+
+        [Fact]
+        public void MustThrowWhenALaterRegistryHoldsMoreThanOneRabbitMqReceiver()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IDiscoveredReceiverRegistry>(new StubDiscoveredReceiverRegistry());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.ReceiveOnly
+                        }));
+            });
+
+            act.Should().Throw<NotSupportedException>()
+                .WithMessage("*single queue receiver per process*");
+        }
+
+        [Fact]
+        public void MustNotThrowWhenALaterEmptyRegistrySupersedesALoadedOne()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                        },
+                        new ReceiverOptions
+                        {
+                            InfrastructureType = RabbitMqMessageContext.InfrastructureType,
+                            TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                        }));
+                services.AddSingleton<IDiscoveredReceiverRegistry>(new StubDiscoveredReceiverRegistry());
+            });
+
+            act.Should().NotThrow(
+                "neither receiver guard may fire off a registry the container will never hand anyone");
+        }
+
+        [Fact]
+        public void MustThrowWhenALaterConnectionSourceOverrideIsScoped()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IRabbitMqConnectionSource>(new SpyRabbitMqConnectionSource());
+                services.AddScoped<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>();
+            });
+
+            act.Should().Throw<NotSupportedException>(
+                    "the scoped descriptor is the one resolved, and the root provider cannot resolve it")
+                .WithMessage("*Scoped*");
+        }
+
+        // Load-bearing beyond its own case: the final assertion turns "MSDI resolves the LAST descriptor" from a
+        // claim in a comment into a fact pinned by the real container.
+        [Fact]
+        public void MustNotThrowWhenASingletonConnectionSourceOverrideSupersedesAScopedOne()
+        {
+            var effectiveSource = new SpyRabbitMqConnectionSource();
+
+            IServiceCollection services = null;
+            Action act = () => services = BuildRegistration(s =>
+            {
+                s.AddScoped<IRabbitMqConnectionSource, SpyRabbitMqConnectionSource>();
+                s.AddSingleton<IRabbitMqConnectionSource>(effectiveSource);
+            });
+
+            act.Should().NotThrow("the effective registration is the singleton");
+
+            var descriptor = Last(services, ConnectionSourceType());
+            descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
+            descriptor.ImplementationInstance.Should().BeSameAs(effectiveSource);
+
+            using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<IRabbitMqConnectionSource>().Should().BeSameAs(
+                effectiveSource,
+                "Microsoft DI resolves a single-service request from the LAST matching descriptor");
+        }
+
+        // CHARACTERIZATION: the two IMessagingInfrastructure lookups are deliberately NOT last-wins reads. The core's
+        // MessagingInfrastructureProvider takes IEnumerable<IMessagingInfrastructure> — which captures EVERY
+        // descriptor in registration order — and picks FirstOrDefault() as the default broker. So for RabbitMQ
+        // attribution the only meaningful question is PRESENCE: if any infrastructure was registered before
+        // AddRabbitMq, RabbitMQ is not the default and a blank-InfrastructureType receiver is not RabbitMQ's to
+        // claim. Converting these reads to last-wins would regress exactly this case.
+        [Fact]
+        public void MustNotClaimADefaultAtomicReceiverWhenAnotherInfrastructureWasRegisteredFirst()
+        {
+            Action act = () => BuildRegistration(services =>
+            {
+                services.AddSingleton<IMessagingInfrastructure>(new ForeignMessagingInfrastructure());
+                services.AddSingleton<IDiscoveredReceiverRegistry>(
+                    new StubDiscoveredReceiverRegistry(new ReceiverOptions
+                    {
+                        InfrastructureType = string.Empty,
+                        TransactionMode = TransactionMode.FullAtomicityViaInfrastructure
+                    }));
+            });
+
+            act.Should().NotThrow(
+                "the foreign infrastructure was registered first, so it — not RabbitMQ — is the core's default");
         }
 
         // --- Hosted-receiver factory must NOT dispose the singleton source at factory return -------------

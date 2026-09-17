@@ -112,22 +112,19 @@ namespace Microsoft.Extensions.DependencyInjection
 
         // Fails fast at registration when FullAtomicityViaInfrastructure is configured for RabbitMQ, on either the
         // global MessageBrokerOptions.TransactionMode or any RabbitMQ-attributed discovered receiver's per-call
-        // mode. Both surfaces are read directly off the IServiceCollection (the MessageBrokerOptions and the
-        // IDiscoveredReceiverRegistry are each registered as a singleton ImplementationInstance during core
+        // mode. Both surfaces are read off the EFFECTIVE IServiceCollection registration (the MessageBrokerOptions
+        // and the IDiscoveredReceiverRegistry are each registered as a singleton ImplementationInstance during core
         // configuration, which runs before AddRabbitMq), so no provider is built here.
         private static void RejectFullAtomicity(IServiceCollection services)
         {
-            var globalMode = services
-                .FirstOrDefault(d => d.ServiceType == typeof(MessageBrokerOptions))?
+            var globalMode = EffectiveRegistration(services, typeof(MessageBrokerOptions))?
                 .ImplementationInstance as MessageBrokerOptions;
             if (globalMode?.TransactionMode == TransactionMode.FullAtomicityViaInfrastructure)
             {
                 throw new NotSupportedException(FullAtomicityMessage);
             }
 
-            var discoveredRegistry = services
-                .FirstOrDefault(d => d.ServiceType == typeof(IDiscoveredReceiverRegistry))?
-                .ImplementationInstance as IDiscoveredReceiverRegistry;
+            var discoveredRegistry = EffectiveDiscoveredReceiverRegistry(services);
             if (discoveredRegistry is null)
             {
                 return;
@@ -137,7 +134,7 @@ namespace Microsoft.Extensions.DependencyInjection
             // IMessagingInfrastructure at runtime. This runs BEFORE AddRabbitMq registers RabbitMQ's own
             // IMessagingInfrastructure descriptor, so RabbitMQ is the core default only when no earlier broker
             // registered one — mirroring the Azure Service Bus attribution.
-            var rabbitMqIsDefault = !services.Any(d => d.ServiceType == typeof(IMessagingInfrastructure));
+            var rabbitMqIsDefault = !AnyRegistration(services, typeof(IMessagingInfrastructure));
 
             foreach (var receiverOptions in discoveredRegistry.DiscoveredReceivers)
             {
@@ -155,20 +152,18 @@ namespace Microsoft.Extensions.DependencyInjection
 
         // Fails fast at registration when MORE THAN ONE RabbitMQ-attributed receiver is discovered. The singleton
         // connection source owns one receive channel and one registration delegate, so a second receiver clobbers the
-        // first and recovery only re-registers the last. Uses the SAME IServiceCollection-read (no provider built) and
-        // the SAME RabbitMQ attribution (IsRabbitMqReceiver + the first-registered-IMessagingInfrastructure default
-        // rule) as RejectFullAtomicity. No-op when the registry is absent or has 0/1 RabbitMQ receivers.
+        // first and recovery only re-registers the last. Uses the SAME effective-registration read (no provider built)
+        // and the SAME RabbitMQ attribution (IsRabbitMqReceiver + the first-registered-IMessagingInfrastructure
+        // default rule) as RejectFullAtomicity. No-op when the registry is absent or has 0/1 RabbitMQ receivers.
         private static void RejectMultipleReceivers(IServiceCollection services)
         {
-            var discoveredRegistry = services
-                .FirstOrDefault(d => d.ServiceType == typeof(IDiscoveredReceiverRegistry))?
-                .ImplementationInstance as IDiscoveredReceiverRegistry;
+            var discoveredRegistry = EffectiveDiscoveredReceiverRegistry(services);
             if (discoveredRegistry is null)
             {
                 return;
             }
 
-            var rabbitMqIsDefault = !services.Any(d => d.ServiceType == typeof(IMessagingInfrastructure));
+            var rabbitMqIsDefault = !AnyRegistration(services, typeof(IMessagingInfrastructure));
 
             var rabbitMqReceiverCount = discoveredRegistry.DiscoveredReceivers
                 .Count(receiverOptions => IsRabbitMqReceiver(receiverOptions.InfrastructureType, rabbitMqIsDefault));
@@ -184,12 +179,13 @@ namespace Microsoft.Extensions.DependencyInjection
         // a Scoped or Transient override survives registration and is then resolved from the ROOT provider by the
         // IMessagingInfrastructure factory: under host scope validation that throws "Cannot resolve scoped service
         // from root provider" at first resolution, and without validation the instance is root-captured for the
-        // application's lifetime — silently breaking the one-IConnection-per-process invariant. Read directly off
-        // the IServiceCollection (no provider built), matching the other two guards. No-op when no override exists
-        // (AddRabbitMq registers the singleton itself) or when the override is already a Singleton.
+        // application's lifetime — silently breaking the one-IConnection-per-process invariant. Read off the
+        // EFFECTIVE IServiceCollection registration (no provider built), matching the other two guards: the lifetime
+        // that matters is the one belonging to the descriptor the container will actually resolve. No-op when no
+        // override exists (AddRabbitMq registers the singleton itself) or when the override is already a Singleton.
         private static void RejectNonSingletonConnectionSourceOverride(IServiceCollection services)
         {
-            var existing = services.FirstOrDefault(d => d.ServiceType == typeof(IRabbitMqConnectionSource));
+            var existing = EffectiveRegistration(services, typeof(IRabbitMqConnectionSource));
             if (existing is null || existing.Lifetime == ServiceLifetime.Singleton)
             {
                 return;
@@ -197,6 +193,31 @@ namespace Microsoft.Extensions.DependencyInjection
 
             throw new NotSupportedException(string.Format(NonSingletonConnectionSourceMessage, existing.Lifetime));
         }
+
+        // The descriptor a SINGLE-service request resolves to. Microsoft DI resolves such a request from the LAST
+        // registered descriptor for the service type (CallSiteFactory.TryCreateExact forwards to descriptor.Last),
+        // so a later registration SUPERSEDES an earlier one. Every registration guard that asks "what is registered
+        // for this service type" must ask it through here: reading the FIRST match reasons about a descriptor the
+        // container may never hand anyone, which both lets an unsupportable effective registration boot and rejects
+        // a supported one.
+        private static ServiceDescriptor EffectiveRegistration(IServiceCollection services, Type serviceType)
+            => services.LastOrDefault(descriptor => descriptor.ServiceType == serviceType);
+
+        // Whether ANY descriptor exists for the service type. This is the correct — and only meaningful — question
+        // for a service resolved as IEnumerable<T>, which captures EVERY matching descriptor in registration order
+        // rather than just one. IMessagingInfrastructure is exactly that: MessagingInfrastructureProvider takes the
+        // whole enumerable and makes FirstOrDefault() the default broker, so an earlier-registered infrastructure
+        // owns the default and no single descriptor is "the" registration. Never convert these callers to
+        // EffectiveRegistration — last-wins would be wrong here, not merely different.
+        private static bool AnyRegistration(IServiceCollection services, Type serviceType)
+            => services.Any(descriptor => descriptor.ServiceType == serviceType);
+
+        // The registry the container will resolve, or null when none is registered or the effective descriptor is
+        // not an ImplementationInstance (a type- or factory-registered registry cannot be read without building a
+        // provider, so both receiver guards no-op on it).
+        private static IDiscoveredReceiverRegistry EffectiveDiscoveredReceiverRegistry(IServiceCollection services)
+            => EffectiveRegistration(services, typeof(IDiscoveredReceiverRegistry))?
+                .ImplementationInstance as IDiscoveredReceiverRegistry;
 
         // A RabbitMQ receiver is one EXPLICITLY typed to RabbitMQ (always claimed) OR one left on the default
         // infrastructure (blank/empty InfrastructureType) ONLY WHEN RabbitMQ is the core's resolved default.
