@@ -45,7 +45,6 @@ namespace Microsoft.Extensions.DependencyInjection
             // and must not be re-created per scope.
             builder.Services.AddIfNotRegistered<IRabbitMqConnectionSource, RabbitMqConnectionSource>(ServiceLifetime.Singleton);
 
-            builder.Services.AddIfNotRegistered<RabbitMqReceiver>(ServiceLifetime.Scoped);
             builder.Services.AddIfNotRegistered<RabbitMqSender>(ServiceLifetime.Scoped);
 
             builder.Services.AddSingleton<ICircuitBreakerExceptionPredicatesProvider, RabbitMqCircuitBreakerExceptionPredicatesProvider>();
@@ -60,21 +59,26 @@ namespace Microsoft.Extensions.DependencyInjection
                 // type), so each broker keeps its own factory under multi-broker registration.
                 //
                 // SCOPE DIVERGENCE from the SqlServiceBroker / Azure Service Bus folds: those folds
-                // open-resolve-and-DISPOSE a transient scope per Create() call. RabbitMQ must NOT, because the
-                // core drives the returned receiver through its own lifecycle — InitializeAsync, then
-                // StopReceivingAsync, then Dispose — all of which happen AFTER this factory delegate returns.
-                // A per-call `using var scope` would dispose the Scoped receiver the moment the delegate
-                // returned, so the core would be handed an already-disposed receiver. The scoped instance must
-                // therefore outlive the factory call, which means the scope that owns it must live for the
-                // infrastructure's (singleton) lifetime. RejectMultipleReceivers guarantees at most one RabbitMQ
-                // receiver, so a single long-lived scope created once here is correct. The sender
-                // (IMessagingInfrastructureDispatcher, NOT disposable, no Dispose) is unaffected, so its delegate
-                // keeps the dispose-per-call shape. The singleton IRabbitMqConnectionSource's own teardown is not
-                // this scope's concern: the container created it, so the root provider disposes it at shutdown.
+                // open-resolve-and-DISPOSE a transient scope per Create() call, because their receivers ARE
+                // container-published services. RabbitMQ's receiver is deliberately NOT published — there is no
+                // RabbitMqReceiver descriptor — and is constructed here, once, at this single site. Two
+                // consequences, both load-bearing:
+                //   1. No other scope can obtain a receiver instance, so there is no such thing as a receiver that
+                //      was never initialized yet can still reach the shared singleton source's teardown. That
+                //      category is what made the receiver's own dispose path need per-instance guarding.
+                //   2. The instance outlives this delegate, which it must: the core drives the returned receiver
+                //      through InitializeAsync, then StopReceivingAsync, then Dispose, all AFTER the delegate
+                //      returns. A per-call resolve-and-dispose scope would hand the core a disposed receiver.
+                // RejectMultipleReceivers guarantees at most one RabbitMQ receiver, so one instance is enough, and
+                // every constructor dependency (IRabbitMqConnectionSource, RabbitMqOptions, IBodyConverterFactory,
+                // ILogger<>) is a SINGLETON, so root resolution is legal under scope validation. The sender
+                // (IMessagingInfrastructureDispatcher, NOT disposable, no Dispose) stays container-published and
+                // keeps the dispose-per-call scope shape. The singleton IRabbitMqConnectionSource's own teardown is
+                // not this delegate's concern: the container created it, so the root provider disposes it.
                 var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                var receiverScope = scopeFactory.CreateScope();
+                var receiver = ActivatorUtilities.CreateInstance<RabbitMqReceiver>(sp);
                 var infrastructureFactory = new MessagingInfrastructureFactory(
-                    () => receiverScope.ServiceProvider.GetRequiredService<RabbitMqReceiver>(),
+                    () => receiver,
                     () =>
                     {
                         using var scope = scopeFactory.CreateScope();

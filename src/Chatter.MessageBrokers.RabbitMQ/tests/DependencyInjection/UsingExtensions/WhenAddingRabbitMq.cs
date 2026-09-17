@@ -79,6 +79,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             => typeof(RabbitMqMessageContext).Assembly.GetType(
                 "Chatter.MessageBrokers.RabbitMQ.Receiving.IRabbitMqConnectionSource", throwOnError: true);
 
+        private static Type ReceiverType()
+            => typeof(RabbitMqMessageContext).Assembly.GetType(
+                "Chatter.MessageBrokers.RabbitMQ.Receiving.RabbitMqReceiver", throwOnError: true);
+
         [Fact]
         public void MustRegisterMessagingInfrastructureAsSingletonViaFactory()
         {
@@ -134,17 +138,13 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
         }
 
         [Fact]
-        public void MustRegisterReceiverAndSenderAsScoped()
+        public void MustRegisterSenderAsScoped()
         {
             var services = BuildRegistration();
 
-            var brokerAssembly = typeof(RabbitMqMessageContext).Assembly;
-            var receiverType = brokerAssembly.GetType(
-                "Chatter.MessageBrokers.RabbitMQ.Receiving.RabbitMqReceiver", throwOnError: true);
-            var senderType = brokerAssembly.GetType(
+            var senderType = typeof(RabbitMqMessageContext).Assembly.GetType(
                 "Chatter.MessageBrokers.RabbitMQ.Sending.RabbitMqSender", throwOnError: true);
 
-            Single(services, receiverType).Lifetime.Should().Be(ServiceLifetime.Scoped);
             Single(services, senderType).Lifetime.Should().Be(ServiceLifetime.Scoped);
         }
 
@@ -444,11 +444,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
         // REGRESSION (codex P1, PR #194): the IMessagingInfrastructure receiver factory delegate must NOT
         // open-resolve-and-DISPOSE a transient scope per Create() call. The core drives the returned receiver
         // through InitializeAsync, then StopReceivingAsync, then Dispose — all AFTER the delegate returns — so a
-        // per-call `using var scope` would dispose the Scoped receiver at factory return and hand the core an
-        // already-disposed receiver. The receiver scope must live for the (singleton) infrastructure lifetime.
-        // The spy below records disposal of the SINGLETON IRabbitMqConnectionSource so these tests also pin that
-        // nothing on the receiver-resolution path tears down the process-wide source: the container created the
-        // production source and the root provider is what disposes it, at process shutdown.
+        // per-call `using var scope` would dispose the receiver at factory return and hand the core an
+        // already-disposed receiver. The spy below records disposal of the SINGLETON IRabbitMqConnectionSource so
+        // these tests also pin that nothing on the receive-infrastructure path tears down the process-wide source:
+        // the container created the production source and the root provider is what disposes it, at shutdown.
         private static IServiceProvider BuildProviderWithSpyConnectionSource(out SpyRabbitMqConnectionSource spy)
         {
             var services = new ServiceCollection();
@@ -467,7 +466,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
                 }
             }
             services.AddSingleton<IRabbitMqConnectionSource>(capturedSpy);
-            // RabbitMqReceiver needs an IBodyConverterFactory and a logger to resolve from the container.
+            // The receiver is constructed by the infrastructure factory delegate via ActivatorUtilities, which
+            // resolves its IBodyConverterFactory and logger from the ROOT provider — both must therefore exist.
             services.AddSingleton<IBodyConverterFactory>(
                 new BodyConverterFactory(new IBrokeredMessageBodyConverter[] { new RabbitMqBodyConverter(), new JsonBodyConverter() }));
             services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
@@ -485,9 +485,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             var receiver = infrastructure.ReceiveInfrastructure;
 
             receiver.Should().NotBeNull();
-            spy.DisposeCount.Should().Be(0, "the receiver factory must keep its scope alive for the receiver "
-                + "lifetime, and nothing on that path may tear down the shared singleton connection source "
-                + "before the core drives InitializeAsync");
+            spy.DisposeCount.Should().Be(0, "the receiver factory must hand the core a live receiver, and nothing "
+                + "on that path may tear down the shared singleton connection source before the core drives "
+                + "InitializeAsync");
         }
 
         [Fact]
@@ -502,37 +502,77 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
             spy.DisposeCount.Should().Be(0);
         }
 
-        // REGRESSION (issue #367): RabbitMqReceiver is registered Scoped and is publicly resolvable, so ANY consumer
-        // scope that resolves it — a health check, a stray injection into a request-scoped service — is disposed by
-        // MSDI at scope end. A receiver dispose that reached the SINGLETON connection source would kill the whole
-        // process's RabbitMQ messaging, sender included, with the failure surfacing far from its cause as
-        // ObjectDisposedException on a later publish. The shared source must therefore be left both undisposed and
-        // USABLE — proven positively by it still handing out a publish channel rental.
+        // --- the receiver is NOT a container-published service ------------------------------------------
+
+        // ROOT (issue #367): AddRabbitMq must publish NO descriptor for RabbitMqReceiver. The receiver's only
+        // legitimate consumer is the IMessagingInfrastructure factory delegate, which constructs the one instance
+        // itself; publishing the concrete type additionally created the category "a receiver instance nothing ever
+        // initialized, held by an arbitrary scope" — the category every per-instance latch check was patching.
         [Fact]
-        public async Task MustNotDisposeSingletonConnectionSourceWhenAStrayScopeResolvesTheReceiver()
+        public void MustNotRegisterTheReceiverInTheContainer()
         {
-            var provider = BuildProviderWithSpyConnectionSource(out var spy);
+            var services = BuildRegistration();
 
-            using (var strayScope = provider.GetRequiredService<IServiceScopeFactory>().CreateScope())
-            {
-                strayScope.ServiceProvider.GetRequiredService<RabbitMqReceiver>().Should().NotBeNull();
-            }
+            services.Should().NotContain(
+                d => d.ServiceType == ReceiverType(),
+                "the receiver is constructed at its single call site, so no descriptor may offer it to anyone else");
+        }
 
-            spy.DisposeCount.Should().Be(0, "a consumer scope that merely resolved the receiver must not tear down "
-                + "the process-wide connection source when it is disposed");
-            await using var rental = await spy.AcquirePublishChannelAsync(CancellationToken.None);
-            rental.Channel.Should().NotBeNull("the sender's publish path must survive a stray receiver scope");
+        // CLOSURE PROOF for the same root: with no descriptor, a consumer scope cannot obtain a receiver at all —
+        // neither the silent GetService nor the throwing GetRequiredService. A stray scope that cannot hold a
+        // receiver cannot dispose one, so no receiver dispose can ever reach the shared singleton source by that
+        // route. This supersedes the weaker "a stray scope's receiver must not dispose the source" guard.
+        [Fact]
+        public void MustNotResolveTheReceiverFromAConsumerScope()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out _);
+
+            using var consumerScope = provider.GetRequiredService<IServiceScopeFactory>().CreateScope();
+
+            consumerScope.ServiceProvider.GetService(ReceiverType()).Should().BeNull();
+            Action resolve = () => consumerScope.ServiceProvider.GetRequiredService(ReceiverType());
+            resolve.Should().Throw<InvalidOperationException>(
+                "no consumer scope may obtain a receiver instance — that category no longer exists");
+        }
+
+        // The core reads IMessagingInfrastructure.ReceiveInfrastructure — a property that calls the factory's
+        // Create() on EVERY access — so "constructed once at a single site" only holds if every Create returns the
+        // SAME instance. A refactor to ActivatorUtilities-per-call would re-mint the very category deleted above:
+        // instances nobody initialized, each of them disposable, each reachable by whoever touched the property.
+        [Fact]
+        public void MustHandTheCoreTheSameReceiverInstanceOnEveryCreate()
+        {
+            var provider = BuildProviderWithSpyConnectionSource(out _);
+            var infrastructure = provider.GetRequiredService<IMessagingInfrastructure>();
+
+            var first = infrastructure.ReceiveInfrastructure;
+            var second = infrastructure.ReceiveInfrastructure;
+
+            first.Should().BeSameAs(second, "exactly one receiver may exist in the process");
+        }
+
+        // Constructing the receiver at the singleton infrastructure's own composition site only works because EVERY
+        // RabbitMqReceiver constructor dependency — IRabbitMqConnectionSource, RabbitMqOptions, IBodyConverterFactory
+        // and ILogger<> — is a SINGLETON. Were one of them ever made Scoped, ValidateScopes would refuse the root
+        // resolution here rather than letting a captured-dependency defect reach a host.
+        [Fact]
+        public void MustConstructTheReceiverFromTheRootProviderUnderScopeValidation()
+        {
+            var services = BuildRegistrationOverRealCore(null);
+            // The bare core registration carries no logging; a real host's ILogger<> is likewise an open-generic
+            // singleton, which is what the sender already requires to dispatch at all.
+            services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
+
+            using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+            provider.GetRequiredService<IMessagingInfrastructure>().ReceiveInfrastructure.Should().NotBeNull();
         }
 
         // A disposal-recording IRabbitMqConnectionSource spy. Implements BOTH IDisposable (the sync container
-        // teardown path) and IAsyncDisposable, matching the production source, and mirrors its post-teardown
-        // contract: AcquirePublishChannelAsync throws ObjectDisposedException
-        // once disposed, so a "still usable" assertion cannot go green against a torn-down source.
+        // teardown path) and IAsyncDisposable, matching the production source, so any dispose reaching the
+        // process-wide source on the receive-infrastructure path is recorded.
         private sealed class SpyRabbitMqConnectionSource : IRabbitMqConnectionSource, IDisposable
         {
-            private readonly Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.RabbitMqPublishChannelRentalFactory _rentalFactory =
-                new Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.RabbitMqPublishChannelRentalFactory();
-
             public int DisposeCount { get; private set; }
 
             public long CurrentReceiveChannelEpoch => 0;
@@ -555,15 +595,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.DependencyInjection.UsingExtensi
                 => throw new NotImplementedException();
 
             public Task<RabbitMqPublishChannelRental> AcquirePublishChannelAsync(CancellationToken cancellationToken)
-            {
-                if (DisposeCount > 0)
-                {
-                    throw new ObjectDisposedException(nameof(SpyRabbitMqConnectionSource));
-                }
-
-                return Task.FromResult(_rentalFactory.Create(
-                    new Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.RecordingChannel()));
-            }
+                => throw new NotImplementedException();
         }
 
         private sealed class StubDiscoveredReceiverRegistry : IDiscoveredReceiverRegistry
