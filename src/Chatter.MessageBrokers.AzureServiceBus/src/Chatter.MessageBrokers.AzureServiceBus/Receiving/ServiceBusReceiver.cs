@@ -383,8 +383,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                     ?? throw new InvalidOperationException($"{nameof(IServiceBusMessageReceiver.CloseAsync)} returned no task, so the close outcome cannot be observed");
 
                 // Region two: the close's own outcome. ExecuteSynchronously ONLY — no outcome filter — so the
-                // continuation runs for every terminal state and decides there what to report. On an
-                // already-completed close this runs inline, before the caller's teardown continues.
+                // continuation DECIDES for every terminal state what to report. ExecuteSynchronously is a HINT:
+                // the continuation runs inline when the TPL honors it, and is queued to TaskScheduler.Default
+                // when it declines. This helper does not wait for it either way, so a queued report can be lost
+                // at process exit on the Dispose path — see the accepted residual in ADR-0022.
                 _ = closeAttempt.ContinueWith(
                     completedCloseAttempt => ReportUnsuccessfulClose(completedCloseAttempt, closeFailureMessage),
                     CancellationToken.None,

@@ -197,8 +197,8 @@ there.
 1. **A two-region partition with no gap between the regions.** Region one is a single guarded synchronous block
    spanning BOTH obtaining the task and attaching the continuation, with the missing-task case folded in as
    `?? throw` so it is answered by the region rather than by a check that names it. Region two is the
-   continuation, attached with `TaskContinuationOptions.ExecuteSynchronously` and NO outcome filter, so it runs
-   for every terminal state and decides there what to report.
+   continuation, attached with `TaskContinuationOptions.ExecuteSynchronously` and NO outcome filter, so it
+   DECIDES for every terminal state what to report. Whether that decision is DELIVERED is the residual below.
 2. **A one-state ALLOWLIST.** The continuation body returns early only on `TaskStatus.RanToCompletion`. Success
    is the single exemption; every other status falls through to the report, and the status travels in the
    message because a cancelled close carries no exception to travel in.
@@ -230,14 +230,20 @@ until their locks expire.
 **Bounded impact.** The close may not have completed when `Dispose` returns, so a failure is learned from the
 log rather than from the caller. That is the whole of it.
 
-### Accepted residual: a close that never completes is never reported
+### Accepted residual: the reporting continuation may not run before the teardown is gone
 
-**Root cause.** The partition above observes every way a close ENDS. A close that never ends — an AMQP link
-whose teardown hangs past the client's whole retry budget — reaches no terminal status, so the continuation
-never runs and nothing is ever written. Reporting-by-default reports terminal states; it does not manufacture
-one.
+**Root cause.** The partition above decides WHICH close outcomes are reported; it does not guarantee the decided
+report LANDS. Neither teardown path waits for the deciding continuation, and that continuation fails to run in
+two ways. (i) No terminal status is reached — an AMQP link whose teardown hangs past the client's whole retry
+budget ends in no status at all, so the continuation never runs. Reporting-by-default reports terminal states; it
+does not manufacture one. (ii) A terminal status IS reached, but `TaskContinuationOptions.ExecuteSynchronously`
+is a HINT and not a guarantee: the TPL declines to inline when the current thread is not a valid inline location
+— a different ambient `TaskScheduler`, or the stack-depth guard — and QUEUES the continuation to
+`TaskScheduler.Default` instead, so on the synchronous `Dispose` path the process can exit before the queued
+continuation is ever scheduled and a decided report is lost. Cause (ii) is `Dispose`-specific: on the
+receive-recovery path the process is still alive, so a queued continuation still runs and still reports.
 
-**Why all three available remediations are REJECTED.**
+**Why all four available remediations are REJECTED.**
 
 - **Await it (REJECTED).** The same rejection as above: sync-over-async inside `Dispose` on the host-shutdown
   path. Waiting on a hang converts a missing log line into a stalled shutdown.
@@ -258,16 +264,21 @@ one.
   — the same thing the timeout buys — at the cost of widening an internal port and changing its three production
   implementations plus every test double that stands in for it.
 
+- **Wait for the continuation (REJECTED).** The only way to turn the inlining HINT into delivery is to await the
+  continuation before teardown returns, which is the sync-over-async await already rejected above: on the Dispose
+  path it is the same host-shutdown block, bought for the same single log line.
+
 **Bounded impact — DIAGNOSTIC ONLY.** On the Dispose path the process is exiting and the logging sink is being
-torn down alongside it, so a line written at that moment may not survive regardless. On the receive-recovery
-path the discard is ALREADY reported one statement earlier: the `ObjectDisposedException` catch logs
+torn down alongside it, so a line written at that moment may not survive regardless — which is equally true of a
+report the TPL queued rather than inlined. On the receive-recovery path the discard is ALREADY reported one
+statement earlier: the `ObjectDisposedException` catch logs
 `"Service Bus receiver connection was closed."` at Warning immediately before calling the helper, and the
 sessions a hung close orphans stay held at the broker until their locks expire, where they are observable as
 held sessions rather than only here. There is no correctness consequence beyond the missing second line.
 
-**Promotion trigger.** An observed hung close in the field, or any future path that starts WAITING on the close
-rather than discarding it. Either makes a real bound worth buying instead of a log line, and this residual is
-PROMOTED then.
+**Promotion trigger.** An observed hung close in the field, an observed report lost because the continuation was
+queued rather than inlined, or any future path that starts WAITING on the close rather than discarding it. Any
+of them makes a real bound worth buying instead of a log line, and this residual is PROMOTED then.
 
 ### Accepted residual: the receiver's disposal transition is not synchronized
 
