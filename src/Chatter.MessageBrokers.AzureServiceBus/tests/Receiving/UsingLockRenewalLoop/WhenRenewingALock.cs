@@ -18,6 +18,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingLockRenewa
     {
         private const string _description = "session 'abc' on 'session-queue'";
         private static readonly DateTimeOffset _startOfTime = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        private static readonly TimeSpan _untilTheEndOfTime = DateTimeOffset.MaxValue - _startOfTime;
 
         [Fact]
         public async Task ItRenewsRepeatedlyUntilTheCeilingIsReached()
@@ -165,6 +166,41 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingLockRenewa
                 .Which.Should().BeSameAs(quotaExceeded);
         }
 
+        [Fact]
+        public async Task ItRenewsRatherThanFaultingUnderAnUnboundedMaxRenewalDuration()
+        {
+            var renewals = 0;
+            Func<Task> run = async () => renewals = await RenewOnceUnderCeilingAsync(TimeSpan.MaxValue);
+
+            await run.Should().NotThrowAsync("an unbounded duration must saturate the ceiling at the end of time rather than overflow the clock, which would leave renewal silently off while it is configured on");
+            renewals.Should().Be(1, "a saturated ceiling is never reached, so renewal runs for as long as the delivery does");
+        }
+
+        [Fact]
+        public async Task ItRenewsAtTheLargestDurationTheClockCanRepresent()
+        {
+            var renewals = 0;
+            Func<Task> run = async () => renewals = await RenewOnceUnderCeilingAsync(_untilTheEndOfTime);
+
+            await run.Should().NotThrowAsync("a duration that lands exactly on the end of time is representable and must renew");
+            renewals.Should().Be(1, "a ceiling at the end of time is never reached, so renewal runs for as long as the delivery does");
+        }
+
+        [Fact]
+        public async Task ItRenewsRatherThanFaultingOneTickBeyondTheEndOfTime()
+        {
+            var renewals = 0;
+            Func<Task> run = async () => renewals = await RenewOnceUnderCeilingAsync(_untilTheEndOfTime + TimeSpan.FromTicks(1));
+
+            await run.Should().NotThrowAsync("the smallest duration that overruns the clock saturates at the end of time rather than faulting the loop before it starts");
+            renewals.Should().Be(1, "a saturated ceiling is never reached, so renewal runs for as long as the delivery does");
+        }
+
+        [Fact]
+        public void ItReportsRenewalDisabledForTheMostNegativeMaxRenewalDuration()
+            => LockRenewalLoop.IsEnabled(TimeSpan.MinValue)
+                              .Should().BeFalse("the disabled check is a pure comparison, so the most negative duration is answered without any clock arithmetic to overflow");
+
         [Theory]
         [InlineData(0)]
         [InlineData(-1)]
@@ -176,6 +212,35 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingLockRenewa
         public void ItReportsRenewalEnabledForAPositiveMaxRenewalDuration()
             => LockRenewalLoop.IsEnabled(TimeSpan.FromSeconds(1))
                               .Should().BeTrue("any positive ceiling admits at least one renewal window");
+
+        /// <summary>
+        /// Runs a loop whose ceiling is <paramref name="maxRenewalDuration"/> until its first renewal, which cancels
+        /// the loop: a ceiling at or beyond the end of time is never reached, so the renewal itself is what stops it.
+        /// </summary>
+        private static async Task<int> RenewOnceUnderCeilingAsync(TimeSpan maxRenewalDuration)
+        {
+            var clock = new AdvanceableTimeProvider(_startOfTime);
+            var delays = new DelayRecorder(clock);
+            var renewals = 0;
+
+            using (var renewalCts = new CancellationTokenSource())
+            {
+                var sut = CreateSut(clock,
+                                    delays,
+                                    lockedUntil: () => clock.GetUtcNow() + TimeSpan.FromSeconds(30),
+                                    renewAsync: _ =>
+                                    {
+                                        renewals++;
+                                        renewalCts.Cancel();
+                                        return Task.CompletedTask;
+                                    },
+                                    maxRenewalDuration: maxRenewalDuration);
+
+                await sut.RunAsync(renewalCts.Token);
+            }
+
+            return renewals;
+        }
 
         private static LockRenewalLoop CreateSut(AdvanceableTimeProvider clock,
                                                  DelayRecorder delays,

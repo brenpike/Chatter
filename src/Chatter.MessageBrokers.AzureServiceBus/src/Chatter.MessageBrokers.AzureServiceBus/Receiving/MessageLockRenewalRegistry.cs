@@ -10,6 +10,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
     /// <summary>
     /// Owns message-lock renewal lifetime PER DELIVERY for the non-session receive path.
     /// </summary>
+    /// <remarks>
+    /// INVARIANT: this registry holds no renewal cleanup obligation of its own. Each renewal's cancellation,
+    /// disposal and fault report belong to the <see cref="RenewalLifetime"/> that runs it, so no step here can
+    /// skip a cleanup by raising. What is left is bookkeeping: ONE collection whose membership means EXACTLY
+    /// "this renewal has not ended", written by exactly two events — an insert in <see cref="Start"/>, and the
+    /// owning renewal removing itself as it ends.
+    /// </remarks>
     internal sealed class MessageLockRenewalRegistry
     {
         private static readonly Func<TimeSpan, CancellationToken, Task> _systemDelay = (delay, cancellationToken) => Task.Delay(delay, cancellationToken);
@@ -19,14 +26,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // Keyed by REFERENCE, for the same reason SessionReceiverMultiplexer._slotsByDeliveredMessage is: settlement
         // is by received message object, and two distinct deliveries may carry equal field values, so value equality
         // would conflate two in-flight deliveries onto one renewal.
-        private readonly Dictionary<ServiceBusReceivedMessage, Registration> _renewalsByDeliveredMessage
-            = new Dictionary<ServiceBusReceivedMessage, Registration>(ReferenceEqualityComparer.Instance);
-
-        // A stopped delivery's loop is cancelled but NOT yet ended: it may still be awaiting the broker inside the
-        // renew call. It stays tracked HERE until it actually ends, because leaving the keyed collection is not the
-        // same event as the loop finishing, and a close that could not see it would report teardown complete while
-        // that renewal was still live against the receiver about to be closed.
-        private readonly HashSet<Registration> _stoppedRenewalsStillEnding = new HashSet<Registration>();
+        private readonly Dictionary<ServiceBusReceivedMessage, RenewalLifetime> _renewalsByDeliveredMessage
+            = new Dictionary<ServiceBusReceivedMessage, RenewalLifetime>(ReferenceEqualityComparer.Instance);
 
         private readonly TimeSpan _maxRenewalDuration;
         private readonly string _receiverPath;
@@ -34,11 +35,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly TimeProvider _timeProvider;
         private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
 
-        private bool _closed;
-
-        // The ONE completion every caller of CloseAsync observes. A close that answered per-caller would let a
-        // second caller proceed to close the SDK receiver while the first was still awaiting a renewal.
-        private TaskCompletionSource<bool> _closeGate;
+        // The ONE completion every caller of CloseAsync observes, and this registry's closed flag in the SAME
+        // field, so a registry cannot be closed to new renewals yet missing the completion that ends the ones it
+        // has. It is an async method's task, which the language guarantees reaches a terminal state, so a close
+        // that is published but never completed is unrepresentable.
+        private Task _closeCompletion;
 
         internal MessageLockRenewalRegistry(TimeSpan maxRenewalDuration, string receiverPath, ILogger logger)
             : this(maxRenewalDuration, receiverPath, logger, TimeProvider.System, _systemDelay)
@@ -59,19 +60,32 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         }
 
         /// <summary>The number of in-flight deliveries whose locks this registry is currently renewing.</summary>
+        /// <remarks>
+        /// A projection over the one collection rather than a second collection of its own: a stopped renewal is
+        /// held until it has actually ended, and a delivery whose renewal was stopped is no longer in flight.
+        /// </remarks>
         internal int ActiveRenewalCount
         {
             get
             {
                 lock (_syncLock)
                 {
-                    return _renewalsByDeliveredMessage.Count;
+                    var inFlight = 0;
+                    foreach (var renewal in _renewalsByDeliveredMessage.Values)
+                    {
+                        if (!renewal.Stopped)
+                        {
+                            inFlight++;
+                        }
+                    }
+
+                    return inFlight;
                 }
             }
         }
 
         /// <summary>
-        /// Begins renewing <paramref name="message"/>'s lock on a renewal loop of its OWN. A no-op when renewal is
+        /// Begins renewing <paramref name="message"/>'s lock on a renewal of its OWN. A no-op when renewal is
         /// disabled, when this registry has closed, or when that message reference is already renewing.
         /// </summary>
         internal void Start(ServiceBusReceivedMessage message, Func<CancellationToken, Task> renewAsync)
@@ -81,7 +95,6 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return;
             }
 
-            var renewalSource = new CancellationTokenSource();
             var description = DescribeDelivery(message);
             var loop = new LockRenewalLoop(() => message.LockedUntil,
                                            renewAsync,
@@ -94,113 +107,61 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             lock (_syncLock)
             {
-                if (_closed || _renewalsByDeliveredMessage.ContainsKey(message))
+                if (_closeCompletion != null || _renewalsByDeliveredMessage.ContainsKey(message))
                 {
-                    renewalSource.Dispose();
                     return;
                 }
 
-                // INVARIANT: the loop is INVOKED here, not awaited — a task-returning call under the lock, exactly
-                // as SessionReceiverMultiplexer arms a child's receive under its own lock. Nothing is ever awaited
-                // while _syncLock is held.
-                _renewalsByDeliveredMessage.Add(message, new Registration(renewalSource, loop.RunAsync(renewalSource.Token), description));
+                var renewal = new RenewalLifetime(description, _logger);
+
+                // INVARIANT: the renewal is TRACKED BEFORE it begins. A loop that ends without ever awaiting ends
+                // inside Begin and leaves its tracking from there, so beginning first would remove an entry not yet
+                // added and leave a dead one behind forever. The lock is reentrant, so that synchronous exit
+                // re-entering it here is safe. Nothing is ever awaited while _syncLock is held.
+                _renewalsByDeliveredMessage.Add(message, renewal);
+                renewal.Begin(loop.RunAsync, () => EndTracking(message));
             }
         }
 
         /// <summary>
-        /// Ends every delivery's renewal and AWAITS each loop — including a loop already STOPPED but still ending —
-        /// so no renewal outlives the receiver that owns it. Idempotent, and a closed registry starts nothing
-        /// further.
+        /// Ends every delivery's renewal and AWAITS each one — including a renewal already STOPPED but still
+        /// ending — so no renewal outlives the receiver that owns it. Idempotent, and a closed registry starts
+        /// nothing further.
         /// </summary>
         /// <remarks>
         /// INVARIANT: every caller observes the SAME completion. Repeated and overlapping closes alike await one
-        /// gate, so no caller can be told teardown is done while another close is still awaiting a renewal — which
+        /// task, so no caller can be told teardown is done while another close is still awaiting a renewal — which
         /// is the whole point of awaiting at all, since <see cref="AzureSdkMessageReceiverAdapter"/> closes the SDK
         /// receiver the moment its close of this registry returns.
         /// </remarks>
         internal Task CloseAsync()
         {
-            List<Registration> renewalsToEnd;
-            List<Registration> renewalsAlreadyEnding;
-            TaskCompletionSource<bool> closeGate;
+            List<RenewalLifetime> renewalsToEnd;
+            Task closeCompletion;
 
             lock (_syncLock)
             {
-                if (_closeGate != null)
+                if (_closeCompletion != null)
                 {
-                    return _closeGate.Task;
+                    return _closeCompletion;
                 }
 
-                _closed = true;
-                _closeGate = closeGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                renewalsToEnd = StopEveryRenewal();
 
-                // Taken in ONE lock: a concurrent Stop either still holds its registration here or has already moved
-                // it to the stopped-but-ending set, so every live loop lands in exactly one of these two lists.
-                renewalsToEnd = new List<Registration>(_renewalsByDeliveredMessage.Values);
-                _renewalsByDeliveredMessage.Clear();
-                renewalsAlreadyEnding = new List<Registration>(_stoppedRenewalsStillEnding);
+                // Published as ONE expression: what a caller awaits IS the flow that ends these renewals, so there
+                // is no moment at which a close is visible and nothing is going to complete it.
+                closeCompletion = _closeCompletion = AwaitEveryRenewalAsync(renewalsToEnd);
             }
 
-            // Cancelled OUTSIDE the lock, and BEFORE this returns, so every renewal this close owns is already
-            // ending by the time the caller holds a task to await. Nothing is ever awaited while _syncLock is held.
-            foreach (var registration in renewalsToEnd)
+            // AFTER publication and OUTSIDE the lock, so no renewal is ended while _syncLock is held, and every
+            // renewal this close owns is already ending by the time its caller holds a task to await. Ending a
+            // renewal never raises, so no renewal in this snapshot is skipped because an earlier one failed.
+            foreach (var renewal in renewalsToEnd)
             {
-                registration.RenewalSource.Cancel();
+                renewal.End();
             }
 
-            return AwaitEveryRenewalAsync(closeGate, renewalsToEnd, renewalsAlreadyEnding);
-        }
-
-        private async Task AwaitEveryRenewalAsync(TaskCompletionSource<bool> closeGate,
-                                                  List<Registration> renewalsToEnd,
-                                                  List<Registration> renewalsAlreadyEnding)
-        {
-            try
-            {
-                foreach (var registration in renewalsToEnd)
-                {
-                    await ObserveRenewalLoopAsync(registration).ConfigureAwait(false);
-                    registration.RenewalSource.Dispose();
-                }
-
-                foreach (var registration in renewalsAlreadyEnding)
-                {
-                    await AwaitStoppedRenewalLoopAsync(registration).ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                closeGate.TrySetResult(true);
-            }
-        }
-
-        // Close must end EVERY delivery's renewal, so one loop faulting on an unexpected broker failure cannot leave
-        // the rest running.
-        private async Task ObserveRenewalLoopAsync(Registration registration)
-        {
-            try
-            {
-                await registration.Loop.ConfigureAwait(false);
-            }
-            catch (Exception e)
-            {
-                _logger.LogWarning(e, $"Failure renewing the Azure Service Bus lock for {registration.Description}");
-            }
-        }
-
-        // Waits for a loop the release path already STOPPED. Close only needs it to have ENDED: the Stop that
-        // cancelled it owns its renewal source's disposal and already reports a faulted loop, so close neither
-        // disposes nor logs here — doing either would give one renewal source two owners.
-        private static async Task AwaitStoppedRenewalLoopAsync(Registration registration)
-        {
-            try
-            {
-                await registration.Loop.ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // Reported by EndRenewal, which owns this loop.
-            }
+            return closeCompletion;
         }
 
         /// <summary>
@@ -215,76 +176,55 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// </remarks>
         internal void Stop(ServiceBusReceivedMessage message)
         {
-            Registration registration;
+            RenewalLifetime renewal;
             lock (_syncLock)
             {
-                if (message == null || !_renewalsByDeliveredMessage.TryGetValue(message, out registration))
+                if (message == null || !_renewalsByDeliveredMessage.TryGetValue(message, out renewal))
                 {
                     return;
                 }
 
-                _renewalsByDeliveredMessage.Remove(message);
-
-                // Leaving the keyed collection is NOT the loop having ended — it may still be awaiting the broker
-                // inside the renew call. Tracked here, in the SAME lock that removed it, so a close cannot snapshot
-                // a registry that has forgotten a renewal which is still running.
-                _stoppedRenewalsStillEnding.Add(registration);
+                // The entry is RETAINED, because a stopped renewal may still be awaiting the broker inside the renew
+                // call and membership means it has not ENDED. Stopped is what tells a teardown it must still await
+                // this renewal while telling ActiveRenewalCount the delivery is no longer in flight.
+                renewal.Stopped = true;
             }
 
-            // INVARIANT: exactly ONE caller ever owns a given renewal source's disposal. Removing under the lock
-            // before cancelling guarantees it: no other caller can still observe this registration. A close that
-            // sees the stopped registration only AWAITS its loop; it never cancels or disposes it again.
-            registration.RenewalSource.Cancel();
-            DisposeRenewalSourceWhenLoopEnds(registration);
+            renewal.End();
         }
 
-        // Disposes the delivery's renewal source once its loop has ended, WITHOUT awaiting that loop on the release
-        // path. Mirrors ServiceBusReceiver.CloseDiscardedReceiver: the release must not block on a renewal that is
-        // still awaiting the broker, and reading the loop's exception here also observes a faulted renewal.
-        private void DisposeRenewalSourceWhenLoopEnds(Registration registration)
+        // Marks every held renewal stopped in the SAME lock that snapshots them, because the adapter closes the SDK
+        // receiver as soon as this close returns: no delivery is in flight past that point, however long its renewal
+        // takes to end.
+        private List<RenewalLifetime> StopEveryRenewal()
         {
-            _ = registration.Loop.ContinueWith(EndRenewal,
-                                               registration,
-                                               CancellationToken.None,
-                                               TaskContinuationOptions.ExecuteSynchronously,
-                                               TaskScheduler.Default);
+            var renewalsToEnd = new List<RenewalLifetime>(_renewalsByDeliveredMessage.Values);
+            foreach (var renewal in renewalsToEnd)
+            {
+                renewal.Stopped = true;
+            }
+
+            return renewalsToEnd;
         }
 
-        private void EndRenewal(Task renewal, object endedRegistration)
+        // A renewal reports its own failure as it ends, so a close waits only for each one to have ended.
+        private static async Task AwaitEveryRenewalAsync(List<RenewalLifetime> renewalsToEnd)
         {
-            var registration = (Registration)endedRegistration;
+            foreach (var renewal in renewalsToEnd)
+            {
+                await renewal.Completion.ConfigureAwait(false);
+            }
+        }
 
+        private void EndTracking(ServiceBusReceivedMessage message)
+        {
             lock (_syncLock)
             {
-                _stoppedRenewalsStillEnding.Remove(registration);
-            }
-
-            registration.RenewalSource.Dispose();
-
-            if (renewal.Exception != null)
-            {
-                _logger.LogWarning(renewal.Exception, $"Failure renewing the Azure Service Bus lock for {registration.Description}");
+                _renewalsByDeliveredMessage.Remove(message);
             }
         }
 
         private string DescribeDelivery(ServiceBusReceivedMessage message)
             => $"message '{message.MessageId}' on '{_receiverPath}'";
-
-        /// <summary>One delivery's renewal: the cancellation source that ends it, and the loop task to await.</summary>
-        private sealed class Registration
-        {
-            public Registration(CancellationTokenSource renewalSource, Task loop, string description)
-            {
-                RenewalSource = renewalSource;
-                Loop = loop;
-                Description = description;
-            }
-
-            public CancellationTokenSource RenewalSource { get; }
-
-            public Task Loop { get; }
-
-            public string Description { get; }
-        }
     }
 }

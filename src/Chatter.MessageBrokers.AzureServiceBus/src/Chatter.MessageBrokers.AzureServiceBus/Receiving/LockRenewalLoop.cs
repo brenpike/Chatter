@@ -9,8 +9,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
     /// <summary>
     /// The bounded lock-renewal policy shared by the receive paths: renew a held lock at the halfway point between
     /// now and its expiry — floored at one second so a near-expired or already-expired lock renews promptly rather
-    /// than spinning or waiting a negative span — until a ceiling of <c>now + maxRenewalDuration</c>, computed ONCE
-    /// at loop start. Past the ceiling renewal stops and the lock is allowed to expire naturally rather than being
+    /// than spinning or waiting a negative span — until a ceiling of <c>now + maxRenewalDuration</c> saturated at
+    /// <see cref="DateTimeOffset.MaxValue"/>, computed ONCE at loop start. Past the ceiling renewal stops and the lock is allowed to expire naturally rather than being
     /// held forever.
     /// </summary>
     /// <remarks>
@@ -82,7 +82,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         internal async Task RunAsync(CancellationToken renewalToken)
         {
-            var ceiling = _timeProvider.GetUtcNow() + _maxRenewalDuration;
+            var ceiling = ComputeCeiling(_timeProvider.GetUtcNow(), _maxRenewalDuration);
 
             try
             {
@@ -118,6 +118,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 _logger.LogTrace(ode, $"Azure Service Bus receiver disposed during renewal for {_description}; stopping renewal");
             }
         }
+
+        // INVARIANT: the ceiling SATURATES at DateTimeOffset.MaxValue, so every TimeSpan admits a ceiling and no
+        // configured duration can fault the loop before it renews once. DateTimeOffset.MaxValue - now is at most
+        // roughly 3.65 million days, well inside TimeSpan's range, so the guard itself cannot overflow.
+        private static DateTimeOffset ComputeCeiling(DateTimeOffset now, TimeSpan maxRenewalDuration)
+            => maxRenewalDuration >= DateTimeOffset.MaxValue - now ? DateTimeOffset.MaxValue : now + maxRenewalDuration;
 
         private static TimeSpan ComputeRenewalDelay(DateTimeOffset lockedUntil, DateTimeOffset now)
         {

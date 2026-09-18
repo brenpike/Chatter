@@ -207,6 +207,77 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingMessageLoc
             (await CompletedWithin(secondClose, _waitTimeout)).Should().BeTrue("every close of one registry shares the one completion");
         }
 
+        [Fact]
+        public async Task ItStopsARenewalWhoseCancellationCallbackThrows()
+        {
+            var sut = CreateSut();
+            var delivery = ServiceBusMessageFactory.ReceivedMessage(messageId: "cancellation-throws");
+            var renewalToken = StartRenewal(sut, delivery, _ => Task.CompletedTask);
+            renewalToken.Register(() => throw new InvalidOperationException("a cancellation callback threw"));
+
+            Action stop = () => sut.Stop(delivery);
+
+            stop.Should().NotThrow("release runs from the worker's finally and must not throw, and Cancel raises whatever its callbacks raise");
+            renewalToken.IsCancellationRequested.Should().BeTrue("Cancel signals the token before running the callback that throws, so the renewal still ends");
+            sut.ActiveRenewalCount.Should().Be(0, "a stopped delivery is no longer in flight even when its cancellation callback failed");
+
+            var close = sut.CloseAsync();
+            _delays.ReleaseAll();
+
+            (await CompletedWithin(close, _waitTimeout)).Should().BeTrue("a renewal whose cancellation failed must still be reachable by teardown, or every later close waits for a renewal nothing will ever report");
+        }
+
+        [Fact]
+        public async Task ItEndsEveryRenewalOnCloseWhenACancellationCallbackThrows()
+        {
+            var sut = CreateSut();
+            var firstRenewalToken = StartRenewal(sut, "first", _ => Task.CompletedTask);
+            var secondRenewalToken = StartRenewal(sut, "second", _ => Task.CompletedTask);
+            firstRenewalToken.Register(() => throw new InvalidOperationException("a cancellation callback threw"));
+
+            var close = sut.CloseAsync();
+
+            secondRenewalToken.IsCancellationRequested.Should().BeTrue("one delivery's failed cancellation must not leave a sibling renewing against the receiver about to close");
+            var overlappingClose = sut.CloseAsync();
+            _delays.ReleaseAll();
+
+            (await CompletedWithin(close, _waitTimeout)).Should().BeTrue("close completes once every renewal it ended has ended, however the cancelling went");
+            (await CompletedWithin(overlappingClose, _waitTimeout)).Should().BeTrue("a close that failed part way through cancelling must not leave later closes waiting forever");
+        }
+
+        [Fact]
+        public async Task ItCompletesCloseWhenARenewalLoopFails()
+        {
+            var sut = CreateSut();
+            var renewalToken = StartRenewal(sut, "failing", _ => throw new InvalidOperationException("the broker refused the renewal"));
+            _delays.Release(renewalToken);
+
+            var close = sut.CloseAsync();
+            _delays.ReleaseAll();
+
+            (await CompletedWithin(close, _waitTimeout)).Should().BeTrue("a renewal that failed has ended, which is all teardown waits for");
+            close.IsFaulted.Should().BeFalse("a failed renewal is reported where it happened; raising it here would stop the adapter closing the receiver it renews against");
+        }
+
+        [Fact]
+        public async Task ItStartsNoSecondRenewalForADeliveryWhoseStopIsStillEnding()
+        {
+            var sut = CreateSut();
+            var delivery = ServiceBusMessageFactory.ReceivedMessage(messageId: "stopped-mid-renewal");
+            var renewal = new ParkedRenewal();
+            var renewalToken = StartRenewal(sut, delivery, renewal.RenewAsync);
+            _delays.Release(renewalToken);
+            (await CompletedWithin(renewal.Entered, _waitTimeout)).Should().BeTrue("the loop must be inside the broker's renew call before the delivery is stopped");
+            sut.Stop(delivery);
+
+            sut.Start(delivery, _ => Task.CompletedTask);
+
+            _delays.RenewalTokens.Should().HaveCount(1, "a stopped delivery is still held until its renewal ends, so nothing can arm a second renewal against a delivery already released");
+            sut.ActiveRenewalCount.Should().Be(0, "a stopped delivery is no longer in flight, however long its renewal takes to end");
+
+            renewal.Complete();
+        }
+
         private static async Task<bool> CompletedWithin(Task pending, TimeSpan timeout)
             => await Task.WhenAny(pending, Task.Delay(timeout)).ConfigureAwait(false) == pending;
 
