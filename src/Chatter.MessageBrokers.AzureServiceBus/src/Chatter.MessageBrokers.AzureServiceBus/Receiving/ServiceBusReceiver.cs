@@ -203,7 +203,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 }
 
                 _logger.LogWarning(e, "Service Bus receiver connection was closed.");
-                CloseDiscardedReceiver(discardedReceiver);
+                CloseWithoutAwaiting(discardedReceiver, "Failure closing the discarded Azure Service Bus receiver");
 
                 return null;
             }
@@ -351,19 +351,22 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        // Closes a receiver being discarded after an ObjectDisposedException, WITHOUT awaiting it on the receive
-        // path. A discarded session receiver that is never closed orphans the sessions it holds, their lock-renewal
-        // loops and their armed receives, which keep locking sessions no worker will ever process while the rebuilt
-        // receiver competes with its own abandoned predecessor for them.
-        private void CloseDiscardedReceiver(IServiceBusMessageReceiver discardedReceiver)
+        // Closes a receiver WITHOUT awaiting it, on the two paths that cannot await one: the receive path
+        // discarding a receiver after an ObjectDisposedException, and the synchronous Dispose. A discarded session
+        // receiver that is never closed orphans the sessions it holds, their lock-renewal loops and their armed
+        // receives, which keep locking sessions no worker will ever process while the rebuilt receiver competes
+        // with its own abandoned predecessor for them; on the Dispose path there is no rebuilt receiver to compete
+        // with, and the sessions stay orphaned until their locks expire. Either way the close attempt is OBSERVED —
+        // a failure is logged rather than left as an unobserved faulted task.
+        private void CloseWithoutAwaiting(IServiceBusMessageReceiver receiverToClose, string closeFailureMessage)
         {
-            if (discardedReceiver == null)
+            if (receiverToClose == null)
             {
                 return;
             }
 
-            _ = discardedReceiver.CloseAsync().ContinueWith(
-                closeAttempt => _logger.LogWarning(closeAttempt.Exception, "Failure closing the discarded Azure Service Bus receiver"),
+            _ = receiverToClose.CloseAsync().ContinueWith(
+                closeAttempt => _logger.LogWarning(closeAttempt.Exception, closeFailureMessage),
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
@@ -438,6 +441,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
+        // Observation seam for the teardown paths: whether this receiver has already been disposed. Both
+        // Dispose overloads fold into one guarded transition, and this is the only way to see it landed.
+        internal bool IsDisposed => _disposedValue;
+
         public async ValueTask DisposeAsync()
         {
             await StopReceiver().ConfigureAwait(false);
@@ -452,7 +459,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 if (disposing)
                 {
-                    _innerReceiver?.CloseAsync();
+                    CloseWithoutAwaiting(_innerReceiver, "Failure closing the Azure Service Bus receiver while disposing it");
                 }
 
                 _innerReceiver = null;
