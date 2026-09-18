@@ -6,8 +6,8 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 {
     /// <summary>
-    /// Owns ONE delivery's renewal for its whole life: the cancellation source that ends it, the loop that runs
-    /// it, its exit from the registry's tracking, and the report of a renewal that failed.
+    /// Owns ONE lock renewal for its whole life: the cancellation source that ends it, the loop that runs it,
+    /// its exit from the tracking that says it is still running, and the report of a renewal that failed.
     /// </summary>
     /// <remarks>
     /// INVARIANT: every obligation this renewal owes is discharged in the <c>finally</c> of ONE async flow, and
@@ -34,8 +34,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         internal Task Completion { get; private set; }
 
         /// <summary>
-        /// Whether this renewal's delivery has been released or its receiver closed, so the delivery is no longer
-        /// in flight however long the loop takes to end. Written and read under the owning registry's lock.
+        /// Whether this renewal has been released or its receiver closed, so it is no longer in flight however
+        /// long the loop takes to end. Written and read under its owner's lock.
         /// </summary>
         internal bool Stopped { get; set; }
 

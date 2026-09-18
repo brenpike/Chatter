@@ -188,7 +188,11 @@ Three ways of removing that bound were considered and rejected:
   `MaxSessionLockRenewalDuration`, which is one lock duration BEFORE the lock it last renewed actually lapses,
   so it would still need a fresh delay and a time seam of its own. Its production half also cannot be driven
   test-first: `ServiceBusSessionReceiver` is sealed, with no accessible constructor and no model-factory entry
-  point, so the renewal loop's session-facing side has no test double.
+  point, so the renewal loop's session-facing side has no test double. SUPERSEDED IN PART by ADR-0021:
+  the session-facing half IS drivable test-first now, behind the internal held-session port ADR-0021
+  puts over the sealed `ServiceBusSessionReceiver`. This rejection stands unchanged on its FIRST reason
+  alone — the loop still stops one lock duration before the lock it last renewed lapses, so it would
+  still need a fresh delay and a time seam of its own to serve as a ticker.
 
 The backstop stays LOG-ONLY on every one of these readings: it never reclaims a slot.
 

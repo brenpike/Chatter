@@ -273,7 +273,10 @@ property unwritable.
 - Issue #307 — the parent epic this defect was raised under.
 - Issue #499 — a session-path release that skips its cleanups when a renewal faults with an unrecognised
   exception. Pre-dates this decision, deliberately deferred out of it, and the reason the session path is
-  named separately wherever this ADR describes a release awaiting its renewal.
+  named separately wherever this ADR describes a release awaiting its renewal. NOW CLOSED, by ADR-0021,
+  which gives the session path one Renewal Lifetime recorded before it begins. That decision does not
+  change this one: renewal is still PER DELIVERY on the non-session path and per held session on the
+  session path.
 - ADR-0014 (in-process session concurrency via the Session Multiplexer) — where the Delivery Release signal is
   first answered in this context, and the source of the reference-keyed, per-delivery dictionary this registry
   mirrors.

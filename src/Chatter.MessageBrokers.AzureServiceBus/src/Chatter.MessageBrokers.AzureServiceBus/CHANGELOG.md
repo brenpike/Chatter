@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-09-18
+
+### Fixed
+
+- A session-lock renewal that faults for a reason the renewal loop does not recognise no longer propagates out of the session release path to its caller. Previously, releasing a held session awaited its renewal inside a `try` that caught only the expected cancellation outcome, so an unrecognised fault escaped before the renewal's cancellation source was disposed and the held session receiver was closed — leaking the AMQP link and holding the session's lock until it expired naturally at the broker. The renewal is now ended and awaited through a single lifetime whose completion never faults, so the dispose and the close that follow it always run, and an unrecognised renewal failure is absorbed and reported instead of surfacing to the caller (#499).
+- A held session's renewal is now recorded in the same lock acquisition that records the session it renews, before the renewal begins. Previously the renewal was recorded afterward, outside that lock, so a release could reach an already-visible session whose renewal did not exist yet: the releasing thread could tear down the renewal's cancellation source before the accepting thread read it, surfacing `ObjectDisposedException` on session accept, or a freshly started renewal could briefly outlive a release that had already run and had nothing to await. This shares its root with the fix above — the session path's renewal state moving from two loosely-coordinated fields to one owned lifetime — and lands together with it (#500).
+
 ## [2.5.0] - 2026-09-17
 
 ### Added
