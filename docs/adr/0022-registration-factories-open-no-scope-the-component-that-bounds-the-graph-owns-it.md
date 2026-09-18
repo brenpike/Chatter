@@ -167,13 +167,24 @@ violate a PUBLISHED contract on the one member most likely to be reached after d
 **Bounded impact, and what is provided instead.** Rather than a guard, the disposed transition is made
 OBSERVABLE: `internal bool IsDisposed => _disposedValue` is the single seam both `Dispose` overloads fold into,
 so a test — and a future guard, if one is ever warranted on a member not bound by that contract — can see the
-transition landed instead of inferring it.
+transition landed instead of inferring it. That seam is an UNSYNCHRONIZED read of the same plain `bool` the
+transition writes; it is sound for the sequential teardown this library drives and for the tests that assert over
+it, and the reason no barrier is added is the separate residual below.
 
 ### Accepted residual: the synchronous Dispose path closes the inner receiver unawaited
 
 **Root cause.** `Dispose(disposing: true)` cannot await, so it calls `CloseWithoutAwaiting(_innerReceiver, ...)`,
 which starts `CloseAsync()` and attaches an `OnlyOnFaulted` continuation that logs. The close is
 unawaited-but-OBSERVED: a failure is logged rather than left as an unobserved faulted task.
+
+The OBSERVED guarantee is TOTAL over the fault shapes a `Task`-returning member permits, not just the faulted-task
+one. A close that throws BEFORE returning a task produces nothing for the continuation to attach to, so
+`CloseWithoutAwaiting` guards the invocation itself and logs that shape directly; the helper therefore does not
+throw, and both callers' remaining work — nulling the inner receiver and latching `_disposedValue` on the Dispose
+path, returning `null` so the next receive rebuilds on the recovery path — always runs. Every production
+`IServiceBusMessageReceiver` implements `CloseAsync` as an `async` method, which captures its failure into the
+returned task, so the synchronous shape is unreachable through today's three implementations; the guarantee is
+stated on the helper rather than inferred from them, because the helper is what the contract is written on.
 
 **Why both obvious remediations are REJECTED.** Awaiting it means blocking on async work inside `Dispose`, i.e.
 sync-over-async on the host-shutdown path, with the deadlock and shutdown-stall failure modes that carries.
@@ -185,6 +196,43 @@ until their locks expire.
 **Bounded impact.** The close may not have completed when `Dispose` returns, so a failure is learned from the
 log rather than from the caller. That is the whole of it.
 
+### Accepted residual: the receiver's disposal transition is not synchronized
+
+**Root cause.** `ServiceBusReceiver.Dispose(bool)` reads `_disposedValue`, closes the inner receiver, nulls
+`_innerReceiver` and latches `_disposedValue` with NO synchronization, while the receive path's
+`ObjectDisposedException` recovery captures-and-clears the SAME `_innerReceiver` field under `_syncLock`. The two
+do not compose: teardown does not take the lock the recovery path takes, `_disposedValue` is a plain `bool` with
+no memory barrier on either side, and `internal bool IsDisposed => _disposedValue` reads it unsynchronized too.
+Two genuinely concurrent `Dispose()` calls could therefore both observe `false` and close the same inner receiver
+twice, and a teardown racing a recovery could null the field the recovery is mid-way through replacing.
+
+**This is INHERITED, byte-for-byte.** The `if (!_disposedValue) { ...; _innerReceiver = null; _disposedValue =
+true; }` transition is unchanged from before this decision; #376's change swapped only what is invoked INSIDE the
+`if (disposing)` block. The `IsDisposed` seam is new, but it only READS a field that was already raced.
+
+**Bounded impact.** The racing schedule is not reachable through any path this library drives. Core's
+`BrokeredMessageReceiver` disposes the infrastructure receiver once, behind its own lifecycle CAS and teardown
+gate, and reaches `DisposeAsync()` — which awaits `StopReceiver()` and then runs `Dispose(disposing: false)`,
+taking neither the close branch nor a second close. The .NET Generic Host stops hosted services to completion
+BEFORE disposing the provider, so the provider's synchronous dispose of the root-captured receiver is sequenced
+AFTER the pump has stopped, not concurrent with it; and a provider disposes each tracked disposable once. The
+sequential double dispose that does occur — an explicit dispose followed by provider teardown — is exactly what
+the `_disposedValue` guard makes idempotent, and sequential visibility needs no barrier. What is left is an
+out-of-band caller disposing the receiver while its pump is still running, which is a misuse of an `internal`
+type with no public registration.
+
+**Why the obvious remediation is REJECTED here.** The obvious fix is the one ADR-0003 adopted for
+`RabbitMqConnectionSource`: collapse liveness to one monotonic authority advanced by `Interlocked.CompareExchange`
+and compose `Dispose`, `DisposeAsync`, `StopReceiver` and the receive-recovery catch through a single gate. That
+is the right answer WHEN the class has demonstrated it recurs — ADR-0003 adopted it after three successive
+non-closing fixes. It has not here. ADR-0019 rejected the same machinery on `RabbitMqReceiver` (option (i)) for
+precisely the reason that applies again: it defends a schedule that is unreachable, duplicates one layer down the
+gated-handoff model core's `BrokeredMessageReceiver` already runs ABOVE this type, and carries real regression
+risk into the teardown path — the path whose failure orphans AMQP links and session locks. Adding it as an
+unforced change inside a PR scoped to a registration defect would put that risk in the least-reviewed place.
+Recorded here so the next reader inherits the argument rather than re-deriving it; if a genuinely concurrent
+caller ever appears, this residual is PROMOTED to an issue and the ADR-0003 shape is what it should adopt.
+
 ### Accepted residual: the transient receiver is root-captured for the provider's lifetime
 
 **Root cause.** `ServiceBusReceiver` is `IDisposable`, and Microsoft DI tracks every disposable transient it
@@ -195,6 +243,27 @@ instance is retained until provider teardown.
 about one instance per receiver entity, resolved once per `ReceiveInfrastructure` access during startup, not
 per message. `StopReceiver()` is one-way and terminal, and the second dispose at provider teardown is
 idempotent through the `_disposedValue` guard, so the retained instance costs retention and nothing else.
+
+**Where that bound comes from, stated rather than assumed.** It is a property of the CORE CALL GRAPH, not
+something this registration enforces. `MessagingInfrastructure.ReceiveInfrastructure` is a property that calls
+`Create()` on EVERY read, exactly as `DispatchInfrastructure` does; what bounds the count is that the only
+production reader is `BrokeredMessageReceiver.StartReceiverImpl`
+(`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs`), which sits
+behind a `NotStarted -> Starting` `Interlocked.CompareExchange` that admits one startup per receiver instance,
+and one `BrokeredMessageReceiver<TMessage>` is registered per configured entity. Option (iii) above says
+"`ReceiveInfrastructure` calls `Create()` once per receiver entity" — read that as the CALLER accessing it once
+per entity, which is what the CAS makes true, not as a property of the property.
+
+**The delta this introduces, and why it is still accepted.** Under the scoped shape each access created a
+receiver AND disposed it with the scope, so repeated reads retained nothing (they handed back dead instances —
+the #376 defect). Under root resolution repeated reads ACCUMULATE. Chatter never makes them, but
+`IMessagingInfrastructureProvider.GetReceiver` and `IMessagingInfrastructure.ReceiveInfrastructure` are
+reachable API, so a consumer hand-driving them in a loop grows root-tracked disposables for the provider's
+lifetime. That is the honest shape of the bound: enforced by how core calls it, not by this site. Bounding it
+here would mean caching one receiver per configured entity behind this factory — which is option (ii)'s
+ownership problem wearing a different hat, since the cache would then own a lifetime the factory cannot end,
+and the factory has no entity key to cache on (it is handed none; `InitializeAsync` supplies the options
+AFTER the delegate returns). Rejected on those merits, not on cost.
 
 ### Accepted residual: a sender is allocated per routed message
 
@@ -259,7 +328,11 @@ checking it has somewhere to check. That is what makes it checkable, not what ma
   whose remaining Azure Service Bus items bounded this PR's scope.
 - ADR-0019 — *RabbitMQ receiver dispose is surgical; the container owns the connection source*. Why the
   RabbitMQ receiver left the scope shape by a different route, and why its single root-constructed instance is
-  the correct answer THERE and not a template for here.
+  the correct answer THERE and not a template for here. Its option (i) is also the precedent for rejecting a
+  receiver-level lifecycle state machine that defends an unreachable schedule.
+- ADR-0003 — *`RabbitMqConnectionSource` single monotonic lifecycle authority*. The shape the unsynchronized
+  disposal-transition residual would adopt if that class ever demonstrates it recurs, and the evidence bar
+  (three successive non-closing fixes) that justified adopting it there.
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs`
   (`SignalDeliveryReleased`) — the `IDeliveryReleaseSignal` type test that rules out the decorator, and the
   MUST-NOT-THROW contract the missing disposed-guard defers to.

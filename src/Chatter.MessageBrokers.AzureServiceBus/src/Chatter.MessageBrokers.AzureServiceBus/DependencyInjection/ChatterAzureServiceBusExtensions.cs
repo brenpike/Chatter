@@ -44,8 +44,10 @@ namespace Microsoft.Extensions.DependencyInjection
             // InitializeAsync writes that entity's options onto the instance, so one shared instance would
             // cross-wire entities; and a SCOPED instance cannot be handed out by the singleton
             // IMessagingInfrastructure below without outliving the scope that owns it. Every dependency of
-            // both types is a singleton, so a transient instance resolved from the root provider has no
-            // scoped member to strand.
+            // both types is registered as a singleton BY THIS MODULE OR BY CORE, so a transient instance
+            // resolved from the root provider has no scoped member to strand. That is a property of these
+            // registrations, not a type-level guarantee: a CONSUMER that re-registers one of them at Scoped
+            // moves this site out of it, and ADR-0022 records what happens then.
             builder.Services.AddTransient<ServiceBusReceiver>();
             builder.Services.AddTransient<ServiceBusMessageSender>();
 
@@ -99,11 +101,13 @@ namespace Microsoft.Extensions.DependencyInjection
                 // which this INHERITS rather than restates: a registration factory must never open a DI
                 // scope whose resolved graph escapes the factory delegate. A scope opened here would be
                 // disposed as the delegate returns, disposing the receiver it just built and handing the
-                // caller a dead instance. Resolving from the captured root provider is safe BY
-                // CONSTRUCTION because the two transient types above have only singleton dependencies, so
-                // there is no scoped member for a scope to bound. ADR-0022 records the residual: each
-                // transient receiver is IDisposable and therefore tracked by the root provider until
-                // teardown.
+                // caller a dead instance. Resolving from the captured root provider is safe because the two
+                // transient types above have only singleton dependencies AS REGISTERED HERE AND IN CORE —
+                // a property of the graph, checkable at those registrations, not a type-level guarantee.
+                // ADR-0022 records both residuals this leaves: each transient receiver is IDisposable and
+                // therefore tracked by the root provider until teardown, and a consumer scoped override of
+                // either graph's dependency is root-captured (or rejected under host scope validation)
+                // rather than stranded.
                 var infrastructureFactory = new MessagingInfrastructureFactory(
                     () => sp.GetRequiredService<ServiceBusReceiver>(),
                     () => sp.GetRequiredService<ServiceBusMessageSender>());

@@ -129,11 +129,49 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             disposing.Should().NotThrow();
         }
 
-        // An inner port whose close fails the way a real one does: CloseAsync is an async method, so its failure
-        // arrives as a FAULTED TASK rather than a synchronous throw. Moq cannot stand in here — the production
-        // assembly's DynamicProxyGenAssembly2 grant does not extend to this internal port over an internal type.
+        // The OTHER fault shape, and the one the continuation structurally cannot see: a close that throws
+        // SYNCHRONOUSLY, before any task exists to attach a continuation to. Every production
+        // IServiceBusMessageReceiver implements CloseAsync as an `async` method, which captures its failure into
+        // the returned task and so can never take this path — but the observed-close contract is stated on the
+        // helper, not on its callers, so it must hold for any implementation of the port rather than for the
+        // three that exist today.
+        [Fact]
+        public async Task MustLogASynchronouslyThrowingCloseAsAWarning()
+        {
+            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(throwSynchronously: true));
+
+            sut.Dispose();
+
+            _logger.CountOf(LogLevel.Warning).Should().Be(1);
+        }
+
+        // A close failure must not strand the disposal itself. The transition that nulls the inner receiver and
+        // latches the disposed flag runs AFTER the close is started, so a synchronous throw escaping the close
+        // would leave the receiver reporting undisposed and re-closable — the second dispose would then close a
+        // second time.
+        [Fact]
+        public async Task MustCompleteTheDisposedTransitionWhenTheCloseThrowsSynchronously()
+        {
+            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(throwSynchronously: true));
+
+            Action disposing = () => sut.Dispose();
+
+            disposing.Should().NotThrow();
+            sut.IsDisposed.Should().BeTrue();
+        }
+
+        // An inner port whose close fails. By default it fails the way every production one does: CloseAsync is an
+        // async method, so its failure arrives as a FAULTED TASK. Constructed with throwSynchronously it fails the
+        // other legal way for the port's Task-returning signature — throwing before a task is ever returned. Moq
+        // cannot stand in here — the production assembly's DynamicProxyGenAssembly2 grant does not extend to this
+        // internal port over an internal type.
         private sealed class FaultingCloseMessageReceiver : IServiceBusMessageReceiver
         {
+            private readonly bool _throwSynchronously;
+
+            public FaultingCloseMessageReceiver(bool throwSynchronously = false)
+                => _throwSynchronously = throwSynchronously;
+
             public bool IsClosedOrClosing => false;
 
             public Task<ServiceBusReceivedMessage> ReceiveAsync(CancellationToken cancellationToken)
@@ -150,7 +188,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             public void DeliveryReleased(ServiceBusReceivedMessage message) { }
 
-            public Task CloseAsync() => Task.FromException(new ServiceBusException("close failed", ServiceBusFailureReason.ServiceCommunicationProblem));
+            public Task CloseAsync()
+            {
+                var closeFailure = new ServiceBusException("close failed", ServiceBusFailureReason.ServiceCommunicationProblem);
+                return _throwSynchronously ? throw closeFailure : Task.FromException(closeFailure);
+            }
         }
     }
 }
