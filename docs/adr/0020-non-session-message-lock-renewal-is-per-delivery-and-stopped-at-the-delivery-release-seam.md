@@ -83,6 +83,16 @@ renewal against the very call that makes the lock meaningless.
   core's settlement-recovery ladder and is logged as a failed settlement against the delivery that suffered
   it. A watchdog would be a second, inferential report of a fact the broker already reports directly.
 
+- **(v) Refuse an out-of-range ceiling when the option is built, instead of saturating where the ceiling is
+  computed (REJECTED).** A `MaxMessageLockRenewalDuration` large enough that `now + maxRenewalDuration` leaves
+  `DateTimeOffset`'s range faulted the loop with an `ArgumentOutOfRangeException` before it renewed once.
+  Validating the option does not close that class: `LockRenewalLoop` takes the duration as a constructor
+  argument and both receive paths construct one directly, so a duration that never passed through
+  `ServiceBusOptionsBuilder` reaches the same arithmetic unchecked. It would also add a new startup throw to a
+  knob that previously accepted any value, turning a setting a deployment may already carry into a refusal to
+  start. Saturating at the arithmetic site is total where validating the option is positional: the single
+  expression that computes a ceiling cannot be reached with a value it rejects.
+
 ## Decision
 
 Adopt option (iii), with zero as a total off-switch per option (iv):
@@ -90,13 +100,15 @@ Adopt option (iii), with zero as a total off-switch per option (iv):
 1. **One bounded renewal policy serves BOTH paths.** `Receiving/LockRenewalLoop.cs` renews a lock at the
    halfway point between now and its expiry, floored at one second so a near-expired or already-expired lock
    renews promptly rather than spinning or waiting a negative span, and stops at a ceiling of
-   `now + maxRenewalDuration` computed ONCE at loop start. It takes no Azure SDK type: the expiry is read
-   through a delegate re-read every iteration (it advances on each successful renewal) and the renewal itself
-   is a delegate, with the clock and the delay injected — which is what makes cadence and ceiling testable
-   without a live namespace. It completes without throwing for the three expected outcomes — cancellation of
-   its own token, a `ServiceBusException` carrying the caller's lock-lost reason, and a concurrently disposed
-   receiver — and faults the returned task for anything else, because a loop that quietly stopped renewing on
-   an unrecognised failure would look identical to one that ran to its ceiling.
+   `now + maxRenewalDuration` — SATURATED at `DateTimeOffset.MaxValue`, so every `TimeSpan` admits a ceiling
+   and no configured duration can fault the loop before it renews once — computed ONCE at loop start. It
+   takes no Azure SDK type: the expiry is read through a delegate re-read every iteration (it advances on
+   each successful renewal) and the renewal itself is a delegate, with the clock and the delay injected —
+   which is what makes cadence and ceiling testable without a live namespace. It completes without throwing
+   for the three expected outcomes — cancellation of its own token, a `ServiceBusException` carrying the
+   caller's lock-lost reason, and a concurrently disposed receiver — and faults the returned task for
+   anything else, because a loop that quietly stopped renewing on an unrecognised failure would look
+   identical to one that ran to its ceiling.
 
 2. **`LockRenewalLoop.IsEnabled` is the SINGLE definition of "renewal off".** Both paths read it, so they
    agree by construction rather than by two matching comparisons that a later edit could separate.
@@ -106,12 +118,19 @@ Adopt option (iii), with zero as a total off-switch per option (iv):
    of 40. Its behaviour is unchanged — the catch set is the same three clauses with the same predicates, with
    `SessionLockLost` passed in as the path's lock-lost reason.
 
-4. **Renewal state is PER DELIVERY, reference-keyed.** `Receiving/MessageLockRenewalRegistry.cs` holds one
-   cancellation source and one loop task per in-flight delivery, in a dictionary keyed by
+4. **ONE object owns ONE renewal, and renewal state is PER DELIVERY, reference-keyed.**
+   `Receiving/RenewalLifetime.cs` is that owner: it constructs the renewal's cancellation source, runs the
+   loop on it, leaves the registry's tracking and reports a renewal failure, all inside the nested `finally`
+   of ONE `async` flow, and its completion IS that flow's task. Nothing else can reach the cancellation
+   source, `End()` is its only cancellation surface, and `End()` owns nothing and never throws.
+   `Receiving/MessageLockRenewalRegistry.cs` holds one such renewal per delivery in ONE dictionary keyed by
    `ServiceBusReceivedMessage` REFERENCE — for the same reason the Session Multiplexer keys its slots by
    reference: settlement is by received-message object, and two distinct deliveries may carry equal field
-   values, so value equality would conflate two in-flight deliveries onto one renewal. `Start` is a no-op when
-   renewal is disabled, when the registry has closed, or when that reference is already renewing.
+   values, so value equality would conflate two in-flight deliveries onto one renewal. Membership in that
+   dictionary means exactly "this renewal has not ended", written by an insert in `Start` and by the owning
+   renewal removing itself as it ends; `ActiveRenewalCount` is a projection computed over it rather than a
+   second collection beside it. `Start` is a no-op when renewal is disabled, when the registry has closed, or
+   when that reference is already renewing.
 
 5. **Renewal starts at receive, for PeekLock only, against the receiver that delivered the message.**
    `AzureSdkMessageReceiverAdapter.ReceiveAsync` captures the SDK receiver it received from and closes over it
@@ -130,8 +149,10 @@ Adopt option (iii), with zero as a total off-switch per option (iv):
    DISCARDED adapter has its release routed to the NEW adapter, which has never seen that reference.
 
 8. **`CloseAsync` awaits the registry close before closing the SDK receiver**, ending and awaiting every
-   delivery's loop, so no renewal outlives the receiver it renews against. One loop faulting cannot leave the
-   rest running: each is observed and logged individually.
+   delivery's renewal — including one already stopped but still ending — so no renewal outlives the receiver
+   it renews against. A failing renewal cannot leave the rest running or strand the close: each renewal
+   reports its own failure as it ends and its completion never faults, and every caller of the close observes
+   the SAME completion, published in the same expression that starts it.
 
 9. **The ceiling is an operator knob with zero as a total off-switch.** `MaxMessageLockRenewalDuration` /
    `WithMaxMessageLockRenewalDuration`, default 5 minutes, fluent winning over configuration per this
@@ -161,25 +182,83 @@ needing to know whether the other ran.
 **The honest residual.** This closes the class of an ONGOING loop, not of a single in-flight broker call. A
 `RenewMessageLockAsync` already awaiting Azure Service Bus when the cancellation lands may still complete
 afterwards; it is bounded at one outstanding call per delivery, and the SDK answers an already-settled delivery
-with the same `ServiceBusException(MessageLockLost)` an expired lock does, which the loop already absorbs. The
-release path also disposes the delivery's cancellation source on a continuation rather than awaiting the loop,
-deliberately: a release must not block on a renewal still awaiting the broker. What is guaranteed is that no
-renewal is ever ISSUED after its delivery ended, and that `CloseAsync` awaits what is outstanding.
+with the same `ServiceBusException(MessageLockLost)` an expired lock does, which the loop already absorbs.
+Ending a delivery's renewal does not wait for that call: a release ends the renewal and returns, and the
+renewal releases what it owns whenever it actually ends.
+
+`CloseAsync` is the one path that does wait, and what it waits for is BOUNDED. Azure.Messaging.ServiceBus
+7.20.2 does not carry the renewal's cancellation token into the AMQP request — `AmqpReceiver`'s renew members
+hand the token to the retry policy, and the retry lambda discards it in favour of the policy's per-try
+timeout — so a renew attempt already in flight runs to `ServiceBusRetryOptions.TryTimeout` (default one
+minute) rather than ending with the cancellation, while the retry policy DOES observe the cancellation between
+attempts. A close therefore waits for at most ONE outstanding renew attempt per delivery, not for an unbounded
+loop. That is a property of the SDK rather than of this module, and it applies equally to the pre-existing
+session path, whose release awaits its renewal the same way.
+
+What is guaranteed is that no renewal is ever ISSUED after its delivery ended, and that `CloseAsync` awaits
+what is outstanding.
+
+## Closed-by-Construction Acceptance Test: the eliminated cleanup-obligation category
+
+> Which class of defect is made impossible, and why?
+
+**"A renewal cleanup obligation a throwing step can SKIP, and a teardown completion a throwing step can
+STRAND."** The first shape of this fix spread one renewal's obligations across its callers: the registry
+cancelled the source, a continuation disposed it, a second collection recorded which renewals were still
+running, and a close published a completion it then had to remember to complete. Each of those is a step that
+can raise before reaching the next, and each raise leaves a different wreck — a source never disposed, an
+ended renewal recorded as running forever, a close every caller awaits and nothing completes.
+
+Four structural facts close the category rather than enumerating its cases:
+
+- **Cleanup has ONE site, and a `finally` guarantees it.** `RenewalLifetime` constructs the cancellation
+  source, and disposing it, leaving tracking and reporting a renewal failure all happen in the nested
+  `finally` of the single `async` flow that ran the loop. There is no second site to forget and no ordering
+  for a caller to get wrong, because no caller participates in the cleanup at all.
+- **No caller owns cleanup, so a failing cancel skips nothing.** `End()` cancels and returns; it holds
+  nothing and releases nothing. `CancellationTokenSource.Cancel()` runs registrations and raises whatever one
+  of them raises, but the token is signalled before any registration runs, so the loop ends either way and
+  the flow that ends it discharges every obligation whether the cancel returned or threw. `End()` therefore
+  never throws, which is what lets the Delivery Release path and the close path both call it unguarded.
+- **The strandable primitive is deleted.** A close is an `async` method's task, published in the same
+  expression that starts it, inside the same lock that snapshots the renewals it owns; the language
+  guarantees that task reaches a terminal state, so "published but never completed" has no representation. A
+  renewal's completion is likewise its own flow's task and never faults, so a failing renewal cannot stop a
+  close from finishing.
+- **ONE structure means the contradictory states have no representation.** Two collections could disagree: a
+  renewal in both, in neither, or added to one after a teardown had snapshotted the other. There is now a
+  single dictionary whose membership means exactly "this renewal has not ended", `ActiveRenewalCount` is
+  computed over that dictionary rather than kept beside it, and a closed registry starts nothing further — so
+  a close's snapshot is the whole population, and there is no second structure for it to differ from.
+
+**The honest residual.** Two of these rest on an argument rather than on a type-level guarantee, and should be
+read as such. `Stopped` is an ordinary mutable field written and read under the registry's lock; nothing in
+its type prevents a future edit touching it outside that lock, so "no contradictory state" holds because every
+write is inside the lock, not because the field cannot express one. And "membership means this renewal has not
+ended" rests on the exit callback running exactly once — which it does, because it runs in one `finally` on
+one flow — rather than on a structure incapable of holding an ended renewal. Both are RELOCATIONS of a
+property into a single place a reader can check, which is what makes them checkable; neither makes the
+property unwritable.
 
 ## Consequences
 
 - **This changes DEFAULT behaviour.** Renewal is now ON for every non-session PeekLock receiver, bounded at 5
   minutes. A deployment that configured nothing previously renewed nothing and now renews; set
   `MaxMessageLockRenewalDuration` to zero to restore the old behaviour exactly.
-- **Renewal is bounded, so lock loss is deferred, not abolished.** A handler still running past the ceiling
-  loses its lock exactly as it did before, and its settlement throws exactly as it did before. Handlers that
-  legitimately run longer need a higher ceiling; handlers that run unboundedly need a different design, not a
-  higher ceiling.
+- **Renewal is bounded by the ceiling the operator sets, so lock loss is deferred, not abolished.** A handler
+  still running past the ceiling loses its lock exactly as it did before, and its settlement throws exactly as
+  it did before. Handlers that legitimately run longer need a higher ceiling.
+- **A saturating ceiling gives `TimeSpan.MaxValue` a meaning: renew until the delivery ends.** This ADR first
+  said that a handler running unboundedly needs a different design, "not a higher ceiling"; the arithmetic no
+  longer refuses one, so that advice is narrowed to what survives. An unbounded ceiling is now expressible,
+  and it does not make a renewal unowned — the stop seams above are unchanged, so such a renewal still ends at
+  the delivery's settlement, at its Delivery Release, or at the receiver's close. What it gives up is the
+  ceiling as a backstop for a handler that never ends, which then holds its lock for as long as it runs.
 - **The common case costs no extra broker call.** The first renewal is scheduled at half the delivery's
   remaining lock, so a handler that settles well inside the entity's lock duration — which is most of them —
   stops renewal before any renewal request is issued.
-- **Per-delivery cost is one cancellation source and one loop task per IN-FLIGHT delivery**, bounded by
-  `MaxConcurrentCalls`, and zero when the knob is zero.
+- **Per-delivery cost is one Renewal Lifetime — a cancellation source and a loop task — per IN-FLIGHT
+  delivery**, bounded by `MaxConcurrentCalls`, and zero when the knob is zero.
 - **The two receive paths now share a policy type.** A change to cadence, ceiling arithmetic or the catch set
   in `LockRenewalLoop` changes SESSION lock renewal too. That coupling is the point — the two had drifted
   apart once already — but it makes that type a shared-behaviour surface rather than a private helper.
@@ -192,6 +271,9 @@ renewal is ever ISSUED after its delivery ended, and that `CloseAsync` awaits wh
 - Issue #373 — *Message locks are never renewed for non-session PeekLock receivers*. The defect this decision
   closes.
 - Issue #307 — the parent epic this defect was raised under.
+- Issue #499 — a session-path release that skips its cleanups when a renewal faults with an unrecognised
+  exception. Pre-dates this decision, deliberately deferred out of it, and the reason the session path is
+  named separately wherever this ADR describes a release awaiting its renewal.
 - ADR-0014 (in-process session concurrency via the Session Multiplexer) — where the Delivery Release signal is
   first answered in this context, and the source of the reference-keyed, per-delivery dictionary this registry
   mirrors.
