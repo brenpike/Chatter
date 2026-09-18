@@ -167,8 +167,13 @@ this is defer-with-scope, and it is the reason this ADR exists at all rather tha
   BOTH delegates of its `IMessagingInfrastructure` descriptor carry the identical scope-open-resolve-dispose
   shape, under a near-verbatim copy of the same "reproducing the former ... behavior exactly" comment Azure
   Service Bus had, and with no stated justification beyond that provenance. `SqlServiceBrokerReceiver` and
-  `SqlServiceBrokerSender` are both registered `Scoped`. It carries the same latent use-after-dispose-by-contract
-  as #376 — with one difference that makes it STRICTLY less safe rather than more: `ISqlConnectionSource` is
+  `SqlServiceBrokerSender` are both registered `Scoped`. It carries the same use-after-dispose-by-contract as
+  #376, and LIVE rather than latent: `SqlServiceBrokerReceiver` is `IDisposable` through
+  `IMessagingInfrastructureReceiver`, so the factory's scope runs that instance's `Dispose` as it returns and the
+  caller receives an already-disposed receiver. Today that `Dispose` reaches an EMPTY `Cancel()` and latches no
+  disposed flag, so it is INERT — an accident of what that one method currently contains, exactly as the Azure
+  Service Bus disposal was benign by accident of timing, not a design difference. There is one further difference,
+  and it makes this site STRICTLY less safe rather than more: `ISqlConnectionSource` is
   registered `Scoped` there, so this site's graph genuinely contains a scoped member. It is a BRANCH ONE site,
   not a branch two one, and the Azure Service Bus answer must not be copied onto it verbatim.
 
@@ -189,8 +194,9 @@ this is defer-with-scope, and it is the reason this ADR exists at all rather tha
 Neither is fixed in this PR because the scope of this work was Azure Service Bus only, to close epic #307's
 remaining Azure Service Bus items, and widening it across two further modules — one of which is a branch ONE
 site needing a different fix — was not pre-approved. The bounded impact of leaving them is that each keeps a
-delegate asserting an ownership it does not hold; neither is currently handing out a disposed graph, and the
-SqlServiceBroker one is the one to look at first.
+delegate asserting an ownership it does not hold, and SqlServiceBroker's receiver delegate hands out an
+already-disposed instance today — costless only for as long as that receiver's `Dispose` stays empty. That is
+why the SqlServiceBroker one is the one to look at first.
 
 ### Accepted residual: no throw-if-disposed guard on the receiver
 
