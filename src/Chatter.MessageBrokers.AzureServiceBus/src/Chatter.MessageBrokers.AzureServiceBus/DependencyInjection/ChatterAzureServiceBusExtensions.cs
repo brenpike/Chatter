@@ -40,8 +40,14 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, ServiceBusOptions options)
         {
-            builder.Services.AddScoped<ServiceBusReceiver>();
-            builder.Services.AddScoped<ServiceBusMessageSender>();
+            // TRANSIENT, not scoped and not singleton. GetReceiver is called once per receiver entity and
+            // InitializeAsync writes that entity's options onto the instance, so one shared instance would
+            // cross-wire entities; and a SCOPED instance cannot be handed out by the singleton
+            // IMessagingInfrastructure below without outliving the scope that owns it. Every dependency of
+            // both types is a singleton, so a transient instance resolved from the root provider has no
+            // scoped member to strand.
+            builder.Services.AddTransient<ServiceBusReceiver>();
+            builder.Services.AddTransient<ServiceBusMessageSender>();
 
             // Ensure the receiver registry exists even when no receivers were configured (e.g. a send-only
             // host), so the shared-client factory can always resolve it. AddQueueReceiver/AddTopicSubscription
@@ -85,22 +91,22 @@ namespace Microsoft.Extensions.DependencyInjection
             {
                 // Folded receiver/dispatcher factory captured directly in this infrastructure's
                 // descriptor (NOT resolved from the container by the shared MessagingInfrastructureFactory
-                // type), so each broker keeps its own factory under multi-broker registration. Each
-                // delegate opens a DI scope, resolves the scoped infrastructure service, and disposes the
-                // scope — reproducing the former ServiceBusReceiverFactory / ServiceBusMessageSenderFactory
-                // behavior exactly.
-                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+                // type), so each broker keeps its own factory under multi-broker registration.
+                //
+                // INVARIANT: these delegates open NO scope — the Azure Service Bus case of the core rule
+                // stated at ChatterMessageBrokerExtensions.AddReceiverImpl (see
+                // src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/DependencyInjection/ChatterMessageBrokerExtensions.cs),
+                // which this INHERITS rather than restates: a registration factory must never open a DI
+                // scope whose resolved graph escapes the factory delegate. A scope opened here would be
+                // disposed as the delegate returns, disposing the receiver it just built and handing the
+                // caller a dead instance. Resolving from the captured root provider is safe BY
+                // CONSTRUCTION because the two transient types above have only singleton dependencies, so
+                // there is no scoped member for a scope to bound. ADR-0022 records the residual: each
+                // transient receiver is IDisposable and therefore tracked by the root provider until
+                // teardown.
                 var infrastructureFactory = new MessagingInfrastructureFactory(
-                    () =>
-                    {
-                        using var scope = scopeFactory.CreateScope();
-                        return scope.ServiceProvider.GetRequiredService<ServiceBusReceiver>();
-                    },
-                    () =>
-                    {
-                        using var scope = scopeFactory.CreateScope();
-                        return scope.ServiceProvider.GetRequiredService<ServiceBusMessageSender>();
-                    });
+                    () => sp.GetRequiredService<ServiceBusReceiver>(),
+                    () => sp.GetRequiredService<ServiceBusMessageSender>());
                 var pathBuilder = sp.GetRequiredService<AzureServiceBusEntityPathBuilder>();
                 return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory, pathBuilder);
             });
