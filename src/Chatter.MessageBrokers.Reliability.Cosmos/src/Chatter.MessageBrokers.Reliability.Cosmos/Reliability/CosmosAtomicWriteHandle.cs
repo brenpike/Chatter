@@ -1,5 +1,6 @@
 using Microsoft.Azure.Cosmos;
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -21,7 +22,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
     /// <strong>Reserved-namespace guard.</strong> The only public create/upsert path is
     /// <see cref="StageCreateItemStream"/>, whose guard keys on the persisted item.id peeked from the payload bytes the
     /// SDK reads, so no public create/upsert can stage a document whose persisted physical id carries a reserved
-    /// prefix. <see cref="StageReplaceItem{T}"/>/<see cref="StagePatchItem"/> call
+    /// prefix. That peek is a forward-only scan over a pooled copy of the payload bytes and materializes no document
+    /// object model: it binds only an <c>id</c> at the root object's own property depth (an <c>id</c> nested in an
+    /// object or an array element is application data and never binds), takes the LAST such <c>id</c> when a payload
+    /// repeats the key — the one Cosmos persists — and treats a payload it cannot parse whole, whether malformed or
+    /// carrying content past the root object, as idless. <see cref="StageReplaceItem{T}"/>/<see cref="StagePatchItem"/> call
     /// <see cref="CosmosItemId.GuardNotReserved"/> on their explicit op-key <c>id</c> (which IS the persisted key)
     /// BEFORE staging, so a rejected stage leaves the batch and <see cref="StagedOperationCount"/> unperturbed (the
     /// guard fires before the op is added). The framework's own reserved-id writes go through the internal
@@ -127,30 +132,83 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             return buffer;
         }
 
+        // The reader depth at which the ROOT object's own property names sit. An "id" any deeper belongs to a nested
+        // object or an array element — application data, never the persisted item id.
+        private const int RootObjectPropertyDepth = 1;
+
         // Returns the top-level "id" string from the JSON payload, or null when the payload is empty, not a JSON object,
-        // unparseable, or carries no string-valued "id" — all of which are non-reserved (idless) by treatment.
+        // unparseable, or carries no string-valued "id" — all of which are non-reserved (idless) by treatment. The bytes
+        // are read into a pooled buffer and scanned forward-only; no document object model is materialized.
         private static string TryReadIdFromJson(Stream seekablePayload)
         {
-            if (seekablePayload.Length - seekablePayload.Position <= 0)
+            long remainingBytes = seekablePayload.Length - seekablePayload.Position;
+            if (remainingBytes <= 0 || remainingBytes > int.MaxValue)
             {
                 return null;
             }
 
+            var payloadLength = (int)remainingBytes;
+            byte[] rentedBuffer = ArrayPool<byte>.Shared.Rent(payloadLength);
             try
             {
-                using var document = JsonDocument.Parse(seekablePayload);
-                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                var bytesRead = 0;
+                while (bytesRead < payloadLength)
+                {
+                    int read = seekablePayload.Read(rentedBuffer, bytesRead, payloadLength - bytesRead);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+
+                    bytesRead += read;
+                }
+
+                return ScanTopLevelId(rentedBuffer.AsSpan(0, bytesRead));
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rentedBuffer);
+            }
+        }
+
+        // Walks the payload's tokens once, recording the LAST "id" found at RootObjectPropertyDepth — the one Cosmos
+        // persists when a payload repeats the key. A payload that is not one well-formed root object — malformed, or
+        // carrying content past the root — is idless, the same treatment a whole-document parse gave it.
+        private static string ScanTopLevelId(ReadOnlySpan<byte> payloadBytes)
+        {
+            ReadOnlySpan<byte> utf8ByteOrderMark = new byte[] { 0xEF, 0xBB, 0xBF };
+            if (payloadBytes.StartsWith(utf8ByteOrderMark))
+            {
+                payloadBytes = payloadBytes.Slice(utf8ByteOrderMark.Length);
+            }
+
+            var reader = new Utf8JsonReader(payloadBytes);
+            try
+            {
+                if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
                 {
                     return null;
                 }
 
-                if (document.RootElement.TryGetProperty(CosmosOutboxDocument.IdField, out JsonElement idElement)
-                    && idElement.ValueKind == JsonValueKind.String)
+                string id = null;
+                while (reader.Read())
                 {
-                    return idElement.GetString();
+                    if (reader.TokenType != JsonTokenType.PropertyName
+                        || reader.CurrentDepth != RootObjectPropertyDepth
+                        || !reader.ValueTextEquals(CosmosOutboxDocument.IdField))
+                    {
+                        continue;
+                    }
+
+                    if (!reader.Read())
+                    {
+                        return null;
+                    }
+
+                    id = reader.TokenType == JsonTokenType.String ? reader.GetString() : null;
                 }
 
-                return null;
+                return id;
             }
             catch (JsonException)
             {

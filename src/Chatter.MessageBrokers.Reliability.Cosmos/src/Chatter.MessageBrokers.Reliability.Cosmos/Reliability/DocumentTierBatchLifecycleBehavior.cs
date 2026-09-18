@@ -69,7 +69,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // resolver or the container factory — no batch, no resolver call.
             if (!_registry.TryGet(typeof(TMessage), out DocumentReliabilityRegistration registration))
             {
-                await next();
+                await next().ConfigureAwait(false);
                 return;
             }
 
@@ -83,7 +83,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             InboundBrokeredMessage inboundBrokeredMessage = messageHandlerContext.GetInboundBrokeredMessage();
             if (inboundBrokeredMessage is null)
             {
-                await next();
+                await next().ConfigureAwait(false);
                 return;
             }
 
@@ -93,7 +93,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             PartitionKey? partitionKey = registration.Resolver(inboundBrokeredMessage);
             if (partitionKey is null)
             {
-                await next();
+                await next().ConfigureAwait(false);
                 return;
             }
 
@@ -134,7 +134,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // re-run. We do NOT add such a pre-read here — it would reintroduce the eliminated TOCTOU.
                 var markerStamped = TryStampInboxMarker(handle, inboundBrokeredMessage, registration.PartitionKeyPath);
 
-                await next();
+                await next().ConfigureAwait(false);
 
                 // INVARIANT: the single batch-execute is the only commit point. Skip it when no op was staged so an
                 // empty batch never calls the Cosmos transport. A marker-only batch has StagedOperationCount > 0, so it
@@ -142,9 +142,9 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 if (handle.StagedOperationCount > 0)
                 {
                     System.Threading.CancellationToken cancellationToken = messageHandlerContext?.CancellationToken ?? default;
-                    TransactionalBatchResponse response = await batch.ExecuteAsync(cancellationToken);
+                    TransactionalBatchResponse response = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
                     string markerId = CosmosItemId.ForInbox(inboundBrokeredMessage.MessageId);
-                    await InspectBatchResponseAsync(response, markerStamped, handle.Container, markerId, partitionKey.Value, inboundBrokeredMessage.MessageId, cancellationToken);
+                    await InspectBatchResponseAsync(response, markerStamped, handle.Container, markerId, partitionKey.Value, inboundBrokeredMessage.MessageId, cancellationToken).ConfigureAwait(false);
                 }
             }
             finally
@@ -249,7 +249,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // trusted: the app owns the container and can author a reserved-prefix id through a non-staging path the
                 // staging guard cannot close, so a 409 alone could be an app-authored collision whose first delivery
                 // would be silently lost if inferred as a duplicate.
-                using ResponseMessage read = await container.ReadItemStreamAsync(markerId, partitionKey, cancellationToken: cancellationToken);
+                using ResponseMessage read = await container.ReadItemStreamAsync(markerId, partitionKey, cancellationToken: cancellationToken).ConfigureAwait(false);
 
                 // NOT-FOUND: a TTL/delete race removed the conflicting doc between the failed create and this read, so
                 // the duplicate is non-confirmable -> redeliver. Any other non-success read (incl. transient 429/503)
