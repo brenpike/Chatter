@@ -18,9 +18,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
     /// so the pump re-polls.
     /// </summary>
     /// <remarks>
-    /// INVARIANT: a held session owns exactly ONE renewal <see cref="CancellationTokenSource"/> and ONE
-    /// renewal <see cref="Task"/>; the renewal CTS is cancelled BEFORE the held session receiver is closed
-    /// on every release path (drain, idle, lock loss, teardown) so no renewal call races a closing receiver.
+    /// INVARIANT: a held session owns exactly ONE <see cref="RenewalLifetime"/>, RECORDED in the same lock
+    /// acquisition that records the session it renews and BEFORE that renewal begins, and released under that same
+    /// lock. A release therefore cannot reach a held session whose renewal it cannot see, and on every release path
+    /// (drain, idle, lock loss, teardown) it ends that renewal and AWAITS it BEFORE closing the held session
+    /// receiver — so no renewal call races a closing receiver, and no way a renewal ends can skip that close.
     /// </remarks>
     internal class AzureSdkSessionMessageReceiverAdapter : IServiceBusSessionMessageReceiver, IServiceBusSessionChildReceiver
     {
@@ -37,8 +39,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
 
         private IServiceBusHeldSession _heldSession;
-        private CancellationTokenSource _renewalCts;
-        private Task _renewalTask;
+        private RenewalLifetime _renewal;
         private bool _closed;
 
         /// <summary>
@@ -267,83 +268,81 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
             var accepted = await _acceptNextSessionAsync(cancellationToken).ConfigureAwait(false);
 
-            CancellationTokenSource renewalCts;
-            lock (_syncLock)
-            {
-                if (_closed)
-                {
-                    // Raced with CloseAsync — do not hold the just-accepted session.
-                    renewalCts = null;
-                }
-                else
-                {
-                    _heldSession = accepted;
-                    _renewalCts = renewalCts = new CancellationTokenSource();
-                }
-            }
-
-            if (renewalCts == null)
-            {
-                await accepted.CloseAsync().ConfigureAwait(false);
-                return null;
-            }
-
-            // A non-positive ceiling admits no renewal window at all, so no loop is started; the held session's
-            // lock is allowed to expire naturally, exactly as a loop that stopped at its ceiling would leave it.
+            // Built OUTSIDE the lock, because recording and beginning the renewal are the only things that belong
+            // inside it. A non-positive ceiling admits no renewal window at all, so no loop is built; the held
+            // session's lock is allowed to expire naturally, exactly as a loop that stopped at its ceiling would
+            // leave it.
+            LockRenewalLoop renewalLoop = null;
+            string renewalDescription = null;
             if (LockRenewalLoop.IsEnabled(_maxSessionLockRenewalDuration))
             {
-                var renewalLoop = new LockRenewalLoop(() => accepted.SessionLockedUntil,
-                                                      renewalToken => accepted.RenewSessionLockAsync(renewalToken),
-                                                      _maxSessionLockRenewalDuration,
-                                                      ServiceBusFailureReason.SessionLockLost,
-                                                      $"session '{accepted.SessionId}' on '{_entityPath}'",
-                                                      _logger,
-                                                      _timeProvider,
-                                                      _delayAsync);
+                renewalDescription = $"session '{accepted.SessionId}' on '{_entityPath}'";
+                renewalLoop = new LockRenewalLoop(() => accepted.SessionLockedUntil,
+                                                  renewalToken => accepted.RenewSessionLockAsync(renewalToken),
+                                                  _maxSessionLockRenewalDuration,
+                                                  ServiceBusFailureReason.SessionLockLost,
+                                                  renewalDescription,
+                                                  _logger,
+                                                  _timeProvider,
+                                                  _delayAsync);
+            }
 
-                _renewalTask = renewalLoop.RunAsync(renewalCts.Token);
+            // Its OWN answer, and deliberately not "this session has no renewal": renewal is OFF for a non-positive
+            // ceiling, so reading an absent renewal as a race would close every session a non-renewing receiver
+            // accepts.
+            bool racedTheClose;
+            lock (_syncLock)
+            {
+                racedTheClose = _closed;
+                if (!racedTheClose)
+                {
+                    _heldSession = accepted;
+                    if (renewalLoop != null)
+                    {
+                        // INVARIANT: the renewal is RECORDED BEFORE it begins, in the SAME lock acquisition that
+                        // records the session it renews. A loop that ends without ever awaiting ends inside Begin,
+                        // and a release reaching this adapter between the two would hold a session whose renewal it
+                        // cannot see — which is what leaves a renewal running past the receiver it renews against.
+                        // The field IS the membership, written by exactly two events, so an ended renewal has
+                        // nothing to unrecord. Nothing is ever awaited while _syncLock is held.
+                        var renewal = new RenewalLifetime(renewalDescription, _logger);
+                        _renewal = renewal;
+                        renewal.Begin(renewalLoop.RunAsync, () => { });
+                    }
+                }
+            }
+
+            if (racedTheClose)
+            {
+                // Raced with CloseAsync — do not hold the just-accepted session.
+                await accepted.CloseAsync().ConfigureAwait(false);
+                return null;
             }
 
             return accepted;
         }
 
-        // Cancels the renewal CTS BEFORE closing the held session receiver, then awaits the renewal task so
-        // no renewal call races a closing/closed session receiver. Idempotent across repeated release paths.
+        // Ends the held session's renewal and AWAITS it BEFORE closing the held session receiver, so no renewal call
+        // races a closing/closed session receiver. Idempotent across repeated release paths.
+        // INVARIANT: this path is TOTAL. Ending a renewal never throws and its completion never faults — the
+        // RenewalLifetime discharges and reports everything it owns — so there is no way for a renewal to end that
+        // could skip the close the session's lock and its AMQP link depend on.
         private async Task ReleaseSessionAsync()
         {
             IServiceBusHeldSession toClose;
-            CancellationTokenSource renewalCts;
-            Task renewalTask;
+            RenewalLifetime renewal;
             lock (_syncLock)
             {
                 toClose = _heldSession;
-                renewalCts = _renewalCts;
-                renewalTask = _renewalTask;
+                renewal = _renewal;
                 _heldSession = null;
-                _renewalCts = null;
-                _renewalTask = null;
+                _renewal = null;
             }
 
-            if (renewalCts != null)
+            if (renewal != null)
             {
-                renewalCts.Cancel();
-            }
-
-            if (renewalTask != null)
-            {
-                try
-                {
-                    await renewalTask.ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Renewal task observed its cancellation — expected on the release path.
-                }
-            }
-
-            if (renewalCts != null)
-            {
-                renewalCts.Dispose();
+                renewal.End();
+                await renewal.Completion.ConfigureAwait(false);
             }
 
             if (toClose != null)
