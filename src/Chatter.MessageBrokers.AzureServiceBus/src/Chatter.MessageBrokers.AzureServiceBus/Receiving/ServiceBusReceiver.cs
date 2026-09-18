@@ -357,10 +357,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // receives, which keep locking sessions no worker will ever process while the rebuilt receiver competes
         // with its own abandoned predecessor for them; on the Dispose path there is no rebuilt receiver to compete
         // with, and the sessions stay orphaned until their locks expire. Either way the close attempt is OBSERVED —
-        // a failure is logged rather than left as an unobserved faulted task.
+        // anything other than a successful close is logged rather than left unobserved.
         //
-        // INVARIANT: this method never throws. Both callers are teardown paths with nothing to do about a close
-        // failure, and both have work left after the call that a propagating exception would skip.
+        // INVARIANT: this method never throws, and it observes EVERY outcome of the close it starts. Both
+        // properties are held by PARTITIONING the close rather than by enumerating the outcomes worth
+        // reporting — an enumeration can only ever name the outcomes known when it was written, and an
+        // outcome it did not name is a teardown failure nobody hears about. The close is covered by exactly
+        // two regions: everything up to and including attaching the continuation, and the continuation
+        // itself. Each region REPORTS BY DEFAULT and exempts only the single success state, so an outcome
+        // that did not exist when this was written is already in the reported set.
         private void CloseWithoutAwaiting(IServiceBusMessageReceiver receiverToClose, string closeFailureMessage)
         {
             if (receiverToClose == null)
@@ -368,31 +373,61 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return;
             }
 
-            Task closeAttempt;
+            // Region one: starting the close. A close that throws before returning a task, and a close that
+            // returns no task to observe at all, are both failures of the same thing — producing something the
+            // continuation can report through — so the missing task is turned into a throw and handled by the
+            // region instead of by a check that names it.
             try
             {
-                closeAttempt = receiverToClose.CloseAsync();
+                var closeAttempt = receiverToClose.CloseAsync()
+                    ?? throw new InvalidOperationException($"{nameof(IServiceBusMessageReceiver.CloseAsync)} returned no task, so the close outcome cannot be observed");
+
+                // Region two: the close's own outcome. ExecuteSynchronously ONLY — no outcome filter — so the
+                // continuation runs for every terminal state and decides there what to report. On an
+                // already-completed close this runs inline, before the caller's teardown continues.
+                _ = closeAttempt.ContinueWith(
+                    completedCloseAttempt => ReportUnsuccessfulClose(completedCloseAttempt, closeFailureMessage),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
             catch (Exception closeFailure)
             {
-                // A close that throws BEFORE returning a task never produces one to continue from, so the
-                // continuation below structurally cannot observe it. Log it here so the OBSERVED-close
-                // guarantee above holds for both fault shapes a Task-returning member permits, and so the
-                // caller's teardown finishes: Dispose must still null the inner receiver and latch
-                // _disposedValue, which a propagating throw would skip, and the receive path is discarding
-                // this receiver regardless. Every production IServiceBusMessageReceiver implements CloseAsync
-                // as an `async` method, which captures its failure into the returned task, so this shape is
-                // unreachable through them today; the guarantee is stated on this helper rather than inferred
-                // from the three implementations that happen to exist.
-                _logger.LogWarning(closeFailure, closeFailureMessage);
+                // The caller's teardown must still finish: Dispose has to null the inner receiver and latch
+                // _disposedValue, which a propagating throw would skip, and the receive path is discarding this
+                // receiver regardless.
+                ReportCloseFailure(closeFailure, closeFailureMessage);
+            }
+        }
+
+        // The continuation body: reports every terminal state of a close EXCEPT success. A cancelled close
+        // carries no exception — it was abandoned partway, leaving the same orphaned sessions and renewals a
+        // faulted close leaves — so the terminal status travels in the message and the exception may be null.
+        private void ReportUnsuccessfulClose(Task completedCloseAttempt, string closeFailureMessage)
+        {
+            if (completedCloseAttempt.Status == TaskStatus.RanToCompletion)
+            {
                 return;
             }
 
-            _ = closeAttempt.ContinueWith(
-                faultedCloseAttempt => _logger.LogWarning(faultedCloseAttempt.Exception, closeFailureMessage),
-                CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            ReportCloseFailure(completedCloseAttempt.Exception, $"{closeFailureMessage}. The close ended as {completedCloseAttempt.Status}");
+        }
+
+        // The single reporting channel both regions use, non-throwing by construction.
+        // INVARIANT: this swallows its own failure DELIBERATELY, and it is where the observation regress
+        // terminates. The logger IS the channel a close failure is reported through, so a failure OF that
+        // channel has nowhere left to be reported, and an observer that can itself fail would need its own
+        // observer without end. Swallowing here is what makes the never-throws invariant above hold for the
+        // reporting step itself.
+        private void ReportCloseFailure(Exception closeFailure, string closeFailureMessage)
+        {
+            try
+            {
+                _logger.LogWarning(closeFailure, closeFailureMessage);
+            }
+            catch
+            {
+            }
         }
 
         // Maps a settle call that reported something OTHER than a settlement onto the outcome the core records.

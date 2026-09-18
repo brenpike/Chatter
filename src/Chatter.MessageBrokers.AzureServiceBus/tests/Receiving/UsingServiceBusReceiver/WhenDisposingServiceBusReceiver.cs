@@ -52,14 +52,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             => new InboundBrokeredMessageFactory(JsonFactory(), Mock.Of<ILogger>());
 
         // A receiver initialized over the supplied inner port, with the inner port already RESOLVED: the
-        // teardown paths read the inner receiver field, which stays null until something touches it.
-        private async Task<ServiceBusReceiver> InitializedSutOverAsync(IServiceBusMessageReceiver innerReceiver)
+        // teardown paths read the inner receiver field, which stays null until something touches it. The
+        // logger defaults to the recorder this fixture asserts on; a test supplies its own only to drive a
+        // failing logging channel.
+        private async Task<ServiceBusReceiver> InitializedSutOverAsync(IServiceBusMessageReceiver innerReceiver,
+                                                                      ILogger<ServiceBusReceiver> logger = null)
         {
             var serviceBusOptions = new ServiceBusOptions { ConnectionString = _connectionString };
             var sut = new ServiceBusReceiver(CreateClient(),
                                              serviceBusOptions,
                                              new MessageBrokerOptions(),
-                                             _logger.Creation,
+                                             logger ?? _logger.Creation,
                                              CreateInboundFactory(),
                                              (_, __) => innerReceiver);
             await sut.InitializeAsync(new ReceiverOptions { MessageReceiverPath = "receiver", TransactionMode = TransactionMode.ReceiveOnly }, CancellationToken.None);
@@ -138,7 +141,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         [Fact]
         public async Task MustLogASynchronouslyThrowingCloseAsAWarning()
         {
-            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(throwSynchronously: true));
+            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(CloseEnding.SynchronousThrow));
 
             sut.Dispose();
 
@@ -152,7 +155,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         [Fact]
         public async Task MustCompleteTheDisposedTransitionWhenTheCloseThrowsSynchronously()
         {
-            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(throwSynchronously: true));
+            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(CloseEnding.SynchronousThrow));
 
             Action disposing = () => sut.Dispose();
 
@@ -160,17 +163,82 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
             sut.IsDisposed.Should().BeTrue();
         }
 
-        // An inner port whose close fails. By default it fails the way every production one does: CloseAsync is an
-        // async method, so its failure arrives as a FAULTED TASK. Constructed with throwSynchronously it fails the
-        // other legal way for the port's Task-returning signature — throwing before a task is ever returned. Moq
-        // cannot stand in here — the production assembly's DynamicProxyGenAssembly2 grant does not extend to this
-        // internal port over an internal type.
+        // A CANCELLED close is not a clean teardown: the close was abandoned partway, so whatever the receiver
+        // held is in the same orphaned state a faulted close leaves it in. Reporting only the faulted ending
+        // reads an aborted close as a success.
+        [Fact]
+        public async Task MustLogACancelledUnawaitedCloseAsAWarning()
+        {
+            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(CloseEnding.CancelledTask));
+
+            sut.Dispose();
+
+            _logger.CountOf(LogLevel.Warning).Should().Be(1);
+            sut.IsDisposed.Should().BeTrue();
+        }
+
+        // A close that returns NO task at all is a close whose outcome can never be observed — there is nothing
+        // to observe it through. That is a reportable teardown failure, not a reason to fail the disposal.
+        [Fact]
+        public async Task MustLogACloseThatReturnsNoTaskAsAWarning()
+        {
+            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(CloseEnding.NoTask));
+
+            Action disposing = () => sut.Dispose();
+
+            disposing.Should().NotThrow();
+            _logger.CountOf(LogLevel.Warning).Should().Be(1);
+            sut.IsDisposed.Should().BeTrue();
+        }
+
+        // The reporting channel itself failing must not become the caller's problem: the logger is how a close
+        // failure is reported, so a logger that throws has nowhere left to report to, and the disposal still has
+        // to land.
+        [Fact]
+        public async Task MustCompleteTheDisposedTransitionWhenTheLoggingChannelThrows()
+        {
+            var sut = await InitializedSutOverAsync(new FaultingCloseMessageReceiver(CloseEnding.SynchronousThrow),
+                                                    new ThrowingLogger<ServiceBusReceiver>());
+
+            Action disposing = () => sut.Dispose();
+
+            disposing.Should().NotThrow();
+            sut.IsDisposed.Should().BeTrue();
+        }
+
+        // The other half of the partition: reporting by default must not make a SUCCESSFUL close look like a
+        // failure. Only the success ending is exempt, and it must stay exempt.
+        [Fact]
+        public async Task MustNotLogAWarningWhenTheUnawaitedCloseSucceeds()
+        {
+            var sut = await InitializedSutOverAsync(new InMemoryServiceBusMessageReceiver());
+
+            sut.Dispose();
+
+            _logger.CountOf(LogLevel.Warning).Should().Be(0);
+        }
+
+        // Every way the port's Task-returning CloseAsync can end WITHOUT succeeding. FaultedTask is how every
+        // production implementation fails — each is an `async` method, which captures its failure into the
+        // returned task — and the other three are endings the signature permits that no production
+        // implementation produces today.
+        private enum CloseEnding
+        {
+            FaultedTask,
+            SynchronousThrow,
+            CancelledTask,
+            NoTask,
+        }
+
+        // An inner port whose close ends in a chosen non-success shape. Moq cannot stand in here — the
+        // production assembly's DynamicProxyGenAssembly2 grant does not extend to this internal port over an
+        // internal type.
         private sealed class FaultingCloseMessageReceiver : IServiceBusMessageReceiver
         {
-            private readonly bool _throwSynchronously;
+            private readonly CloseEnding _closeEnding;
 
-            public FaultingCloseMessageReceiver(bool throwSynchronously = false)
-                => _throwSynchronously = throwSynchronously;
+            public FaultingCloseMessageReceiver(CloseEnding closeEnding = CloseEnding.FaultedTask)
+                => _closeEnding = closeEnding;
 
             public bool IsClosedOrClosing => false;
 
@@ -190,9 +258,33 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             public Task CloseAsync()
             {
-                var closeFailure = new ServiceBusException("close failed", ServiceBusFailureReason.ServiceCommunicationProblem);
-                return _throwSynchronously ? throw closeFailure : Task.FromException(closeFailure);
+                switch (_closeEnding)
+                {
+                    case CloseEnding.SynchronousThrow:
+                        throw CreateCloseFailure();
+                    case CloseEnding.CancelledTask:
+                        return Task.FromCanceled(new CancellationToken(canceled: true));
+                    case CloseEnding.NoTask:
+                        return null;
+                    default:
+                        return Task.FromException(CreateCloseFailure());
+                }
             }
+
+            private static ServiceBusException CreateCloseFailure()
+                => new ServiceBusException("close failed", ServiceBusFailureReason.ServiceCommunicationProblem);
+        }
+
+        // A logger whose every write fails. The reporter IS the observation channel, so a failure of the
+        // channel has nowhere to be reported; what must survive it is the caller's teardown.
+        private sealed class ThrowingLogger<T> : ILogger<T>
+        {
+            public IDisposable BeginScope<TState>(TState state) => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception,
+                Func<TState, Exception, string> formatter)
+                => throw new InvalidOperationException("the logging channel failed");
         }
     }
 }
