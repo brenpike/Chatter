@@ -21,8 +21,9 @@ using ServiceBusClient = Azure.Messaging.ServiceBus.ServiceBusClient;
 namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBusReceiver
 {
     // Pins ServiceBusReceiver's IDeliveryReleaseSignal implementation: the core worker's finally tells the
-    // infrastructure a delivery is finished with, and a session-mode receiver forwards that to its inner session
-    // port so the multiplexer can free the session slot the delivery occupied (ADR-0014).
+    // infrastructure a delivery is finished with, and the receiver forwards that to its inner port UNCONDITIONALLY.
+    // Every inner receiver has something to end with the delivery — a session receiver frees the session slot the
+    // delivery occupied (ADR-0014), a non-session receiver ends the delivery's message-lock renewal.
     //
     // The release hook reads the inner receiver FIELD, never the lazily-constructing InnerReceiver property:
     // during teardown the property would build a brand-new receiver — opening a connection and, in session mode,
@@ -96,16 +97,19 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
         }
 
         [Fact]
-        public async Task MustIgnoreTheReleasedDeliveryWhenTheInnerReceiverIsNotSessionMode()
+        public async Task MustForwardTheReleasedDeliveryToANonSessionReceiver()
         {
+            // A non-session receiver renews the message lock per delivery, so it needs the release too: a handler
+            // that throws reaches no settle member at all, and this signal is the only guaranteed stop.
+            var message = ServiceBusMessageFactory.ReceivedMessage();
             var inMemory = new InMemoryServiceBusMessageReceiver();
-            inMemory.EnqueueMessage(ServiceBusMessageFactory.ReceivedMessage());
+            inMemory.EnqueueMessage(message);
             var sut = await InitializedSutOverAsync(inMemory);
             var context = await sut.ReceiveMessageAsync(new TransactionContext("receiver"), CancellationToken.None);
 
-            Action act = () => sut.DeliveryReleased(context);
+            sut.DeliveryReleased(context);
 
-            act.Should().NotThrow();
+            inMemory.ReleasedDeliveries.Should().ContainSingle().Which.Should().BeSameAs(message);
         }
 
         [Fact]

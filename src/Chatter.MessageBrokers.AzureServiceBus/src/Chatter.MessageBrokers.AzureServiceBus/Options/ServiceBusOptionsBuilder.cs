@@ -44,6 +44,11 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         // value is left untouched. A non-null value means the fluent method was called and its value
         // overrides any config-bound value in EITHER direction (explicit 2 min overrides config 10 min).
         private TimeSpan? _maxSessionLockRenewalDuration = null;
+        // INVARIANT: null means WithMaxMessageLockRenewalDuration was never called, so the config-bound
+        // value is left untouched. A non-null value means the fluent method was called and its value
+        // overrides any config-bound value in EITHER direction (explicit zero, which switches message-lock
+        // renewal off, overrides config 10 min).
+        private TimeSpan? _maxMessageLockRenewalDuration = null;
 
         private const int _defaultMaxConcurrentCalls = 1;
         private const int _defaultPrefetchCount = 0;
@@ -127,6 +132,17 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
         public ServiceBusOptionsBuilder WithMaxSessionLockRenewalDuration(TimeSpan duration)
         {
             _maxSessionLockRenewalDuration = duration;
+            return this;
+        }
+
+        /// <summary>
+        /// Overrides the ceiling on how long a non-session PeekLock message's lock is renewed while its
+        /// handler runs. Once reached, renewal stops and the lock is allowed to expire naturally. Zero or
+        /// a negative duration means the lock is never renewed at all. Default: 5 minutes.
+        /// </summary>
+        public ServiceBusOptionsBuilder WithMaxMessageLockRenewalDuration(TimeSpan duration)
+        {
+            _maxMessageLockRenewalDuration = duration;
             return this;
         }
 
@@ -343,6 +359,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Options
             if (_maxSessionLockRenewalDuration.HasValue)
             {
                 options.MaxSessionLockRenewalDuration = _maxSessionLockRenewalDuration.Value;
+            }
+
+            // Explicit fluent call wins over configuration: apply the fluent value only when
+            // WithMaxMessageLockRenewalDuration was actually called, leaving the config-bound value
+            // untouched otherwise.
+            if (_maxMessageLockRenewalDuration.HasValue)
+            {
+                options.MaxMessageLockRenewalDuration = _maxMessageLockRenewalDuration.Value;
             }
 
             // Resolve the effective retry options LAST among the option values, once every source is in

@@ -9,7 +9,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
 {
     // In-memory IServiceBusMessageReceiver double used to drive ServiceBusReceiver's receive/ack
     // paths without a live Azure Service Bus namespace. Receive results (including null) are queued;
-    // ack/nack/deadletter settle by the received MESSAGE OBJECT and are recorded; IsClosedOrClosing is
+    // ack/nack/deadletter settle by the received MESSAGE OBJECT and are recorded, as are delivery
+    // releases; IsClosedOrClosing is
     // toggleable; and a single transient ServiceBusException or an ObjectDisposedException can be
     // injected on the next receive.
     internal class InMemoryServiceBusMessageReceiver : IServiceBusMessageReceiver
@@ -21,6 +22,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
         public List<(ServiceBusReceivedMessage message, string reason, string description)> DeadLetteredMessages { get; }
             = new List<(ServiceBusReceivedMessage, string, string)>();
         public List<IDictionary<string, object>> AbandonPropertiesToModify { get; } = new List<IDictionary<string, object>>();
+
+        // The deliveries the worker signalled it was finished with, recorded so a test can assert the release
+        // reached a NON-SESSION inner receiver — the case the old session-only fork excluded.
+        public List<ServiceBusReceivedMessage> ReleasedDeliveries { get; } = new List<ServiceBusReceivedMessage>();
 
         public int ReceiveCount { get; private set; }
         public int CloseCount { get; private set; }
@@ -73,6 +78,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving
             DeadLetteredMessages.Add((message, deadLetterReason, deadLetterErrorDescription));
             return Task.FromResult(SettlementOutcome);
         }
+
+        public void DeliveryReleased(ServiceBusReceivedMessage message) => ReleasedDeliveries.Add(message);
 
         public Task CloseAsync()
         {

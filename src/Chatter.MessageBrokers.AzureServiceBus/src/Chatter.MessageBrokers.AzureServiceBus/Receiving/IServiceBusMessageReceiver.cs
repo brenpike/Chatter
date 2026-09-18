@@ -26,6 +26,20 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         Task<ServiceBusSettlementOutcome> CompleteAsync(ServiceBusReceivedMessage message);
         Task<ServiceBusSettlementOutcome> AbandonAsync(ServiceBusReceivedMessage message, IDictionary<string, object> propertiesToModify);
         Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription);
+
+        /// <summary>
+        /// Signals that the worker is finished with <paramref name="message"/>'s delivery, whether or not it was
+        /// settled. Every receiver has something to end with a delivery — a session receiver frees the session slot
+        /// the delivery occupied, a non-session receiver ends the delivery's message-lock renewal.
+        /// </summary>
+        /// <param name="message">The delivery the worker has finished with.</param>
+        /// <remarks>
+        /// It MUST NOT throw, and a delivery the receiver does not hold is a SILENT no-op: the signal is raised from
+        /// the worker's <c>finally</c> on every path, including one where a receiver rebuilt after an
+        /// <see cref="System.ObjectDisposedException"/> is handed a delivery its discarded predecessor served.
+        /// </remarks>
+        void DeliveryReleased(ServiceBusReceivedMessage message);
+
         Task CloseAsync();
     }
 

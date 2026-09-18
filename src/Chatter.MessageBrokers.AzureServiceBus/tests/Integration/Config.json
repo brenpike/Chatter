@@ -247,6 +247,17 @@
             }
           },
           {
+            "Name": "chatter.lockrenewal",
+            "Properties": {
+              "DeadLetteringOnMessageExpiration": false,
+              "DefaultMessageTimeToLive": "PT1H",
+              "LockDuration": "PT10S",
+              "MaxDeliveryCount": 2,
+              "RequiresDuplicateDetection": false,
+              "RequiresSession": false
+            }
+          },
+          {
             "Name": "chatter.session",
             "Properties": {
               "DeadLetteringOnMessageExpiration": false,

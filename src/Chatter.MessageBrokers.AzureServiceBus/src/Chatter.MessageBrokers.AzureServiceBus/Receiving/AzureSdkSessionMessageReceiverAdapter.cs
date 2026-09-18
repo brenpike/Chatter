@@ -276,61 +276,21 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return null;
             }
 
-            _renewalTask = RenewSessionLockLoopAsync(accepted, renewalCts.Token);
+            // A non-positive ceiling admits no renewal window at all, so no loop is started; the held session's
+            // lock is allowed to expire naturally, exactly as a loop that stopped at its ceiling would leave it.
+            if (LockRenewalLoop.IsEnabled(_maxSessionLockRenewalDuration))
+            {
+                var renewalLoop = new LockRenewalLoop(() => accepted.SessionLockedUntil,
+                                                      renewalToken => accepted.RenewSessionLockAsync(renewalToken),
+                                                      _maxSessionLockRenewalDuration,
+                                                      ServiceBusFailureReason.SessionLockLost,
+                                                      $"session '{accepted.SessionId}' on '{_entityPath}'",
+                                                      _logger);
+
+                _renewalTask = renewalLoop.RunAsync(renewalCts.Token);
+            }
+
             return accepted;
-        }
-
-        // Bounded session-lock renewal loop: renews the held session's lock on a cadence derived from the
-        // session lock duration, bounded by MaxSessionLockRenewalDuration. Once the ceiling is reached,
-        // renewal stops and the session is allowed to expire/roll naturally rather than being held forever.
-        private async Task RenewSessionLockLoopAsync(ServiceBusSessionReceiver session, CancellationToken renewalToken)
-        {
-            var ceiling = DateTimeOffset.UtcNow + _maxSessionLockRenewalDuration;
-
-            try
-            {
-                while (!renewalToken.IsCancellationRequested && DateTimeOffset.UtcNow < ceiling)
-                {
-                    var lockedUntil = session.SessionLockedUntil;
-                    var delay = ComputeRenewalDelay(lockedUntil);
-
-                    await Task.Delay(delay, renewalToken).ConfigureAwait(false);
-
-                    if (renewalToken.IsCancellationRequested || DateTimeOffset.UtcNow >= ceiling)
-                    {
-                        break;
-                    }
-
-                    await session.RenewSessionLockAsync(renewalToken).ConfigureAwait(false);
-                    _logger.LogTrace($"Renewed Azure Service Bus session lock for session '{session.SessionId}' on '{_entityPath}'");
-                }
-            }
-            catch (OperationCanceledException) when (renewalToken.IsCancellationRequested)
-            {
-                // Expected: the session is being released/closed. The release path cancels this CTS before
-                // closing the receiver, so a cancelled renewal is normal teardown, not a fault.
-            }
-            catch (ServiceBusException sbe) when (sbe.Reason == ServiceBusFailureReason.SessionLockLost)
-            {
-                // The lock was lost out from under the renewal loop. ReceiveAsync observes the same loss on
-                // its next receive and releases the session there; the loop simply stops renewing.
-                _logger.LogTrace(sbe, $"Azure Service Bus session lock lost during renewal for '{_entityPath}'; stopping renewal");
-            }
-            catch (ObjectDisposedException)
-            {
-                // The session receiver was closed concurrently with renewal. Stop renewing; the release path
-                // owns teardown.
-            }
-        }
-
-        // Renews at the halfway point between now and the lock expiry, clamped to a small positive floor so a
-        // near-expired or already-expired lock renews promptly rather than spinning or waiting a negative span.
-        private static TimeSpan ComputeRenewalDelay(DateTimeOffset lockedUntil)
-        {
-            var remaining = lockedUntil - DateTimeOffset.UtcNow;
-            var half = TimeSpan.FromTicks(remaining.Ticks / 2);
-            var floor = TimeSpan.FromSeconds(1);
-            return half < floor ? floor : half;
         }
 
         // Cancels the renewal CTS BEFORE closing the held session receiver, then awaits the renewal task so

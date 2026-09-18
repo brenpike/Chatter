@@ -122,6 +122,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingServiceBus
 
             public Task<ServiceBusSettlementOutcome> DeadLetterAsync(ServiceBusReceivedMessage message, string deadLetterReason, string deadLetterErrorDescription) => throw _settlementFault;
 
+            public void DeliveryReleased(ServiceBusReceivedMessage message)
+            {
+            }
+
             public Task CloseAsync() => Task.CompletedTask;
         }
 

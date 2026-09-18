@@ -44,6 +44,13 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         }
 
         [Fact]
+        public void MustReturnSameBuilderFromWithMaxMessageLockRenewalDuration()
+        {
+            var sut = CreateSut();
+            sut.WithMaxMessageLockRenewalDuration(TimeSpan.FromMinutes(2)).Should().BeSameAs(sut);
+        }
+
+        [Fact]
         public void MustReturnSameBuilderFromWithNoRetry()
         {
             var sut = CreateSut();
