@@ -203,7 +203,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 }
 
                 _logger.LogWarning(e, "Service Bus receiver connection was closed.");
-                CloseDiscardedReceiver(discardedReceiver);
+                CloseWithoutAwaiting(discardedReceiver, "Failure closing the discarded Azure Service Bus receiver");
 
                 return null;
             }
@@ -351,22 +351,85 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
-        // Closes a receiver being discarded after an ObjectDisposedException, WITHOUT awaiting it on the receive
-        // path. A discarded session receiver that is never closed orphans the sessions it holds, their lock-renewal
-        // loops and their armed receives, which keep locking sessions no worker will ever process while the rebuilt
-        // receiver competes with its own abandoned predecessor for them.
-        private void CloseDiscardedReceiver(IServiceBusMessageReceiver discardedReceiver)
+        // Closes a receiver WITHOUT awaiting it, on the two paths that cannot await one: the receive path
+        // discarding a receiver after an ObjectDisposedException, and the synchronous Dispose. A discarded session
+        // receiver that is never closed orphans the sessions it holds, their lock-renewal loops and their armed
+        // receives, which keep locking sessions no worker will ever process while the rebuilt receiver competes
+        // with its own abandoned predecessor for them; on the Dispose path there is no rebuilt receiver to compete
+        // with, and the sessions stay orphaned until their locks expire. Either way the close attempt is OBSERVED —
+        // anything other than a successful close is logged rather than left unobserved.
+        //
+        // INVARIANT: this method never throws, and it observes EVERY outcome of the close it starts. Both
+        // properties are held by PARTITIONING the close rather than by enumerating the outcomes worth
+        // reporting — an enumeration can only ever name the outcomes known when it was written, and an
+        // outcome it did not name is a teardown failure nobody hears about. The close is covered by exactly
+        // two regions: everything up to and including attaching the continuation, and the continuation
+        // itself. Each region REPORTS BY DEFAULT and exempts only the single success state, so an outcome
+        // that did not exist when this was written is already in the reported set.
+        private void CloseWithoutAwaiting(IServiceBusMessageReceiver receiverToClose, string closeFailureMessage)
         {
-            if (discardedReceiver == null)
+            if (receiverToClose == null)
             {
                 return;
             }
 
-            _ = discardedReceiver.CloseAsync().ContinueWith(
-                closeAttempt => _logger.LogWarning(closeAttempt.Exception, "Failure closing the discarded Azure Service Bus receiver"),
-                CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            // Region one: starting the close. A close that throws before returning a task, and a close that
+            // returns no task to observe at all, are both failures of the same thing — producing something the
+            // continuation can report through — so the missing task is turned into a throw and handled by the
+            // region instead of by a check that names it.
+            try
+            {
+                var closeAttempt = receiverToClose.CloseAsync()
+                    ?? throw new InvalidOperationException($"{nameof(IServiceBusMessageReceiver.CloseAsync)} returned no task, so the close outcome cannot be observed");
+
+                // Region two: the close's own outcome. ExecuteSynchronously ONLY — no outcome filter — so the
+                // continuation DECIDES for every terminal state what to report. ExecuteSynchronously is a HINT:
+                // the continuation runs inline when the TPL honors it, and is queued to TaskScheduler.Default
+                // when it declines. This helper does not wait for it either way, so a queued report can be lost
+                // at process exit on the Dispose path — see the accepted residual in ADR-0022.
+                _ = closeAttempt.ContinueWith(
+                    completedCloseAttempt => ReportUnsuccessfulClose(completedCloseAttempt, closeFailureMessage),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            catch (Exception closeFailure)
+            {
+                // The caller's teardown must still finish: Dispose has to null the inner receiver and latch
+                // _disposedValue, which a propagating throw would skip, and the receive path is discarding this
+                // receiver regardless.
+                ReportCloseFailure(closeFailure, closeFailureMessage);
+            }
+        }
+
+        // The continuation body: reports every terminal state of a close EXCEPT success. A cancelled close
+        // carries no exception — it was abandoned partway, leaving the same orphaned sessions and renewals a
+        // faulted close leaves — so the terminal status travels in the message and the exception may be null.
+        private void ReportUnsuccessfulClose(Task completedCloseAttempt, string closeFailureMessage)
+        {
+            if (completedCloseAttempt.Status == TaskStatus.RanToCompletion)
+            {
+                return;
+            }
+
+            ReportCloseFailure(completedCloseAttempt.Exception, $"{closeFailureMessage}. The close ended as {completedCloseAttempt.Status}");
+        }
+
+        // The single reporting channel both regions use, non-throwing by construction.
+        // INVARIANT: this swallows its own failure DELIBERATELY, and it is where the observation regress
+        // terminates. The logger IS the channel a close failure is reported through, so a failure OF that
+        // channel has nowhere left to be reported, and an observer that can itself fail would need its own
+        // observer without end. Swallowing here is what makes the never-throws invariant above hold for the
+        // reporting step itself.
+        private void ReportCloseFailure(Exception closeFailure, string closeFailureMessage)
+        {
+            try
+            {
+                _logger.LogWarning(closeFailure, closeFailureMessage);
+            }
+            catch
+            {
+            }
         }
 
         // Maps a settle call that reported something OTHER than a settlement onto the outcome the core records.
@@ -438,6 +501,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
         }
 
+        // Observation seam for the teardown paths: whether this receiver has already been disposed. Both
+        // Dispose overloads fold into one guarded transition, and this is the only way to see it landed.
+        internal bool IsDisposed => _disposedValue;
+
         public async ValueTask DisposeAsync()
         {
             await StopReceiver().ConfigureAwait(false);
@@ -452,7 +519,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 if (disposing)
                 {
-                    _innerReceiver?.CloseAsync();
+                    CloseWithoutAwaiting(_innerReceiver, "Failure closing the Azure Service Bus receiver while disposing it");
                 }
 
                 _innerReceiver = null;

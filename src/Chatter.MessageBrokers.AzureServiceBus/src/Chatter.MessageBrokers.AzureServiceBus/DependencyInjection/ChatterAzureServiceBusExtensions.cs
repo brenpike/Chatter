@@ -40,8 +40,16 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static IChatterBuilder AddAzureServiceBus(this IChatterBuilder builder, ServiceBusOptions options)
         {
-            builder.Services.AddScoped<ServiceBusReceiver>();
-            builder.Services.AddScoped<ServiceBusMessageSender>();
+            // TRANSIENT, not scoped and not singleton: a SCOPED instance cannot be handed out by the
+            // singleton IMessagingInfrastructure below without outliving the scope that owns it. Every
+            // dependency of this type is registered as a singleton BY THIS MODULE OR BY CORE, so a transient
+            // instance resolved from the root provider has no scoped member to strand. That is a property of
+            // these registrations, not a type-level guarantee: a CONSUMER that re-registers one at Scoped
+            // moves this site out of it, and ADR-0022 records what happens then.
+            //
+            // The RECEIVER is deliberately NOT registered here. See the sole-disposer INVARIANT on the
+            // IMessagingInfrastructure descriptor below.
+            builder.Services.AddTransient<ServiceBusMessageSender>();
 
             // Ensure the receiver registry exists even when no receivers were configured (e.g. a send-only
             // host), so the shared-client factory can always resolve it. AddQueueReceiver/AddTopicSubscription
@@ -85,22 +93,34 @@ namespace Microsoft.Extensions.DependencyInjection
             {
                 // Folded receiver/dispatcher factory captured directly in this infrastructure's
                 // descriptor (NOT resolved from the container by the shared MessagingInfrastructureFactory
-                // type), so each broker keeps its own factory under multi-broker registration. Each
-                // delegate opens a DI scope, resolves the scoped infrastructure service, and disposes the
-                // scope — reproducing the former ServiceBusReceiverFactory / ServiceBusMessageSenderFactory
-                // behavior exactly.
-                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+                // type), so each broker keeps its own factory under multi-broker registration.
+                //
+                // INVARIANT: SOLE-DISPOSER OWNERSHIP of the receiver. The component whose lifetime bounds
+                // the receive pump is the receiver's ONLY disposer, because only it knows the pump has
+                // stopped. That is why the receiver is CONSTRUCTED here rather than registered as a
+                // container service: ActivatorUtilities.CreateInstance does not enlist it for container
+                // disposal, so the container never constructs the receiver and is therefore not a disposer
+                // of it at all. This makes impossible a teardown of the Azure Service Bus receiver ordered
+                // by a disposer that does not know whether the pump has stopped — the container cannot
+                // order one. The shape and the rationale are the RabbitMQ fold's, mirrored verbatim (see
+                // src/Chatter.MessageBrokers.RabbitMQ/src/Chatter.MessageBrokers.RabbitMQ/DependencyInjection/Extensions.cs),
+                // and the ownership principle is ADR-0022's: the component that bounds the graph owns it.
+                //
+                // INVARIANT: these delegates open NO scope — the Azure Service Bus case of the core rule
+                // stated at ChatterMessageBrokerExtensions.AddReceiverImpl (see
+                // src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/DependencyInjection/ChatterMessageBrokerExtensions.cs),
+                // which this INHERITS rather than restates: a registration factory must never open a DI
+                // scope whose resolved graph escapes the factory delegate. A scope opened here would be
+                // disposed as the delegate returns, disposing the instance it just built and handing the
+                // caller a dead one. Constructing the receiver against the captured root provider, and
+                // resolving the transient sender from it, is safe because both graphs have only singleton
+                // dependencies AS REGISTERED HERE AND IN CORE — a property of the graph, checkable at those
+                // registrations, not a type-level guarantee. ADR-0022 records the residual this leaves: a
+                // consumer scoped override of either graph's dependency is root-captured (or rejected under
+                // host scope validation) rather than stranded.
                 var infrastructureFactory = new MessagingInfrastructureFactory(
-                    () =>
-                    {
-                        using var scope = scopeFactory.CreateScope();
-                        return scope.ServiceProvider.GetRequiredService<ServiceBusReceiver>();
-                    },
-                    () =>
-                    {
-                        using var scope = scopeFactory.CreateScope();
-                        return scope.ServiceProvider.GetRequiredService<ServiceBusMessageSender>();
-                    });
+                    () => ActivatorUtilities.CreateInstance<ServiceBusReceiver>(sp),
+                    () => sp.GetRequiredService<ServiceBusMessageSender>());
                 var pathBuilder = sp.GetRequiredService<AzureServiceBusEntityPathBuilder>();
                 return new MessagingInfrastructure(ASBMessageContext.InfrastructureType, infrastructureFactory, infrastructureFactory, pathBuilder);
             });

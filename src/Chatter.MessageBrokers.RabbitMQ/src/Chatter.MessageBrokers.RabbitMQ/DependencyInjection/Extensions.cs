@@ -65,9 +65,12 @@ namespace Microsoft.Extensions.DependencyInjection
                 // descriptor (NOT resolved from the container by the shared MessagingInfrastructureFactory
                 // type), so each broker keeps its own factory under multi-broker registration.
                 //
-                // SCOPE DIVERGENCE from the SqlServiceBroker / Azure Service Bus folds: those folds
-                // open-resolve-and-DISPOSE a transient scope per Create() call, because their receivers ARE
-                // container-published services. RabbitMQ's receiver is deliberately NOT published — there is no
+                // SCOPE DIVERGENCE from the SqlServiceBroker fold: that fold open-resolve-and-DISPOSEs a
+                // transient scope per Create() call, because its receiver IS a container-published service.
+                // Azure Service Bus's receiver now takes the SAME route as RabbitMQ's — constructed via
+                // ActivatorUtilities.CreateInstance, not container-published (see
+                // ChatterAzureServiceBusExtensions.AddAzureServiceBus) — but it constructs a fresh instance PER
+                // Create() call, whereas RabbitMQ's receiver is deliberately NOT published — there is no
                 // RabbitMqReceiver descriptor — and is constructed here, once per `AddRabbitMq` registration, at
                 // this single site. (A duplicate `AddRabbitMq` call registers a second `IMessagingInfrastructure`
                 // descriptor and constructs a second receiver, but that second instance is inert:

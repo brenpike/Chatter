@@ -16,7 +16,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
 
         // INVARIANT: this is the only PUBLIC constructor. Microsoft.Extensions.DependencyInjection
         // selects among public constructors only, so the scope-factory seam below stays internal to
-        // keep activation of the AddScoped<ServiceBusMessageSender>() registration unambiguous.
+        // keep activation of the AddTransient<ServiceBusMessageSender>() registration unambiguous.
         public ServiceBusMessageSender(IServiceBusMessageSenderFactory senderFactory)
             : this(senderFactory, new DispatchTransactionScopeFactory())
         {
