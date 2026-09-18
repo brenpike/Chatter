@@ -59,7 +59,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         /// <see cref="CancellationTokenSource.Cancel()"/> raises whatever a registration raises and rejects a
         /// source already disposed. Cancelling is all this does: everything the renewal owns is released by the
         /// flow <see cref="Begin"/> started, so a cancel that fails here skips no cleanup, and the token is
-        /// signalled before any registration runs, so the loop ends either way.
+        /// signalled before any registration runs, so the loop ends either way. Reporting that failure goes
+        /// through <see cref="Report"/>, so the report cannot raise where the cancel was allowed to.
         /// </remarks>
         internal void End()
         {
@@ -69,7 +70,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
             catch (Exception endFailure)
             {
-                _logger.LogTrace(endFailure, $"Ending the Azure Service Bus lock renewal for {_description} raised after the renewal was signalled to end");
+                Report(LogLevel.Trace, endFailure, $"Ending the Azure Service Bus lock renewal for {_description} raised after the renewal was signalled to end");
             }
         }
 
@@ -98,7 +99,36 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             }
             catch (Exception renewalFailure)
             {
-                _logger.LogWarning(renewalFailure, $"Failure renewing the Azure Service Bus lock for {_description}");
+                Report(LogLevel.Warning, renewalFailure, $"Failure renewing the Azure Service Bus lock for {_description}");
+            }
+        }
+
+        /// <summary>
+        /// The ONLY place this renewal reaches the application's logging sink, and it never raises.
+        /// </summary>
+        /// <remarks>
+        /// WHY A METHOD AND NOT A GUARD AT EACH SITE — the same reason
+        /// <c>Chatter.MessageBrokers.Reliability.Cosmos</c> holds its sink through <c>GuardedRelayLog</c>:
+        /// guarding the two reports that exist today COMPLETES THE KNOWN SET and leaves the next report to be
+        /// found by the next reviewer. Both of this class's reports are the last statement of a TOTAL BOUNDARY
+        /// — <see cref="End"/> may not throw because a delivery's release calls it unguarded and the registry's
+        /// close calls it in a loop that would skip every later renewal, and <see cref="Completion"/> may not
+        /// fault because the close awaits it and would otherwise never close the receiver this renewal runs
+        /// against. Routing every report through here means an unguarded sink call is not reachable from this
+        /// class at all, so the totality this type documents holds by construction rather than by each catch
+        /// block remembering to guard.
+        /// INVARIANT: a sink fault is SWALLOWED and deliberately not re-reported — the sink that just failed is
+        /// the only one there is. Observability may never decide whether a renewal's cleanup completes.
+        /// </remarks>
+        private void Report(LogLevel level, Exception failure, string message)
+        {
+            try
+            {
+                _logger.Log(level, failure, message);
+            }
+            catch (Exception)
+            {
+                // Swallowed, and deliberately not re-reported: the sink that just faulted is the only one there is.
             }
         }
     }

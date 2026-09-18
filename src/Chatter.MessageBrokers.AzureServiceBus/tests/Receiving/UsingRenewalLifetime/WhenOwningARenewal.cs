@@ -94,10 +94,52 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Receiving.UsingRenewalLif
             end.Should().NotThrow("a renewal that already ended disposed the source it would cancel, and both the release and the close end renewals they may have already ended");
         }
 
+        [Fact]
+        public async Task ItEndsWithoutThrowingWhenItsDiagnosticSinkFails()
+        {
+            var sut = CreateSut(new ThrowingLogger());
+            var parkedLoop = new ParkedLoop();
+            sut.Begin(parkedLoop.RunAsync, () => { });
+            (await CompletedWithin(parkedLoop.Running, _waitTimeout)).Should().BeTrue("the loop must hold its renewal token before the cancellation callback is registered");
+            parkedLoop.RenewalToken.Register(() => throw new InvalidOperationException("a cancellation callback threw"));
+
+            Action end = () => sut.End();
+
+            end.Should().NotThrow("reporting a failed cancellation through a broken sink must not make End throw — the delivery release calls it unguarded, and the close calls it in a loop that would skip every later renewal");
+            parkedLoop.RenewalToken.IsCancellationRequested.Should().BeTrue("Cancel signals the token before the callback that throws, so the renewal still ends");
+
+            parkedLoop.Complete();
+            (await CompletedWithin(sut.Completion, _waitTimeout)).Should().BeTrue("the renewal still ends after both its cancellation and its sink failed");
+        }
+
+        [Fact]
+        public async Task ItCompletesRatherThanFaultsWhenItsDiagnosticSinkFailsReportingAFailedRenewal()
+        {
+            var sut = CreateSut(new ThrowingLogger());
+
+            sut.Begin(_ => Task.FromException(new InvalidOperationException("the broker refused the renewal")), () => { });
+
+            (await CompletedWithin(sut.Completion, _waitTimeout)).Should().BeTrue("a renewal whose failure could not be reported has still ended, which is all a teardown waits for");
+            sut.Completion.IsFaulted.Should().BeFalse("a broken sink must not fault the completion a close awaits, or the close fails, every later close observes the same faulted task, and the receiver this renewal runs against is never closed");
+        }
+
         private static async Task<bool> CompletedWithin(Task pending, TimeSpan timeout)
             => await Task.WhenAny(pending, Task.Delay(timeout)).ConfigureAwait(false) == pending;
 
-        private static RenewalLifetime CreateSut() => new RenewalLifetime(_description, Mock.Of<ILogger>());
+        private static RenewalLifetime CreateSut() => CreateSut(Mock.Of<ILogger>());
+
+        private static RenewalLifetime CreateSut(ILogger logger) => new RenewalLifetime(_description, logger);
+
+        /// <summary>An <see cref="ILogger"/> whose sink is broken, as a misconfigured application's can be.</summary>
+        private sealed class ThrowingLogger : ILogger
+        {
+            public IDisposable BeginScope<TState>(TState state) => throw new InvalidOperationException("the logging sink is broken");
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+                => throw new InvalidOperationException("the logging sink is broken");
+        }
 
         /// <summary>
         /// A renewal loop that answers the renewal token it was handed and PARKS until the test completes it —
