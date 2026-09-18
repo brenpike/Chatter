@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Azure Service Bus `IMessagingInfrastructure` registration factory no longer hands the caller an already-disposed receiver. Previously each factory delegate opened a DI scope, resolved the receiver or sender from it, and disposed that scope as it returned — so the resolved instance was disposed before the caller ever used it, and the graph the scope bounded escaped the scope that owned it. The delegates now open no scope and resolve from the root provider, and `ServiceBusReceiver` and `ServiceBusMessageSender` move from scoped to transient registration to match: every dependency of both types is a singleton, so a transient instance resolved from the root provider has no scoped member to strand (#376).
+- A close that fails on the synchronous `Dispose` path is now observed and reported instead of being lost. Previously `Dispose` fired `CloseAsync()` without awaiting or observing it, so a failed close became an unobserved faulted task and nothing recorded that the receiver's sessions, renewal loops and armed receives had been left orphaned. That close now runs through the module's observed fire-and-forget close, the same one the receive path already used when discarding a receiver, which logs a failure rather than dropping it.
+
+The single consumer-visible delta is that new Warning log line when a close fails on the synchronous dispose path. Everything else here is internal to the module's registration and teardown paths — no public surface moved.
+
 ## [2.5.1] - 2026-09-18
 
 ### Fixed
