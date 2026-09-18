@@ -24,20 +24,27 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
     /// </remarks>
     internal class AzureSdkSessionMessageReceiverAdapter : IServiceBusSessionMessageReceiver, IServiceBusSessionChildReceiver
     {
+        private static readonly Func<TimeSpan, CancellationToken, Task> _systemDelay = (delay, cancellationToken) => Task.Delay(delay, cancellationToken);
+
         readonly object _syncLock = new object();
-        private readonly ServiceBusClient _client;
         private readonly ServiceBusSessionEntityPath _entityPath;
         private readonly ServiceBusReceiveMode _receiveMode;
-        private readonly int _prefetchCount;
         private readonly TimeSpan _sessionIdleTimeout;
         private readonly TimeSpan _maxSessionLockRenewalDuration;
         private readonly ILogger _logger;
+        private readonly Func<CancellationToken, Task<IServiceBusHeldSession>> _acceptNextSessionAsync;
+        private readonly TimeProvider _timeProvider;
+        private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
 
-        private ServiceBusSessionReceiver _sessionReceiver;
+        private IServiceBusHeldSession _heldSession;
         private CancellationTokenSource _renewalCts;
         private Task _renewalTask;
         private bool _closed;
 
+        /// <summary>
+        /// Builds an adapter that accepts its sessions from the shared <paramref name="client"/> on the system
+        /// clock, which is what a receive path uses.
+        /// </summary>
         public AzureSdkSessionMessageReceiverAdapter(ServiceBusClient client,
                                                      ServiceBusSessionEntityPath entityPath,
                                                      ServiceBusReceiveMode receiveMode,
@@ -45,49 +52,65 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                      TimeSpan sessionIdleTimeout,
                                                      TimeSpan maxSessionLockRenewalDuration,
                                                      ILogger logger)
+            : this(entityPath,
+                   receiveMode,
+                   sessionIdleTimeout,
+                   maxSessionLockRenewalDuration,
+                   logger,
+                   CreateSdkSessionAcceptor(client, entityPath, receiveMode, prefetchCount),
+                   TimeProvider.System,
+                   _systemDelay)
         {
-            _client = client ?? throw new ArgumentNullException(nameof(client));
-            _entityPath = entityPath;
-            _receiveMode = receiveMode;
-            _prefetchCount = prefetchCount;
-            _sessionIdleTimeout = sessionIdleTimeout;
-            _maxSessionLockRenewalDuration = maxSessionLockRenewalDuration;
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         /// <summary>
-        /// The currently held SDK session receiver, or null when no session is held. Later steps include
-        /// this in the transaction <c>Container</c> and resolve it for session-state Get/Set/Clear.
+        /// Builds an adapter whose session acceptance, clock and delay are supplied, the seam a test drives the
+        /// acquire and release paths through without a live Azure Service Bus namespace or a wall-clock wait.
         /// </summary>
-        public ServiceBusSessionReceiver HeldSessionReceiver
+        internal AzureSdkSessionMessageReceiverAdapter(ServiceBusSessionEntityPath entityPath,
+                                                      ServiceBusReceiveMode receiveMode,
+                                                      TimeSpan sessionIdleTimeout,
+                                                      TimeSpan maxSessionLockRenewalDuration,
+                                                      ILogger logger,
+                                                      Func<CancellationToken, Task<IServiceBusHeldSession>> acceptNextSessionAsync,
+                                                      TimeProvider timeProvider,
+                                                      Func<TimeSpan, CancellationToken, Task> delayAsync)
         {
-            get
-            {
-                lock (_syncLock)
-                {
-                    return _sessionReceiver;
-                }
-            }
+            _entityPath = entityPath;
+            _receiveMode = receiveMode;
+            _sessionIdleTimeout = sessionIdleTimeout;
+            _maxSessionLockRenewalDuration = maxSessionLockRenewalDuration;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _acceptNextSessionAsync = acceptNextSessionAsync ?? throw new ArgumentNullException(nameof(acceptNextSessionAsync));
+            _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+            _delayAsync = delayAsync ?? throw new ArgumentNullException(nameof(delayAsync));
         }
 
-        public string HeldSessionId
-        {
-            get
-            {
-                lock (_syncLock)
-                {
-                    return _sessionReceiver?.SessionId;
-                }
-            }
-        }
+        /// <summary>
+        /// The currently held SDK session receiver, or null when no session is held. The
+        /// <see cref="ServiceBusReceiver"/> includes this in the transaction <c>Container</c> and the public
+        /// session-state extension resolves it for Get/Set/Clear.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: it answers the CONCRETE <see cref="ServiceBusSessionReceiver"/>, never
+        /// <see cref="IServiceBusHeldSession"/>. The container keys by the STATIC type of what it is handed, and
+        /// the session-state extension looks the answer up by that concrete type, so widening this answer would
+        /// leave every session-state call resolving nothing.
+        /// </remarks>
+        public ServiceBusSessionReceiver HeldSessionReceiver => HeldSession?.SdkSessionReceiver;
 
-        public DateTimeOffset? HeldSessionLockedUntil
+        public string HeldSessionId => HeldSession?.SessionId;
+
+        public DateTimeOffset? HeldSessionLockedUntil => HeldSession?.SessionLockedUntil;
+
+        // The held session itself, which is what everything inside this adapter works through.
+        private IServiceBusHeldSession HeldSession
         {
             get
             {
                 lock (_syncLock)
                 {
-                    return _sessionReceiver?.SessionLockedUntil;
+                    return _heldSession;
                 }
             }
         }
@@ -112,14 +135,14 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 lock (_syncLock)
                 {
-                    return _closed || (_sessionReceiver != null && _sessionReceiver.IsClosed);
+                    return _closed || (_heldSession != null && _heldSession.IsClosed);
                 }
             }
         }
 
         public async Task<ServiceBusReceivedMessage> ReceiveAsync(CancellationToken cancellationToken)
         {
-            ServiceBusSessionReceiver session;
+            IServiceBusHeldSession session;
             try
             {
                 session = await AcquireSessionAsync(cancellationToken).ConfigureAwait(false);
@@ -142,7 +165,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 // Idle rollover: a held session that yields no message within SessionIdleTimeout is released
                 // and the adapter rolls to the next session (return null, re-poll).
-                var message = await session.ReceiveMessageAsync(maxWaitTime: _sessionIdleTimeout, cancellationToken).ConfigureAwait(false);
+                var message = await session.ReceiveMessageAsync(_sessionIdleTimeout, cancellationToken).ConfigureAwait(false);
 
                 if (message == null)
                 {
@@ -201,7 +224,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // INVARIANT: a released session yields DeliveryUnreachable, NEVER a silent success — the broker still
         // holds the delivery, so reporting it settled would have the delivery processed twice (and, for
         // deadletter, leave a poison message circulating while the pipeline believes it was contained).
-        private bool TrySettlingSession(out ServiceBusSessionReceiver session, out ServiceBusSettlementOutcome shortCircuit)
+        private bool TrySettlingSession(out IServiceBusHeldSession session, out ServiceBusSettlementOutcome shortCircuit)
         {
             if (_receiveMode != ServiceBusReceiveMode.PeekLock)
             {
@@ -210,7 +233,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 return false;
             }
 
-            session = HeldSessionReceiver;
+            session = HeldSession;
             if (session == null)
             {
                 shortCircuit = ServiceBusSettlementOutcome.DeliveryUnreachable;
@@ -234,26 +257,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // Returns the held session if one is already held, otherwise accepts the next available session
         // and starts its bounded lock-renewal loop. Lets SessionCannotBeLocked / ServiceTimeout propagate
         // to the caller's non-fatal guard.
-        private async Task<ServiceBusSessionReceiver> AcquireSessionAsync(CancellationToken cancellationToken)
+        private async Task<IServiceBusHeldSession> AcquireSessionAsync(CancellationToken cancellationToken)
         {
-            var existing = HeldSessionReceiver;
+            var existing = HeldSession;
             if (existing != null)
             {
                 return existing;
             }
 
-            var sessionOptions = new ServiceBusSessionReceiverOptions
-            {
-                ReceiveMode = _receiveMode,
-                PrefetchCount = _prefetchCount,
-            };
-
-            // INVARIANT: address the entity through the structured identity so the correct AcceptNextSessionAsync
-            // overload is chosen — the (topic, subscription) overload for a subscription, the (queue) overload for a
-            // queue — rather than feeding a composite "<topic>/Subscriptions/<sub>" string to the queue-only overload.
-            var accepted = _entityPath.IsSubscription
-                ? await _client.AcceptNextSessionAsync(_entityPath.TopicName, _entityPath.SubscriptionName, sessionOptions, cancellationToken).ConfigureAwait(false)
-                : await _client.AcceptNextSessionAsync(_entityPath.QueueName, sessionOptions, cancellationToken).ConfigureAwait(false);
+            var accepted = await _acceptNextSessionAsync(cancellationToken).ConfigureAwait(false);
 
             CancellationTokenSource renewalCts;
             lock (_syncLock)
@@ -265,7 +277,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                 }
                 else
                 {
-                    _sessionReceiver = accepted;
+                    _heldSession = accepted;
                     _renewalCts = renewalCts = new CancellationTokenSource();
                 }
             }
@@ -285,7 +297,9 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
                                                       _maxSessionLockRenewalDuration,
                                                       ServiceBusFailureReason.SessionLockLost,
                                                       $"session '{accepted.SessionId}' on '{_entityPath}'",
-                                                      _logger);
+                                                      _logger,
+                                                      _timeProvider,
+                                                      _delayAsync);
 
                 _renewalTask = renewalLoop.RunAsync(renewalCts.Token);
             }
@@ -297,15 +311,15 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
         // no renewal call races a closing/closed session receiver. Idempotent across repeated release paths.
         private async Task ReleaseSessionAsync()
         {
-            ServiceBusSessionReceiver toClose;
+            IServiceBusHeldSession toClose;
             CancellationTokenSource renewalCts;
             Task renewalTask;
             lock (_syncLock)
             {
-                toClose = _sessionReceiver;
+                toClose = _heldSession;
                 renewalCts = _renewalCts;
                 renewalTask = _renewalTask;
-                _sessionReceiver = null;
+                _heldSession = null;
                 _renewalCts = null;
                 _renewalTask = null;
             }
@@ -336,6 +350,44 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
             {
                 await toClose.CloseAsync().ConfigureAwait(false);
             }
+        }
+
+        // The production session acceptance: accept the next available session from the shared client and hand it
+        // back behind the held-session port. Bound ONCE at construction, because the adapter never accepts a
+        // session any other way.
+        private static Func<CancellationToken, Task<IServiceBusHeldSession>> CreateSdkSessionAcceptor(ServiceBusClient client,
+                                                                                                      ServiceBusSessionEntityPath entityPath,
+                                                                                                      ServiceBusReceiveMode receiveMode,
+                                                                                                      int prefetchCount)
+        {
+            if (client == null)
+            {
+                throw new ArgumentNullException(nameof(client));
+            }
+
+            return cancellationToken => AcceptNextSdkSessionAsync(client, entityPath, receiveMode, prefetchCount, cancellationToken);
+        }
+
+        private static async Task<IServiceBusHeldSession> AcceptNextSdkSessionAsync(ServiceBusClient client,
+                                                                                    ServiceBusSessionEntityPath entityPath,
+                                                                                    ServiceBusReceiveMode receiveMode,
+                                                                                    int prefetchCount,
+                                                                                    CancellationToken cancellationToken)
+        {
+            var sessionOptions = new ServiceBusSessionReceiverOptions
+            {
+                ReceiveMode = receiveMode,
+                PrefetchCount = prefetchCount,
+            };
+
+            // INVARIANT: address the entity through the structured identity so the correct AcceptNextSessionAsync
+            // overload is chosen — the (topic, subscription) overload for a subscription, the (queue) overload for a
+            // queue — rather than feeding a composite "<topic>/Subscriptions/<sub>" string to the queue-only overload.
+            var accepted = entityPath.IsSubscription
+                ? await client.AcceptNextSessionAsync(entityPath.TopicName, entityPath.SubscriptionName, sessionOptions, cancellationToken).ConfigureAwait(false)
+                : await client.AcceptNextSessionAsync(entityPath.QueueName, sessionOptions, cancellationToken).ConfigureAwait(false);
+
+            return new AzureSdkHeldSession(accepted);
         }
     }
 }
