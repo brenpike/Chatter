@@ -430,6 +430,59 @@ would then own a lifetime the factory cannot end, and the factory has no entity 
 none; `InitializeAsync` supplies the options AFTER the delegate returns). Rejected on those merits, not on
 cost.
 
+### Accepted residual: the container still disposes the shared client the pump receives THROUGH
+
+**Root cause.** Sole-disposer ownership (Decision 2) is stated over the `ServiceBusReceiver`
+INSTANCE, and that is exactly as far as it reaches. The receiver does not own its transport: it holds
+the DI-registered singleton `ServiceBusClient`, which the container DOES construct and therefore DOES
+dispose — deliberately, so that the client and the senders cached off it are released on provider
+teardown, as the `AddSingleton` comment above the client registration states. That client is resolved
+LAZILY, during the first receiver construction inside `BrokeredMessageReceiver.StartReceiverImpl`,
+which is AFTER the hosted service was constructed — so Microsoft DI's LIFO disposal list disposes the
+CLIENT BEFORE `BrokeredMessageReceiverBackgroundService`. On the same provider-disposed-without-`StopAsync`
+path the falsified premise above turned on, a container-ordered teardown therefore still reaches the
+links a live pump is receiving on, one level BELOW the receiver.
+
+**Why it is NOT the class Decision 2 eliminates.** That class is a container-ordered
+`ServiceBusReceiver.Dispose()`, and its harm was specific: `Dispose` latches `_disposedValue` and nulls
+`_innerReceiver`, after which the lazy `InnerReceiver` accessor — which consults no disposed flag —
+rebuilds a FRESH AMQP link behind the latch, a link nothing will ever close. Client disposal cannot
+produce that. `_disposedValue` is never latched, and the rebuild cannot open a link: the accessor builds
+only an `AzureSdkMessageReceiverAdapter`, which opens nothing in its constructor, and the SDK receiver
+that adapter wraps is created by its own lazy accessor through `ServiceBusClient.CreateReceiver`, where
+the SDK asserts the client is not disposed. The attempt throws instead of connecting.
+
+**Bounded impact — SHUTDOWN DIAGNOSTICS ONLY, and traced.** The pump's in-flight receive fails with
+`ObjectDisposedException` off the now-closed SDK receiver; that matches the recovery catch in
+`ServiceBusReceiver.ReceiveMessageAsync` (the old adapter reports `IsClosedOrClosing`), which discards
+and nulls the inner receiver under `_syncLock`, logs at Warning and returns `null`. The NEXT receive
+rebuilds a fresh adapter — holding no link and no renewals — and its first `ReceiveAsync` throws
+`ObjectDisposedException` out of `CreateReceiver`. This time the recovery filter is FALSE (the fresh
+adapter's SDK receiver is still null, so it is not `IsClosedOrClosing`), so the exception falls through
+to the general `catch`, is logged at Error, and is rethrown into core's receive loop, which is unwinding
+anyway. Nothing is orphaned: the discarded adapter's link was closed by the client, and the rebuilt one
+never had a link. The whole of the cost is an Error-level line during a teardown that had already
+skipped its stop.
+
+**Why the obvious remediations are REJECTED.**
+
+- **Take the client out of container ownership, as the receiver was (REJECTED).** The receiver could
+  leave because exactly one component bounds its lifetime. The client has NO such component: it is a
+  namespace-wide singleton shared by every receiver AND every sender, and cross-entity transactions
+  REQUIRE that sharing (the `INVARIANT:` on `ServiceBusReceiver._client`). Dropping the container as its
+  disposer leaves the connection with no owner at all — the leak the `AddSingleton` registration exists
+  to prevent.
+- **Give a pump-bounding component ownership of the client (REJECTED).** Same reason, from the other
+  side: there are N pump-bounding components — one `BrokeredMessageReceiver<TMessage>` per configured
+  entity — and ONE client. No one of them can end a lifetime the others still depend on.
+- **Guard the rebuild against a disposed client (REJECTED).** That is the throw-if-disposed guard this
+  ADR already rejects, and here it would buy nothing anyway: the SDK's own not-disposed assert raises
+  the identical exception one call later, with no guard of ours to keep true.
+
+**Promotion trigger.** Any change that lets the rebuild SUCCEED against a disposed or closing client —
+an SDK that drops the not-disposed assert, or a Chatter change that opens a link outside the adapter's
+lazy accessor — restores the orphaned-link harm, and this residual is PROMOTED then.
+
 ### Accepted residual: a sender is allocated per routed message
 
 **Root cause.** `MessagingInfrastructure.DispatchInfrastructure` is a PROPERTY that calls
@@ -466,6 +519,14 @@ corrected above had been resting on; it holds on the startup-failure path, where
 no stop and the pump is still unwinding, exactly as it holds on the graceful one. `MustNotPublishServiceBusReceiverAsAContainerService`
 pins the absent descriptor and `MustNotDisposeAReceiverItHandedOutWhenTheProviderIsDisposed` pins the
 consequence at the instance, so the claim is checkable from both sides.
+
+Read that class at the SCOPE it is stated: the receiver INSTANCE. The container still constructs, and
+therefore still disposes, the shared `ServiceBusClient` the receiver receives THROUGH, so a
+container-ordered teardown of the TRANSPORT under a live pump stays reachable one level below this
+claim. It is not the eliminated class — it cannot rebuild a link behind a latched `_disposedValue`,
+because the rebuild throws rather than connecting — and the residual above is where that path is
+traced and bounded. The distinction is the point: the class is closed where a disposer was REMOVED,
+and remains open where one is deliberately retained.
 
 **The honest residual.** Branch two's safety rests on a PROPERTY of the graph — every dependency of both types
 is a singleton — not on a type-level guarantee. A future edit that gives either type a genuinely scoped
