@@ -324,9 +324,12 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Receiving
 
         // Ends the held session's renewal and AWAITS it BEFORE closing the held session receiver, so no renewal call
         // races a closing/closed session receiver. Idempotent across repeated release paths.
-        // INVARIANT: this path is TOTAL. Ending a renewal never throws and its completion never faults — the
-        // RenewalLifetime discharges and reports everything it owns — so there is no way for a renewal to end that
-        // could skip the close the session's lock and its AMQP link depend on.
+        // INVARIANT: everything BEFORE the close is TOTAL. Ending a renewal never throws and its completion never
+        // faults — the RenewalLifetime discharges and reports everything it owns — so there is no way for a renewal
+        // to end that could skip the close the session's lock and its AMQP link depend on. The close ITSELF carries
+        // no such guarantee and is deliberately unguarded: it is the LAST statement, so a fault there jumps over
+        // nothing. A close that fails forgets its session rather than re-serving a dead one — an inherited residual
+        // recorded on the record in ADR-0021 ("a close that fails is not retried"), not a claim this path makes.
         private async Task ReleaseSessionAsync()
         {
             IServiceBusHeldSession toClose;

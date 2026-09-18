@@ -47,11 +47,15 @@ with.
 
 **A held session and the renewal of its lock are recorded TOGETHER, in ONE lock acquisition, and the renewal is
 recorded BEFORE it begins. Every release ends that renewal, awaits it, and only then closes the session — on a
-path that needs no catch clause, because nothing on it can throw.**
+path that needs no catch clause, because nothing BEFORE the close can throw.**
 
 The two halves answer the two issues and they are not separable. Recording together is what makes a release
 unable to see a session without its renewal. Recording before beginning is what makes that true even for a loop
-that ends synchronously. And a release that cannot throw part-way is what makes the close unskippable.
+that ends synchronously. And a release that cannot throw BEFORE the close is what makes the close unskippable.
+
+The close ITSELF carries no such guarantee, and the invariant deliberately does not claim one: it is the LAST
+statement on the path, so a throw there jumps over nothing. What a failing close does cost is recorded under
+*Accepted residual: a close that fails is not retried*.
 
 ## Considered Options
 
@@ -135,11 +139,14 @@ that ends synchronously. And a release that cannot throw part-way is what makes 
    both `0` and `-1` (`MustHoldAnAcceptedSessionWhenRenewalIsDisabled`).
 
 7. **`ReleaseSessionAsync` has NO catch clause at all.** It snapshots and nulls both fields under the lock,
-   ends the renewal, awaits its completion, then closes the held session. It needs no guard because nothing on
-   it can throw: `RenewalLifetime.End()` never throws, and `RenewalLifetime.Completion` never faults — its
-   `RunToEndAsync` wraps the loop, the exit callback and the source's disposal in a single `catch (Exception)`
-   with no filter, which absorbs `OperationCanceledException` along with everything else, and the report it
-   makes there goes through `Report`, which guards its own sink. Deleting a catch clause is what makes #499
+   ends the renewal, awaits its completion, then closes the held session. It needs no guard because nothing
+   BEFORE the close can throw: `RenewalLifetime.End()` never throws, and `RenewalLifetime.Completion` never
+   faults — its `RunToEndAsync` wraps the loop, the exit callback and the source's disposal in a single
+   `catch (Exception)` with no filter, which absorbs `OperationCanceledException` along with everything else,
+   and the report it makes there goes through `Report`, which guards its own sink. That is the whole of the
+   claim, and it is exactly what #499 needs: the close is the LAST statement, so nothing can jump over it.
+   `IServiceBusHeldSession.CloseAsync` is NOT covered by it and is deliberately left unguarded — a fault there
+   skips no cleanup, because there is none after it. Deleting a catch clause is what makes #499
    unrepresentable; adding a broader one would only have widened the set of failures that silently reached the
    close.
 
@@ -173,6 +180,31 @@ residual, accepted there on the record when ADR-0020 landed. A future edit that 
 real work would invalidate this, which is why the delegate's cost is stated as part of the reasoning and not
 assumed.
 
+### Accepted residual: a close that fails is not retried
+
+`IServiceBusHeldSession.CloseAsync` carries no totality guarantee, and `AzureSdkHeldSession` forwards straight
+to `ServiceBusSessionReceiver.CloseAsync`, which can fault or be cancelled. Both close sites attempt the close
+EXACTLY ONCE against a reference they have already dropped — `ReleaseSessionAsync` nulls `_heldSession` under
+the lock before awaiting the close, and the raced-the-close branch awaits `accepted.CloseAsync()` on a session
+it never recorded. So a failing close leaves the session FORGOTTEN: no later release can retry it, the AMQP
+link is reclaimed when the client's connection scope is disposed rather than here, and the session's lock
+lapses at its own expiry instead of being handed back.
+
+**This ordering is INHERITED, not introduced.** The release before this decision nulled `_sessionReceiver`
+under the same lock before the same unguarded `await toClose.CloseAsync()`, and its race branch made the same
+single unguarded attempt. Nothing here makes a failing close reachable where it was not, or costlier than it
+was.
+
+It is accepted rather than fixed because the obvious repair is not obviously an improvement. Retaining a
+session whose close FAILED keeps a receiver that answers `IsClosed == true` behind `AcquireSessionAsync`,
+`TrySettlingSession` and `IsClosedOrClosing`, so the adapter would re-serve a dead session indefinitely —
+every receive throwing, every settlement unreachable — instead of forgetting it and accepting a fresh one
+while the abandoned lock lapses on its own in at most one lock duration. Choosing between forget, retry and
+retain-until-closed is its own decision about teardown ownership, with its own failure modes to test; it is
+not a consequence of giving the renewal one owner, and it is deliberately NOT taken here. What #499 and #500
+close is narrower and stands on its own: a release can no longer see a session without its renewal, and no
+renewal fault can jump over the close.
+
 ## Closed-by-Construction Acceptance Test
 
 > Which class of defect is made impossible, and why?
@@ -192,7 +224,13 @@ throw, so being right depended on the catch clause enumerating every way a renew
 `LockRenewalLoop` faults deliberately for the ones nobody enumerated. What closes the class is that there is no
 longer anything to enumerate: `End()` never throws and `Completion` never faults, so the statements after them
 are not conditionally reachable. The release path carries NO catch clause, which is the observable form of the
-claim — there is no longer a catch clause that can be wrong, because there is nothing for one to catch.
+claim — there is no longer a RENEWAL-fault catch clause that can be wrong, because no renewal fault reaches
+this path at all.
+
+The class this closes is precisely "a cleanup a RENEWAL FAULT can jump over", and it is closed because the
+cleanups were moved AHEAD of the only statement that can still throw. A throw from the close itself is not a
+member of this class: it jumps over nothing, since nothing follows it. What it does cost is a separate,
+pre-existing residual, recorded above.
 
 **The honest residual.** Both rest on `RenewalLifetime`'s totality rather than on a type-level guarantee: its
 `catch (Exception)` and its guarded sink are code a future edit could narrow, and narrowing them would
