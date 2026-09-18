@@ -174,17 +174,51 @@ it, and the reason no barrier is added is the separate residual below.
 ### Accepted residual: the synchronous Dispose path closes the inner receiver unawaited
 
 **Root cause.** `Dispose(disposing: true)` cannot await, so it calls `CloseWithoutAwaiting(_innerReceiver, ...)`,
-which starts `CloseAsync()` and attaches an `OnlyOnFaulted` continuation that logs. The close is
-unawaited-but-OBSERVED: a failure is logged rather than left as an unobserved faulted task.
+which starts `CloseAsync()` and attaches a continuation that reports. The close is unawaited-but-OBSERVED:
+anything other than a successful close is logged rather than left unobserved.
 
-The OBSERVED guarantee is TOTAL over the fault shapes a `Task`-returning member permits, not just the faulted-task
-one. A close that throws BEFORE returning a task produces nothing for the continuation to attach to, so
-`CloseWithoutAwaiting` guards the invocation itself and logs that shape directly; the helper therefore does not
-throw, and both callers' remaining work — nulling the inner receiver and latching `_disposedValue` on the Dispose
-path, returning `null` so the next receive rebuilds on the recovery path — always runs. Every production
-`IServiceBusMessageReceiver` implements `CloseAsync` as an `async` method, which captures its failure into the
-returned task, so the synchronous shape is unreachable through today's three implementations; the guarantee is
-stated on the helper rather than inferred from them, because the helper is what the contract is written on.
+**CORRECTION — the guarantee this section first claimed was FALSE.** An earlier revision of this ADR, and the
+code it described, stated the observation was "TOTAL over the fault shapes a `Task`-returning member permits".
+It was not. It ENUMERATED two shapes — a faulted task, and a throw before a task is ever returned — and an
+enumeration of two is not the partition it called itself. A `CloseAsync()` returning `null` dereferenced out of
+the helper as a `NullReferenceException` that no continuation could ever observe, and a CANCELLED task matched
+neither the `OnlyOnFaulted` filter nor the synchronous `catch`, so an abandoned close read as a clean teardown.
+The local reviewer found both on the very next pass over the same code.
+
+That is recorded here rather than quietly rewritten, because the failure mode IS the lesson. The earlier fix was
+complete-the-known-set wearing closed-by-construction's name: it added the one shape somebody had thought of,
+called the result total, and the class re-emitted immediately. It is one instance of the evidence bar ADR-0003
+names — a fix that closes an instance without closing the class — met ONCE. One instance is why the answer here
+is a structural partition of this one helper, and not the monotonic lifecycle authority three instances bought
+there.
+
+**The invariant now, and the three things that hold it.**
+
+1. **A two-region partition with no gap between the regions.** Region one is a single guarded synchronous block
+   spanning BOTH obtaining the task and attaching the continuation, with the missing-task case folded in as
+   `?? throw` so it is answered by the region rather than by a check that names it. Region two is the
+   continuation, attached with `TaskContinuationOptions.ExecuteSynchronously` and NO outcome filter, so it runs
+   for every terminal state and decides there what to report.
+2. **A one-state ALLOWLIST.** The continuation body returns early only on `TaskStatus.RanToCompletion`. Success
+   is the single exemption; every other status falls through to the report, and the status travels in the
+   message because a cancelled close carries no exception to travel in.
+3. **A non-throwing terminal reporter.** `ReportCloseFailure` swallows a failure of the logger DELIBERATELY. The
+   logger IS the channel a close failure is reported through, so a failure of that channel has nowhere left to
+   be reported, and an observer that can itself fail would need its own observer without end. That is where the
+   regress terminates, and it is what makes the never-throws property hold for the reporting step as well.
+
+*Which class is made impossible, and why.* **"A teardown-close outcome nobody hears about."** The helper names
+no outcome it reports — it names the one outcome it does NOT. An outcome that did not exist when this code was
+written is therefore already in the reported set, and a new `TaskStatus`, or a new way for the port's
+`Task`-returning signature to end badly, needs no new conjunct anywhere. That is exactly what the previous shape
+could not say: it had to be extended once per shape somebody remembered.
+
+Because the helper does not throw, both callers' remaining work always runs — nulling the inner receiver and
+latching `_disposedValue` on the Dispose path, returning `null` so the next receive rebuilds on the recovery
+path. Every production `IServiceBusMessageReceiver` implements `CloseAsync` as an `async` method, which captures
+its failure into the returned task, so only the faulted-task ending is reachable through today's three
+implementations; the guarantee is stated on the helper rather than inferred from them, because the helper is
+what the contract is written on.
 
 **Why both obvious remediations are REJECTED.** Awaiting it means blocking on async work inside `Dispose`, i.e.
 sync-over-async on the host-shutdown path, with the deadlock and shutdown-stall failure modes that carries.
@@ -195,6 +229,45 @@ until their locks expire.
 
 **Bounded impact.** The close may not have completed when `Dispose` returns, so a failure is learned from the
 log rather than from the caller. That is the whole of it.
+
+### Accepted residual: a close that never completes is never reported
+
+**Root cause.** The partition above observes every way a close ENDS. A close that never ends — an AMQP link
+whose teardown hangs past the client's whole retry budget — reaches no terminal status, so the continuation
+never runs and nothing is ever written. Reporting-by-default reports terminal states; it does not manufacture
+one.
+
+**Why all three available remediations are REJECTED.**
+
+- **Await it (REJECTED).** The same rejection as above: sync-over-async inside `Dispose` on the host-shutdown
+  path. Waiting on a hang converts a missing log line into a stalled shutdown.
+
+- **An observational timeout — `Task.WhenAny(closeAttempt, Task.Delay(threshold))` (REJECTED).** It buys a log
+  line, not a bound. `Dispose` already returns immediately and the close is already unawaited, so THERE IS NO
+  WAIT TO SHORTEN: the hung link, the sessions it holds and the renewals still running are identical with and
+  without the timer. The framing "bounding this needs a sync-over-async stall" is IMPRECISE — a combinator would
+  not block anything — but the correct rejection is the stronger one: it bounds nothing. And no threshold works.
+  Below the client's own retry budget it fires on slow-but-successful closes, and this module cannot sit above
+  that budget because it is consumer-configurable — the `RetryPolicy` configuration section and the fluent
+  `WithNoRetry()` / `WithExponentialDelay(...)` calls both set it. Above it, on the Dispose path the process has
+  usually exited before the timer fires, so the line is never written at all.
+
+- **A cancellable close — widening `IServiceBusMessageReceiver.CloseAsync` to take a `CancellationToken`
+  (REJECTED).** Cancelling an SDK close ABANDONS the attempt rather than completing it, so the AMQP link is left
+  exactly as the hang left it and the sessions stay held until their locks expire either way. It buys reporting
+  — the same thing the timeout buys — at the cost of widening an internal port and changing its three production
+  implementations plus every test double that stands in for it.
+
+**Bounded impact — DIAGNOSTIC ONLY.** On the Dispose path the process is exiting and the logging sink is being
+torn down alongside it, so a line written at that moment may not survive regardless. On the receive-recovery
+path the discard is ALREADY reported one statement earlier: the `ObjectDisposedException` catch logs
+`"Service Bus receiver connection was closed."` at Warning immediately before calling the helper, and the
+sessions a hung close orphans stay held at the broker until their locks expire, where they are observable as
+held sessions rather than only here. There is no correctness consequence beyond the missing second line.
+
+**Promotion trigger.** An observed hung close in the field, or any future path that starts WAITING on the close
+rather than discarding it. Either makes a real bound worth buying instead of a log line, and this residual is
+PROMOTED then.
 
 ### Accepted residual: the receiver's disposal transition is not synchronized
 
