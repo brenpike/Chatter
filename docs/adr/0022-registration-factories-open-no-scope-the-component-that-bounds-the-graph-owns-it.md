@@ -31,13 +31,26 @@ return scope.ServiceProvider.GetRequiredService<T>();` shape, justified in the c
 "reproducing the former `ServiceBusReceiverFactory` / `ServiceBusMessageSenderFactory` behavior exactly" — a
 statement of provenance, not of correctness.
 
-**Why it had not yet bitten.** `ServiceBusReceiver` and `ServiceBusMessageSender` were registered `Scoped`, and
-every constructor dependency of both is registered by this module or by core as a SINGLETON: the shared
+**Why it did not surface earlier.** Not because the disposal was inert. `ServiceBusReceiver` was registered
+`Scoped` and is `IDisposable`, so the factory's scope tracked the very instance it had just created and ran
+that instance's `Dispose` as it went out — the caller received an already-disposed receiver. That much was
+LIVE, and it is the defect #376 reports.
+
+What was latent is narrower than the disposal, and it is two things. First, the injected graph: every
+constructor dependency of both types is registered by this module or by core as a SINGLETON — the shared
 `ServiceBusClient`, `ServiceBusOptions`, `MessageBrokerOptions`, `ILogger<>`, `IBodyConverterFactory`
-(`ChatterMessageBrokerExtensions`), `IServiceBusMessageSenderFactory` and `ServiceBusReceiverRegistry`. Nothing
-in either graph was actually scoped, so disposing the scope disposed nothing the caller went on to use. The
-defect was latent-by-contract rather than live: the code asserted an ownership it did not have, and the next
-scoped dependency added to either graph — by this module or by a consumer override — would have made it real.
+(`ChatterMessageBrokerExtensions`), `IServiceBusMessageSenderFactory` and `ServiceBusReceiverRegistry` — so
+the scope tore down nothing the receiver had been injected WITH, and the next scoped dependency added to
+either graph, by this module or by a consumer override, would have been stranded too. Second, the `Dispose`
+the scope ran was nearly empty AT THAT INSTANT: `_innerReceiver` is not built until `InitializeAsync`, which
+runs well after the delegate returns, so there was no AMQP link yet to close, and neither `InitializeAsync`
+nor the receive path carried a disposed-state guard that would have refused the already-disposed instance.
+
+What the premature `Dispose` did cost is the receiver's own idempotence: `_disposedValue` was left `true`
+before the receiver had been used at all, so any later SYNCHRONOUS `Dispose()` on it was a no-op and could
+never close the inner receiver `InitializeAsync` went on to build. Only the `StopReceiver()` /
+`DisposeAsync()` path — which closes before it consults that flag — could still release the link. A quiet
+leak on one teardown path rather than a fault at startup is why the refused shape survived this long.
 
 **Why the two are not one decision.** `ServiceBusReceiver` is `IDisposable`/`IAsyncDisposable` and is driven
 through `InitializeAsync`, `StopReceiver()` and `Dispose` entirely AFTER the factory delegate returns.
