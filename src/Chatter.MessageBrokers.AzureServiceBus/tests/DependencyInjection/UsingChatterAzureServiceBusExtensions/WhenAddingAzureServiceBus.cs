@@ -38,7 +38,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
             => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>()).Build();
 
         // Builds the minimal Chatter + AzureServiceBus registration path against a placeholder connection
-        // string. AddLogging is required because the receiver factory delegate resolves a
+        // string. AddLogging is required because the receiver factory delegate constructs a
         // ServiceBusReceiver, which depends on ILogger<ServiceBusReceiver>.
         private static ServiceProvider BuildProvider()
             => BuildServices().BuildServiceProvider();
@@ -170,17 +170,30 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.DependencyInjection.Using
         }
 
         [Fact]
-        public void MustRegisterServiceBusReceiverAsTransient()
+        public async Task MustNotDisposeAReceiverItHandedOutWhenTheProviderIsDisposed()
         {
-            // InitializeAsync writes per-entity state onto the receiver and GetReceiver is called once per
-            // receiver entity, so a shared instance would cross-wire entities; and a SCOPED instance handed
-            // out by a singleton factory would outlive its scope. Transient is the only correct lifetime.
+            // SOLE-DISPOSER OWNERSHIP. The component whose lifetime bounds the receive pump is the only
+            // thing that may tear the receiver down, because only it knows the pump has stopped. The
+            // container must never be a second disposer: a container-ordered teardown fires at provider
+            // disposal knowing nothing about the pump, and closing the inner Azure Service Bus receiver
+            // under a running pump is what leaks an unclosed AMQP link (ADR-0022).
+            var provider = BuildProvider();
+
+            var receiver = (ServiceBusReceiver)provider.GetRequiredService<IMessagingInfrastructure>().ReceiveInfrastructure;
+            await provider.DisposeAsync();
+
+            receiver.IsDisposed.Should().BeFalse();
+        }
+
+        [Fact]
+        public void MustNotPublishServiceBusReceiverAsAContainerService()
+        {
+            // The absence of a descriptor IS the enforcement of sole-disposer ownership above: the
+            // container cannot dispose an instance it never constructed. The receiver is constructed at
+            // the IMessagingInfrastructure factory site instead of being resolved from it.
             var services = BuildServices();
 
-            var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(ServiceBusReceiver));
-
-            descriptor.Should().NotBeNull();
-            descriptor.Lifetime.Should().Be(ServiceLifetime.Transient);
+            services.Should().NotContain(descriptor => descriptor.ServiceType == typeof(ServiceBusReceiver));
         }
 
         [Fact]
