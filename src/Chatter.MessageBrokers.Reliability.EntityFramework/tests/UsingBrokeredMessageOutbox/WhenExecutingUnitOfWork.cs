@@ -46,6 +46,49 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             _sut.CurrentTransaction.TransactionId.Should().Be(Guid.Empty);
         }
 
+        // INVARIANT: with no transaction on the context there is nothing to commit or roll back, so the handle
+        // refuses rather than dereferencing a transaction it never had. The refusal names the condition; a
+        // NullReferenceException named only the failure.
+        [Fact]
+        public async Task MustRefuseCommitWhenNoTransactionActive()
+        {
+            IPersistanceTransaction transaction = _sut.CurrentTransaction;
+
+            Func<Task> act = () => transaction.CommitAsync();
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        [Fact]
+        public async Task MustRefuseRollbackWhenNoTransactionActive()
+        {
+            IPersistanceTransaction transaction = _sut.CurrentTransaction;
+
+            Func<Task> act = () => transaction.RollbackAsync();
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        [Fact]
+        public void MustNotThrowFromDisposeWhenNoTransactionActiveUnderInMemory()
+        {
+            IPersistanceTransaction transaction = _sut.CurrentTransaction;
+
+            Action act = () => transaction.Dispose();
+
+            act.Should().NotThrow();
+        }
+
+        [Fact]
+        public async Task MustNotThrowFromDisposeAsyncWhenNoTransactionActiveUnderInMemory()
+        {
+            IPersistanceTransaction transaction = _sut.CurrentTransaction;
+
+            Func<Task> act = async () => await transaction.DisposeAsync();
+
+            await act.Should().NotThrowAsync();
+        }
+
         // INVARIANT: ExecuteAsync calls DbContext.Database.BeginTransactionAsync, which the
         // EF Core in-memory provider does not support. AS-IS the in-memory provider surfaces
         // TransactionIgnoredWarning as a thrown InvalidOperationException before the supplied

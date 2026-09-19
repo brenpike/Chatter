@@ -19,7 +19,16 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        public IPersistanceTransaction CurrentTransaction => PersistanceTransaction.Create(_context.Database.CurrentTransaction);
+        public IPersistanceTransaction CurrentTransaction
+        {
+            get
+            {
+                var ambientTransaction = _context.Database.CurrentTransaction;
+                return ambientTransaction is null
+                    ? (IPersistanceTransaction)NoActiveTransaction.Instance
+                    : PersistanceTransaction.Create(ambientTransaction);
+            }
+        }
 
         public bool HasActiveTransaction => _context?.Database?.CurrentTransaction != null;
 
@@ -38,8 +47,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             return strategy.ExecuteAsync(async ct =>
             {
+                // INVARIANT: the transaction is begun outside the try so that a failure to begin one propagates with
+                // no scope in existence to clean up. On the failure path both terminal steps - rolling back and
+                // disposing - are guarded, so neither can replace the exception that caused the failure. On the
+                // success path the disposal is deliberately left unguarded: there is no causal exception to mask,
+                // and swallowing there would hide a real commit-time failure.
                 var scope = await BeginAsync(ct).ConfigureAwait(false);
-                await using var scopeLifetime = scope.ConfigureAwait(false);
                 try
                 {
                     transactionContext?.Container.Include<IPersistanceTransaction>(scope.Transaction);
@@ -51,11 +64,28 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 }
                 catch (Exception ex)
                 {
-                    await RollbackAsync(scope, ct).ConfigureAwait(false);
+                    await CleanUpAsync(() => RollbackAsync(scope, CancellationToken.None), "roll back").ConfigureAwait(false);
+                    await CleanUpAsync(() => scope.DisposeAsync().AsTask(), "dispose").ConfigureAwait(false);
                     _logger.LogError(ex, "Error occurred during unit of work");
                     throw;
                 }
+
+                await scope.DisposeAsync().ConfigureAwait(false);
             }, cancellationToken);
+        }
+
+        // INVARIANT: cleanup runs under CancellationToken.None. Honouring the token that failed the unit of work
+        // would make a cancelled operation skip its own rollback and leave the transaction open.
+        private async Task CleanUpAsync(Func<Task> cleanUp, string cleanUpDescription)
+        {
+            try
+            {
+                await cleanUp().ConfigureAwait(false);
+            }
+            catch (Exception cleanUpException)
+            {
+                _logger.LogWarning(cleanUpException, "Failed to {CleanUpDescription} the unit of work's transaction while handling an earlier failure. The earlier failure is the one reported.", cleanUpDescription);
+            }
         }
 
         private async Task CompleteAsync(UnitOfWorkTransaction scope, CancellationToken cancellationToken = default)

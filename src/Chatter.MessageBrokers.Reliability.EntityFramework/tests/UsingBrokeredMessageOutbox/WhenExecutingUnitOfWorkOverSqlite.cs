@@ -5,6 +5,7 @@ using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.Testing.Core.Creators.MessageBrokers;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System;
@@ -127,6 +128,77 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             containedTransactionId.Should().Be(transactionIdInsideOperation);
             containedTransactionId.Should().NotBe(Guid.Empty);
         }
+
+        // INVARIANT: terminal cleanup - rolling the transaction back and disposing it - can never become the
+        // reported cause of a failed unit of work. Whatever the cleanup throws is logged and dropped, and the
+        // exception that actually failed the unit of work is the one the caller receives.
+        [Fact]
+        public async Task MustRethrowTheOperationExceptionWhenRollbackAlsoThrows()
+        {
+            using var context = CreateFaultingContext<RollbackFaultingRelationalTransactionFactory>();
+            IUnitOfWork unitOfWork = new BrokeredMessageOutbox<SqliteOutboxContext>(context, _loggerFactory.Object);
+            var operationException = new InvalidOperationException("operation failed");
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(_ => throw operationException, null);
+
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Should().BeSameAs(operationException);
+            unitOfWork.HasActiveTransaction.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task MustRethrowTheOperationExceptionWhenDisposeAlsoThrows()
+        {
+            using var context = CreateFaultingContext<DisposeFaultingRelationalTransactionFactory>();
+            IUnitOfWork unitOfWork = new BrokeredMessageOutbox<SqliteOutboxContext>(context, _loggerFactory.Object);
+            var operationException = new InvalidOperationException("operation failed");
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(_ => throw operationException, null);
+
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Should().BeSameAs(operationException);
+            unitOfWork.HasActiveTransaction.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task MustRethrowTheOperationExceptionWhenBothRollbackAndDisposeThrow()
+        {
+            using var context = CreateFaultingContext<RollbackAndDisposeFaultingRelationalTransactionFactory>();
+            IUnitOfWork unitOfWork = new BrokeredMessageOutbox<SqliteOutboxContext>(context, _loggerFactory.Object);
+            var operationException = new InvalidOperationException("operation failed");
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(_ => throw operationException, null);
+
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Should().BeSameAs(operationException);
+            unitOfWork.HasActiveTransaction.Should().BeFalse();
+        }
+
+        // INVARIANT: a commit failure is itself the cause, and the rollback that follows it is still cleanup. The
+        // commit exception reaches the caller even when the rollback fails on top of it.
+        [Fact]
+        public async Task MustPropagateTheCommitExceptionWhenRollbackAlsoThrows()
+        {
+            using var context = CreateFaultingContext<CommitAndRollbackFaultingRelationalTransactionFactory>();
+            IUnitOfWork unitOfWork = new BrokeredMessageOutbox<SqliteOutboxContext>(context, _loggerFactory.Object);
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(
+                ct => context.Set<OutboxMessage>().AddAsync(message, ct).AsTask(),
+                null);
+
+            (await act.Should().ThrowAsync<TransactionFaultException>())
+                .Which.Phase.Should().Be(TransactionFaultPhase.Commit);
+            unitOfWork.HasActiveTransaction.Should().BeFalse();
+
+            using var freshContext = _harness.CreateContext();
+            var persisted = await freshContext.Set<OutboxMessage>()
+                .SingleOrDefaultAsync(m => m.MessageId == message.MessageId);
+            persisted.Should().BeNull();
+        }
+
+        private SqliteOutboxContext CreateFaultingContext<TFactory>() where TFactory : FaultingRelationalTransactionFactory
+            => _harness.CreateContext(options => options.ReplaceService<IRelationalTransactionFactory, TFactory>());
 
         public async ValueTask DisposeAsync()
         {
