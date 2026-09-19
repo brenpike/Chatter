@@ -16,26 +16,27 @@ using Xunit;
 namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabilityRetentionPurgeService
 {
     // Retention Purge statement granularity over a relational provider that needs no container, so the bound on a
-    // purge DELETE is pinned on every host rather than only where Docker runs. The three facts in
-    // Integration/WhenPurgingRetentionOnSqlServer own WHICH rows a pass deletes; these two own HOW MANY statements
-    // it takes to delete them.
+    // purge pass is pinned on every host rather than only where Docker runs. The three facts in
+    // Integration/WhenPurgingRetentionOnSqlServer own WHICH rows a pass deletes; these two own HOW MUCH one pass
+    // does, and what it leaves for the next one.
     //
-    // ELIMINATED CLASS: a retention DELETE that touches an unbounded number of rows. Both facts seed one row more
-    // than a chunk holds and count DELETE statements, because both the chunked and the unbounded shape delete the
-    // same rows - a row-count assertion cannot separate them, and only the statement count can.
+    // ELIMINATED CLASS: a purge whose per-pass work, or whose termination, depends on anything outside the purge's
+    // own configuration. Both facts seed one row more than a chunk holds and then drive TWO passes, asserting one
+    // DELETE statement per pass with the remainder taken by the next pass. They count statements rather than rows
+    // because a pass that loops until the table is drained and a pass that issues one bounded statement both end
+    // with the same rows gone - only the statement count, and what survives the FIRST pass, separate them.
     public class WhenPurgingRetentionOverSqlite
     {
         // Mirrors ReliabilityRetentionPurgeService.RetentionPurgeChunkSize, which is private. One row more than a
-        // chunk is the smallest backlog needing two statements, and it is also what makes the expected count exact:
-        // the second chunk comes back SHORT, so a loop ending on a short chunk issues two statements while one
-        // ending on an empty chunk issues three.
+        // chunk is the smallest backlog that outlives a single pass, which is what makes the surviving count exact:
+        // a pass bounded by the chunk leaves exactly one row, while a pass that loops leaves none.
         private const int ChunkSize = 1000;
         private const int BacklogSize = ChunkSize + 1;
 
         private static readonly TimeSpan RetentionWindow = TimeSpan.FromHours(1);
 
         [Fact]
-        public async Task MustPurgeAnOutboxBacklogInChunkedStatements()
+        public async Task MustPurgeAnOutboxBacklogOneBoundedStatementPerPass()
         {
             using var harness = SqliteOutboxContextHarness.Create();
             var stale = DateTime.UtcNow - RetentionWindow - TimeSpan.FromHours(1);
@@ -51,18 +52,26 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             }
 
             var options = new EntityFrameworkReliabilityOptions { ProcessedOutboxRetention = RetentionWindow };
-            var deleteStatements = await PurgeOnceAsync(harness, options);
 
-            deleteStatements.Should().Be(2,
-                "a backlog one row larger than a chunk is deleted by one full chunk and one short one, never by a single unbounded DELETE");
+            (await PurgeOnceAsync(harness, options)).Should().Be(1,
+                "a pass issues one bounded DELETE per configured table and then returns, whatever the backlog behind it");
+
+            using (var afterFirstPass = harness.CreateContext())
+            {
+                (await afterFirstPass.Set<OutboxMessage>().CountAsync()).Should().Be(BacklogSize - ChunkSize,
+                    "the pass is bounded by the chunk rather than by the eligible set, so the overflow is left for the next pass");
+            }
+
+            (await PurgeOnceAsync(harness, options)).Should().Be(1,
+                "the next pass is bounded the same way, however few rows are left for it");
 
             using var verify = harness.CreateContext();
             (await verify.Set<OutboxMessage>().CountAsync()).Should().Be(0,
-                "chunking bounds each statement, it does not leave rows past their retention behind");
+                "successive bounded passes still reclaim every row past its retention");
         }
 
         [Fact]
-        public async Task MustPurgeAnInboxBacklogInChunkedStatements()
+        public async Task MustPurgeAnInboxBacklogOneBoundedStatementPerPass()
         {
             using var harness = SqliteOutboxContextHarness.Create();
             var stale = DateTime.UtcNow - RetentionWindow - TimeSpan.FromHours(1);
@@ -78,14 +87,22 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             }
 
             var options = new EntityFrameworkReliabilityOptions { InboxDeduplicationWindow = RetentionWindow };
-            var deleteStatements = await PurgeOnceAsync(harness, options);
 
-            deleteStatements.Should().Be(2,
-                "the inbox is chunked through the same helper as the outbox, so its first purge of an accumulated table is bounded too");
+            (await PurgeOnceAsync(harness, options)).Should().Be(1,
+                "the inbox is deleted through the same bounded helper as the outbox, so its pass is bounded too");
+
+            using (var afterFirstPass = harness.CreateContext())
+            {
+                (await afterFirstPass.Set<InboxMessage>().CountAsync()).Should().Be(BacklogSize - ChunkSize,
+                    "the pass is bounded by the chunk rather than by the eligible set, so the overflow is left for the next pass");
+            }
+
+            (await PurgeOnceAsync(harness, options)).Should().Be(1,
+                "the next pass is bounded the same way, however few markers are left for it");
 
             using var verify = harness.CreateContext();
             (await verify.Set<InboxMessage>().CountAsync()).Should().Be(0,
-                "chunking bounds each statement, it does not leave markers past the Deduplication Window behind");
+                "successive bounded passes still reclaim every marker past the Deduplication Window");
         }
 
         // A chunk is a row-limiting operator, and EF raises RowLimitingOperationWithoutOrderByWarning for one that
@@ -127,6 +144,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
         // The purge service takes an IServiceScopeFactory rather than a context: it outlives any one scope, so it
         // opens a fresh one per cycle. A real container supplies the factory here so the seam is driven exactly as
         // the hosted service drives it, and the scoped context carries the counting interceptor.
+        //
+        // Each call builds its own interceptor, so the count it answers with belongs to THAT pass alone and two
+        // successive calls report two independent per-pass counts over the one database the harness holds open.
         private static async Task<int> PurgeOnceAsync(SqliteOutboxContextHarness harness,
                                                       EntityFrameworkReliabilityOptions options,
                                                       Action<DbContextOptionsBuilder<SqliteOutboxContext>> configureContext = null)

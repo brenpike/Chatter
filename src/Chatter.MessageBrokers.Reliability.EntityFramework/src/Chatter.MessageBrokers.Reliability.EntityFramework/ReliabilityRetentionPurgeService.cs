@@ -95,16 +95,25 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// Integration/WhenPurgingRetentionOnSqlServer.MustPurgeOnlyTheRowsPastTheirRetentionWindow, which goes red
         /// the moment the outbox predicate keys on SentToOutboxAtUtc instead.
         ///
-        /// INVARIANT: no retention DELETE reaches the database unbounded. Both eligible sets are deleted through
-        /// DeleteInChunksAsync, so a pass over a table that has accumulated for months grows in the number of
-        /// statements it issues, never in the rows one statement touches. An unbounded DELETE over the inbox or the
-        /// outbox escalates to a lock on the very table the durability path writes through, and the loop's per-pass
-        /// catch would reissue it every PurgeInterval. Pinned by
-        /// UsingReliabilityRetentionPurgeService/WhenPurgingRetentionOverSqlite.MustPurgeAnOutboxBacklogInChunkedStatements
-        /// and .MustPurgeAnInboxBacklogInChunkedStatements, which count DELETE statements rather than deleted rows -
-        /// both shapes delete the same rows, so a row-count assertion cannot tell one unbounded statement from two
-        /// chunked ones. Dropping the Take from the helper reddens both at one statement (observed); routing either
-        /// call site around the helper reddens the fact for that table alone.
+        /// INVARIANT: a pass issues exactly ONE bounded DELETE per configured table and then returns. ELIMINATED
+        /// CLASS: a purge whose per-pass work, or whose termination, depends on anything outside the purge's own
+        /// configuration. This method holds no loop, so no writer, clock or replenishment rate can change how much
+        /// one pass deletes or whether it ends; the only loop in this service is the one in ExecuteAsync, owned by
+        /// stoppingToken and paced by PurgeInterval. An unbounded DELETE over the inbox or the outbox escalates to
+        /// a lock on the very table the durability path writes through, and a per-pass loop bounding each statement
+        /// only moves the unbounded quantity from the rows one statement touches to the statements one pass issues.
+        /// TRADE, disclosed: a pass reclaims at most RetentionPurgeChunkSize rows per table - 1000 per table per
+        /// PurgeInterval, 288,000 per table per day at the five-minute default - and PurgeInterval is the operator's
+        /// dial on that rate. A table accruing eligible rows faster than that now never catches up, where a
+        /// per-pass loop would have kept deleting; that is the deliberate cost, because the loop's exit was a claim
+        /// about how fast writers replenish rather than a property of this service. Pinned by
+        /// UsingReliabilityRetentionPurgeService/WhenPurgingRetentionOverSqlite.MustPurgeAnOutboxBacklogOneBoundedStatementPerPass
+        /// and .MustPurgeAnInboxBacklogOneBoundedStatementPerPass, which seed one row more than a chunk, drive two
+        /// passes, and count DELETE statements rather than deleted rows - a looping pass and a bounded one both end
+        /// with the same rows gone, so only the statement count and what survives the FIRST pass separate them.
+        /// Wrapping either call in a loop over DeleteOneChunkAsync reddens both at two statements on the first pass
+        /// (observed - that is the shape they were written against); dropping the Take from the helper reddens both
+        /// at a first pass that leaves nothing for the second (observed).
         /// </remarks>
         internal async Task PurgeOnceAsync(CancellationToken cancellationToken)
         {
@@ -114,7 +123,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             if (_options.InboxDeduplicationWindow.HasValue)
             {
                 var inboxCutoffUtc = DateTime.UtcNow - _options.InboxDeduplicationWindow.Value;
-                var purgedMarkers = await DeleteInChunksAsync(
+                var purgedMarkers = await DeleteOneChunkAsync(
                         context.Set<InboxMessage>()
                             .Where(marker => marker.ReceivedByInboxAtUtc != null && marker.ReceivedByInboxAtUtc < inboxCutoffUtc)
                             .OrderBy(marker => marker.ReceivedByInboxAtUtc),
@@ -127,7 +136,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             if (_options.ProcessedOutboxRetention.HasValue)
             {
                 var outboxCutoffUtc = DateTime.UtcNow - _options.ProcessedOutboxRetention.Value;
-                var purgedMessages = await DeleteInChunksAsync(
+                var purgedMessages = await DeleteOneChunkAsync(
                         context.Set<OutboxMessage>()
                             .Where(message => message.ProcessedFromOutboxAtUtc != null && message.ProcessedFromOutboxAtUtc < outboxCutoffUtc)
                             .OrderBy(message => message.ProcessedFromOutboxAtUtc),
@@ -139,50 +148,24 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         }
 
         /// <summary>
-        /// Deletes every row the query selects, at most <see cref="RetentionPurgeChunkSize"/> per statement,
-        /// and answers how many were deleted across the whole pass.
+        /// Deletes the oldest <see cref="RetentionPurgeChunkSize"/> rows the query selects in ONE statement, and
+        /// answers how many were deleted. Rows beyond that chunk are left for the next pass.
         /// </summary>
         /// <remarks>
-        /// INVARIANT: the loop ends on a chunk that came back SHORT, not on one that came back empty. A short chunk
-        /// means the eligible set was exhausted, so the pass stops without spending a statement to prove it; ending
-        /// on an empty chunk would instead keep the pass open for as long as rows kept becoming eligible underneath
-        /// it. Nothing can become eligible mid-pass in the first place: the cutoff is captured before the first
-        /// chunk and every stamp is written as UtcNow, so a row written while the pass runs is stamped at or after
-        /// the pass began and is therefore newer than that cutoff, and a refreshed inbox marker moves OUT of the
-        /// eligible set rather than into it. Clock skew between hosts wider than the retention window is the one
-        /// way in, and it is bounded by the same short-chunk exit. The two chunked-statement facts in
-        /// UsingReliabilityRetentionPurgeService/WhenPurgingRetentionOverSqlite seed one row more than a chunk and
-        /// expect exactly two statements, so relaxing this condition to deletedInChunk > 0 reddens both at three
-        /// (observed).
-        ///
         /// INVARIANT: the query is ORDERED before it is taken from, which is why the parameter is an
         /// IOrderedQueryable rather than an IQueryable. A row-limiting operator with no ordering raises
         /// CoreEventId.RowLimitingOperationWithoutOrderByWarning, so a TContext registered with
-        /// ConfigureWarnings(w => w.Throw(...)) would throw on every chunk, be caught by the per-pass handler in
+        /// ConfigureWarnings(w => w.Throw(...)) would throw on every pass, be caught by the per-pass handler in
         /// ExecuteAsync, and purge nothing at all while logging an error every PurgeInterval. Pinned by
         /// UsingReliabilityRetentionPurgeService/WhenPurgingRetentionOverSqlite.MustPurgeThroughAContextThatRefusesUnorderedRowLimiting,
         /// which reddens with that InvalidOperationException when both OrderBy calls come off and this parameter is
         /// widened to IQueryable (observed). Ordering by the retention stamp also deletes the oldest rows first,
-        /// which is the order a purge falling behind should make progress in.
+        /// which is the order a purge falling behind must make progress in for the remainder it leaves to be the
+        /// NEWEST rows rather than an arbitrary slice.
         /// </remarks>
-        private static async Task<int> DeleteInChunksAsync<TEntity>(IOrderedQueryable<TEntity> eligibleOldestFirst,
-                                                                    CancellationToken cancellationToken)
+        private static Task<int> DeleteOneChunkAsync<TEntity>(IOrderedQueryable<TEntity> eligibleOldestFirst,
+                                                              CancellationToken cancellationToken)
             where TEntity : class
-        {
-            var totalDeleted = 0;
-            int deletedInChunk;
-
-            do
-            {
-                deletedInChunk = await eligibleOldestFirst.Take(RetentionPurgeChunkSize)
-                    .ExecuteDeleteAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                totalDeleted += deletedInChunk;
-            }
-            while (deletedInChunk == RetentionPurgeChunkSize);
-
-            return totalDeleted;
-        }
+            => eligibleOldestFirst.Take(RetentionPurgeChunkSize).ExecuteDeleteAsync(cancellationToken);
     }
 }
