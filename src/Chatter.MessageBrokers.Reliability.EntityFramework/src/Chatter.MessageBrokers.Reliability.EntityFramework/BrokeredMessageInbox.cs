@@ -32,8 +32,17 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         private readonly DbSet<InboxMessage> _inbox;
         private readonly ILogger<BrokeredMessageInbox<TContext>> _logger;
         private readonly ReliabilityOptions _options;
+        private readonly EntityFrameworkReliabilityOptions _retentionOptions;
 
         public BrokeredMessageInbox(TContext context, ILogger<BrokeredMessageInbox<TContext>> logger, ReliabilityOptions options)
+            : this(context, logger, options, new EntityFrameworkReliabilityOptions())
+        {
+        }
+
+        public BrokeredMessageInbox(TContext context,
+                                    ILogger<BrokeredMessageInbox<TContext>> logger,
+                                    ReliabilityOptions options,
+                                    EntityFrameworkReliabilityOptions retentionOptions)
         {
             if (context is null)
             {
@@ -42,6 +51,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _options = options ?? throw new ArgumentNullException(nameof(options));
+            _retentionOptions = retentionOptions ?? throw new ArgumentNullException(nameof(retentionOptions));
             _inbox = context.Set<InboxMessage>();
         }
 
@@ -73,32 +83,51 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             if (string.IsNullOrWhiteSpace(messageId))
             {
                 _logger.LogDebug("Unable to receve message using inbox because message id is null or whitespace. Executing handler.");
-                await handler();
+                await handler().ConfigureAwait(false);
                 return;
             }
 
+            var cancellationToken = messageBrokerContext.CancellationToken;
+
             _logger.LogTrace($"Checking inbox for brokered message with message id '{messageId}'.");
 
-            if (await _inbox.AnyAsync(m => m.MessageId == messageId))
+            var existingMarker = await _inbox.FindAsync(new object[] { messageId }, cancellationToken).ConfigureAwait(false);
+
+            if (existingMarker != null && !HasMarkerExpired(existingMarker))
             {
-                _logger.LogTrace($"Message with id '{messageId}' found in inbox. Message will not be handled.");
+                _logger.LogInformation($"Message with id '{messageId}' found in inbox. Message will not be handled.");
                 return;
+            }
+
+            if (existingMarker != null)
+            {
+                _logger.LogInformation($"Message with id '{messageId}' was found in the inbox but was received before the "
+                                       + $"deduplication window of '{_retentionOptions.InboxDeduplicationWindow}'. Message will be handled again.");
             }
 
             try
             {
                 _logger.LogDebug("Executing message handler from inbox");
-                await handler();
-                var inboxMessage = new InboxMessage()
-                {
-                    MessageId = messageId,
-                    ReceivedByInboxAtUtc = DateTime.UtcNow
-                };
-
+                await handler().ConfigureAwait(false);
                 _logger.LogDebug("Message handler executed successfully from inbox");
-                _logger.LogTrace($"Adding inbox message with id '{inboxMessage.MessageId}' and date received '{inboxMessage.ReceivedByInboxAtUtc}'.");
-                await _inbox.AddAsync(inboxMessage);
-                _logger.LogTrace($"Message with id '{messageId}' added to inbox.");
+
+                if (existingMarker is null)
+                {
+                    var inboxMessage = new InboxMessage()
+                    {
+                        MessageId = messageId,
+                        ReceivedByInboxAtUtc = DateTime.UtcNow
+                    };
+
+                    _logger.LogTrace($"Adding inbox message with id '{inboxMessage.MessageId}' and date received '{inboxMessage.ReceivedByInboxAtUtc}'.");
+                    await _inbox.AddAsync(inboxMessage, cancellationToken).ConfigureAwait(false);
+                    _logger.LogTrace($"Message with id '{messageId}' added to inbox.");
+                }
+                else
+                {
+                    existingMarker.ReceivedByInboxAtUtc = DateTime.UtcNow;
+                    _logger.LogTrace($"Inbox message with id '{messageId}' refreshed with date received '{existingMarker.ReceivedByInboxAtUtc}'.");
+                }
             }
             catch (Exception ex)
             {
@@ -108,6 +137,33 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         }
 
         public Task<bool> HasBeenReceived(string messageId, CancellationToken cancellationToken = default)
-            => _inbox.AnyAsync(m => m.MessageId == messageId, cancellationToken);
+        {
+            var deduplicationWindow = _retentionOptions.InboxDeduplicationWindow;
+
+            if (!deduplicationWindow.HasValue)
+            {
+                return _inbox.AnyAsync(m => m.MessageId == messageId, cancellationToken);
+            }
+
+            var cutoffUtc = DateTime.UtcNow - deduplicationWindow.Value;
+
+            return _inbox.AnyAsync(m => m.MessageId == messageId
+                                        && (m.ReceivedByInboxAtUtc == null || m.ReceivedByInboxAtUtc >= cutoffUtc),
+                                   cancellationToken);
+        }
+
+        // INVARIANT: expiry is decided HERE, at receive time, and not by the retention purge alone. A purge is the
+        // only thing that reclaims the row, but it runs on its own cadence, so a marker older than the Deduplication
+        // Window would keep suppressing a legitimate redelivery until the next pass happened to reach it. A null
+        // window - the default - never expires anything, and a marker carrying no timestamp cannot be aged, so both
+        // keep suppressing.
+        private bool HasMarkerExpired(InboxMessage marker)
+        {
+            var deduplicationWindow = _retentionOptions.InboxDeduplicationWindow;
+
+            return deduplicationWindow.HasValue
+                   && marker.ReceivedByInboxAtUtc.HasValue
+                   && DateTime.UtcNow - marker.ReceivedByInboxAtUtc.Value > deduplicationWindow.Value;
+        }
     }
 }
