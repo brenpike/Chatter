@@ -164,10 +164,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     // An undeliverable stamp happens INSTEAD of a publish, never after one, and records NO drain
                     // outcome: the document never resolved to a publish decision, the same reason a failed publish
                     // records none. The admitted/skipped/dropped vocabulary is CLOSED.
-                    return await MarkUndeliverableAsync(document, verification, monitoredContainer, partitionKeyPath, cancellationToken);
+                    return await MarkUndeliverableAsync(document, verification, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
                 }
 
-                await DispatchAsync(Reconstruct(verification), verification.MessagingSystem);
+                await DispatchAsync(Reconstruct(verification), verification.MessagingSystem).ConfigureAwait(false);
                 messageDispatched = true;
             }
             else
@@ -176,13 +176,13 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 // resolution dispatches nothing. Either way the document is then stamped delivered (a null resolution is
                 // an intentional drop-and-acknowledge). A THROW propagates below with no stamp issued.
                 OutboxDrainContext context = BuildDrainContext(document, partitionKeyPath);
-                OutboundBrokeredMessage resolved = await resolver.ResolveAsync(context, cancellationToken);
+                OutboundBrokeredMessage resolved = await resolver.ResolveAsync(context, cancellationToken).ConfigureAwait(false);
                 messageDispatched = resolved is not null;
                 if (messageDispatched)
                 {
                     // The resolved message's context is HOST-owned and is never verified, so its messaging system comes
                     // from the module's SINGLE reader, without classification.
-                    await DispatchAsync(resolved, OutboxDocumentContract.ReadMessagingSystem(resolved.MessageContext));
+                    await DispatchAsync(resolved, OutboxDocumentContract.ReadMessagingSystem(resolved.MessageContext)).ConfigureAwait(false);
                 }
             }
 
@@ -193,7 +193,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                     : CosmosReliabilityDiagnostics.DrainOutcomes.Dropped);
             }
 
-            return await StampDeliveredAsync(document, monitoredContainer, partitionKeyPath, messageDispatched, cancellationToken);
+            return await StampDeliveredAsync(document, monitoredContainer, partitionKeyPath, messageDispatched, cancellationToken).ConfigureAwait(false);
         }
 
         // PUBLISH via IMessagingInfrastructureProvider.GetDispatcher(infra).Dispatch(message, null) — the SAME
@@ -216,11 +216,11 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             // sibling send sites.
             if (!BrokerDiagnostics.IsEnabled)
             {
-                await dispatcher.Dispatch(message, null);
+                await dispatcher.Dispatch(message, null).ConfigureAwait(false);
             }
             else
             {
-                await DispatchObserved(dispatcher, message, messagingSystem);
+                await DispatchObserved(dispatcher, message, messagingSystem).ConfigureAwait(false);
             }
         }
 
@@ -251,7 +251,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
                 try
                 {
-                    await dispatcher.Dispatch(message, null);
+                    await dispatcher.Dispatch(message, null).ConfigureAwait(false);
                 }
                 catch (Exception e)
                 {
@@ -340,7 +340,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                                                                        IReadOnlyList<string> partitionKeyPath,
                                                                        CancellationToken cancellationToken)
         {
-            ConfirmationReceipt receipt = await StampUndeliverableAsync(document, monitoredContainer, partitionKeyPath, cancellationToken);
+            ConfirmationReceipt receipt = await StampUndeliverableAsync(document, monitoredContainer, partitionKeyPath, cancellationToken).ConfigureAwait(false);
 
             // INVARIANT: no outer ADR-0010 R1 off-guard is needed here, and adding one would be noise: this emit takes
             // no argument, so nothing is BUILT before the emit method's own instrument guard runs.
@@ -371,7 +371,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 PatchOperation.Set(_settings.StatusPatchPath, CosmosOutboxDocument.StatusUndeliverable),
             };
 
-            return await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken);
+            return await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken).ConfigureAwait(false);
         }
 
         // POST-PUBLISH: a SINGLE PatchItemAsync with two ops (set the status path to the delivered value, set the
@@ -400,7 +400,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
 
             try
             {
-                return await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken);
+                return await PatchAsync(document, monitoredContainer, partitionKeyPath, patchOperations, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception confirmationFailure) when (messageDispatched)
             {
@@ -425,7 +425,7 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
             PartitionKey partitionKey = RecoverPartitionKey(document, partitionKeyPath);
 
             ItemResponse<JsonElement> stampResponse =
-                await monitoredContainer.PatchItemAsync<JsonElement>(id, partitionKey, patchOperations, requestOptions: null, cancellationToken: cancellationToken);
+                await monitoredContainer.PatchItemAsync<JsonElement>(id, partitionKey, patchOperations, requestOptions: null, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             // Minted HERE, at the one write both stamps share, rather than at the two stamp call sites: a call site
             // would have to re-decide WHICH arrival counts as a confirmation, which is the inference this replaces.
