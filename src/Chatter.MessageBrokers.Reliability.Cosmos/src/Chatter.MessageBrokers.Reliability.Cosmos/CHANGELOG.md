@@ -15,7 +15,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
-- The reserved-id peek derives its verdict from the payload bytes it reads, never from the byte count the staged `Stream` advertises. A seekable payload whose `Length` under-reported, over-reported, or exceeded a buffer-sized range was previously judged on a truncated read or on no read at all, so a document carrying an `inbox:`/`outbox:` id could stage as idless; the advertised length is now a buffer-sizing hint only, and a payload it cannot bound is read to end-of-stream before the prefix test (#365, epic #305).
+- The reserved-id peek no longer answers from the byte count a staged `Stream` advertises. A seekable payload advertising nothing remaining was previously returned as idless without a byte being read, so a payload carrying an `inbox:`/`outbox:` id could stage unseen; the advertised length is now a buffer-sizing hint only, and a payload it cannot bound is read to end-of-stream before the prefix test (#365, epic #305).
 
 ## [0.8.0] - 2026-09-03
 
