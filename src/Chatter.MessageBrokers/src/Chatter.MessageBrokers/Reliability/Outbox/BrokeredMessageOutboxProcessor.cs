@@ -142,7 +142,9 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         {
             try
             {
-                using var scope = _serviceScopeFactory.CreateScope();
+                // INVARIANT: the release is asynchronous because a scoped member of the poll's graph may implement
+                // only IAsyncDisposable, which a synchronous release refuses.
+                await using var scope = _serviceScopeFactory.CreateAsyncScope();
                 var outbox = (IPollableOutboxStore)scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
                 var processor = scope.ServiceProvider.GetRequiredService<IOutboxProcessor>();
                 var messages = (await outbox.GetUnprocessedMessagesFromOutbox(cancellationToken)).ToList();

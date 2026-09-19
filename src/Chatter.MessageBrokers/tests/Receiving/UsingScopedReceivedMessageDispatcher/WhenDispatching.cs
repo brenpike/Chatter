@@ -3,6 +3,7 @@ using Chatter.CQRS.Context;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Sending;
+using Chatter.MessageBrokers.Tests.Support;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
@@ -93,6 +94,33 @@ namespace Chatter.MessageBrokers.Tests.Receiving.UsingScopedReceivedMessageDispa
 
             await FluentActions.Invoking(async () => await Dispatch(sut, new FakePayload(), CreateContext()))
                 .Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        [Fact]
+        public async Task MustReleaseTheDispatchScopeAsynchronously()
+        {
+            var sut = CreateSutHoldingAnAsyncOnlyDisposable();
+
+            await FluentActions.Invoking(() => Dispatch(sut, new FakePayload(), CreateContext()))
+                .Should().NotThrowAsync<InvalidOperationException>();
+        }
+
+        // The message dispatcher resolved inside the dispatch scope pulls an AsyncOnlyDisposableScopedService from
+        // that same scope, so the scope holds a member a synchronous release refuses.
+        private ScopedReceivedMessageDispatcher CreateSutHoldingAnAsyncOnlyDisposable()
+        {
+            var services = new ServiceCollection();
+            services.AddSingleton(_brokeredMessageDispatcher.Object);
+            services.AddScoped<AsyncOnlyDisposableScopedService>();
+            services.AddScoped(provider => ResolveDispatcherAfterAnAsyncOnlyDisposable(provider));
+            var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+            return new ScopedReceivedMessageDispatcher(scopeFactory);
+        }
+
+        private IMessageDispatcher ResolveDispatcherAfterAnAsyncOnlyDisposable(IServiceProvider provider)
+        {
+            provider.GetRequiredService<AsyncOnlyDisposableScopedService>();
+            return _messageDispatcher.Object;
         }
     }
 }

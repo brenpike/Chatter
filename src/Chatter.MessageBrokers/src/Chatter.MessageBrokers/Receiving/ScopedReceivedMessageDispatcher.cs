@@ -17,7 +17,9 @@ namespace Chatter.MessageBrokers.Receiving
 
         async Task IReceivedMessageDispatcher.DispatchAsync<TMessage>(TMessage payload, MessageBrokerContext messageContext, CancellationToken receiverTokenSource)
         {
-            using var scope = _serviceScopeFactory.CreateScope();
+            // INVARIANT: the release is asynchronous because a scoped member of the dispatch graph may implement
+            // only IAsyncDisposable, which a synchronous release refuses.
+            await using var scope = _serviceScopeFactory.CreateAsyncScope();
             var dispatcher = scope.ServiceProvider.GetRequiredService<IMessageDispatcher>();
             messageContext.Container.Include((IExternalDispatcher)scope.ServiceProvider.GetRequiredService<IBrokeredMessageDispatcher>());
             await dispatcher.Dispatch(payload, messageContext);

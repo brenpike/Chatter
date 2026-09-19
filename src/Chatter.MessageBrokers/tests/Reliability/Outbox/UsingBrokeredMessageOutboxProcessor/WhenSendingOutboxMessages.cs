@@ -1,5 +1,6 @@
 using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Reliability.Outbox;
+using Chatter.MessageBrokers.Tests.Support;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -99,12 +100,15 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
 
         // Drives a single drain pass to completion: starts the hosted service, waits for the
         // supplied signal (fired from the last dependency invoked on the path under test), then stops.
-        private async Task RunSingleDrainAsync(Task signal)
+        private Task RunSingleDrainAsync(Task signal)
+            => RunSingleDrainAsync(_sut, signal);
+
+        private static async Task RunSingleDrainAsync(BrokeredMessageOutboxProcessor sut, Task signal)
         {
-            await _sut.StartAsync(CancellationToken.None);
+            await sut.StartAsync(CancellationToken.None);
             await signal.WaitAsync(TimeSpan.FromSeconds(5));
             // Bounded so a drain loop that ignores its stopping token fails the test instead of hanging the suite.
-            await _sut.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+            await sut.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
         }
 
         // Counts the poll and releases _pollSignal once the poller reaches the poll a test is waiting on, so a
@@ -436,6 +440,40 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
 
             await FluentActions.Invoking(() => RunSingleDrainAsync(_pollSignal.Task))
                 .Should().NotThrowAsync();
+        }
+
+        [Fact]
+        public async Task MustReleaseTheDrainScopeAsynchronously()
+        {
+            // SendOutboxMessagesAsync catches everything the poll raises, so a refused release surfaces as the
+            // error log rather than as a throw out of the drain.
+            var drained = new TaskCompletionSource();
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(Enumerable.Empty<OutboxMessage>())
+                   .Callback(() => drained.TrySetResult());
+
+            await RunSingleDrainAsync(CreateSutHoldingAnAsyncOnlyDisposable(), drained.Task);
+
+            _logger.Levels.Should().NotContain(LogLevel.Error);
+        }
+
+        // The Pollable Outbox Store resolved inside the poll's scope pulls an AsyncOnlyDisposableScopedService from
+        // that same scope, so the scope holds a member a synchronous release refuses.
+        private BrokeredMessageOutboxProcessor CreateSutHoldingAnAsyncOnlyDisposable()
+        {
+            var services = new ServiceCollection();
+            services.AddScoped<AsyncOnlyDisposableScopedService>();
+            services.AddScoped(provider => ResolveOutboxAfterAnAsyncOnlyDisposable(provider));
+            services.AddScoped(_ => _processor.Object);
+            var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+            return new BrokeredMessageOutboxProcessor(_logger, _reliabilityOptions, scopeFactory);
+        }
+
+        private IBrokeredMessageOutbox ResolveOutboxAfterAnAsyncOnlyDisposable(IServiceProvider provider)
+        {
+            provider.GetRequiredService<AsyncOnlyDisposableScopedService>();
+            return _outbox.Object;
         }
 
         private void VerifyErrorLogged()

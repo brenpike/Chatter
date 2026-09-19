@@ -21,7 +21,9 @@ namespace Chatter.MessageBrokers.Recovery
         public async Task Notify(FailureContext failureContext)
         {
             _logger.LogDebug($"Dispatching '{nameof(CriticalFailureEvent)}'.");
-            using var scope = _scopeFactory.CreateScope();
+            // INVARIANT: the release is asynchronous because a scoped member of the notification graph may
+            // implement only IAsyncDisposable, which a synchronous release refuses.
+            await using var scope = _scopeFactory.CreateAsyncScope();
             var dispatcher = scope.ServiceProvider.GetService<IMessageDispatcher>();
 
             if (dispatcher != null)

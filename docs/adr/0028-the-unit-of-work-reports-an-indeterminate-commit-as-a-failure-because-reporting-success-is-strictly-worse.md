@@ -20,7 +20,7 @@ records why the remediation the review recommended is a change to a public contr
 Single-phase commit over a network has an outcome the client cannot always observe: the server can make the
 commit durable and the acknowledgement can be lost to a dropped connection or a timeout, and the client then
 sees an exception for work that stands. `ExecuteAsync` cannot tell that exception from one raised because the
-commit did not stand, and it does not try. Both enter the `catch` at `UnitOfWork.cs:67-76`, which rolls back —
+commit did not stand, and it does not try. Both enter the `catch` at `UnitOfWork.cs:71-77`, which rolls back —
 a no-op against a commit that already stood, and against a connection that is gone a rollback that itself
 throws, which `CleanUpAsync` logs at Warning and swallows — disposes, logs the causal exception at Error, and
 rethrows. The caller receives failure, and a broker redelivery or a caller retry then re-drives the message.
