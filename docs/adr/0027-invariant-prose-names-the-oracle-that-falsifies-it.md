@@ -103,9 +103,32 @@ of restatement, and they are the cost whether the original claim was true or fal
 surfaces has to be re-verified on four surfaces every time the mechanism moves, and three of those surfaces
 have no test anywhere near them. Rule 2 removes three of the four.
 
+### Rule 2 has now been given a chance to fail, and failed
+
+It failed inside the same commit series that wrote this ADR, in a mode sharper than restatement alone: the
+copy TIGHTENED a true claim into a false one. `src/Chatter.MessageBrokers/src/README.md:213` said a drain that
+has SEEN 10,000 distinct messages ends — true when written and true now. The `CHANGELOG.md` bullet restated it
+as "One drain retains at most 10,000 message identities" — false, because the ceiling is read AFTER a poll's
+identities are tallied, so the poll that crosses it is kept whole and retention peaks at `MaxDrainIdentities +
+OutboxPollBatchSize - 1`, 10,099 at the default batch of 100. Duplication is the cost Rule 2 predicted; the
+tightening is what made the copy wrong while the original stayed right, and no reader comparing the two
+surfaces could tell which one to believe.
+
+**The repair was an added oracle, not a lint.** `MustEndTheDrainOnceTheDrainIdentityCeilingIsReached` drives a
+batch of half the ceiling, so it lands on the ceiling exactly and never overshoots: no existing fact could see
+the arithmetic the CHANGELOG got wrong. `MustEndTheDrainOnTheFirstPollThatCrossesTheDrainIdentityCeiling`,
+added in `d5a9e27`, uses a batch that does not divide the ceiling and goes red the moment the loop stops SHORT
+of crossing it. That is further evidence for the lint rejection recorded above: a `grep` cannot distinguish a
+faithful restatement from a tightened one, because both name the same real test.
+
+**This ADR carried the class it exists to stop.** It named the retention helper `DeleteInChunksAsync` — a
+plural describing the loop `9e57ea2` deleted — and cited the `PurgeOnceAsync` remarks block at `:86-106`. The
+helper is `DeleteOneChunkAsync` and the block is `:87-117`. Both citations below are corrected and re-measured
+against the file as it now stands; the CLAIM they carry is unchanged and still holds.
+
 ### The strongest available form is not a comment at all
 
-`802ca9d5`'s fix went further than either rule requires. `DeleteInChunksAsync` takes its query as
+`802ca9d5`'s fix went further than either rule requires. `DeleteOneChunkAsync` takes its query as
 `IOrderedQueryable<TEntity>` rather than `IQueryable<TEntity>`, so an unordered chunked delete is a COMPILE
 ERROR rather than a documented rule. The accompanying `INVARIANT:` then explains why the parameter type is
 what it is, and additionally names `MustPurgeThroughAContextThatRefusesUnorderedRowLimiting` and the widening
@@ -115,11 +138,13 @@ shrinks to explaining the type.
 ### The in-repo exemplars
 
 `ReliabilityRetentionPurgeService.cs` carries both halves of Rule 1 on `PurgeOnceAsync` (remarks block
-`:86-106`). Its first `INVARIANT:` names
+`:87-117`). Its first `INVARIANT:` names
 `Integration/WhenPurgingRetentionOnSqlServer.MustPurgeOnlyTheRowsPastTheirRetentionWindow` and the mutation
 that reddens it — keying the outbox predicate on `SentToOutboxAtUtc` instead. Its second names two facts in
 `UsingReliabilityRetentionPurgeService/WhenPurgingRetentionOverSqlite`, says why they count statements rather
-than rows, and distinguishes the mutation that reddens both from the one that reddens a single table.
+than rows, and names two mutations that redden both — wrapping either call in a loop over
+`DeleteOneChunkAsync`, and dropping the `Take` from that helper — each marked `(observed)` rather than
+inferred.
 
 `UnitOfWork.cs:53-60` carries the other honest form. It names its oracle
 (`MustNotSurfaceADisposeFailureAfterTheCommitSucceeds`) and its mutation for the claim that HAS one, and then
@@ -145,6 +170,13 @@ for adopting them rather than inventing them.
    pins it, which is what Rule 1 asks for when no oracle exists.
 
 3. **A claim moved into the type system.** The `IOrderedQueryable<TEntity>` parameter described above.
+
+4. **A rejected mutation.** Writing the ceiling oracle above, a worker found the obvious mutation — reading
+   the ceiling before the poll's identities are tallied — unusable as the named one: it also reddens the
+   older ceiling fact, and does so only intermittently, so a red run proves nothing about which claim broke
+   (`d5a9e27`). The substituted mutation reddens the new fact alone and every time. What this adds to Rule 1
+   is that the mutation a comment names must be EXCLUSIVE to the claim and deterministic; a mutation that
+   reddens a fact it is not the oracle for pins nothing.
 
 ## Closed-by-Construction Acceptance Test
 
@@ -185,8 +217,15 @@ antecedent the test never touched.
 `INVARIANT:` naming an oracle that does not pin the claim the comment makes. That shape is the one a lint
 cannot reach and a convention has already been asked to reach, so its recurrence is evidence the convention
 is insufficient rather than merely unenforced — and the response then is to question what the comment is
-keyed on, not to add a check. Restatement drift alone does not trigger it; Rule 2 addresses that shape and
-has not yet been given a chance to fail.
+keyed on, not to add a check.
+
+**The trigger is not met by the failure recorded above, on a strict reading, for three reasons.** Restatement
+drift is excluded by this trigger's own terms, and the tightened CHANGELOG bullet is restatement drift. The
+second prose finding of that review dissolved with the mechanism it described rather than standing as a
+qualifying instance: `9e57ea2` deleted the retention purge's inner `do`/`while`, and the false clause holding
+that clock skew was "bounded by the same short-chunk exit" went with the exit it named. The third was already
+recorded in the *Evidence* section above. The deferred mechanism therefore stays deferred, and the trigger
+stands unchanged.
 
 No tracker entry is opened. This is a decision with a stated reason, not outstanding work.
 
@@ -214,8 +253,9 @@ No tracker entry is opened. This is a decision with a stated reason, not outstan
 - Commit `feaac1b` — *delete retention in chunks rather than one statement* (finding `802ca9d5`), whose fix
   moved the claim into the parameter type.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/ReliabilityRetentionPurgeService.cs`
-  (`PurgeOnceAsync` remarks, `:86-106`; `DeleteInChunksAsync` remarks and signature, `:144-169`) — the
-  oracle-and-mutation exemplar, and the type-system form.
+  (`PurgeOnceAsync` remarks, `:87-117`; `DeleteOneChunkAsync` remarks and signature, `:154-169`) — the
+  oracle-and-mutation exemplar, and the type-system form. Measured after `9e57ea2`, which renamed the helper
+  and reshaped the remarks.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/UnitOfWork.cs`
   (`:53-60`) — the honest "no test pins this" form alongside a named oracle.
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/Outbox/BrokeredMessageOutboxProcessor.cs`
@@ -224,5 +264,13 @@ No tracker entry is opened. This is a decision with a stated reason, not outstan
 - `src/Chatter.MessageBrokers/tests/Reliability/Outbox/UsingBrokeredMessageOutboxProcessor/WhenSendingOutboxMessages.cs`
   (`MustCreateScopePerDrainPass`, `:196`) — the `Times.AtLeastOnce` assertion that does not pin
   scope-per-poll.
+- Commit `9e57ea2` — *give the retention purge one loop instead of two*, which removed the inner `do`/`while`
+  and, with it, the clause claiming clock skew was bounded by the short-chunk exit.
+- Commit `d5a9e27` — *say what the drain retains and what the purge reclaims*, which added
+  `MustEndTheDrainOnTheFirstPollThatCrossesTheDrainIdentityCeiling` and rewrote the `DrainOutboxAsync` remark
+  to state where the ceiling is read. The CHANGELOG bullet that had tightened the same claim is corrected in
+  the same series.
 - ADR-0024 — precedent for recording a check as defense-in-depth rather than as soundness.
 - ADR-0025 — precedent for recording a deferred option with its unverified parts named as unverified.
+- ADR-0028 — the indeterminate-commit residual recorded from review finding `cb35ad41` in `9e57ea2`; the same
+  "recording judgment AS judgment" form, applied again in this series.
