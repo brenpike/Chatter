@@ -31,6 +31,7 @@ namespace Microsoft.Extensions.DependencyInjection
         public static CommandPipelineBuilder WithUnitOfWorkBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder)
             where TContext : DbContext
         {
+            BindReliabilityContext<TContext>(pipelineBuilder.Services);
             pipelineBuilder.Services.Replace<IUnitOfWork, UnitOfWork<TContext>>(ServiceLifetime.Scoped);
             AddReliabilityBehaviorOnce(pipelineBuilder, typeof(UnitOfWorkBehavior<>));
             NormalizeReliabilityBehaviorOrder(pipelineBuilder.Services);
@@ -41,6 +42,7 @@ namespace Microsoft.Extensions.DependencyInjection
         public static CommandPipelineBuilder WithInboxBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder)
             where TContext : DbContext
         {
+            BindReliabilityContext<TContext>(pipelineBuilder.Services);
             pipelineBuilder.WithUnitOfWorkBehavior<TContext>();
             SeedDefaultReliabilityRetention(pipelineBuilder.Services);
             pipelineBuilder.Services.Replace<BrokeredMessageInbox<TContext>, BrokeredMessageInbox<TContext>>(ServiceLifetime.Scoped);
@@ -54,6 +56,7 @@ namespace Microsoft.Extensions.DependencyInjection
         public static CommandPipelineBuilder WithOutboxProcessingBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder)
             where TContext : DbContext
         {
+            BindReliabilityContext<TContext>(pipelineBuilder.Services);
             AddReliabilityBehaviorOnce(pipelineBuilder, typeof(OutboxProcessingBehavior<>));
             SeedDefaultReliabilityRetention(pipelineBuilder.Services);
             // Register the EF outbox once scoped and forward the enqueue contract to the same instance.
@@ -72,6 +75,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         /// <param name="retentionOptions">A delegate configuring the <see cref="EntityFrameworkReliabilityOptions"/></param>
         /// <exception cref="ArgumentOutOfRangeException">A configured span was not positive</exception>
+        /// <exception cref="InvalidOperationException">A different <typeparamref name="TContext"/> is already bound to these reliability extensions</exception>
         /// <remarks>
         /// INVARIANT: ONE door spans both tables. Retention is a property of the stored rows rather than of either
         /// behavior, so a per-behavior overload would make the result depend on which behaviors a host happened to
@@ -84,6 +88,8 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                 Action<EntityFrameworkReliabilityOptions> retentionOptions)
             where TContext : DbContext
         {
+            BindReliabilityContext<TContext>(pipelineBuilder.Services);
+
             var options = new EntityFrameworkReliabilityOptions();
             retentionOptions?.Invoke(options);
 
@@ -96,6 +102,60 @@ namespace Microsoft.Extensions.DependencyInjection
             pipelineBuilder.Services.AddHostedService<ReliabilityRetentionPurgeService<TContext>>();
 
             return pipelineBuilder;
+        }
+
+        // INVARIANT: ONE DbContext spans every reliability extension on a pipeline, and this is what holds each
+        // TContext-parameterized entry point to it. The unit of work commits the context the inbox marker, the outbox
+        // rows and the retention purge all live in; because each entry point takes its own type argument and Replace
+        // is remove-then-add, a second context would otherwise leave the unit of work committing one context while the
+        // inbox wrote its marker into another - the once-only guarantee lost with nothing raised. Every entry point
+        // calls this BEFORE it registers anything, so the refusal lands while the collection is still exactly as the
+        // caller left it and a caught exception cannot leave a half-configured pipeline behind. The same context is a
+        // no-op however many times, and however many entry points, it arrives through.
+        private static void BindReliabilityContext<TContext>(IServiceCollection services)
+            where TContext : DbContext
+        {
+            var boundContextType = FindBoundReliabilityContextType(services);
+
+            if (boundContextType is null)
+            {
+                services.AddSingleton(new ReliabilityContextBinding(typeof(TContext)));
+                return;
+            }
+
+            if (boundContextType == typeof(TContext))
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"The reliability extensions are already bound to DbContext '{boundContextType.FullName}' and cannot also "
+                + $"be bound to '{typeof(TContext).FullName}'. The unit of work commits the context that holds the inbox "
+                + "marker, the outbox rows and the rows retention purges, so every reliability extension on one command "
+                + "pipeline must be given the same DbContext.");
+        }
+
+        // INVARIANT: the IsKeyedService test must stay ahead of the ImplementationInstance read, for the same reason it
+        // stays ahead of the ImplementationType read in IsBehaviorDescriptorFor below. Microsoft.Extensions
+        // .DependencyInjection.Abstractions 8.0.0 throws InvalidOperationException from ImplementationInstance for a
+        // keyed descriptor, and consumers bind that assembly at their ASP.NET Core host's patch level rather than at the
+        // version restored here, so reordering these operands reintroduces the crash on an unpatched host without
+        // failing anything in this repository.
+        private static Type FindBoundReliabilityContextType(IServiceCollection services)
+        {
+            for (var index = 0; index < services.Count; index++)
+            {
+                var descriptor = services[index];
+
+                if (!descriptor.IsKeyedService
+                    && descriptor.ServiceType == typeof(ReliabilityContextBinding)
+                    && descriptor.ImplementationInstance is ReliabilityContextBinding binding)
+                {
+                    return binding.ContextType;
+                }
+            }
+
+            return null;
         }
 
         private static void RefuseNonPositiveSpan(TimeSpan? span, string optionName)
