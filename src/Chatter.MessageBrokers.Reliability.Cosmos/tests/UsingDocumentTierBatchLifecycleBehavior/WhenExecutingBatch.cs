@@ -703,6 +703,183 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             handle.StagedOperationCount.Should().Be(1);
         }
 
+        [Fact]
+        public void MustRejectReservedIdWhenStreamLengthUnderReportsThePayload()
+        {
+            // Teeth: the peek must judge the bytes the SDK will READ, never the byte count the stream ADVERTISES. A
+            // seekable payload whose Length is shorter than its readable content would otherwise be scanned truncated,
+            // parse as malformed, and be waved through as idless with a reserved id intact.
+            var (handle, batch) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = new LyingLengthStream(System.Text.Encoding.UTF8.GetBytes("{\"id\":\"inbox:x\"}"), advertisedLength: 2);
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().Throw<ArgumentException>("an under-reported Length must not become an idless verdict");
+            handle.StagedOperationCount.Should().Be(0);
+            batch.Verify(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()), Times.Never);
+        }
+
+        [Fact]
+        public void MustRejectReservedIdWhenStreamLengthReportsNothingRemaining()
+        {
+            // The same class as above at its extreme: a Length of zero over a payload that still yields bytes.
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = new LyingLengthStream(System.Text.Encoding.UTF8.GetBytes("{\"id\":\"inbox:x\"}"), advertisedLength: 0);
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().Throw<ArgumentException>("an empty-looking Length must not become an idless verdict");
+            handle.StagedOperationCount.Should().Be(0);
+        }
+
+        [Fact]
+        public void MustRejectReservedIdWhenStreamLengthExceedsInt32Range()
+        {
+            // The same class in the other direction: a Length too large to size a buffer from must fall back to
+            // reading the payload, not resolve to idless without reading a byte.
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = new LyingLengthStream(
+                System.Text.Encoding.UTF8.GetBytes("{\"id\":\"inbox:x\"}"), advertisedLength: (long)int.MaxValue + 1);
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().Throw<ArgumentException>("an unusable Length must not become an idless verdict");
+            handle.StagedOperationCount.Should().Be(0);
+        }
+
+        [Fact]
+        public void MustStageSafeIdWhenStreamLengthUnderReportsThePayload()
+        {
+            // The mirror of the rejection cases: judging the real bytes must not start REFUSING documents whose real
+            // top-level id is not reserved, and the SDK must still receive the payload rewound to where it started.
+            var (handle, batch) = DirectHandle();
+            Stream captured = null;
+            batch.Setup(b => b.CreateItemStream(It.IsAny<Stream>(), It.IsAny<TransactionalBatchItemRequestOptions>()))
+                 .Callback<Stream, TransactionalBatchItemRequestOptions>((s, _) => captured = s)
+                 .Returns(batch.Object);
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            var json = "{\"id\":\"order:abc\",\"value\":1}";
+            using var payload = new LyingLengthStream(System.Text.Encoding.UTF8.GetBytes(json), advertisedLength: 2);
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().NotThrow();
+            handle.StagedOperationCount.Should().Be(1);
+            captured.Should().BeSameAs(payload, "a seekable payload is peeked in place, never copied");
+            captured.Position.Should().Be(0, "the peek restores the position the caller handed over");
+            using var reader = new StreamReader(captured);
+            reader.ReadToEnd().Should().Be(json, "the SDK must read the same bytes the peek inspected");
+        }
+
+        [Fact]
+        public void MustRejectReservedIdDeliveredInSingleByteReads()
+        {
+            // A stream is permitted to satisfy a read request partially. A peek that treats one short read as
+            // end-of-payload would scan a truncated prefix and wave the reserved id through.
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            using var payload = new SingleByteReadStream(System.Text.Encoding.UTF8.GetBytes("{\"id\":\"inbox:x\"}"));
+
+            Action act = () => publicHandle.StageCreateItemStream(payload);
+
+            act.Should().Throw<ArgumentException>("a short read is not end-of-payload");
+            handle.StagedOperationCount.Should().Be(0);
+        }
+
+        // A seekable payload stream whose Length is a LIE relative to what Read actually yields. Real consumers hand
+        // over honest streams; this double exists to prove the guard derives its verdict from the bytes it reads and
+        // never from the count the stream advertises.
+        private sealed class LyingLengthStream : Stream
+        {
+            private readonly MemoryStream _inner;
+            private readonly long _advertisedLength;
+
+            public LyingLengthStream(byte[] bytes, long advertisedLength)
+            {
+                _inner = new MemoryStream(bytes, writable: false);
+                _advertisedLength = advertisedLength;
+            }
+
+            public override bool CanRead => true;
+
+            public override bool CanSeek => true;
+
+            public override bool CanWrite => false;
+
+            public override long Length => _advertisedLength;
+
+            public override long Position
+            {
+                get => _inner.Position;
+                set => _inner.Position = value;
+            }
+
+            public override void Flush() { }
+
+            public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+
+            public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _inner.Dispose();
+                }
+
+                base.Dispose(disposing);
+            }
+        }
+
+        // An honest-Length seekable payload stream that satisfies every read request one byte at a time.
+        private sealed class SingleByteReadStream : Stream
+        {
+            private readonly MemoryStream _inner;
+
+            public SingleByteReadStream(byte[] bytes) => _inner = new MemoryStream(bytes, writable: false);
+
+            public override bool CanRead => true;
+
+            public override bool CanSeek => true;
+
+            public override bool CanWrite => false;
+
+            public override long Length => _inner.Length;
+
+            public override long Position
+            {
+                get => _inner.Position;
+                set => _inner.Position = value;
+            }
+
+            public override void Flush() { }
+
+            public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, Math.Min(1, count));
+
+            public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _inner.Dispose();
+                }
+
+                base.Dispose(disposing);
+            }
+        }
+
         // A read-only, forward-only payload stream: CanSeek is false and Length/Position throw, so any peek that
         // touches them without buffering first fails loudly instead of silently skipping the guard.
         private sealed class NonSeekableStream : Stream

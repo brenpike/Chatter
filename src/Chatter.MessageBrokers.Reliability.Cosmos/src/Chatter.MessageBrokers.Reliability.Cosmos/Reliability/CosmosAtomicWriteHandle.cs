@@ -139,36 +139,61 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
         // Returns the top-level "id" string from the JSON payload, or null when the payload is empty, not a JSON object,
         // unparseable, or carries no string-valued "id" — all of which are non-reserved (idless) by treatment. The bytes
         // are read into a pooled buffer and scanned forward-only; no document object model is materialized.
+        //
+        // INVARIANT: the stream's advertised Length is a BUFFER-SIZING HINT and never a verdict. The guard's answer is
+        // derived from the bytes the SDK will actually read, exactly as the whole-document parse this replaced derived
+        // it — a Length that under-reports, over-reports, or cannot size a buffer at all changes only HOW the bytes are
+        // gathered, never WHETHER they are inspected. Deriving "idless" from an advertised count is a fail-open: a
+        // caller-supplied stream that misreports its length would stage a reserved-prefix document unseen.
         private static string TryReadIdFromJson(Stream seekablePayload)
         {
-            long remainingBytes = seekablePayload.Length - seekablePayload.Position;
-            if (remainingBytes <= 0 || remainingBytes > int.MaxValue)
+            long startPosition = seekablePayload.Position;
+            long advertisedRemainingBytes = seekablePayload.Length - startPosition;
+            if (advertisedRemainingBytes > 0 && advertisedRemainingBytes < int.MaxValue)
             {
-                return null;
-            }
-
-            var payloadLength = (int)remainingBytes;
-            byte[] rentedBuffer = ArrayPool<byte>.Shared.Rent(payloadLength);
-            try
-            {
-                var bytesRead = 0;
-                while (bytesRead < payloadLength)
+                // One byte MORE than advertised is requested: a stream that yields that extra byte has more content
+                // than its Length admits, so the pooled scan would be judging a truncated payload and must not run.
+                var probeLength = (int)advertisedRemainingBytes + 1;
+                byte[] rentedBuffer = ArrayPool<byte>.Shared.Rent(probeLength);
+                try
                 {
-                    int read = seekablePayload.Read(rentedBuffer, bytesRead, payloadLength - bytesRead);
-                    if (read <= 0)
+                    int bytesRead = FillBuffer(seekablePayload, rentedBuffer, probeLength);
+                    if (bytesRead < probeLength)
                     {
-                        break;
+                        return ScanTopLevelId(rentedBuffer.AsSpan(0, bytesRead));
                     }
-
-                    bytesRead += read;
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(rentedBuffer);
                 }
 
-                return ScanTopLevelId(rentedBuffer.AsSpan(0, bytesRead));
+                seekablePayload.Position = startPosition;
             }
-            finally
+
+            // The advertised Length could not bound the payload. Gather the remaining bytes to end-of-stream and judge
+            // those — the same bytes, and the same verdict, a whole-document parse of this stream would produce.
+            using MemoryStream bufferedPayload = BufferStream(seekablePayload);
+            return ScanTopLevelId(new ReadOnlySpan<byte>(bufferedPayload.GetBuffer(), 0, (int)bufferedPayload.Length));
+        }
+
+        // Reads up to `count` bytes, tolerating partial reads, and returns how many were actually read. A stream is
+        // free to satisfy a read request partially, so one short read is not end-of-payload.
+        private static int FillBuffer(Stream source, byte[] destination, int count)
+        {
+            var bytesRead = 0;
+            while (bytesRead < count)
             {
-                ArrayPool<byte>.Shared.Return(rentedBuffer);
+                int read = source.Read(destination, bytesRead, count - bytesRead);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                bytesRead += read;
             }
+
+            return bytesRead;
         }
 
         // Walks the payload's tokens once, recording the LAST "id" found at RootObjectPropertyDepth — the one Cosmos

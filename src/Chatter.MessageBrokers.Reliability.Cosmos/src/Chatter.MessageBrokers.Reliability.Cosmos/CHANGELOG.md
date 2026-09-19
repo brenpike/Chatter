@@ -13,6 +13,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - The reserved-id peek no longer builds a JSON DOM over the staged payload. It scans top-level properties forward-only, allocating no `JsonDocument`, no `JsonElement`, and no per-token metadata (#365, epic #305).
 - `CosmosOutboxRelay` and `DocumentTierBatchLifecycleBehavior` now apply `ConfigureAwait(false)` like the rest of the module (#364, epic #305).
 
+### Fixed
+
+- The reserved-id peek derives its verdict from the payload bytes it reads, never from the byte count the staged `Stream` advertises. A seekable payload whose `Length` under-reported, over-reported, or exceeded a buffer-sized range was previously judged on a truncated read or on no read at all, so a document carrying an `inbox:`/`outbox:` id could stage as idless; the advertised length is now a buffer-sizing hint only, and a payload it cannot bound is read to end-of-stream before the prefix test (#365, epic #305).
+
 ## [0.8.0] - 2026-09-03
 
 ### Added
