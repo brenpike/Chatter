@@ -629,6 +629,45 @@ namespace Chatter.MessageBrokers.Tests.Configuration.UsingMessageBrokerOptionsBu
             services.Should().BeEmpty();
         }
 
+        [Fact]
+        public void MustHonourTheNestedOutboxPollBatchSizeKeyWhenTheParentSectionCarriesIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxPollBatchSize"] = "10"
+                })
+                .Build();
+
+            var options = MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            options.Reliability.OutboxPollBatchSize.Should().Be(10);
+        }
+
+        /// <summary>
+        /// The refused value belongs to the NESTED outbox poll batch size and arrives through THIS builder's own
+        /// section, the same composition the neighbouring nested refusals above pin. No poller key travels with it:
+        /// the batch size is refused whether or not the host will run the outbox polling processor.
+        /// </summary>
+        [Fact]
+        public void MustRefuseANestedOutboxPollBatchSizeAndPublishNothingWhenTheParentSectionCarriesIt()
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxPollBatchSize"] = "0"
+                })
+                .Build();
+
+            var fromConfig = () => MessageBrokerOptionsBuilder.FromConfig(services, configuration);
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxPollBatchSize)}");
+            services.Should().BeEmpty();
+        }
+
         /// <summary>
         /// The refused value belongs to the NESTED in-memory inbox deduplication window and arrives through THIS
         /// builder's own section, the same composition the neighbouring nested refusals above pin.

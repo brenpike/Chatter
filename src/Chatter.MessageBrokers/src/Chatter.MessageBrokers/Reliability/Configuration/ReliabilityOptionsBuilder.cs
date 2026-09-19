@@ -16,6 +16,7 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         private int _outboxProcessingIntervalInMilliseconds = 5000;
         private int _inMemoryInboxDeduplicationWindowInMinutes = 60;
         private int _inMemoryInboxMaxEntries = 200000;
+        private int _outboxPollBatchSize = 100;
 
         private const int _minimumOutboxProcessingIntervalInMilliseconds = 0;
         private const string _outboxProcessingIntervalBound = "at least 0 milliseconds";
@@ -24,6 +25,8 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         private const string _inMemoryInboxMaxEntriesBound = "at least 1 entry";
         private const int _minimumInMemoryInboxDeduplicationWindowInMinutes = 1;
         private const string _inMemoryInboxDeduplicationWindowBound = "at least 1 minute";
+        private const int _minimumOutboxPollBatchSize = 1;
+        private const string _outboxPollBatchSizeBound = "at least 1 message";
 
         public const string ReliabilityOptionsSectionName = "Chatter:MessageBrokers:Reliability";
         private readonly IServiceCollection _services;
@@ -102,6 +105,19 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
         }
 
         /// <summary>
+        /// Defines the most outbox messages a single poll of the <see cref="BrokeredMessageOutboxProcessor"/> takes,
+        /// so that poll cost is bounded by this number rather than by the number of unprocessed messages. Default
+        /// value is 100.
+        /// </summary>
+        /// <param name="batchSize">The most messages to take per poll. Must be at least 1.</param>
+        /// <returns><see cref="ReliabilityOptionsBuilder"/></returns>
+        public ReliabilityOptionsBuilder WithOutboxPollBatchSize(int batchSize)
+        {
+            _outboxPollBatchSize = batchSize;
+            return this;
+        }
+
+        /// <summary>
         /// Enables the <see cref="BrokeredMessageOutboxProcessor"/> which processes messages from the outbox and sends them to messaging infrastructure 
         /// at a timed interval. The default polling interval is 5000 milliseconds. This does not enable sending of messages to the outbox by default which
         /// must be done by calling <see cref="WithOutboxRouting"/> or by using <see cref="OutboxProcessingBehavior{TMessage}"/>.
@@ -134,6 +150,7 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
             reliabilityOptions.OutboxProcessingIntervalInMilliseconds = _outboxProcessingIntervalInMilliseconds;
             reliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes = _inMemoryInboxDeduplicationWindowInMinutes;
             reliabilityOptions.InMemoryInboxMaxEntries = _inMemoryInboxMaxEntries;
+            reliabilityOptions.OutboxPollBatchSize = _outboxPollBatchSize;
 
             if (_reliabilityOptionsSection != null && _reliabilityOptionsSection.Exists())
             {
@@ -210,6 +227,21 @@ namespace Chatter.MessageBrokers.Reliability.Configuration
                 throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes)}",
                                                           reliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes,
                                                           _inMemoryInboxDeduplicationWindowBound,
+                                                          _reliabilityOptionsSection?.Path);
+            }
+
+            // INVARIANT: the batch size bounds what a single poll takes, so it must name a number of messages the
+            // poll can actually take. A batch of zero would take nothing on every pass, leaving the outbox undrained
+            // for as long as the host ran, and a negative batch names no number at all. Neither is read as
+            // 'disabled': EnableOutboxPollingProcessor is where an operator says the outbox is not to be polled.
+            // Unlike the polling interval above, the refusal is asked of EVERY host rather than only one that will
+            // run the poller: an interval the poller never waits on is inert, while a batch of zero is a setting that
+            // reads like a limit and silently drains nothing the moment the poller is switched on.
+            if (reliabilityOptions.OutboxPollBatchSize < _minimumOutboxPollBatchSize)
+            {
+                throw new ConfiguredValueRefusedException($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxPollBatchSize)}",
+                                                          reliabilityOptions.OutboxPollBatchSize,
+                                                          _outboxPollBatchSizeBound,
                                                           _reliabilityOptionsSection?.Path);
             }
         }

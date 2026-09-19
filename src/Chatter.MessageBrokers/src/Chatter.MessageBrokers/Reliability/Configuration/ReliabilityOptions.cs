@@ -23,5 +23,15 @@
         /// again once the receipt has been evicted.
         /// </summary>
         public int InMemoryInboxMaxEntries { get; internal set; }
+
+        /// <summary>
+        /// The most outbox messages a single poll takes, so that poll cost is bounded by this number rather than by
+        /// the number of unprocessed messages. Default value is 100, and a value below 1 is refused while the options
+        /// are being built. Unlike its siblings, this property carries its default as an initializer rather than
+        /// taking it from <see cref="ReliabilityOptionsBuilder"/>: a directly constructed
+        /// <see cref="ReliabilityOptions"/> that never passed through that builder would otherwise name a batch of
+        /// zero, which drains nothing at all.
+        /// </summary>
+        public int OutboxPollBatchSize { get; internal set; } = 100;
     }
 }

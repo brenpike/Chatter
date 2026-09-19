@@ -33,6 +33,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             options.OutboxProcessingIntervalInMilliseconds.Should().Be(5000);
             options.InMemoryInboxDeduplicationWindowInMinutes.Should().Be(60);
             options.InMemoryInboxMaxEntries.Should().Be(200000);
+            options.OutboxPollBatchSize.Should().Be(100);
         }
 
         [Fact]
@@ -118,6 +119,32 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             var options = ReliabilityOptionsBuilder.Create(services).WithInMemoryInboxMaxEntries(1500).Build();
 
             options.InMemoryInboxMaxEntries.Should().Be(1500);
+        }
+
+        [Fact]
+        public void MustReflectWithOutboxPollBatchSize()
+        {
+            var services = new ServiceCollection();
+
+            var options = ReliabilityOptionsBuilder.Create(services).WithOutboxPollBatchSize(250).Build();
+
+            options.OutboxPollBatchSize.Should().Be(250);
+        }
+
+        /// <summary>
+        /// The batch size is seeded before the section is bound, so a configured value takes the fluent default's
+        /// place rather than being overwritten by it. This builder binds no section of its own except the one
+        /// <c>FromConfig</c> resolves, so the fluent default is the only fluent value a configured one can be
+        /// stated against here; the parent builder pins the same precedence over an explicit fluent call.
+        /// </summary>
+        [Fact]
+        public void MustHonourAConfiguredOutboxPollBatchSizeOverItsFluentDefault()
+        {
+            var services = new ServiceCollection();
+
+            var options = ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxPollBatchSize("25"));
+
+            options.OutboxPollBatchSize.Should().Be(25);
         }
 
         /// <summary>
@@ -540,6 +567,41 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
             provider.GetRequiredService<ReliabilityOptions>().Should().BeSameAs(options);
         }
 
+        /// <summary>
+        /// A batch of zero names no message the poll could take, so the outbox would be drained of nothing on every
+        /// pass while the poller went on running. It is refused rather than read as 'disabled': the poller switch is
+        /// where an operator says the outbox is not to be polled.
+        /// </summary>
+        [Fact]
+        public void MustRefuseAConfiguredOutboxPollBatchSizeOfZero()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxPollBatchSize("0"));
+
+            var refusal = fromConfig.Should().Throw<ConfiguredValueRefusedException>().Which;
+            refusal.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxPollBatchSize)}");
+            refusal.RefusedValue.Should().Be(0);
+            refusal.RequiredBound.Should().Be("at least 1 message");
+            refusal.ConfigurationPath.Should().Be(ReliabilityOptionsBuilder.ReliabilityOptionsSectionName);
+            services.Should().BeEmpty();
+        }
+
+        /// <summary>
+        /// A negative batch names no number of messages the poll could take, so there is nothing for it to mean.
+        /// </summary>
+        [Fact]
+        public void MustRefuseAConfiguredNegativeOutboxPollBatchSize()
+        {
+            var services = new ServiceCollection();
+
+            var fromConfig = () => ReliabilityOptionsBuilder.FromConfig(services, BuildConfigurationWithOutboxPollBatchSize("-5"));
+
+            fromConfig.Should().Throw<ConfiguredValueRefusedException>()
+                      .Which.OptionName.Should().Be($"{nameof(ReliabilityOptions)}.{nameof(ReliabilityOptions.OutboxPollBatchSize)}");
+            services.Should().BeEmpty();
+        }
+
         [Fact]
         public void MustNameTheRefusedPropertyValueBoundAndResolvedSectionPathWhenAConfiguredValueIsRefused()
         {
@@ -672,6 +734,15 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
                 .AddInMemoryCollection(new Dictionary<string, string>
                 {
                     [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:InMemoryInboxMaxEntries"] = maxEntries
+                })
+                .Build();
+
+        // The batch size travels alone because it is refused whether or not the poller is enabled.
+        private static IConfiguration BuildConfigurationWithOutboxPollBatchSize(string batchSize)
+            => new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string>
+                {
+                    [$"{ReliabilityOptionsBuilder.ReliabilityOptionsSectionName}:OutboxPollBatchSize"] = batchSize
                 })
                 .Build();
 
