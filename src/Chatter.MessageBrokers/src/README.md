@@ -197,13 +197,22 @@ The Outbox pattern records outgoing messages so they can be published reliably a
 {
     options.AddReliabilityOptions(r => r
         .WithOutboxRouting()                 // route outbound messages through the outbox
-        .WithOutboxPollingProcessor(5000));  // BrokeredMessageOutboxProcessor drains it every 5s
+        .WithOutboxPollingProcessor(5000)    // BrokeredMessageOutboxProcessor drains it every 5s
+        .WithOutboxPollBatchSize(100));      // at most 100 messages per poll (the default)
 });
 ```
 
-`WithOutboxRouting()` swaps `IRouteBrokeredMessages` for `OutboxBrokeredMessageRouter`. `WithOutboxPollingProcessor(...)` registers `BrokeredMessageOutboxProcessor` (an `IHostedService`). The default store is `InMemoryBrokeredMessageOutbox`; `WithInMemoryOutboxTimeToLive(minutes)` controls its retention.
+`WithOutboxRouting()` swaps `IRouteBrokeredMessages` for `OutboxBrokeredMessageRouter`. `WithOutboxPollingProcessor(...)` registers `BrokeredMessageOutboxProcessor` (an `IHostedService`). `WithOutboxPollBatchSize(...)` sets `ReliabilityOptions.OutboxPollBatchSize`, the most messages a single poll takes; it defaults to `100` and a value below `1` is refused while the options are being built. The default store is `InMemoryBrokeredMessageOutbox`; `WithInMemoryOutboxTimeToLive(minutes)` controls its retention.
 
 The shipped in-memory outbox and inbox are registered as process-lifetime singletons, not per DI scope. A receiver's `ScopedReceivedMessageDispatcher` opens a fresh scope for every delivery, so a per-scope instance would start every poll and every delivery with an empty store: the outbox would never have anything to drain and the inbox would deduplicate nothing. `MinutesToLiveInMemory` is unchanged in what it means — it is still the outbox's cleanup of already-processed rows — but that cleanup now runs across polls instead of being discarded with the scope it used to live in. One consequence worth calling out: `SendToOutbox` throwing `InvalidOperationException` for a repeated `MessageId` is now reachable in practice, because the store the second call sees is the same store the first call wrote into, rather than a fresh empty one.
+
+#### Draining: a bounded poll, repeated until the backlog is gone
+
+A single poll takes one **Outbox Poll Batch** — at most `OutboxPollBatchSize` unprocessed messages, oldest `SentToOutboxAtUtc` first — so the cost of a poll is bounded by that number rather than by the size of the backlog. On its own a bounded poll is just a throttle: at the defaults it would ship 100 messages every 5000 ms no matter how far behind the outbox was. So the poller **re-polls immediately after a batch of the full size** and waits `OutboxProcessingIntervalInMilliseconds` only after a shorter one, which lets a backlog larger than the batch size leave in one interval instead of one batch per interval (`MustRepollImmediatelyAfterAFullOutboxPollBatchAndStopAfterAShortOne`). An empty first batch is a short batch, so an idle outbox polls once and waits (`MustNotRepollWhenTheFirstOutboxPollBatchIsEmpty`). Each poll opens its **own DI scope**, so draining a large backlog does not accumulate every row of every batch in one store instance.
+
+A full batch **identical to the one before it** also ends the drain and falls through to the interval wait. `OutboxProcessor.Process` logs and swallows every dispatch failure, so a batch of exactly the batch size that cannot be dispatched is re-fetched unchanged on the next poll; without this no-progress guard it would spin against the store forever and never reach the wait. The guard compares consecutive batches as their ordered `(Id, MessageId)` pairs — the message id is part of the key because `InMemoryBrokeredMessageOutbox` never assigns an `Id`, so an `Id`-only comparison would read every one of its batches as a repeat and cap the in-memory outbox at one poll per interval. Pinned by `MustStopRepollingWhenAFullOutboxPollBatchRepeatsUnchanged`; the drain also honours the stopping token between polls (`MustStopDrainingWhenCancellationIsRequestedMidDrain`).
+
+`IPollableOutboxStore.GetUnprocessedMessagesFromOutbox` documents both halves of that contract — the cap and the ordering — and `InMemoryBrokeredMessageOutbox` honours it by ordering before capping (`MustReturnNoMoreMessagesThanTheOutboxPollBatchSize`, `MustReturnOldestSentToOutboxMessagesFirst`). **A custom store is asked for both halves, not held to them.** The no-progress guard compares batches in the order the store returned them, so a store that caps without ordering can still defeat it; and a store that answers with more rows than the cap counts as a full batch — still drained, still terminating — but without the bound on poll cost the cap exists for. `GetUnprocessedBatch(batchId)` is a lookup by batch id and is not an Outbox Poll Batch: it is neither capped nor ordered by this contract.
 
 On each poll, the drain dispatches the message to broker infrastructure first and only stamps the row's processed date once that publish has returned. Delivery is therefore **at-least-once, not exactly-once**: a publish that throws leaves the row unprocessed so the next poll retries it, and a publish that succeeds followed by a mark/commit failure — or a second host instance polling the same durable store concurrently — can dispatch the same message a second time. A handler that is not naturally idempotent should sit behind the Inbox on the receiving side to absorb that duplicate.
 
@@ -283,6 +292,7 @@ The default in each row is the value the fluent builder seeds before configurati
 | `OutboxProcessingIntervalInMilliseconds` | `int` | `5000` |
 | `InMemoryInboxDeduplicationWindowInMinutes` | `int` | `60` |
 | `InMemoryInboxMaxEntries` | `int` | `200000` |
+| `OutboxPollBatchSize` | `int` | `100` |
 
 `Chatter:MessageBrokers:Recovery`
 
@@ -313,7 +323,8 @@ A worked `appsettings.json`, showing every bindable key at its default:
         "EnableOutboxPollingProcessor": false,
         "OutboxProcessingIntervalInMilliseconds": 5000,
         "InMemoryInboxDeduplicationWindowInMinutes": 60,
-        "InMemoryInboxMaxEntries": 200000
+        "InMemoryInboxMaxEntries": 200000,
+        "OutboxPollBatchSize": 100
       },
       "Recovery": {
         "MaxRetryAttempts": 5,
@@ -374,12 +385,15 @@ These are the values that are refused:
 | `ReliabilityOptions.MinutesToLiveInMemory` | `NaN` or `Infinity` |
 | `ReliabilityOptions.InMemoryInboxMaxEntries` | below `1` |
 | `ReliabilityOptions.InMemoryInboxDeduplicationWindowInMinutes` | below `1` |
+| `ReliabilityOptions.OutboxPollBatchSize` | below `1` |
 | `RecoveryOptions.MaxRetryAttempts` | below `1` |
 | `CircuitBreakerOptions.ConcurrentHalfOpenAttempts` | below `1` |
 | `CircuitBreakerOptions.OpenToHalfOpenWaitTimeInSeconds` | negative, or longer than `Task.Delay` can wait |
 | `CircuitBreakerOptions.SecondsOpenBeforeCriticalFailureNotification` | negative, or longer than `Timer.Change` can schedule |
 
-Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`, `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` and `MustRefuseAConfiguredInfiniteMinutesToLiveInMemoryTheExpiryScanRunsWithoutFaulting` for the in-memory ttl; `MustRefuseAConfiguredInMemoryInboxMaxEntriesOfZero` and `MustRefuseAConfiguredNegativeInMemoryInboxMaxEntries` for the inbox cap; `MustRefuseAConfiguredInMemoryInboxDeduplicationWindowOfZero`, `MustRefuseAConfiguredNegativeInMemoryInboxDeduplicationWindow` and `MustAcceptTheSmallestInMemoryInboxDeduplicationWindowTheSettingCanExpress` for the deduplication window; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
+Each row is pinned: `MustAcceptEveryNumericTransactionModeTheEnumDefines` and `MustRefuseANumericTransactionModeTheEnumDoesNotDefine` for the transaction mode; `MustAgreeWithTheOutboxPollingSinkAboutAConfiguredProcessingInterval` for the poll interval; `MustAgreeWithTheExpiryScanAboutAConfiguredMinutesToLiveInMemory`, `MustRefuseAConfiguredNaNMinutesToLiveInMemoryTheExpiryScanDoesNotDisableItselfFor` and `MustRefuseAConfiguredInfiniteMinutesToLiveInMemoryTheExpiryScanRunsWithoutFaulting` for the in-memory ttl; `MustRefuseAConfiguredInMemoryInboxMaxEntriesOfZero` and `MustRefuseAConfiguredNegativeInMemoryInboxMaxEntries` for the inbox cap; `MustRefuseAConfiguredInMemoryInboxDeduplicationWindowOfZero`, `MustRefuseAConfiguredNegativeInMemoryInboxDeduplicationWindow` and `MustAcceptTheSmallestInMemoryInboxDeduplicationWindowTheSettingCanExpress` for the deduplication window; `MustRefuseAConfiguredOutboxPollBatchSizeOfZero` and `MustRefuseAConfiguredNegativeOutboxPollBatchSize` for the poll batch size; `MustRefuseAConfiguredMaxRetryAttemptsBelowTheSmallestBudgetTheRetryStrategyCanExpress` and `MustAcceptTheSmallestMaxRetryAttemptsTheRetryStrategyCanExpress` for the attempt budget; `MustRefuseAConfiguredConcurrentHalfOpenAttemptsOfZero`, `MustRefuseAConfiguredNegativeConcurrentHalfOpenAttempts` and `MustAcceptTheSmallestConcurrentHalfOpenAttemptsTheSemaphoreAdmits` for the half-open count.
+
+Two reliability rows read alike but are asked of different hosts. `OutboxProcessingIntervalInMilliseconds` is refused only when `EnableOutboxPollingProcessor` is set, because the only thing that waits on it is registered behind that flag, so a stale out-of-range interval is inert on a host that never polls. `OutboxPollBatchSize` is refused on **every** host, poller enabled or not: it carries its default as a property initializer rather than taking it from the builder, and a batch size of zero is not inert the way an unread interval is — it reads like a limit and drains nothing the moment the poller is switched on.
 
 The upper bound on the two circuit-breaker durations is a constant derived from the BCL's maximum supported timeout rather than probed at run time. It is straddled by two theories that offer the seconds either side of it to a real `Task.Delay` and a real `Timer.Change` and require the builder to agree with whichever answer the sink gives (`MustAgreeWithTaskDelayAboutAConfiguredOpenToHalfOpenWaitTime`, `MustAgreeWithTimerChangeAboutAConfiguredTimeOpenBeforeCriticalEvent`), so a move in either BCL bound is loud rather than silent.
 
