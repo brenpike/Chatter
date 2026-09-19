@@ -26,21 +26,32 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         public Task ExecuteAsync(Func<CancellationToken, Task> operation, TransactionContext transactionContext, CancellationToken cancellationToken = default)
         {
             var strategy = _context.Database.CreateExecutionStrategy();
+            if (strategy.RetriesOnFailure)
+            {
+                throw new InvalidOperationException(
+                    $"UnitOfWork<{typeof(TContext).Name}> refuses to run under execution strategy '{strategy.GetType().Name}' because its RetriesOnFailure is true. " +
+                    $"Re-executing a unit of work would silently discard or duplicate a handler's work: the first attempt's SaveChangesAsync accepts every tracked change, " +
+                    $"so a retry after a failed commit saves nothing and commits an empty transaction, and only the application can supply the verifySucceeded predicate " +
+                    $"that would make re-execution safe. Remove EnableRetryOnFailure from '{typeof(TContext).Name}', or stop registering the unit of work for it " +
+                    $"(WithUnitOfWorkBehavior, WithInboxBehavior, WithOutboxProcessingBehavior). Chatter's recovery pipeline and broker redelivery already retry at their own layers.");
+            }
+
             return strategy.ExecuteAsync(async ct =>
             {
-                await using var scope = await BeginAsync(ct);
+                var scope = await BeginAsync(ct).ConfigureAwait(false);
+                await using var scopeLifetime = scope.ConfigureAwait(false);
                 try
                 {
                     transactionContext?.Container.Include<IPersistanceTransaction>(scope.Transaction);
                     transactionContext?.Container.Include("CurrentTransactionId", scope.Transaction.TransactionId);
 
-                    await operation(ct);
-                    await CompleteAsync(scope, ct);
+                    await operation(ct).ConfigureAwait(false);
+                    await CompleteAsync(scope, ct).ConfigureAwait(false);
                     _logger.LogTrace($"Unit of work completed successfully.");
                 }
                 catch (Exception ex)
                 {
-                    await RollbackAsync(scope, ct);
+                    await RollbackAsync(scope, ct).ConfigureAwait(false);
                     _logger.LogError(ex, "Error occurred during unit of work");
                     throw;
                 }
@@ -49,7 +60,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         private async Task CompleteAsync(UnitOfWorkTransaction scope, CancellationToken cancellationToken = default)
         {
-            await _context.SaveChangesAsync(cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             _logger.LogTrace($"Change(s) saved for context '{typeof(TContext).Name}'.");
 
             if (!scope.BegunHere)
@@ -59,7 +70,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             }
 
             _logger.LogTrace($"Committing transaction id '{scope.Transaction.TransactionId}'.");
-            await scope.CommitAsync(cancellationToken);
+            await scope.CommitAsync(cancellationToken).ConfigureAwait(false);
             _logger.LogTrace($"Transaction committed for context '{typeof(TContext).Name}'.");
         }
 
@@ -86,7 +97,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             }
 
             _logger.LogTrace($"Rolling back transaction id '{scope.Transaction.TransactionId}'.");
-            await scope.RollbackAsync(cancellationToken);
+            await scope.RollbackAsync(cancellationToken).ConfigureAwait(false);
             _logger.LogTrace($"Transaction rolled back for context '{typeof(TContext).Name}'.");
         }
 

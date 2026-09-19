@@ -31,7 +31,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         public async ValueTask DisposeAsync()
         {
-            await DisposeAsyncCore();
+            await DisposeAsyncCore().ConfigureAwait(false);
 
             Dispose(disposing: false);
             GC.SuppressFinalize(this);
@@ -51,7 +51,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         {
             if (!(_dbContextTransaction is null))
             {
-                await _dbContextTransaction.DisposeAsync();
+                await _dbContextTransaction.DisposeAsync().ConfigureAwait(false);
             }
 
             _dbContextTransaction = null;
