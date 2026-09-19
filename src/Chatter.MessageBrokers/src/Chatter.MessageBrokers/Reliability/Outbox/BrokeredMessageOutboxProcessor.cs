@@ -12,6 +12,13 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 {
     internal sealed class BrokeredMessageOutboxProcessor : BackgroundService
     {
+        /// <summary>
+        /// The most distinct message identities one drain retains before it ends and takes the processing
+        /// interval. At the default Outbox Poll Batch of 100 that is 100 consecutive polls in one interval.
+        /// Internal so the test pinning the ceiling reads the number rather than restating it.
+        /// </summary>
+        internal const int MaxDrainIdentities = 10000;
+
         private readonly ILogger<BrokeredMessageOutboxProcessor> _logger;
         private readonly ReliabilityOptions _reliabilityOptions;
         private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -52,50 +59,58 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         }
 
         /// <summary>
-        /// Polls until the Pollable Outbox Store answers with less than a full Outbox Poll Batch, so a backlog
-        /// larger than the batch size leaves in one interval rather than one batch per interval.
+        /// Polls while the Pollable Outbox Store keeps answering with a full Outbox Poll Batch of messages this
+        /// drain has not already seen, so a backlog larger than the batch size leaves in one interval rather than
+        /// one batch per interval.
         /// </summary>
         /// <remarks>
-        /// INVARIANT: the drain stops when a batch repeats unchanged. <see cref="OutboxProcessor.Process"/> logs and
-        /// swallows every dispatch failure, so a batch of exactly the batch size that cannot be dispatched is
-        /// re-fetched identically on the next poll; without this guard a full poison batch would spin against the
-        /// store forever and never reach the interval wait below. A batch that made no progress therefore costs one
-        /// wasted poll and then waits the interval like any other.
+        /// INVARIANT: the drain ends on a poll that adds no message identity it has not already seen.
+        /// <see cref="OutboxProcessor.Process"/> logs and swallows every dispatch failure, so a batch of exactly the
+        /// batch size that cannot be dispatched is re-fetched on the next poll; without this guard a full poison
+        /// batch would spin against the store forever and never reach the interval wait below. The seen set spans
+        /// the WHOLE drain and is keyed on identity rather than on position, so neither the order a poll returns
+        /// rows in nor which side of the store's cap a row tied on
+        /// <see cref="OutboxMessage.SentToOutboxAtUtc"/> falls on can read as progress. Pinned by
+        /// MustStopRepollingWhenAFullOutboxPollBatchRepeatsInADifferentOrder and
+        /// MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage in
+        /// UsingBrokeredMessageOutboxProcessor.WhenSendingOutboxMessages, which go red the moment the comparison is
+        /// narrowed to the batch immediately before — the first of them when that comparison is positional, the
+        /// second however it is written, since its consecutive batches are never equal as sets either.
+        /// <para>
+        /// INVARIANT: the identity of a row is the (Id, MessageId) PAIR. InMemoryBrokeredMessageOutbox never assigns
+        /// an Id, so every row it hands back carries Id 0 and an Id-only key would end every one of its drains on
+        /// the second poll, capping the default outbox at one batch per interval. Pinned by
+        /// MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage, whose rows all carry Id 0 and which
+        /// goes red the moment MessageId is dropped from the key.
+        /// </para>
+        /// <para>
+        /// INVARIANT: the drain also ends once it has seen <see cref="MaxDrainIdentities"/> identities, which is
+        /// what bounds the seen set. That stop reports only that this drain has run long enough; it is NOT a claim
+        /// that the store made no progress, and whatever is still unprocessed is taken by the next poll after the
+        /// interval wait. Pinned by MustEndTheDrainOnceTheDrainIdentityCeilingIsReached, which goes red the moment
+        /// the ceiling leaves the loop condition.
+        /// </para>
         /// </remarks>
         private async Task DrainOutboxAsync(CancellationToken stoppingToken)
         {
-            IReadOnlyList<OutboxMessage> previousBatch = Array.Empty<OutboxMessage>();
+            var seenIdentities = new HashSet<(int Id, string MessageId)>();
             bool hasMoreToDrain;
 
             do
             {
                 var batch = await SendOutboxMessagesAsync(stoppingToken);
-                hasMoreToDrain = batch.Count >= _reliabilityOptions.OutboxPollBatchSize && !IsSameBatch(previousBatch, batch);
-                previousBatch = batch;
+                var unseenCount = batch.Count(message => seenIdentities.Add((message.Id, message.MessageId)));
+                var storeAnsweredWithUnseenWork = batch.Count >= _reliabilityOptions.OutboxPollBatchSize && unseenCount > 0;
+                var isWithinIdentityCeiling = seenIdentities.Count < MaxDrainIdentities;
+
+                if (storeAnsweredWithUnseenWork && !isWithinIdentityCeiling)
+                {
+                    _logger.LogInformation($"Outbox drain has run long enough at {seenIdentities.Count} messages and is ending; the rest is taken on the next poll.");
+                }
+
+                hasMoreToDrain = storeAnsweredWithUnseenWork && isWithinIdentityCeiling;
             }
             while (hasMoreToDrain && !stoppingToken.IsCancellationRequested);
-        }
-
-        private static bool IsSameBatch(IReadOnlyList<OutboxMessage> previousBatch, IReadOnlyList<OutboxMessage> currentBatch)
-        {
-            if (previousBatch.Count != currentBatch.Count)
-            {
-                return false;
-            }
-
-            for (var index = 0; index < currentBatch.Count; index++)
-            {
-                // INVARIANT: the identity of a row is the (Id, MessageId) PAIR. InMemoryBrokeredMessageOutbox never
-                // assigns an Id, so every row it hands back carries Id 0 and an Id-only comparison would report every
-                // in-memory batch as a repeat and cap the default outbox at one poll per interval.
-                if (previousBatch[index].Id != currentBatch[index].Id
-                    || !string.Equals(previousBatch[index].MessageId, currentBatch[index].MessageId, StringComparison.Ordinal))
-                {
-                    return false;
-                }
-            }
-
-            return true;
         }
 
         /// <summary>
@@ -104,7 +119,13 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// </summary>
         /// <remarks>
         /// INVARIANT: the scope is per POLL, not per drain. A drain of a large backlog would otherwise accumulate
-        /// every row of every batch in one store's change tracker for the whole drain.
+        /// every row of every batch in one store's change tracker for the whole drain. What the drain does carry
+        /// across polls is the identity set alone, and deliberately so: a store that stamps a row processed on the
+        /// instance before it saves hands that row back unstamped from the next poll's fresh store when the save
+        /// fails, so only a set spanning the whole drain keeps it from being dispatched again immediately. That the
+        /// set outlives a poll is pinned by MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage in
+        /// UsingBrokeredMessageOutboxProcessor.WhenSendingOutboxMessages, which goes red the moment the set is
+        /// reset or pruned between polls.
         /// </remarks>
         private async Task<IReadOnlyList<OutboxMessage>> SendOutboxMessagesAsync(CancellationToken cancellationToken = default)
         {

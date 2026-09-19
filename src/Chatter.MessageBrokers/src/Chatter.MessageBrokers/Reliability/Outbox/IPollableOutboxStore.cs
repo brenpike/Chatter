@@ -29,11 +29,21 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// single poll; the ordering is what keeps a row from starving behind newer ones while the backlog stays
         /// above the cap, because the cap is applied to the ordered rows rather than to an arbitrary selection.
         /// <para>
-        /// The poller polls again IMMEDIATELY after a batch of the full size and waits
+        /// The poller polls again IMMEDIATELY after a batch of the full size that carries at least one message it
+        /// has not already seen during this drain, and waits
         /// <see cref="Chatter.MessageBrokers.Reliability.Configuration.ReliabilityOptions.OutboxProcessingIntervalInMilliseconds"/>
-        /// only after a shorter one, so a backlog larger than the batch size drains in one interval. An answer
-        /// LARGER than the cap counts as a full batch, so it is still drained and the poller still terminates, but
-        /// it defeats the bound on poll cost the cap exists for.
+        /// otherwise, so a backlog larger than the batch size drains in one interval. An answer LARGER than the cap
+        /// counts as a full batch, so it is still drained and the poller still terminates, but it defeats the bound
+        /// on poll cost the cap exists for.
+        /// </para>
+        /// <para>
+        /// A message is recognised by its (<see cref="OutboxMessage.Id"/>, <see cref="OutboxMessage.MessageId"/>)
+        /// pair, so the residual obligation a store carries here is that those values are STABLE across fetches of
+        /// the same row. Neither the order a store returns rows in nor which rows it keeps when more share one
+        /// timestamp than the cap takes can mislead the poller. A store that fabricates a fresh identity per fetch
+        /// does mislead it: every poll then looks like progress, so a batch that cannot be dispatched is re-fetched
+        /// and re-dispatched until the poller's own ceiling on how long one pass may run ends it, rather than after
+        /// a single wasted poll. The poller still reaches the interval wait either way.
         /// </para>
         /// </remarks>
         Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default);

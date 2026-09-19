@@ -81,6 +81,17 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
                 SentToOutboxAtUtc = sentToOutboxAtUtc,
             };
 
+        // InMemoryBrokeredMessageOutbox assigns no Id, so every row it hands back carries Id 0 and MessageId is all
+        // that tells two of its rows apart.
+        private static OutboxMessage CreateUnassignedIdOutboxMessage(int messageNumber, DateTime sentToOutboxAtUtc)
+            => new OutboxMessage
+            {
+                Id = 0,
+                MessageId = $"message-{messageNumber}",
+                Destination = "destination",
+                SentToOutboxAtUtc = sentToOutboxAtUtc,
+            };
+
         private void SetupOutboxReturns(IEnumerable<OutboxMessage> messages)
             => _outbox.As<IPollableOutboxStore>()
                       .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
@@ -114,8 +125,16 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
                       .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
                       .ReturnsAsync(() => script[Math.Min(RecordPoll(), script.Length) - 1]);
 
+        // Answers each poll from the script CYCLICALLY, so no entry is ever the one that answers every poll after
+        // it. A store that keeps rotating the same rows can therefore never end a drain by handing back an answer
+        // positionally identical to the poll immediately before it.
+        private void SetupCyclingPolls(params OutboxMessage[][] script)
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(() => script[(RecordPoll() - 1) % script.Length]);
+
         // Answers every poll with a FULL Outbox Poll Batch of rows never seen before, so neither a short batch nor
-        // the identical-batch guard can end the drain and only cancellation can.
+        // the no-progress guard can end the drain and only cancellation or the drain identity ceiling can.
         private void SetupEndlessDistinctFullPolls(int batchSize)
             => _outbox.As<IPollableOutboxStore>()
                       .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
@@ -307,11 +326,64 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         public async Task MustStopRepollingWhenAFullOutboxPollBatchRepeatsUnchanged()
         {
             // OutboxProcessor.Process swallows every dispatch failure, so a poison batch of exactly
-            // OutboxPollBatchSize rows is re-fetched identically forever. Without this guard the drain never
-            // reaches its Task.Delay and spins on the store with no wait at all.
+            // OutboxPollBatchSize rows is re-fetched forever. Without this guard the drain never reaches its
+            // Task.Delay and spins on the store with no wait at all. This is the simplest shape the repeat takes,
+            // the batch coming back identical; MustStopRepollingWhenAFullOutboxPollBatchRepeatsInADifferentOrder
+            // and MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage take the other two.
             _reliabilityOptions.OutboxPollBatchSize = 2;
             _signalOnPoll = 2;
             SetupScriptedPolls(new[] { CreateOutboxMessage(1, BaseSentToOutboxAtUtc), CreateOutboxMessage(2, BaseSentToOutboxAtUtc.AddMinutes(1)) });
+
+            await RunSingleDrainAsync(_pollSignal.Task);
+
+            VerifyPollCount(2);
+        }
+
+        [Fact]
+        public async Task MustStopRepollingWhenAFullOutboxPollBatchRepeatsInADifferentOrder()
+        {
+            // GetUnprocessedMessagesFromOutbox orders by SentToOutboxAtUtc alone, so rows sharing one instant may
+            // be handed back in any order and a poison batch can arrive reversed on every poll. Those are the same
+            // two rows, so the second poll adds no message the drain has not already seen and must end it.
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+            _signalOnPoll = 2;
+            var first = CreateOutboxMessage(1, BaseSentToOutboxAtUtc);
+            var second = CreateOutboxMessage(2, BaseSentToOutboxAtUtc);
+            SetupCyclingPolls(new[] { first, second }, new[] { second, first });
+
+            await RunSingleDrainAsync(_pollSignal.Task);
+
+            VerifyPollCount(2);
+        }
+
+        [Fact]
+        public async Task MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage()
+        {
+            // One more tied row than the batch takes, so which of them the store's cap keeps can differ per poll
+            // and consecutive batches are different SUBSETS rather than reorderings of one another. Only the third
+            // poll is wholly made of rows the drain has already seen, so that is the one that ends it.
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+            _signalOnPoll = 3;
+            var first = CreateUnassignedIdOutboxMessage(1, BaseSentToOutboxAtUtc);
+            var second = CreateUnassignedIdOutboxMessage(2, BaseSentToOutboxAtUtc);
+            var third = CreateUnassignedIdOutboxMessage(3, BaseSentToOutboxAtUtc);
+            SetupCyclingPolls(new[] { first, second }, new[] { second, third });
+
+            await RunSingleDrainAsync(_pollSignal.Task);
+
+            VerifyPollCount(3);
+        }
+
+        [Fact]
+        public async Task MustEndTheDrainOnceTheDrainIdentityCeilingIsReached()
+        {
+            // Every poll answers full with rows never seen before, so nothing but the ceiling can end this drain.
+            // Half the ceiling per batch reaches it on the second poll, rather than polling the default batch size
+            // a hundred times. The signal comes off the LAST message of that poll rather than off the poll itself,
+            // so a drain that kept going would reach a third poll before this test could stop it.
+            _reliabilityOptions.OutboxPollBatchSize = BrokeredMessageOutboxProcessor.MaxDrainIdentities / 2;
+            SetupEndlessDistinctFullPolls(_reliabilityOptions.OutboxPollBatchSize);
+            SignalWhenProcessedCountReaches(BrokeredMessageOutboxProcessor.MaxDrainIdentities, new List<int>());
 
             await RunSingleDrainAsync(_pollSignal.Task);
 
@@ -333,7 +405,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         [Fact]
         public async Task MustStopDrainingWhenCancellationIsRequestedMidDrain()
         {
-            // Every poll answers with a full batch of new rows, so the drain would never end on its own.
+            // Every poll answers with a full batch of new rows, so nothing the store does ends this drain and the
+            // identity ceiling is thousands of polls away at a batch of two: only cancellation can end it here.
             // RunSingleDrainAsync bounds StopAsync, so a drain that ignores its stopping token fails here.
             _reliabilityOptions.OutboxPollBatchSize = 2;
             _signalOnPoll = 3;
