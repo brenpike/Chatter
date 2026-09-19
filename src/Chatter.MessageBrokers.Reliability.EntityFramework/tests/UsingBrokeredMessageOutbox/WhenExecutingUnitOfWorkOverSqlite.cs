@@ -197,6 +197,30 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             persisted.Should().BeNull();
         }
 
+        // INVARIANT: once the commit has stood, a provider whose disposal faults cannot turn that durable success
+        // into a thrown exception. This goes red the moment UnitOfWork's success-path disposal is awaited directly
+        // rather than through CleanUpAsync: the TransactionFaultException(Dispose) then escapes ExecuteAsync while
+        // the row it reports a failure for is already committed.
+        [Fact]
+        public async Task MustNotSurfaceADisposeFailureAfterTheCommitSucceeds()
+        {
+            using var context = CreateFaultingContext<DisposeFaultingRelationalTransactionFactory>();
+            IUnitOfWork unitOfWork = new BrokeredMessageOutbox<SqliteOutboxContext>(context, _loggerFactory.Object);
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(
+                ct => context.Set<OutboxMessage>().AddAsync(message, ct).AsTask(),
+                null);
+
+            await act.Should().NotThrowAsync();
+            unitOfWork.HasActiveTransaction.Should().BeFalse();
+
+            using var freshContext = _harness.CreateContext();
+            var persisted = await freshContext.Set<OutboxMessage>()
+                .SingleOrDefaultAsync(m => m.MessageId == message.MessageId);
+            persisted.Should().NotBeNull();
+        }
+
         private SqliteOutboxContext CreateFaultingContext<TFactory>() where TFactory : FaultingRelationalTransactionFactory
             => _harness.CreateContext(options => options.ReplaceService<IRelationalTransactionFactory, TFactory>());
 

@@ -10,6 +10,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 {
     internal sealed class UnitOfWork<TContext> : IUnitOfWork where TContext : DbContext
     {
+        private const string WhileHandlingAnEarlierFailure = "while handling an earlier failure; the earlier failure is the one reported";
+        private const string AfterTheCommitStood = "after the unit of work committed; the commit stands";
+
         private readonly TContext _context;
         private readonly ILogger<UnitOfWork<TContext>> _logger;
 
@@ -47,11 +50,14 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             return strategy.ExecuteAsync(async ct =>
             {
-                // INVARIANT: the transaction is begun outside the try so that a failure to begin one propagates with
-                // no scope in existence to clean up. On the failure path both terminal steps - rolling back and
-                // disposing - are guarded, so neither can replace the exception that caused the failure. On the
-                // success path the disposal is deliberately left unguarded: there is no causal exception to mask,
-                // and swallowing there would hide a real commit-time failure.
+                // INVARIANT: every terminal step on both paths runs through CleanUpAsync, so no terminal step can
+                // report a failure that is not the causal failure. On the failure path the causal failure is the
+                // operation's own exception; on the success path the commit has already stood by the time the
+                // disposal runs, so a provider whose disposal faults must not turn a durable success into a throw.
+                // Oracle: MustNotSurfaceADisposeFailureAfterTheCommitSucceeds, which goes red the moment the
+                // success-path disposal below is awaited directly instead of through the guard. The transaction is
+                // begun outside the try because the catch clause reads the scope; the compiler holds that placement,
+                // no test does.
                 var scope = await BeginAsync(ct).ConfigureAwait(false);
                 try
                 {
@@ -64,19 +70,19 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 }
                 catch (Exception ex)
                 {
-                    await CleanUpAsync(() => RollbackAsync(scope, CancellationToken.None), "roll back").ConfigureAwait(false);
-                    await CleanUpAsync(() => scope.DisposeAsync().AsTask(), "dispose").ConfigureAwait(false);
+                    await CleanUpAsync(() => RollbackAsync(scope, CancellationToken.None), "roll back", WhileHandlingAnEarlierFailure).ConfigureAwait(false);
+                    await CleanUpAsync(() => scope.DisposeAsync().AsTask(), "dispose", WhileHandlingAnEarlierFailure).ConfigureAwait(false);
                     _logger.LogError(ex, "Error occurred during unit of work");
                     throw;
                 }
 
-                await scope.DisposeAsync().ConfigureAwait(false);
+                await CleanUpAsync(() => scope.DisposeAsync().AsTask(), "dispose", AfterTheCommitStood).ConfigureAwait(false);
             }, cancellationToken);
         }
 
         // INVARIANT: cleanup runs under CancellationToken.None. Honouring the token that failed the unit of work
         // would make a cancelled operation skip its own rollback and leave the transaction open.
-        private async Task CleanUpAsync(Func<Task> cleanUp, string cleanUpDescription)
+        private async Task CleanUpAsync(Func<Task> cleanUp, string cleanUpDescription, string cleanUpCircumstance)
         {
             try
             {
@@ -84,7 +90,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             }
             catch (Exception cleanUpException)
             {
-                _logger.LogWarning(cleanUpException, "Failed to {CleanUpDescription} the unit of work's transaction while handling an earlier failure. The earlier failure is the one reported.", cleanUpDescription);
+                _logger.LogWarning(cleanUpException, "Failed to {CleanUpDescription} the unit of work's transaction {CleanUpCircumstance}.", cleanUpDescription, cleanUpCircumstance);
             }
         }
 
