@@ -391,6 +391,28 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         }
 
         [Fact]
+        public async Task MustEndTheDrainOnTheFirstPollThatCrossesTheDrainIdentityCeiling()
+        {
+            // MustEndTheDrainOnceTheDrainIdentityCeilingIsReached takes half the ceiling per batch and so lands on
+            // it exactly. A batch that does NOT divide the ceiling evenly pins the arithmetic that one cannot see:
+            // the ceiling is read AFTER the poll's identities are tallied, so the drain re-polls while the count is
+            // still below 10,000 and the poll that crosses it adds a WHOLE batch on top. At 3,000 per poll the
+            // drain therefore ends on the FOURTH poll having retained 12,000 identities, not on the ceiling itself.
+            // The reddening mutation is a loop that stops SHORT of crossing the ceiling - reading it as
+            // seenIdentities.Count + OutboxPollBatchSize <= MaxDrainIdentities - which ends this drain on the third
+            // poll at 9,000 so the signal below never fires, and which leaves the exact-landing fact green. The
+            // signal comes off the LAST message of the fourth poll rather than off the poll itself, so a drain that
+            // kept going would reach a fifth poll before this test could stop it.
+            _reliabilityOptions.OutboxPollBatchSize = 3000;
+            SetupEndlessDistinctFullPolls(_reliabilityOptions.OutboxPollBatchSize);
+            SignalWhenProcessedCountReaches(12000, new List<int>());
+
+            await RunSingleDrainAsync(_pollSignal.Task);
+
+            VerifyPollCount(4);
+        }
+
+        [Fact]
         public async Task MustNotRepollWhenTheFirstOutboxPollBatchIsEmpty()
         {
             _reliabilityOptions.OutboxPollBatchSize = 2;

@@ -13,8 +13,11 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
     internal sealed class BrokeredMessageOutboxProcessor : BackgroundService
     {
         /// <summary>
-        /// The most distinct message identities one drain retains before it ends and takes the processing
-        /// interval. At the default Outbox Poll Batch of 100 that is 100 consecutive polls in one interval.
+        /// The identity count at which a drain stops re-polling and takes the processing interval. The count is
+        /// read AFTER a poll's identities are tallied, so the poll that crosses the ceiling is kept whole and one
+        /// drain retains up to MaxDrainIdentities + OutboxPollBatchSize - 1 identities — 10,099 at the default
+        /// Outbox Poll Batch of 100. At that batch the ceiling takes no FEWER than 100 consecutive polls, and more
+        /// than that whenever polls overlap and each adds fewer than a full batch of unseen identities.
         /// Internal so the test pinning the ceiling reads the number rather than restating it.
         /// </summary>
         internal const int MaxDrainIdentities = 10000;
@@ -87,8 +90,14 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// INVARIANT: the drain also ends once it has seen <see cref="MaxDrainIdentities"/> identities, which is
         /// what bounds the seen set. That stop reports only that this drain has run long enough; it is NOT a claim
         /// that the store made no progress, and whatever is still unprocessed is taken by the next poll after the
-        /// interval wait. Pinned by MustEndTheDrainOnceTheDrainIdentityCeilingIsReached, which goes red the moment
-        /// the ceiling leaves the loop condition.
+        /// interval wait. The ceiling is read AFTER the poll's identities are tallied, so the poll that crosses it
+        /// is kept whole and the set holds up to <see cref="MaxDrainIdentities"/> plus one Outbox Poll Batch less
+        /// one. Pinned by MustEndTheDrainOnceTheDrainIdentityCeilingIsReached, which goes red the moment the
+        /// ceiling leaves the loop condition, and by
+        /// MustEndTheDrainOnTheFirstPollThatCrossesTheDrainIdentityCeiling, whose batch does not divide the ceiling
+        /// evenly and which goes red the moment the loop stops SHORT of crossing it — reading the ceiling as
+        /// seenIdentities.Count + OutboxPollBatchSize &lt;= MaxDrainIdentities leaves the first of the two green and
+        /// only the second red.
         /// </para>
         /// </remarks>
         private async Task DrainOutboxAsync(CancellationToken stoppingToken)
@@ -125,7 +134,9 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// fails, so only a set spanning the whole drain keeps it from being dispatched again immediately. That the
         /// set outlives a poll is pinned by MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage in
         /// UsingBrokeredMessageOutboxProcessor.WhenSendingOutboxMessages, which goes red the moment the set is
-        /// reset or pruned between polls.
+        /// reset or pruned between polls. NO test pins the scope being per poll: MustCreateScopePerDrainPass
+        /// asserts CreateScope with Times.AtLeastOnce against a drain of a single poll, so hoisting one scope to
+        /// span a whole drain leaves it green.
         /// </remarks>
         private async Task<IReadOnlyList<OutboxMessage>> SendOutboxMessagesAsync(CancellationToken cancellationToken = default)
         {
