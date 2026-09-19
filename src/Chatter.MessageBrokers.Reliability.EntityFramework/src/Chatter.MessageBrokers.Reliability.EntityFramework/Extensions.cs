@@ -42,6 +42,7 @@ namespace Microsoft.Extensions.DependencyInjection
             where TContext : DbContext
         {
             pipelineBuilder.WithUnitOfWorkBehavior<TContext>();
+            SeedDefaultReliabilityRetention(pipelineBuilder.Services);
             pipelineBuilder.Services.Replace<BrokeredMessageInbox<TContext>, BrokeredMessageInbox<TContext>>(ServiceLifetime.Scoped);
             pipelineBuilder.Services.Replace<IBrokeredMessageInbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<BrokeredMessageInbox<TContext>>());
             AddReliabilityBehaviorOnce(pipelineBuilder, typeof(InboxBehavior<>));
@@ -54,6 +55,7 @@ namespace Microsoft.Extensions.DependencyInjection
             where TContext : DbContext
         {
             AddReliabilityBehaviorOnce(pipelineBuilder, typeof(OutboxProcessingBehavior<>));
+            SeedDefaultReliabilityRetention(pipelineBuilder.Services);
             // Register the EF outbox once scoped and forward the enqueue contract to the same instance.
             // IPollableOutboxStore is obtained by casting IBrokeredMessageOutbox at the consumption site.
             pipelineBuilder.Services.Replace<BrokeredMessageOutbox<TContext>, BrokeredMessageOutbox<TContext>>(ServiceLifetime.Scoped);
@@ -63,6 +65,78 @@ namespace Microsoft.Extensions.DependencyInjection
             NormalizeReliabilityBehaviorOrder(pipelineBuilder.Services);
 
             return pipelineBuilder;
+        }
+
+        /// <summary>
+        /// Configures how long the relational inbox and outbox keep their rows, and starts the purge that enforces it.
+        /// </summary>
+        /// <param name="retentionOptions">A delegate configuring the <see cref="EntityFrameworkReliabilityOptions"/></param>
+        /// <exception cref="ArgumentOutOfRangeException">A configured span was not positive</exception>
+        /// <remarks>
+        /// INVARIANT: ONE door spans both tables. Retention is a property of the stored rows rather than of either
+        /// behavior, so a per-behavior overload would make the result depend on which behaviors a host happened to
+        /// register; this door reads the same whatever order it is called in. The last call wins - the registration is
+        /// replaced rather than appended - while the purge service is added once however many times this is called.
+        /// Every span is refused HERE, at registration, rather than when the first purge runs: a window that names no
+        /// time would delete every row it can reach, and the host must not start before that is rejected.
+        /// </remarks>
+        public static CommandPipelineBuilder WithReliabilityRetention<TContext>(this CommandPipelineBuilder pipelineBuilder,
+                                                                                Action<EntityFrameworkReliabilityOptions> retentionOptions)
+            where TContext : DbContext
+        {
+            var options = new EntityFrameworkReliabilityOptions();
+            retentionOptions?.Invoke(options);
+
+            RefuseNonPositiveSpan(options.InboxDeduplicationWindow, nameof(EntityFrameworkReliabilityOptions.InboxDeduplicationWindow));
+            RefuseNonPositiveSpan(options.ProcessedOutboxRetention, nameof(EntityFrameworkReliabilityOptions.ProcessedOutboxRetention));
+            RefuseNonPositiveSpan(options.PurgeInterval, nameof(EntityFrameworkReliabilityOptions.PurgeInterval));
+
+            RemoveReliabilityRetention(pipelineBuilder.Services);
+            pipelineBuilder.Services.AddSingleton(options);
+            pipelineBuilder.Services.AddHostedService<ReliabilityRetentionPurgeService<TContext>>();
+
+            return pipelineBuilder;
+        }
+
+        private static void RefuseNonPositiveSpan(TimeSpan? span, string optionName)
+        {
+            if (span.HasValue && span.Value <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(optionName,
+                                                      span.Value,
+                                                      $"{nameof(EntityFrameworkReliabilityOptions)}.{optionName} must be a positive time span.");
+            }
+        }
+
+        // INVARIANT: RemoveAll<T> and TryAddSingleton<T> live in the Microsoft.Extensions.DependencyInjection
+        // .Extensions namespace, and THIS type shadows that namespace from inside Microsoft.Extensions
+        // .DependencyInjection - importing it raises CS0138 ('Extensions' is a type not a namespace) plus CS0437 - so
+        // neither is reachable by name from this file and both are written out against IServiceCollection's own
+        // surface. The same collision is recorded in Chatter.MessageBrokers.Reliability.Cosmos
+        // (CosmosOutboxRelayServiceCollectionExtensions.TryAddScopedResolver). The removal walks back to front so a
+        // removal never invalidates an index still to be visited.
+        private static void RemoveReliabilityRetention(IServiceCollection services)
+        {
+            for (var index = services.Count - 1; index >= 0; index--)
+            {
+                if (services[index].ServiceType == typeof(EntityFrameworkReliabilityOptions))
+                {
+                    services.RemoveAt(index);
+                }
+            }
+        }
+
+        // Seeds the disabled-by-default retention options so the inbox resolves an instance whatever order the
+        // reliability extensions were called in. An instance a WithReliabilityRetention call already registered is
+        // left alone: the default must never overwrite what an operator configured.
+        private static void SeedDefaultReliabilityRetention(IServiceCollection services)
+        {
+            if (services.Any(descriptor => descriptor.ServiceType == typeof(EntityFrameworkReliabilityOptions)))
+            {
+                return;
+            }
+
+            services.AddSingleton(new EntityFrameworkReliabilityOptions());
         }
 
         // INVARIANT: each reliability behavior is registered by its first caller only. Registering one again

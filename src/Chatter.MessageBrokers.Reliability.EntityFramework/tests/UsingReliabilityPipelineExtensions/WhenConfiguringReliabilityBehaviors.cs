@@ -1,16 +1,20 @@
 using Chatter.CQRS.Pipeline;
 using Chatter.MessageBrokers.Reliability;
+using Chatter.MessageBrokers.Reliability.Configuration;
 using Chatter.MessageBrokers.Reliability.EntityFramework;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.MessageBrokers.Routing;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Moq;
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabilityPipelineExtensions
@@ -172,9 +176,206 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             returned.Should().BeSameAs(captured);
         }
 
+        // Retention options are registered as a singleton INSTANCE, so the descriptor carries the finalized
+        // object and no provider has to be built to read what an operator configured.
+        private static EntityFrameworkReliabilityOptions FindRetentionOptions(CommandPipelineBuilder builder)
+            => builder.Services.LastOrDefault(descriptor => descriptor.ServiceType == typeof(EntityFrameworkReliabilityOptions))
+                      ?.ImplementationInstance as EntityFrameworkReliabilityOptions;
+
+        private static int CountPurgeServiceDescriptors(CommandPipelineBuilder builder)
+            => builder.Services.Count(descriptor =>
+                !descriptor.IsKeyedService
+                && descriptor.ServiceType == typeof(IHostedService)
+                && descriptor.ImplementationType == typeof(ReliabilityRetentionPurgeService<TestDbContext>));
+
+        [Fact]
+        public void MustRegisterDisabledRetentionOptionsForInboxBehavior()
+        {
+            var builder = CaptureBuilder(b => b.WithInboxBehavior<TestDbContext>());
+
+            var options = FindRetentionOptions(builder);
+
+            options.Should().NotBeNull("the inbox resolves these options whatever order the reliability extensions were called in");
+            options.InboxDeduplicationWindow.Should().BeNull("inbox retention is disabled until an operator opts in");
+            options.ProcessedOutboxRetention.Should().BeNull("outbox retention is disabled until an operator opts in");
+            options.PurgeInterval.Should().Be(TimeSpan.FromMinutes(5));
+        }
+
+        [Fact]
+        public void MustRegisterDisabledRetentionOptionsForOutboxProcessingBehavior()
+        {
+            var builder = CaptureBuilder(b => b.WithOutboxProcessingBehavior<TestDbContext>());
+
+            var options = FindRetentionOptions(builder);
+
+            options.Should().NotBeNull();
+            options.InboxDeduplicationWindow.Should().BeNull("inbox retention is disabled until an operator opts in");
+            options.ProcessedOutboxRetention.Should().BeNull("outbox retention is disabled until an operator opts in");
+        }
+
+        [Fact]
+        public void MustRegisterNoPurgeServiceWithoutAReliabilityRetentionCall()
+        {
+            var builder = CaptureBuilder(b =>
+            {
+                b.WithInboxBehavior<TestDbContext>();
+                b.WithOutboxProcessingBehavior<TestDbContext>();
+            });
+
+            CountPurgeServiceDescriptors(builder).Should().Be(0, "seeding the default options must not start a purge nobody asked for");
+        }
+
+        [Fact]
+        public void MustReplaceRetentionOptionsWithTheLastRetentionCall()
+        {
+            var builder = CaptureBuilder(b =>
+            {
+                b.WithReliabilityRetention<TestDbContext>(o => o.InboxDeduplicationWindow = TimeSpan.FromDays(1));
+                b.WithReliabilityRetention<TestDbContext>(o => o.InboxDeduplicationWindow = TimeSpan.FromDays(7));
+            });
+
+            var options = FindRetentionOptions(builder);
+
+            options.InboxDeduplicationWindow.Should().Be(TimeSpan.FromDays(7));
+            builder.Services.Count(descriptor => descriptor.ServiceType == typeof(EntityFrameworkReliabilityOptions))
+                   .Should().Be(1, "the last call replaces the registration rather than appending a second one");
+        }
+
+        [Fact]
+        public void MustKeepConfiguredRetentionWhenABehaviorIsRegisteredAfterwards()
+        {
+            var builder = CaptureBuilder(b =>
+            {
+                b.WithReliabilityRetention<TestDbContext>(o => o.ProcessedOutboxRetention = TimeSpan.FromDays(3));
+                b.WithInboxBehavior<TestDbContext>();
+                b.WithOutboxProcessingBehavior<TestDbContext>();
+            });
+
+            FindRetentionOptions(builder).ProcessedOutboxRetention
+                .Should().Be(TimeSpan.FromDays(3), "the default seeded by a behavior must never overwrite what an operator configured");
+        }
+
+        [Fact]
+        public void MustRegisterPurgeServiceExactlyOnceAcrossRepeatedRetentionCalls()
+        {
+            var builder = CaptureBuilder(b =>
+            {
+                b.WithReliabilityRetention<TestDbContext>(o => o.InboxDeduplicationWindow = TimeSpan.FromDays(1));
+                b.WithReliabilityRetention<TestDbContext>(o => o.InboxDeduplicationWindow = TimeSpan.FromDays(2));
+                b.WithReliabilityRetention<TestDbContext>(o => o.InboxDeduplicationWindow = TimeSpan.FromDays(3));
+            });
+
+            CountPurgeServiceDescriptors(builder).Should().Be(1, "a second purge loop over the same context would double the delete traffic");
+        }
+
+        [Fact]
+        public void MustReturnSameBuilderFromReliabilityRetention()
+        {
+            CommandPipelineBuilder captured = null;
+            CommandPipelineBuilder returned = null;
+            var services = new ServiceCollection();
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), builder =>
+            {
+                captured = builder;
+                returned = builder.WithReliabilityRetention<TestDbContext>(o => o.InboxDeduplicationWindow = TimeSpan.FromDays(1));
+            });
+
+            returned.Should().BeSameAs(captured);
+        }
+
+        [Theory]
+        [InlineData(0L)]
+        [InlineData(-1L)]
+        public void MustRefuseNonPositiveInboxDeduplicationWindow(long ticks)
+        {
+            Action configure = () => CaptureBuilder(b =>
+                b.WithReliabilityRetention<TestDbContext>(o => o.InboxDeduplicationWindow = TimeSpan.FromTicks(ticks)));
+
+            configure.Should().Throw<ArgumentOutOfRangeException>()
+                     .WithMessage("*InboxDeduplicationWindow*", "a window that names no time would purge every inbox marker on the first pass");
+        }
+
+        [Theory]
+        [InlineData(0L)]
+        [InlineData(-1L)]
+        public void MustRefuseNonPositiveProcessedOutboxRetention(long ticks)
+        {
+            Action configure = () => CaptureBuilder(b =>
+                b.WithReliabilityRetention<TestDbContext>(o => o.ProcessedOutboxRetention = TimeSpan.FromTicks(ticks)));
+
+            configure.Should().Throw<ArgumentOutOfRangeException>()
+                     .WithMessage("*ProcessedOutboxRetention*");
+        }
+
+        [Theory]
+        [InlineData(0L)]
+        [InlineData(-1L)]
+        public void MustRefuseNonPositivePurgeInterval(long ticks)
+        {
+            Action configure = () => CaptureBuilder(b =>
+                b.WithReliabilityRetention<TestDbContext>(o => o.PurgeInterval = TimeSpan.FromTicks(ticks)));
+
+            configure.Should().Throw<ArgumentOutOfRangeException>()
+                     .WithMessage("*PurgeInterval*", "a non-positive interval spins the purge loop against the database with no wait");
+        }
+
+        // STEP-005 capped the outbox poll at ReliabilityOptions.OutboxPollBatchSize on a SECOND constructor, so the
+        // cap only reaches a running host if the container activates that constructor rather than the uncapped one.
+        // This resolves the outbox the way a Chatter host does - through the registration WithOutboxProcessingBehavior
+        // makes, over a published ReliabilityOptions - and watches the poll obey the configured batch.
+        [Fact]
+        public async Task MustResolveOutboxThroughTheBatchSizeAwareConstructor()
+        {
+            using var connection = new SqliteConnection("DataSource=:memory:");
+            connection.Open();
+
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddScoped(_ => new TestDbContext(
+                new DbContextOptionsBuilder<TestDbContext>().UseSqlite(connection).Options));
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), builder => builder.WithOutboxProcessingBehavior<TestDbContext>());
+            ReliabilityOptionsBuilder.Create(services).WithOutboxPollBatchSize(2).Build();
+
+            using var provider = services.BuildServiceProvider();
+            using var scope = provider.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<TestDbContext>();
+            await context.Database.EnsureCreatedAsync();
+
+            for (var sequence = 0; sequence < 3; sequence++)
+            {
+                context.Set<OutboxMessage>().Add(CreateUnprocessedOutboxMessage($"message-{sequence}"));
+            }
+
+            await context.SaveChangesAsync();
+
+            var outbox = (IPollableOutboxStore)scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
+            var polled = await outbox.GetUnprocessedMessagesFromOutbox();
+
+            polled.Should().HaveCount(2, "the container must activate the ReliabilityOptions-aware constructor, so the poll takes the configured Outbox Poll Batch rather than the whole backlog");
+        }
+
+        private static OutboxMessage CreateUnprocessedOutboxMessage(string messageId)
+            => new OutboxMessage
+            {
+                MessageId = messageId,
+                Destination = "test-destination",
+                MessageContext = "{}",
+                MessageBody = "{}",
+                MessageContentType = "application/json",
+                SentToOutboxAtUtc = DateTime.UtcNow,
+                ProcessedFromOutboxAtUtc = null,
+                BatchId = Guid.NewGuid()
+            };
+
         private sealed class TestDbContext : DbContext
         {
             public TestDbContext(DbContextOptions options) : base(options) { }
+
+            protected override void OnModelCreating(ModelBuilder modelBuilder)
+            {
+                modelBuilder.ApplyConfiguration(new OutboxMessageConfiguration());
+                modelBuilder.ApplyConfiguration(new InboxMessageConfiguration());
+            }
         }
     }
 }
