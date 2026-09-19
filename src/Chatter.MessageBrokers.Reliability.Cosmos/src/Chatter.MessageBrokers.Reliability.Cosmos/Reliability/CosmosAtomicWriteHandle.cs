@@ -165,6 +165,12 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos
                 }
                 finally
                 {
+                    // The rental held the STAGED DOCUMENT's own bytes, and ArrayPool hands rentals back DIRTY: an
+                    // uncleared Return leaves those bytes readable by the next component in the process to rent this
+                    // bucket. The whole-document parse this scan replaced cleared its own document rental for the same
+                    // reason, so clearing here is PARITY, not new hardening. The whole REQUESTED region is cleared
+                    // rather than the byte count read, so a read that throws part-way still leaves nothing behind.
+                    rentedBuffer.AsSpan(0, probeLength).Clear();
                     ArrayPool<byte>.Shared.Return(rentedBuffer);
                 }
 

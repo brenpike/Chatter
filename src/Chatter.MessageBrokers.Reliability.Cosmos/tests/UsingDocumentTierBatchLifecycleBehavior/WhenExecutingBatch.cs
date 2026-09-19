@@ -789,6 +789,35 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingDocumentTierBatch
             handle.StagedOperationCount.Should().Be(0);
         }
 
+        [Fact]
+        public void MustClearPooledProbeBufferBeforeReturningItToTheSharedPool()
+        {
+            // The pooled probe buffer holds the STAGED DOCUMENT's own bytes. ArrayPool hands rentals back DIRTY, so a
+            // Return without a clear leaves those bytes readable by the next component in the process that rents the
+            // same bucket. The whole-document parse this peek replaced — JsonDocument.Parse(Stream) — clears its
+            // document rental before returning it, so not clearing here would be a LOOSENING, not parity.
+            const string secret = "ZQZQ-staged-payload-secret-ZQZQ";
+            var (handle, _) = DirectHandle();
+            ICosmosAtomicWriteHandle publicHandle = handle;
+            byte[] payloadBytes = System.Text.Encoding.UTF8.GetBytes($"{{\"id\":\"ok\",\"secret\":\"{secret}\"}}");
+            using var payload = new MemoryStream(payloadBytes, writable: false);
+
+            publicHandle.StageCreateItemStream(payload);
+
+            // The peek rents `Length + 1`; renting that same size on THIS thread pops that very array back off the
+            // pool's thread-local slot, so what it still contains is exactly what the peek handed back.
+            byte[] rented = System.Buffers.ArrayPool<byte>.Shared.Rent(payloadBytes.Length + 1);
+            try
+            {
+                System.Text.Encoding.UTF8.GetString(rented).Should().NotContain(
+                    secret, "a pooled rental holding staged payload bytes must be cleared before it is returned");
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
+
         // A seekable payload stream whose Length is a LIE relative to what Read actually yields. Real consumers hand
         // over honest streams; this double exists to prove the guard derives its verdict from the bytes it reads and
         // never from the count the stream advertises.
