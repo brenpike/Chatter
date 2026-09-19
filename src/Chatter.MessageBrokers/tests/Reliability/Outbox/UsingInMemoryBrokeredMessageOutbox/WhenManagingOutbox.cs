@@ -182,6 +182,43 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
                 .Should().ThrowAsync<InvalidOperationException>();
         }
 
+        [Fact]
+        public async Task MustReturnNoMoreMessagesThanTheOutboxPollBatchSize()
+        {
+            await SeedOutboxAsync(("id-1", 4), ("id-2", 0), ("id-3", 3), ("id-4", 1), ("id-5", 2));
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-2", "id-4");
+        }
+
+        [Fact]
+        public async Task MustReturnOldestSentToOutboxMessagesFirst()
+        {
+            await SeedOutboxAsync(("id-1", 4), ("id-2", 0), ("id-3", 3), ("id-4", 1), ("id-5", 2));
+
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-2", "id-4", "id-5", "id-3", "id-1");
+        }
+
+        // Sends each message then overwrites its SentToOutboxAtUtc, because SendToOutbox stamps DateTime.UtcNow
+        // and rapid sequential sends can tie. An explicit minute per message makes the expected poll order exact.
+        private async Task SeedOutboxAsync(params (string MessageId, int SentAtMinute)[] seeds)
+        {
+            foreach (var seed in seeds)
+            {
+                await _sut.SendToOutbox(CreateOutbound(seed.MessageId), new TransactionContext());
+            }
+
+            var stored = (await _sut.GetUnprocessedMessagesFromOutbox()).ToDictionary(m => m.MessageId);
+            foreach (var seed in seeds)
+            {
+                stored[seed.MessageId].SentToOutboxAtUtc = new DateTime(2026, 6, 7, 0, seed.SentAtMinute, 0, DateTimeKind.Utc);
+            }
+        }
+
         private static IPersistanceTransaction StubTransaction(Guid transactionId)
         {
             var transaction = new Mock<IPersistanceTransaction>();

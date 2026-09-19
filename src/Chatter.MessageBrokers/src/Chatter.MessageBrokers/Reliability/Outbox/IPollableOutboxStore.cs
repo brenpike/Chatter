@@ -19,6 +19,23 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
     /// </remarks>
     public interface IPollableOutboxStore
     {
+        /// <summary>
+        /// Takes one Outbox Poll Batch: at most
+        /// <see cref="Chatter.MessageBrokers.Reliability.Configuration.ReliabilityOptions.OutboxPollBatchSize"/>
+        /// unprocessed rows, oldest <see cref="OutboxMessage.SentToOutboxAtUtc"/> first.
+        /// </summary>
+        /// <remarks>
+        /// A store implementing this method owes both halves of that contract. The cap is what bounds the cost of a
+        /// single poll; the ordering is what keeps a row from starving behind newer ones while the backlog stays
+        /// above the cap, because the cap is applied to the ordered rows rather than to an arbitrary selection.
+        /// <para>
+        /// The poller polls again IMMEDIATELY after a batch of the full size and waits
+        /// <see cref="Chatter.MessageBrokers.Reliability.Configuration.ReliabilityOptions.OutboxProcessingIntervalInMilliseconds"/>
+        /// only after a shorter one, so a backlog larger than the batch size drains in one interval. An answer
+        /// LARGER than the cap counts as a full batch, so it is still drained and the poller still terminates, but
+        /// it defeats the bound on poll cost the cap exists for.
+        /// </para>
+        /// </remarks>
         Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default);
         Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages, CancellationToken cancellationToken = default);
         Task UpdateProcessedDate(OutboxMessage outboxMessage, CancellationToken cancellationToken = default);

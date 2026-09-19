@@ -43,6 +43,14 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         private readonly Mock<IOutboxProcessor> _processor = new Mock<IOutboxProcessor>();
         private readonly BrokeredMessageOutboxProcessor _sut;
 
+        private static readonly DateTime BaseSentToOutboxAtUtc = new DateTime(2026, 6, 7, 0, 0, 0, DateTimeKind.Utc);
+
+        // RunContinuationsAsynchronously so the waiting test body never resumes INSIDE the poller's own call stack;
+        // a test that stopped the poller from there would await a task it was itself standing on.
+        private readonly TaskCompletionSource _pollSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _polls;
+        private int _signalOnPoll = int.MaxValue;
+
         public WhenSendingOutboxMessages()
         {
             // A long interval parks the loop at Task.Delay after the first drain so a single
@@ -84,8 +92,57 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         {
             await _sut.StartAsync(CancellationToken.None);
             await signal.WaitAsync(TimeSpan.FromSeconds(5));
-            await _sut.StopAsync(CancellationToken.None);
+            // Bounded so a drain loop that ignores its stopping token fails the test instead of hanging the suite.
+            await _sut.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
         }
+
+        // Counts the poll and releases _pollSignal once the poller reaches the poll a test is waiting on, so a
+        // test observes the drain off a signal rather than by sleeping for the processing interval.
+        private int RecordPoll()
+        {
+            var poll = Interlocked.Increment(ref _polls);
+            if (poll >= _signalOnPoll)
+            {
+                _pollSignal.TrySetResult();
+            }
+            return poll;
+        }
+
+        // Answers each poll from the script in order; the final script entry answers every poll after it.
+        private void SetupScriptedPolls(params OutboxMessage[][] script)
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(() => script[Math.Min(RecordPoll(), script.Length) - 1]);
+
+        // Answers every poll with a FULL Outbox Poll Batch of rows never seen before, so neither a short batch nor
+        // the identical-batch guard can end the drain and only cancellation can.
+        private void SetupEndlessDistinctFullPolls(int batchSize)
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(() => CreateFullBatch(batchSize, RecordPoll()));
+
+        private static OutboxMessage[] CreateFullBatch(int batchSize, int poll)
+            => Enumerable.Range(0, batchSize)
+                         .Select(offset => CreateOutboxMessage((poll * batchSize) + offset, BaseSentToOutboxAtUtc))
+                         .ToArray();
+
+        private void SignalWhenProcessedCountReaches(int target, List<int> processedOrder)
+            => _processor.Setup(p => p.Process(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+                         .Returns(Task.CompletedTask)
+                         .Callback<OutboxMessage, CancellationToken>((m, _) => RecordProcessed(m, target, processedOrder));
+
+        private void RecordProcessed(OutboxMessage message, int target, List<int> processedOrder)
+        {
+            processedOrder.Add(message.Id);
+            if (processedOrder.Count >= target)
+            {
+                _pollSignal.TrySetResult();
+            }
+        }
+
+        private void VerifyPollCount(int expected)
+            => _outbox.As<IPollableOutboxStore>()
+                      .Verify(o => o.GetUnprocessedMessagesFromOutbox(It.IsAny<CancellationToken>()), Times.Exactly(expected));
 
         [Fact]
         public void MustThrowArgumentNullExceptionWhenLoggerIsNull()
@@ -226,6 +283,64 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
                 .Should().NotThrowAsync();
 
             VerifyErrorLogged();
+        }
+
+        [Fact]
+        public async Task MustRepollImmediatelyAfterAFullOutboxPollBatchAndStopAfterAShortOne()
+        {
+            // A poll bounded by OutboxPollBatchSize would otherwise trickle the backlog out one batch per
+            // processing interval, capping throughput at the batch size every interval.
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+            SetupScriptedPolls(
+                new[] { CreateOutboxMessage(1, BaseSentToOutboxAtUtc), CreateOutboxMessage(2, BaseSentToOutboxAtUtc.AddMinutes(1)) },
+                new[] { CreateOutboxMessage(3, BaseSentToOutboxAtUtc.AddMinutes(2)) });
+            var processedOrder = new List<int>();
+            SignalWhenProcessedCountReaches(3, processedOrder);
+
+            await RunSingleDrainAsync(_pollSignal.Task);
+
+            VerifyPollCount(2);
+            processedOrder.Should().Equal(1, 2, 3);
+        }
+
+        [Fact]
+        public async Task MustStopRepollingWhenAFullOutboxPollBatchRepeatsUnchanged()
+        {
+            // OutboxProcessor.Process swallows every dispatch failure, so a poison batch of exactly
+            // OutboxPollBatchSize rows is re-fetched identically forever. Without this guard the drain never
+            // reaches its Task.Delay and spins on the store with no wait at all.
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+            _signalOnPoll = 2;
+            SetupScriptedPolls(new[] { CreateOutboxMessage(1, BaseSentToOutboxAtUtc), CreateOutboxMessage(2, BaseSentToOutboxAtUtc.AddMinutes(1)) });
+
+            await RunSingleDrainAsync(_pollSignal.Task);
+
+            VerifyPollCount(2);
+        }
+
+        [Fact]
+        public async Task MustNotRepollWhenTheFirstOutboxPollBatchIsEmpty()
+        {
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+            _signalOnPoll = 1;
+            SetupScriptedPolls(Array.Empty<OutboxMessage>());
+
+            await RunSingleDrainAsync(_pollSignal.Task);
+
+            VerifyPollCount(1);
+        }
+
+        [Fact]
+        public async Task MustStopDrainingWhenCancellationIsRequestedMidDrain()
+        {
+            // Every poll answers with a full batch of new rows, so the drain would never end on its own.
+            // RunSingleDrainAsync bounds StopAsync, so a drain that ignores its stopping token fails here.
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+            _signalOnPoll = 3;
+            SetupEndlessDistinctFullPolls(2);
+
+            await FluentActions.Invoking(() => RunSingleDrainAsync(_pollSignal.Task))
+                .Should().NotThrowAsync();
         }
 
         private void VerifyErrorLogged()

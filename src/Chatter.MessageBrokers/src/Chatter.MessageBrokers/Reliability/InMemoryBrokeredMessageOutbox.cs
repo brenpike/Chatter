@@ -77,9 +77,15 @@ namespace Chatter.MessageBrokers.Reliability
             return Task.CompletedTask;
         }
 
+        // INVARIANT: the Outbox Poll Batch contract - at most ReliabilityOptions.OutboxPollBatchSize rows, oldest
+        // SentToOutboxAtUtc first. The dictionary hands back its values in hash-bucket order, which is unrelated to
+        // arrival, so the ordering must be applied BEFORE the cap or the cap would drop arbitrary rows and an old
+        // message could sit behind newer ones for as long as the backlog stays above the batch size.
         public Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default)
                 => Task.FromResult<IEnumerable<OutboxMessage>>(_outbox.Values
                         .Where(m => m.ProcessedFromOutboxAtUtc is null)
+                        .OrderBy(m => m.SentToOutboxAtUtc)
+                        .Take(_reliabilityOptions.OutboxPollBatchSize)
                         .ToList());
 
         public Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages, CancellationToken cancellationToken = default)
