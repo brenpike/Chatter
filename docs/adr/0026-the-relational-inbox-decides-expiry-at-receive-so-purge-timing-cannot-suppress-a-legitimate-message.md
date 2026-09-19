@@ -111,6 +111,50 @@ redelivery horizon spends its suppression on redeliveries and releases the id af
 observable now rather than silent: `ReceiveViaInbox` logs it at Information with the message id
 (`MustLogSuppressionAtInformationWithTheMessageId`), and logs the expired-marker decision at Information too.
 
+### Accepted residual: the store's collation, not the application, decides message-id equality
+
+`ReceiveViaInbox` reads the marker with `_inbox.FindAsync(new object[] { messageId }, ...)` and
+`HasBeenReceived` reads it with `AnyAsync(m => m.MessageId == messageId)`. Both emit an equality predicate on
+the `MessageId` column, so the comparison is performed by the DATABASE under that column's collation, not by
+the application under an ordinal comparison. `InboxMessageConfiguration.Configure` declares
+`HasKey(t => t.MessageId)` and `IsRequired()` and no collation, so the column inherits the database default —
+on SQL Server typically a case- and accent-insensitive one. Two ordinally distinct broker identifiers that
+the deployed collation treats as equal therefore share one marker, and the second is suppressed without its
+handler running.
+
+**Root cause.** Message-id equality is delegated to the store's collation, and this package never states what
+equality it needs. **Inherited, not introduced:** the pre-branch code read the same column with
+`AnyAsync(m => m.MessageId == messageId)`. This change replaced an existence test with a key lookup — the
+query SHAPE — and left the equality SEMANTICS exactly where it found them.
+
+**Bounded impact.** Reaching it needs two ordinally distinct ids that collide under the deployed collation,
+which broker identifiers in practice are not. For a GUID rendered as hex — the common case — a case-only
+difference is the SAME identifier, so a case-insensitive collation is correct there rather than harmful; the
+residual needs an id scheme whose distinctness genuinely rests on case or accent. As with a forged id above,
+setting the colliding id requires the ability to publish to the queue the receive path reads from, so it is
+not reachable by anything that cannot already publish. With a window configured the suppression is bounded to
+that window rather than permanent, and it is observable rather than silent: suppression logs at Information
+with the message id (`MustLogSuppressionAtInformationWithTheMessageId`).
+
+**Why the obvious remediation was rejected.** Pinning a binary or case-sensitive collation on the column is
+the closed-by-construction fix, and it is not this package's to make. This package ships
+`IEntityTypeConfiguration` types that the application applies inside its OWN `DbContext.OnModelCreating`, and
+the application generates and owns the migration — the same boundary that makes
+`OutboxMessagePollIndexConfiguration` opt-in. `UseCollation` is also provider-specific while this package
+targets EF Core generally, so a collation named in shipped configuration would be wrong or unsupported on
+some providers. Changing the collation of an existing primary-key column is in any case a breaking schema
+migration on every deployed consumer.
+
+The cheaper in-process remediation — re-check `string.Equals(marker.MessageId, messageId,
+StringComparison.Ordinal)` after the lookup and treat a non-ordinal match as absent — was rejected on the
+merits, because it converts a silent suppression into an unrecoverable one. The handler would run, then
+`AddAsync` would insert a second row whose key the database still considers a duplicate, so the unit of work
+fails on its primary key on every delivery until retention purges the colliding marker or the broker
+dead-letters the message. It also never reaches `HasBeenReceived`, whose `AnyAsync` decides in the database.
+
+An application that needs ordinal message-id equality declares the collation it wants on the `MessageId`
+column in its own `OnModelCreating`, alongside the configuration this package ships.
+
 ### Accepted residual: two concurrent redeliveries of an expired id both re-run the handler
 
 Both deliveries can call `FindAsync`, both can see the same expired marker, and both can run the handler
@@ -138,14 +182,19 @@ at Error, and waits for the next interval. This is deliberate: a context mapping
 the host down. The cost is that a misconfigured model reports itself once per interval, for as long as the
 host runs, rather than once at startup.
 
-### Accepted residual: the core CONTEXT.md still describes this receive as reserving the id
+### The core CONTEXT.md drift, corrected rather than carried
 
-The **Inbox Deduplicator** term in `src/Chatter.MessageBrokers/CONTEXT.md` says that on the relational tier
-`ReceiveViaInbox` "reserves the message id before the handler runs rather than after it completes". That
-describes the in-memory realization, not this one: `BrokeredMessageInbox<TContext>` stages its marker after
-the handler returns and commits nothing itself, so no reservation is visible to a concurrent delivery. The
-drift predates this work and is recorded here rather than corrected, because that file is outside this
-change's scope.
+The **Inbox Deduplicator** term in `src/Chatter.MessageBrokers/CONTEXT.md` used to say that on the relational
+tier `ReceiveViaInbox` "reserves the message id before the handler runs rather than after it completes", and
+built an in-flight-reservation paragraph on that premise. That described the in-memory realization, not this
+one: `BrokeredMessageInbox<TContext>` stages its marker AFTER the handler returns and commits nothing itself,
+so no reservation is ever visible to a concurrent delivery. The drift predated this work and was first filed
+here as a carried residual; it was corrected during this initiative's pre-PR review instead. The term now
+states the handler-first order, scopes in-flight reservation to the in-memory inbox, and carries an `_Avoid_`
+clause naming `MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId` and
+`MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed`
+(`tests/UsingBrokeredMessageInbox/WhenReceivingViaInbox.cs`) as the oracles that go red if the order ever
+changes — so the claim is pinned to executable behaviour rather than restated as prose.
 
 ### Accepted residual: the purge service's loop is covered by reasoning only
 
@@ -177,6 +226,8 @@ test in this repository starts the hosted service.
   rule that the relational inbox never commits its own marker.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageInbox.cs`
   (`ReceiveViaInbox`, `HasMarkerExpired`, `HasBeenReceived`) — where the expiry decision lives.
+- `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/InboxMessageConfiguration.cs`
+  — the key declaration that leaves `MessageId` equality to the column's collation.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/ReliabilityRetentionPurgeService.cs`
   (`ExecuteAsync`, `PurgeOnceAsync`) — the hygiene half.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/EntityFrameworkReliabilityOptions.cs`

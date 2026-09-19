@@ -43,9 +43,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             // INVARIANT: the purge must suspend before its first pass. BackgroundService.StartAsync runs this method
             // inline until it genuinely suspends, and every await below can complete synchronously against a database
-            // that answers from cache, so without this the first purge of a large table would run on the host's
-            // startup path. The unconditional Task.Delay bounds that to ONE pass rather than the whole backlog the
-            // outbox processor faced, but one pass is still one pass the host waits on.
+            // that answers from cache, so without THIS yield the first purge of a large table would run on the host's
+            // startup path. Task.Yield is what hands control back. The loop's Task.Delay cannot do it: that delay is
+            // reached only AFTER a pass has already run, so it paces how often a pass repeats and never decides
+            // whether the first one lands on the startup path.
             await Task.Yield();
 
             _logger.LogInformation($"Reliability retention purge is starting for {typeof(TContext).Name}.");

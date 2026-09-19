@@ -91,6 +91,11 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
             _logger.LogTrace($"Checking inbox for brokered message with message id '{messageId}'.");
 
+            // The equality this lookup - and HasBeenReceived below - applies is the MessageId column's COLLATION, not
+            // an ordinal comparison, because both predicates are evaluated by the database. Recorded as an accepted
+            // residual, with root cause, bounds and why pinning a collation here was rejected, under "the store's
+            // collation, not the application, decides message-id equality" in
+            // docs/adr/0026-the-relational-inbox-decides-expiry-at-receive-so-purge-timing-cannot-suppress-a-legitimate-message.md.
             var existingMarker = await _inbox.FindAsync(new object[] { messageId }, cancellationToken).ConfigureAwait(false);
 
             if (existingMarker != null && !HasMarkerExpired(existingMarker))

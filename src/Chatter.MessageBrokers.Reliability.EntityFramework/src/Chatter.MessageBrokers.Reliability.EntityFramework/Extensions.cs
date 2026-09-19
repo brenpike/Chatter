@@ -136,11 +136,15 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         // INVARIANT: the IsKeyedService test must stay ahead of the ImplementationInstance read, for the same reason it
-        // stays ahead of the ImplementationType read in IsBehaviorDescriptorFor below. Microsoft.Extensions
-        // .DependencyInjection.Abstractions 8.0.0 throws InvalidOperationException from ImplementationInstance for a
-        // keyed descriptor, and consumers bind that assembly at their ASP.NET Core host's patch level rather than at the
-        // version restored here, so reordering these operands reintroduces the crash on an unpatched host without
-        // failing anything in this repository.
+        // stays ahead of the ImplementationType read in IsBehaviorDescriptorFor below. On an affected Microsoft
+        // .Extensions.DependencyInjection.Abstractions, reading ImplementationInstance for a keyed descriptor throws
+        // InvalidOperationException, and consumers bind that assembly at their ASP.NET Core host's patch level rather
+        // than at the version restored here, so reordering these operands reintroduces the crash on an unpatched host
+        // without failing anything in this repository. WHICH versions are affected, and why the boundary must be read
+        // from the LOADED assembly rather than from the lock file, is recorded ONCE - above
+        // UsingReliabilityPipelineExtensions/WhenOrderingReliabilityBehaviors
+        // .MustLeaveAKeyedCommandBehaviorOutOfTheReliabilityBehaviorSet. Do not restate the boundary here: a version
+        // literal repeated per site is exactly what drifted.
         private static Type FindBoundReliabilityContextType(IServiceCollection services)
         {
             for (var index = 0; index < services.Count; index++)
@@ -254,10 +258,13 @@ namespace Microsoft.Extensions.DependencyInjection
         // registration - which serves a single command type - out of the reliability behavior set. A keyed
         // descriptor is left out too: it is invisible to the non-keyed resolution the pipeline performs, so it
         // is never part of the sequence these extensions order.
-        // INVARIANT: the IsKeyedService test must stay ahead of the ImplementationType read. Microsoft.Extensions
-        // .DependencyInjection.Abstractions 8.0.0 throws InvalidOperationException from ImplementationType for a
-        // keyed descriptor, and consumers bind that assembly at their ASP.NET Core host's patch level, so
-        // reordering these operands reintroduces the crash on an unpatched host without failing anything here.
+        // INVARIANT: the IsKeyedService test must stay ahead of the ImplementationType read. On an affected
+        // Microsoft.Extensions.DependencyInjection.Abstractions, reading ImplementationType for a keyed descriptor
+        // throws InvalidOperationException, and consumers bind that assembly at their ASP.NET Core host's patch
+        // level, so reordering these operands reintroduces the crash on an unpatched host without failing anything
+        // here. The affected-version boundary is recorded ONCE, above
+        // UsingReliabilityPipelineExtensions/WhenOrderingReliabilityBehaviors
+        // .MustLeaveAKeyedCommandBehaviorOutOfTheReliabilityBehaviorSet; do not restate it here.
         private static bool IsBehaviorDescriptorFor(ServiceDescriptor descriptor, Type openGenericBehaviorType)
             => !descriptor.IsKeyedService
                 && descriptor.ServiceType.IsGenericType
