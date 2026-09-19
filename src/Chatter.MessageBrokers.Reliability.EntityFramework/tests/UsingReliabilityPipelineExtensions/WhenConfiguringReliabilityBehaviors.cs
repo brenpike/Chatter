@@ -49,8 +49,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             => builder.Services.LastOrDefault(descriptor =>
                 descriptor.ServiceType == serviceType && descriptor.ImplementationFactory != null);
 
-        // UnitOfWork<TContext> is internal to the EF module and cannot be referenced by type symbol from the
-        // test assembly. Match its closed-generic ImplementationType by name plus the supplied context arg.
+        // UnitOfWork<TContext> is internal to the EF module, but this assembly holds an InternalsVisibleTo
+        // grant and CAN reference it by type symbol - WhenBindingReliabilityContext asserts directly against
+        // typeof(UnitOfWork<PrimaryDbContext>). This helper takes its context as a runtime Type rather than a
+        // type parameter, so it matches the closed-generic ImplementationType by name plus that context arg.
         private static ServiceDescriptor FindUnitOfWorkDescriptor(CommandPipelineBuilder builder, Type contextType)
             => builder.Services.LastOrDefault(descriptor =>
                 descriptor.ServiceType == typeof(IUnitOfWork) &&
