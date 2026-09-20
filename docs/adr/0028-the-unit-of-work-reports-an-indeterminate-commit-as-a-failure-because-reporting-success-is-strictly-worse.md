@@ -91,9 +91,10 @@ finds it. The bound holds only where all three of these hold:
 is suppressed by `ReceiveViaInbox`'s own `_inbox.FindAsync(new object[] { messageId }, cancellationToken)`,
 pinned by `MustNotInvokeHandlerOrAddSecondRowForDuplicateMessageId`. `HasBeenReceived` answers on the same
 terms — ADR-0026 records that deliberately — but it is the `IInboxDeduplicator` port read and has NO production
-call site in this repository; a grep for `.HasBeenReceived(` across `src/` outside `tests/` returns only the
-interface declaration, the tier implementations, and doc comments. Naming it as the suppressing symbol would be
-wrong, so the record names the lookup that actually runs.
+call site in this repository; a grep for `.HasBeenReceived(` across `src/` outside `tests/` returns NOTHING —
+all 18 matches of that call form sit under a `/tests/` path. The interface declaration, the tier
+implementations and the doc comments match the BARE token, which carries no leading dot. Naming it as the
+suppressing symbol would be wrong, so the record names the lookup that actually runs.
 
 **What the marker does not bound.** The marker stops the handler running twice. It does not stop the failure
 being REPORTED once for work that committed, so the application's own failure handling — the recovery pipeline,
