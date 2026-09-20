@@ -209,10 +209,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
         [Fact]
         public void MustRefuseASecondContextFromEveryContextParameterizedEntryPoint()
         {
-            var entryPoints = _reliabilityExtensions
-                .GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .Where(IsContextParameterizedEntryPoint)
-                .ToList();
+            var entryPoints = ContextParameterizedEntryPoints();
 
             entryPoints.Select(entryPoint => entryPoint.Name).Should().Contain(new[]
             {
@@ -228,7 +225,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
                 Action register = () => ConfigurePipeline(services, builder =>
                 {
                     builder.WithInboxBehavior<PrimaryDbContext>();
-                    InvokeWithContext(entryPoint, builder, typeof(SecondaryDbContext));
+                    InvokeWithContext(entryPoint, builder, typeof(SecondaryDbContext), suppliedConfiguration: null);
                 });
 
                 register.Should().Throw<InvalidOperationException>(
@@ -236,6 +233,147 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
                         .Which.Message.Should().Contain(typeof(PrimaryDbContext).FullName)
                                       .And.Contain(typeof(SecondaryDbContext).FullName);
             }
+        }
+
+        // The one discovery filter both sweeps run on. An entry point added later is picked up by each of them
+        // without being listed anywhere, and the name check in the sweep above is what keeps a filter that matched
+        // nothing from making either of them pass while driving no entry point at all.
+        private static IReadOnlyList<MethodInfo> ContextParameterizedEntryPoints()
+            => _reliabilityExtensions.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                                     .Where(IsContextParameterizedEntryPoint)
+                                     .ToList();
+
+        // One case per refusal an entry point can raise, each carrying the state the collection is in when the call
+        // arrives and the argument that makes it refuse. The mixed-context case arrives with another context already
+        // bound, so the bind itself refuses. Every span case arrives with NOTHING bound - the one state in which the
+        // bind REGISTERS - and names the entry point's own context, so the refusal lands after the bind has already
+        // written. Driving a span case from an already-bound collection would make the bind a no-op and assert
+        // nothing about what a refusal leaves behind.
+        private sealed class RefusalCase
+        {
+            public RefusalCase(string name,
+                               Type boundContextType,
+                               Type invokedContextType,
+                               Action<EntityFrameworkReliabilityOptions> configuration,
+                               Type expectedException)
+            {
+                Name = name;
+                BoundContextType = boundContextType;
+                InvokedContextType = invokedContextType;
+                Configuration = configuration;
+                ExpectedException = expectedException;
+            }
+
+            public string Name { get; }
+
+            public Type BoundContextType { get; }
+
+            public Type InvokedContextType { get; }
+
+            public Action<EntityFrameworkReliabilityOptions> Configuration { get; }
+
+            public Type ExpectedException { get; }
+        }
+
+        private static RefusalCase SpanRefusal(string name, Action<EntityFrameworkReliabilityOptions> configuration)
+            => new RefusalCase(name, null, typeof(PrimaryDbContext), configuration, typeof(ArgumentOutOfRangeException));
+
+        // Both bounds of all three spans. Each is a separate throw site, each sits after the bind, and each is
+        // therefore its own chance to leave a caller holding a registration its call never completed.
+        private static readonly RefusalCase[] _spanRefusals = new[]
+        {
+            SpanRefusal("an InboxDeduplicationWindow naming no time",
+                        options => options.InboxDeduplicationWindow = TimeSpan.Zero),
+            SpanRefusal("an InboxDeduplicationWindow no cutoff can be derived from",
+                        options => options.InboxDeduplicationWindow = TimeSpan.MaxValue),
+            SpanRefusal("a ProcessedOutboxRetention naming no time",
+                        options => options.ProcessedOutboxRetention = TimeSpan.Zero),
+            SpanRefusal("a ProcessedOutboxRetention no cutoff can be derived from",
+                        options => options.ProcessedOutboxRetention = TimeSpan.MaxValue),
+            SpanRefusal("a PurgeInterval naming no time",
+                        options => options.PurgeInterval = TimeSpan.Zero),
+            SpanRefusal("a PurgeInterval the scheduler cannot schedule",
+                        options => options.PurgeInterval = TimeSpan.FromMilliseconds((double)uint.MaxValue))
+        };
+
+        private static IEnumerable<RefusalCase> RefusalCasesFor(MethodInfo entryPoint)
+        {
+            yield return new RefusalCase("a second DbContext",
+                                         typeof(PrimaryDbContext),
+                                         typeof(SecondaryDbContext),
+                                         null,
+                                         typeof(InvalidOperationException));
+
+            var takesRetentionConfiguration = entryPoint.GetParameters()
+                .Any(parameter => parameter.ParameterType == typeof(Action<EntityFrameworkReliabilityOptions>));
+
+            if (!takesRetentionConfiguration)
+            {
+                yield break;
+            }
+
+            foreach (var spanRefusal in _spanRefusals)
+            {
+                yield return spanRefusal;
+            }
+        }
+
+        public static TheoryData<string, string> RefusedCalls()
+        {
+            var refusedCalls = new TheoryData<string, string>();
+
+            foreach (var entryPoint in ContextParameterizedEntryPoints())
+            {
+                foreach (var refusal in RefusalCasesFor(entryPoint))
+                {
+                    refusedCalls.Add(entryPoint.Name, refusal.Name);
+                }
+            }
+
+            return refusedCalls;
+        }
+
+        // The sweep: every public TContext-parameterized entry point crossed with every refusal it can raise,
+        // watching the caller's own collection across the throw. MustLeaveTheServiceCollectionExactlyAsItWasWhenA
+        // CallIsRefused above holds one of those crossings; the refusals it does not reach are the ones raised
+        // AFTER an entry point has begun registering, which is invisible both to the door that returns normally
+        // and to a caller that catches.
+        [Theory]
+        [MemberData(nameof(RefusedCalls))]
+        public void MustLeaveTheServiceCollectionExactlyAsItWasWhenAnyRefusalIsRaised(string entryPointName, string refusalName)
+        {
+            var entryPoint = ContextParameterizedEntryPoints().Single(method => method.Name == entryPointName);
+            var refusal = RefusalCasesFor(entryPoint).Single(candidate => candidate.Name == refusalName);
+
+            var services = new ServiceCollection();
+            List<ServiceDescriptor> beforeTheRefusedCall = null;
+
+            Action register = () => ConfigurePipeline(services, builder =>
+            {
+                BindContextDirectly(builder.Services, refusal.BoundContextType);
+                beforeTheRefusedCall = builder.Services.ToList();
+                InvokeWithContext(entryPoint, builder, refusal.InvokedContextType, refusal.Configuration);
+            });
+
+            register.Should().Throw<Exception>("'{0}' must refuse {1}", entryPointName, refusalName)
+                    .Which.GetType().Should().Be(refusal.ExpectedException);
+
+            beforeTheRefusedCall.Should().NotBeNull();
+            services.Should().Equal(beforeTheRefusedCall,
+                                    "'{0}' refusing {1} must leave every descriptor in the slot the caller left it in",
+                                    entryPointName, refusalName);
+        }
+
+        // The binding marker is registered directly rather than through one of the entry points, so a case states
+        // the collection's starting state instead of inheriting whatever else a door would have registered with it.
+        private static void BindContextDirectly(IServiceCollection services, Type contextType)
+        {
+            if (contextType is null)
+            {
+                return;
+            }
+
+            services.AddSingleton(new ReliabilityContextBinding(contextType));
         }
 
         private static bool IsContextParameterizedEntryPoint(MethodInfo method)
@@ -251,11 +389,14 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
                 && typeParameters[0].GetGenericParameterConstraints().Any(constraint => constraint == typeof(DbContext));
         }
 
-        private static void InvokeWithContext(MethodInfo entryPoint, CommandPipelineBuilder pipelineBuilder, Type contextType)
+        private static void InvokeWithContext(MethodInfo entryPoint,
+                                              CommandPipelineBuilder pipelineBuilder,
+                                              Type contextType,
+                                              Delegate suppliedConfiguration)
         {
             var closedEntryPoint = entryPoint.MakeGenericMethod(contextType);
             var arguments = closedEntryPoint.GetParameters()
-                                            .Select(parameter => BuildArgument(parameter, pipelineBuilder))
+                                            .Select(parameter => BuildArgument(parameter, pipelineBuilder, suppliedConfiguration))
                                             .ToArray();
 
             try
@@ -270,7 +411,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
 
         // Fails loudly on a parameter type it has no argument for. Skipping one would leave the entry point
         // unexercised while this sweep still reported success.
-        private static object BuildArgument(ParameterInfo parameter, CommandPipelineBuilder pipelineBuilder)
+        private static object BuildArgument(ParameterInfo parameter, CommandPipelineBuilder pipelineBuilder, Delegate suppliedConfiguration)
         {
             if (parameter.ParameterType == typeof(CommandPipelineBuilder))
             {
@@ -280,16 +421,37 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             if (parameter.ParameterType.IsGenericType
                 && parameter.ParameterType.GetGenericTypeDefinition() == typeof(Action<>))
             {
-                var noOp = typeof(WhenBindingReliabilityContext)
-                    .GetMethod(nameof(IgnoreConfiguration), BindingFlags.NonPublic | BindingFlags.Static)
-                    .MakeGenericMethod(parameter.ParameterType.GetGenericArguments());
-
-                return noOp.CreateDelegate(parameter.ParameterType);
+                return suppliedConfiguration is null
+                    ? BuildNoOpConfiguration(parameter.ParameterType)
+                    : RequireConfigurationFor(parameter, suppliedConfiguration);
             }
 
             throw new NotSupportedException(
                 $"'{nameof(WhenBindingReliabilityContext)}' has no argument for parameter '{parameter.Name}' of type " +
                 $"'{parameter.ParameterType}' on '{parameter.Member.Name}'. Supply one so the entry point is driven.");
+        }
+
+        private static Delegate BuildNoOpConfiguration(Type configurationType)
+        {
+            var noOp = typeof(WhenBindingReliabilityContext)
+                .GetMethod(nameof(IgnoreConfiguration), BindingFlags.NonPublic | BindingFlags.Static)
+                .MakeGenericMethod(configurationType.GetGenericArguments());
+
+            return noOp.CreateDelegate(configurationType);
+        }
+
+        // A configuration a case supplied that this entry point cannot take would otherwise fall back to the no-op,
+        // leaving the refusal that case exists to raise unraised while the sweep still reported success.
+        private static Delegate RequireConfigurationFor(ParameterInfo parameter, Delegate suppliedConfiguration)
+        {
+            if (!parameter.ParameterType.IsInstanceOfType(suppliedConfiguration))
+            {
+                throw new NotSupportedException(
+                    $"'{nameof(WhenBindingReliabilityContext)}' supplied a '{suppliedConfiguration.GetType()}' for parameter " +
+                    $"'{parameter.Name}' of type '{parameter.ParameterType}' on '{parameter.Member.Name}'.");
+            }
+
+            return suppliedConfiguration;
         }
 
         private static void IgnoreConfiguration<TOptions>(TOptions options)

@@ -31,10 +31,11 @@ namespace Microsoft.Extensions.DependencyInjection
         public static CommandPipelineBuilder WithUnitOfWorkBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder)
             where TContext : DbContext
         {
-            BindReliabilityContext<TContext>(pipelineBuilder.Services);
-            pipelineBuilder.Services.Replace<IUnitOfWork, UnitOfWork<TContext>>(ServiceLifetime.Scoped);
-            AddReliabilityBehaviorOnce(pipelineBuilder, typeof(UnitOfWorkBehavior<>));
-            NormalizeReliabilityBehaviorOrder(pipelineBuilder.Services);
+            var staged = StageReliabilityRegistrations(pipelineBuilder.Services);
+
+            StageUnitOfWorkBehavior<TContext>(staged);
+
+            CommitStagedRegistrations(pipelineBuilder.Services, staged);
 
             return pipelineBuilder;
         }
@@ -42,13 +43,17 @@ namespace Microsoft.Extensions.DependencyInjection
         public static CommandPipelineBuilder WithInboxBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder)
             where TContext : DbContext
         {
-            BindReliabilityContext<TContext>(pipelineBuilder.Services);
-            pipelineBuilder.WithUnitOfWorkBehavior<TContext>();
-            SeedDefaultReliabilityRetention(pipelineBuilder.Services);
-            pipelineBuilder.Services.Replace<BrokeredMessageInbox<TContext>, BrokeredMessageInbox<TContext>>(ServiceLifetime.Scoped);
-            pipelineBuilder.Services.Replace<IBrokeredMessageInbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<BrokeredMessageInbox<TContext>>());
-            AddReliabilityBehaviorOnce(pipelineBuilder, typeof(InboxBehavior<>));
-            NormalizeReliabilityBehaviorOrder(pipelineBuilder.Services);
+            var staged = StageReliabilityRegistrations(pipelineBuilder.Services);
+
+            BindReliabilityContext<TContext>(staged);
+            StageUnitOfWorkBehavior<TContext>(staged);
+            SeedDefaultReliabilityRetention(staged);
+            staged.Replace<BrokeredMessageInbox<TContext>, BrokeredMessageInbox<TContext>>(ServiceLifetime.Scoped);
+            staged.Replace<IBrokeredMessageInbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<BrokeredMessageInbox<TContext>>());
+            AddReliabilityBehaviorOnce(staged, typeof(InboxBehavior<>));
+            NormalizeReliabilityBehaviorOrder(staged);
+
+            CommitStagedRegistrations(pipelineBuilder.Services, staged);
 
             return pipelineBuilder;
         }
@@ -56,18 +61,92 @@ namespace Microsoft.Extensions.DependencyInjection
         public static CommandPipelineBuilder WithOutboxProcessingBehavior<TContext>(this CommandPipelineBuilder pipelineBuilder)
             where TContext : DbContext
         {
-            BindReliabilityContext<TContext>(pipelineBuilder.Services);
-            AddReliabilityBehaviorOnce(pipelineBuilder, typeof(OutboxProcessingBehavior<>));
-            SeedDefaultReliabilityRetention(pipelineBuilder.Services);
+            var staged = StageReliabilityRegistrations(pipelineBuilder.Services);
+
+            BindReliabilityContext<TContext>(staged);
+            AddReliabilityBehaviorOnce(staged, typeof(OutboxProcessingBehavior<>));
+            SeedDefaultReliabilityRetention(staged);
             // Register the EF outbox once scoped and forward the enqueue contract to the same instance.
             // IPollableOutboxStore is obtained by casting IBrokeredMessageOutbox at the consumption site.
-            pipelineBuilder.Services.Replace<BrokeredMessageOutbox<TContext>, BrokeredMessageOutbox<TContext>>(ServiceLifetime.Scoped);
-            pipelineBuilder.Services.Replace<IBrokeredMessageOutbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<BrokeredMessageOutbox<TContext>>());
-            pipelineBuilder.Services.Replace<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
-            pipelineBuilder.WithUnitOfWorkBehavior<TContext>();
-            NormalizeReliabilityBehaviorOrder(pipelineBuilder.Services);
+            staged.Replace<BrokeredMessageOutbox<TContext>, BrokeredMessageOutbox<TContext>>(ServiceLifetime.Scoped);
+            staged.Replace<IBrokeredMessageOutbox>(ServiceLifetime.Scoped, sp => sp.GetRequiredService<BrokeredMessageOutbox<TContext>>());
+            staged.Replace<IRouteBrokeredMessages, OutboxBrokeredMessageRouter>(ServiceLifetime.Scoped);
+            StageUnitOfWorkBehavior<TContext>(staged);
+            NormalizeReliabilityBehaviorOrder(staged);
+
+            CommitStagedRegistrations(pipelineBuilder.Services, staged);
 
             return pipelineBuilder;
+        }
+
+        // The unit of work the inbox and outbox doors each bring with them. It takes the staged collection rather
+        // than the builder so a door reaches it without leaving the staging, which is what keeps the commit the one
+        // place any of them touches the caller's collection.
+        private static void StageUnitOfWorkBehavior<TContext>(IServiceCollection services)
+            where TContext : DbContext
+        {
+            BindReliabilityContext<TContext>(services);
+            services.Replace<IUnitOfWork, UnitOfWork<TContext>>(ServiceLifetime.Scoped);
+            AddReliabilityBehaviorOnce(services, typeof(UnitOfWorkBehavior<>));
+            NormalizeReliabilityBehaviorOrder(services);
+        }
+
+        // INVARIANT: no entry point holds the caller's IServiceCollection while it does anything that can throw.
+        // Every mutation a door makes is staged onto this copy, and the caller's collection is reached only through
+        // CommitStagedRegistrations below, which is not fallible on its own account. A refusal - the mixed-context
+        // one, any of the three span refusals, or one a step added later raises - therefore lands with the caller's
+        // collection exactly as it was handed over, wherever in the door that step sits. This replaces an earlier
+        // arrangement in which each door bound the context first and was correct only while that bind stayed the
+        // first fallible statement: the span refusals were added to the retention door afterwards, BELOW a bind that
+        // had already registered, and the convention was void with nothing saying so.
+        // ELIMINATED CLASS: a reliability entry point mutating the caller's collection before, or despite, a refusal.
+        // Pinned by UsingReliabilityPipelineExtensions/WhenBindingReliabilityContext
+        // .MustLeaveTheServiceCollectionExactlyAsItWasWhenAnyRefusalIsRaised, a sweep over every public
+        // TContext-parameterized entry point crossed with every refusal that entry point can raise. Returning
+        // `services` from here instead of the copy reddens that sweep's six span cases and nothing else in this
+        // package (observed), because the commit then finds every slot already holding the descriptor it would write
+        // and writes nothing - which is precisely the pre-staging behaviour.
+        private static IServiceCollection StageReliabilityRegistrations(IServiceCollection services)
+        {
+            // ServiceCollection implements IList<ServiceDescriptor> explicitly, so the staging is held through the
+            // interface rather than through the concrete type, which exposes no Add of its own.
+            IServiceCollection staged = new ServiceCollection();
+
+            for (var index = 0; index < services.Count; index++)
+            {
+                staged.Add(services[index]);
+            }
+
+            return staged;
+        }
+
+        // NOTE: descriptors already sitting in the slot the staging would write are left untouched rather than
+        // removed and re-added, because a host may hand these extensions a decorating or side-effecting
+        // IServiceCollection that would see every replay. A slot is written only where it does not already hold the
+        // staged descriptor, a longer staging appends its tail, and a shorter one has its surplus removed from the
+        // back so a removal never invalidates an index still to be visited. Writing by absolute index is also what
+        // carries NormalizeReliabilityBehaviorOrder's slot permutation across intact. A collection the host has made
+        // read-only is expected to refuse the write here just as it refused the registration before staging existed;
+        // no test pins that, and it is written down so a reader does not assume one does. Why the staging is there at
+        // all is stated once, on StageReliabilityRegistrations above.
+        private static void CommitStagedRegistrations(IServiceCollection services, IServiceCollection staged)
+        {
+            for (var index = services.Count - 1; index >= staged.Count; index--)
+            {
+                services.RemoveAt(index);
+            }
+
+            for (var index = 0; index < staged.Count; index++)
+            {
+                if (index >= services.Count)
+                {
+                    services.Add(staged[index]);
+                }
+                else if (!ReferenceEquals(services[index], staged[index]))
+                {
+                    services[index] = staged[index];
+                }
+            }
         }
 
         /// <summary>
@@ -89,7 +168,9 @@ namespace Microsoft.Extensions.DependencyInjection
                                                                                 Action<EntityFrameworkReliabilityOptions> retentionOptions)
             where TContext : DbContext
         {
-            BindReliabilityContext<TContext>(pipelineBuilder.Services);
+            var staged = StageReliabilityRegistrations(pipelineBuilder.Services);
+
+            BindReliabilityContext<TContext>(staged);
 
             var options = new EntityFrameworkReliabilityOptions();
             retentionOptions?.Invoke(options);
@@ -113,9 +194,11 @@ namespace Microsoft.Extensions.DependencyInjection
                                          MaxSchedulablePurgeInterval,
                                          "the scheduler cannot wait that long");
 
-            RemoveReliabilityRetention(pipelineBuilder.Services);
-            pipelineBuilder.Services.AddSingleton(options);
-            pipelineBuilder.Services.AddHostedService<ReliabilityRetentionPurgeService<TContext>>();
+            RemoveReliabilityRetention(staged);
+            staged.AddSingleton(options);
+            staged.AddHostedService<ReliabilityRetentionPurgeService<TContext>>();
+
+            CommitStagedRegistrations(pipelineBuilder.Services, staged);
 
             return pipelineBuilder;
         }
@@ -124,10 +207,13 @@ namespace Microsoft.Extensions.DependencyInjection
         // TContext-parameterized entry point to it. The unit of work commits the context the inbox marker, the outbox
         // rows and the retention purge all live in; because each entry point takes its own type argument and Replace
         // is remove-then-add, a second context would otherwise leave the unit of work committing one context while the
-        // inbox wrote its marker into another - the once-only guarantee lost with nothing raised. Every entry point
-        // calls this BEFORE it registers anything, so the refusal lands while the collection is still exactly as the
-        // caller left it and a caught exception cannot leave a half-configured pipeline behind. The same context is a
-        // no-op however many times, and however many entry points, it arrives through.
+        // inbox wrote its marker into another - the once-only guarantee lost with nothing raised. The same context is
+        // a no-op however many times, and however many entry points, it arrives through. This runs against the staged
+        // copy like every other step, so what a refused call leaves behind is StageReliabilityRegistrations'
+        // guarantee rather than this method's position within a door; that reasoning lives there and is not restated
+        // here. Pinned by UsingReliabilityPipelineExtensions/WhenBindingReliabilityContext
+        // .MustRefuseASecondContextFromEveryContextParameterizedEntryPoint, which drives every discovered entry point
+        // with a second context; deleting this call from any one door reddens that sweep for that door alone.
         private static void BindReliabilityContext<TContext>(IServiceCollection services)
             where TContext : DbContext
         {
@@ -262,14 +348,14 @@ namespace Microsoft.Extensions.DependencyInjection
         // registered since - including descriptors this package does not own - out of the slot its own
         // registration chose. The relative order of the reliability behaviors themselves is established by
         // NormalizeReliabilityBehaviorOrder, not by this guard.
-        private static void AddReliabilityBehaviorOnce(CommandPipelineBuilder pipelineBuilder, Type openGenericBehaviorType)
+        private static void AddReliabilityBehaviorOnce(IServiceCollection services, Type openGenericBehaviorType)
         {
-            if (pipelineBuilder.Services.Any(descriptor => IsBehaviorDescriptorFor(descriptor, openGenericBehaviorType)))
+            if (services.Any(descriptor => IsBehaviorDescriptorFor(descriptor, openGenericBehaviorType)))
             {
                 return;
             }
 
-            pipelineBuilder.WithBehavior(openGenericBehaviorType);
+            services.AddPipelineBehavior(openGenericBehaviorType);
         }
 
         // INVARIANT: the reliability behaviors are permuted into the very indices they already occupy, so
