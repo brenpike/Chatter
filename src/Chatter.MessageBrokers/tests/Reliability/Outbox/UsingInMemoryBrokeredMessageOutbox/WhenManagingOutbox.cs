@@ -21,6 +21,11 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
         private readonly RecordingLoggerCreator<InMemoryBrokeredMessageOutbox> _logger;
         private readonly ReliabilityOptions _reliabilityOptions = new ReliabilityOptions();
         private readonly InMemoryBrokeredMessageOutbox _sut;
+        // IPollableOutboxStore.RecordDispatchAttempt is a default interface implementation, so it is reachable
+        // ONLY through the interface - which is also how the poller reaches it, since it resolves the single
+        // outbox and casts. Calling it through this handle is what lets a store that inherits the no-op default
+        // redden these facts instead of failing to compile.
+        private readonly IPollableOutboxStore _pollableStore;
 
         public WhenManagingOutbox()
         {
@@ -28,6 +33,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
             _bodyConverter.Setup(c => c.Stringify(It.IsAny<byte[]>())).Returns("stringified-body");
             _logger = New.Common().RecordingLogger<InMemoryBrokeredMessageOutbox>();
             _sut = new InMemoryBrokeredMessageOutbox(_logger.Creation, _reliabilityOptions);
+            _pollableStore = _sut;
         }
 
         private OutboundBrokeredMessage CreateOutbound(string messageId = "message-id", string destination = "destination")
@@ -203,9 +209,199 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
             polled.Select(m => m.MessageId).Should().Equal("id-2", "id-4", "id-5", "id-3", "id-1");
         }
 
+        [Fact]
+        public async Task MustExcludeAMessageWhoseNextAttemptHasNotArrived()
+        {
+            // INVARIANT: an unprocessed message is polled only once it is DUE, and a null NextAttemptAtUtc - the
+            // value a staged message carries - is due now. Both halves are read here: id-1 is held back by an
+            // instant still ahead, id-2 is taken with no instant at all.
+            var stored = await SeedOutboxAsync(("id-1", 0), ("id-2", 1));
+            stored["id-1"].NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(5);
+
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-2");
+        }
+
+        [Fact]
+        public async Task MustIncludeAMessageWhoseNextAttemptHasPassed()
+        {
+            // INVARIANT: the due clause HOLDS a message back rather than retiring it - once the instant has passed
+            // the message is polled again, which is what makes the backoff a deferral and not a drop.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            stored["id-1"].NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(-5);
+
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-1");
+        }
+
+        [Fact]
+        public async Task MustSpendNoBatchSlotOnAMessageThatIsNotDue()
+        {
+            // INVARIANT: the due clause is applied BEFORE the batch cap. Gating the rows the cap already took
+            // would shrink the batch instead of filling it from behind, and a batch's worth of held-back messages
+            // would then return nothing at all - the very starvation the clause exists to end.
+            var stored = await SeedOutboxAsync(("id-1", 0), ("id-2", 1), ("id-3", 2));
+            stored["id-1"].NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(5);
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-2", "id-3");
+        }
+
+        [Fact]
+        public async Task MustGiveTheBatchSlotOfAFailingMessageToTheNextMessage()
+        {
+            // INVARIANT: the ELIMINATED CLASS. A message whose dispatch keeps failing cannot hold a selection slot
+            // in the default in-process configuration, because occupancy is a function of a due instant the failure
+            // path advances rather than of failure itself. At a batch size of one, id-1 owns the whole batch until
+            // its attempt is recorded; the next poll belongs to id-2.
+            var stored = await SeedOutboxAsync(("id-1", 0), ("id-2", 1));
+            _reliabilityOptions.OutboxPollBatchSize = 1;
+
+            var firstPoll = await _sut.GetUnprocessedMessagesFromOutbox();
+            firstPoll.Select(m => m.MessageId).Should().Equal("id-1");
+
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"],
+                                                       DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(1)));
+
+            var secondPoll = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            secondPoll.Select(m => m.MessageId).Should().Equal("id-2");
+        }
+
+        [Fact]
+        public async Task MustExcludeAMessageThatHasSpentTheConfiguredAttemptCeiling()
+        {
+            // INVARIANT: the ceiling compares attempts already SPENT against the configured most, so a message
+            // that has spent all of them is no longer polled even though it is due. Its two recorded attempts are
+            // both stamped due-now, so the due clause cannot be what withholds it.
+            var stored = await SeedOutboxAsync(("id-1", 0), ("id-2", 1));
+            _reliabilityOptions.OutboxMaxDispatchAttempts = 2;
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-2");
+        }
+
+        [Fact]
+        public async Task MustIncludeAMessageBelowTheConfiguredAttemptCeiling()
+        {
+            // INVARIANT: the ceiling is the count of attempts a message may be GIVEN, not the count it may
+            // survive, so one spent attempt out of two leaves the second one owed.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            _reliabilityOptions.OutboxMaxDispatchAttempts = 2;
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-1");
+        }
+
+        [Fact]
+        public async Task MustApplyNoAttemptCeilingWhenOutboxMaxDispatchAttemptsIsAbsent()
+        {
+            // INVARIANT: an absent OutboxMaxDispatchAttempts - the default - is NO ceiling at all rather than a
+            // ceiling of some fallback number, so the shipped configuration keeps re-attempting a message for
+            // good, which is what a host already running this package does today.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            for (var attemptsSpent = 0; attemptsSpent < 50; attemptsSpent++)
+            {
+                await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+            }
+
+            _reliabilityOptions.OutboxMaxDispatchAttempts.Should().BeNull();
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-1");
+        }
+
+        [Fact]
+        public async Task MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling()
+        {
+            // INVARIANT: the ceiling clause, like the due clause, is applied BEFORE the batch cap, so abandoned
+            // messages do not shrink the batch the poll returns.
+            var stored = await SeedOutboxAsync(("id-1", 0), ("id-2", 1), ("id-3", 2));
+            _reliabilityOptions.OutboxMaxDispatchAttempts = 1;
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+
+            var polled = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            polled.Select(m => m.MessageId).Should().Equal("id-2", "id-3");
+        }
+
+        [Fact]
+        public async Task MustCountOneMoreDispatchAttemptWhenRecordingAnAttempt()
+        {
+            // INVARIANT: a staged message has spent no attempts, and recording one spends exactly one.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            stored["id-1"].DispatchAttempts.Should().Be(0);
+
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+
+            stored["id-1"].DispatchAttempts.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task MustAccumulateDispatchAttemptsAcrossRecordedAttempts()
+        {
+            // INVARIANT: the count RISES by one per recorded attempt rather than being set to one, which is what
+            // lets ReliabilityOptions.CalculateDispatchBackoff lengthen the wait and what the ceiling counts.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], DateTime.UtcNow.AddMinutes(-5));
+
+            stored["id-1"].DispatchAttempts.Should().Be(3);
+        }
+
+        [Fact]
+        public async Task MustHoldTheRecordedAttemptStateOnTheStoredRow()
+        {
+            // INVARIANT: the attempt state written here survives into the NEXT poll, because this store's rows
+            // live for the process and a poll hands back the stored instances themselves. A store that recorded
+            // the attempt onto a copy would keep re-attempting on every poll, exactly as the no-op default does.
+            var nextAttemptAtUtc = DateTime.UtcNow.AddMinutes(-5);
+            var stored = await SeedOutboxAsync(("id-1", 0));
+
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], nextAttemptAtUtc);
+
+            var polled = (await _sut.GetUnprocessedMessagesFromOutbox()).Single();
+            polled.DispatchAttempts.Should().Be(1);
+            polled.NextAttemptAtUtc.Should().Be(nextAttemptAtUtc);
+        }
+
+        [Fact]
+        public async Task MustLeaveTheBatchQueryUngatedByDuenessAndAttempts()
+        {
+            // INVARIANT: GetUnprocessedBatch is a lookup by batch id, NOT an Outbox Poll Batch: neither the due
+            // clause nor the ceiling applies to it. Its caller runs it once per unit of work with no re-poll loop
+            // behind it, so withholding a row there drops it for good rather than deferring it.
+            var transactionId = Guid.NewGuid();
+            var batchContext = new TransactionContext();
+            batchContext.Container.Include<IPersistanceTransaction>(StubTransaction(transactionId));
+            await _sut.SendToOutbox(CreateOutbound("id-1"), batchContext);
+            _reliabilityOptions.OutboxMaxDispatchAttempts = 1;
+            var staged = (await _sut.GetUnprocessedBatch(transactionId)).Single();
+
+            await _pollableStore.RecordDispatchAttempt(staged, DateTime.UtcNow.AddMinutes(5));
+
+            var batch = await _sut.GetUnprocessedBatch(transactionId);
+
+            batch.Should().ContainSingle().Which.MessageId.Should().Be("id-1");
+        }
+
         // Sends each message then overwrites its SentToOutboxAtUtc, because SendToOutbox stamps DateTime.UtcNow
         // and rapid sequential sends can tie. An explicit minute per message makes the expected poll order exact.
-        private async Task SeedOutboxAsync(params (string MessageId, int SentAtMinute)[] seeds)
+        // Returns the STORED rows, which are the very instances the store hands a poll, so a test can set the
+        // attempt state of a named message without going through a poll it may be about to be excluded from.
+        private async Task<IDictionary<string, OutboxMessage>> SeedOutboxAsync(params (string MessageId, int SentAtMinute)[] seeds)
         {
             foreach (var seed in seeds)
             {
@@ -217,6 +413,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
             {
                 stored[seed.MessageId].SentToOutboxAtUtc = new DateTime(2026, 6, 7, 0, seed.SentAtMinute, 0, DateTimeKind.Utc);
             }
+
+            return stored;
         }
 
         private static IPersistanceTransaction StubTransaction(Guid transactionId)
