@@ -321,6 +321,74 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
                      .WithMessage("*PurgeInterval*", "a non-positive interval spins the purge loop against the database with no wait");
         }
 
+        // The scheduler's ceiling, measured on both target frameworks rather than quoted: Task.Delay accepts
+        // TimeSpan.FromMilliseconds(uint.MaxValue - 1) and throws ArgumentOutOfRangeException(paramName: "delay")
+        // one millisecond above it, identically on net8.0 and net10.0 (observed). These two facts hold the
+        // registration bound to exactly that measurement from both sides, so neither a bound that drifts wide nor
+        // one that drifts narrow can pass: raising MaxSchedulablePurgeInterval by one millisecond reddens
+        // MustRefuseAPurgeIntervalTheSchedulerCannotSchedule alone, and lowering it by one tick reddens
+        // MustAcceptTheLargestPurgeIntervalTheSchedulerCanSchedule alone.
+        [Fact]
+        public void MustRefuseAPurgeIntervalTheSchedulerCannotSchedule()
+        {
+            Action configure = () => CaptureBuilder(b =>
+                b.WithReliabilityRetention<TestDbContext>(o => o.PurgeInterval = TimeSpan.FromMilliseconds((double)uint.MaxValue)));
+
+            configure.Should().Throw<ArgumentOutOfRangeException>()
+                     .WithMessage("*PurgeInterval*", "an interval Task.Delay refuses faults the first wait, and ExecuteAsync catches only cancellation, so the hosted service would end and retention would stop");
+        }
+
+        [Fact]
+        public void MustAcceptTheLargestPurgeIntervalTheSchedulerCanSchedule()
+        {
+            Action configure = () => CaptureBuilder(b =>
+                b.WithReliabilityRetention<TestDbContext>(o => o.PurgeInterval = TimeSpan.FromMilliseconds(uint.MaxValue - 1)));
+
+            configure.Should().NotThrow("the registration bound is the scheduler's own ceiling and must admit every interval the scheduler accepts");
+        }
+
+        // Both retention windows are read only by subtracting them from DateTime.UtcNow - in
+        // BrokeredMessageInbox.HasBeenReceived and HasMarkerExpired, and once per window in
+        // ReliabilityRetentionPurgeService.PurgeOnceAsync - and that subtraction throws when the result would
+        // precede DateTime.MinValue. The refusal is what keeps such a window away from all four sites, so
+        // deleting the InboxDeduplicationWindow ceiling reddens the inbox fact alone and deleting the
+        // ProcessedOutboxRetention ceiling reddens the outbox fact alone.
+        [Fact]
+        public void MustRefuseAnInboxDeduplicationWindowNoCutoffCanBeDerivedFrom()
+        {
+            Action configure = () => CaptureBuilder(b =>
+                b.WithReliabilityRetention<TestDbContext>(o => o.InboxDeduplicationWindow = TimeSpan.MaxValue));
+
+            configure.Should().Throw<ArgumentOutOfRangeException>()
+                     .WithMessage("*InboxDeduplicationWindow*", "a window no cutoff can be derived from makes every receive and every purge pass throw instead of deduplicating");
+        }
+
+        [Fact]
+        public void MustRefuseAProcessedOutboxRetentionNoCutoffCanBeDerivedFrom()
+        {
+            Action configure = () => CaptureBuilder(b =>
+                b.WithReliabilityRetention<TestDbContext>(o => o.ProcessedOutboxRetention = TimeSpan.MaxValue));
+
+            configure.Should().Throw<ArgumentOutOfRangeException>()
+                     .WithMessage("*ProcessedOutboxRetention*", "a window no cutoff can be derived from makes every purge pass throw instead of reclaiming rows");
+        }
+
+        // The ceiling is the whole distance back to DateTime.MinValue, so a window far longer than any operator
+        // would configure still registers. This is what separates refusing the unsubtractable from capping
+        // retention at some invented duration: widening the refusal to reject, say, anything over a year reddens
+        // here and nowhere else.
+        [Fact]
+        public void MustAcceptARetentionWindowACutoffCanStillBeDerivedFrom()
+        {
+            Action configure = () => CaptureBuilder(b => b.WithReliabilityRetention<TestDbContext>(o =>
+            {
+                o.InboxDeduplicationWindow = TimeSpan.FromDays(365_000);
+                o.ProcessedOutboxRetention = TimeSpan.FromDays(365_000);
+            }));
+
+            configure.Should().NotThrow("a thousand-year window is still subtractable from UtcNow, and retention duration is the operator's to choose");
+        }
+
         // STEP-005 capped the outbox poll at ReliabilityOptions.OutboxPollBatchSize on a SECOND constructor, so the
         // cap only reaches a running host if the container activates that constructor rather than the uncapped one.
         // This resolves the outbox the way a Chatter host does - through the registration WithOutboxProcessingBehavior

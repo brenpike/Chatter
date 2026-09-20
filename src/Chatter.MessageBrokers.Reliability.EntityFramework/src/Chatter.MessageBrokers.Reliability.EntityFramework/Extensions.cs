@@ -74,15 +74,16 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Configures how long the relational inbox and outbox keep their rows, and starts the purge that enforces it.
         /// </summary>
         /// <param name="retentionOptions">A delegate configuring the <see cref="EntityFrameworkReliabilityOptions"/></param>
-        /// <exception cref="ArgumentOutOfRangeException">A configured span was not positive</exception>
+        /// <exception cref="ArgumentOutOfRangeException">A configured span fell outside the range the operation reading it can compute with</exception>
         /// <exception cref="InvalidOperationException">A different <typeparamref name="TContext"/> is already bound to these reliability extensions</exception>
         /// <remarks>
         /// INVARIANT: ONE door spans both tables. Retention is a property of the stored rows rather than of either
         /// behavior, so a per-behavior overload would make the result depend on which behaviors a host happened to
         /// register; this door reads the same whatever order it is called in. The last call wins - the registration is
         /// replaced rather than appended - while the purge service is added once however many times this is called.
-        /// Every span is refused HERE, at registration, rather than when the first purge runs: a window that names no
-        /// time would delete every row it can reach, and the host must not start before that is rejected.
+        /// Every span is refused HERE, at registration, rather than when the code that reads it runs, so the host
+        /// must not start before a span outside its consumer's range is rejected. Which range, and why each bound
+        /// is where it is, is stated once on RefuseSpanOutsideUsableRange below.
         /// </remarks>
         public static CommandPipelineBuilder WithReliabilityRetention<TContext>(this CommandPipelineBuilder pipelineBuilder,
                                                                                 Action<EntityFrameworkReliabilityOptions> retentionOptions)
@@ -93,9 +94,24 @@ namespace Microsoft.Extensions.DependencyInjection
             var options = new EntityFrameworkReliabilityOptions();
             retentionOptions?.Invoke(options);
 
-            RefuseNonPositiveSpan(options.InboxDeduplicationWindow, nameof(EntityFrameworkReliabilityOptions.InboxDeduplicationWindow));
-            RefuseNonPositiveSpan(options.ProcessedOutboxRetention, nameof(EntityFrameworkReliabilityOptions.ProcessedOutboxRetention));
-            RefuseNonPositiveSpan(options.PurgeInterval, nameof(EntityFrameworkReliabilityOptions.PurgeInterval));
+            // The distance back to DateTime.MinValue, read ONCE here and used as the ceiling for both retention
+            // windows. Reading it at registration is what makes the refusal permanent rather than a snapshot:
+            // UtcNow only advances, so a window subtractable from the clock now is subtractable from every later
+            // clock, and a window this door admits can never become unsubtractable while the host runs.
+            var largestSubtractableWindow = DateTime.UtcNow - DateTime.MinValue;
+
+            RefuseSpanOutsideUsableRange(options.InboxDeduplicationWindow,
+                                         nameof(EntityFrameworkReliabilityOptions.InboxDeduplicationWindow),
+                                         largestSubtractableWindow,
+                                         "no cutoff can be derived from a window that long");
+            RefuseSpanOutsideUsableRange(options.ProcessedOutboxRetention,
+                                         nameof(EntityFrameworkReliabilityOptions.ProcessedOutboxRetention),
+                                         largestSubtractableWindow,
+                                         "no cutoff can be derived from a window that long");
+            RefuseSpanOutsideUsableRange(options.PurgeInterval,
+                                         nameof(EntityFrameworkReliabilityOptions.PurgeInterval),
+                                         MaxSchedulablePurgeInterval,
+                                         "the scheduler cannot wait that long");
 
             RemoveReliabilityRetention(pipelineBuilder.Services);
             pipelineBuilder.Services.AddSingleton(options);
@@ -162,13 +178,51 @@ namespace Microsoft.Extensions.DependencyInjection
             return null;
         }
 
-        private static void RefuseNonPositiveSpan(TimeSpan? span, string optionName)
+        // The largest interval Task.Delay accepts. Measured rather than quoted: Task.Delay takes
+        // TimeSpan.FromMilliseconds(uint.MaxValue - 1) and throws ArgumentOutOfRangeException(paramName: "delay")
+        // one millisecond above it, identically on net8.0 and net10.0 (observed), so one constant serves both
+        // targets and no TFM conditional is needed.
+        private static readonly TimeSpan MaxSchedulablePurgeInterval = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+
+        // INVARIANT: this door admits a span only from the range the ONE operation that consumes it can actually
+        // compute with - Task.Delay for the interval, subtraction from DateTime.UtcNow for either window - so a
+        // span that would fault its consumer cannot reach it. ELIMINATED CLASS: a configured span accepted here
+        // and refused later by the code that reads it. Both bounds matter and neither is a policy on duration.
+        // Below the floor, a window naming no time deletes every row it can reach and an interval naming no time
+        // spins the purge loop against the database with no wait. Above the ceiling, the failure is louder and
+        // arrives after the host is already up: Task.Delay throws on the FIRST wait and ExecuteAsync catches only
+        // cancellation, so the hosted service ends and retention silently stops, while an unsubtractable window
+        // throws on every receive in BrokeredMessageInbox and on every purge pass instead of deduplicating or
+        // reclaiming anything. What is deliberately NOT bounded is how long an operator keeps rows or waits
+        // between passes: the ceiling is the consumer's own domain, which is why a thousand-year window still
+        // registers. Pinned by UsingReliabilityPipelineExtensions/WhenConfiguringReliabilityBehaviors, five facts
+        // holding the range from both sides. Raising MaxSchedulablePurgeInterval by one millisecond reddens
+        // MustRefuseAPurgeIntervalTheSchedulerCannotSchedule alone; lowering it by one tick reddens
+        // MustAcceptTheLargestPurgeIntervalTheSchedulerCanSchedule alone; passing TimeSpan.MaxValue as either
+        // window's ceiling reddens MustRefuseAnInboxDeduplicationWindowNoCutoffCanBeDerivedFrom or
+        // MustRefuseAProcessedOutboxRetentionNoCutoffCanBeDerivedFrom, one per call site; and narrowing either
+        // window's ceiling to an invented duration reddens MustAcceptARetentionWindowACutoffCanStillBeDerivedFrom
+        // alone (observed).
+        private static void RefuseSpanOutsideUsableRange(TimeSpan? span, string optionName, TimeSpan ceiling, string ceilingReason)
         {
-            if (span.HasValue && span.Value <= TimeSpan.Zero)
+            if (!span.HasValue)
+            {
+                return;
+            }
+
+            if (span.Value <= TimeSpan.Zero)
             {
                 throw new ArgumentOutOfRangeException(optionName,
                                                       span.Value,
                                                       $"{nameof(EntityFrameworkReliabilityOptions)}.{optionName} must be a positive time span.");
+            }
+
+            if (span.Value > ceiling)
+            {
+                throw new ArgumentOutOfRangeException(optionName,
+                                                      span.Value,
+                                                      $"{nameof(EntityFrameworkReliabilityOptions)}.{optionName} must be no longer than "
+                                                      + $"'{ceiling}' because {ceilingReason}.");
             }
         }
 
