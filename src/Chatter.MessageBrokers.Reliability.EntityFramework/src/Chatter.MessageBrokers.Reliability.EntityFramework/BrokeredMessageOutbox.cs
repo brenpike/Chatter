@@ -18,17 +18,24 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         private readonly ILogger<BrokeredMessageOutbox<TContext>> _logger;
         private readonly UnitOfWork<TContext> _unitOfWork;
         private readonly int? _outboxPollBatchSize;
+        private readonly int? _outboxMaxDispatchAttempts;
 
         IPersistanceTransaction IUnitOfWork.CurrentTransaction => _unitOfWork.CurrentTransaction;
         bool IUnitOfWork.HasActiveTransaction => _unitOfWork.HasActiveTransaction;
 
         /// <summary>
-        /// Creates an outbox whose poll takes every unprocessed message, however many there are.
+        /// Creates an outbox whose poll takes every unprocessed message that is due, however many there are, and
+        /// applies no attempt ceiling.
         /// </summary>
         /// <remarks>
         /// This is the legacy uncapped path, kept for a caller that constructs the outbox itself. The container
         /// resolves the overload taking <see cref="ReliabilityOptions"/>, so a Chatter-configured host polls the
         /// Outbox Poll Batch rather than the whole backlog.
+        /// <para>
+        /// INVARIANT: only the cap and the ceiling are options-dependent. The due clause is not, so a message whose
+        /// dispatch keeps failing stops holding its place at the head of every poll here too. Oracle:
+        /// <c>WhenGettingUnprocessedMessages.MustDueGateWithoutReliabilityOptions</c>.
+        /// </para>
         /// </remarks>
         public BrokeredMessageOutbox(TContext context, ILoggerFactory loggerFactory)
         {
@@ -38,6 +45,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             _logger = loggerFactory.CreateLogger<BrokeredMessageOutbox<TContext>>();
             _unitOfWork = new UnitOfWork<TContext>(context, loggerFactory.CreateLogger<UnitOfWork<TContext>>());
             _outboxPollBatchSize = null;
+            _outboxMaxDispatchAttempts = null;
         }
 
         /// <summary>
@@ -64,6 +72,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             }
 
             _outboxPollBatchSize = reliabilityOptions.OutboxPollBatchSize;
+            _outboxMaxDispatchAttempts = reliabilityOptions.OutboxMaxDispatchAttempts;
         }
 
         /// <remarks>
@@ -74,12 +83,50 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// hand back a detached message whose original value IS the stamp being written, so the claim would match no
         /// row and every drain would fail. Proven over a real database by
         /// Integration/WhenClaimingOutboxConcurrentlyOnSqlServer.
+        /// <para>
+        /// INVARIANT: the due clause and the attempt ceiling are part of the QUERY, so a message that is not due
+        /// never leaves the database. Both clauses also sit BEFORE the OrderBy/Take: filtering rows the take has
+        /// already claimed shrinks the batch rather than filling it from behind, so as few as
+        /// <see cref="ReliabilityOptions.OutboxPollBatchSize"/> held-back messages would leave this poll returning
+        /// nothing at all. Moving the due clause into a Where AFTER the Take reddens
+        /// WhenGettingUnprocessedMessages.MustSpendNoBatchSlotOnAMessageThatIsNotDue and nothing else (observed);
+        /// moving the ceiling clause there reddens
+        /// WhenGettingUnprocessedMessages.MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling and nothing
+        /// else (observed).
+        /// </para>
+        /// <para>
+        /// INVARIANT: both clauses TRANSLATE, so a message that is not due never leaves the database. Every other
+        /// fact in <c>WhenGettingUnprocessedMessages</c> runs on the InMemory provider, which evaluates a Where in
+        /// process and so cannot tell a translated predicate from one EF would refuse. Oracle:
+        /// <c>WhenGettingUnprocessedMessages.MustTranslateTheDueGateAndTheCeilingToSqlOverARelationalProvider</c>,
+        /// which runs this poll over SQLite. Rewriting the due clause as a call to a static helper - a shape EF
+        /// refuses - reddens it, plus the two other facts that poll over a relational provider
+        /// (<c>WhenUpdatingProcessed.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed</c> and
+        /// <c>WhenConfiguringReliabilityBehaviors.MustResolveOutboxThroughTheBatchSizeAwareConstructor</c>), and
+        /// nothing else (observed). The mutation is not exclusive because translation is a property of the query
+        /// every relational caller shares, not of one fact.
+        /// </para>
+        /// <para>
+        /// NOTE: no oracle pins the boundary between <c>&lt;=</c> and <c>&lt;</c> against now. The instant is read
+        /// from the wall clock inside this method, so no test can name a message due at exactly it; the two differ
+        /// only for a message whose next attempt lands on that very tick, and one a tick early is taken by the
+        /// following poll.
+        /// </para>
         /// </remarks>
         public async Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default)
         {
+            var now = DateTime.UtcNow;
             var outbox = _context.Set<OutboxMessage>();
-            var unprocessed = outbox.Where(message => message.ProcessedFromOutboxAtUtc == null)
-                                    .OrderBy(message => message.SentToOutboxAtUtc);
+            var selectable = outbox.Where(message => message.ProcessedFromOutboxAtUtc == null
+                                                     && (message.NextAttemptAtUtc == null || message.NextAttemptAtUtc <= now));
+
+            if (_outboxMaxDispatchAttempts is not null)
+            {
+                var maxDispatchAttempts = _outboxMaxDispatchAttempts.Value;
+                selectable = selectable.Where(message => message.DispatchAttempts < maxDispatchAttempts);
+            }
+
+            var unprocessed = selectable.OrderBy(message => message.SentToOutboxAtUtc);
 
             if (_outboxPollBatchSize is null)
             {
@@ -89,6 +136,16 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             return await unprocessed.Take(_outboxPollBatchSize.Value).ToListAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        /// <remarks>
+        /// INVARIANT: this lookup carries neither the cap, the due clause nor the attempt ceiling the poll above
+        /// applies. Its caller runs it once per unit of work with no re-poll loop behind it, so any of the three
+        /// would drop a message nothing would ever come back for rather than deferring it. Oracle for the due
+        /// clause and the ceiling:
+        /// <c>WhenGettingUnprocessedMessages.MustNeitherDueGateNorCeilingTheUnprocessedBatch</c>; adding either
+        /// clause here reddens it and nothing else (observed). NO oracle pins the absence of a CAP - the fact
+        /// stages a single message, so a Take would still return it - and none is added here, because a fact that
+        /// staged more would pin a number this method does not otherwise name.
+        /// </remarks>
         public async Task<IEnumerable<OutboxMessage>> GetUnprocessedBatch(Guid batchId, CancellationToken cancellationToken = default)
         {
             var outbox = _context.Set<OutboxMessage>();
@@ -116,6 +173,53 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         {
             outboxMessage.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
             outbox.Update(outboxMessage);
+        }
+
+        /// <remarks>
+        /// INVARIANT: this writes through ExecuteUpdateAsync rather than through the change tracker, so it carries
+        /// neither the pending state of the tracked message nor the ProcessedFromOutboxAtUtc concurrency token
+        /// OutboxMessageConfiguration maps. Its caller reaches here after a dispatch failed, and EF does not reset
+        /// the tracker when the surrounding transaction rolls back: the message still holds the claim stamp as its
+        /// CURRENT value against the null it was loaded with, so a tracked SaveChangesAsync would re-emit the very
+        /// 'still unprocessed' predicate that just failed - and would commit the claim if it now matched. Oracle:
+        /// <c>WhenUpdatingProcessed.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed</c>;
+        /// recording through <c>Update</c> plus <c>SaveChangesAsync</c> instead reddens it and nothing else
+        /// (observed) - the other two facts here survive that mutation, because their message is clean and a
+        /// tracked save reaches the row just as well.
+        /// <para>
+        /// INVARIANT: it is also a write that must LAND, which is the second reason it is not staged. The
+        /// transaction that carried the claim has already rolled back and there is no unit of work left to commit
+        /// with, so a staged attempt would be discarded and the message would come back due now with nothing spent.
+        /// Oracle: <c>WhenUpdatingProcessed.MustCountOneMoreDispatchAttemptOnTheStoredRow</c>, which reads the row
+        /// back through a second context rather than off the tracked instance. Staging the write without saving
+        /// reddens that fact and BOTH others here (observed) - this is a claim all three pin rather than one, since
+        /// every one of them reads the stored row.
+        /// </para>
+        /// <para>
+        /// INVARIANT: the predicate is the message's own <see cref="OutboxMessage.Id"/>, so the write touches
+        /// exactly the message it was handed; a wider one would spend an attempt, and push out a next attempt
+        /// instant, on messages whose dispatch never failed. Oracle:
+        /// <c>WhenUpdatingProcessed.MustRecordTheAttemptOnlyOnTheMessageItWasHanded</c>; dropping the Where reddens
+        /// it and nothing else (observed).
+        /// </para>
+        /// <para>
+        /// NOTE: the count is incremented in the database rather than from the count the supplied message carries,
+        /// so a stale in-memory value cannot undo an attempt another host recorded. No test pins that: the
+        /// difference shows only when two hosts record against the same message, and the suite drives one.
+        /// </para>
+        /// </remarks>
+        public Task RecordDispatchAttempt(OutboxMessage outboxMessage, DateTime nextAttemptAtUtc, CancellationToken cancellationToken = default)
+        {
+            _ = outboxMessage ?? throw new ArgumentNullException(nameof(outboxMessage));
+
+            var outboxMessageId = outboxMessage.Id;
+
+            return _context.Set<OutboxMessage>()
+                           .Where(message => message.Id == outboxMessageId)
+                           .ExecuteUpdateAsync(setters => setters
+                                                   .SetProperty(message => message.DispatchAttempts, message => message.DispatchAttempts + 1)
+                                                   .SetProperty(message => message.NextAttemptAtUtc, nextAttemptAtUtc),
+                                               cancellationToken);
         }
 
         public async Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext, CancellationToken cancellationToken = default)

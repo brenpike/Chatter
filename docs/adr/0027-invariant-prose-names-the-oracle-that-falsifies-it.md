@@ -227,6 +227,37 @@ that clock skew was "bounded by the same short-chunk exit" went with the exit it
 recorded in the *Evidence* section above. The deferred mechanism therefore stays deferred, and the trigger
 stands unchanged.
 
+**Instance #1 of the three the trigger asks for — written after this ADR was accepted, by the work this ADR
+governs.** `bca45c2` corrected the `INVARIANT:` remark on
+`BrokeredMessageOutboxProcessor.SendOutboxMessagesAsync` (`:129-140` before the fix; line numbers in this
+entry are measured against `bca45c2^`). The remark made two claims and named one oracle. The clause at
+`:132-134` held that "only a set spanning the whole drain keeps it from being dispatched again immediately" —
+false: `seenIdentities` is constructed in `DrainOutboxAsync` at `:105` and read only at `:111` and `:113`, to
+compute `hasMoreToDrain`. It is never passed to `SendOutboxMessagesAsync`, and the dispatch loop at
+`:160-163` iterates the poll's batch whole, so the set terminates re-polling and gates no dispatch. The
+oracle the remark named, `MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage`, asserts
+`VerifyPollCount(3)` and nothing further, and the mutation named beside it — resetting or pruning the set
+between polls — reddens it. Both are attached to the OTHER claim, that the set outlives a poll, which is
+true. Nothing pinned the clause that was false, and the adjacent citation read as though something did.
+
+**What this instance adds.** It is not restatement drift, and so is not excluded by the terms that excluded
+the failure recorded above: the false clause lived on one surface, the code comment itself. It is counted
+although it surfaced in this branch's own work rather than in a review, because the trigger keys on the SHAPE
+of the finding, and a count that turned on who found it would pay for not looking. It is further evidence for
+the lint rejection rather than against it: the comment named a real, passing, relevant `[Fact]`, so a `grep`
+for an identifier matching a fact name would have passed it — the same failure mode as the pre-fix
+`README.md:213` sentence. Rule 1 was in force. The comment satisfied its visible form and failed the judgment
+the rule exists to ask for.
+
+**The repair, again, was an added oracle.** `MustDispatchEveryRowAPollReturnsEvenWhenTheDrainHasAlreadySeenIt`
+drives the same overlapping poll script as the older fact and counts DISPATCHES rather than polls, asserting
+six dispatches across the drain and three of the row every poll carries. Its named mutation — filtering the
+batch through the identity set before dispatch — is recorded by `bca45c2` as measured to redden that fact
+alone, on both target frameworks, which is the exclusivity Rule 1 asks of a named mutation.
+
+**The promotion trigger is NOT tripped.** The count stands at one where the trigger asks for three, the
+deferred lint stays deferred, and the trigger's wording is unchanged.
+
 No tracker entry is opened. This is a decision with a stated reason, not outstanding work.
 
 ## Consequences

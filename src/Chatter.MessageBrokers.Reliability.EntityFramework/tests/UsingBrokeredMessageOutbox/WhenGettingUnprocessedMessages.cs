@@ -1,4 +1,5 @@
 ﻿using Chatter.MessageBrokers.Reliability.Configuration;
+using Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Chatter.Testing.Core.Creators.MessageBrokers;
 using FluentAssertions;
@@ -170,10 +171,193 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             construct.Should().Throw<ArgumentNullException>();
         }
 
+        [Fact]
+        public async Task MustNotGetAMessageWhoseNextAttemptInstantHasNotArrived()
+        {
+            SeedUnprocessedMessageDueAt(DateTime.UtcNow.AddMinutes(5));
+            var sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object, CreateOptions(batchSize: 10, maxDispatchAttempts: null));
+
+            var messages = await sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Should().BeEmpty();
+        }
+
+        [Fact]
+        public async Task MustGetAMessageWhoseNextAttemptInstantHasPassed()
+        {
+            var message = SeedUnprocessedMessageDueAt(DateTime.UtcNow.AddMinutes(-5));
+
+            var messages = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Should().Contain(message);
+        }
+
+        [Fact]
+        public async Task MustGetAMessageThatCarriesNoNextAttemptInstant()
+        {
+            var message = SeedUnprocessedMessageDueAt(null);
+
+            var messages = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Should().Contain(message);
+        }
+
+        [Fact]
+        public async Task MustExcludeAMessageThatHasSpentTheConfiguredAttemptCeiling()
+        {
+            SeedUnprocessedMessageWithDispatchAttempts(3);
+            var sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object, CreateOptions(batchSize: 10, maxDispatchAttempts: 3));
+
+            var messages = await sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Should().BeEmpty();
+        }
+
+        [Fact]
+        public async Task MustGetAMessageStillUnderTheConfiguredAttemptCeiling()
+        {
+            var message = SeedUnprocessedMessageWithDispatchAttempts(2);
+            var sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object, CreateOptions(batchSize: 10, maxDispatchAttempts: 3));
+
+            var messages = await sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Should().Contain(message);
+        }
+
+        [Fact]
+        public async Task MustApplyNoAttemptCeilingWhenNoneIsConfigured()
+        {
+            var message = SeedUnprocessedMessageWithDispatchAttempts(int.MaxValue);
+            var sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object, CreateOptions(batchSize: 10, maxDispatchAttempts: null));
+
+            var messages = await sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Should().Contain(message);
+        }
+
+        // INVARIANT: the due clause is NOT options-dependent. The legacy two-argument constructor names an uncapped
+        // poll, not an ungated one, so a host that constructs the outbox itself still stops re-attempting a message
+        // that keeps failing. Only the ceiling is options-dependent, which MustApplyNoAttemptCeilingWhenNoneIsConfigured
+        // pins from the other side.
+        [Fact]
+        public async Task MustDueGateWithoutReliabilityOptions()
+        {
+            SeedUnprocessedMessageDueAt(DateTime.UtcNow.AddMinutes(5));
+
+            var messages = await _sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Should().BeEmpty();
+        }
+
+        // INVARIANT: the due clause and the attempt ceiling sit BEFORE the OrderBy/Take. Gating rows the take has
+        // already claimed shrinks the batch rather than filling it from behind, so as few as OutboxPollBatchSize
+        // held-back messages would leave the poll returning nothing at all. A batch size of one is what makes that
+        // observable: the held-back message is the oldest, so it would take the only slot.
+        [Fact]
+        public async Task MustSpendNoBatchSlotOnAMessageThatIsNotDue()
+        {
+            var sentAtUtc = DateTime.UtcNow;
+            SeedUnprocessedMessage(sentAtUtc.AddMinutes(-10), nextAttemptAtUtc: sentAtUtc.AddMinutes(5), dispatchAttempts: 0);
+            var due = SeedUnprocessedMessageSentAt(sentAtUtc);
+            var sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object, CreateOptions(batchSize: 1, maxDispatchAttempts: null));
+
+            var messages = await sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Select(message => message.MessageId).Should().Equal(due.MessageId);
+        }
+
+        [Fact]
+        public async Task MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling()
+        {
+            var sentAtUtc = DateTime.UtcNow;
+            SeedUnprocessedMessage(sentAtUtc.AddMinutes(-10), nextAttemptAtUtc: null, dispatchAttempts: 3);
+            var underCeiling = SeedUnprocessedMessageSentAt(sentAtUtc);
+            var sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object, CreateOptions(batchSize: 1, maxDispatchAttempts: 3));
+
+            var messages = await sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Select(message => message.MessageId).Should().Equal(underCeiling.MessageId);
+        }
+
+        // INVARIANT: GetUnprocessedBatch is a lookup by batch id, not an Outbox Poll Batch. Its caller runs it once
+        // per unit of work with no re-poll loop behind it, so a due gate or a ceiling here would drop a message
+        // nothing would ever come back for, rather than deferring it.
+        [Fact]
+        public async Task MustNeitherDueGateNorCeilingTheUnprocessedBatch()
+        {
+            var batchId = Guid.NewGuid();
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            message.BatchId = batchId;
+            message.NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(5);
+            message.DispatchAttempts = 99;
+            _context.ThatHasOutboxMessage(message);
+            var sut = new BrokeredMessageOutbox<DbContext>(_context, _logger.Object, CreateOptions(batchSize: 10, maxDispatchAttempts: 3));
+
+            var messages = await sut.GetUnprocessedBatch(batchId);
+
+            messages.Should().Contain(message);
+        }
+
+        // INVARIANT: both clauses translate to SQL. The InMemory provider every other fact here runs on evaluates a
+        // Where in process, so it cannot tell a translated predicate from one EF would refuse; SQLite is a real
+        // relational provider, and an untranslatable clause throws rather than filtering. The whole point of gating
+        // in the query is that a held-back message never leaves the database.
+        [Fact]
+        public async Task MustTranslateTheDueGateAndTheCeilingToSqlOverARelationalProvider()
+        {
+            using var harness = SqliteOutboxContextHarness.Create();
+            var sentAtUtc = DateTime.UtcNow;
+            SeedSqliteMessage(harness, 1, sentAtUtc.AddMinutes(-30), nextAttemptAtUtc: sentAtUtc.AddMinutes(5), dispatchAttempts: 1);
+            SeedSqliteMessage(harness, 2, sentAtUtc.AddMinutes(-20), nextAttemptAtUtc: null, dispatchAttempts: 3);
+            var taken = SeedSqliteMessage(harness, 3, sentAtUtc.AddMinutes(-10), nextAttemptAtUtc: sentAtUtc.AddMinutes(-1), dispatchAttempts: 2);
+            using var context = harness.CreateContext();
+            var sut = new BrokeredMessageOutbox<SqliteOutboxContext>(context, _logger.Object, CreateOptions(batchSize: 10, maxDispatchAttempts: 3));
+
+            var messages = await sut.GetUnprocessedMessagesFromOutbox();
+
+            messages.Select(message => message.MessageId).Should().Equal(taken.MessageId);
+        }
+
+        private OutboxMessage SeedSqliteMessage(SqliteOutboxContextHarness harness,
+                                                int id,
+                                                DateTime sentToOutboxAtUtc,
+                                                DateTime? nextAttemptAtUtc,
+                                                int dispatchAttempts)
+        {
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            message.Id = id;
+            message.SentToOutboxAtUtc = sentToOutboxAtUtc;
+            message.NextAttemptAtUtc = nextAttemptAtUtc;
+            message.DispatchAttempts = dispatchAttempts;
+
+            using var context = harness.CreateContext();
+            context.Add(message);
+            context.SaveChanges();
+
+            return message;
+        }
+
         private OutboxMessage SeedUnprocessedMessageSentAt(DateTime sentToOutboxAtUtc)
         {
             OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
             message.SentToOutboxAtUtc = sentToOutboxAtUtc;
+            _context.ThatHasOutboxMessage(message);
+
+            return message;
+        }
+
+        private OutboxMessage SeedUnprocessedMessageDueAt(DateTime? nextAttemptAtUtc)
+            => SeedUnprocessedMessage(DateTime.UtcNow, nextAttemptAtUtc, dispatchAttempts: 0);
+
+        private OutboxMessage SeedUnprocessedMessageWithDispatchAttempts(int dispatchAttempts)
+            => SeedUnprocessedMessage(DateTime.UtcNow, nextAttemptAtUtc: null, dispatchAttempts);
+
+        private OutboxMessage SeedUnprocessedMessage(DateTime sentToOutboxAtUtc, DateTime? nextAttemptAtUtc, int dispatchAttempts)
+        {
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            message.SentToOutboxAtUtc = sentToOutboxAtUtc;
+            message.NextAttemptAtUtc = nextAttemptAtUtc;
+            message.DispatchAttempts = dispatchAttempts;
             _context.ThatHasOutboxMessage(message);
 
             return message;
@@ -185,6 +369,15 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         {
             var options = new ReliabilityOptions();
             typeof(ReliabilityOptions).GetProperty(nameof(ReliabilityOptions.OutboxPollBatchSize)).SetValue(options, batchSize);
+
+            return options;
+        }
+
+        // OutboxMaxDispatchAttempts has an internal setter too, so it is seeded the same way.
+        private static ReliabilityOptions CreateOptions(int batchSize, int? maxDispatchAttempts)
+        {
+            var options = CreateOptionsWithBatchSize(batchSize);
+            typeof(ReliabilityOptions).GetProperty(nameof(ReliabilityOptions.OutboxMaxDispatchAttempts)).SetValue(options, maxDispatchAttempts);
 
             return options;
         }
