@@ -110,7 +110,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         // carries the processed stamp as its CURRENT value against a null ORIGINAL, so a tracked SaveChanges here
         // would re-emit the very 'still unprocessed' predicate that just failed - and would commit the claim if it
         // now matched. Recording the attempt must neither throw nor disturb that tracked state, and must leave the
-        // stored row unprocessed.
+        // stored row unprocessed. This pins the STORE's contract and nothing about its caller: OutboxProcessor
+        // records the attempt straight on the store, so no SaveChangesAsync of its own runs behind this fact - the
+        // rationale is on OutboxProcessor.RecordFailedDispatchAttempt.
         [Fact]
         public async Task MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed()
         {

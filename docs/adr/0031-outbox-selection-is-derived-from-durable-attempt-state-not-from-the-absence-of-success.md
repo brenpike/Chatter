@@ -13,6 +13,13 @@ of that one missing fact. This ADR records the change of the selection key to *u
 a persisted `OutboxMessage.NextAttemptAtUtc` the failure path advances — and records why changing the key closed a
 second finding that had been framed as a separate defect.
 
+**Amended in place, 2026-09-20.** This ADR is accepted and UNRELEASED — `messagebrokers/v0.32.0` is not a tag, and
+the release it is recorded under has not been published — so it is corrected here rather than superseded. The
+correction is confined to the first and second bullets of *Subsumption required three conditions*:
+`OutboxProcessor` now re-claims a row whose message is already on the broker before it spends an attempt, and
+records the attempt straight on the store instead of through a unit of work of its own. The selection key, the two
+columns and the closed class below are unchanged.
+
 ## Context
 
 **The key that was, read from the bytes at `master`.**
@@ -71,17 +78,22 @@ set filters a batch before dispatch. The set terminates re-polling and nothing e
 
 **Subsumption required three conditions, and all three are built.**
 
-- **The stamp is written on EVERY non-success exit**, including a dispatch that SUCCEEDED whose claim commit then
-  threw — that exit leaves the row unclaimed too, so without the stamp the due gate would re-publish an
-  already-published message on the very next poll. Oracles:
+- **The stamp is written on EVERY exit that leaves the row UNCLAIMED**, including a dispatch that SUCCEEDED whose
+  claim commit and whose re-claim both threw — that exit leaves the row unclaimed too, so without the stamp the due
+  gate would re-publish an already-published message on the very next poll. Oracles:
   `WhenProcessingOutboxMessage.MustRecordADispatchAttemptWhenDispatchFails` and
-  `.MustRecordADispatchAttemptWhenMarkingProcessedFails`. The one deliberate exemption is a drain the host
+  `.MustRecordADispatchAttemptWhenTheReClaimAlsoFails`. A claim commit that threw after a publish is re-claimed
+  first and spends no attempt when that re-claim succeeds, because the row ends CLAIMED and selection never reaches
+  it again — pinned by `.MustReClaimTheRowWhenTheClaimCommitFailsAfterAPublish` and
+  `.MustNotRecordADispatchAttemptWhenTheReClaimSucceeds`. The one deliberate exemption is a drain the host
   cancelled, which spends no attempt and pushes no due time out — pinned by
   `.MustNotRecordADispatchAttemptWhenProcessingIsCancelled`, whose bound is
   `.MustRecordADispatchAttemptWhenDispatchIsCancelledByAnotherToken`.
-- **It commits in its OWN unit of work.** Dispatch runs inside one that rolls back when it throws, so a stamp
-  staged there would be discarded together with the failure it records. `RecordFailedDispatchAttempt` opens a second
-  `IUnitOfWork.ExecuteAsync` rather than reusing the failed one. Oracle:
+- **It goes STRAIGHT to the store, outside any unit of work.** Dispatch runs inside one that rolls back when it
+  throws, so a stamp staged there would be discarded together with the failure it records — and a unit of work
+  opened to carry the stamp would commit, alongside it, whatever the rolled-back one left staged.
+  `RecordFailedDispatchAttempt` calls `IPollableOutboxStore.RecordDispatchAttempt` directly rather than through
+  `IUnitOfWork.ExecuteAsync`. Oracle:
   `WhenProcessingOutboxMessage.MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork`.
 - **The relational write bypasses the change tracker**, via `ExecuteUpdateAsync` over a `Where` on the message's own
   `Id`, incrementing the count in the database rather than from the possibly-stale in-memory value. Oracles:
