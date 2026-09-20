@@ -25,9 +25,10 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
     /// dispatched, and the suite stayed green over a dead default outbox. This class wires the concrete store DI
     /// registers so no facet can be faked, and the only test double is the messaging infrastructure the drain
     /// publishes to.
-    /// ORACLE: every assertion reads the SINK - the messages the infrastructure dispatcher actually received, and
-    /// the rows the store itself still returns from GetUnprocessedMessagesFromOutbox - never a copy of the drain's
-    /// own condition and never the store's private state.
+    /// ORACLE: every assertion reads the SINK - the messages the infrastructure dispatcher actually received, the
+    /// rows the store itself still returns from GetUnprocessedMessagesFromOutbox, and the attempt state carried by
+    /// a polled row, which is the stored instance itself because the store records attempts write-through - never a
+    /// copy of the drain's own condition and never the store's private state.
     /// </remarks>
     public class WhenDrainingTheDefaultInMemoryOutbox : Testing.Core.Context
     {
@@ -99,11 +100,15 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             (await PollUnprocessedRows()).Should().BeEmpty();
         }
 
-        // FACT 2 - FAILURE IS RETRYABLE. A publish that never reached the broker must leave the row exactly as a
-        // later poll needs to find it. The dispatch-attempt assertion keeps this non-vacuous: a drain that stopped
-        // publishing at all would otherwise satisfy the unprocessed assertions.
+        // FACT 2 - FAILURE IS RECORDED AND STILL RETRYABLE. A publish that never reached the broker must leave the
+        // row exactly as a later poll needs to find it: unclaimed, one attempt poorer, and scheduled a backoff
+        // ahead so the poll's due gate holds it back rather than handing it to every batch. The row read here IS
+        // the row the store keeps - RecordDispatchAttempt writes through to the stored instance - so these read the
+        // state the next poll reads. The dispatch-attempt assertion keeps this non-vacuous: a drain that stopped
+        // publishing at all would otherwise satisfy the unprocessed assertion. The schedule is asserted as a bound
+        // rather than as merely present, so a row parked at an instant no poll ever reaches fails here too.
         [Fact]
-        public async Task MustLeaveTheRowUnprocessedWhenDispatchFails()
+        public async Task MustRecordTheFailedDispatchAndLeaveTheRowUnprocessed()
         {
             var row = await EnqueueAndPollOneRow();
             _dispatcher.FailureToThrow = new InvalidOperationException("the broker publish failed deliberately");
@@ -112,8 +117,10 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
 
             _dispatcher.DispatchAttempts.Should().Be(1);
             _dispatcher.DeliveredMessageIds.Should().BeEmpty();
-            (await PollUnprocessedRows()).Should().ContainSingle().Which.MessageId.Should().Be(MessageId);
             row.ProcessedFromOutboxAtUtc.Should().BeNull();
+            row.DispatchAttempts.Should().Be(1);
+            row.NextAttemptAtUtc.Should().NotBeNull();
+            row.NextAttemptAtUtc.Value.Should().BeCloseTo(DateTime.UtcNow.AddSeconds(5), TimeSpan.FromSeconds(2));
         }
 
         // FACT 2 - ERROR POSTURE. Process is driven by the outbox poll and by OutboxProcessingBehavior, so a broker
@@ -129,16 +136,22 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             await process.Should().NotThrowAsync();
         }
 
-        // FACT 3 - RECOVERY. The row a failed drain left behind is the row the next poll hands back, and a healthy
-        // dispatcher then delivers THAT row and the store stops returning it. This is the whole point of leaving the
-        // row unprocessed, so it is asserted end to end rather than inferred from fact 2.
+        // FACT 3 - RECOVERY ONCE DUE. The row a failed drain left behind is the row a LATER poll hands back, and a
+        // healthy dispatcher then delivers THAT row and the store stops returning it. This is the whole point of
+        // leaving the row unprocessed, so it is asserted end to end rather than inferred from fact 2. The failed
+        // attempt schedules the row a backoff ahead, so the fact first pins that the row is genuinely held back
+        // while that wait stands and then elapses the wait - standing in for wall-clock time, and touching nothing
+        // about the row but the instant - so what it pins is re-dispatch once due rather than immediate re-dispatch.
         [Fact]
-        public async Task MustDispatchTheSameRowOnTheNextDrainAfterAFailedDispatch()
+        public async Task MustDispatchTheSameRowOnTheNextDrainOnceItsBackoffHasElapsed()
         {
             var row = await EnqueueAndPollOneRow();
             _dispatcher.FailureToThrow = new InvalidOperationException("the broker publish failed deliberately");
             await _sut.Process(row);
             _dispatcher.FailureToThrow = null;
+
+            (await PollUnprocessedRows()).Should().BeEmpty();
+            row.NextAttemptAtUtc = DateTime.UtcNow.AddSeconds(-1);
 
             var retriedRow = (await PollUnprocessedRows()).Single();
             await _sut.Process(retriedRow);
