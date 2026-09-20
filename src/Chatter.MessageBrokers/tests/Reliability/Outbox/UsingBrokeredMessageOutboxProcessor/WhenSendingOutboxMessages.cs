@@ -379,6 +379,31 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingBrokeredMessageOu
         }
 
         [Fact]
+        public async Task MustDispatchEveryRowAPollReturnsEvenWhenTheDrainHasAlreadySeenIt()
+        {
+            // The identity set terminates RE-POLLING; it never filters the batch before dispatch. The same overlapping
+            // script as MustStopRepollingWhenOverlappingOutboxPollBatchesAddNoUnseenMessage, read on the dispatch side
+            // rather than the poll side: three polls of two rows dispatch six times, and the row every poll carries is
+            // dispatched on each of them even though the drain has held its identity since the first. The reddening
+            // mutation is a dispatch loop that skips rows already in the set, which drops this drain to three
+            // dispatches. The signal comes off the LAST dispatch rather than off the poll, so the third poll's
+            // dispatches are complete before the count below is read.
+            _reliabilityOptions.OutboxPollBatchSize = 2;
+            var first = CreateOutboxMessage(1, BaseSentToOutboxAtUtc);
+            var second = CreateOutboxMessage(2, BaseSentToOutboxAtUtc);
+            var third = CreateOutboxMessage(3, BaseSentToOutboxAtUtc);
+            SetupCyclingPolls(new[] { first, second }, new[] { second, third });
+            var processedOrder = new List<int>();
+            SignalWhenProcessedCountReaches(6, processedOrder);
+
+            await RunSingleDrainAsync(_pollSignal.Task);
+
+            VerifyPollCount(3);
+            processedOrder.Should().Equal(1, 2, 2, 3, 1, 2);
+            _processor.Verify(p => p.Process(It.Is<OutboxMessage>(m => m.Id == second.Id), It.IsAny<CancellationToken>()), Times.Exactly(3));
+        }
+
+        [Fact]
         public async Task MustEndTheDrainOnceTheDrainIdentityCeilingIsReached()
         {
             // Every poll answers full with rows never seen before, so nothing but the ceiling can end this drain.
