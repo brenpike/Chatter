@@ -45,6 +45,8 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
 
         public async Task Process(OutboxMessage message, CancellationToken cancellationToken = default)
         {
+            var published = false;
+
             try
             {
                 // The persisted MessageContext is a JSON string whose values are NOT all strings:
@@ -97,14 +99,29 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                         await DispatchObserved(dispatcherInfrastructure, outbound, infrastructureType);
                     }
 
+                    // INVARIANT: the flag reads "this message is on the broker", so it is raised AFTER the publish
+                    // returns and BEFORE the claim - the two exits below branch on it and neither may treat a
+                    // message the broker never took as delivered. Raising it before the dispatch instead turns
+                    // every failed publish into a re-claim, and reddens eight facts and nothing else (observed):
+                    // every WhenProcessingOutboxMessage fact whose dispatch fails -
+                    // MustLeaveOutboxMessageUnprocessedWhenDispatchFails, MustRecordADispatchAttemptWhenDispatchFails,
+                    // MustRecordADispatchAttemptWhenDispatchIsCancelledByAnotherToken,
+                    // MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork,
+                    // MustScheduleTheNextAttemptOneBackoffAhead,
+                    // MustGrowTheScheduledWaitWithTheAttemptsTheRowAlreadyCarries - plus both real-store drain facts
+                    // in WhenDrainingTheDefaultInMemoryOutbox, MustRecordTheFailedDispatchAndLeaveTheRowUnprocessed
+                    // and MustDispatchTheSameRowOnTheNextDrainOnceItsBackoffHasElapsed.
+                    published = true;
+
                     _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
 
                     // INVARIANT: the row is recorded processed ONLY after the publish returns, on BOTH diagnostics
                     // branches above. A publish that throws leaves the row unprocessed so the next poll retries it;
                     // marking first would record a message that never reached the broker as delivered and lose it,
                     // because Process swallows the failure and no later poll would ever see the row again.
-                    // The converse - a publish that succeeds and a mark that then fails - redelivers the message on
-                    // the next poll. That duplicate is the accepted cost of at-least-once delivery here.
+                    // Oracle: MustLeaveOutboxMessageUnprocessedWhenDispatchFails. The converse - a publish that
+                    // succeeds and this claim that then fails - is re-claimed rather than redelivered; the rationale
+                    // for that is on TryReClaimPublishedMessage.
                     await pollable.UpdateProcessedDate(message, ct);
                 }, null, cancellationToken);
             }
@@ -124,7 +141,54 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             catch (Exception e)
             {
                 _logger.LogError(e, $"Unable to process outbox message with id '{message.Id}'");
+
+                if (published && await TryReClaimPublishedMessage(message, cancellationToken).ConfigureAwait(false))
+                {
+                    return;
+                }
+
                 await RecordFailedDispatchAttempt(message, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// Claims a row whose message is already on the broker a second time, in a unit of work of its own, after
+        /// the claim the drain made rolled back with the failure that ended the drain. Reports whether the row is
+        /// claimed.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: this runs ONLY on an exit where the publish returned, so it can never record a message the
+        /// broker never took as delivered; the flag it is gated on is raised at the one point where that becomes
+        /// true, and the mutations that redden its position are named there.
+        /// Oracles: MustReClaimTheRowWhenTheClaimCommitFailsAfterAPublish and
+        /// MustNotRecordADispatchAttemptWhenTheReClaimSucceeds; removing the re-claim reddens both together and
+        /// nothing else (observed), and recording an attempt after a re-claim that SUCCEEDED reddens the second
+        /// alone (observed). There is no mutation that reddens the first alone.
+        /// INVARIANT: the claim is STAGED here rather than inherited. A relational store's change tracker can still
+        /// carry the claim the rolled-back unit of work staged, and any unit of work opened afterwards would flush
+        /// it - which is the same row state by accident, reached by a write nothing named. Issuing the claim again
+        /// makes the write explicit and leaves the drain's outcome independent of what a tracker retained. No oracle
+        /// separates the two: residue belongs to a relational store and a mocked one has none, so this is stated
+        /// rather than pinned.
+        /// INVARIANT: a re-claim that throws is logged and reported unclaimed, so the caller falls through to the
+        /// dispatch attempt and the row is held back by the backoff instead of being published again next poll.
+        /// Oracle: MustRecordADispatchAttemptWhenTheReClaimAlsoFails; swallowing the failure and reporting the row
+        /// claimed reddens it and nothing else (observed).
+        /// </remarks>
+        private async Task<bool> TryReClaimPublishedMessage(OutboxMessage message, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
+
+                await ((IUnitOfWork)_brokeredMessageOutbox).ExecuteAsync(ct => pollable.UpdateProcessedDate(message, ct), null, cancellationToken).ConfigureAwait(false);
+
+                return true;
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, $"Unable to record outbox message with id '{message.Id}' processed after it was dispatched");
+                return false;
             }
         }
 
@@ -133,19 +197,20 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// the poll's due gate hold a failing message back instead of handing it to every batch.
         /// </summary>
         /// <remarks>
-        /// INVARIANT: the stamp commits in its OWN unit of work. Dispatch runs inside one that ROLLS BACK when it
-        /// throws, so a stamp staged there is discarded with the failure it records and the mechanism silently does
-        /// nothing. Oracle: MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork, whose unit of work reverts
-        /// attempt state staged by an operation that threw and which also counts the units of work opened. Calling
-        /// the store directly here instead of through a unit of work reddens it and nothing else (observed);
-        /// staging the stamp inside the DISPATCH unit of work instead reddens it together with
-        /// MustNotRecordADispatchAttemptWhenProcessingIsCancelled - a stamp staged there also bypasses the
-        /// cancellation exemption above - and nothing else (observed).
-        /// INVARIANT: this covers BOTH non-success exits of the drain, because both leave the row unclaimed: a
-        /// dispatch that threw, and a dispatch that SUCCEEDED whose claim commit then threw. The second is what
-        /// keeps the due gate from re-publishing an already-published message on the very next poll.
-        /// Oracles: MustRecordADispatchAttemptWhenDispatchFails and MustRecordADispatchAttemptWhenMarkingProcessedFails;
-        /// swallowing the claim failure inside the unit of work reddens the second and nothing else (observed).
+        /// INVARIANT: the stamp goes STRAIGHT to the store, outside any unit of work. Dispatch runs inside one that
+        /// ROLLS BACK when it throws, so a stamp staged there is discarded with the failure it records and the
+        /// mechanism silently does nothing - and a unit of work opened HERE would commit, along with the stamp,
+        /// whatever the rolled-back one left staged, which is a write this method never named. The relational store
+        /// writes the stamp without saving a change tracker at all, for the reasons recorded on
+        /// BrokeredMessageOutbox.RecordDispatchAttempt. Oracle:
+        /// MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork, whose unit of work reverts attempt state
+        /// staged by an operation that threw and which also counts the units of work opened. Wrapping this call in
+        /// a unit of work reddens it and nothing else (observed).
+        /// INVARIANT: this covers the two exits that leave the row unclaimed: a dispatch that threw, and a dispatch
+        /// that SUCCEEDED whose claim AND re-claim both threw. The second is what keeps the due gate from
+        /// re-publishing an already-published message on the very next poll.
+        /// Oracles: MustRecordADispatchAttemptWhenDispatchFails and MustRecordADispatchAttemptWhenTheReClaimAlsoFails,
+        /// whose exclusive mutation is recorded on TryReClaimPublishedMessage.
         /// INVARIANT: the backoff is taken from the attempt count THIS failure leaves the row at, so the waits run
         /// 5s, 10s, 20s rather than repeating the base for the first two failures.
         /// Oracle: MustGrowTheScheduledWaitWithTheAttemptsTheRowAlreadyCarries; passing the row's pre-increment
@@ -163,7 +228,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 var nextAttemptAtUtc = DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(attemptsThisFailureLeaves));
                 var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
 
-                await ((IUnitOfWork)_brokeredMessageOutbox).ExecuteAsync(ct => pollable.RecordDispatchAttempt(message, nextAttemptAtUtc, ct), null, cancellationToken).ConfigureAwait(false);
+                await pollable.RecordDispatchAttempt(message, nextAttemptAtUtc, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception e)
             {

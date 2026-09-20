@@ -280,11 +280,11 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
                    .Verify(o => o.RecordDispatchAttempt(message, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
-        // EXIT 2 - DISPATCH SUCCEEDED AND THE CLAIM COMMIT THREW. This exit is what makes the due gate subsume a
-        // duplicate dispatch: the message IS on the broker, so a row that came back due immediately would be
-        // published a second time on the very next poll. It costs an attempt exactly like a failed publish.
+        // EXIT 2 - DISPATCH SUCCEEDED AND THE CLAIM COMMIT THREW, AND THE RE-CLAIM FAILED TOO. A published message
+        // whose row cannot be claimed at all must cost an attempt: the message IS on the broker, so a row that came
+        // back due immediately would be published a second time on the very next poll.
         [Fact]
-        public async Task MustRecordADispatchAttemptWhenMarkingProcessedFails()
+        public async Task MustRecordADispatchAttemptWhenTheReClaimAlsoFails()
         {
             var message = CreateOutboxMessage();
             _outbox.As<IPollableOutboxStore>()
@@ -296,6 +296,63 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
             _outbox.As<IPollableOutboxStore>()
                    .Verify(o => o.RecordDispatchAttempt(message, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        private int _claimAttempts;
+
+        /// <summary>
+        /// Fails the FIRST claim the way a claim commit fails, then lets the next one through and stamps the row the
+        /// way a real Pollable Outbox Store stamps it - so the re-claim is read off the row a later poll would read.
+        /// </summary>
+        private void FailTheFirstClaimThenStampTheRow()
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.UpdateProcessedDate(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+                      .Returns<OutboxMessage, CancellationToken>(StampTheRowUnlessItIsTheFirstClaim);
+
+        private Task StampTheRowUnlessItIsTheFirstClaim(OutboxMessage row, CancellationToken cancellationToken)
+        {
+            if (++_claimAttempts == 1)
+            {
+                throw new InvalidOperationException("the claim commit failed deliberately");
+            }
+
+            row.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
+            return Task.CompletedTask;
+        }
+
+        // EXIT 2 - DISPATCH SUCCEEDED AND THE CLAIM COMMIT THREW, AND THE RE-CLAIM WORKED. The row is claimed by a
+        // second claim the drain issues deliberately, not by whatever a rolled-back unit of work happened to retain.
+        // The Dispatch assertion is what keeps the re-claim from being a second publish.
+        [Fact]
+        public async Task MustReClaimTheRowWhenTheClaimCommitFailsAfterAPublish()
+        {
+            var message = CreateOutboxMessage();
+            FailTheFirstClaimThenStampTheRow();
+
+            await _sut.Process(message);
+
+            message.ProcessedFromOutboxAtUtc.Should().NotBeNull();
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Exactly(2));
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+        }
+
+        // ...AND A ROW THE RE-CLAIM CLAIMED COSTS NOTHING. The attempt is what holds a row back from the next poll,
+        // and a claimed row has nothing left to hold back; spending one here would push a due time and burn budget
+        // against a configured ceiling on a drain that ended in success.
+        [Fact]
+        public async Task MustNotRecordADispatchAttemptWhenTheReClaimSucceeds()
+        {
+            var message = CreateOutboxMessage();
+            RecordAttemptStateOnRecord();
+            FailTheFirstClaimThenStampTheRow();
+
+            await _sut.Process(message);
+
+            message.DispatchAttempts.Should().Be(0);
+            message.NextAttemptAtUtc.Should().BeNull();
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         // SCHEDULE - THE FIRST FAILURE. The instant handed to the store is one backoff ahead of now, taken from
@@ -370,7 +427,8 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
         // THE STAMP MUST SURVIVE THE ROLLBACK. Dispatch runs inside a unit of work that rolls back when it throws,
         // so an attempt staged in THAT unit of work is discarded with it and the whole mechanism silently does
         // nothing. The oracle is the row - the state a later poll reads - plus the count of units of work opened:
-        // the stamp travels through a SECOND one of its own.
+        // the drain opens exactly the ONE the dispatch ran in, and the stamp goes straight to the store outside it,
+        // so no unit of work can roll the stamp back and none can flush anything the stamp did not name.
         [Fact]
         public async Task MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork()
         {
@@ -384,7 +442,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             message.DispatchAttempts.Should().Be(1);
             message.NextAttemptAtUtc.Should().NotBeNull();
             _outbox.As<IUnitOfWork>()
-                   .Verify(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+                   .Verify(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         // CANCELLATION IS EXEMPT. A drain stopped by shutdown never attempted anything the broker refused, so
