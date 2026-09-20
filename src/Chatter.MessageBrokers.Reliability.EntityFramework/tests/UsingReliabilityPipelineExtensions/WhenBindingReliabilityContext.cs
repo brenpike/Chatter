@@ -21,9 +21,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
     // These tests pin the single-context contract of the reliability extensions. Each extension takes its own
     // TContext, and Replace is remove-then-add, so before this contract existed a host that wrote
     // WithInboxBehavior<A>() followed by WithOutboxProcessingBehavior<B>() resolved IUnitOfWork as UnitOfWork<B>
-    // while IBrokeredMessageInbox still wrote its marker into A - the unit of work then committed a different
-    // DbContext than the one holding the marker, and nothing said so. The contract makes that registration
-    // unrepresentable: it is refused at registration, before anything is mutated.
+    // while IBrokeredMessageInbox still claimed the message id in A, flushing that claim into A's transaction -
+    // the unit of work then committed a different DbContext than the one holding the claim, and nothing said so.
+    // The contract makes that registration unrepresentable: it is refused at registration, before anything is
+    // mutated.
     public class WhenBindingReliabilityContext : Testing.Core.Context
     {
         // The resolved sequence is outermost-first, because CommandBehaviorPipeline composes last-to-first.

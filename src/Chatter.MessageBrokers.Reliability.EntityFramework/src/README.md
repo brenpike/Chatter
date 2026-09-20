@@ -157,13 +157,23 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ### Inbox (idempotency)
 
-`BrokeredMessageInbox<TContext>` enforces **once-only handling**. When a message arrives, the inbox reads the marker for its `MessageId` by key:
+`BrokeredMessageInbox<TContext>` **records its claim on a message id before it invokes the handler**, so the id is reserved in the store for as long as the handler runs rather than only once it has returned. When a message arrives, the inbox reads the marker for its `MessageId` by key:
 
 - If a marker is present and was received within the deduplication window, the handler is skipped and the suppression is logged at Information with the message id.
-- If a marker is present but was received longer ago than the window, it is treated as spent: the handler runs, and the marker's `ReceivedByInboxAtUtc` is refreshed in place. `MessageId` is the primary key, so refreshing the existing row is the only shape available — a second row for the same id would not insert.
-- If no marker is present, the handler runs and on success an `InboxMessage` row is added recording the id and `ReceivedByInboxAtUtc`.
+- If a marker is present but was received longer ago than the window, it is treated as spent: the marker's `ReceivedByInboxAtUtc` is refreshed in place, that refresh is flushed, and then the handler runs. `MessageId` is the primary key, so refreshing the existing row is the only shape available — a second row for the same id would not insert.
+- If no marker is present, an `InboxMessage` row recording the id and `ReceivedByInboxAtUtc` is added, that insert is flushed, and then the handler runs.
 
-If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible). Whether the marker is added or refreshed, it participates in the surrounding unit of work, so the handler's effects and the inbox record commit together — the inbox never saves on its own. The registration guard in [Reliability Behavior Order](#reliability-behavior-order) is what makes every relational reliability participant share one `DbContext`, so the transaction the unit of work commits is the one holding the marker.
+**The inbox flushes; it never commits.** The claim is pushed out with `SaveChangesAsync` into whatever transaction is already active on the `DbContext`, and the inbox issues no commit of its own — the surrounding unit of work's single commit stays the only commit point, so the claim and the handler's effects commit together or roll back together. If that flush fails, the inbox detaches the failed entry and re-reads the marker by key as ground truth: a committed marker the deduplication window does not age out means another delivery owns the id, so the handler is skipped; anything else — no marker, or an expired one — is rethrown.
+
+If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible). The registration guard in [Reliability Behavior Order](#reliability-behavior-order) is what makes every relational reliability participant share one `DbContext`, so the transaction the unit of work commits is the one holding the marker. Why the claim precedes the handler, rather than following it, is recorded in [ADR-0033](https://github.com/brenpike/Chatter/blob/master/docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md).
+
+#### The cost of claiming first
+
+**A duplicate delivery waits for the handler it is duplicating.** A second delivery of an id already claimed blocks on the first delivery's claim until that delivery's transaction commits or rolls back — so it waits for up to the first handler's full duration. That wait is capped by the command timeout on your provider's connection (30 seconds by default for both SqlClient and Npgsql), after which the second delivery throws and the broker redelivers it; *that* redelivery is deduplicated correctly, because the winner's marker has committed by then. A long-running handler combined with a burst of duplicates can therefore produce command timeouts while holding a receiver slot. Shorten the handler, or raise the command timeout, if that is your traffic shape.
+
+**The inbox refuses to claim outside a unit of work.** When the context holds no active transaction, `ReceiveViaInbox` throws an `InvalidOperationException` naming `TContext` instead of flushing. Without a transaction the flush would commit on its own, and a failure anywhere between that commit and the handler's work would leave a marker suppressing a message nothing ever handled. Register the inbox through `WithInboxBehavior<TContext>()`, which registers the matching unit of work itself, or run the call inside a unit of work's `ExecuteAsync`.
+
+**The flush is change-tracker-wide.** `SaveChangesAsync` pushes out every pending entry on the context, not only the claim, so a dispatch nested inside another handler flushes that outer handler's staged entries early. They go into the same transaction and remain atomic with the claim, but a constraint or validation error on an outer entry now surfaces at the claim rather than at the unit of work's commit.
 
 #### The deduplication window
 
@@ -173,7 +183,7 @@ When a window *is* configured, expiry is decided at receive rather than left to 
 
 Size the window **at or above your worst-case redelivery horizon**. `MessageId` is a wire value chosen by whatever produced the message, so a forged or merely reused id suppresses a legitimate message for as long as its marker stays live; a window sized that way spends its suppression on genuine redeliveries and releases the id afterwards.
 
-Deduplication covers redelivery, not concurrency. Two deliveries racing on the same expired id can both read the marker, both find it expired, and both run the handler before either commits. That accepted residual — and the reasoning behind the disabled default — is recorded in [ADR-0026](https://github.com/brenpike/Chatter/blob/master/docs/adr/0026-the-relational-inbox-decides-expiry-at-receive-so-purge-timing-cannot-suppress-a-legitimate-message.md).
+**A second concurrent delivery of the same id blocks, then skips its handler.** Because the claim is written and flushed ahead of the handler, two deliveries racing on one id contend on the store's own row lock rather than on a read they can both pass: the primary key for a fresh id, and `ReceivedByInboxAtUtc` — which `InboxMessageConfiguration` marks `IsConcurrencyToken()` — for an expired one, where both deliveries update the same row and the primary key separates nothing. The loser's flush matches no row, its re-read finds the winner's committed marker, and it skips its handler. The token carries no new column and needs no migration. What this costs the caller is set out under [The cost of claiming first](#the-cost-of-claiming-first); the reasoning behind the disabled default is recorded in [ADR-0026](https://github.com/brenpike/Chatter/blob/master/docs/adr/0026-the-relational-inbox-decides-expiry-at-receive-so-purge-timing-cannot-suppress-a-legitimate-message.md), and the ordering decision in [ADR-0033](https://github.com/brenpike/Chatter/blob/master/docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md).
 
 ### Outbox (reliable publish)
 
@@ -215,7 +225,7 @@ The entity configurations map two tables (table names default to the `DbSet`/ent
 | Column | Type | Constraints |
 | --- | --- | --- |
 | `MessageId` | `string` | Primary key, required |
-| `ReceivedByInboxAtUtc` | `DateTime?` | When the message was recorded in the inbox |
+| `ReceivedByInboxAtUtc` | `DateTime?` | When the message was claimed in the inbox; **concurrency token** |
 
 ### Outbox — `OutboxMessage`
 

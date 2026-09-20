@@ -48,7 +48,7 @@ Semantic expiry is decided at receive, and the purge is kept as separate hygiene
 the marker is refreshed in place rather than inserted again.
 
 This eliminates the class *a marker older than the window suppresses a legitimate redelivery, whatever the
-purge timing*. `MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed` pins it from the
+purge timing*. `MustRefreshTheClaimBeforeInvokingTheHandlerForAnExpiredMessageId` pins it from the
 positive side and `MustSkipHandlerWhenMarkerIsWithinTheDeduplicationWindow` from the negative one
 (`tests/UsingBrokeredMessageInbox/WhenReceivingViaInbox.cs`). `HasBeenReceived` answers on the same terms:
 `MustNotReportReceivedForAMarkerOlderThanTheDeduplicationWindow` and
@@ -57,11 +57,16 @@ positive side and `MustSkipHandlerWhenMarkerIsWithinTheDeduplicationWindow` from
 ### The refresh does not give the inbox a commit point
 
 The refresh is an assignment to a tracked entity — `existingMarker.ReceivedByInboxAtUtc = DateTime.UtcNow` —
-which leaves an `EntityState.Modified` entry that `UnitOfWorkBehavior`'s single `SaveChangesAsync` commits
-alongside the handler's own work, exactly as the `Added` entry on the fresh-id path already was.
-`MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed` asserts the entry state and that the
-table still holds one row. `ReceiveViaInbox` still calls no `SaveChanges` of its own, and
-`MustNotDeclareADbContextField` still fails on a reintroduced `DbContext`-typed field.
+which leaves an `EntityState.Modified` entry. That entry is flushed AHEAD of the handler and committed by
+`UnitOfWorkBehavior`'s single commit alongside the handler's own work, exactly as the `Added` entry on the
+fresh-id path is. `MustRefreshTheClaimBeforeInvokingTheHandlerForAnExpiredMessageId` asserts the entry
+state and that the table still holds one row.
+
+The flush is participation, not a commit: `ReceiveViaInbox` issues no `Commit` of its own, so the inbox has no
+commit point. `MustFlushTheRefreshedClaimWithoutCommittingForAnExpiredMessageId` pins that — it counts commits
+through an `IDbTransactionInterceptor` and asserts zero across a full receive, then one after an explicit
+commit. It replaces `MustNotDeclareADbContextField`, named here previously, which no longer exists: a
+`DbContext` field is the mechanism the claim needs rather than a hazard to trip on. ADR-0033 records why.
 
 ### A marker that cannot be dated keeps suppressing
 
@@ -155,24 +160,32 @@ dead-letters the message. It also never reaches `HasBeenReceived`, whose `AnyAsy
 An application that needs ordinal message-id equality declares the collation it wants on the `MessageId`
 column in its own `OnModelCreating`, alongside the configuration this package ships.
 
-### Accepted residual: two concurrent redeliveries of an expired id both re-run the handler
+### Closed: two concurrent redeliveries of an expired id both re-run the handler
 
-Both deliveries can call `FindAsync`, both can see the same expired marker, and both can run the handler
-before either commits. `InboxMessage`
-(`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/Inbox/InboxMessage.cs`) declares
-`MessageId` and `ReceivedByInboxAtUtc` and no concurrency token, so nothing makes the second refresh lose.
-Adding a token is a change to a `Chatter.MessageBrokers` entity that lands as a column in every application's
-database, which is a wider change than this one. The residual is reachable only with a window configured and
-only for a redelivery arriving outside the window that window was sized for.
+Recorded here as an accepted residual, and since closed. It read: both deliveries can call `FindAsync`, both
+can see the same expired marker, and both can run the handler before either commits, because `InboxMessage`
+(`src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/Inbox/InboxMessage.cs`) declared
+`MessageId` and `ReceivedByInboxAtUtc` and no concurrency token, so nothing made the second refresh lose.
 
-This is kin to **#380, which stays OPEN**: the EF inbox is read-then-act on the fresh-id path too, and the
-backstop there is the primary key, pinned by
-`Integration/WhenDeduplicatingInboxOnSqlServer.MustRejectDuplicateInboxMessageIdAtThePrimaryKeyConstraint`
-and `MustPersistExactlyOneInboxRowWhenTwoReceiversRaceForTheSameMessageId`. Claim-first was rejected for the
-same reason in both places: claiming an id ahead of the handler requires the inbox to commit its own row,
-which is the reverted self-save path that ADR-0006, the `INVARIANT` block at `BrokeredMessageInbox.cs:18-31`,
-and the `MustNotDeclareADbContextField` tripwire all exist to prevent. Database side effects stay once-only
-through the primary key; only a handler's non-transactional side effects can run twice.
+Two changes closed it together. `ReceivedByInboxAtUtc` is declared `IsConcurrencyToken()` in
+`InboxMessageConfiguration`, so each delivery's `UPDATE` carries the value it read into its own predicate and
+the delivery that reaches the row second matches no row. And the refresh is flushed AHEAD of the handler, so
+the losing delivery learns it lost before its handler runs. The reason recorded above for declining the token
+was wrong: `IsConcurrencyToken()` on a property that already exists is a model-snapshot annotation whose
+generated migration has an empty `Up()` and emits no DDL — it lands as no column in any application's database.
+`OutboxMessageConfiguration.cs:14` carries the same annotation on `ProcessedFromOutboxAtUtc` and is the
+precedent in this package.
+`UsingInboxMessageConfiguration/WhenConfiguring.MustTreatReceivedDateAsAConcurrencyToken` and
+`Integration/WhenDeduplicatingInboxOnSqlServer.MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId`
+are the oracles; removing `IsConcurrencyToken()` reddens exactly those two and nothing else.
+
+**#380 is closed with it**, by the same ordering rather than by the primary key alone. The rejection recorded
+here rested on a false premise: claiming an id ahead of the handler does NOT require the inbox to commit its
+own row. ADR-0006:162 states that "saving is participation: it flushes the handler's staged work into whichever
+transaction is active", so a flush inside the ambient transaction leaves `UnitOfWorkBehavior`'s single commit
+as the only commit point and atomicity intact — it is not the reverted self-save path. The claim-first
+mechanism, the refusal that keeps a claim from ever autocommitting outside a transaction, the store-level
+ordering it relies on, and the costs it accepts are recorded in ADR-0033.
 
 ### Accepted residual: a purge against a model mapping neither entity logs an error every cycle
 
@@ -186,15 +199,17 @@ host runs, rather than once at startup.
 
 The **Inbox Deduplicator** term in `src/Chatter.MessageBrokers/CONTEXT.md` used to say that on the relational
 tier `ReceiveViaInbox` "reserves the message id before the handler runs rather than after it completes", and
-built an in-flight-reservation paragraph on that premise. That described the in-memory realization, not this
-one: `BrokeredMessageInbox<TContext>` stages its marker AFTER the handler returns and commits nothing itself,
-so no reservation is ever visible to a concurrent delivery. The drift predated this work and was first filed
-here as a carried residual; it was corrected during this initiative's pre-PR review instead. The term now
-states the handler-first order, scopes in-flight reservation to the in-memory inbox, and carries an `_Avoid_`
-clause naming `MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId` and
-`MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed`
-(`tests/UsingBrokeredMessageInbox/WhenReceivingViaInbox.cs`) as the oracles that go red if the order ever
-changes — so the claim is pinned to executable behaviour rather than restated as prose.
+built an in-flight-reservation paragraph on that premise. That described the in-memory realization and not the
+relational one, which staged its marker AFTER the handler returned and committed nothing itself, so no
+reservation was ever visible to a concurrent delivery. The drift predated this work and was first filed here as
+a carried residual; it was corrected during this initiative's pre-PR review instead, to state the handler-first
+order and scope in-flight reservation to the in-memory inbox.
+
+**That correction is itself superseded.** The relational inbox claims the message id BEFORE the handler, by
+flushing the claim into the ambient transaction, so both tiers reserve ahead of the handler — for a different
+reason on each: the in-memory inbox through an in-process reservation, the relational one through a write the
+store adjudicates. The oracles that hold the relational order, and the mechanism behind it, are recorded in
+ADR-0033.
 
 ### Accepted residual: the purge service's loop is covered by reasoning only
 
@@ -219,11 +234,11 @@ test in this repository starts the hosted service.
 ## Amendment — a database-owned retention stamp, recorded as a named future direction
 
 Every retention stamp this package writes is the WRITING host's `DateTime.UtcNow`: `ReceivedByInboxAtUtc` on
-the fresh-id insert (`BrokeredMessageInbox.cs:124`), `ReceivedByInboxAtUtc` on the expiry refresh
-(`BrokeredMessageInbox.cs:133`), and `ProcessedFromOutboxAtUtc` on the drain's claiming update
-(`BrokeredMessageOutbox.cs:117`). Every eligibility decision compares one of those stamps against a cutoff
+the fresh-id claim (`BrokeredMessageInbox.cs:147`), `ReceivedByInboxAtUtc` on the expiry refresh
+(`BrokeredMessageInbox.cs:156`), and `ProcessedFromOutboxAtUtc` on the drain's claiming update
+(`BrokeredMessageOutbox.cs:174`). Every eligibility decision compares one of those stamps against a cutoff
 taken from the DECIDING host's clock — `HasBeenReceived`'s cutoff and `HasMarkerExpired`'s comparison
-(`BrokeredMessageInbox.cs:153` and `:171`), and the `inboxCutoffUtc` and `outboxCutoffUtc` the purge derives
+(`BrokeredMessageInbox.cs:205` and `:223`), and the `inboxCutoffUtc` and `outboxCutoffUtc` the purge derives
 in `PurgeOnceAsync`. Writer and decider need not be the same process.
 
 So retention eligibility — and through it how much work a purge pass finds to do — is EMERGENT FROM CLOCK
@@ -272,10 +287,14 @@ falsify.
 
 - Issue #382 — inbox rows living forever and a producer-controlled id suppressing a legitimate message; the
   occasion for both the retention purge and this expiry decision.
-- Issue #380 (OPEN) — the concurrent-delivery residual this decision narrows but does not close.
+- Issue #380 — the concurrent-delivery residual this decision narrowed and did not close; closed by the
+  claim-first ordering recorded in ADR-0033.
 - Issue #383 — the cancellation token now threaded through the inbox lookup and insert.
 - ADR-0006 — *Two-tier reliability port: relational ambient-tx vs NoSQL stage-then-commit*, source of the
-  rule that the relational inbox never commits its own marker.
+  rule that the relational inbox never commits its own marker, and of the participation-versus-ownership
+  distinction at `:162` that makes a pre-handler flush available.
+- ADR-0033 — *The relational inbox claims the message id before the handler, inside the ambient transaction*.
+  The claim-first mechanism, the no-transaction refusal, the concurrency token, and the costs they accept.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageInbox.cs`
   (`ReceiveViaInbox`, `HasMarkerExpired`, `HasBeenReceived`) — where the expiry decision lives.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/InboxMessageConfiguration.cs`

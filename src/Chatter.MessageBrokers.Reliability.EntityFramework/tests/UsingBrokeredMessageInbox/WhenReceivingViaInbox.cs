@@ -349,7 +349,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         // inserted a second time, and that refresh reaches the store before the handler runs exactly as a fresh
         // claim does. Oracle for the expired branch of the claim; moving the flush after the handler reddens it.
         [Fact]
-        public async Task MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed()
+        public async Task MustRefreshTheClaimBeforeInvokingTheHandlerForAnExpiredMessageId()
         {
             using var harness = InboxClaimSqliteHarness.Create();
             var messageId = Guid.NewGuid().ToString();

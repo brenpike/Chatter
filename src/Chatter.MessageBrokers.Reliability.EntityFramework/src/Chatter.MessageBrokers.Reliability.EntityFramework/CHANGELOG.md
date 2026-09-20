@@ -12,6 +12,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.10.0] - 2026-09-20
+
+### Changed
+
+- **Breaking.** `ReceiveViaInbox` now records the claim before invoking the handler, instead of after. It reads the marker by key; an unexpired marker still skips the handler without touching the change tracker. Otherwise it stages the claim — an insert for a fresh message id, an in-place `ReceivedByInboxAtUtc` refresh for an expired one — and flushes that stage with `SaveChangesAsync` inside the ambient transaction, before the handler runs. `UnitOfWorkBehavior` still owns the single commit; the inbox never commits. Rationale and the concurrency mechanics are recorded once in [ADR-0033](https://github.com/brenpike/Chatter/blob/master/docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md). Pinned by `WhenReceivingViaInbox.MustRecordTheClaimBeforeInvokingTheHandlerForAFreshMessageId`, `.MustFlushTheClaimWithoutCommittingForAFreshMessageId`, `.MustFlushTheRefreshedClaimWithoutCommittingForAnExpiredMessageId`, and over a real database by `Integration/WhenDeduplicatingInboxOnSqlServer.MustInvokeTheHandlerOnceWhenASecondDeliveryRacesTheSameMessageId` and `.MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId`.
+- **Breaking. MIGRATION NOTE.** `ReceiveViaInbox` now throws `InvalidOperationException` when there is no ambient transaction, rather than staging a claim no commit will ever persist. A host that called the inbox by hand outside a unit of work previously got silent non-deduplication — every delivery ran the handler because nothing durable ever recorded the earlier one. It now gets a loud refusal instead. Migration: register the inbox through `WithInboxBehavior<TContext>()`, which also registers the matching unit of work, or wrap the call in `IUnitOfWork.ExecuteAsync` yourself. Pinned by `WhenReceivingViaInbox.MustRefuseToClaimOutsideATransaction`.
+- A second concurrent delivery of the same message id now blocks on the first delivery's claim for up to the first handler's duration, capped by the provider's own command timeout (SqlClient and Npgsql both default to 30 seconds), rather than racing the handler. Past that cap it throws and the broker redelivers, and that redelivery is deduplicated by the same claim. A long-running handler combined with a duplicate storm can therefore hold a receiver slot until the timeout elapses rather than returning immediately. The flush is change-tracker-wide: a nested dispatch inside the handler flushes any of that outer handler's already-staged entries early, into the same ambient transaction. Pinned by `Integration/WhenDeduplicatingInboxOnSqlServer.MustBlockADuplicateInboxInsertUntilTheHoldingTransactionResolves` and `.MustInvokeTheHandlerOnTheWaitingDeliveryWhenTheClaimingDeliveryRollsBack`.
+- A concurrency token was added to the existing `ReceivedByInboxAtUtc` column, so the losing side of a race to refresh an expired marker matches zero rows on its update and is absorbed as a duplicate rather than reported as a conflict.
+
+### Fixed
+
+- #380 — the inbox invoked the handler before recording the claim, so two concurrent deliveries of the same message id could both run the handler; the claim is now recorded first, inside the same transaction the handler runs in.
+- #507 — the expired-marker refresh raced the Retention Purge, leaving a window in which a purge pass deleting the row mid-handler caused the refresh's save to match no row and throw after the handler had already run. Closed by the concurrency token on `ReceivedByInboxAtUtc`, which now absorbs that race as an ordinary duplicate instead. This closes the residual left open by [ADR-0026](https://github.com/brenpike/Chatter/blob/master/docs/adr/0026-the-relational-inbox-decides-expiry-at-receive-so-purge-timing-cannot-suppress-a-legitimate-message.md).
+- No DDL and no migration accompany this release — `InboxMessageConfiguration`'s model change adds a concurrency token to a column the schema already has, so its generated migration has an empty `Up()`. This is a deliberate contrast with 0.9.0's `DispatchAttempts` / `NextAttemptAtUtc` schema addition, which required consumers to apply a migration before rolling the binary; this release requires neither.
+
 ## [0.9.0] - 2026-09-19
 
 ### Added

@@ -4,10 +4,10 @@
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <PackageId>Chatter.MessageBrokers.Reliability.EntityFramework</PackageId>
-    <Version>0.9.0</Version>
+    <Version>0.10.0</Version>
     <Authors>Brennan Pike</Authors>
     <Owners>Brennan Pike</Owners>
-    <Description>An implementation of the Chatter.MessageBrokers.Reliability adapter library which leverages EF Core for transactions, units of work, inbox and outbox</Description>
+    <Description>An implementation of the Chatter.MessageBrokers.Reliability adapter library which leverages EF Core for transactions, units of work, inbox and outbox. The inbox claims a message id before invoking the handler, staged and flushed inside the ambient transaction the unit of work commits, so two concurrent deliveries of the same id serialize on that claim: one runs the handler, and the other blocks on the claim before skipping its own handler as an already-claimed duplicate.</Description>
     <RepositoryUrl>https://github.com/brenpike/Chatter</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>Messaging,Message Broker,.NET Core, EF Core</PackageTags>
