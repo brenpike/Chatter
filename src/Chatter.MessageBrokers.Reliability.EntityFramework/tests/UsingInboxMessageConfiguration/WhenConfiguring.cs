@@ -54,6 +54,14 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingInboxMes
             property.IsNullable.Should().BeTrue();
         }
 
+        [Fact]
+        public void MustTreatReceivedDateAsAConcurrencyToken()
+        {
+            var property = EntityType.FindProperty(nameof(InboxMessage.ReceivedByInboxAtUtc));
+
+            property.IsConcurrencyToken.Should().BeTrue();
+        }
+
         private sealed class ConfiguredContext : DbContext
         {
             public ConfiguredContext(DbContextOptions options) : base(options) { }

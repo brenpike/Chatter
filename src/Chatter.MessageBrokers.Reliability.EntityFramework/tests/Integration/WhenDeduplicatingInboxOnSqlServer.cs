@@ -222,13 +222,88 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             rows.Should().HaveCount(1, "the waiting delivery's own claim is the only one that commits");
         }
 
-        private static async Task DeliverViaInboxAsync(SqlServerOutboxContextHarness harness, string messageId, Func<Task> handler)
+        // The expired-marker branch of the same ordering. An expired marker is refreshed IN PLACE rather than
+        // inserted a second time, so both deliveries issue an UPDATE against one existing row and the MessageId
+        // primary key separates nothing: it is ReceivedByInboxAtUtc being a concurrency token that carries the value
+        // each delivery read into its own UPDATE predicate, so the delivery that reaches the row second matches no
+        // row once the first has committed a newer one.
+        [RequiresDockerFact]
+        public async Task MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId()
+        {
+            var connectionString = await CreateSnapshotIsolatedDatabaseAsync();
+            var harness = SqlServerOutboxContextHarness.Create(connectionString);
+            var messageId = Guid.NewGuid().ToString();
+            var staleReceivedAtUtc = DateTime.UtcNow.AddMinutes(-10);
+            var deduplicationWindow = TimeSpan.FromMinutes(1);
+            await GivenACommittedMarkerAsync(harness, messageId, staleReceivedAtUtc);
+
+            var handlerInvocations = 0;
+            var secondHandlerInvocations = 0;
+            var firstHandlerEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstHandlerReleased = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var firstDelivery = Task.Run(() => DeliverViaInboxAsync(harness, messageId, async () =>
+            {
+                Interlocked.Increment(ref handlerInvocations);
+                firstHandlerEntered.TrySetResult(true);
+                await firstHandlerReleased.Task;
+            }, deduplicationWindow));
+
+            await firstHandlerEntered.Task.WaitAsync(HandlerRendezvousTimeout);
+
+            var secondDelivery = Task.Run(() => DeliverViaInboxAsync(harness, messageId, () =>
+            {
+                Interlocked.Increment(ref handlerInvocations);
+                Interlocked.Increment(ref secondHandlerInvocations);
+                return Task.CompletedTask;
+            }, deduplicationWindow));
+
+            var blockedRequest = await WaitForBlockedLockRequestAsync(connectionString);
+
+            firstHandlerReleased.TrySetResult(true);
+            var firstDeliveryFailure = await CaptureFailureAsync(firstDelivery);
+            var secondDeliveryFailure = await CaptureFailureAsync(secondDelivery);
+
+            blockedRequest.Should().NotBeNull(
+                "the second delivery's refresh must be ordered behind the first delivery's uncommitted one by a lock wait");
+            handlerInvocations.Should().Be(1,
+                "a delivery of an expired MessageId another delivery has already refreshed must not reach the handler");
+            // WHICH delivery loses is the assertion, not an inference from the total: the delivery that refreshed
+            // FIRST keeps its handler's work and the one that arrived second is the one absorbed. A count of one
+            // alone would also hold if the winner's work were the work discarded.
+            secondHandlerInvocations.Should().Be(0,
+                "the delivery whose refresh matched no row is the one that must be absorbed");
+            firstDeliveryFailure.Should().BeNull("the refreshing delivery must commit its handler's work with its refreshed marker");
+            secondDeliveryFailure.Should().BeNull("the losing delivery must be absorbed as a duplicate, not surfaced as an error");
+
+            using var verifyContext = harness.CreateContext();
+            var rows = await verifyContext.Set<InboxMessage>().Where(m => m.MessageId == messageId).ToListAsync();
+            rows.Should().ContainSingle("the expired marker is refreshed in place, not inserted a second time")
+                .Which.ReceivedByInboxAtUtc.Should().BeAfter(staleReceivedAtUtc,
+                    "the refresh that committed must be the one the winning delivery wrote");
+        }
+
+        private static async Task DeliverViaInboxAsync(SqlServerOutboxContextHarness harness,
+                                                       string messageId,
+                                                       Func<Task> handler,
+                                                       TimeSpan? deduplicationWindow = null)
         {
             using var context = harness.CreateContext();
-            var inbox = new BrokeredMessageInbox<SqlServerOutboxContext>(context, CreateLogger(), new ReliabilityOptions());
+            var inbox = new BrokeredMessageInbox<SqlServerOutboxContext>(
+                context,
+                CreateLogger(),
+                new ReliabilityOptions(),
+                new EntityFrameworkReliabilityOptions { InboxDeduplicationWindow = deduplicationWindow });
             var unitOfWork = new UnitOfWork<SqlServerOutboxContext>(context, NullLogger<UnitOfWork<SqlServerOutboxContext>>.Instance);
 
             await unitOfWork.ExecuteAsync(_ => inbox.ReceiveViaInbox("payload", CreateBrokerContext(messageId), handler), null);
+        }
+
+        private static async Task GivenACommittedMarkerAsync(SqlServerOutboxContextHarness harness, string messageId, DateTime receivedAtUtc)
+        {
+            using var seedContext = harness.CreateContext();
+            seedContext.Set<InboxMessage>().Add(new InboxMessage { MessageId = messageId, ReceivedByInboxAtUtc = receivedAtUtc });
+            await seedContext.SaveChangesAsync();
         }
 
         // Returns a formatted description of the first blocked lock request seen on this test's database, or null
