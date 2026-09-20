@@ -35,8 +35,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// <para>
         /// A row is DUE when its <see cref="OutboxMessage.NextAttemptAtUtc"/> is null - the value a staged row carries
         /// - or has passed. As with the cap and the ordering, this is DOCUMENTED on the method rather than enforced by
-        /// the caller: nothing inspects what a store hands back for size, order or dueness. The shipped stores gate on
-        /// it in their own step; no test in this repository pins the gate as of this one.
+        /// the caller: nothing inspects what a store hands back for size, order or dueness.
         /// </para>
         /// <para>
         /// The poller polls again IMMEDIATELY after a batch of the full size that carries at least one message it

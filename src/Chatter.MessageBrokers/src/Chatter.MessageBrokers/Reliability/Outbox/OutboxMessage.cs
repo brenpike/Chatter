@@ -34,10 +34,6 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// INVARIANT: null is the due-now value rather than the never-due one. Oracle:
         /// <c>WhenResolvingReliabilityStores.OutboxMessage_IsNeverAttemptedAndDueNowWhenStaged</c>; giving this
         /// property an initializer of <see cref="DateTime.UtcNow"/> reddens it and nothing else.
-        /// <para>
-        /// NO POLL READS THIS YET. Selection is still <c>ProcessedFromOutboxAtUtc IS NULL</c> alone; the store that
-        /// gates a poll on this instant is a later step, so no test in this repository pins the due gate itself.
-        /// </para>
         /// </remarks>
         public DateTime? NextAttemptAtUtc { get; set; }
     }

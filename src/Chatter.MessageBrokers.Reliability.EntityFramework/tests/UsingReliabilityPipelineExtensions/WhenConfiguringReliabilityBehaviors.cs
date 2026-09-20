@@ -389,7 +389,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             configure.Should().NotThrow("a thousand-year window is still subtractable from UtcNow, and retention duration is the operator's to choose");
         }
 
-        // STEP-005 capped the outbox poll at ReliabilityOptions.OutboxPollBatchSize on a SECOND constructor, so the
+        // The outbox poll is capped at ReliabilityOptions.OutboxPollBatchSize only on a SECOND constructor, so the
         // cap only reaches a running host if the container activates that constructor rather than the uncapped one.
         // This resolves the outbox the way a Chatter host does - through the registration WithOutboxProcessingBehavior
         // makes, over a published ReliabilityOptions - and watches the poll obey the configured batch.

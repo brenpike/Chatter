@@ -41,8 +41,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
     [Collection(EfReliabilitySqlServerCollection.Name)]
     public class WhenDrainingPastAPermanentlyFailingRowOnSqlServer : Testing.Core.Context
     {
-        // The Outbox Poll Batch is filled ENTIRELY by messages the broker refuses, which is the wedge this step
-        // closes: at as few as this many of them, nothing behind them could be polled at all.
+        // The Outbox Poll Batch is filled ENTIRELY by messages the broker refuses, which is the wedge ADR-0031's
+        // attempt-state selection closes: at as few as this many of them, nothing behind them could be polled at all.
         private const int OutboxPollBatchSize = 3;
         private const string Infrastructure = "test-infrastructure";
         private const string RefusedDestination = "destination-the-broker-refuses";
