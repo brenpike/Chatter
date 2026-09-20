@@ -13,8 +13,10 @@ using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingPersistanceTransaction
 {
-    // INVARIANT: PersistanceTransaction is internal sealed with no [InternalsVisibleTo]; it is reachable only as
-    // IPersistanceTransaction via IUnitOfWork.CurrentTransaction. These tests exercise that public surface.
+    // INVARIANT: these tests reach PersistanceTransaction the way an application does - as an
+    // IPersistanceTransaction handed back by IUnitOfWork.CurrentTransaction - so they pin the public surface.
+    // The module's [InternalsVisibleTo] grant also names this assembly; see WhenCreatingPersistanceTransaction
+    // for the tests that use it to reach the internal type directly.
     public class WhenManagingTransactionLifecycle : Testing.Core.Context, IAsyncDisposable
     {
         private readonly SqliteOutboxContextHarness _harness;
@@ -114,6 +116,55 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingPersista
         {
             await using var dbTransaction = await _context.Database.BeginTransactionAsync();
             IPersistanceTransaction transaction = _sut.CurrentTransaction;
+
+            Func<Task> act = async () => await transaction.DisposeAsync();
+
+            await act.Should().NotThrowAsync();
+        }
+
+        // INVARIANT: a disposed handle no longer owns a transaction, so commit and rollback refuse by naming the
+        // disposal. Previously both dereferenced the released transaction and surfaced a NullReferenceException.
+        [Fact]
+        public async Task MustRefuseCommitAfterDisposeWhenTransactionActive()
+        {
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+            IPersistanceTransaction transaction = _sut.CurrentTransaction;
+            transaction.Dispose();
+
+            Func<Task> act = () => transaction.CommitAsync();
+
+            await act.Should().ThrowAsync<ObjectDisposedException>();
+        }
+
+        [Fact]
+        public async Task MustRefuseRollbackAfterDisposeAsyncWhenTransactionActive()
+        {
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+            IPersistanceTransaction transaction = _sut.CurrentTransaction;
+            await transaction.DisposeAsync();
+
+            Func<Task> act = () => transaction.RollbackAsync();
+
+            await act.Should().ThrowAsync<ObjectDisposedException>();
+        }
+
+        [Fact]
+        public async Task MustReportEmptyTransactionIdAfterDisposeWhenTransactionActive()
+        {
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+            IPersistanceTransaction transaction = _sut.CurrentTransaction;
+
+            transaction.Dispose();
+
+            transaction.TransactionId.Should().Be(Guid.Empty);
+        }
+
+        [Fact]
+        public async Task MustNotThrowFromASecondDisposeWhenTransactionActive()
+        {
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+            IPersistanceTransaction transaction = _sut.CurrentTransaction;
+            transaction.Dispose();
 
             Func<Task> act = async () => await transaction.DisposeAsync();
 

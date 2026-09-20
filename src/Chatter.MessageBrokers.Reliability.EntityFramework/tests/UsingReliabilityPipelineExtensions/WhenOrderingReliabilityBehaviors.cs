@@ -186,13 +186,17 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
         // of work behavior would never have been registered and could not appear in the resolved sequence.
         //
         // Scope, stated plainly. This test is GREEN against the code as it stood before the IsKeyedService
-        // guard, because Microsoft.Extensions.DependencyInjection.Abstractions 8.0.2 and later - the versions
-        // this repository resolves on both target frameworks - return null from ServiceDescriptor.Implementation-
-        // Type for a keyed descriptor. At 8.0.0 that same property throws InvalidOperationException instead.
-        // Consumers bind that assembly from the ASP.NET Core shared framework at the host's patch level rather
-        // than from the restored package, so an unpatched 8.0.0 host plus any keyed ICommandBehavior<>
-        // registration crashes. This is a host-patch-level regression guard, not a reproduction of a failure
-        // reachable in this repository today.
+        // guard, because the Microsoft.Extensions.DependencyInjection.Abstractions assembly actually LOADED
+        // here returns null from ServiceDescriptor.ImplementationType for a keyed descriptor. Read the LOADED
+        // assembly for this, not the lock file: packages.lock.json records resolved 8.0.2 on the net8.0 leg,
+        // but the assembly that package ships carries informational version 8.0.10, and the net10.0 leg loads
+        // 10.0.11. Both of those return null. The throwing form - 'if (IsKeyedService) ThrowKeyedDescriptor();'
+        // - is what the dotnet/runtime v8.0.0, v8.0.2 AND v8.0.5 sources all have; it became
+        // 'IsKeyedService ? null : _implementationType' somewhere between 8.0.5 and 8.0.10. The vulnerable
+        // window is therefore every version BEFORE ~8.0.10, not 8.0.0 alone. Consumers bind that assembly from
+        // the ASP.NET Core shared framework at the host's patch level rather than from the restored package, so
+        // a host below that patch level plus any keyed ICommandBehavior<> registration crashes. This is a
+        // host-patch-level regression guard, not a reproduction of a failure reachable in this repository today.
         //
         // The guard it pins adds a FOURTH attribute to an inferential predicate: command behavior service
         // type, then exact open generic, then implementation type, then not keyed. It closes that one crash.

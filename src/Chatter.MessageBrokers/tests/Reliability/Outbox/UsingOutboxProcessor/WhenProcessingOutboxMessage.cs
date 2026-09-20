@@ -244,5 +244,260 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             structured["id"].Should().BeOfType<long>().And.Be(1L);
             structured["name"].Should().BeOfType<string>().And.Be("abc");
         }
+
+        /// <summary>
+        /// Records the attempt state on the row the way <c>InMemoryBrokeredMessageOutbox.RecordDispatchAttempt</c>
+        /// records it - through to the stored row - so an assertion on the row reads the state a later poll would
+        /// read rather than a mock's unset default.
+        /// </summary>
+        private void RecordAttemptStateOnRecord()
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                      .Callback<OutboxMessage, DateTime, CancellationToken>((m, nextAttemptAtUtc, _) =>
+                      {
+                          m.DispatchAttempts++;
+                          m.NextAttemptAtUtc = nextAttemptAtUtc;
+                      })
+                      .Returns(Task.CompletedTask);
+
+        private void FailTheDispatch()
+            => _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                          .ThrowsAsync(new InvalidOperationException("the broker publish failed deliberately"));
+
+        // EXIT 1 - DISPATCH THREW. A row whose publish failed must cost an attempt and be scheduled forward, or the
+        // due gate the poll now applies never holds anything back and a permanently-failing row keeps its place at
+        // the head of every batch.
+        [Fact]
+        public async Task MustRecordADispatchAttemptWhenDispatchFails()
+        {
+            var message = CreateOutboxMessage();
+            FailTheDispatch();
+
+            await _sut.Process(message);
+
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.RecordDispatchAttempt(message, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        // EXIT 2 - DISPATCH SUCCEEDED AND THE CLAIM COMMIT THREW, AND THE RE-CLAIM FAILED TOO. A published message
+        // whose row cannot be claimed at all must cost an attempt: the message IS on the broker, so a row that came
+        // back due immediately would be published a second time on the very next poll.
+        [Fact]
+        public async Task MustRecordADispatchAttemptWhenTheReClaimAlsoFails()
+        {
+            var message = CreateOutboxMessage();
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.UpdateProcessedDate(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new InvalidOperationException("the claim commit failed deliberately"));
+
+            await _sut.Process(message);
+
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.RecordDispatchAttempt(message, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        private int _claimAttempts;
+
+        /// <summary>
+        /// Fails the FIRST claim the way a claim commit fails, then lets the next one through and stamps the row the
+        /// way a real Pollable Outbox Store stamps it - so the re-claim is read off the row a later poll would read.
+        /// </summary>
+        private void FailTheFirstClaimThenStampTheRow()
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.UpdateProcessedDate(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+                      .Returns<OutboxMessage, CancellationToken>(StampTheRowUnlessItIsTheFirstClaim);
+
+        private Task StampTheRowUnlessItIsTheFirstClaim(OutboxMessage row, CancellationToken cancellationToken)
+        {
+            if (++_claimAttempts == 1)
+            {
+                throw new InvalidOperationException("the claim commit failed deliberately");
+            }
+
+            row.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
+            return Task.CompletedTask;
+        }
+
+        // EXIT 2 - DISPATCH SUCCEEDED AND THE CLAIM COMMIT THREW, AND THE RE-CLAIM WORKED. The row is claimed by a
+        // second claim the drain issues deliberately, not by whatever a rolled-back unit of work happened to retain.
+        // The Dispatch assertion is what keeps the re-claim from being a second publish.
+        [Fact]
+        public async Task MustReClaimTheRowWhenTheClaimCommitFailsAfterAPublish()
+        {
+            var message = CreateOutboxMessage();
+            FailTheFirstClaimThenStampTheRow();
+
+            await _sut.Process(message);
+
+            message.ProcessedFromOutboxAtUtc.Should().NotBeNull();
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Exactly(2));
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+        }
+
+        // ...AND A ROW THE RE-CLAIM CLAIMED COSTS NOTHING. The attempt is what holds a row back from the next poll,
+        // and a claimed row has nothing left to hold back; spending one here would push a due time and burn budget
+        // against a configured ceiling on a drain that ended in success.
+        [Fact]
+        public async Task MustNotRecordADispatchAttemptWhenTheReClaimSucceeds()
+        {
+            var message = CreateOutboxMessage();
+            RecordAttemptStateOnRecord();
+            FailTheFirstClaimThenStampTheRow();
+
+            await _sut.Process(message);
+
+            message.DispatchAttempts.Should().Be(0);
+            message.NextAttemptAtUtc.Should().BeNull();
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        // SCHEDULE - THE FIRST FAILURE. The instant handed to the store is one backoff ahead of now, taken from
+        // ReliabilityOptions rather than invented here: a drain built without options must still back off by the
+        // shipped base of 5 seconds. The Kind assertion pins that a UTC instant is what reaches a UTC column.
+        [Fact]
+        public async Task MustScheduleTheNextAttemptOneBackoffAhead()
+        {
+            var message = CreateOutboxMessage();
+            DateTime? scheduled = null;
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                   .Callback<OutboxMessage, DateTime, CancellationToken>((_, nextAttemptAtUtc, __) => scheduled = nextAttemptAtUtc)
+                   .Returns(Task.CompletedTask);
+            FailTheDispatch();
+
+            await _sut.Process(message);
+
+            scheduled.Should().NotBeNull();
+            scheduled.Value.Kind.Should().Be(DateTimeKind.Utc);
+            scheduled.Value.Should().BeCloseTo(DateTime.UtcNow.AddSeconds(5), TimeSpan.FromSeconds(2));
+        }
+
+        // SCHEDULE - THE WAIT GROWS WITH THE ROW'S OWN ATTEMPT COUNT. The count handed to the backoff is the count
+        // THIS failure leaves the row at, so the waits run 5s, 10s, 20s rather than repeating the base. A row that
+        // has already failed twice is scheduled 5 * 2^2 = 20 seconds out; passing the row's pre-increment count
+        // instead would schedule it 10 seconds out.
+        [Fact]
+        public async Task MustGrowTheScheduledWaitWithTheAttemptsTheRowAlreadyCarries()
+        {
+            var message = CreateOutboxMessage();
+            message.DispatchAttempts = 2;
+            DateTime? scheduled = null;
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                   .Callback<OutboxMessage, DateTime, CancellationToken>((_, nextAttemptAtUtc, __) => scheduled = nextAttemptAtUtc)
+                   .Returns(Task.CompletedTask);
+            FailTheDispatch();
+
+            await _sut.Process(message);
+
+            scheduled.Should().NotBeNull();
+            scheduled.Value.Should().BeCloseTo(DateTime.UtcNow.AddSeconds(20), TimeSpan.FromSeconds(2));
+        }
+
+        /// <summary>
+        /// Gives the mocked Unit of Work the one behaviour that matters to the attempt stamp: work staged inside an
+        /// operation that throws is ROLLED BACK, the way a real relational unit of work rolls its transaction back.
+        /// </summary>
+        private void RollBackAttemptStateStagedInsideAFailedUnitOfWork(OutboxMessage row)
+            => _outbox.As<IUnitOfWork>()
+                      .Setup(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()))
+                      .Returns<Func<CancellationToken, Task>, TransactionContext, CancellationToken>((operation, _, ct) => RunAndRollBackOnFailure(operation, row, ct));
+
+        private static async Task RunAndRollBackOnFailure(Func<CancellationToken, Task> operation, OutboxMessage row, CancellationToken cancellationToken)
+        {
+            var attemptsBeforeTheWork = row.DispatchAttempts;
+            var nextAttemptBeforeTheWork = row.NextAttemptAtUtc;
+
+            try
+            {
+                await operation(cancellationToken);
+            }
+            catch
+            {
+                row.DispatchAttempts = attemptsBeforeTheWork;
+                row.NextAttemptAtUtc = nextAttemptBeforeTheWork;
+                throw;
+            }
+        }
+
+        // THE STAMP MUST SURVIVE THE ROLLBACK. Dispatch runs inside a unit of work that rolls back when it throws,
+        // so an attempt staged in THAT unit of work is discarded with it and the whole mechanism silently does
+        // nothing. The oracle is the row - the state a later poll reads - plus the count of units of work opened:
+        // the drain opens exactly the ONE the dispatch ran in, and the stamp goes straight to the store outside it,
+        // so no unit of work can roll the stamp back and none can flush anything the stamp did not name.
+        [Fact]
+        public async Task MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork()
+        {
+            var message = CreateOutboxMessage();
+            RecordAttemptStateOnRecord();
+            RollBackAttemptStateStagedInsideAFailedUnitOfWork(message);
+            FailTheDispatch();
+
+            await _sut.Process(message);
+
+            message.DispatchAttempts.Should().Be(1);
+            message.NextAttemptAtUtc.Should().NotBeNull();
+            _outbox.As<IUnitOfWork>()
+                   .Verify(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        // CANCELLATION IS EXEMPT. A drain stopped by shutdown never attempted anything the broker refused, so
+        // spending an attempt on it would push a perfectly good row's due time out - and, with a ceiling
+        // configured, would burn the row's budget on restarts alone.
+        [Fact]
+        public async Task MustNotRecordADispatchAttemptWhenProcessingIsCancelled()
+        {
+            var message = CreateOutboxMessage();
+            using var shutdown = new CancellationTokenSource();
+            shutdown.Cancel();
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                       .ThrowsAsync(new OperationCanceledException(shutdown.Token));
+
+            await _sut.Process(message, shutdown.Token);
+
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        // ...AND ONLY SHUTDOWN IS EXEMPT. A cancellation raised by some OTHER token - an infrastructure client's own
+        // send timeout - is a dispatch that failed, and is recorded as one. This is why the exemption is filtered on
+        // the drain's own token rather than written as a bare catch of OperationCanceledException.
+        [Fact]
+        public async Task MustRecordADispatchAttemptWhenDispatchIsCancelledByAnotherToken()
+        {
+            var message = CreateOutboxMessage();
+            using var brokerClientTimeout = new CancellationTokenSource();
+            brokerClientTimeout.Cancel();
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                       .ThrowsAsync(new OperationCanceledException(brokerClientTimeout.Token));
+
+            await _sut.Process(message);
+
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.RecordDispatchAttempt(message, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        // ERROR-POSTURE LOCK FOR THE STAMP ITSELF. A store that cannot record the attempt leaves the row exactly as
+        // it is today - due now, zero attempts, retried next drain - so this change can never leave the drain worse
+        // than the behaviour it replaced. Rethrowing here would push a store outage into the CQRS pipeline through
+        // OutboxProcessingBehavior, which the swallowed publish failure deliberately does not do.
+        [Fact]
+        public async Task MustNotThrowWhenRecordingTheDispatchAttemptFails()
+        {
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new InvalidOperationException("the attempt write failed deliberately"));
+            FailTheDispatch();
+
+            Func<Task> process = () => _sut.Process(CreateOutboxMessage());
+
+            await process.Should().NotThrowAsync();
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+        }
     }
 }

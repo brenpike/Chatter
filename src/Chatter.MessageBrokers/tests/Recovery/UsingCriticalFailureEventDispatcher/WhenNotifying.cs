@@ -1,6 +1,7 @@
 using Chatter.CQRS;
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Recovery;
+using Chatter.MessageBrokers.Tests.Support;
 using Chatter.Testing.Core.Creators.Common;
 using Chatter.Testing.Core.Creators.MessageBrokers;
 using FluentAssertions;
@@ -83,6 +84,32 @@ namespace Chatter.MessageBrokers.Tests.Recovery.UsingCriticalFailureEventDispatc
             await sut.Notify(CreateFailureContext());
 
             _messageDispatcher.Verify(d => d.Dispatch(It.IsAny<CriticalFailureEvent>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task MustReleaseTheNotificationScopeAsynchronously()
+        {
+            var sut = CreateSutHoldingAnAsyncOnlyDisposable();
+
+            await FluentActions.Invoking(() => sut.Notify(CreateFailureContext()))
+                .Should().NotThrowAsync<InvalidOperationException>();
+        }
+
+        // The message dispatcher resolved inside the notification scope pulls an AsyncOnlyDisposableScopedService
+        // from that same scope, so the scope holds a member a synchronous release refuses.
+        private CriticalFailureEventDispatcher CreateSutHoldingAnAsyncOnlyDisposable()
+        {
+            var services = new ServiceCollection();
+            services.AddScoped<AsyncOnlyDisposableScopedService>();
+            services.AddScoped(provider => ResolveDispatcherAfterAnAsyncOnlyDisposable(provider));
+            var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+            return new CriticalFailureEventDispatcher(scopeFactory, _logger.Creation);
+        }
+
+        private IMessageDispatcher ResolveDispatcherAfterAnAsyncOnlyDisposable(IServiceProvider provider)
+        {
+            provider.GetRequiredService<AsyncOnlyDisposableScopedService>();
+            return _messageDispatcher.Object;
         }
     }
 }

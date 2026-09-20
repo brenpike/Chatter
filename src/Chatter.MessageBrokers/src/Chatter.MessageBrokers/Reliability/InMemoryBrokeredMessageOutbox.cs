@@ -77,10 +77,36 @@ namespace Chatter.MessageBrokers.Reliability
             return Task.CompletedTask;
         }
 
+        // INVARIANT: the Outbox Poll Batch contract - at most ReliabilityOptions.OutboxPollBatchSize rows that are
+        // unprocessed and DUE, oldest SentToOutboxAtUtc first. The dictionary hands back its values in hash-bucket
+        // order, which is unrelated to arrival, so the ordering must be applied BEFORE the cap or the cap would
+        // drop arbitrary rows and an old message could sit behind newer ones for as long as the backlog stays
+        // above the batch size.
+        // INVARIANT: the due clause and the attempt ceiling are applied BEFORE the cap too, for a different
+        // reason: gating the rows the cap has already taken shrinks the batch rather than filling it from behind,
+        // so as few as OutboxPollBatchSize permanently-failing rows would leave the poll returning nothing at all.
+        // This is the shipped default in-process outbox, so that wedge reaches the DEFAULT configuration and not
+        // only the relational one. Moving the due clause into a Where AFTER the Take reddens
+        // MustSpendNoBatchSlotOnAMessageThatIsNotDue and MustGiveTheBatchSlotOfAFailingMessageToTheNextMessage -
+        // the second because at a batch size of one the held-back message takes the only slot and is then
+        // filtered out of it - and nothing else (observed). Moving the ceiling clause there reddens
+        // MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling and nothing else (observed).
+        // NOTE: no oracle pins the boundary between `<=` and `<` against now. The instant is read from the wall
+        // clock inside this method, so no test can name a row due at exactly it; the two differ only for a row
+        // whose next attempt lands on that very tick, and a row a tick early is taken by the following poll.
         public Task<IEnumerable<OutboxMessage>> GetUnprocessedMessagesFromOutbox(CancellationToken cancellationToken = default)
-                => Task.FromResult<IEnumerable<OutboxMessage>>(_outbox.Values
-                        .Where(m => m.ProcessedFromOutboxAtUtc is null)
-                        .ToList());
+        {
+            var now = DateTime.UtcNow;
+            var maxDispatchAttempts = _reliabilityOptions.OutboxMaxDispatchAttempts;
+
+            return Task.FromResult<IEnumerable<OutboxMessage>>(_outbox.Values
+                    .Where(m => m.ProcessedFromOutboxAtUtc is null
+                                && (m.NextAttemptAtUtc is null || m.NextAttemptAtUtc.Value <= now)
+                                && (maxDispatchAttempts is null || m.DispatchAttempts < maxDispatchAttempts.Value))
+                    .OrderBy(m => m.SentToOutboxAtUtc)
+                    .Take(_reliabilityOptions.OutboxPollBatchSize)
+                    .ToList());
+        }
 
         public Task UpdateProcessedDate(IEnumerable<OutboxMessage> outboxMessages, CancellationToken cancellationToken = default)
         {
@@ -96,6 +122,25 @@ namespace Chatter.MessageBrokers.Reliability
         {
             outboxMessage.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
             RemoveExpiredFromInboxOutbox();
+            return Task.CompletedTask;
+        }
+
+        // INVARIANT: this writes THROUGH to the stored row rather than to a copy, because the dictionary holds the
+        // very instances a poll hands back - the same reference identity UpdateProcessedDate stamps a processed
+        // date through. Recording onto a copy would leave a failing message due now with no attempts spent and
+        // re-attempted on every poll, which is exactly what the no-op default interface implementation still does
+        // for a store that does not override it. Oracle: MustHoldTheRecordedAttemptStateOnTheStoredRow, which
+        // records the attempt through the interface and then reads it back out of a fresh poll. Recording onto a
+        // copy of the message instead reddens six facts, every one of them an oracle for this same write-through:
+        // that one, MustCountOneMoreDispatchAttemptWhenRecordingAnAttempt,
+        // MustAccumulateDispatchAttemptsAcrossRecordedAttempts,
+        // MustExcludeAMessageThatHasSpentTheConfiguredAttemptCeiling,
+        // MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling and
+        // MustGiveTheBatchSlotOfAFailingMessageToTheNextMessage - and nothing else (observed).
+        public Task RecordDispatchAttempt(OutboxMessage outboxMessage, DateTime nextAttemptAtUtc, CancellationToken cancellationToken = default)
+        {
+            outboxMessage.DispatchAttempts++;
+            outboxMessage.NextAttemptAtUtc = nextAttemptAtUtc;
             return Task.CompletedTask;
         }
 

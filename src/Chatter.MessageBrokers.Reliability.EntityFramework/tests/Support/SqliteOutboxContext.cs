@@ -82,6 +82,20 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support
             return new SqliteOutboxContext(options);
         }
 
+        /// <summary>
+        /// Returns a context over the same connection whose options the caller may extend - replacing a provider
+        /// service, for instance - before they are built.
+        /// </summary>
+        public SqliteOutboxContext CreateContext(Action<DbContextOptionsBuilder<SqliteOutboxContext>> configureOptions)
+        {
+            var optionsBuilder = new DbContextOptionsBuilder<SqliteOutboxContext>()
+                .UseSqlite(_connection);
+
+            configureOptions(optionsBuilder);
+
+            return new SqliteOutboxContext(optionsBuilder.Options);
+        }
+
         public void Dispose()
         {
             _connection.Dispose();

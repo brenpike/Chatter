@@ -22,6 +22,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         private DbContextCreator _context;
         private readonly DbContext _dbContext;
         private readonly BrokeredMessageInbox<DbContext> _sut;
+        private readonly LoggerCreator<BrokeredMessageInbox<DbContext>> _loggerCreator;
         private readonly ILogger<BrokeredMessageInbox<DbContext>> _logger;
         private readonly ReliabilityOptions _options;
 
@@ -29,12 +30,28 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         {
             _context = New.MessageBrokers().DbContext();
             _dbContext = _context;
-            _logger = New.Common().Logger<BrokeredMessageInbox<DbContext>>().Creation;
+            _loggerCreator = New.Common().Logger<BrokeredMessageInbox<DbContext>>();
+            _logger = _loggerCreator.Creation;
             _options = new ReliabilityOptions();
             _sut = new BrokeredMessageInbox<DbContext>(_context, _logger, _options);
         }
 
-        private static IMessageBrokerContext CreateContext(string messageId)
+        private BrokeredMessageInbox<DbContext> CreateSutWithDeduplicationWindow(TimeSpan? deduplicationWindow)
+            => new BrokeredMessageInbox<DbContext>(_context,
+                                                   _logger,
+                                                   _options,
+                                                   new EntityFrameworkReliabilityOptions { InboxDeduplicationWindow = deduplicationWindow });
+
+        private InboxMessage GivenAMarker(string messageId, DateTime? receivedAtUtc)
+        {
+            var marker = new InboxMessage { MessageId = messageId, ReceivedByInboxAtUtc = receivedAtUtc };
+            _dbContext.Add(marker);
+            _dbContext.SaveChanges();
+
+            return marker;
+        }
+
+        private static IMessageBrokerContext CreateContext(string messageId, CancellationToken cancellationToken = default)
         {
             var converter = new Mock<IBrokeredMessageBodyConverter>();
             converter.Setup(c => c.ContentType).Returns("application/json");
@@ -44,7 +61,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
                 Array.Empty<byte>(),
                 new Dictionary<string, object>(),
                 "test-receiver",
-                CancellationToken.None,
+                cancellationToken,
                 converter.Object);
         }
 
@@ -152,6 +169,187 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         public void MustThrowWhenOptionsIsNull()
         {
             Action act = () => new BrokeredMessageInbox<DbContext>(_context, _logger, null);
+
+            act.Should().Throw<ArgumentNullException>();
+        }
+
+        // INVARIANT: with no Deduplication Window configured - the default - an existing marker suppresses the
+        // redelivery however old it is. This is the 0.8.0 behaviour and expiry must not change it.
+        [Fact]
+        public async Task MustSkipHandlerForAnyExistingMarkerWhenDeduplicationWindowIsUnset()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            GivenAMarker(messageId, DateTime.UtcNow.AddYears(-5));
+
+            var context = CreateContext(messageId);
+            var handlerInvoked = false;
+
+            await _sut.ReceiveViaInbox("payload", context, () =>
+            {
+                handlerInvoked = true;
+                return Task.CompletedTask;
+            });
+
+            handlerInvoked.Should().BeFalse();
+            var persisted = await _dbContext.Set<InboxMessage>().ToListAsync();
+            persisted.Should().ContainSingle();
+        }
+
+        [Fact]
+        public async Task MustSkipHandlerForAnyExistingMarkerWhenRetentionIsExplicitlyDisabled()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            GivenAMarker(messageId, DateTime.UtcNow.AddYears(-5));
+
+            var sut = CreateSutWithDeduplicationWindow(null);
+            var handlerInvoked = false;
+
+            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+            {
+                handlerInvoked = true;
+                return Task.CompletedTask;
+            });
+
+            handlerInvoked.Should().BeFalse();
+        }
+
+        // INVARIANT: MessageId is the inbox primary key, so an expired marker is REFRESHED in place rather than
+        // inserted a second time. The refresh is a tracked Modified entry so it commits in the same transaction as
+        // the handler's own work.
+        [Fact]
+        public async Task MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            var staleReceivedAtUtc = DateTime.UtcNow.AddMinutes(-10);
+            GivenAMarker(messageId, staleReceivedAtUtc);
+
+            var sut = CreateSutWithDeduplicationWindow(TimeSpan.FromMinutes(1));
+            var handlerInvoked = false;
+
+            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+            {
+                handlerInvoked = true;
+                return Task.CompletedTask;
+            });
+
+            handlerInvoked.Should().BeTrue();
+
+            var entry = _dbContext.ChangeTracker.Entries<InboxMessage>().Single();
+            entry.State.Should().Be(EntityState.Modified);
+            entry.Entity.ReceivedByInboxAtUtc.Should().BeAfter(staleReceivedAtUtc);
+
+            var persisted = await _dbContext.Set<InboxMessage>().ToListAsync();
+            persisted.Should().ContainSingle();
+        }
+
+        [Fact]
+        public async Task MustSkipHandlerWhenMarkerIsWithinTheDeduplicationWindow()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            GivenAMarker(messageId, DateTime.UtcNow.AddMinutes(-1));
+
+            var sut = CreateSutWithDeduplicationWindow(TimeSpan.FromHours(1));
+            var handlerInvoked = false;
+
+            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+            {
+                handlerInvoked = true;
+                return Task.CompletedTask;
+            });
+
+            handlerInvoked.Should().BeFalse();
+            _dbContext.ChangeTracker.Entries<InboxMessage>().Single().State.Should().Be(EntityState.Unchanged);
+        }
+
+        // INVARIANT: a marker with no timestamp cannot be aged, so it keeps suppressing. Expiring it would let a
+        // window silently undo a suppression the inbox cannot date.
+        [Fact]
+        public async Task MustSkipHandlerWhenMarkerHasNoTimestampAndDeduplicationWindowIsSet()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            GivenAMarker(messageId, null);
+
+            var sut = CreateSutWithDeduplicationWindow(TimeSpan.FromMinutes(1));
+            var handlerInvoked = false;
+
+            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+            {
+                handlerInvoked = true;
+                return Task.CompletedTask;
+            });
+
+            handlerInvoked.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task MustThrowBeforeInvokingHandlerWhenCancellationIsAlreadyRequested()
+        {
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            var context = CreateContext(Guid.NewGuid().ToString(), cancellation.Token);
+            var handlerInvoked = false;
+
+            Func<Task> act = () => _sut.ReceiveViaInbox("payload", context, () =>
+            {
+                handlerInvoked = true;
+                return Task.CompletedTask;
+            });
+
+            await act.Should().ThrowAsync<OperationCanceledException>();
+            handlerInvoked.Should().BeFalse();
+        }
+
+        // INVARIANT: suppression is logged at Information with the message id. At Trace a host that dropped a
+        // message it should have handled had nothing in its logs saying so.
+        [Fact]
+        public async Task MustLogSuppressionAtInformationWithTheMessageId()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            GivenAMarker(messageId, DateTime.UtcNow);
+
+            await _sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask);
+
+            _loggerCreator.LoggedMessages
+                .Should()
+                .Contain(logged => logged.level == LogLevel.Information && logged.message.Contains(messageId));
+        }
+
+        [Fact]
+        public async Task MustNotReportReceivedForAMarkerOlderThanTheDeduplicationWindow()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            GivenAMarker(messageId, DateTime.UtcNow.AddMinutes(-10));
+
+            var sut = CreateSutWithDeduplicationWindow(TimeSpan.FromMinutes(1));
+
+            (await sut.HasBeenReceived(messageId)).Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task MustReportReceivedForAMarkerWithinTheDeduplicationWindow()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            GivenAMarker(messageId, DateTime.UtcNow.AddMinutes(-1));
+
+            var sut = CreateSutWithDeduplicationWindow(TimeSpan.FromHours(1));
+
+            (await sut.HasBeenReceived(messageId)).Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task MustReportReceivedForAnyExistingMarkerWhenDeduplicationWindowIsUnset()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            GivenAMarker(messageId, DateTime.UtcNow.AddYears(-5));
+
+            (await _sut.HasBeenReceived(messageId)).Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustThrowWhenRetentionOptionsIsNull()
+        {
+            Action act = () => new BrokeredMessageInbox<DbContext>(_context, _logger, _options, null);
 
             act.Should().Throw<ArgumentNullException>();
         }
