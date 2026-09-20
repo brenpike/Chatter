@@ -117,8 +117,18 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// </remarks>
         internal async Task PurgeOnceAsync(CancellationToken cancellationToken)
         {
-            using var scope = _serviceScopeFactory.CreateScope();
-            var context = scope.ServiceProvider.GetRequiredService<TContext>();
+            // INVARIANT: the scope a pass opens is released ASYNCHRONOUSLY. Whatever resolving TContext pulls is
+            // held by the scope until release, and a scoped member implementing only IAsyncDisposable refuses a
+            // synchronous release with InvalidOperationException - which would abort the pass after its deletes had
+            // already run and have ExecuteAsync log a failed pass every PurgeInterval for a purge that is working.
+            // The release is configured like every other await in this package, so the disposable is captured into
+            // a local first and the scope itself stays reachable for the resolve below. Pinned by
+            // UsingReliabilityRetentionPurgeService/WhenPurgingRetentionOverSqlite.MustReleaseThePurgeScopeAsynchronously,
+            // which reddens with exactly that InvalidOperationException - and alone in this package - when these
+            // two lines go back to CreateScope under a synchronous using (observed).
+            var purgeScope = _serviceScopeFactory.CreateAsyncScope();
+            await using var purgeScopeRelease = purgeScope.ConfigureAwait(false);
+            var context = purgeScope.ServiceProvider.GetRequiredService<TContext>();
 
             if (_options.InboxDeduplicationWindow.HasValue)
             {

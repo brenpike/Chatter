@@ -141,6 +141,56 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
                 "a chunk the purge orders raises no row-limiting warning for the context to throw on");
         }
 
+        // A pass opens a DI scope and resolves TContext out of it, so whatever that resolution pulls is held by the
+        // scope until it is released. A scoped member implementing ONLY IAsyncDisposable refuses a synchronous
+        // release with InvalidOperationException, which aborts the pass on the way out - after its deletes have
+        // already run - and leaves the loop in ExecuteAsync logging a failed pass every PurgeInterval for a purge
+        // that is in fact working.
+        //
+        // This fact asserts the pass does not throw rather than that no error is logged, because it drives
+        // PurgeOnceAsync directly: the refusal surfaces at the await here. Routed through ExecuteAsync the per-pass
+        // handler would swallow it, and an assertion on the log would then be reporting that handler rather than
+        // the release shape. Revert the scope to a synchronous release and only this fact reddens, because only
+        // this one puts an async-only disposable in the scope.
+        [Fact]
+        public async Task MustReleaseThePurgeScopeAsynchronously()
+        {
+            using var harness = SqliteOutboxContextHarness.Create();
+            var stale = DateTime.UtcNow - RetentionWindow - TimeSpan.FromHours(1);
+
+            using (var seed = harness.CreateContext())
+            {
+                seed.Set<OutboxMessage>().Add(CreateOutboxMessage("outbox-stale", stale, stale));
+                await seed.SaveChangesAsync();
+            }
+
+            var services = new ServiceCollection();
+            services.AddScoped(_ => new AsyncOnlyDisposableScopedService());
+            services.AddScoped(scopedProvider => ResolveContextAfterAnAsyncOnlyDisposable(scopedProvider, harness));
+
+            await using var provider = services.BuildServiceProvider();
+            var purgeService = new ReliabilityRetentionPurgeService<SqliteOutboxContext>(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                new EntityFrameworkReliabilityOptions { ProcessedOutboxRetention = RetentionWindow },
+                NullLogger<ReliabilityRetentionPurgeService<SqliteOutboxContext>>.Instance);
+
+            await FluentActions.Invoking(() => purgeService.PurgeOnceAsync(CancellationToken.None))
+                .Should().NotThrowAsync<InvalidOperationException>();
+
+            using var verify = harness.CreateContext();
+            (await verify.Set<OutboxMessage>().CountAsync()).Should().Be(0,
+                "the pass still reclaims what it should through a graph whose release is asynchronous");
+        }
+
+        // The context the pass resolves pulls an AsyncOnlyDisposableScopedService out of the same scope, so the
+        // scope holds a member a synchronous release refuses.
+        private static SqliteOutboxContext ResolveContextAfterAnAsyncOnlyDisposable(IServiceProvider scopedProvider,
+                                                                                    SqliteOutboxContextHarness harness)
+        {
+            scopedProvider.GetRequiredService<AsyncOnlyDisposableScopedService>();
+            return harness.CreateContext();
+        }
+
         // The purge service takes an IServiceScopeFactory rather than a context: it outlives any one scope, so it
         // opens a fresh one per cycle. A real container supplies the factory here so the seam is driven exactly as
         // the hosted service drives it, and the scoped context carries the counting interceptor.
@@ -214,6 +264,17 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
 
                 return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
             }
+        }
+
+        /// <summary>
+        /// A service implementing ONLY <see cref="IAsyncDisposable"/>. A scope holding one throws
+        /// <see cref="InvalidOperationException"/> when released synchronously, which is what lets a fact tell an
+        /// asynchronous release from a synchronous one. Registered through a factory because the container's
+        /// constructor discovery does not reach a private nested type.
+        /// </summary>
+        private sealed class AsyncOnlyDisposableScopedService : IAsyncDisposable
+        {
+            public ValueTask DisposeAsync() => default;
         }
     }
 }
