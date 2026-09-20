@@ -46,11 +46,39 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingOutboxMe
         [InlineData(nameof(OutboxMessage.MessageContentType))]
         [InlineData(nameof(OutboxMessage.Destination))]
         [InlineData(nameof(OutboxMessage.BatchId))]
+        [InlineData(nameof(OutboxMessage.DispatchAttempts))]
         public void MustRequireProperty(string propertyName)
         {
             var property = EntityType.FindProperty(propertyName);
 
             property.IsNullable.Should().BeFalse();
+        }
+
+        [Theory]
+        [InlineData(nameof(OutboxMessage.DispatchAttempts))]
+        [InlineData(nameof(OutboxMessage.NextAttemptAtUtc))]
+        public void MustMapAttemptState(string propertyName)
+        {
+            EntityType.FindProperty(propertyName).Should().NotBeNull();
+        }
+
+        [Fact]
+        public void MustGiveDispatchAttemptsAStoreDefaultOfZero()
+        {
+            var property = EntityType.FindProperty(nameof(OutboxMessage.DispatchAttempts));
+
+            var defaultValue = property.FindAnnotation(Microsoft.EntityFrameworkCore.Metadata.RelationalAnnotationNames.DefaultValue);
+
+            defaultValue.Should().NotBeNull();
+            defaultValue.Value.Should().Be(0);
+        }
+
+        [Fact]
+        public void MustAllowNextAttemptToBeNullable()
+        {
+            var property = EntityType.FindProperty(nameof(OutboxMessage.NextAttemptAtUtc));
+
+            property.IsNullable.Should().BeTrue();
         }
 
         [Fact]
@@ -59,6 +87,14 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingOutboxMe
             var property = EntityType.FindProperty(nameof(OutboxMessage.ProcessedFromOutboxAtUtc));
 
             property.IsConcurrencyToken.Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustTreatProcessedDateAsTheOnlyConcurrencyToken()
+        {
+            var tokens = EntityType.GetProperties().Where(p => p.IsConcurrencyToken).Select(p => p.Name);
+
+            tokens.Should().ContainSingle().Which.Should().Be(nameof(OutboxMessage.ProcessedFromOutboxAtUtc));
         }
 
         [Fact]

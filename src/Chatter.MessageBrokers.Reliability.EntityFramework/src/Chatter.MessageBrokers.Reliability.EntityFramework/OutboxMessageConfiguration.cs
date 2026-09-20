@@ -18,6 +18,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             builder.Property(t => t.MessageContentType).IsRequired();
             builder.Property(t => t.Destination).IsRequired();
             builder.Property(t => t.BatchId).IsRequired();
+            // INVARIANT: ProcessedFromOutboxAtUtc stays the sole concurrency token. The failure path writes attempt
+            // state outside the tracker, so a token on either column below would make that write fight the claim.
+            // Oracle: WhenConfiguring.MustTreatProcessedDateAsTheOnlyConcurrencyToken; adding IsConcurrencyToken() to
+            // either property reddens it and nothing else.
+            builder.Property(t => t.DispatchAttempts).IsRequired().HasDefaultValue(0);
+            builder.Property(t => t.NextAttemptAtUtc).IsRequired(false);
         }
     }
 }
