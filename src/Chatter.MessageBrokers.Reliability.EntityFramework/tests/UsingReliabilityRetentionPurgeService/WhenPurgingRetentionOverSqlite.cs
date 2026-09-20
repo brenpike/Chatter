@@ -1,10 +1,12 @@
 using Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
+using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.Collections.Generic;
@@ -25,7 +27,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
     // DELETE statement per pass with the remainder taken by the next pass. They count statements rather than rows
     // because a pass that loops until the table is drained and a pass that issues one bounded statement both end
     // with the same rows gone - only the statement count, and what survives the FIRST pass, separate them.
-    public class WhenPurgingRetentionOverSqlite
+    public class WhenPurgingRetentionOverSqlite : Testing.Core.Context
     {
         // Mirrors ReliabilityRetentionPurgeService.RetentionPurgeChunkSize, which is private. One row more than a
         // chunk is the smallest backlog that outlives a single pass, which is what makes the surviving count exact:
@@ -182,6 +184,50 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
                 "the pass still reclaims what it should through a graph whose release is asynchronous");
         }
 
+        // A host stopping mid-pass cancels stoppingToken, and every await PurgeOnceAsync makes is observing it, so
+        // the pass completes by throwing OperationCanceledException. That is the shutdown working, not a retention
+        // incident: the loop condition is already false by the time the handler runs, so the "next pass will retry"
+        // the broad handler promises never comes and an operator reads an Error-level failure on every clean stop.
+        //
+        // This fact drives the hosted service exactly as the host does - StartAsync, then StopAsync once the pass is
+        // known to be in flight - and parks the pass's DELETE on the token the pass is observing, so the cancellation
+        // arrives from inside the pass rather than from the interval wait, which already handles its own. It asserts
+        // on Error-level logs rather than on an exception because the loop swallows either way; what separates the
+        // two handlers is only what they record. Remove the cancellation-aware handler and this fact reddens on a
+        // logged Error, and alone in this package, because only this one cancels a pass in flight.
+        [Fact]
+        public async Task MustTreatAPurgeCancelledByShutdownAsANormalStop()
+        {
+            using var harness = SqliteOutboxContextHarness.Create();
+            var stale = DateTime.UtcNow - RetentionWindow - TimeSpan.FromHours(1);
+
+            using (var seed = harness.CreateContext())
+            {
+                seed.Set<OutboxMessage>().Add(CreateOutboxMessage("outbox-stale", stale, stale));
+                await seed.SaveChangesAsync();
+            }
+
+            var logger = New.Common().RecordingLogger<ReliabilityRetentionPurgeService<SqliteOutboxContext>>();
+            var passIsInFlight = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var interceptor = new DeleteParkingInterceptor(passIsInFlight);
+
+            var services = new ServiceCollection();
+            services.AddScoped(_ => harness.CreateContext(builder => builder.AddInterceptors(interceptor)));
+
+            await using var provider = services.BuildServiceProvider();
+            var purgeService = new ReliabilityRetentionPurgeService<SqliteOutboxContext>(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                new EntityFrameworkReliabilityOptions { ProcessedOutboxRetention = RetentionWindow },
+                logger.Creation);
+
+            await purgeService.StartAsync(CancellationToken.None);
+            await passIsInFlight.Task;
+            await purgeService.StopAsync(CancellationToken.None);
+
+            logger.CountOf(LogLevel.Error).Should().Be(0,
+                "a pass the host cancelled on its way down is the shutdown working, not a purge that failed");
+        }
+
         // The context the pass resolves pulls an AsyncOnlyDisposableScopedService out of the same scope, so the
         // scope holds a member a synchronous release refuses.
         private static SqliteOutboxContext ResolveContextAfterAnAsyncOnlyDisposable(IServiceProvider scopedProvider,
@@ -263,6 +309,38 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
                 }
 
                 return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+            }
+        }
+
+        /// <summary>
+        /// Parks the pass's DELETE on the very token the pass is observing, so the pass is still in flight when the
+        /// host stops and then completes by throwing <see cref="OperationCanceledException"/> exactly as a real
+        /// ExecuteDeleteAsync cancelled mid-statement does.
+        /// </summary>
+        /// <remarks>
+        /// INVARIANT: only DELETE is parked. The purge context is opened by the pass itself, so anything the
+        /// provider issues on the way to the statement would otherwise park instead and the cancellation would
+        /// arrive before the pass had begun its work.
+        /// </remarks>
+        private sealed class DeleteParkingInterceptor : DbCommandInterceptor
+        {
+            private readonly TaskCompletionSource<bool> _passIsInFlight;
+
+            public DeleteParkingInterceptor(TaskCompletionSource<bool> passIsInFlight) => _passIsInFlight = passIsInFlight;
+
+            public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command,
+                                                                                            CommandEventData eventData,
+                                                                                            InterceptionResult<int> result,
+                                                                                            CancellationToken cancellationToken = default)
+            {
+                if (!command.CommandText.TrimStart().StartsWith("DELETE", StringComparison.OrdinalIgnoreCase))
+                {
+                    return await base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+                }
+
+                _passIsInFlight.TrySetResult(true);
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+                return result;
             }
         }
 

@@ -59,6 +59,21 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 {
                     await PurgeOnceAsync(stoppingToken).ConfigureAwait(false);
                 }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    // INVARIANT: a pass the host cancelled on its way down is the shutdown working, not a failed
+                    // pass. Every await in PurgeOnceAsync observes stoppingToken, so a stop that lands mid-pass
+                    // surfaces HERE rather than at the interval wait below; the broad handler would record it at
+                    // Error and promise a retry the loop condition has already ruled out, turning every clean stop
+                    // into a retention incident. The filter keys on the stopping token rather than on the exception
+                    // type alone, so a cancellation raised by anything else - a command timeout the provider
+                    // cancels with its own token - still reaches the broad handler as the genuine pass failure it
+                    // is. Pinned by
+                    // UsingReliabilityRetentionPurgeService/WhenPurgingRetentionOverSqlite.MustTreatAPurgeCancelledByShutdownAsANormalStop,
+                    // which parks a pass's DELETE on the stopping token and reddens on a logged Error - alone in
+                    // this package - the moment this handler comes off (observed).
+                    break;
+                }
                 catch (Exception purgeFailure)
                 {
                     // INVARIANT: one failed pass never ends the loop and never faults the host. A TContext whose model
