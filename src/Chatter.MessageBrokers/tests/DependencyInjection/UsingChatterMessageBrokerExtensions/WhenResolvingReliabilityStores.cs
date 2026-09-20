@@ -225,6 +225,44 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
             ReferenceEquals(outbox, pollable).Should().BeTrue("one instance — split unrepresentable");
         }
 
+        // ------------------------------------------------------------------ outbox: durable attempt state
+
+        /// <summary>
+        /// A staged outbox message has never been attempted and is due now — <see cref="OutboxMessage.DispatchAttempts"/>
+        /// is zero and <see cref="OutboxMessage.NextAttemptAtUtc"/> is null, which is the DUE-NOW value. A row a store
+        /// wrote before it knew about either column therefore reads as due rather than as held back for good.
+        /// </summary>
+        [Fact]
+        public void OutboxMessage_IsNeverAttemptedAndDueNowWhenStaged()
+        {
+            var staged = new OutboxMessage();
+
+            staged.DispatchAttempts.Should().Be(0);
+            staged.NextAttemptAtUtc.Should().BeNull("null is the due-now value, so an unstamped row is never held back");
+        }
+
+        /// <summary>
+        /// <see cref="CustomOutboxBoth"/> deliberately does NOT implement <c>RecordDispatchAttempt</c>: a third-party
+        /// pollable store written against the previous interface must still compile and must still satisfy the cast.
+        /// The inherited default records nothing, so such a store keeps whatever attempt state its rows already carry
+        /// rather than being handed a half-applied one.
+        /// </summary>
+        [Fact]
+        public async Task OutboxCustomPrimaryImplementingBoth_RecordDispatchAttemptDefaultsToANoOp()
+        {
+            using var scope = BuildScope(services =>
+                services.AddScoped<IBrokeredMessageOutbox, CustomOutboxBoth>());
+            var pollable = (IPollableOutboxStore)scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
+            // Both attempt-state values are stated rather than defaulted, so this fact answers for the no-op alone and
+            // the staged defaults stay the business of the fact above.
+            var attempted = new OutboxMessage { MessageId = "store-that-never-heard-of-attempts", DispatchAttempts = 3, NextAttemptAtUtc = null };
+
+            await pollable.RecordDispatchAttempt(attempted, DateTime.UtcNow.AddMinutes(5));
+
+            attempted.DispatchAttempts.Should().Be(3, "the inherited default records nothing");
+            attempted.NextAttemptAtUtc.Should().BeNull("the inherited default records nothing");
+        }
+
         // ------------------------------------------------------------------ inbox: default in-memory
 
         [Fact]
