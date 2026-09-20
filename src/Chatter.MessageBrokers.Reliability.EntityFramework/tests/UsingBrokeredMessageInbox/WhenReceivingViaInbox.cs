@@ -1,16 +1,18 @@
 using Chatter.MessageBrokers.Context;
 using Chatter.MessageBrokers.Reliability.Configuration;
+using Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support;
 using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.Testing.Core.Creators.Common;
 using Chatter.Testing.Core.Creators.MessageBrokers;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -51,6 +53,31 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             return marker;
         }
 
+        private static BrokeredMessageInbox<InboxClaimSqliteContext> CreateSqliteSut(InboxClaimSqliteContext context, TimeSpan? deduplicationWindow = null)
+            => new BrokeredMessageInbox<InboxClaimSqliteContext>(context,
+                                                                 NullLogger<BrokeredMessageInbox<InboxClaimSqliteContext>>.Instance,
+                                                                 new ReliabilityOptions(),
+                                                                 new EntityFrameworkReliabilityOptions { InboxDeduplicationWindow = deduplicationWindow });
+
+        // Reads through a SECOND context enlisted in the owner's open transaction. Microsoft.Data.Sqlite refuses a
+        // command whose transaction is not the connection's pending one, so the enlistment is what makes an
+        // uncommitted claim readable at all; and reading through a second context is what makes the result a
+        // flushed row rather than the owner's own change-tracker entry.
+        private static InboxClaimSqliteContext CreateReaderEnlistedIn(InboxClaimSqliteHarness harness, InboxClaimSqliteContext owner)
+        {
+            var reader = harness.CreateContext();
+            reader.Database.UseTransaction(owner.Database.CurrentTransaction.GetDbTransaction());
+
+            return reader;
+        }
+
+        private static async Task GivenACommittedMarkerAsync(InboxClaimSqliteHarness harness, string messageId, DateTime? receivedAtUtc)
+        {
+            using var seedContext = harness.CreateContext();
+            seedContext.Set<InboxMessage>().Add(new InboxMessage { MessageId = messageId, ReceivedByInboxAtUtc = receivedAtUtc });
+            await seedContext.SaveChangesAsync();
+        }
+
         private static IMessageBrokerContext CreateContext(string messageId, CancellationToken cancellationToken = default)
         {
             var converter = new Mock<IBrokeredMessageBodyConverter>();
@@ -65,33 +92,126 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
                 converter.Object);
         }
 
-        // INVARIANT: ReceiveViaInbox adds the inbox message via DbSet.AddAsync but never calls
-        // SaveChangesAsync. AS-IS the new inbox row is only tracked as Added; it is not persisted
-        // to the store, so a fresh query returns nothing until the surrounding context is saved.
+        // INVARIANT: the claim on a fresh message id reaches the store BEFORE the handler runs. Oracle for the
+        // ordering inside a single delivery; moving the flush in TryClaimMessageIdAsync to after the handler
+        // reddens this fact. See
+        // docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md.
         [Fact]
-        public async Task MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId()
+        public async Task MustRecordTheClaimBeforeInvokingTheHandlerForAFreshMessageId()
         {
+            using var harness = InboxClaimSqliteHarness.Create();
+            using var context = harness.CreateContext();
+            var sut = CreateSqliteSut(context);
             var messageId = Guid.NewGuid().ToString();
-            var context = CreateContext(messageId);
+
+            using var transaction = await context.Database.BeginTransactionAsync();
+
+            var claimVisibleToTheHandler = false;
             var handlerInvoked = false;
 
-            await _sut.ReceiveViaInbox("payload", context, () =>
+            await sut.ReceiveViaInbox("payload", CreateContext(messageId), async () =>
+            {
+                using var reader = CreateReaderEnlistedIn(harness, context);
+                claimVisibleToTheHandler = await reader.Set<InboxMessage>().AnyAsync(m => m.MessageId == messageId);
+                handlerInvoked = true;
+            });
+
+            claimVisibleToTheHandler.Should().BeTrue("the message id must be claimed in the store before the handler is invoked");
+            handlerInvoked.Should().BeTrue();
+        }
+
+        // INVARIANT: the inbox flushes its claim into the ambient transaction and commits nothing, leaving the
+        // unit of work's single commit as the only one. Oracle for a fresh message id; committing the ambient
+        // transaction after the flush in TryClaimMessageIdAsync reddens this fact. The commit count is asserted
+        // zero and THEN observed rising, so an interceptor that was never wired up cannot pass for "never
+        // committed".
+        [Fact]
+        public async Task MustFlushTheClaimWithoutCommittingForAFreshMessageId()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var commitCounter = new InboxCommitCountingTransactionInterceptor();
+            using var context = harness.CreateContext(options => options.AddInterceptors(commitCounter));
+            var sut = CreateSqliteSut(context);
+            var messageId = Guid.NewGuid().ToString();
+
+            using var transaction = await context.Database.BeginTransactionAsync();
+
+            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask);
+
+            using (var reader = CreateReaderEnlistedIn(harness, context))
+            {
+                (await reader.Set<InboxMessage>().AnyAsync(m => m.MessageId == messageId))
+                    .Should().BeTrue("the claim must have been flushed into the ambient transaction");
+            }
+
+            commitCounter.CommitCount.Should().Be(0, "the inbox must leave the commit to the unit of work");
+
+            await transaction.CommitAsync();
+
+            commitCounter.CommitCount.Should().Be(1, "the counter must see a commit when one happens, or the zero above proves nothing");
+        }
+
+        // INVARIANT: the same flush-without-commit holds when the claim refreshes an expired marker in place
+        // rather than inserting a fresh one, which is a different statement down a different branch.
+        [Fact]
+        public async Task MustFlushTheRefreshedClaimWithoutCommittingForAnExpiredMessageId()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var messageId = Guid.NewGuid().ToString();
+            var staleReceivedAtUtc = DateTime.UtcNow.AddMinutes(-10);
+            await GivenACommittedMarkerAsync(harness, messageId, staleReceivedAtUtc);
+
+            var commitCounter = new InboxCommitCountingTransactionInterceptor();
+            using var context = harness.CreateContext(options => options.AddInterceptors(commitCounter));
+            var sut = CreateSqliteSut(context, TimeSpan.FromMinutes(1));
+
+            using var transaction = await context.Database.BeginTransactionAsync();
+
+            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask);
+
+            using (var reader = CreateReaderEnlistedIn(harness, context))
+            {
+                var refreshed = await reader.Set<InboxMessage>()
+                    .Where(m => m.MessageId == messageId)
+                    .Select(m => m.ReceivedByInboxAtUtc)
+                    .SingleAsync();
+                refreshed.Should().BeAfter(staleReceivedAtUtc, "the refreshed claim must have been flushed into the ambient transaction");
+            }
+
+            commitCounter.CommitCount.Should().Be(0, "the inbox must leave the commit to the unit of work");
+
+            await transaction.CommitAsync();
+
+            commitCounter.CommitCount.Should().Be(1, "the counter must see a commit when one happens, or the zero above proves nothing");
+        }
+
+        // INVARIANT: the inbox refuses to claim a message id when its context carries no transaction, and refuses
+        // before staging anything. A flush outside a transaction autocommits, so a failure between that autocommit
+        // and the handler's work would leave a marker suppressing a message nothing ever handled. Oracle for the
+        // refusal; deleting the CurrentTransaction guard in TryClaimMessageIdAsync reddens this fact.
+        [Fact]
+        public async Task MustRefuseToClaimOutsideATransaction()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            using var context = harness.CreateContext();
+            var sut = CreateSqliteSut(context);
+            var messageId = Guid.NewGuid().ToString();
+            var handlerInvoked = false;
+
+            Func<Task> act = () => sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
             {
                 handlerInvoked = true;
                 return Task.CompletedTask;
             });
 
-            handlerInvoked.Should().BeTrue();
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Message.Should().Contain("WithInboxBehavior", "the refusal must name the registration that fixes it");
 
-            var tracked = _dbContext.ChangeTracker.Entries<InboxMessage>()
-                .Where(e => e.State == EntityState.Added)
-                .Select(e => e.Entity)
-                .Single();
-            tracked.MessageId.Should().Be(messageId);
-            tracked.ReceivedByInboxAtUtc.Should().NotBeNull();
+            handlerInvoked.Should().BeFalse("the refusal must come before the handler");
+            context.ChangeTracker.Entries<InboxMessage>().Should().BeEmpty("the refusal must come before anything is staged");
 
-            var persisted = await _dbContext.Set<InboxMessage>().ToListAsync();
-            persisted.Should().BeEmpty();
+            using var verifyContext = harness.CreateContext();
+            (await verifyContext.Set<InboxMessage>().ToListAsync()).Should().BeEmpty();
         }
 
         [Fact]
@@ -135,18 +255,30 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             persisted.Should().BeEmpty();
         }
 
+        // INVARIANT: a claim flushed ahead of the handler is undone by the unit of work's rollback along with
+        // everything else that handler touched, so a marker never outlives a handler that threw. Oracle for the
+        // atomicity of claim and handler; committing the claim on its own reddens this fact.
         [Fact]
         public async Task MustPropagateHandlerExceptionAndNotPersistInboxMessage()
         {
+            using var harness = InboxClaimSqliteHarness.Create();
             var messageId = Guid.NewGuid().ToString();
-            var context = CreateContext(messageId);
             var expected = new InvalidOperationException("handler failed");
 
-            Func<Task> act = () => _sut.ReceiveViaInbox<string>("payload", context, () => throw expected);
+            using (var context = harness.CreateContext())
+            {
+                var sut = CreateSqliteSut(context);
+                var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
 
-            (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(expected);
-            var persisted = await _dbContext.Set<InboxMessage>().ToListAsync();
-            persisted.Should().BeEmpty();
+                Func<Task> act = () => unitOfWork.ExecuteAsync(
+                    _ => sut.ReceiveViaInbox<string>("payload", CreateContext(messageId), () => throw expected),
+                    null);
+
+                (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(expected);
+            }
+
+            using var verifyContext = harness.CreateContext();
+            (await verifyContext.Set<InboxMessage>().ToListAsync()).Should().BeEmpty();
         }
 
         [Fact]
@@ -214,32 +346,43 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         }
 
         // INVARIANT: MessageId is the inbox primary key, so an expired marker is REFRESHED in place rather than
-        // inserted a second time. The refresh is a tracked Modified entry so it commits in the same transaction as
-        // the handler's own work.
+        // inserted a second time, and that refresh reaches the store before the handler runs exactly as a fresh
+        // claim does. Oracle for the expired branch of the claim; moving the flush after the handler reddens it.
         [Fact]
         public async Task MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed()
         {
+            using var harness = InboxClaimSqliteHarness.Create();
             var messageId = Guid.NewGuid().ToString();
             var staleReceivedAtUtc = DateTime.UtcNow.AddMinutes(-10);
-            GivenAMarker(messageId, staleReceivedAtUtc);
+            await GivenACommittedMarkerAsync(harness, messageId, staleReceivedAtUtc);
 
-            var sut = CreateSutWithDeduplicationWindow(TimeSpan.FromMinutes(1));
+            using var context = harness.CreateContext();
+            var sut = CreateSqliteSut(context, TimeSpan.FromMinutes(1));
+
+            using var transaction = await context.Database.BeginTransactionAsync();
+
+            DateTime? refreshVisibleToTheHandler = null;
             var handlerInvoked = false;
 
-            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+            await sut.ReceiveViaInbox("payload", CreateContext(messageId), async () =>
             {
+                using var reader = CreateReaderEnlistedIn(harness, context);
+                refreshVisibleToTheHandler = await reader.Set<InboxMessage>()
+                    .Where(m => m.MessageId == messageId)
+                    .Select(m => m.ReceivedByInboxAtUtc)
+                    .SingleAsync();
                 handlerInvoked = true;
-                return Task.CompletedTask;
             });
 
             handlerInvoked.Should().BeTrue();
+            refreshVisibleToTheHandler.Should().BeAfter(staleReceivedAtUtc,
+                "the refreshed claim must reach the store before the handler is invoked");
 
-            var entry = _dbContext.ChangeTracker.Entries<InboxMessage>().Single();
-            entry.State.Should().Be(EntityState.Modified);
-            entry.Entity.ReceivedByInboxAtUtc.Should().BeAfter(staleReceivedAtUtc);
+            await transaction.CommitAsync();
 
-            var persisted = await _dbContext.Set<InboxMessage>().ToListAsync();
-            persisted.Should().ContainSingle();
+            using var verifyContext = harness.CreateContext();
+            (await verifyContext.Set<InboxMessage>().ToListAsync())
+                .Should().ContainSingle("the expired marker is refreshed in place, not inserted a second time");
         }
 
         [Fact]
@@ -281,16 +424,23 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             handlerInvoked.Should().BeFalse();
         }
 
+        // INVARIANT: the token threads through the inbox lookup, the claim's flush and the duplicate re-read, so a
+        // token already cancelled stops the delivery before the handler. Oracle for cancellation on the claim path.
         [Fact]
         public async Task MustThrowBeforeInvokingHandlerWhenCancellationIsAlreadyRequested()
         {
+            using var harness = InboxClaimSqliteHarness.Create();
+            using var context = harness.CreateContext();
+            var sut = CreateSqliteSut(context);
+
             using var cancellation = new CancellationTokenSource();
             cancellation.Cancel();
 
-            var context = CreateContext(Guid.NewGuid().ToString(), cancellation.Token);
+            using var transaction = await context.Database.BeginTransactionAsync();
+
             var handlerInvoked = false;
 
-            Func<Task> act = () => _sut.ReceiveViaInbox("payload", context, () =>
+            Func<Task> act = () => sut.ReceiveViaInbox("payload", CreateContext(Guid.NewGuid().ToString(), cancellation.Token), () =>
             {
                 handlerInvoked = true;
                 return Task.CompletedTask;
@@ -352,29 +502,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             Action act = () => new BrokeredMessageInbox<DbContext>(_context, _logger, _options, null);
 
             act.Should().Throw<ArgumentNullException>();
-        }
-
-        // INVARIANT: BrokeredMessageInbox declares no DbContext-assignable field. This guard buys a
-        // narrowed declared surface — no _context.SaveChangesAsync(...) in the type's own vocabulary
-        // — and a regression tripwire against reintroducing a DbContext field, the exact path the
-        // reverted inbox self-save took. It does not make a commit impossible: DbSet<T> transitively
-        // reaches the DbContext (EF Core 10.0.0: DbSet<T> declares IInfrastructure<IServiceProvider>;
-        // the runtime InternalDbSet<T> implements IInfrastructure<DbContext> and holds a private
-        // DbContext field), so a commit is reachable from the retained DbSet<InboxMessage> with no
-        // reflection and no internal-type cast. What actually enforces that the marker is committed
-        // exactly once by UnitOfWorkBehavior's single SaveChangesAsync is the canonical resolved order
-        // [OutboxProcessingBehavior, UnitOfWorkBehavior, InboxBehavior] plus the characterization test
-        // MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId. See
-        // docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md.
-        [Fact]
-        public void MustNotDeclareADbContextField()
-        {
-            var dbContextFields = typeof(BrokeredMessageInbox<DbContext>)
-                .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
-                .Where(field => typeof(DbContext).IsAssignableFrom(field.FieldType))
-                .Select(field => $"{field.FieldType.Name} {field.Name}");
-
-            dbContextFields.Should().BeEmpty();
         }
     }
 }

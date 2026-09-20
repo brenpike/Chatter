@@ -19,8 +19,9 @@ using Xunit;
 namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
 {
     // CRITERION 3: DB-enforced inbox idempotency over a real SQL Server database with the PRODUCTION model
-    // (MessageId primary key). The MessageId PK is the backstop behind BrokeredMessageInbox's read-then-add: even
-    // when two receivers both pass the AnyAsync check, the unique constraint admits exactly one row.
+    // (MessageId primary key). The MessageId PK is what orders two deliveries of the same id: the second
+    // delivery's claim waits on the first delivery's uncommitted key lock and then resolves against whatever that
+    // first delivery did with it.
     [Trait("Category", "Integration")]
     [Collection(EfReliabilitySqlServerCollection.Name)]
     public class WhenDeduplicatingInboxOnSqlServer
@@ -69,36 +70,6 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             thrown.WithInnerException<SqlException>()
                 .Which.Number.Should().Be(PrimaryKeyViolationNumber,
                     "a duplicate inbox MessageId must violate the primary-key constraint (SQL Server error 2627)");
-        }
-
-        [RequiresDockerFact]
-        public async Task MustPersistExactlyOneInboxRowWhenTwoReceiversRaceForTheSameMessageId()
-        {
-            var harness = await CreateHarnessAsync();
-            var messageId = Guid.NewGuid().ToString();
-
-            using var firstContext = harness.CreateContext();
-            using var secondContext = harness.CreateContext();
-            var firstInbox = new BrokeredMessageInbox<SqlServerOutboxContext>(firstContext, CreateLogger(), new ReliabilityOptions());
-            var secondInbox = new BrokeredMessageInbox<SqlServerOutboxContext>(secondContext, CreateLogger(), new ReliabilityOptions());
-
-            // ReceiveViaInbox only AddAsync's to the change tracker; it does NOT SaveChanges. Each receiver must
-            // explicitly save to hit the DB constraint. With both contexts having passed the AnyAsync check before
-            // either saved, exactly one SaveChanges commits and the other violates the MessageId PK.
-            await firstInbox.ReceiveViaInbox("payload", CreateBrokerContext(messageId), () => Task.CompletedTask);
-            await secondInbox.ReceiveViaInbox("payload", CreateBrokerContext(messageId), () => Task.CompletedTask);
-
-            await firstContext.SaveChangesAsync();
-
-            Func<Task> secondSave = () => secondContext.SaveChangesAsync();
-            var thrown = await secondSave.Should().ThrowAsync<DbUpdateException>();
-            thrown.WithInnerException<SqlException>()
-                .Which.Number.Should().Be(PrimaryKeyViolationNumber,
-                    "the losing receiver must lose specifically at the MessageId primary-key constraint (SQL Server error 2627)");
-
-            using var verifyContext = harness.CreateContext();
-            var rows = await verifyContext.Set<InboxMessage>().Where(m => m.MessageId == messageId).ToListAsync();
-            rows.Should().HaveCount(1, "the MessageId primary key admits exactly one inbox row");
         }
 
         // The database, not the application, orders two deliveries of the same MessageId. Under
@@ -158,6 +129,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             var messageId = Guid.NewGuid().ToString();
 
             var handlerInvocations = 0;
+            var secondHandlerInvocations = 0;
             var firstHandlerEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var firstHandlerReleased = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -173,6 +145,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             var secondDelivery = Task.Run(() => DeliverViaInboxAsync(harness, messageId, () =>
             {
                 Interlocked.Increment(ref handlerInvocations);
+                Interlocked.Increment(ref secondHandlerInvocations);
                 return Task.CompletedTask;
             }));
 
@@ -186,6 +159,11 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
                 "the second delivery must be ordered behind the first delivery's uncommitted inbox claim by a lock wait");
             handlerInvocations.Should().Be(1,
                 "a delivery of a MessageId another delivery has already claimed must not reach the handler");
+            // WHICH delivery loses is the assertion, not an inference from the total: the delivery that claimed
+            // FIRST keeps its handler's work and the one that arrived second is the one absorbed. A count of one
+            // alone would also hold if the winner's work were the work discarded.
+            secondHandlerInvocations.Should().Be(0,
+                "the delivery that claimed the MessageId second is the one that must be absorbed");
             firstDeliveryFailure.Should().BeNull("the claiming delivery must commit its handler's work with its inbox marker");
             secondDeliveryFailure.Should().BeNull("the losing delivery must be absorbed as a duplicate, not surfaced as an error");
 
@@ -194,6 +172,54 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             using var verifyContext = harness.CreateContext();
             var rows = await verifyContext.Set<InboxMessage>().Where(m => m.MessageId == messageId).ToListAsync();
             rows.Should().HaveCount(1, "the MessageId primary key admits exactly one inbox row");
+        }
+
+        // The mirror of the fact above: when the claiming delivery ROLLS BACK instead of committing, the claim it
+        // was holding goes with it, and the delivery that waited behind it must go on to handle the message. An
+        // ordering that only ever suppressed the waiter would pass the fact above and lose the message here.
+        [RequiresDockerFact]
+        public async Task MustInvokeTheHandlerOnTheWaitingDeliveryWhenTheClaimingDeliveryRollsBack()
+        {
+            var connectionString = await CreateSnapshotIsolatedDatabaseAsync();
+            var harness = SqlServerOutboxContextHarness.Create(connectionString);
+            var messageId = Guid.NewGuid().ToString();
+
+            var waitingHandlerInvocations = 0;
+            var abandonedHandlerEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var abandonedHandlerReleased = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var abandonedDelivery = Task.Run(() => DeliverViaInboxAsync(harness, messageId, async () =>
+            {
+                abandonedHandlerEntered.TrySetResult(true);
+                await abandonedHandlerReleased.Task;
+                throw new DeliveryAbandonedException();
+            }));
+
+            await abandonedHandlerEntered.Task.WaitAsync(HandlerRendezvousTimeout);
+
+            var waitingDelivery = Task.Run(() => DeliverViaInboxAsync(harness, messageId, () =>
+            {
+                Interlocked.Increment(ref waitingHandlerInvocations);
+                return Task.CompletedTask;
+            }));
+
+            var blockedRequest = await WaitForBlockedLockRequestAsync(connectionString);
+
+            abandonedHandlerReleased.TrySetResult(true);
+            var abandonedDeliveryFailure = await CaptureFailureAsync(abandonedDelivery);
+            var waitingDeliveryFailure = await CaptureFailureAsync(waitingDelivery);
+
+            blockedRequest.Should().NotBeNull(
+                "the waiting delivery must be ordered behind the abandoned delivery's uncommitted inbox claim by a lock wait");
+            abandonedDeliveryFailure.Should().BeOfType<DeliveryAbandonedException>(
+                "the abandoned delivery must fail through its handler rather than at the claim");
+            waitingDeliveryFailure.Should().BeNull("the waiting delivery must complete once the claim it waited on is rolled back");
+            waitingHandlerInvocations.Should().Be(1,
+                "a rolled-back claim releases the message id, so the delivery that waited on it must handle the message");
+
+            using var verifyContext = harness.CreateContext();
+            var rows = await verifyContext.Set<InboxMessage>().Where(m => m.MessageId == messageId).ToListAsync();
+            rows.Should().HaveCount(1, "the waiting delivery's own claim is the only one that commits");
         }
 
         private static async Task DeliverViaInboxAsync(SqlServerOutboxContextHarness harness, string messageId, Func<Task> handler)
@@ -289,5 +315,15 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
 
         private static ILogger<BrokeredMessageInbox<SqlServerOutboxContext>> CreateLogger()
             => new Mock<ILogger<BrokeredMessageInbox<SqlServerOutboxContext>>>().Object;
+
+        // Deliberately its own type rather than an InvalidOperationException: the inbox refuses a claim outside a
+        // transaction with an InvalidOperationException, and a fact that abandons a delivery must not be able to
+        // mistake that refusal for its own handler's failure.
+        private sealed class DeliveryAbandonedException : Exception
+        {
+            public DeliveryAbandonedException()
+                : base("Simulated failure of a handler that had already claimed its message id.")
+            { }
+        }
     }
 }
