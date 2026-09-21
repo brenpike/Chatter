@@ -51,8 +51,12 @@ which observes the claim recorded at the moment the handler is entered rather th
 ### The flush is not a commit, and the distinction is the whole design
 
 `ReceiveViaInbox` issues no `Commit` of its own. `UnitOfWorkBehavior`'s single commit stays the only one, so the
-marker and the handler's work are still atomic: a handler that throws takes the claim down with it and the
-message is handled on redelivery. ADR-0006 already states this in the general form — *"Saving is participation:
+marker and the handler's work are still atomic: a handler that throws leaves no claim in the **store** — nothing
+was ever committed — and the message is handled on redelivery. The **change tracker** is a separate question
+with a separate answer. The claim was flushed, so it is tracked, and it stays tracked through a rollback; it is
+undone only because `ReceiveViaInbox` wraps the handler invocation and detaches the claim when it throws, as
+*A handler that throws is undone in the change tracker too* below records. ADR-0006 already states this in the
+general form — *"Saving is participation:
 it flushes the handler's staged work into whichever transaction is active"* (`0006-...md:162`) — and it is the
 sentence that makes claim-first available at all.
 
@@ -60,6 +64,45 @@ sentence that makes claim-first available at all.
 `MustFlushTheRefreshedClaimWithoutCommittingForAnExpiredMessageId` count commits through an
 `IDbTransactionInterceptor`, asserting zero across a full receive and one after an explicit commit. Committing
 the ambient transaction after the flush in `TryClaimMessageIdAsync` reddens seven facts.
+
+### A handler that throws is undone in the change tracker too
+
+`_inbox.FindAsync` resolves from the identity map before it reaches the store, so a claim left tracked after its
+transaction rolled back is served to a redelivery arriving over that same scoped `DbContext` and suppresses a
+message nothing ever committed. `ReceiveViaInbox` therefore wraps the handler await alone, detaches the claim,
+and rethrows bare. One detach serves both branches — the fresh insert and the in-place refresh.
+
+**Detaching is the only undo available, and the expired branch is why.** On that branch the claim is not a new
+entity: it is the marker the `FindAsync` at `BrokeredMessageInbox.cs:100` loaded, mutated in place, and flushed.
+Neither obvious alternative works there.
+
+- **Restoring from `OriginalValues` is unavailable.** A successful `SaveChangesAsync` calls `AcceptAllChanges`,
+  so by the time the handler runs the entry's original values already hold the *new* timestamp. No pre-mutation
+  value survives in the tracker to restore from.
+- **`ReloadAsync` is wrong.** It queries on the doomed transaction, so it reads this transaction's own
+  uncommitted refresh and writes that value straight back into the tracker.
+
+Detaching is honest about what is known. The tracker stops asserting anything about the row, and the next
+`FindAsync` over that scope misses the identity map and reads the store's committed — stale — value, which is
+ground truth once the transaction has rolled back. The expired branch carries a second reason of its own:
+`ReceivedByInboxAtUtc` is the concurrency token (`InboxMessageConfiguration.cs:22`), so a marker left tracked
+carrying a rolled-back timestamp would arm the next refresh's `UPDATE` predicate from a value no store row
+holds.
+
+`UsingBrokeredMessageInbox/WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId`
+and `.MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId` are the oracles. Both
+were observed red against the code as it stood before the catch existed, on both target frameworks, and deleting
+the catch reddens exactly those two and nothing else, counted on both. The pre-existing
+`.MustPropagateHandlerExceptionAndNotPersistInboxMessage` stays green under that same deletion: it asserts the
+*store* is empty, which holds either way because nothing was ever committed, so it is blind to this defect and
+was left as it stands rather than stretched to cover it.
+
+**What this does not close.** The claim is undone only where `ReceiveViaInbox` can observe the failure, and that
+is the handler await. The other way this context holds a claim no commit stands behind is the flush succeeding,
+the handler succeeding, and the unit of work's own commit then failing:
+`UnitOfWork<TContext>.ExecuteAsync` rolls back without resetting the change tracker, and the inbox has already
+returned and cannot observe it. That path is not introduced by this decision — it is present on `master` — and
+it is tracked by [issue #512](https://github.com/brenpike/Chatter/issues/512).
 
 ### Why the refusal is load-bearing rather than defensive
 
@@ -292,7 +335,7 @@ than corrected in place. Line numbers are as at this ADR's date.
 | `0028-...md:158` | `INVARIANT` block at `BrokeredMessageInbox.cs:18-31` | The block is at `BrokeredMessageInbox.cs:18-26` |
 | `0028-...md:157-159`, `0028-...md:233` | `MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId` | Renamed as above. ADR-0028's claim — the marker is staged and never self-committed — still holds under the commit-counting facts |
 | `0030-...md:20-22`, `0030-...md:157` | `BrokeredMessageInbox.cs:99` (the pre-read) and `:101-105` (the expiry gate) | The pre-read is at `:100` and the skip at `:102-106`. The pre-read-and-skip behaviour ADR-0030 defends is unchanged |
-| `0030-...md:24-25`, `0030-...md:158-161` | `WhenReceivingViaInbox.cs:98` and `:179` | `MustNotInvokeHandlerOrAddSecondRowForDuplicateMessageId` is at `:218` and `MustSkipHandlerForAnyExistingMarkerWhenDeduplicationWindowIsUnset` at `:311`. Both facts exist and both still hold |
+| `0030-...md:24-25`, `0030-...md:158-161` | `WhenReceivingViaInbox.cs:98` and `:179` | `MustNotInvokeHandlerOrAddSecondRowForDuplicateMessageId` is at `:218` and `MustSkipHandlerForAnyExistingMarkerWhenDeduplicationWindowIsUnset` at `:385`. Both facts exist and both still hold |
 | `characterization-findings.md:9` (row 3) | The marker is added to the change tracker and "`SaveChangesAsync` is never called; the row is not persisted until the surrounding `DbContext` is saved externally" | The claim is flushed before the handler and is durable at the unit of work's commit. The row is still not committed by the inbox. That file is an observation log of behaviour as it stood and is not rewritten |
 
 ## References
