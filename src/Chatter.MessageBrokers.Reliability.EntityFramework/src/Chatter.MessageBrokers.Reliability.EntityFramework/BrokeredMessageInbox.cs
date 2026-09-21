@@ -131,8 +131,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             // catch below reddens those two facts and no others, measured by deleting it and counting.
             // No fact pins the other way this context can hold a phantom claim: the handler succeeds and the unit
             // of work's own commit then fails, which ReceiveViaInbox has already returned from and cannot observe.
-            // That path predates the claim-before-handler change and is deferred to a tracking issue; the issue
-            // number belongs in this sentence and is absent from it.
+            // That path predates the claim-before-handler change and is deferred to issue #512.
             try
             {
                 await handler().ConfigureAwait(false);
