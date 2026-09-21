@@ -355,6 +355,135 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             handlerInvoked.Should().BeTrue("the redelivery must read the store's stale marker, which the window ages out");
         }
 
+        // INVARIANT: a transaction carrying a claim whose handler did not return is refused at the commit point,
+        // so a caller that swallows a claimed message's failure cannot commit the claim and suppress the message
+        // for good. Oracle for the swallowed failure; deleting the unsettled-claim refusal in
+        // PersistanceTransaction.CommitAsync reddens this fact.
+        // The THROW is the discriminating assertion, not the empty store. On the defect the swallow leaves
+        // ExecuteAsync returning normally - CompleteAsync's SaveChangesAsync is a no-op because the claim was
+        // already accepted, and the commit succeeds - so an empty-store assertion alone would be blind: a variant
+        // that never reached a commit leaves the store empty either way. The swallow is asserted to have happened
+        // so the fact cannot pass vacuously on an operation that never threw at all.
+        [Fact]
+        public async Task MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var messageId = Guid.NewGuid().ToString();
+            var swallowed = new InvalidOperationException("handler failed");
+            var swallowedByTheCaller = false;
+
+            using (var context = harness.CreateContext())
+            {
+                var sut = CreateSqliteSut(context);
+                var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+
+                Func<Task> act = () => unitOfWork.ExecuteAsync(async _ =>
+                {
+                    try
+                    {
+                        await sut.ReceiveViaInbox<string>("payload", CreateContext(messageId), () => throw swallowed);
+                    }
+                    catch (Exception caught) when (ReferenceEquals(caught, swallowed))
+                    {
+                        swallowedByTheCaller = true;
+                    }
+                }, null);
+
+                var refusal = (await act.Should().ThrowAsync<InvalidOperationException>(
+                    "the commit point must refuse a transaction carrying a claim whose handler did not return")).Which;
+
+                refusal.Should().NotBeSameAs(swallowed, "the refusal must be the commit point's, not the handler failure the caller swallowed");
+                refusal.Message.Should().Contain(messageId, "the refusal must name the message id whose claim went unsettled");
+            }
+
+            swallowedByTheCaller.Should().BeTrue("the handler failure must actually have been swallowed, or this fact passes vacuously");
+
+            using var verifyContext = harness.CreateContext();
+            (await verifyContext.Set<InboxMessage>().ToListAsync())
+                .Should().BeEmpty("a claim the refused commit never made durable must leave no marker behind");
+        }
+
+        // INVARIANT: settlement grants the commit. A handler that RETURNS settles its claim, so the unit of work
+        // commits and the marker is durable. Oracle against a gate that refuses every commit, which would pass
+        // MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure just as well.
+        [Fact]
+        public async Task MustCommitTheClaimWhenTheHandlerReturns()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var messageId = Guid.NewGuid().ToString();
+            var handlerInvoked = false;
+
+            using (var context = harness.CreateContext())
+            {
+                var sut = CreateSqliteSut(context);
+                var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+
+                await unitOfWork.ExecuteAsync(
+                    _ => sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+                    {
+                        handlerInvoked = true;
+                        return Task.CompletedTask;
+                    }),
+                    null);
+            }
+
+            handlerInvoked.Should().BeTrue();
+
+            using var verifyContext = harness.CreateContext();
+            (await verifyContext.Set<InboxMessage>().Select(m => m.MessageId).ToListAsync())
+                .Should().ContainSingle().Which.Should().Be(messageId, "a handler that returned must leave its claim durable");
+        }
+
+        // INVARIANT: the refusal is decided PER CLAIM, so a later claim that settled cannot grant the commit an
+        // earlier unsettled one withholds. Oracle for the per-claim reading; a single per-transaction flag that the
+        // last settlement clears passes MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure and reddens
+        // here. The swallowed delivery is ordered FIRST for exactly that reason - a last-writer flag is only
+        // distinguishable when a settlement follows the claim that went unsettled.
+        [Fact]
+        public async Task MustRefuseTheCommitWhenOnlyOneOfTwoClaimsWasSwallowed()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var swallowedMessageId = Guid.NewGuid().ToString();
+            var handledMessageId = Guid.NewGuid().ToString();
+            var swallowed = new InvalidOperationException("handler failed");
+            var swallowedByTheCaller = false;
+            var secondHandlerInvoked = false;
+
+            using (var context = harness.CreateContext())
+            {
+                var sut = CreateSqliteSut(context);
+                var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+
+                Func<Task> act = () => unitOfWork.ExecuteAsync(async _ =>
+                {
+                    try
+                    {
+                        await sut.ReceiveViaInbox<string>("payload", CreateContext(swallowedMessageId), () => throw swallowed);
+                    }
+                    catch (Exception caught) when (ReferenceEquals(caught, swallowed))
+                    {
+                        swallowedByTheCaller = true;
+                    }
+
+                    await sut.ReceiveViaInbox("payload", CreateContext(handledMessageId), () =>
+                    {
+                        secondHandlerInvoked = true;
+                        return Task.CompletedTask;
+                    });
+                }, null);
+
+                (await act.Should().ThrowAsync<InvalidOperationException>())
+                    .Which.Message.Should().Contain(swallowedMessageId, "the refusal must name the claim that went unsettled");
+            }
+
+            swallowedByTheCaller.Should().BeTrue("the first handler's failure must actually have been swallowed");
+            secondHandlerInvoked.Should().BeTrue("the second delivery must have claimed and settled, or there is no settlement to out-weigh");
+
+            using var verifyContext = harness.CreateContext();
+            (await verifyContext.Set<InboxMessage>().ToListAsync())
+                .Should().BeEmpty("neither claim may be made durable by a commit the refusal withheld");
+        }
+
         [Fact]
         public void MustThrowWhenContextIsNull()
         {
