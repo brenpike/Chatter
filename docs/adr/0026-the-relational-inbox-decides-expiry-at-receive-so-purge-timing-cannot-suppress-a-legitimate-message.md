@@ -234,11 +234,11 @@ test in this repository starts the hosted service.
 ## Amendment — a database-owned retention stamp, recorded as a named future direction
 
 Every retention stamp this package writes is the WRITING host's `DateTime.UtcNow`: `ReceivedByInboxAtUtc` on
-the fresh-id claim (`BrokeredMessageInbox.cs:147`), `ReceivedByInboxAtUtc` on the expiry refresh
-(`BrokeredMessageInbox.cs:156`), and `ProcessedFromOutboxAtUtc` on the drain's claiming update
+the fresh-id claim (`BrokeredMessageInbox.cs:202`), `ReceivedByInboxAtUtc` on the expiry refresh
+(`BrokeredMessageInbox.cs:211`), and `ProcessedFromOutboxAtUtc` on the drain's claiming update
 (`BrokeredMessageOutbox.cs:174`). Every eligibility decision compares one of those stamps against a cutoff
 taken from the DECIDING host's clock — `HasBeenReceived`'s cutoff and `HasMarkerExpired`'s comparison
-(`BrokeredMessageInbox.cs:205` and `:223`), and the `inboxCutoffUtc` and `outboxCutoffUtc` the purge derives
+(`BrokeredMessageInbox.cs:283` and `:301`), and the `inboxCutoffUtc` and `outboxCutoffUtc` the purge derives
 in `PurgeOnceAsync`. Writer and decider need not be the same process.
 
 So retention eligibility — and through it how much work a purge pass finds to do — is EMERGENT FROM CLOCK

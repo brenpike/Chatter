@@ -97,12 +97,25 @@ the catch reddens exactly those two and nothing else, counted on both. The pre-e
 *store* is empty, which holds either way because nothing was ever committed, so it is blind to this defect and
 was left as it stands rather than stretched to cover it.
 
+**The detach is RETAINED, and it answers the identity map alone.** The claim's other half — DURABILITY, the
+flushed write the detach cannot reach — is answered in ADR-0034, which opens every claim unsettled against the
+transaction it was flushed into, settles it only when the handler returns, and refuses the commit while any claim
+on that transaction is unsettled. That covers the case this section's catch cannot: a caller that catches the
+rethrow above and returns normally, leaving the unit of work to commit the flushed claim. It does NOT make the
+detach redundant, and that is measured rather than assumed — deleting the detach reddens exactly the two facts
+named above, and deleting ADR-0034's commit refusal reddens exactly two others, a set disjoint from them.
+
 **What this does not close.** The claim is undone only where `ReceiveViaInbox` can observe the failure, and that
 is the handler await. The other way this context holds a claim no commit stands behind is the flush succeeding,
 the handler succeeding, and the unit of work's own commit then failing:
 `UnitOfWork<TContext>.ExecuteAsync` rolls back without resetting the change tracker, and the inbox has already
 returned and cannot observe it. That path is not introduced by this decision — it is present on `master` — and
 it is tracked by [issue #512](https://github.com/brenpike/Chatter/issues/512).
+
+ADR-0034 narrows this paragraph at one point and leaves it standing at the other. A handler failure a CALLER
+swallows no longer reaches a commit, because the commit point refuses a transaction carrying an unsettled claim.
+The path named here is the one where the handler SUCCEEDED — the claim settled, so nothing unsettled remains for
+that refusal to read — so **#512 is unaffected by ADR-0034 and remains open.**
 
 ### Why the refusal is load-bearing rather than defensive
 
@@ -332,10 +345,10 @@ than corrected in place. Line numbers are as at this ADR's date.
 | --- | --- | --- |
 | `0006-...md:126` | "leaving `UnitOfWorkBehavior`'s single `SaveChanges` as the only commit point"; the inbox "calls no `SaveChanges` of its own"; `MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId` pins it | The commit point is unchanged. The inbox calls `SaveChangesAsync` as a flush. The named fact was replaced by `MustRecordTheClaimBeforeInvokingTheHandlerForAFreshMessageId`, `MustFlushTheClaimWithoutCommittingForAFreshMessageId` and `MustFlushTheRefreshedClaimWithoutCommittingForAnExpiredMessageId` |
 | `0006-...md:126` | `MustNotDeclareADbContextField` "fails the build if a `DbContext`-typed field ever returns" | That fact no longer exists. A `DbContext` field is the mechanism, and the commit-counting facts pin what the tripwire approximated |
-| `0028-...md:158` | `INVARIANT` block at `BrokeredMessageInbox.cs:18-31` | The block is at `BrokeredMessageInbox.cs:18-26` |
+| `0028-...md:158` | `INVARIANT` block at `BrokeredMessageInbox.cs:18-31` | The block is at `BrokeredMessageInbox.cs:19-30` |
 | `0028-...md:157-159`, `0028-...md:233` | `MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId` | Renamed as above. ADR-0028's claim — the marker is staged and never self-committed — still holds under the commit-counting facts |
-| `0030-...md:20-22`, `0030-...md:157` | `BrokeredMessageInbox.cs:99` (the pre-read) and `:101-105` (the expiry gate) | The pre-read is at `:100` and the skip at `:102-106`. The pre-read-and-skip behaviour ADR-0030 defends is unchanged |
-| `0030-...md:24-25`, `0030-...md:158-161` | `WhenReceivingViaInbox.cs:98` and `:179` | `MustNotInvokeHandlerOrAddSecondRowForDuplicateMessageId` is at `:218` and `MustSkipHandlerForAnyExistingMarkerWhenDeduplicationWindowIsUnset` at `:385`. Both facts exist and both still hold |
+| `0030-...md:20-22`, `0030-...md:157` | `BrokeredMessageInbox.cs:99` (the pre-read) and `:101-105` (the expiry gate) | The pre-read is at `:104` and the skip at `:106-110`. The pre-read-and-skip behaviour ADR-0030 defends is unchanged |
+| `0030-...md:24-25`, `0030-...md:158-161` | `WhenReceivingViaInbox.cs:98` and `:179` | `MustNotInvokeHandlerOrAddSecondRowForDuplicateMessageId` is at `:218` and `MustSkipHandlerForAnyExistingMarkerWhenDeduplicationWindowIsUnset` at `:514`. Both facts exist and both still hold |
 | `characterization-findings.md:9` (row 3) | The marker is added to the change tracker and "`SaveChangesAsync` is never called; the row is not persisted until the surrounding `DbContext` is saved externally" | The claim is flushed before the handler and is durable at the unit of work's commit. The row is still not committed by the inbox. That file is an observation log of behaviour as it stood and is not rewritten |
 
 ## References
@@ -354,6 +367,8 @@ than corrected in place. Line numbers are as at this ADR's date.
   and the mutation that reddens it, and why the MARS section states plainly that no fact pins the absorption
   gate's rethrow direction or a flush with savepoints disabled.
 - ADR-0030 — *Corrected only where history is not rewritten*. The doctrine the pointer ledger follows.
+- ADR-0034 — *An unsettled inbox claim withholds the commit*. Answers the durability half of the claim this
+  decision's detach leaves open, retains that detach for the identity-map half, and records why #512 is untouched.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageInbox.cs`
   (`ReceiveViaInbox`, `TryClaimMessageIdAsync`) — the claim, the refusal, the flush and the absorption path.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/InboxMessageConfiguration.cs`
