@@ -281,6 +281,80 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             (await verifyContext.Set<InboxMessage>().ToListAsync()).Should().BeEmpty();
         }
 
+        // INVARIANT: a claim whose handler threw leaves nothing behind in the change tracker, so a redelivery over
+        // that same context reads the store rather than the failed delivery's leftover entry. Oracle for the fresh
+        // branch; deleting the catch around the handler in ReceiveViaInbox reddens this fact. See
+        // docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md.
+        [Fact]
+        public async Task MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            using var context = harness.CreateContext();
+            var sut = CreateSqliteSut(context);
+            var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+            var messageId = Guid.NewGuid().ToString();
+            var expected = new InvalidOperationException("handler failed");
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox<string>("payload", CreateContext(messageId), () => throw expected),
+                null);
+
+            (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(expected);
+
+            context.ChangeTracker.Entries<InboxMessage>()
+                .Should().BeEmpty("a rolled back claim must not stay tracked for the next lookup to find");
+
+            var handlerInvoked = false;
+
+            await unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+                {
+                    handlerInvoked = true;
+                    return Task.CompletedTask;
+                }),
+                null);
+
+            handlerInvoked.Should().BeTrue("a message id nothing ever committed must still reach the handler");
+        }
+
+        // INVARIANT: the same holds when the claim refreshed an expired marker in place, where the leftover entry
+        // would also carry a ReceivedByInboxAtUtc concurrency token no store row carries. Oracle for the expired
+        // branch; deleting the catch around the handler in ReceiveViaInbox reddens this fact.
+        [Fact]
+        public async Task MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var messageId = Guid.NewGuid().ToString();
+            var staleReceivedAtUtc = DateTime.UtcNow.AddMinutes(-10);
+            await GivenACommittedMarkerAsync(harness, messageId, staleReceivedAtUtc);
+
+            using var context = harness.CreateContext();
+            var sut = CreateSqliteSut(context, TimeSpan.FromMinutes(1));
+            var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+            var expected = new InvalidOperationException("handler failed");
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox<string>("payload", CreateContext(messageId), () => throw expected),
+                null);
+
+            (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(expected);
+
+            context.ChangeTracker.Entries<InboxMessage>()
+                .Should().BeEmpty("a rolled back refresh must not stay tracked for the next lookup to find");
+
+            var handlerInvoked = false;
+
+            await unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+                {
+                    handlerInvoked = true;
+                    return Task.CompletedTask;
+                }),
+                null);
+
+            handlerInvoked.Should().BeTrue("the redelivery must read the store's stale marker, which the window ages out");
+        }
+
         [Fact]
         public void MustThrowWhenContextIsNull()
         {

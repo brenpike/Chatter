@@ -111,13 +111,38 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                                        + $"deduplication window of '{_retentionOptions.InboxDeduplicationWindow}'. Message will be handled again.");
             }
 
-            if (!await TryClaimMessageIdAsync(messageId, existingMarker, cancellationToken).ConfigureAwait(false))
+            var claim = await TryClaimMessageIdAsync(messageId, existingMarker, cancellationToken).ConfigureAwait(false);
+            if (claim is null)
             {
                 return;
             }
 
             _logger.LogDebug("Executing message handler from inbox");
-            await handler().ConfigureAwait(false);
+
+            // INVARIANT: a claim whose handler threw is detached, so nothing the transaction is about to roll back
+            // stays in the change tracker asserting a row the store does not carry. The lookup above resolves from
+            // the identity map before the store, so a claim left tracked would be found by a redelivery over this
+            // same context and suppress a message nothing ever handled. Detaching is the only undo available: a
+            // successful flush has already accepted the claim's values, so the refresh branch has no pre-mutation
+            // timestamp left to restore, and re-reading would run on the doomed transaction and read its own
+            // uncommitted write. Oracles:
+            // MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId and
+            // MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId; deleting the
+            // catch below reddens those two facts and no others, measured by deleting it and counting.
+            // No fact pins the other way this context can hold a phantom claim: the handler succeeds and the unit
+            // of work's own commit then fails, which ReceiveViaInbox has already returned from and cannot observe.
+            // That path predates the claim-before-handler change and is deferred to a tracking issue; the issue
+            // number belongs in this sentence and is absent from it.
+            try
+            {
+                await handler().ConfigureAwait(false);
+            }
+            catch
+            {
+                _context.Entry(claim).State = EntityState.Detached;
+                throw;
+            }
+
             _logger.LogDebug("Message handler executed successfully from inbox");
         }
 
@@ -127,7 +152,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         // `_context.Database.CurrentTransaction` that refuses that case rather than merely leaving it unlikely.
         // Oracle: MustRefuseToClaimOutsideATransaction, the only fact
         // in the suite that goes red when the guard below is removed.
-        private async Task<bool> TryClaimMessageIdAsync(string messageId, InboxMessage expiredMarker, CancellationToken cancellationToken)
+        //
+        // The claim is returned rather than a bool so the caller can name the entry it must detach when the handler
+        // throws; null reports absorption, the async stand-in for an out parameter.
+        private async Task<InboxMessage> TryClaimMessageIdAsync(string messageId, InboxMessage expiredMarker, CancellationToken cancellationToken)
         {
             if (_context.Database.CurrentTransaction is null)
             {
@@ -165,7 +193,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 // stay atomic with the claim - one transaction, one commit - but a constraint or validation error
                 // on an outer entry surfaces here, at the claim, instead of at the unit of work's commit.
                 await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                return true;
+                return claim;
             }
             catch (DbUpdateException ex)
             {
@@ -212,7 +240,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 }
 
                 _logger.LogInformation($"Message with id '{messageId}' was claimed in the inbox by a concurrent delivery. Message will not be handled.");
-                return false;
+                return null;
             }
         }
 
