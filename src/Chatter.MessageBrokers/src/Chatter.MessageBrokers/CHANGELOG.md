@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.32.1] - 2026-09-21
+
+### Changed
+
+- **This release carries no code change.** Two internal `INVARIANT:` comments on `OutboxProcessor`'s private `TryReClaimPublishedMessage` and `RecordFailedDispatchAttempt` methods asserted that a rolled-back unit of work leaves change-tracker residue for a later unit of work to flush by accident. `UnitOfWork<TContext>` now reconciles its context's change tracker when it rolls back a transaction it began, which falsifies that premise, so the comments were corrected to state the current mechanism instead; their reasoning about why the dispatch-attempt write must land outside any unit of work is unchanged. See `docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md`. This release exists only because the package's version-check gate is path-based and does not distinguish a comment-only edit from a behavioural one — an application already on 0.32.0 gains nothing from taking this release.
+
 ## [0.32.0] - 2026-09-19
 
 ### Added

@@ -21,14 +21,18 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         public Guid TransactionId => _dbContextTransaction?.TransactionId ?? Guid.Empty;
 
-        // INVARIANT: this is the package's single commit of a provider transaction, and it refuses one carrying an
-        // inbox claim whose handler did not return. Permission is DERIVED from the claim's own recorded outcome,
-        // not from whether an exception reached this point: BrokeredMessageInbox opens every claim unsettled and
-        // settles it only when the handler returns, so a caller that swallowed a claimed message's failure and
-        // returned normally is refused here just as a caller that rethrew would be. ELIMINATED CLASS: a transaction
-        // this package commits while carrying an inbox claim whose handler did not return.
+        // INVARIANT: this is the single commit of the transactions this package intermediates, and it refuses one
+        // carrying an inbox claim whose handler did not return. Permission is DERIVED from the claim's own recorded
+        // outcome, not from whether an exception reached this point: BrokeredMessageInbox opens every claim
+        // unsettled and settles it only when the handler returns, so a caller that swallowed a claimed message's
+        // failure and returned normally is refused here just as a caller that rethrew would be. ELIMINATED CLASS: a
+        // transaction this package commits while carrying an inbox claim whose handler did not return.
         // The refusal does NOT roll back. Whoever began the transaction rolls it back, which is the ownership rule
         // UnitOfWork.UnitOfWorkTransaction carries.
+        // BOUNDARY: a commit issued directly on Database.CurrentTransaction, EF Core's own public handle, reaches
+        // no gate here; this package neither withdraws nor intermediates that handle, so the refusal above governs
+        // only the commits this package intermediates, not every commit that can reach the store. No test pins
+        // that slice; one would construct the bypass and assert the gap. Tracked in issue #513.
         // Oracles: WhenReceivingViaInbox.MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure and
         // .MustRefuseTheCommitWhenOnlyOneOfTwoClaimsWasSwallowed; deleting the refusal below reddens those two
         // facts and no others, measured by deleting it and counting.

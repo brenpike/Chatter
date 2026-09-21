@@ -139,10 +139,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             // frameworks by deleting it and running the suite. Rationale in
             // docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md.
             //
-            // The residual is a transaction the CALLER began and owns: ExecuteAsync rolls back and clears only a
-            // transaction it began itself, so a claim staged into a caller-begun transaction stays in this
-            // context's change tracker after that caller rolls back. No test in this suite drives ReceiveViaInbox
-            // inside a caller-begun transaction. Tracked by issue #513.
+            // ExecuteAsync rolls back and clears only a transaction it began itself, so what that clear reaches is
+            // exactly what the ownership refusal below admits: a claim can only ever have been staged into a
+            // transaction a unit of work began. Oracle:
+            // MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan.
             //
             // The second is DURABILITY. The flush already pushed the claim into the transaction, where clearing the
             // change tracker cannot reach it, so a caller that CATCHES the handler's exception and returns normally
@@ -165,12 +165,24 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             _logger.LogDebug("Message handler executed successfully from inbox");
         }
 
-        // INVARIANT: the refusal below and the flush that follows it land together and are never separated. A
-        // flush outside a transaction autocommits, so a failure between that autocommit and the handler's work
-        // would leave a marker suppressing a message nothing ever handled; the guard below is a runtime read of
+        // INVARIANT: the two refusals below and the flush that follows them land together and are never separated.
+        // A flush outside a transaction autocommits, so a failure between that autocommit and the handler's work
+        // would leave a marker suppressing a message nothing ever handled; the first guard is a runtime read of
         // `_context.Database.CurrentTransaction` that refuses that case rather than merely leaving it unlikely.
-        // Oracle: MustRefuseToClaimOutsideATransaction, the only fact
-        // in the suite that goes red when the guard below is removed.
+        // Oracle: MustRefuseToClaimOutsideATransaction, the only fact in the suite that goes red when that guard
+        // is removed.
+        //
+        // INVARIANT: the second guard widens the key of that same refusal from "is there a transaction" to "does a
+        // unit of work OWN this transaction". ELIMINATED CLASS: a claim flushed into a transaction whose failure
+        // and whose commit this package does not control. Both protections the claim rests on - the change-tracker
+        // reconciliation on UnitOfWork's rollback, and PersistanceTransaction's unsettled-claim refusal - act only
+        // on a transaction a unit of work began, so an ADOPTED transaction would take the claim and leave both
+        // behind. The lookup asks UnitOfWorkTransactionRegister about the ONE transaction object read below, so it
+        // is a fact carried from where that transaction was begun rather than an ownership re-derived from which
+        // unit of work happens to be running. Oracles: MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan for
+        // the refusal, MustCommitTheClaimWhenTheHandlerReturns for the grant, and
+        // MustClaimInsideAUnitOfWorkNestedInAnothersTransaction for the keying, which is what keeps a nested
+        // dispatch's claim admitted. Rationale on UnitOfWorkTransactionRegister.
         //
         // The claim is returned rather than a bool so the caller can name the registration it must settle when the
         // handler returns; null reports absorption, the async stand-in for an out parameter.
@@ -190,6 +202,18 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                     $"transaction that write would commit on its own: a failure anywhere between it and the handler's work would leave a marker suppressing a message nothing " +
                     $"ever handled. Register the inbox with WithInboxBehavior<{typeof(TContext).Name}>(), which registers the matching unit of work, or run this call inside a " +
                     $"unit of work's ExecuteAsync.");
+            }
+
+            if (!UnitOfWorkTransactionRegister.IsOwnedByAUnitOfWork(transaction))
+            {
+                throw new InvalidOperationException(
+                    $"BrokeredMessageInbox<{typeof(TContext).Name}> refuses to claim message id '{messageId}' because no unit of work owns the transaction " +
+                    $"'{typeof(TContext).Name}' is currently in. The claim is written before the handler runs, and everything that undoes it when the handler does " +
+                    $"not return acts only on a transaction a unit of work began: the rollback that reconciles this context's change tracker, and the commit point " +
+                    $"that withholds a commit carrying an unsettled claim. Flushed into a transaction begun elsewhere, the claim would survive its own failure - the " +
+                    $"owner's rollback leaves it in this context's identity map, where the next lookup finds it and skips a message nothing ever handled. Register the " +
+                    $"inbox with WithInboxBehavior<{typeof(TContext).Name}>(), which registers the matching unit of work, or run this call inside " +
+                    $"IUnitOfWork.ExecuteAsync rather than inside a transaction you began yourself.");
             }
 
             InboxMessage claim;

@@ -102,19 +102,20 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             using var harness = InboxClaimSqliteHarness.Create();
             using var context = harness.CreateContext();
             var sut = CreateSqliteSut(context);
+            var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
             var messageId = Guid.NewGuid().ToString();
-
-            using var transaction = await context.Database.BeginTransactionAsync();
 
             var claimVisibleToTheHandler = false;
             var handlerInvoked = false;
 
-            await sut.ReceiveViaInbox("payload", CreateContext(messageId), async () =>
-            {
-                using var reader = CreateReaderEnlistedIn(harness, context);
-                claimVisibleToTheHandler = await reader.Set<InboxMessage>().AnyAsync(m => m.MessageId == messageId);
-                handlerInvoked = true;
-            });
+            await unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox("payload", CreateContext(messageId), async () =>
+                {
+                    using var reader = CreateReaderEnlistedIn(harness, context);
+                    claimVisibleToTheHandler = await reader.Set<InboxMessage>().AnyAsync(m => m.MessageId == messageId);
+                    handlerInvoked = true;
+                }),
+                null);
 
             claimVisibleToTheHandler.Should().BeTrue("the message id must be claimed in the store before the handler is invoked");
             handlerInvoked.Should().BeTrue();
@@ -132,21 +133,21 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             var commitCounter = new InboxCommitCountingTransactionInterceptor();
             using var context = harness.CreateContext(options => options.AddInterceptors(commitCounter));
             var sut = CreateSqliteSut(context);
+            var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
             var messageId = Guid.NewGuid().ToString();
 
-            using var transaction = await context.Database.BeginTransactionAsync();
-
-            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask);
-
-            using (var reader = CreateReaderEnlistedIn(harness, context))
+            await unitOfWork.ExecuteAsync(async _ =>
             {
-                (await reader.Set<InboxMessage>().AnyAsync(m => m.MessageId == messageId))
-                    .Should().BeTrue("the claim must have been flushed into the ambient transaction");
-            }
+                await sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask);
 
-            commitCounter.CommitCount.Should().Be(0, "the inbox must leave the commit to the unit of work");
+                using (var reader = CreateReaderEnlistedIn(harness, context))
+                {
+                    (await reader.Set<InboxMessage>().AnyAsync(m => m.MessageId == messageId))
+                        .Should().BeTrue("the claim must have been flushed into the ambient transaction");
+                }
 
-            await transaction.CommitAsync();
+                commitCounter.CommitCount.Should().Be(0, "the inbox must leave the commit to the unit of work");
+            }, null);
 
             commitCounter.CommitCount.Should().Be(1, "the counter must see a commit when one happens, or the zero above proves nothing");
         }
@@ -164,23 +165,23 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             var commitCounter = new InboxCommitCountingTransactionInterceptor();
             using var context = harness.CreateContext(options => options.AddInterceptors(commitCounter));
             var sut = CreateSqliteSut(context, TimeSpan.FromMinutes(1));
+            var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
 
-            using var transaction = await context.Database.BeginTransactionAsync();
-
-            await sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask);
-
-            using (var reader = CreateReaderEnlistedIn(harness, context))
+            await unitOfWork.ExecuteAsync(async _ =>
             {
-                var refreshed = await reader.Set<InboxMessage>()
-                    .Where(m => m.MessageId == messageId)
-                    .Select(m => m.ReceivedByInboxAtUtc)
-                    .SingleAsync();
-                refreshed.Should().BeAfter(staleReceivedAtUtc, "the refreshed claim must have been flushed into the ambient transaction");
-            }
+                await sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask);
 
-            commitCounter.CommitCount.Should().Be(0, "the inbox must leave the commit to the unit of work");
+                using (var reader = CreateReaderEnlistedIn(harness, context))
+                {
+                    var refreshed = await reader.Set<InboxMessage>()
+                        .Where(m => m.MessageId == messageId)
+                        .Select(m => m.ReceivedByInboxAtUtc)
+                        .SingleAsync();
+                    refreshed.Should().BeAfter(staleReceivedAtUtc, "the refreshed claim must have been flushed into the ambient transaction");
+                }
 
-            await transaction.CommitAsync();
+                commitCounter.CommitCount.Should().Be(0, "the inbox must leave the commit to the unit of work");
+            }, null);
 
             commitCounter.CommitCount.Should().Be(1, "the counter must see a commit when one happens, or the zero above proves nothing");
         }
@@ -204,14 +205,53 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
                 return Task.CompletedTask;
             });
 
-            (await act.Should().ThrowAsync<InvalidOperationException>())
-                .Which.Message.Should().Contain("WithInboxBehavior", "the refusal must name the registration that fixes it");
+            var refusal = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
+            refusal.Message.Should().Contain("WithInboxBehavior", "the refusal must name the registration that fixes it");
+            refusal.Message.Should().Contain("has no active transaction",
+                "this fact must name the NO-TRANSACTION refusal specifically, or the ownership refusal satisfies it too and deleting the CurrentTransaction guard reddens nothing");
 
             handlerInvoked.Should().BeFalse("the refusal must come before the handler");
             context.ChangeTracker.Entries<InboxMessage>().Should().BeEmpty("the refusal must come before anything is staged");
 
             using var verifyContext = harness.CreateContext();
             (await verifyContext.Set<InboxMessage>().ToListAsync()).Should().BeEmpty();
+        }
+
+        // INVARIANT: the inbox refuses to claim a message id inside a transaction no unit of work began, and
+        // refuses before staging anything. Every protection that undoes a claim whose handler did not return - the
+        // change-tracker reconciliation on UnitOfWork's rollback, and PersistanceTransaction's unsettled-claim
+        // refusal - acts only on a transaction a unit of work owns, so a claim flushed into a caller's transaction
+        // is left in this context's identity map when that caller rolls back, and the next lookup finds it and
+        // skips a message nothing handled. Oracle for the OWNERSHIP refusal; deleting the ownership guard in
+        // TryClaimMessageIdAsync, or the registration in UnitOfWork.BeginAsync's begun-here branch, reddens this
+        // fact. It does NOT pin the grant - a guard that refused every claim passes here - which
+        // MustCommitTheClaimWhenTheHandlerReturns pins instead. The message assertion names a phrase unique to
+        // ownership so the no-transaction refusal cannot satisfy this fact if the two guards are ever merged. See
+        // docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md
+        // and docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md.
+        [Fact]
+        public async Task MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            using var context = harness.CreateContext();
+            var sut = CreateSqliteSut(context);
+            var messageId = Guid.NewGuid().ToString();
+            var handlerInvoked = false;
+
+            using var callerTransaction = await context.Database.BeginTransactionAsync();
+
+            Func<Task> act = () => sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+            {
+                handlerInvoked = true;
+                return Task.CompletedTask;
+            });
+
+            (await act.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Message.Should().Contain("no unit of work owns",
+                    "the refusal must name OWNERSHIP, so the no-transaction refusal cannot pass for this one");
+
+            handlerInvoked.Should().BeFalse("the refusal must come before the handler");
+            context.ChangeTracker.Entries<InboxMessage>().Should().BeEmpty("the refusal must come before anything is staged");
         }
 
         [Fact]
@@ -551,6 +591,48 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
                 .Should().ContainSingle().Which.Should().Be(messageId, "a handler that returned must leave its claim durable");
         }
 
+        // INVARIANT: ownership is a fact about the TRANSACTION OBJECT, not about which unit of work is innermost.
+        // A unit of work nested inside another's transaction begins none of its own and owns nothing, yet the
+        // transaction it participates in is still one a unit of work began, so a dispatch nested inside another
+        // handler claims exactly as a top-level one does. Oracle for the keying; recording ownership against the
+        // SCOPE rather than the transaction object - so that only the unit of work whose own ExecuteAsync is
+        // running counts as owner - reddens this fact and no other, measured by making that substitution and
+        // counting, and would otherwise silently refuse every nested dispatch and break the
+        // multiple-claims-per-transaction shape InboxClaimRegister exists to support. It does NOT
+        // pin the refusal - keying that called every transaction owned passes here - which
+        // MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan pins instead.
+        [Fact]
+        public async Task MustClaimInsideAUnitOfWorkNestedInAnothersTransaction()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var messageId = Guid.NewGuid().ToString();
+            var handlerInvoked = false;
+
+            using (var context = harness.CreateContext())
+            {
+                var sut = CreateSqliteSut(context);
+                var outerUnitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+                var nestedUnitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+
+                await outerUnitOfWork.ExecuteAsync(
+                    _ => nestedUnitOfWork.ExecuteAsync(
+                        __ => sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+                        {
+                            handlerInvoked = true;
+                            return Task.CompletedTask;
+                        }),
+                        null),
+                    null);
+            }
+
+            handlerInvoked.Should().BeTrue("a dispatch nested inside another unit of work must still reach the handler");
+
+            using var verifyContext = harness.CreateContext();
+            (await verifyContext.Set<InboxMessage>().Select(m => m.MessageId).ToListAsync())
+                .Should().ContainSingle().Which.Should().Be(messageId,
+                    "the nested claim must be made durable by the outer unit of work's commit");
+        }
+
         // INVARIANT: the refusal is decided PER CLAIM, so a later claim that settled cannot grant the commit an
         // earlier unsettled one withholds. Oracle for the per-claim reading; a single per-transaction flag that the
         // last settlement clears passes MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure and reddens
@@ -678,27 +760,26 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
             using var context = harness.CreateContext();
             var sut = CreateSqliteSut(context, TimeSpan.FromMinutes(1));
-
-            using var transaction = await context.Database.BeginTransactionAsync();
+            var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
 
             DateTime? refreshVisibleToTheHandler = null;
             var handlerInvoked = false;
 
-            await sut.ReceiveViaInbox("payload", CreateContext(messageId), async () =>
-            {
-                using var reader = CreateReaderEnlistedIn(harness, context);
-                refreshVisibleToTheHandler = await reader.Set<InboxMessage>()
-                    .Where(m => m.MessageId == messageId)
-                    .Select(m => m.ReceivedByInboxAtUtc)
-                    .SingleAsync();
-                handlerInvoked = true;
-            });
+            await unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox("payload", CreateContext(messageId), async () =>
+                {
+                    using var reader = CreateReaderEnlistedIn(harness, context);
+                    refreshVisibleToTheHandler = await reader.Set<InboxMessage>()
+                        .Where(m => m.MessageId == messageId)
+                        .Select(m => m.ReceivedByInboxAtUtc)
+                        .SingleAsync();
+                    handlerInvoked = true;
+                }),
+                null);
 
             handlerInvoked.Should().BeTrue();
             refreshVisibleToTheHandler.Should().BeAfter(staleReceivedAtUtc,
                 "the refreshed claim must reach the store before the handler is invoked");
-
-            await transaction.CommitAsync();
 
             using var verifyContext = harness.CreateContext();
             (await verifyContext.Set<InboxMessage>().ToListAsync())

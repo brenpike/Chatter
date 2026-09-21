@@ -162,6 +162,15 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             }
 
             var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
+
+            // INVARIANT: the RAW transaction EF returned is registered as owned, not the PersistanceTransaction
+            // wrapper built from it, because a fresh wrapper is built at every read of it and a reader would never
+            // meet the object registered here. This records that a unit of work began THIS transaction, at the
+            // instant it was begun; rationale on UnitOfWorkTransactionRegister. Oracle:
+            // WhenReceivingViaInbox.MustCommitTheClaimWhenTheHandlerReturns, which goes red when this line is
+            // dropped, because the inbox then finds no owner for the transaction it is flushing into and refuses.
+            UnitOfWorkTransactionRegister.Register(transaction);
+
             _logger.LogTrace($"Transaction created for context '{typeof(TContext).Name}' with transaction id '{transaction.TransactionId}'");
             return new UnitOfWorkTransaction(PersistanceTransaction.Create(transaction), begunHere: true);
         }
