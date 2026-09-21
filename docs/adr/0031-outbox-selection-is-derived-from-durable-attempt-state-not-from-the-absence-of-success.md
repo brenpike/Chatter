@@ -20,6 +20,14 @@ correction is confined to the first and second bullets of *Subsumption required 
 records the attempt straight on the store instead of through a unit of work of its own. The selection key, the two
 columns and the closed class below are unchanged.
 
+**Amended in place again, 2026-09-21.** *The tracker bypass is a failure-path requirement* below rested on the
+premise that EF never resets the change tracker when the surrounding transaction rolls back. That premise is
+FALSIFIED: a unit of work that BEGAN its transaction reconciles its context's change tracker when it rolls back, so
+a message a failed claim staged can reach `RecordDispatchAttempt` detached rather than tracked
+(`docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md`). **The bypass survives the
+correction**, for the two reasons the amended section states, and its oracle and measurement are unchanged. The
+correction is confined to that section's premise.
+
 ## Context
 
 **The key that was, read from the bytes at `master`.**
@@ -108,12 +116,18 @@ reddens EXACTLY ONE fact — `WhenUpdatingProcessed.MustRecordTheAttemptAfterAFa
 the post-rollback case. The two clean-entity facts beside it pass either way, because a tracked save reaches a clean
 row just as well.
 
-The bypass is essential on the FAILURE path for a reason specific to that path: EF does not reset the change tracker
-when the surrounding transaction rolls back, so after a failed claim the tracked message still carries the
-`ProcessedFromOutboxAtUtc` stamp as its CURRENT value against the `null` it was loaded with. `OutboxMessageConfiguration`
-maps that property `IsConcurrencyToken()`, so a tracked save there would re-emit the very "still unprocessed"
-predicate that just failed — and would commit the claim if it now matched. That same mapping decision is why neither
-new column is a concurrency token: oracle `WhenConfiguring.MustTreatProcessedDateAsTheOnlyConcurrencyToken`.
+The bypass is essential on the FAILURE path for a reason specific to that path, and the message it is handed there
+can arrive in either of two shapes. Where the message is still tracked, it carries the `ProcessedFromOutboxAtUtc`
+stamp as its CURRENT value against the `null` it was loaded with; `OutboxMessageConfiguration` maps that property
+`IsConcurrencyToken()`, so a tracked save would re-emit the very "still unprocessed" predicate that just failed —
+and would commit the claim if it now matched. Where the unit of work that carried the claim reconciled the tracker
+on its rollback, the message is DETACHED, and `Update` on a detached entity sets original from current, so a
+tracked save would emit `= the stamp just written` and match no row. Neither shape reaches the row through the
+tracker, which is why this write goes around it entirely. The reconciliation and its ownership gate are recorded in
+`docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md`; the detached shape is what
+`BrokeredMessageOutbox.UpdateProcessedDate` states its own `null` original value for, so the CLAIM's predicate does
+not depend on which shape it gets either. That same mapping decision is why neither new column is a concurrency
+token: oracle `WhenConfiguring.MustTreatProcessedDateAsTheOnlyConcurrencyToken`.
 
 ## Considered Options
 

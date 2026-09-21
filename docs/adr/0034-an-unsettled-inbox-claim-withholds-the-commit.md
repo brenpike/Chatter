@@ -12,6 +12,13 @@ ONE of those places for ONE observed path, and every path nobody had enumerated 
 records the change that derives commit permission from the claim's own recorded outcome, why that is a derivation
 rather than a longer list of handled cases, and what it leaves open.
 
+**Amended in place, 2026-09-21.** This ADR is accepted and UNRELEASED, so it is corrected here rather than
+superseded. The correction is confined to the CHANGE-TRACKER half of the split described below — the detach it
+records as retained was REMOVED, and the undo is now `UnitOfWork<TContext>.ExecuteAsync` reconciling the tracker
+with the rollback it owns (`docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md`).
+**Settlement is untouched**: the single grant, the register, the refusal at `PersistanceTransaction.CommitAsync`,
+its ownership boundary, the raw-provider-commit slice and the eliminated class below all stand exactly as written.
+
 ## Context
 
 ### The claim lives in two places, and undoing one place at a time is what kept re-emitting findings
@@ -21,7 +28,7 @@ into two stores with different undo mechanics:
 
 - **The change tracker.** `_inbox.FindAsync` resolves from the identity map before it reaches the store, so a claim
   left tracked after its transaction rolled back is served to a redelivery arriving over that same scoped
-  `DbContext`. The undo is a detach, and only `ReceiveViaInbox` can perform it.
+  `DbContext`. The undo is `UnitOfWork<TContext>.ExecuteAsync` reconciling the tracker with the rollback it owns.
 - **The transaction.** The flush pushed rows into the ambient transaction, where no detach reaches them. Their undo
   is a rollback, and `ReceiveViaInbox` neither owns nor issues one — `UnitOfWorkBehavior`'s single commit, or the
   unit of work's catch, decides that.
@@ -29,9 +36,11 @@ into two stores with different undo mechanics:
 Three findings sit on that split, and they are three instances of one root rather than three defects:
 
 1. **The change-tracker phantom on rollback.** A claim whose handler threw stayed tracked and suppressed a
-   redelivery over the same context. Closed by the detach `66f969b` added, which `ReceiveViaInbox` performs in the
-   catch around the handler await. ADR-0033 records it.
-2. **The flush surviving a swallowed handler failure.** The detach above answers the identity map and nothing else.
+   redelivery over the same context. First answered by the detach `66f969b` added to `ReceiveViaInbox`; that detach
+   was later retired in favour of reconciling the tracker on the rollback itself, which is the general form of the
+   same undo. ADR-0033 records the finding and ADR-0035 the mechanism that answers it.
+2. **The flush surviving a swallowed handler failure.** The tracker undo above answers the identity map and nothing
+   else.
    A caller that CATCHES `ReceiveViaInbox`'s rethrow and returns normally leaves the outer unit of work committing
    a transaction that still carries the flushed claim, so the marker becomes durable for a message nothing handled.
    That is the finding this ADR's decision answers.
@@ -95,15 +104,18 @@ Five mutations were applied and counted, each on both target frameworks.
 | --- | --- |
 | Delete the unsettled-claim refusal in `PersistanceTransaction.CommitAsync` | Exactly `MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure` and `MustRefuseTheCommitWhenOnlyOneOfTwoClaimsWasSwallowed`. Nothing else |
 | Collapse settlement to a per-transaction flag the last settlement clears | Exactly `MustRefuseTheCommitWhenOnlyOneOfTwoClaimsWasSwallowed` |
-| Delete the handler-throw detach `66f969b` added | Exactly `MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId` and `MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId` |
+| Delete the handler-throw detach `66f969b` added, while it was still the only undo of the tracker | Exactly `MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId` and `MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId` |
 | Settle the claim BEFORE the handler instead of after | Both refusal facts named in the first row |
 | Serve every transaction from one shared collection instead of keying on the transaction | Fifteen facts, among them `MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId`, which runs a second `ExecuteAsync` over the SAME context, and `MustCommitTheClaimWhenTheHandlerReturns` |
 
 **The first and third rows are DISJOINT, and that disjointness is the measurement that matters.** Settlement could
-plausibly have made the detach redundant: both answer a handler that did not return. It does not, and the counting
-is how that is known rather than assumed. The detach answers the IDENTITY MAP — a redelivery arriving over the same
-scoped context reads the tracker before the store — while settlement answers DURABILITY. Neither set of facts moves
-when the other mechanism is removed.
+plausibly have made the tracker undo redundant: both answer a handler that did not return. It does not, and the
+counting is how that is known rather than assumed. The tracker undo answers the IDENTITY MAP — a redelivery
+arriving over the same scoped context reads the tracker before the store — while settlement answers DURABILITY.
+Neither set of facts moves when the other mechanism is removed. The disjointness survives the detach's retirement:
+what changed is which component performs the tracker undo, not that a separate mechanism is needed for it. With
+the reconciliation in place, deleting the detach reddens nothing, and the third row's two facts are carried by the
+reconciliation instead — measured, and recorded in ADR-0035.
 
 Three facts are new, in
 `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/UsingBrokeredMessageInbox/WhenReceivingViaInbox.cs`:
@@ -205,12 +217,13 @@ review threads — [r4058599905](https://github.com/brenpike/Chatter/pull/511#di
 [issue #513](https://github.com/brenpike/Chatter/issues/513), which tracks it as work introduced by this change
 rather than as an inherited residual.
 
-**#512 is unaffected and remains open.** There the handler SUCCEEDS, so the claim SETTLES, and the unit of work's
+**#512 is unaffected by this decision.** There the handler SUCCEEDS, so the claim SETTLES, and the unit of work's
 own commit then fails for its own reason; the gate never fires, because there is nothing unsettled for it to read.
-What #512 reports is that `UnitOfWork<TContext>` leaves rolled-back entities tracked, so a phantom claim survives on
-the change tracker for a later `ExecuteAsync` on the same scope to find. That is the change-tracker half of the
-split this ADR opens with, on the one path `ReceiveViaInbox` cannot observe because it has already returned.
-Nothing here closes it, and nothing here should be read as closing it.
+What #512 reports is the change-tracker half of the split this ADR opens with, on the one path `ReceiveViaInbox`
+cannot observe because it has already returned. `CompleteAsync` is awaited inside `ExecuteAsync`'s `try`, so a
+commit that throws there lands in the same catch and the tracker reconciliation ADR-0035 records runs for it.
+Nothing in THIS decision closes #512, and nothing here should be read as closing it; its disposition is decided
+against what shipped, not here.
 
 ## Consequences
 
@@ -229,14 +242,17 @@ Nothing here closes it, and nothing here should be read as closing it.
   `IDbContextTransaction` releases its entry with the transaction, and `UnsettledClaim` carries only the message id
   and the context type name, so an abandoned transaction carrying an unsettled claim is collected rather than
   retained.
-- **The detach is RETAINED, not superseded.** ADR-0033's handler-throw detach answers the identity map and
-  settlement answers durability; the measured mutation sets are disjoint, as recorded above.
+- **The tracker undo is a SEPARATE mechanism, not superseded by settlement.** It answers the identity map and
+  settlement answers durability; the measured mutation sets are disjoint, as recorded above. Which component
+  performs it moved — from ADR-0033's handler-throw detach to ADR-0035's reconciliation on the rollback — and the
+  disjointness is unchanged by that move.
 - **Three new facts, and no change to the existing ones.** The three are listed under *What the suite pins* above;
   nothing already in the suite changed meaning.
 
 ## References
 
-- Issue #512 — `UnitOfWork<TContext>` leaving rolled-back entities tracked. Open, unaffected by this decision.
+- Issue #512 — the change-tracker residue of a commit that fails after the handler succeeded. Unaffected by this
+  decision, and not claimed closed by ADR-0035 either.
 - Issue #513 — the raw-provider-commit slice this decision does not cover; introduced by this change and tracked
   with full scope.
 - Issue #380 — the concurrent-delivery finding whose remediation created the two-places split this ADR resolves.
@@ -251,14 +267,15 @@ Nothing here closes it, and nothing here should be read as closing it.
 - ADR-0027 — *An `INVARIANT:` comment names the oracle that falsifies it*. Why each claim above names its oracle
   and the mutation that reddens it, and why the raw-provider slice says plainly that no fact pins it.
 - ADR-0033 — *The relational inbox claims the message id before the handler, inside the ambient transaction*. The
-  claim-first mechanism, the no-transaction refusal, and the handler-throw detach this decision retains.
+  claim-first mechanism and the no-transaction refusal.
+- ADR-0035 — *A rolled-back unit of work reconciles its context's change tracker*. The identity-map half of the
+  split above, and the decision that retired ADR-0033's handler-throw detach.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/InboxClaimRegister.cs`
   — the register, the weak key, and `UnsettledClaim`.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/PersistanceTransaction.cs`
   (`CommitAsync`) — the refusal and its message.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageInbox.cs`
-  (`ReceiveViaInbox`, `TryClaimMessageIdAsync`, `ClaimedMessageId`) — where a claim is opened, detached and
-  settled.
+  (`ReceiveViaInbox`, `TryClaimMessageIdAsync`, `ClaimedMessageId`) — where a claim is opened and settled.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/UnitOfWork.cs`
   (`UnitOfWorkTransaction`) — the ownership rule the refusal declines to override.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/UsingBrokeredMessageInbox/WhenReceivingViaInbox.cs`
