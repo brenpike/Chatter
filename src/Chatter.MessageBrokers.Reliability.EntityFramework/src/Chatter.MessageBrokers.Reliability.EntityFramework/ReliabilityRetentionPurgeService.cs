@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 namespace Chatter.MessageBrokers.Reliability.EntityFramework
 {
     /// <summary>
-    /// Deletes inbox markers and processed outbox rows that have outlived the retention configured by
+    /// Deletes reclaimable inbox markers and processed outbox rows under the retention configured by
     /// <see cref="EntityFrameworkReliabilityOptions"/>.
     /// </summary>
     internal sealed class ReliabilityRetentionPurgeService<TContext> : BackgroundService where TContext : DbContext
@@ -102,13 +102,30 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// <remarks>
         /// INVARIANT: each cutoff is computed into a local BEFORE the predicate is written, so the expression tree
         /// closes over a captured instant rather than over a DateTime.UtcNow the provider would have to translate.
-        /// Both predicates also demand a non-null timestamp: an inbox marker with no received time has no age to
-        /// compare, and an outbox row with no processed stamp has not been drained yet, so neither is purgeable at
-        /// all rather than merely younger than its cutoff. A relational provider already excludes those rows through
-        /// three-valued logic, so the conjuncts state the rule rather than carry it; what carries it is the column
-        /// each predicate keys on, pinned by
+        /// The outbox predicate demands a non-null processed stamp: a row with no processed stamp has not been
+        /// drained, so it is not purgeable at all rather than merely younger than its cutoff. A relational provider
+        /// already excludes it through three-valued logic, so that conjunct states the rule rather than carries it;
+        /// what carries it is the column the predicate keys on, pinned by
         /// Integration/WhenPurgingRetentionOnSqlServer.MustPurgeOnlyTheRowsPastTheirRetentionWindow, which goes red
         /// the moment the outbox predicate keys on SentToOutboxAtUtc instead.
+        ///
+        /// INVARIANT: the inbox predicate reads the OTHER way and takes a NULL ReceivedByInboxAtUtc as eligible.
+        /// That column carries two states rather than one age - a marker present with a NULL stamp is a delivery the
+        /// inbox claimed and whose handler never completed, and a marker present with a stamp was handled at that
+        /// instant - and the rationale for the two-state marker is in
+        /// docs/adr/0033-the-relational-inbox-claims-before-the-handler-and-stamps-handled-after-it-in-the-same-row.md.
+        /// A claimed-but-unhandled marker reaches the table durably whenever a caller swallows the handler failure
+        /// and commits anyway, which is deliberate, but no cutoff on a NULL column ages one out, so sparing them
+        /// would accrue rows for the life of a table under a configured Deduplication Window. Pinned by
+        /// Integration/WhenPurgingRetentionOnSqlServer.MustPurgeAnInboxMarkerClaimedButNeverHandled and
+        /// UsingReliabilityRetentionPurgeService/WhenPurgingRetentionOverSqlite.MustPurgeAnInboxMarkerClaimedButNeverHandledWhileSparingAFreshOne,
+        /// which observe the marker's PRESENCE after a pass; restoring the non-null conjunct reddens exactly those
+        /// two facts per target framework and nothing else in this package (measured).
+        ///
+        /// NULL sort order is provider-defined: NULLs sort FIRST on SQL Server and LAST on PostgreSQL, so a capped
+        /// pass reclaims claimed-but-unhandled markers ahead of the aged ones on one and behind them on the other.
+        /// Both are correct and no test pins either, because the eligible SET is the same on both and only the
+        /// order within one capped pass differs.
         ///
         /// INVARIANT: a pass issues exactly ONE bounded DELETE per configured table and then returns. ELIMINATED
         /// CLASS: a purge whose per-pass work, or whose termination, depends on anything outside the purge's own
@@ -150,7 +167,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 var inboxCutoffUtc = DateTime.UtcNow - _options.InboxDeduplicationWindow.Value;
                 var purgedMarkers = await DeleteOneChunkAsync(
                         context.Set<InboxMessage>()
-                            .Where(marker => marker.ReceivedByInboxAtUtc != null && marker.ReceivedByInboxAtUtc < inboxCutoffUtc)
+                            .Where(marker => marker.ReceivedByInboxAtUtc == null || marker.ReceivedByInboxAtUtc < inboxCutoffUtc)
                             .OrderBy(marker => marker.ReceivedByInboxAtUtc),
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -186,7 +203,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// which reddens with that InvalidOperationException when both OrderBy calls come off and this parameter is
         /// widened to IQueryable (observed). Ordering by the retention stamp also deletes the oldest rows first,
         /// which is the order a purge falling behind must make progress in for the remainder it leaves to be the
-        /// NEWEST rows rather than an arbitrary slice.
+        /// NEWEST rows rather than an arbitrary slice. An inbox marker whose stamp is NULL carries no age to order
+        /// by and the provider decides where it lands, as the INVARIANT on PurgeOnceAsync records.
         /// </remarks>
         private static Task<int> DeleteOneChunkAsync<TEntity>(IOrderedQueryable<TEntity> eligibleOldestFirst,
                                                               CancellationToken cancellationToken)

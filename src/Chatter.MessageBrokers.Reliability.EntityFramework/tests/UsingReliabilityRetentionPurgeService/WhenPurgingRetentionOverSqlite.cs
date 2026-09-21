@@ -11,16 +11,18 @@ using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
 namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabilityRetentionPurgeService
 {
-    // Retention Purge statement granularity over a relational provider that needs no container, so the bound on a
-    // purge pass is pinned on every host rather than only where Docker runs. The three facts in
-    // Integration/WhenPurgingRetentionOnSqlServer own WHICH rows a pass deletes; these two own HOW MUCH one pass
-    // does, and what it leaves for the next one.
+    // Retention Purge behaviour over a relational provider that needs no container, so what is pinned here is
+    // pinned on every host rather than only where Docker runs. Integration/WhenPurgingRetentionOnSqlServer owns
+    // WHICH rows a pass deletes against the production model; the two backlog facts below own HOW MUCH one pass
+    // does and what it leaves for the next one, and MustPurgeAnInboxMarkerClaimedButNeverHandledWhileSparingAFreshOne
+    // carries the inbox predicate's two-state reading of ReceivedByInboxAtUtc onto hosts with no Docker.
     //
     // ELIMINATED CLASS: a purge whose per-pass work, or whose termination, depends on anything outside the purge's
     // own configuration. Both facts seed one row more than a chunk holds and then drive TWO passes, asserting one
@@ -105,6 +107,45 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
             using var verify = harness.CreateContext();
             (await verify.Set<InboxMessage>().CountAsync()).Should().Be(0,
                 "successive bounded passes still reclaim every marker past the Deduplication Window");
+        }
+
+        // ReceivedByInboxAtUtc carries two states rather than one age: a marker present with a NULL stamp is a
+        // delivery the inbox claimed and whose handler never completed, and a marker present with a stamp was
+        // handled at that instant. A claimed-but-unhandled marker can reach the table durably - a caller that
+        // swallows the handler failure and commits anyway leaves one, deliberately, so the next delivery reads it
+        // as unhandled - and no cutoff on a NULL column would ever age it out, so the predicate takes it as
+        // eligible outright. The rationale is in
+        // docs/adr/0033-the-relational-inbox-claims-before-the-handler-and-stamps-handled-after-it-in-the-same-row.md.
+        //
+        // The seed pairs the unstamped marker with a stamped one INSIDE the window so the assertion separates the
+        // new eligibility from a predicate that simply deletes every marker, and the observation is which
+        // MessageIds are still PRESENT: the purge deletes rather than updates, so an assertion on a surviving row's
+        // column values could not tell a spared marker from a reclaimed one. The eligible set is far smaller than
+        // one chunk, so nothing here depends on where a provider sorts NULLs.
+        [Fact]
+        public async Task MustPurgeAnInboxMarkerClaimedButNeverHandledWhileSparingAFreshOne()
+        {
+            using var harness = SqliteOutboxContextHarness.Create();
+            var stale = DateTime.UtcNow - RetentionWindow - TimeSpan.FromHours(1);
+            var fresh = DateTime.UtcNow - TimeSpan.FromMinutes(1);
+
+            using (var seed = harness.CreateContext())
+            {
+                seed.Set<InboxMessage>().Add(new InboxMessage { MessageId = "inbox-unstamped", ReceivedByInboxAtUtc = null });
+                seed.Set<InboxMessage>().Add(new InboxMessage { MessageId = "inbox-stale", ReceivedByInboxAtUtc = stale });
+                seed.Set<InboxMessage>().Add(new InboxMessage { MessageId = "inbox-fresh", ReceivedByInboxAtUtc = fresh });
+                await seed.SaveChangesAsync();
+            }
+
+            var options = new EntityFrameworkReliabilityOptions { InboxDeduplicationWindow = RetentionWindow };
+
+            await PurgeOnceAsync(harness, options);
+
+            using var verify = harness.CreateContext();
+            var remainingMarkers = await verify.Set<InboxMessage>().Select(marker => marker.MessageId).ToListAsync();
+
+            remainingMarkers.Should().BeEquivalentTo(new[] { "inbox-fresh" },
+                "an unstamped marker is eligible outright and a stamped one only once it is older than the Deduplication Window");
         }
 
         // A chunk is a row-limiting operator, and EF raises RowLimitingOperationWithoutOrderByWarning for one that

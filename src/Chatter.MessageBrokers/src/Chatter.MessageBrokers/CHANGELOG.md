@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.32.1] - 2026-09-21
+
+### Changed
+
+- **Two `INVARIANT:` comments on `OutboxProcessor` are corrected to match `UnitOfWork<TContext>.ExecuteAsync`, which now clears the change tracker on rollback of a transaction it began.** `TryReClaimPublishedMessage`'s comment no longer premises the re-claim's explicit write on residue a tracker might still carry after a rolled-back unit of work — on the path where that unit of work began its own transaction, rollback leaves no residue to carry, so the explicit write is what performs the claim rather than what merely restates it. `RecordFailedDispatchAttempt`'s comment drops the clause describing a unit of work opened there as committing whatever the rolled-back one left staged, which the same tracker clear rules out. **This carries no code change and no user-facing effect: it corrects prose on two private members to match behaviour a sibling change already shipped, and satisfies no formal SemVer trigger.** It ships as its own release because this repository's version-check gate is path-based and cannot distinguish a comment edit from a behavioural one, and the alternative — leaving the comments as they stood — would keep asserting a premise that is no longer true. See `docs/adr/0034-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md`.
+
 ## [0.32.0] - 2026-09-19
 
 ### Added
