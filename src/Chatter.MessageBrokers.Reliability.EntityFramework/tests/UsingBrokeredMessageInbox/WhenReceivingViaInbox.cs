@@ -283,8 +283,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
         // INVARIANT: a claim whose handler threw leaves nothing behind in the change tracker, so a redelivery over
         // that same context reads the store rather than the failed delivery's leftover entry. Oracle for the fresh
-        // branch; deleting the catch around the handler in ReceiveViaInbox reddens this fact. See
-        // docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md.
+        // branch; deleting the change-tracker clear on UnitOfWork's owned rollback path reddens this fact. See
+        // docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md
+        // and docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md.
         [Fact]
         public async Task MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId()
         {
@@ -319,7 +320,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
 
         // INVARIANT: the same holds when the claim refreshed an expired marker in place, where the leftover entry
         // would also carry a ReceivedByInboxAtUtc concurrency token no store row carries. Oracle for the expired
-        // branch; deleting the catch around the handler in ReceiveViaInbox reddens this fact.
+        // branch; deleting the change-tracker clear on UnitOfWork's owned rollback path reddens this fact.
         [Fact]
         public async Task MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId()
         {

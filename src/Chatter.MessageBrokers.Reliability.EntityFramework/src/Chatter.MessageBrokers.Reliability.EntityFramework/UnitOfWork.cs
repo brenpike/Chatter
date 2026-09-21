@@ -84,8 +84,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                     // docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md.
                     // Oracles: WhenExecutingUnitOfWorkOverSqlite.MustLeaveNoTrackedChangesWhenAUnitOfWorkItBeganRollsBack,
                     // WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenACompanionWriteFailedTheClaimsFlush,
-                    // WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenAnExpiredMarkersRefreshFailedOutsideDbUpdateException.
-                    // Deleting this reconciliation reddens those three and nothing else, on both target frameworks -
+                    // WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenAnExpiredMarkersRefreshFailedOutsideDbUpdateException,
+                    // WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId,
+                    // WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId.
+                    // Deleting this reconciliation reddens those five and nothing else, on both target frameworks -
                     // counted, not argued. The companion that must stay green is
                     // WhenUpdatingProcessed.MustStateTheClaimAsUnprocessedWhenTheMessageIsDetached: it is what makes a
                     // re-claim over a reconciled tracker safe, since the outbox states the claim's 'still unprocessed'
