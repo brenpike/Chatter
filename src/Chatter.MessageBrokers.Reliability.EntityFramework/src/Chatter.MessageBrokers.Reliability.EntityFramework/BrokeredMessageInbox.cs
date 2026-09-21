@@ -166,20 +166,42 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 return true;
             }
-            catch (DbUpdateException)
+            catch (DbUpdateException ex)
             {
                 // DbUpdateConcurrencyException derives from DbUpdateException, so this one catch serves both
                 // losers: the delivery whose INSERT hit the message id's primary key, and the delivery whose
                 // in-place refresh of an expired marker matched no row.
                 //
+                // INVARIANT: absorption is entered only when the failing batch implicates the claim and nothing
+                // else. The re-read further down runs on this same transaction, so it can report rows this
+                // transaction itself wrote and has not committed. The gate is what keeps that from mattering:
+                // past it the store rejected the claim's own write and only that write, so no row of this
+                // transaction's sits on this message id and the re-read can only observe what some other
+                // transaction committed. The failure that rules out is the re-read returning this transaction's
+                // own uncommitted claim and skipping the handler. The decision therefore does not depend on EF
+                // Core rolling back to the savepoint it takes around a flush, which is skipped outright when
+                // SupportsSavepoints is false - MultipleActiveResultSets=true produces exactly that, logged as
+                // SavepointsDisabledBecauseOfMARS. The gate holds whether DbUpdateException.Entries carries the
+                // whole batch or only the failing command, because an unrelated entry failing alongside the claim
+                // fails the gate under either reading, so drift in that contract degrades toward rethrow and
+                // redelivery. Rationale in
+                // docs/adr/0033-the-relational-inbox-claims-the-message-id-before-the-handler-inside-the-ambient-transaction.md.
+                //
+                // What the suite pins: inverting this gate reddens
+                // MustInvokeTheHandlerOnceWhenASecondDeliveryRacesTheSameMessageId and
+                // MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId, and no other fact.
+                // Those two pin one direction only - that a lone rejected claim is still absorbed - so deleting
+                // the gate reddens nothing. No test in this suite exercises a flush with savepoints disabled.
+                if (ex.Entries.Count != 1 || !ReferenceEquals(ex.Entries[0].Entity, claim))
+                {
+                    throw;
+                }
+
                 // The failed entry is still tracked, and re-staging or re-flushing it would write it back later,
                 // so it is detached and the store is re-read as ground truth. The re-read decides the outcome, not
                 // the provider's error code: a committed marker the deduplication window does not age out means
                 // another delivery owns this message id, and anything else - no marker, or an expired one - is a
-                // failure to report. With MultipleActiveResultSets=true EF Core creates no savepoint around this
-                // flush (it logs SavepointsDisabledBecauseOfMARS), so the failed statement is not undone before
-                // the re-read; the re-read reports what committed either way, so the decision does not depend on
-                // the savepoint. No test in this suite runs under MARS.
+                // failure to report.
                 _context.Entry(claim).State = EntityState.Detached;
 
                 var committedMarker = await _inbox.FindAsync(new object[] { messageId }, cancellationToken).ConfigureAwait(false);
