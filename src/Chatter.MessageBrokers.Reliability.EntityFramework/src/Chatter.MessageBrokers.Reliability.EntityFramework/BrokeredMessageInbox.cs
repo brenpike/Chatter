@@ -124,41 +124,41 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             _logger.LogDebug("Executing message handler from inbox");
 
             // INVARIANT: the claim is SETTLED only by the handler RETURNING, and one observation - that the handler
-            // did not return - carries two consequences that land in the same catch.
+            // did not return - carries two consequences.
             //
-            // The first is the IDENTITY MAP. A claim whose handler threw is detached, so nothing the transaction is
-            // about to roll back stays in the change tracker asserting a row the store does not carry. The lookup
-            // above resolves from the identity map before the store, so a claim left tracked would be found by a
-            // redelivery over this same context and suppress a message nothing ever handled. Detaching is the only
-            // undo available: a successful flush has already accepted the claim's values, so the refresh branch has
-            // no pre-mutation timestamp left to restore, and re-reading would run on the doomed transaction and
-            // read its own uncommitted write. Oracles:
+            // The first is the IDENTITY MAP, and it is undone outside this type. The lookup above resolves from the
+            // identity map before the store, so a claim left tracked after its transaction rolled back would be
+            // found by a redelivery over this same context and suppress a message nothing ever handled. A handler
+            // that throws propagates out of UnitOfWork<TContext>.ExecuteAsync, whose catch rolls the transaction
+            // back and then clears that context's change tracker, which is what takes the claim back out of the
+            // identity map. Oracles:
             // MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId and
-            // MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId; deleting the
-            // detach below reddens those two facts and no others, measured by deleting it and counting.
+            // MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId, which go red
+            // when that clear is removed from ExecuteAsync's catch. This method wrapped the handler call in a catch
+            // that detached the marker itself; removing that catch reddened nothing, measured on both target
+            // frameworks by deleting it and running the suite. Rationale in
+            // docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md.
             //
-            // The second is DURABILITY. The flush already pushed the claim into the transaction, where no detach
-            // can reach it, so a caller that CATCHES this rethrow and returns normally would otherwise leave the
-            // unit of work committing a claim for a message nothing handled. Settlement is what the commit point
-            // reads, and it is granted in exactly one place - after the handler returned - so a throw, an upstream
-            // swallow, a cancellation, or any future early return all leave the claim unsettled and the commit
-            // refused. Oracles: MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure and
+            // The residual is a transaction the CALLER began and owns: ExecuteAsync rolls back and clears only a
+            // transaction it began itself, so a claim staged into a caller-begun transaction stays in this
+            // context's change tracker after that caller rolls back. No test in this suite drives ReceiveViaInbox
+            // inside a caller-begun transaction. Tracked by issue #513.
+            //
+            // The second is DURABILITY. The flush already pushed the claim into the transaction, where clearing the
+            // change tracker cannot reach it, so a caller that CATCHES the handler's exception and returns normally
+            // would otherwise leave the unit of work committing a claim for a message nothing handled. Settlement
+            // is what the commit point reads, and it is granted in exactly one place - after the handler returned -
+            // so a throw, an upstream swallow, a cancellation, or any early return all leave the claim unsettled
+            // and the commit refused. Oracles: MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure and
             // MustRefuseTheCommitWhenOnlyOneOfTwoClaimsWasSwallowed; moving the Settle call below to before the
-            // handler, or into the catch, reddens both. MustCommitTheClaimWhenTheHandlerReturns pins the grant
-            // itself, so a settlement that never happened cannot pass for a refusal that is always right.
+            // handler reddens both. MustCommitTheClaimWhenTheHandlerReturns pins the grant itself, so a settlement
+            // that never happened cannot pass for a refusal that is always right.
             //
             // The remaining way this context can hold a phantom claim is the handler succeeding and the unit of
             // work's own commit then failing, which ReceiveViaInbox has already returned from and cannot observe.
-            // That path predates the claim-before-handler change and is deferred to issue #512.
-            try
-            {
-                await handler().ConfigureAwait(false);
-            }
-            catch
-            {
-                _context.Entry(claim.Marker).State = EntityState.Detached;
-                throw;
-            }
+            // A commit that throws inside CompleteAsync lands in ExecuteAsync's catch, so the rollback and the
+            // clear both run for that path; issue #512 tracks the decision on it.
+            await handler().ConfigureAwait(false);
 
             claim.Settle();
 
@@ -172,9 +172,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         // Oracle: MustRefuseToClaimOutsideATransaction, the only fact
         // in the suite that goes red when the guard below is removed.
         //
-        // The claim is returned rather than a bool so the caller can name the entry it must detach when the handler
-        // throws and the registration it must settle when the handler returns; null reports absorption, the async
-        // stand-in for an out parameter.
+        // The claim is returned rather than a bool so the caller can name the registration it must settle when the
+        // handler returns; null reports absorption, the async stand-in for an out parameter.
         //
         // INVARIANT: the transaction read below is the ONE read, captured and carried on the returned claim, so the
         // refusal, the registration and the settlement all name the same IDbContextTransaction object. Re-reading
@@ -220,7 +219,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 // on an outer entry surfaces here, at the claim, instead of at the unit of work's commit.
                 await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-                return new ClaimedMessageId(claim, transaction, InboxClaimRegister.Open(transaction, messageId, typeof(TContext).Name));
+                return new ClaimedMessageId(transaction, InboxClaimRegister.Open(transaction, messageId, typeof(TContext).Name));
             }
             catch (DbUpdateException ex)
             {
@@ -302,23 +301,19 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         }
 
         /// <summary>
-        /// Pairs the marker a claim staged with the transaction it was flushed into and the registration the commit
-        /// point reads, so the claim's two undos - detaching the marker and withholding settlement - name the same
-        /// delivery.
+        /// Pairs the transaction a claim was flushed into with the registration the commit point reads, so the
+        /// settlement the handler's return grants names the transaction that claim went into.
         /// </summary>
         private sealed class ClaimedMessageId
         {
             private readonly IDbContextTransaction _transaction;
             private readonly UnsettledClaim _unsettledClaim;
 
-            public ClaimedMessageId(InboxMessage marker, IDbContextTransaction transaction, UnsettledClaim unsettledClaim)
+            public ClaimedMessageId(IDbContextTransaction transaction, UnsettledClaim unsettledClaim)
             {
-                Marker = marker;
                 _transaction = transaction;
                 _unsettledClaim = unsettledClaim;
             }
-
-            public InboxMessage Marker { get; }
 
             public void Settle() => InboxClaimRegister.Settle(_transaction, _unsettledClaim);
         }

@@ -164,12 +164,11 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// MustNotRecordADispatchAttemptWhenTheReClaimSucceeds; removing the re-claim reddens both together and
         /// nothing else (observed), and recording an attempt after a re-claim that SUCCEEDED reddens the second
         /// alone (observed). There is no mutation that reddens the first alone.
-        /// INVARIANT: the claim is STAGED here rather than inherited. A relational store's change tracker can still
-        /// carry the claim the rolled-back unit of work staged, and any unit of work opened afterwards would flush
-        /// it - which is the same row state by accident, reached by a write nothing named. Issuing the claim again
-        /// makes the write explicit and leaves the drain's outcome independent of what a tracker retained. No oracle
-        /// separates the two: residue belongs to a relational store and a mocked one has none, so this is stated
-        /// rather than pinned.
+        /// INVARIANT: the claim is STAGED here rather than inherited. A unit of work that began its own transaction
+        /// reconciles its context's change tracker when it rolls back, so no residue of the claim the failed drain
+        /// staged survives for a later unit of work to flush by accident. Issuing the claim again is therefore the
+        /// only way this row's processed state lands at all. No oracle pins this: the mocked store this project
+        /// tests against carries no tracker to retain or lose residue, so it is stated rather than pinned.
         /// INVARIANT: a re-claim that throws is logged and reported unclaimed, so the caller falls through to the
         /// dispatch attempt and the row is held back by the backoff instead of being published again next poll.
         /// Oracle: MustRecordADispatchAttemptWhenTheReClaimAlsoFails; swallowing the failure and reporting the row
@@ -199,9 +198,8 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// <remarks>
         /// INVARIANT: the stamp goes STRAIGHT to the store, outside any unit of work. Dispatch runs inside one that
         /// ROLLS BACK when it throws, so a stamp staged there is discarded with the failure it records and the
-        /// mechanism silently does nothing - and a unit of work opened HERE would commit, along with the stamp,
-        /// whatever the rolled-back one left staged, which is a write this method never named. The relational store
-        /// writes the stamp without saving a change tracker at all, for the reasons recorded on
+        /// mechanism silently does nothing. The relational store writes the stamp without saving a change tracker
+        /// at all, for the reasons recorded on
         /// BrokeredMessageOutbox.RecordDispatchAttempt. Oracle:
         /// MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork, whose unit of work reverts attempt state
         /// staged by an operation that threw and which also counts the units of work opened. Wrapping this call in
