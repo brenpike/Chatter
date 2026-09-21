@@ -57,11 +57,15 @@ second's `INSERT` fails on the primary key; when it rolls back, the second's `IN
 delivery's handler runs.
 `Integration/WhenDeduplicatingInboxOnSqlServer.MustInvokeTheHandlerOnceWhenASecondDeliveryRacesTheSameMessageId`
 pins the first outcome and `MustInvokeTheHandlerOnTheWaitingDeliveryWhenTheClaimingDeliveryRollsBack` the
-second. Moving the flush in `TryClaimMessageIdAsync` to after the handler reddens four facts.
+second. Moving the flush out of `TryClaimMessageIdAsync` and issuing it after the handler returns reddens five
+facts, identically on both target frameworks: those two,
+`MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId`, and the two single-delivery
+ordering facts named next.
 
 Within a single delivery the ordering is pinned separately, by
-`UsingBrokeredMessageInbox/WhenReceivingViaInbox.MustRecordTheClaimBeforeInvokingTheHandlerForAFreshMessageId`,
-which observes the claim recorded at the moment the handler is entered rather than after it returns.
+`UsingBrokeredMessageInbox/WhenReceivingViaInbox.MustRecordTheClaimBeforeInvokingTheHandlerForAFreshMessageId`
+and `.MustRefreshTheClaimBeforeInvokingTheHandlerForAnExpiredMessageId`, which observe the claim recorded at the
+moment the handler is entered rather than after it returns.
 
 ### The flush is not a commit, and the distinction is the whole design
 
@@ -78,7 +82,24 @@ sentence that makes claim-first available at all.
 `MustFlushTheClaimWithoutCommittingForAFreshMessageId` and
 `MustFlushTheRefreshedClaimWithoutCommittingForAnExpiredMessageId` count commits through an
 `IDbTransactionInterceptor`, asserting zero across a full receive and one after an explicit commit. Committing
-the ambient transaction after the flush in `TryClaimMessageIdAsync` reddens seven facts.
+the ambient transaction after the flush in `TryClaimMessageIdAsync` reddens sixteen facts, identically on both
+target frameworks. Those two are the direct oracles; the other fourteen fall out because that commit ENDS the
+ambient transaction, so every later act of the receive runs without one —
+`MustRecordTheClaimBeforeInvokingTheHandlerForAFreshMessageId`,
+`MustRefreshTheClaimBeforeInvokingTheHandlerForAnExpiredMessageId`,
+`MustClaimInsideAUnitOfWorkNestedInAnothersTransaction`, `MustCommitTheClaimWhenTheHandlerReturns`,
+`MustRefuseTheCommitWhenAHandlerSwallowedAClaimedMessagesFailure`,
+`MustRefuseTheCommitWhenOnlyOneOfTwoClaimsWasSwallowed`, `MustPropagateHandlerExceptionAndNotPersistInboxMessage`,
+`MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAFreshMessageId`,
+`MustNotSuppressARedeliveryOverTheSameContextWhenTheHandlerThrewOnAnExpiredMessageId`,
+`MustNotSuppressARedeliveryOverTheSameContextWhenACompanionWriteFailedTheClaimsFlush`,
+`MustNotSuppressARedeliveryOverTheSameContextWhenAnExpiredMarkersRefreshFailedOutsideDbUpdateException`, and the
+three `Integration/WhenDeduplicatingInboxOnSqlServer` race facts
+`MustInvokeTheHandlerOnceWhenASecondDeliveryRacesTheSameMessageId`,
+`MustInvokeTheHandlerOnTheWaitingDeliveryWhenTheClaimingDeliveryRollsBack` and
+`MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId`. The count is a blast radius rather
+than a targeted set, which is why the two commit-counting facts are worth having: they fail on the commit itself
+rather than on what losing the transaction costs everything downstream.
 
 ### A handler that throws is undone in the change tracker too
 

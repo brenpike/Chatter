@@ -140,8 +140,9 @@ Three facts are new, in
   delivery FIRST, because a last-writer flag is only distinguishable when a settlement follows the claim that went
   unsettled.
 
-The package's suite is 227 passed, 0 failed, 0 skipped per target framework, and `Chatter.MessageBrokers` is
-unchanged at its 1357 baseline.
+The mutation table and the three facts above were counted against a package suite of 227 passed, 0 failed and 0
+skipped per target framework, with `Chatter.MessageBrokers` unchanged at its 1357 baseline. The package's suite
+is 234 passed, 0 failed and 0 skipped per target framework as at 2026-09-21.
 
 ## Considered Options
 
