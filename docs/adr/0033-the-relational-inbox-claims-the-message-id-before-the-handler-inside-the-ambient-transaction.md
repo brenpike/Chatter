@@ -88,8 +88,23 @@ which is the question being asked. It also means one catch serves both losers, b
 on a fresh id, and the delivery whose in-place refresh of an expired marker matched no row, arrive at the same
 handler and are answered by the same read.
 
-The failed entry is detached first because it is still tracked, and re-staging or re-flushing it would write it
-back on the unit of work's commit.
+**The gate on the catch is the re-read's precondition.** The re-read runs on the same transaction as the flush,
+so it can report rows that transaction itself wrote and has not committed. It is ground truth about what
+*another* transaction committed only once the store has rejected this transaction's own write on that key, and
+that is what the catch establishes before it touches anything: `ex.Entries.Count != 1 ||
+!ReferenceEquals(ex.Entries[0].Entity, claim)` rethrows. Past that test the failing batch implicates the claim
+and nothing else, so no row of this transaction's sits on the message id and the re-read answers the question
+the paragraphs above claim it answers.
+
+Gating on `Entries` merely *containing* the claim would not establish that. EF Core's relational batch throws
+`new DbUpdateException(RelationalStrings.UpdateStoreException, ex, ModificationCommands.SelectMany(c => c.Entries).ToList())`,
+so `Entries` carries the **whole batch** rather than the failing command alone. A claim that succeeded in a
+batch some unrelated entry failed is still contained in `Entries`, which is exactly the shape that would absorb
+a failure no handler ever ran for. `Count == 1` is what excludes it; simplifying the gate to a containment check
+reopens the class.
+
+The failed entry is detached after that test because it is still tracked, and re-staging or re-flushing it would
+write it back on the unit of work's commit.
 
 ### The expired-id branch needs a concurrency token, and gets one without a migration
 
@@ -111,13 +126,30 @@ are the two oracles; removing `IsConcurrencyToken()` reddens exactly those two a
 EF Core's `BatchExecutor` skips its rollback-to-savepoint when the connection reports `SupportsSavepoints` as
 false, which is what `MultipleActiveResultSets=true` produces — logged as `SavepointsDisabledBecauseOfMARS`. The
 detach and the re-read still execute in that configuration, and a `2627` with `XACT_ABORT` off leaves the
-transaction usable. The savepoint is what would undo a partially-applied batch; the absorption **decision** does
-not depend on it, because the decision is made by re-reading the committed row rather than by inspecting the
-failed batch.
+transaction usable. The savepoint is what would undo a partially-applied batch, so where it is skipped a claim
+write that succeeded inside a failed batch stays applied — and the re-read, sharing that transaction, would
+report this transaction's own uncommitted row and skip a handler that never ran.
 
-**No test in this suite runs under MARS.** Per ADR-0027 that is stated rather than implied: the paragraph above
-is reasoning over EF Core's documented behaviour and the re-read's independence from it, not behaviour a named
-fact in this repository would falsify.
+The absorption **decision** is independent of the savepoint, but that independence is earned by the gate rather
+than inherent in re-reading a row. Absorption is entered only for a batch the store rejected for the claim's own
+write and nothing else, and a rejected write leaves no row of this transaction's on that key, so whatever the
+re-read finds there was committed by some other transaction. The savepoint's presence or absence does not change
+that.
+
+**What the suite pins, measured rather than argued.** Fully inverting the gate reddens exactly two facts,
+identically on both target frameworks:
+`Integration/WhenDeduplicatingInboxOnSqlServer.MustInvokeTheHandlerOnceWhenASecondDeliveryRacesTheSameMessageId`
+and
+`Integration/WhenDeduplicatingInboxOnSqlServer.MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId`.
+Deleting the gate outright reddens nothing, because that is the shape the suite was already green against. Those
+two facts therefore pin one direction only — that a lone rejected claim is still absorbed. Per ADR-0027 the rest
+is stated plainly rather than implied: **no fact in this repository pins the rethrow direction, and no fact
+exercises a flush with savepoints disabled.**
+
+That absence is a priced decision rather than an oversight. Pinning either would take a savepoint-disabling
+transaction factory plus a faulting interceptor, roughly 130 lines of test machinery, and durable message loss
+needs five conditions to hold at once, the first four of which roll back harmlessly on their own. The machinery
+was weighed against that and declined.
 
 ## Considered Options
 
@@ -186,10 +218,35 @@ Three findings sit inside that class and are closed with it:
   handler. Closed by the concurrency token plus the claim-first ordering, as recorded above and amended in
   ADR-0026 itself.
 
+**Eliminated class: the absorption re-read returning this transaction's own uncommitted claim.**
+
+The re-read shares the flush's transaction, so a claim write that survived a failed batch would be visible to it
+and would skip a handler that never ran. The gate on the catch removes that ordering: absorption is entered only
+for a batch the store rejected for the claim's own write and nothing else, and a rejected write leaves no row of
+this transaction's on that key. Everything the re-read can find there was committed by another transaction. The
+argument holds without EF Core's rollback-to-savepoint, which is skipped when the connection reports
+`SupportsSavepoints` as false.
+
 **What this does NOT close.** A single delivery whose handler has non-transactional side effects and whose
 transaction then rolls back re-runs those side effects on redelivery. That is the at-least-once contract of the
 whole reliability tier and is unchanged here. Message-id equality also remains the store column's collation's
 to decide — ADR-0026 owns that residual and this decision does not touch it.
+
+The gate carries three residuals of its own, and each of them ends in a redelivery rather than a skipped
+handler:
+
+- **A duplicate claim whose flush batch carries other entries is reported rather than absorbed.** The gate sees
+  more than one entry and rethrows, the delivery fails, the broker redelivers, and the redelivery deduplicates
+  against the committed marker.
+- **A `DbContext` that table-splits, or that maps an owned type onto the inbox table, can put more than one
+  `EntityEntry` on the claim's own modification command.** `Count > 1` then rethrows, so for that mapping a
+  legitimate concurrent-claim absorption becomes a redelivery. Safe degradation rather than a dropped message,
+  but a behaviour change for such a model.
+- **`DbUpdateException.Entries` is a third-party contract.** EF Core documents it loosely, as the entries
+  involved in the error, and this package multi-targets EF Core 8.0.27 and 10.0.0. The fail-closed direction is
+  therefore stated explicitly: while `Entries` carries the whole batch, a mixed batch gives `Count > 1` and
+  rethrows; were EF to narrow it to the failing command, an unrelated failure fails `ReferenceEquals` and
+  rethrows. Drift in that contract degrades toward rethrow-and-redeliver and never toward a skipped handler.
 
 ## Consequences
 
@@ -207,6 +264,12 @@ to decide — ADR-0026 owns that residual and this decision does not touch it.
   staged entries out early, into the same transaction. They stay atomic with the claim — one transaction, one
   commit — but a constraint or validation error on an outer entry surfaces at the claim rather than at the unit
   of work's commit.
+- **A duplicate claim that shares its flush batch with other entries is reported rather than absorbed.** The
+  absorption path is entered only for a batch the store rejected for the claim's own write and nothing else, so
+  the change-tracker-wide flush above has a second visible effect: a concurrent duplicate that arrives in a
+  mixed batch surfaces as a failed delivery, and the broker's redelivery deduplicates against the committed
+  marker instead of the loser skipping in place. The trade is a redelivery in exchange for the re-read never
+  answering from this transaction's own uncommitted row.
 - **A host running the inbox outside a unit of work gets a loud refusal.** It previously got silent
   non-deduplication: the marker was staged and, with nothing to commit it, never became durable. The refusal
   names the context, the message id, and the two supported registrations, so the failure is diagnosable at the
@@ -245,14 +308,18 @@ than corrected in place. Line numbers are as at this ADR's date.
 - ADR-0026 — *The relational inbox decides expiry at receive*. Owns `HasMarkerExpired`, the deduplication window
   the absorption path consults, and the expired-id residual this decision closes.
 - ADR-0027 — *An `INVARIANT:` comment names the oracle that falsifies it*. Why each claim above names its oracle
-  and the mutation that reddens it, and why the MARS paragraph says no fact pins it.
+  and the mutation that reddens it, and why the MARS section states plainly that no fact pins the absorption
+  gate's rethrow direction or a flush with savepoints disabled.
 - ADR-0030 — *Corrected only where history is not rewritten*. The doctrine the pointer ledger follows.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageInbox.cs`
   (`ReceiveViaInbox`, `TryClaimMessageIdAsync`) — the claim, the refusal, the flush and the absorption path.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/InboxMessageConfiguration.cs`
   — the concurrency token on `ReceivedByInboxAtUtc`.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/Integration/WhenDeduplicatingInboxOnSqlServer.cs`
-  — the blocking-premise fact and the three race facts.
+  — the blocking-premise fact and the three race facts, two of which —
+  `MustInvokeTheHandlerOnceWhenASecondDeliveryRacesTheSameMessageId` and
+  `MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId` — are the whole measured
+  coverage of the absorption gate.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/UsingBrokeredMessageInbox/WhenReceivingViaInbox.cs`
   — the ordering fact, the two commit-counting facts, and the refusal.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/UsingInboxMessageConfiguration/WhenConfiguring.cs`

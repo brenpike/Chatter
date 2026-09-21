@@ -123,8 +123,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
 
         // INVARIANT: the refusal below and the flush that follows it land together and are never separated. A
         // flush outside a transaction autocommits, so a failure between that autocommit and the handler's work
-        // would leave a marker suppressing a message nothing ever handled; the refusal is what makes that
-        // unrepresentable rather than merely unlikely. Oracle: MustRefuseToClaimOutsideATransaction, the only fact
+        // would leave a marker suppressing a message nothing ever handled; the guard below is a runtime read of
+        // `_context.Database.CurrentTransaction` that refuses that case rather than merely leaving it unlikely.
+        // Oracle: MustRefuseToClaimOutsideATransaction, the only fact
         // in the suite that goes red when the guard below is removed.
         private async Task<bool> TryClaimMessageIdAsync(string messageId, InboxMessage expiredMarker, CancellationToken cancellationToken)
         {
