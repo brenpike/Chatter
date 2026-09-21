@@ -78,6 +78,26 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             stored.ProcessedFromOutboxAtUtc.Should().BeNull();
         }
 
+        // INVARIANT: the claim states its own 'still unprocessed' predicate rather than inheriting one from the
+        // change tracker. OutboxMessageConfiguration maps ProcessedFromOutboxAtUtc as a concurrency token, so EF
+        // emits the entry's ORIGINAL value as the predicate on the claiming update. A tracked message keeps the null
+        // it was loaded with, but Update on a DETACHED one sets original from current, which would make the predicate
+        // read '= the stamp just written' and match no row. The message here is detached deliberately so the fact
+        // reports UpdateProcessedDate's own behaviour rather than the timing of whatever loaded the message.
+        [Fact]
+        public async Task MustStateTheClaimAsUnprocessedWhenTheMessageIsDetached()
+        {
+            var message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            _context.ThatHasOutboxMessage(message);
+            _dbContext.Entry((OutboxMessage)message).State = EntityState.Detached;
+
+            await _sut.UpdateProcessedDate((OutboxMessage)message);
+
+            var entry = _dbContext.Entry((OutboxMessage)message);
+            entry.OriginalValues[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)].Should().BeNull();
+            entry.CurrentValues[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)].Should().NotBeNull();
+        }
+
         // NOTE: every RecordDispatchAttempt fact below runs over SQLite rather than over the InMemory-provider
         // context the rest of this class uses. The store records through ExecuteUpdateAsync, and the InMemory
         // provider refuses to translate it - observed as
@@ -105,12 +125,11 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             stored.NextAttemptAtUtc.Should().Be(nextAttemptAtUtc);
         }
 
-        // INVARIANT: the write bypasses the change tracker and the ProcessedFromOutboxAtUtc concurrency token. After
-        // the claim loses a race the transaction rolls back, but EF does not reset the tracker: the entity still
-        // carries the processed stamp as its CURRENT value against a null ORIGINAL, so a tracked SaveChanges here
-        // would re-emit the very 'still unprocessed' predicate that just failed - and would commit the claim if it
-        // now matched. Recording the attempt must neither throw nor disturb that tracked state, and must leave the
-        // stored row unprocessed. This pins the STORE's contract and nothing about its caller: OutboxProcessor
+        // INVARIANT: the write bypasses the change tracker and the ProcessedFromOutboxAtUtc concurrency token. Were
+        // the message still tracked carrying the processed stamp as its CURRENT value against a null ORIGINAL, a
+        // tracked SaveChanges here would re-emit the very 'still unprocessed' predicate that just failed - and would
+        // commit the claim if it now matched. Recording the attempt must neither throw nor disturb that tracked
+        // state, and must leave the stored row unprocessed. This pins the STORE's contract and nothing about its caller: OutboxProcessor
         // records the attempt straight on the store, so no SaveChangesAsync of its own runs behind this fact - the
         // rationale is on OutboxProcessor.RecordFailedDispatchAttempt.
         [Fact]

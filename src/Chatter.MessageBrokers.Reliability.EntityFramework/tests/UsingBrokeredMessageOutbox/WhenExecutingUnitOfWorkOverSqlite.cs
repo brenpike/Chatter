@@ -221,6 +221,63 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             persisted.Should().NotBeNull();
         }
 
+        // INVARIANT: a unit of work that began its own transaction reconciles the context's change tracker with the
+        // rollback, so nothing stays tracked describing a write the rolled-back transaction did not make. The change
+        // tracker is the observation that discriminates here, not the store: nothing commits on this path, so a store
+        // assertion reads empty whether the reconciliation happens or not. This goes red the moment the reconciliation
+        // is removed from ExecuteAsync's catch - the staged OutboxMessage then survives the rollback as a tracked entry.
+        [Fact]
+        public async Task MustLeaveNoTrackedChangesWhenAUnitOfWorkItBeganRollsBack()
+        {
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            var operationException = new InvalidOperationException("operation failed");
+
+            Func<Task> act = () => _sut.ExecuteAsync(async ct =>
+            {
+                await _context.Set<OutboxMessage>().AddAsync(message, ct);
+                throw operationException;
+            }, null);
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+
+            _context.ChangeTracker.Entries().Should().BeEmpty();
+        }
+
+        // INVARIANT: the reconciliation acts only on a transaction this unit of work began. A caller who began their
+        // own transaction keeps their staged entities tracked across a failed ExecuteAsync, because this unit of work
+        // neither began that transaction nor completes it. The change tracker is again the observation that
+        // discriminates and the store cannot: neither the caller's transaction nor the unit of work commits here.
+        // Evidence that the adopted branch ran, rather than an assumption that this shape produces it: the operation
+        // observes the caller's own TransactionId, and the transaction is still active after the failure - both hold
+        // only when the scope's BegunHere is false, since an owned scope is rolled back and disposed in the catch.
+        // This goes red the moment the reconciliation in ExecuteAsync's catch stops being gated on BegunHere - the
+        // caller's Added entry is then discarded by a unit of work that does not own it.
+        [Fact]
+        public async Task MustLeaveTheCallersTrackedChangesAloneWhenTheCallerBeganTheTransaction()
+        {
+            await using var callerTransaction = await _context.Database.BeginTransactionAsync();
+            OutboxMessage message = New.MessageBrokers().OutboxMessage().ThatIsNotProcessed();
+            await _context.Set<OutboxMessage>().AddAsync(message);
+            var operationException = new InvalidOperationException("operation failed");
+
+            Guid observedTransactionId = Guid.Empty;
+
+            Func<Task> act = () => _sut.ExecuteAsync(_ =>
+            {
+                observedTransactionId = _sut.CurrentTransaction.TransactionId;
+                throw operationException;
+            }, null);
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+
+            observedTransactionId.Should().Be(callerTransaction.TransactionId);
+            _sut.HasActiveTransaction.Should().BeTrue();
+
+            var callersEntry = _context.ChangeTracker.Entries<OutboxMessage>().Single();
+            callersEntry.Entity.Should().BeSameAs(message);
+            callersEntry.State.Should().Be(EntityState.Added);
+        }
+
         private SqliteOutboxContext CreateFaultingContext<TFactory>() where TFactory : FaultingRelationalTransactionFactory
             => _harness.CreateContext(options => options.ReplaceService<IRelationalTransactionFactory, TFactory>());
 

@@ -76,12 +76,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         }
 
         /// <remarks>
-        /// INVARIANT: this query stays TRACKED. The claim staged by <see cref="UpdateProcessedDate(OutboxMessage, CancellationToken)"/>
-        /// is safe under concurrency only because a tracked message keeps the ProcessedFromOutboxAtUtc it was loaded
-        /// with as its original value, which OutboxMessageConfiguration maps to a concurrency token and EF therefore
-        /// emits as a 'still unprocessed' predicate on the claiming update. Reading this poll with AsNoTracking would
-        /// hand back a detached message whose original value IS the stamp being written, so the claim would match no
-        /// row and every drain would fail. Proven over a real database by
+        /// INVARIANT: the 'still unprocessed' predicate the claiming update emits does not come from this query.
+        /// <see cref="UpdateProcessedDate(OutboxMessage, CancellationToken)"/> states the claim's original
+        /// ProcessedFromOutboxAtUtc - which OutboxMessageConfiguration maps to a concurrency token - as null, so a
+        /// message this poll returns emits that predicate whether the poll tracked it or not. Oracle:
+        /// <c>WhenUpdatingProcessed.MustStateTheClaimAsUnprocessedWhenTheMessageIsDetached</c>. The claim's
+        /// behaviour under concurrency is proven over a real database by
         /// Integration/WhenClaimingOutboxConcurrentlyOnSqlServer.
         /// <para>
         /// INVARIANT: the due clause and the attempt ceiling are part of the QUERY, so a message that is not due
@@ -169,19 +169,31 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             return Task.CompletedTask;
         }
 
+        /// <remarks>
+        /// INVARIANT: the claim states its own 'still unprocessed' predicate rather than inheriting one from the
+        /// change tracker. OutboxMessageConfiguration maps ProcessedFromOutboxAtUtc as a concurrency token, so EF
+        /// emits the entry's ORIGINAL value as the predicate on the claiming update. A tracked message keeps the
+        /// null it was loaded with, but <c>Update</c> on a DETACHED message sets original from current, which would
+        /// make the predicate read '= the stamp just written', match no row, and leave a message the broker already
+        /// took unprocessed for the next poll to publish again. Stating the original as null emits the same
+        /// predicate either way. Oracle:
+        /// <c>WhenUpdatingProcessed.MustStateTheClaimAsUnprocessedWhenTheMessageIsDetached</c>; dropping the
+        /// original-value statement reddens it and nothing else (observed).
+        /// </remarks>
         private void UpdateProcessedDate(DbSet<OutboxMessage> outbox, OutboxMessage outboxMessage)
         {
             outboxMessage.ProcessedFromOutboxAtUtc = DateTime.UtcNow;
-            outbox.Update(outboxMessage);
+            var entry = outbox.Update(outboxMessage);
+            entry.OriginalValues[nameof(OutboxMessage.ProcessedFromOutboxAtUtc)] = null;
         }
 
         /// <remarks>
         /// INVARIANT: this writes through ExecuteUpdateAsync rather than through the change tracker, so it carries
         /// neither the pending state of the tracked message nor the ProcessedFromOutboxAtUtc concurrency token
-        /// OutboxMessageConfiguration maps. Its caller reaches here after a dispatch failed, and EF does not reset
-        /// the tracker when the surrounding transaction rolls back: the message still holds the claim stamp as its
-        /// CURRENT value against the null it was loaded with, so a tracked SaveChangesAsync would re-emit the very
-        /// 'still unprocessed' predicate that just failed - and would commit the claim if it now matched. Oracle:
+        /// OutboxMessageConfiguration maps. Its caller reaches here after a dispatch failed. Were the message it is
+        /// handed still tracked holding the claim stamp as its CURRENT value against a null original, a tracked
+        /// SaveChangesAsync would re-emit the very 'still unprocessed' predicate that just failed - and would commit
+        /// the claim if it now matched. Oracle:
         /// <c>WhenUpdatingProcessed.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed</c>;
         /// recording through <c>Update</c> plus <c>SaveChangesAsync</c> instead reddens it and nothing else
         /// (observed) - the other two facts here survive that mutation, because their message is clean and a
@@ -208,42 +220,32 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// difference shows only when two hosts record against the same message, and the suite drives one.
         /// </para>
         /// <para>
-        /// NOTE: the residue this method steps around outlives it, because a LATER unit of work on the same
-        /// <see cref="DbContext"/> commits what an EARLIER one left staged. The tracker keeps a rolled-back claim
-        /// as Modified, and the next <c>SaveChangesAsync</c> on that context emits it. The class is INHERITED, not
-        /// introduced here: at <c>master</c>, message B's dispatch unit of work inside one poll already flushes
-        /// message A's rolled-back claim. <c>OutboxProcessor</c>'s outbox failure path no longer DEPENDS on it - it
-        /// re-claims a published row with a statement it issues itself, and records the attempt outside any unit of
-        /// work - but the class remains. Its impact is bounded three ways. Every residue belongs to a row whose
-        /// message the broker already took, because <c>OutboxProcessor.Process</c> stages the claim only after the
-        /// dispatch returns, so committing residue records a PUBLISHED message processed rather than losing an
-        /// unpublished one. The drain takes a scope per poll, so the tracker behind it carries only that poll's
-        /// outbox rows. And the handler path's tracker is clean when <c>ProcessBatch</c> runs, because the
-        /// reliability behaviour order puts outbox processing OUTSIDE the unit of work behaviour and
-        /// <c>OutboxProcessingBehavior.Handle</c> awaits <c>next()</c> first, so the handler's unit of work has
-        /// already saved and committed by then. Thread:
-        /// https://github.com/brenpike/Chatter/pull/505#discussion_r4057201913.
+        /// NOTE: a rolled-back claim does not outlive the unit of work that staged it. A unit of work that BEGAN
+        /// the transaction it rolls back reconciles the context's change tracker with the store, so no LATER unit
+        /// of work on the same <see cref="DbContext"/> emits what an EARLIER one left staged. Where the unit of
+        /// work did NOT begin the transaction it leaves the tracker as it found it, because the caller owns both
+        /// that transaction and the state staged into it. See
+        /// docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md. This method depends
+        /// on neither case: it reaches the row through ExecuteUpdateAsync whatever the tracker holds, which is what
+        /// <c>WhenUpdatingProcessed.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed</c> pins.
         /// </para>
         /// <para>
-        /// NOTE: clearing the tracker inside <c>UnitOfWork&lt;TContext&gt;</c> was weighed as the general fix and
-        /// REJECTED on the merits. It is this module's shared commit primitive, pinned by 26 facts across
-        /// <c>WhenExecutingUnitOfWork</c>, <c>WhenExecutingUnitOfWorkOverSqlite</c> and
-        /// <c>WhenOwningTheCommitPoint</c>, so the change is not local to the outbox. It cannot clear safely when
-        /// <c>BegunHere</c> is false: the unit of work then participates in a transaction the CALLER began and
-        /// leaves open, and the caller owns the state staged into it, so discarding the tracker would discard
-        /// work the unit of work never began and never commits. And it would falsify the premise the
-        /// ExecuteUpdateAsync bypass above rests on - that EF does not reset the tracker when the surrounding
-        /// transaction rolls back - which ADR-0031 states as the reason this write leaves the tracker alone.
+        /// NOTE: clearing the tracker inside <c>UnitOfWork&lt;TContext&gt;</c> is the general fix that was taken,
+        /// per docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md. The claim staged
+        /// by <see cref="UpdateProcessedDate(OutboxMessage, CancellationToken)"/> states its own 'still
+        /// unprocessed' original value rather than inheriting one from the tracker, so a re-claim reaches the row
+        /// whether the message it is handed is tracked or detached.
         /// </para>
         /// <para>
-        /// NOTE: one outcome on the CONCURRENCY path changed when the re-claim landed, on a path this method is not
-        /// on. After a clean <see cref="DbUpdateConcurrencyException"/> - one the compensation below resynced to
-        /// the stored row and left Unchanged - the re-claim now overwrites the winning host's
-        /// <see cref="OutboxMessage.ProcessedFromOutboxAtUtc"/> with this host's instant and spends no attempt,
-        /// where the row previously kept the winner's instant and spent one attempt on a row already processed.
-        /// Both end states are a processed row the due gate never selects again, so neither loses nor duplicates a
-        /// message. <c>OutboxProcessor</c> cannot tell the two apart: it lives in <c>Chatter.MessageBrokers</c> and
-        /// cannot name <see cref="DbUpdateConcurrencyException"/>, an EF type. NO oracle covers this difference.
+        /// NOTE: one outcome on the CONCURRENCY path follows from that stated original value, on a path this
+        /// method is not on. After a clean <see cref="DbUpdateConcurrencyException"/> - one the compensation below
+        /// resynced to the stored row and left Unchanged - the re-claim's 'still unprocessed' predicate matches no
+        /// row and reports the message unclaimed, so the row keeps the winning host's
+        /// <see cref="OutboxMessage.ProcessedFromOutboxAtUtc"/> and spends one attempt, rather than overwriting the
+        /// winner's instant and spending none. Both end states are a processed row the due gate never selects
+        /// again, so neither loses nor duplicates a message. <c>OutboxProcessor</c> cannot tell the two apart: it
+        /// lives in <c>Chatter.MessageBrokers</c> and cannot name <see cref="DbUpdateConcurrencyException"/>, an EF
+        /// type. NO oracle separates the two outcomes.
         /// </para>
         /// </remarks>
         public Task RecordDispatchAttempt(OutboxMessage outboxMessage, DateTime nextAttemptAtUtc, CancellationToken cancellationToken = default)
