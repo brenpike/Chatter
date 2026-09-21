@@ -71,6 +71,46 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 catch (Exception ex)
                 {
                     await CleanUpAsync(() => RollbackAsync(scope, CancellationToken.None), "roll back", WhileHandlingAnEarlierFailure).ConfigureAwait(false);
+
+                    // INVARIANT: a unit of work that began its own transaction reconciles the context's change tracker
+                    // with the rollback. ELIMINATED CLASS: a change-tracker entry describing a write a transaction this
+                    // unit of work rolled back never made. EF accepts changes at SaveChangesAsync time rather than at
+                    // COMMIT time, so every entity a failed attempt flushed stays tracked in its post-flush state, and
+                    // FindAsync resolves from the identity map ahead of the store - which is how a retry over the same
+                    // scoped context reads a marker for a message nothing handled and skips it. Reconciling here
+                    // eliminates the class at the rollback instead of at each exit that can reach it, so no exit can
+                    // produce one. The claim also stands on its own terms: after a rollback, a tracker still reporting
+                    // a row the store does not hold is already wrong. Decision:
+                    // docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md.
+                    // Oracles: WhenExecutingUnitOfWorkOverSqlite.MustLeaveNoTrackedChangesWhenAUnitOfWorkItBeganRollsBack,
+                    // WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenACompanionWriteFailedTheClaimsFlush,
+                    // WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenAnExpiredMarkersRefreshFailedOutsideDbUpdateException.
+                    // Deleting this reconciliation reddens those three and nothing else, on both target frameworks -
+                    // counted, not argued. The companion that must stay green is
+                    // WhenUpdatingProcessed.MustStateTheClaimAsUnprocessedWhenTheMessageIsDetached: it is what makes a
+                    // re-claim over a reconciled tracker safe, since the outbox states the claim's 'still unprocessed'
+                    // predicate itself rather than inheriting it from a tracked entry.
+                    // The BegunHere gate is the ownership rule of the surrounding type: a unit of work that adopted a
+                    // caller's transaction rolls nothing back and did not begin the state staged on it, so it leaves
+                    // that state to the owner who completes the transaction. Oracle:
+                    // WhenExecutingUnitOfWorkOverSqlite.MustLeaveTheCallersTrackedChangesAloneWhenTheCallerBeganTheTransaction;
+                    // reconciling without the gate reddens it and nothing else (measured). A unit of work nested inside
+                    // another's transaction never reaches the reconciliation, which is that same rule read from the
+                    // other side.
+                    // The SUCCESS path is untouched, because a commit that stood leaves a truthful tracker. ADR-0028's
+                    // indeterminate commit is neither claimed nor denied: the reconciliation runs after a rollback
+                    // attempt whose outcome is unknown, and detaching asserts nothing about the store either way. A
+                    // commit that throws inside CompleteAsync - the unsettled-claim refusal, or a provider failure -
+                    // lands in this same catch, so the rollback and the reconciliation both run for it (#512). A
+                    // rollback that throws is swallowed above and the reconciliation still runs, since a tracker
+                    // describing writes into a doomed transaction is wrong whether or not the rollback statement
+                    // succeeded. Entities loaded for READS inside the operation are detached too: objects the caller
+                    // holds survive, they are simply no longer tracked.
+                    if (scope.BegunHere)
+                    {
+                        _context.ChangeTracker.Clear();
+                    }
+
                     await CleanUpAsync(() => scope.DisposeAsync().AsTask(), "dispose", WhileHandlingAnEarlierFailure).ConfigureAwait(false);
                     _logger.LogError(ex, "Error occurred during unit of work");
                     throw;
