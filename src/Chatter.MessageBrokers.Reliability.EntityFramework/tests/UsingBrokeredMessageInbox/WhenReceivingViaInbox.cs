@@ -355,6 +355,122 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             handlerInvoked.Should().BeTrue("the redelivery must read the store's stale marker, which the window ages out");
         }
 
+        // INVARIANT: a claim whose flush failed on a COMPANION entity's write leaves nothing behind in the change
+        // tracker, so a redelivery over that same context reads the store rather than the failed delivery's leftover
+        // Added entry. Oracle for the rethrow exit of TryClaimMessageIdAsync, which returns through the throw above
+        // its own detach; deleting the change-tracker clear on UnitOfWork's owned rollback path reddens this fact.
+        //
+        // The COMPANION is what makes the absorption gate fail, and it is load bearing rather than incidental. The
+        // gate reads ex.Entries.Count == 1 && ReferenceEquals(ex.Entries[0].Entity, claim), which holds by
+        // construction whenever the claim is the only failing entity, so faulting the claim's OWN write drives
+        // ABSORPTION - detach, re-read, rethrow - and leaves the claim already gone from the tracker, which is a
+        // different exit and not the one this fact pins. Staging a companion in the same change tracker, the way a
+        // dispatch nested inside another handler does, is what puts a different entity in that entry.
+        //
+        // The CHANGE TRACKER and the SECOND DELIVERY REACHING ITS HANDLER are the discriminating observations. The
+        // STORE is deliberately not asserted on: nothing commits on this path, so an empty store reads the same
+        // whether the claim survived in the tracker or not. InjectedFailureCount pins that the hook fired at all,
+        // without which an empty tracker reads identically to a flush that simply succeeded.
+        [Fact]
+        public async Task MustNotSuppressARedeliveryOverTheSameContextWhenACompanionWriteFailedTheClaimsFlush()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var messageId = Guid.NewGuid().ToString();
+            var companionMessageId = Guid.NewGuid().ToString();
+            var faultingCompanionWrite = new FaultingInboxClaimFlushInterceptor(companionMessageId);
+
+            using var context = harness.CreateContext(options => options.AddInterceptors(faultingCompanionWrite));
+            var sut = CreateSqliteSut(context);
+            var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(
+                _ =>
+                {
+                    context.Set<InboxMessage>().Add(new InboxMessage { MessageId = companionMessageId, ReceivedByInboxAtUtc = DateTime.UtcNow });
+                    return sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask);
+                },
+                null);
+
+            var thrown = (await act.Should().ThrowAsync<DbUpdateException>(
+                "a flush failure the absorption gate does not cover must reach the caller")).Which;
+
+            thrown.Entries.Select(entry => entry.Entity).OfType<InboxMessage>().Select(failing => failing.MessageId)
+                .Should().NotContain(messageId, "the gate must have failed on the companion rather than matched on the claim");
+
+            faultingCompanionWrite.InjectedFailureCount.Should().Be(1,
+                "without an injected failure an empty change tracker proves nothing");
+
+            context.ChangeTracker.Entries<InboxMessage>()
+                .Should().BeEmpty("a claim the rolled back transaction never made durable must not stay tracked for the next lookup to find");
+
+            var handlerInvoked = false;
+
+            await unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+                {
+                    handlerInvoked = true;
+                    return Task.CompletedTask;
+                }),
+                null);
+
+            handlerInvoked.Should().BeTrue("a message id nothing ever committed must still reach the handler");
+        }
+
+        // INVARIANT: a claim whose flush failed with something TryClaimMessageIdAsync's catch (DbUpdateException)
+        // cannot catch leaves nothing behind in the change tracker, so a redelivery over that same context reads the
+        // store rather than the failed delivery's leftover Modified entry. Oracle for the uncaught-flush exit;
+        // deleting the change-tracker clear on UnitOfWork's owned rollback path reddens this fact.
+        //
+        // The EXPIRED branch is the one that matters here: the leftover entry is Modified and carries the REFRESHED
+        // timestamp as its current value, and that refreshed stamp is what HasMarkerExpired reads, so the
+        // redelivery's lookup resolves a marker the deduplication window ages out in the store but not in the
+        // identity map. A cancellation raised out of the flush leaves by this same exit - EF Core wraps a statement
+        // failure into a DbUpdateException but passes an OperationCanceledException through untouched - so the exit
+        // is a routine one rather than an exotic one.
+        //
+        // The CHANGE TRACKER and the SECOND DELIVERY REACHING ITS HANDLER are the discriminating observations. The
+        // STORE is deliberately not asserted on: the stale marker sits there either way and nothing commits on this
+        // path. InjectedFailureCount pins that the hook fired at all, without which an empty tracker reads
+        // identically to a flush that simply succeeded.
+        [Fact]
+        public async Task MustNotSuppressARedeliveryOverTheSameContextWhenAnExpiredMarkersRefreshFailedOutsideDbUpdateException()
+        {
+            using var harness = InboxClaimSqliteHarness.Create();
+            var messageId = Guid.NewGuid().ToString();
+            var staleReceivedAtUtc = DateTime.UtcNow.AddMinutes(-10);
+            await GivenACommittedMarkerAsync(harness, messageId, staleReceivedAtUtc);
+
+            var faultingSave = new FaultingInboxClaimSaveInterceptor();
+            using var context = harness.CreateContext(options => options.AddInterceptors(faultingSave));
+            var sut = CreateSqliteSut(context, TimeSpan.FromMinutes(1));
+            var unitOfWork = new UnitOfWork<InboxClaimSqliteContext>(context, NullLogger<UnitOfWork<InboxClaimSqliteContext>>.Instance);
+
+            Func<Task> act = () => unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox("payload", CreateContext(messageId), () => Task.CompletedTask),
+                null);
+
+            await act.Should().ThrowAsync<InboxClaimFlushFaultException>(
+                "a flush failure the claim's catch (DbUpdateException) cannot catch must reach the caller");
+
+            faultingSave.InjectedFailureCount.Should().Be(1,
+                "without an injected failure an empty change tracker proves nothing");
+
+            context.ChangeTracker.Entries<InboxMessage>()
+                .Should().BeEmpty("a refresh the rolled back transaction never made durable must not stay tracked for the next lookup to find");
+
+            var handlerInvoked = false;
+
+            await unitOfWork.ExecuteAsync(
+                _ => sut.ReceiveViaInbox("payload", CreateContext(messageId), () =>
+                {
+                    handlerInvoked = true;
+                    return Task.CompletedTask;
+                }),
+                null);
+
+            handlerInvoked.Should().BeTrue("the redelivery must read the store's stale marker, which the window ages out");
+        }
+
         // INVARIANT: a transaction carrying a claim whose handler did not return is refused at the commit point,
         // so a caller that swallows a claimed message's failure cannot commit the claim and suppress the message
         // for good. Oracle for the swallowed failure; deleting the unsettled-claim refusal in
