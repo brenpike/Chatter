@@ -14,6 +14,12 @@ walked became the next finding. This ADR
 records the change that reconciles the tracker with the rollback in one place, why that eliminates a class rather
 than extending a handled set, where the change deliberately stops, and what it costs.
 
+**Amended in place, 2026-09-21.** This ADR is accepted and UNRELEASED, so it is corrected here rather than
+superseded. The correction is confined to WHO can stand on the adopted side of the boundary drawn below: the
+relational inbox now refuses to claim into a transaction no unit of work began, so a claim can no longer be the
+instance of the adopted-transaction shape this ADR recorded. The boundary itself, the reconciliation, its
+`BegunHere` gate and every measured oracle set below are unchanged.
+
 ## Context
 
 ### The root is EF's acceptance point, not any one exit
@@ -63,6 +69,69 @@ false. A unit of work nested inside another's transaction never reaches the reco
 read from the other side. The residual this boundary leaves is tracked by
 [issue #513](https://github.com/brenpike/Chatter/issues/513) and stated under *What this does NOT close* below.
 
+### The inbox stopped standing on the adopted side of that boundary
+
+The boundary is drawn correctly and it left the relational inbox on the wrong side of it. `ReceiveViaInbox`
+flushed its claim into whatever transaction was ambient, while BOTH protections the claim rests on — the
+reconciliation above, and ADR-0034's refusal of a commit carrying an unsettled claim — act only on a transaction
+a unit of work began. An adopted transaction therefore took the claim and left both behind.
+
+`TryClaimMessageIdAsync` refuses a transaction no unit of work registered, before it stages anything.
+**ELIMINATED CLASS: a claim flushed into a transaction whose failure and whose commit this package does not
+control.** That is a change of ADMISSION PREDICATE rather than an added case: the refusal's key moved from *is
+there a transaction* to *does a unit of work OWN this transaction*, and the population this ADR exposed —
+`BegunHere: false` — is exactly the complement of the new predicate. Nothing is enumerated; the class is
+excluded at the door.
+
+Ownership is CARRIED, never INFERRED. `UnitOfWork.BeginAsync` records, against the raw `IDbContextTransaction`
+object it has just created, that a unit of work began it, and `BrokeredMessageInbox` reads that object's own
+entry. This is NOT the re-derivation `UnitOfWorkTransaction`'s rule forbids — deciding, at commit or rollback
+time, whether the context's CURRENT ambient transaction is the one a scope began, a question a nested unit of
+work makes ambiguous. A lookup keyed on the transaction OBJECT asks nothing about which scope is current. That
+the writer and the reader meet the SAME object was load-bearing before this change: `BeginAsync`'s raw
+transaction, the `InboxClaimRegister` key and `PersistanceTransaction`'s handle are already one instance, or
+ADR-0034's three settlement facts could not pass. The new register inherits that pin.
+
+The key is the raw transaction rather than the `PersistanceTransaction` wrapper for the reason ADR-0034 records
+for its own register: `UnitOfWork.CurrentTransaction` and `UnitOfWork.BeginAsync` each build a FRESH wrapper over
+the same provider transaction, so the reader would never meet the object the writer registered. The table is
+weak and its value references nothing, because a value holding its own key would retain every transaction a
+process ever began.
+
+#### What the ownership refusal pins, measured rather than argued
+
+| Mutation | What reddens |
+| --- | --- |
+| Drop the registration from `UnitOfWork.BeginAsync`'s `begunHere` branch | SIXTEEN facts, among them `WhenReceivingViaInbox.MustCommitTheClaimWhenTheHandlerReturns` — the grant direction, so a register that recorded nothing cannot pass for a refusal that is always right |
+| Key ownership on the unit of work SCOPE rather than on the transaction OBJECT | Exactly `WhenReceivingViaInbox.MustClaimInsideAUnitOfWorkNestedInAnothersTransaction`, and nothing else |
+
+`WhenReceivingViaInbox.MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan` is the refusal's own oracle:
+deleting the ownership guard, or the registration, reddens it.
+
+`MustClaimInsideAUnitOfWorkNestedInAnothersTransaction` is a KEYING REGRESSION GUARD and was GREEN FROM THE
+START. No pre-change state reddens it, so it was never observed red, and per ADR-0027 that is stated plainly
+rather than implied. Its teeth are the measured substitution in the second row: scope-keyed ownership refuses
+every dispatch nested inside another handler — the multiple-claims-per-transaction shape `InboxClaimRegister`
+exists to support — and this is the only fact that says so.
+
+Four facts were reshaped onto `IUnitOfWork.ExecuteAsync`, each having previously begun its transaction on
+`context.Database` directly: `MustRecordTheClaimBeforeInvokingTheHandlerForAFreshMessageId`,
+`MustFlushTheClaimWithoutCommittingForAFreshMessageId`,
+`MustFlushTheRefreshedClaimWithoutCommittingForAnExpiredMessageId` and
+`MustRefreshTheClaimBeforeInvokingTheHandlerForAnExpiredMessageId`. They drive the inbox the way a registered
+host does; what each asserts is unchanged.
+`MustThrowBeforeInvokingHandlerWhenCancellationIsAlreadyRequested` also opens its own transaction and was NOT
+reshaped — it stayed green — because an already-cancelled token throws out of `_inbox.FindAsync` before
+`TryClaimMessageIdAsync` is entered, so it never reaches the ownership guard.
+
+`MustRefuseToClaimOutsideATransaction` was a FAKE ORACLE and is repaired rather than left. It asserted only that
+the refusal message contains `WithInboxBehavior`, which the ownership refusal also contains, so its recorded
+claim that deleting the `CurrentTransaction` guard reddens it became FALSE the moment a second guard existed. It
+now also asserts a phrase unique to the no-transaction message, and the ownership fact asserts one unique to
+ownership, so the two refusals are separable in both directions.
+
+The package's suite is 234 passed, 0 failed and 0 skipped per target framework.
+
 ### Why `BrokeredMessageOutbox`'s recorded rejection is superseded, and the collateral it correctly predicted
 
 `RecordDispatchAttempt` carried a recorded rejection of this exact fix, on three grounds. Two are answered and one
@@ -110,8 +179,8 @@ addition is READ OFF row 3 rather than separately counted, and per ADR-0027 that
 rather than presented as a fresh measurement. `BrokeredMessageInbox.ReceiveViaInbox` names those two facts as
 oracles for the reconciliation on exactly this basis.
 
-The package's suite is 232 passed, 0 failed and 0 skipped per target framework, and `Chatter.MessageBrokers` is
-unchanged at its 1357 baseline.
+Those three rows were counted against a package suite of 232 passed, 0 failed and 0 skipped per target framework,
+with `Chatter.MessageBrokers` unchanged at its 1357 baseline.
 
 **The third row is the strongest evidence in this record that the primitive is right rather than being a fifth
 patch.** The change REMOVED a mechanism instead of adding one: the detach, its `ClaimedMessageId.Marker` field, and
@@ -214,13 +283,19 @@ than a guard for one consumer.
 
 **What this does NOT close: the adopted-transaction shape.** Where a caller began the transaction and the unit of
 work merely participates, `ExecuteAsync` rolls nothing back and clears nothing, so state that caller's operation
-flushed stays tracked after the caller rolls back on its own. A claim staged by `ReceiveViaInbox` inside such a
-transaction is one instance of it. This is the ownership line drawn above, not an un-enumerated exit: it is the
-same boundary that keeps this type off a transaction it does not own. **No fact in this suite pins it** — nothing
-in the suite drives `ReceiveViaInbox`, or any other participant, inside a caller-begun transaction — and per
-ADR-0027 that is stated plainly rather than implied. It carries its root cause and bounds in
-[issue #513](https://github.com/brenpike/Chatter/issues/513), which also tracks the raw-provider-commit slice on
-the same ownership line.
+flushed stays tracked after the caller rolls back on its own. This is the ownership line drawn above, not an
+un-enumerated exit: it is the same boundary that keeps this type off a transaction it does not own, and it
+STANDS, for every participant that can stage into such a transaction.
+
+**An inbox claim is no longer one of those participants.** The boundary did not move; the inbox stopped standing
+on the wrong side of it. A claim cannot enter a transaction no unit of work began, so the instance this ADR was
+written against is UNREACHABLE rather than tracked, which
+`WhenReceivingViaInbox.MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan` pins. What is left on this line is a
+caller's OWN staged entities, left tracked by a rollback this package does not perform, and **no fact in this
+suite pins that** — per ADR-0027, stated plainly rather than implied.
+[Issue #513](https://github.com/brenpike/Chatter/issues/513) carries the root cause and bounds: its inbox half is
+eliminated and its raw-provider-commit half survives in the narrower form ADR-0034 records, so the issue
+RE-SCOPES rather than closes.
 
 **What this does not decide: #512.** A commit that throws inside `CompleteAsync` — the unsettled-claim refusal, or
 a provider failure — is awaited inside `ExecuteAsync`'s `try`, so it lands in this same catch and both the rollback
@@ -249,11 +324,21 @@ reconciliation does on that path and leaves the disposition of the issue to be d
 - **The inbox lost a mechanism.** `ReceiveViaInbox` no longer wraps its handler await, and `ClaimedMessageId` no
   longer carries the marker it detached. Settlement — ADR-0034's durability half — is untouched and is still
   granted in exactly one place.
+- **A host that calls `ReceiveViaInbox` inside its own transaction gets a loud refusal.** The inbox depends on
+  the reconciliation above, and the reconciliation reaches only a transaction a unit of work began, so the inbox
+  now requires one rather than flushing into a transaction neither protection reaches. The refusal names
+  `WithInboxBehavior<TContext>()` and `IUnitOfWork.ExecuteAsync` as the two ways out. A host in that position
+  previously got a claim with neither protection behind it.
+- **A new internal type, `UnitOfWorkTransactionRegister`.** It is static for the reason ADR-0034 records for
+  `InboxClaimRegister`: `BrokeredMessageInbox<TContext>` is public and hand-constructed, so a channel supplied
+  through its constructor would be absent wherever a caller did not supply one — and an absent channel reads as
+  *owned*, failing open on exactly the case the refusal exists to stop.
 
 ## References
 
 - Issue #512 — `UnitOfWork<TContext>` change-tracker residue after a commit that failed. Not claimed closed here.
-- Issue #513 — the ownership-line residual: the adopted-transaction shape above and the raw-provider-commit slice.
+- Issue #513 — the ownership-line residual: the adopted-transaction shape above and the raw-provider-commit
+  slice. Its inbox half is eliminated and its commit half narrows; it re-scopes rather than closes.
 - Issue #380 — the concurrent-delivery finding whose remediation created the phantom-claim class this decision
   eliminates.
 - ADR-0006 — *Two-tier reliability: relational ambient-tx vs NoSQL stage-then-commit*. The participation-versus-
@@ -268,10 +353,14 @@ reconciliation does on that path and leaves the disposition of the issue to be d
   handler-throw detach this decision retires.
 - ADR-0034 — *An unsettled inbox claim withholds the commit*. The durability half of the claim, untouched here.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/UnitOfWork.cs`
-  (`ExecuteAsync`, `UnitOfWorkTransaction`) — the reconciliation, the `BegunHere` gate and the ownership rule.
+  (`ExecuteAsync`, `BeginAsync`, `UnitOfWorkTransaction`) — the reconciliation, the `BegunHere` gate, the
+  ownership rule, and the registration of the transaction a unit of work began.
+- `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/UnitOfWorkTransactionRegister.cs`
+  — the object-keyed ownership record the inbox reads.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageInbox.cs`
-  (`ReceiveViaInbox`, `TryClaimMessageIdAsync`) — the participant whose claim the reconciliation undoes, and the
-  absorption gate whose rethrow exit needs a companion entity.
+  (`ReceiveViaInbox`, `TryClaimMessageIdAsync`) — the participant whose claim the reconciliation undoes, the
+  ownership refusal that keeps that claim inside the reconciliation's reach, and the absorption gate whose
+  rethrow exit needs a companion entity.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageOutbox.cs`
   (`UpdateProcessedDate`, `RecordDispatchAttempt`) — the stated original value that makes the claim's predicate
   independent of tracker residue, and the recorded rejection this decision supersedes.
@@ -279,6 +368,8 @@ reconciliation does on that path and leaves the disposition of the issue to be d
   — `MustLeaveNoTrackedChangesWhenAUnitOfWorkItBeganRollsBack` and
   `MustLeaveTheCallersTrackedChangesAloneWhenTheCallerBeganTheTransaction`.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/UsingBrokeredMessageInbox/WhenReceivingViaInbox.cs`
-  — the two flush-exit facts and the two handler-throw facts the retired detach was added for.
+  — the two flush-exit facts and the two handler-throw facts the retired detach was added for, plus
+  `MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan`, `MustClaimInsideAUnitOfWorkNestedInAnothersTransaction`
+  and the repaired `MustRefuseToClaimOutsideATransaction`.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/UsingBrokeredMessageOutbox/WhenUpdatingProcessed.cs`
   — `MustStateTheClaimAsUnprocessedWhenTheMessageIsDetached`.

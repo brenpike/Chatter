@@ -17,7 +17,14 @@ superseded. The correction is confined to the CHANGE-TRACKER half of the split d
 records as retained was REMOVED, and the undo is now `UnitOfWork<TContext>.ExecuteAsync` reconciling the tracker
 with the rollback it owns (`docs/adr/0035-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md`).
 **Settlement is untouched**: the single grant, the register, the refusal at `PersistanceTransaction.CommitAsync`,
-its ownership boundary, the raw-provider-commit slice and the eliminated class below all stand exactly as written.
+its ownership boundary and the eliminated class below all stand exactly as written.
+
+**Amended again, 2026-09-21.** The relational inbox refuses to claim into a transaction no unit of work began;
+ADR-0035 records that decision, its object-keyed ownership record and the measurements behind it. Two things
+below are corrected for it. The premise that this package's commit point is the single commit of a provider
+transaction was OVER-BROAD and is dropped wherever it appeared — it is the single commit of the transactions this
+package INTERMEDIATES. And the raw-provider-commit slice NARROWS: the shape it was written against is closed, and
+what survives is stated in its place. Settlement itself is again untouched.
 
 ## Context
 
@@ -71,12 +78,14 @@ BEFORE the handler instead of after reddens both refusal facts named below.
 
 ### Where the grant is read
 
-`PersistanceTransaction.CommitAsync` is this package's single commit of a provider transaction. Every commit path
-the package offers funnels through it — `UnitOfWork<TContext>.CompleteAsync` through its `UnitOfWorkTransaction`,
-and a consumer committing through `IUnitOfWork.CurrentTransaction`, the `TransactionContext` container, or
-`BrokeredMessageOutbox<TContext>`'s re-exposure of the transaction. It refuses while `InboxClaimRegister` reports
-any unsettled claim on the transaction it wraps, and the refusal message names the message ids and the `TContext`
-that claimed them.
+`PersistanceTransaction.CommitAsync` is the single commit of the transactions this package INTERMEDIATES. Every
+commit path the package OFFERS funnels through it — `UnitOfWork<TContext>.CompleteAsync` through its
+`UnitOfWorkTransaction`, and a consumer committing through `IUnitOfWork.CurrentTransaction`, the
+`TransactionContext` container, or `BrokeredMessageOutbox<TContext>`'s re-exposure of the transaction. It is not
+every commit that can reach the store: a commit issued directly on `Database.CurrentTransaction`, EF Core's own
+public handle, passes no gate here, which the slice under *What this does NOT close* states. It refuses while
+`InboxClaimRegister` reports any unsettled claim on the transaction it wraps, and the refusal message names the
+message ids and the `TContext` that claimed them.
 
 **The refusal does not roll back.** Whoever began the transaction rolls it back. That is the ownership rule
 `UnitOfWork<TContext>.UnitOfWorkTransaction` already carries — commit, rollback and dispose act only on a
@@ -176,9 +185,9 @@ loop.
 
 **Commit permission is derived from the claim's own recorded outcome.** `BrokeredMessageInbox<TContext>` opens
 every claim unsettled against the `IDbContextTransaction` it flushed into, and settles it in exactly one place —
-after the handler returns. `PersistanceTransaction.CommitAsync`, this package's single commit of a provider
-transaction, refuses while any claim on that transaction is unsettled, names the message ids and the `TContext`,
-and leaves the rollback to whoever began the transaction.
+after the handler returns. `PersistanceTransaction.CommitAsync`, the single commit of the transactions this
+package intermediates, refuses while any claim on that transaction is unsettled, names the message ids and the
+`TContext`, and leaves the rollback to whoever began the transaction.
 
 ## Closed-by-Construction Acceptance Test
 
@@ -198,16 +207,22 @@ transaction stays exactly as its owner left it and the rule `UnitOfWorkTransacti
 transaction this unit of work began — is untouched. `UnitOfWork<TContext>.ExecuteAsync`'s catch then rolls back the
 transaction it began, the delivery fails, and the broker redelivers.
 
-**What this does NOT close: the raw-provider-commit slice.** A consumer that pulls
-`context.Database.CurrentTransaction` and commits it directly on the EF API never passes through
-`PersistanceTransaction`, so the gate never sees that commit and never has a chance to withhold it. The claim
-becomes durable for a message nothing handled.
+**What this does NOT close: the raw-provider-commit slice, in the narrowed form the ownership refusal leaves.** A
+caller that pulls `context.Database.CurrentTransaction` and commits it directly on the EF API never passes
+through `PersistanceTransaction`, so the gate never sees that commit and never has a chance to withhold it. The
+claim becomes durable for a message nothing handled.
 
-This is an OWNERSHIP LINE, not another un-enumerated path — one nameable boundary, stated once: the gate covers the
-commits this package owns, and a commit issued on EF Core's own API is not one of them. Reaching it needs a
-consumer to do BOTH of two things at once: bypass `IUnitOfWork` for the commit, AND swallow the dispatch failure.
-Neither alone suffices. The instance the review reported — a handler swallowing a nested dispatch failure while the
-unit of work commits — sits squarely INSIDE the covered region, and is refused.
+The shape this was written against — a caller beginning its own transaction, calling the inbox inside it, and
+committing it on the EF API — is CLOSED. A claim never enters such a transaction: the inbox refuses one no unit
+of work began, which ADR-0035 records. What SURVIVES is narrower: a handler running INSIDE a package-begun
+transaction reaches `Database.CurrentTransaction` and commits it while its own claim is unsettled.
+
+This is an OWNERSHIP LINE, not another un-enumerated path — one nameable boundary, stated once: the gate covers
+the commits this package intermediates, and a commit issued on EF Core's own API is not one of them. Reaching
+what survives needs a caller to do BOTH of two things at once: commit on that handle from inside a transaction
+the unit of work began, AND swallow the dispatch failure. Neither alone suffices. The instance the review
+reported — a handler swallowing a nested dispatch failure while the unit of work commits — sits squarely INSIDE
+the covered region, and is refused.
 
 **No deterministic oracle pins this slice, and none is claimed.** A test there would construct the bypass and then
 assert that the claim was committed, which asserts the gap rather than any behaviour this package decided. Per
@@ -215,7 +230,8 @@ ADR-0027 that is stated plainly rather than papered over. The slice carries root
 review threads — [r4058599905](https://github.com/brenpike/Chatter/pull/511#discussion_r4058599905) and
 [r4058761610](https://github.com/brenpike/Chatter/pull/511#discussion_r4058761610) — in
 [issue #513](https://github.com/brenpike/Chatter/issues/513), which tracks it as work introduced by this change
-rather than as an inherited residual.
+rather than as an inherited residual. That issue RE-SCOPES rather than closes: its inbox half is eliminated by
+the ownership refusal, and this commit half survives in the narrowed form above.
 
 **#512 is unaffected by this decision.** There the handler SUCCEEDS, so the claim SETTLES, and the unit of work's
 own commit then fails for its own reason; the gate never fires, because there is nothing unsettled for it to read.
@@ -254,7 +270,7 @@ against what shipped, not here.
 - Issue #512 — the change-tracker residue of a commit that fails after the handler succeeded. Unaffected by this
   decision, and not claimed closed by ADR-0035 either.
 - Issue #513 — the raw-provider-commit slice this decision does not cover; introduced by this change and tracked
-  with full scope.
+  with full scope. Narrowed, not closed, by the ownership refusal ADR-0035 records.
 - Issue #380 — the concurrent-delivery finding whose remediation created the two-places split this ADR resolves.
 - ADR-0006 — *Two-tier reliability: relational ambient-tx vs NoSQL stage-then-commit*. The participation-versus-
   ownership distinction that lets the inbox flush into a transaction it does not own.
@@ -269,7 +285,8 @@ against what shipped, not here.
 - ADR-0033 — *The relational inbox claims the message id before the handler, inside the ambient transaction*. The
   claim-first mechanism and the no-transaction refusal.
 - ADR-0035 — *A rolled-back unit of work reconciles its context's change tracker*. The identity-map half of the
-  split above, and the decision that retired ADR-0033's handler-throw detach.
+  split above, the decision that retired ADR-0033's handler-throw detach, and the ownership refusal that keeps a
+  claim inside the region this gate covers.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/InboxClaimRegister.cs`
   — the register, the weak key, and `UnsettledClaim`.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/PersistanceTransaction.cs`

@@ -20,6 +20,13 @@ introduced was REMOVED, measured to redden nothing, and the undo is now
 the no-transaction refusal, the absorption gate, the concurrency token and the closed class below are unchanged.
 The pointer ledger's rows were re-anchored against the files as they stand at this amendment's date.
 
+**Amended again, 2026-09-21.** `TryClaimMessageIdAsync` gained a SECOND refusal: it also refuses a transaction no
+unit of work began, so the claim goes only into a transaction whose failure and whose commit this package
+controls. ADR-0035 owns that decision, its measurements and the reason it is not a re-derivation of ownership;
+this ADR cites it. Two things here are corrected for it — the caller-begun residual recorded below, which a claim
+can no longer reach, and the exclusivity recorded for `MustRefuseToClaimOutsideATransaction`, which the second
+refusal falsified until that fact was repaired.
+
 ## Context
 
 **The read cannot order two deliveries, and no read can.** `_inbox.FindAsync` answers from a snapshot. Under
@@ -114,12 +121,17 @@ introduced by this decision — it is present on `master` — and it is tracked 
 [issue #512](https://github.com/brenpike/Chatter/issues/512), which stays open on its own terms; nothing recorded
 here decides it.
 
-The residual this decision leaves on the tracker half is a transaction the CALLER began and owns. `ExecuteAsync`
-rolls back and reconciles only a transaction it began itself, so a claim staged into a caller-begun transaction
-stays in this context's change tracker after that caller rolls back. **No fact in this suite drives
-`ReceiveViaInbox` inside a caller-begun transaction**, and per ADR-0027 that is stated plainly rather than
-implied. It is tracked by [issue #513](https://github.com/brenpike/Chatter/issues/513) on the same ownership line
-as the raw-provider-commit slice.
+The residual this decision once left on the tracker half was a transaction the CALLER began and owns:
+`ExecuteAsync` rolls back and reconciles only a transaction it began itself, so a claim staged into a
+caller-begun transaction stayed in this context's change tracker after that caller rolled back. **A claim cannot
+reach that shape.** `TryClaimMessageIdAsync` refuses a transaction no unit of work began, so what the
+reconciliation reaches is exactly what the inbox admits, and
+`UsingBrokeredMessageInbox/WhenReceivingViaInbox.MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan` is the
+oracle — the ownership guard, or the registration in `UnitOfWork.BeginAsync`, reddens it when removed. The
+ownership line itself is unchanged and still bounds what `ExecuteAsync` reconciles for OTHER participants;
+ADR-0035 owns that boundary and the refusal that keeps the claim on the inside of it.
+[Issue #513](https://github.com/brenpike/Chatter/issues/513) re-scopes accordingly: this half is eliminated and
+the raw-provider-commit slice survives in the narrower form ADR-0034 records.
 
 ADR-0034 narrows the durability half at one point and leaves it standing at the other. A handler failure a CALLER
 swallows no longer reaches a commit, because the commit point refuses a transaction carrying an unsettled claim.
@@ -136,8 +148,13 @@ class the document tier needed a whole second phase to answer, recorded in ADR-0
 The refusal makes it unrepresentable in this package rather than merely unlikely: there is no code path on which
 this type writes a claim that can stand on its own.
 
-`MustRefuseToClaimOutsideATransaction` is the oracle, and it is exclusive and deterministic: removing the guard
-reddens exactly that one fact and nothing else in the suite.
+`MustRefuseToClaimOutsideATransaction` is the oracle, and removing the guard reddens exactly that one fact and
+nothing else in the suite. That exclusivity was REPAIRED rather than restated. The fact asserted only that the
+refusal message contains `WithInboxBehavior`, which the second refusal — the ownership guard ADR-0035 records —
+also contains, so from the moment a second guard existed, deleting the `CurrentTransaction` guard reddened
+nothing and the exclusivity recorded here was false. The fact now also asserts a phrase unique to the
+no-transaction message, and the ownership fact asserts one unique to ownership, so each guard has an oracle the
+other cannot satisfy.
 
 ### Why the loser re-reads by key rather than reading a provider error code
 
@@ -357,7 +374,7 @@ than corrected in place. Line numbers are as at this ADR's amendment date, 2026-
 | `0028-...md:158` | `INVARIANT` block at `BrokeredMessageInbox.cs:18-31` | The block is at `BrokeredMessageInbox.cs:19-30` |
 | `0028-...md:157-159`, `0028-...md:233` | `MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId` | Renamed as above. ADR-0028's claim — the marker is staged and never self-committed — still holds under the commit-counting facts |
 | `0030-...md:20-22`, `0030-...md:157` | `BrokeredMessageInbox.cs:99` (the pre-read) and `:101-105` (the expiry gate) | The pre-read is at `:104` and the skip at `:106-110`. The pre-read-and-skip behaviour ADR-0030 defends is unchanged |
-| `0030-...md:24-25`, `0030-...md:158-161` | `WhenReceivingViaInbox.cs:98` and `:179` | `MustNotInvokeHandlerOrAddSecondRowForDuplicateMessageId` is at `:218` and `MustSkipHandlerForAnyExistingMarkerWhenDeduplicationWindowIsUnset` at `:630`. Both facts exist and both still hold |
+| `0030-...md:24-25`, `0030-...md:158-161` | `WhenReceivingViaInbox.cs:98` and `:179` | `MustNotInvokeHandlerOrAddSecondRowForDuplicateMessageId` is at `:258` and `MustSkipHandlerForAnyExistingMarkerWhenDeduplicationWindowIsUnset` at `:713`. Both facts exist and both still hold |
 | `characterization-findings.md:9` (row 3) | The marker is added to the change tracker and "`SaveChangesAsync` is never called; the row is not persisted until the surrounding `DbContext` is saved externally" | The claim is flushed before the handler and is durable at the unit of work's commit. The row is still not committed by the inbox. That file is an observation log of behaviour as it stood and is not rewritten |
 
 ## References
@@ -379,7 +396,8 @@ than corrected in place. Line numbers are as at this ADR's amendment date, 2026-
 - ADR-0034 — *An unsettled inbox claim withholds the commit*. Answers the durability half of the claim, and
   records why #512 is untouched by it.
 - ADR-0035 — *A rolled-back unit of work reconciles its context's change tracker*. Answers the identity-map half,
-  and the decision that retired this one's handler-throw detach.
+  retires this one's handler-throw detach, and owns the ownership refusal that keeps a claim inside the
+  reconciliation's reach.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/BrokeredMessageInbox.cs`
   (`ReceiveViaInbox`, `TryClaimMessageIdAsync`) — the claim, the refusal, the flush and the absorption path.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/InboxMessageConfiguration.cs`
@@ -390,6 +408,7 @@ than corrected in place. Line numbers are as at this ADR's amendment date, 2026-
   `MustInvokeTheHandlerOnceWhenASecondDeliveryRefreshesTheSameExpiredMessageId` — are the whole measured
   coverage of the absorption gate.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/UsingBrokeredMessageInbox/WhenReceivingViaInbox.cs`
-  — the ordering fact, the two commit-counting facts, and the refusal.
+  — the ordering fact, the two commit-counting facts, and the two refusals:
+  `MustRefuseToClaimOutsideATransaction` and `MustRefuseToClaimInsideATransactionNoUnitOfWorkBegan`.
 - `src/Chatter.MessageBrokers.Reliability.EntityFramework/tests/UsingInboxMessageConfiguration/WhenConfiguring.cs`
   — `MustTreatReceivedDateAsAConcurrencyToken`.
