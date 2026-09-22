@@ -88,14 +88,24 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             (await verify.Set<OutboxMessage>().CountAsync()).Should().Be(1, "a null retention is disabled, not zero");
         }
 
+        // A marker whose ReceivedByInboxAtUtc is NULL is a delivery the inbox claimed and whose handler never
+        // completed, not a marker of unknown age: the column carries two states, and the row's own presence is the
+        // claim. Such a row becomes durable whenever a caller swallows the handler failure and commits anyway, which
+        // is deliberate - the next delivery reads it as unhandled and runs the handler again - but no cutoff on a
+        // NULL column ever ages it out, so a configured Deduplication Window would accrue those rows for the life of
+        // the table if the predicate spared them. The rationale is in
+        // docs/adr/0033-the-relational-inbox-claims-before-the-handler-and-stamps-handled-after-it-in-the-same-row.md.
+        //
+        // The observation is the row's PRESENCE, not its column values: the purge issues a DELETE rather than an
+        // update, so an assertion on what the row holds could not tell a spared row from a reclaimed one.
         [RequiresDockerFact]
-        public async Task MustNeverPurgeAnInboxMarkerCarryingNoReceivedTimestamp()
+        public async Task MustPurgeAnInboxMarkerClaimedButNeverHandled()
         {
             var harness = await CreateHarnessAsync();
 
             using (var seed = harness.CreateContext())
             {
-                seed.Set<InboxMessage>().Add(new InboxMessage { MessageId = "inbox-undated", ReceivedByInboxAtUtc = null });
+                seed.Set<InboxMessage>().Add(new InboxMessage { MessageId = "inbox-unstamped", ReceivedByInboxAtUtc = null });
                 await seed.SaveChangesAsync();
             }
 
@@ -104,8 +114,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
             await PurgeOnceAsync(harness, options);
 
             using var verify = harness.CreateContext();
-            (await verify.Set<InboxMessage>().CountAsync()).Should().Be(1,
-                "a marker with no received timestamp has no age to compare against the window, so it is never purged");
+            (await verify.Set<InboxMessage>().CountAsync()).Should().Be(0,
+                "a marker left unstamped is a claim no handler completed, and no cutoff would ever age it out");
         }
 
         // The purge service takes an IServiceScopeFactory rather than a context: it outlives any one scope, so it

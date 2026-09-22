@@ -162,6 +162,33 @@ Three properties hold, and they are what makes the record sufficient rather than
 No GitHub issue is filed. The recorded residual is the mechanism, and the escalation that produced it is in the
 review ledger.
 
+### Clarifying amendment (2026-09-21) — the marker this bound rests on is flushed, not staged
+
+**This is a clarification, not a reversal.** The residual decided above is intact, and so is the bound on its
+impact: a commit that stood durably makes the inbox marker durable with it, so where the inbox behavior is
+registered the redelivery does not re-run the handler. Prior prose is preserved verbatim as an audit trail and
+the status of this ADR remains `accepted`. What changed is the marker's own mechanics, decided in
+[ADR-0033](0033-the-relational-inbox-claims-before-the-handler-and-stamps-handled-after-it-in-the-same-row.md).
+
+**The withdrawn mechanism.** The second Decision bullet above says the marker "is staged and never
+self-committed" and names `MustInvokeHandlerAndTrackButNotPersistInboxMessageForFreshMessageId`; the References
+entry below names that fact again alongside the `INVARIANT` block at `BrokeredMessageInbox.cs:18-31`.
+`ReceiveViaInbox` now writes the row twice — a claim carrying no timestamp before the handler runs, the handled
+stamp after it returns — and FLUSHES each write into the ambient transaction rather than staging it, so that
+fact was deleted with the behaviour it pinned. The block both anchors point at spans
+`BrokeredMessageInbox.cs:18-28`.
+
+**What holds the bound now.** The half that is this package's to keep is *flushed and never self-committed*.
+Its oracle is `WhenReceivingViaInbox.MustFlushTheClaimWithoutCommittingIt`, which counts commits through an
+`IDbTransactionInterceptor`; committing the ambient transaction inside the inbox reddens it. The bound itself
+is unaffected because the handled stamp is flushed before the unit of work's commit is attempted, so the commit
+this residual is about carries a HANDLED marker rather than a bare claim —
+`WhenReceivingViaInbox.MustFlushTheStampWhenTheHandlerReturnsAndCommitIt` reads that stamp back from the store
+ahead of any commit. The suppression the bound rests on is unchanged, and the other three facts the References
+entry names — `MustNotInvokeHandlerOrAddSecondRowForDuplicateMessageId`,
+`MustSkipHandlerForAnyExistingMarkerWhenDeduplicationWindowIsUnset` and
+`MustBypassInboxAndInvokeHandlerWhenMessageIdIsNullEmptyOrWhitespace` — still pin it.
+
 ## Closed-by-Construction Acceptance Test
 
 > What class of future finding does this make impossible, and why?

@@ -71,6 +71,34 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                 catch (Exception ex)
                 {
                     await CleanUpAsync(() => RollbackAsync(scope, CancellationToken.None), "roll back", WhileHandlingAnEarlierFailure).ConfigureAwait(false);
+
+                    // INVARIANT: a unit of work that began its own transaction reconciles the context's change tracker
+                    // with the rollback. ELIMINATED CLASS: a change-tracker entry describing a write a transaction
+                    // this unit of work rolled back never made. EF accepts changes at SaveChangesAsync time rather
+                    // than at COMMIT time, so every entity a failed attempt flushed stays tracked in its post-flush
+                    // state, and FindAsync resolves from the identity map ahead of the store - which is how a retry
+                    // over the same scoped context reads a row the store does not hold (#512). The tracker is cleared
+                    // wholesale rather than entry by entry: a targeted detach leaves the flushed entity's companions
+                    // tracked, which is the same wrong answer read through a different object.
+                    // Oracles: WhenExecutingUnitOfWorkOverSqlite.MustLeaveNoTrackedChangesWhenAUnitOfWorkItBeganRollsBack
+                    // and WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenTheCommitFailedAfterTheHandlerReturned.
+                    // Deleting this reconciliation reddens those TWO facts and nothing else, on both target
+                    // frameworks - measured by deleting it and counting, not predicted.
+                    // The BegunHere gate carries the ownership rule this type states below: a unit of work that
+                    // adopted a caller's transaction rolls nothing back and did not begin the state staged on it, so
+                    // it leaves that state to the owner who completes the transaction. Oracle:
+                    // WhenExecutingUnitOfWorkOverSqlite.MustLeaveTheCallersTrackedChangesAloneWhenTheCallerBeganTheTransaction;
+                    // reconciling without the gate reddens that one fact and nothing else, on both target frameworks
+                    // (measured).
+                    // The SUCCESS path is untouched, because a commit that stood leaves a truthful tracker. ADR-0028's
+                    // indeterminate commit is neither claimed nor denied: this runs after a rollback attempt whose
+                    // outcome is unknown, and clearing the tracker asserts nothing about the store either way.
+                    // Decision: docs/adr/0034-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md.
+                    if (scope.BegunHere)
+                    {
+                        _context.ChangeTracker.Clear();
+                    }
+
                     await CleanUpAsync(() => scope.DisposeAsync().AsTask(), "dispose", WhileHandlingAnEarlierFailure).ConfigureAwait(false);
                     _logger.LogError(ex, "Error occurred during unit of work");
                     throw;

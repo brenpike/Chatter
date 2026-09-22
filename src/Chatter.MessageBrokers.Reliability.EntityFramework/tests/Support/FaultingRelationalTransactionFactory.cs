@@ -112,6 +112,19 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Support
         }
     }
 
+    /// <summary>
+    /// Fails the commit alone, leaving the rollback working, so a test can observe what a unit of work does after
+    /// its commit failed rather than what it does when its recovery also fails.
+    /// </summary>
+    public sealed class CommitFaultingRelationalTransactionFactory : FaultingRelationalTransactionFactory
+    {
+        public CommitFaultingRelationalTransactionFactory(RelationalTransactionFactoryDependencies dependencies)
+            : base(dependencies)
+        { }
+
+        protected override TransactionFaults Faults => TransactionFaults.Commit;
+    }
+
     public sealed class RollbackFaultingRelationalTransactionFactory : FaultingRelationalTransactionFactory
     {
         public RollbackFaultingRelationalTransactionFactory(RelationalTransactionFactoryDependencies dependencies)

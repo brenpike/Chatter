@@ -108,12 +108,26 @@ reddens EXACTLY ONE fact — `WhenUpdatingProcessed.MustRecordTheAttemptAfterAFa
 the post-rollback case. The two clean-entity facts beside it pass either way, because a tracked save reaches a clean
 row just as well.
 
-The bypass is essential on the FAILURE path for a reason specific to that path: EF does not reset the change tracker
-when the surrounding transaction rolls back, so after a failed claim the tracked message still carries the
-`ProcessedFromOutboxAtUtc` stamp as its CURRENT value against the `null` it was loaded with. `OutboxMessageConfiguration`
-maps that property `IsConcurrencyToken()`, so a tracked save there would re-emit the very "still unprocessed"
-predicate that just failed — and would commit the claim if it now matched. That same mapping decision is why neither
-new column is a concurrency token: oracle `WhenConfiguring.MustTreatProcessedDateAsTheOnlyConcurrencyToken`.
+The bypass is essential on the FAILURE path for a reason specific to that path: after a failed claim the message
+this method is handed may still carry the `ProcessedFromOutboxAtUtc` stamp as its CURRENT value against the `null`
+it was loaded with. `OutboxMessageConfiguration` maps that property `IsConcurrencyToken()`, so a tracked save there
+would re-emit the very "still unprocessed" predicate that just failed — and would commit the claim if it now
+matched. That same mapping decision is why neither new column is a concurrency token: oracle
+`WhenConfiguring.MustTreatProcessedDateAsTheOnlyConcurrencyToken`.
+
+**Amended in place, 2026-09-21 — the PREMISE above changed; the DECISION did not.** This paragraph used to state
+the reason as *EF does not reset the change tracker when the surrounding transaction rolls back*. That no longer
+holds for THIS package's own unit of work: `UnitOfWork<TContext>` clears its context's change tracker when it rolls
+back a transaction IT BEGAN, per ADR-0034. The bypass SURVIVES, because the states it has to be correct over are
+now wider rather than narrower — a message can reach `RecordDispatchAttempt` DETACHED, where `Update` sets original
+from current, or still tracked holding the stale stamp where the unit of work adopted a caller's transaction and
+reconciled nothing. `ExecuteUpdateAsync` reaches the row whatever the tracker holds, which is what
+`WhenUpdatingProcessed.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed` pins, and that fact
+still reddens exclusively on the tracked-save mutation. The second reason — the write must LAND, because the
+transaction that carried the claim has already rolled back and there is no unit of work left to commit with — is
+untouched. The ADR-0034 reconciliation also required a change in the same file to a DIFFERENT method,
+`UpdateProcessedDate`, which now states its own `null` original value so that the claim emits the same predicate
+detached or tracked; that is recorded in ADR-0034, not here.
 
 ## Considered Options
 
@@ -259,6 +273,9 @@ the application generates and owns the migration (`src/README.md`, *Reliability*
   terminal state stamped rather than derived.
 - ADR-0025 — *The unit of work refuses a retrying execution strategy*. The seam the separate failure-path unit of
   work is opened through.
+- ADR-0034 — *A rolled-back unit of work reconciles its context's change tracker*. The decision that superseded
+  this ADR's stated premise for the tracker bypass, and that required `UpdateProcessedDate` to state its own
+  original value.
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/Outbox/OutboxMessage.cs` — `DispatchAttempts`
   and `NextAttemptAtUtc`, and the null-means-due-now invariant.
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/Outbox/IPollableOutboxStore.cs` —
