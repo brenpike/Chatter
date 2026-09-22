@@ -83,6 +83,41 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             => Task.CompletedTask;
 
         /// <summary>
+        /// Takes the drain claim on <paramref name="outboxMessage"/>: a compare-and-set that moves the row's
+        /// <see cref="OutboxMessage.NextAttemptAtUtc"/> from <paramref name="observedNextAttemptAtUtc"/> - the value
+        /// the poll that handed this message back reported - to <paramref name="claimedNextAttemptAtUtc"/>, and
+        /// answers whether THIS caller is the one that moved it.
+        /// </summary>
+        /// <remarks>
+        /// The drain claim is a different thing from the claim the processed stamp carries
+        /// (<see cref="OutboxMessage.ProcessedFromOutboxAtUtc"/>): that one records that a message was dispatched,
+        /// while this one only arbitrates which of several drains running at once gets to try.
+        /// <para>
+        /// The observed value is an EXPLICIT PARAMETER rather than a read of
+        /// <see cref="OutboxMessage.NextAttemptAtUtc"/> taken at claim time, and that is what leaves the
+        /// compare-and-set honest rather than a style preference. A store may hand a poll THE STORED INSTANCES
+        /// THEMSELVES - the shipped in-memory one does - so a second drain reading the observed value off the
+        /// message would read the FIRST drain's claim, compare it against itself, satisfy the set, and be granted
+        /// the claim too: both drains would win. The parameter pins the comparison to what the poll reported
+        /// instead of to whatever the row says by the time the claim runs.
+        /// </para>
+        /// <para>
+        /// INVARIANT: this is a default interface implementation that GRANTS, so a third-party pollable store
+        /// written against the previous shape of this interface still compiles and still satisfies the cast at the
+        /// poll site - the same reason <c>RecordDispatchAttempt</c> above carries a default body. Granting is the
+        /// answer that keeps such a store's behaviour exactly what it is today and costs it nothing; what the store
+        /// gives up in exchange is arbitration, because every drain is told it won and nothing then holds two of
+        /// them off one message. Oracle:
+        /// <c>WhenResolvingReliabilityStores.OutboxCustomPrimaryImplementingBoth_TryClaimForDispatchGrantsByDefault</c>,
+        /// whose store deliberately does not implement this member; answering <c>false</c> from this body reddens
+        /// that ONE fact and nothing else - measured across both suites that see this interface, the core
+        /// <c>Chatter.MessageBrokers</c> one and the EntityFramework reliability one.
+        /// </para>
+        /// </remarks>
+        Task<bool> TryClaimForDispatch(OutboxMessage outboxMessage, DateTime? observedNextAttemptAtUtc, DateTime claimedNextAttemptAtUtc, CancellationToken cancellationToken = default)
+            => Task.FromResult(true);
+
+        /// <summary>
         /// Takes every unprocessed row of one staged batch. This is a lookup by batch id and is NOT an Outbox Poll
         /// Batch: neither the cap, the ordering nor the due clause above applies to it.
         /// </summary>

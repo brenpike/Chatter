@@ -263,6 +263,25 @@ namespace Chatter.MessageBrokers.Tests.DependencyInjection.UsingChatterMessageBr
             attempted.NextAttemptAtUtc.Should().BeNull("the inherited default records nothing");
         }
 
+        /// <summary>
+        /// <see cref="CustomOutboxBoth"/> deliberately does NOT implement <c>TryClaimForDispatch</c> either, so the
+        /// inherited default is what answers. It GRANTS: a store written against the previous interface keeps
+        /// exactly today's behaviour and pays nothing for the new member. What it gives up is arbitration - every
+        /// drain is told it won - which is the honest trade, not a defect this fact is guarding against.
+        /// </summary>
+        [Fact]
+        public async Task OutboxCustomPrimaryImplementingBoth_TryClaimForDispatchGrantsByDefault()
+        {
+            using var scope = BuildScope(services =>
+                services.AddScoped<IBrokeredMessageOutbox, CustomOutboxBoth>());
+            var pollable = (IPollableOutboxStore)scope.ServiceProvider.GetRequiredService<IBrokeredMessageOutbox>();
+            var polled = new OutboxMessage { MessageId = "store-that-never-heard-of-the-drain-claim", NextAttemptAtUtc = null };
+
+            var claimed = await pollable.TryClaimForDispatch(polled, observedNextAttemptAtUtc: null, claimedNextAttemptAtUtc: DateTime.UtcNow.AddMinutes(5));
+
+            claimed.Should().BeTrue("the inherited default grants the drain claim");
+        }
+
         // ------------------------------------------------------------------ inbox: default in-memory
 
         [Fact]
