@@ -91,6 +91,16 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                    .Setup(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()))
                    .Returns<Func<CancellationToken, Task>, TransactionContext, CancellationToken>((operation, _, token) => operation(token));
 
+            // The drain takes its drain claim before it publishes. Moq PROXIES the interface's granting default
+            // implementation rather than inheriting it, and a LOOSE mock's Task<bool> answers FALSE, so without this
+            // grant every span, metric and wire assertion below would read a drain that was denied and published
+            // nothing - removing it reddens NINE facts in this fixture, every one of them (measured).
+            // What the claim arbitrates is not this fixture's subject; it is pinned in
+            // Reliability.Outbox.UsingOutboxProcessor.WhenProcessingOutboxMessage.
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.TryClaimForDispatch(It.IsAny<OutboxMessage>(), It.IsAny<DateTime?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(true);
+
             // Process SWALLOWS a publish failure after logging it, so the logger is the only place the exception —
             // and with it the async stack trace that exposes which path the drain took — is observable.
             _logger.Setup(l => l.Log(LogLevel.Error,

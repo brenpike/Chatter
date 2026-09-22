@@ -397,6 +397,135 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
             batch.Should().ContainSingle().Which.MessageId.Should().Be("id-1");
         }
 
+        [Fact]
+        public async Task MustGrantExactlyOneOfTwoCompetingDrainClaims()
+        {
+            // INVARIANT: two drains that polled the same message and reported the same due instant cannot both be
+            // granted the drain claim. The competing claim is FORCED rather than raced: the store's test seam runs
+            // it at exactly the point between this drain's observation and its compare-and-set, the only window in
+            // which both could be granted. The competing drain claims an instant already PAST, so the losing claim
+            // is refused by the comparison against the reported instant and not by the due gate.
+            var claimedByTheCompetingDrain = DateTime.UtcNow.AddMinutes(-5);
+            var competingClaimGranted = false;
+            var competingDrainHasRun = false;
+            InMemoryBrokeredMessageOutbox store = null;
+            store = new InMemoryBrokeredMessageOutbox(_logger.Creation, _reliabilityOptions, messageId =>
+            {
+                if (competingDrainHasRun)
+                {
+                    return;
+                }
+                competingDrainHasRun = true;
+                competingClaimGranted = TakeDrainClaim(store, messageId, null, claimedByTheCompetingDrain);
+            });
+
+            await store.SendToOutbox(CreateOutbound("id-1"), new TransactionContext());
+            var polled = (await store.GetUnprocessedMessagesFromOutbox()).Single();
+
+            var claimGranted = await ((IPollableOutboxStore)store)
+                .TryClaimForDispatch(polled, null, DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(1)));
+
+            competingDrainHasRun.Should().BeTrue();
+            new[] { competingClaimGranted, claimGranted }.Should().ContainSingle(granted => granted);
+            competingClaimGranted.Should().BeTrue();
+            polled.NextAttemptAtUtc.Should().Be(claimedByTheCompetingDrain);
+        }
+
+        [Fact]
+        public async Task MustRefuseADrainClaimOnAMessageAnotherDrainHolds()
+        {
+            // INVARIANT: once a drain holds the claim, a second drain that polled the same message before the claim
+            // was taken is refused, so only one of them dispatches it.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            var heldUntil = DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(1));
+
+            (await _pollableStore.TryClaimForDispatch(stored["id-1"], null, heldUntil)).Should().BeTrue();
+            var secondClaim = await _pollableStore.TryClaimForDispatch(stored["id-1"],
+                                                                      null,
+                                                                      DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(1)));
+
+            secondClaim.Should().BeFalse();
+            stored["id-1"].NextAttemptAtUtc.Should().Be(heldUntil);
+        }
+
+        [Fact]
+        public async Task MustRefuseADrainClaimOnAProcessedMessage()
+        {
+            // INVARIANT: the drain claim also refuses a message already stamped processed - a drain holding a row
+            // polled before that stamp landed must not dispatch it a second time. The reported instant still
+            // matches and the message is still due, so the processed stamp is the only thing refusing here.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            await _sut.UpdateProcessedDate(stored["id-1"]);
+
+            var claimGranted = await _pollableStore.TryClaimForDispatch(stored["id-1"],
+                                                                       null,
+                                                                       DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(1)));
+
+            claimGranted.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task MustRefuseADrainClaimOnAMessageThatIsNotDue()
+        {
+            // INVARIANT: the drain claim refuses a message whose next attempt has not arrived, even when the
+            // reported instant matches it exactly. GetUnprocessedBatch is deliberately NOT due-gated, so an
+            // in-request drain can read a message AFTER another drain claimed it and report the claim's own
+            // instant back; refusing what is not due at claim time is what keeps that from passing the comparison.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            var notDueUntil = DateTime.UtcNow.AddMinutes(5);
+            stored["id-1"].NextAttemptAtUtc = notDueUntil;
+
+            var claimGranted = await _pollableStore.TryClaimForDispatch(stored["id-1"],
+                                                                       notDueUntil,
+                                                                       DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(1)));
+
+            claimGranted.Should().BeFalse();
+            stored["id-1"].NextAttemptAtUtc.Should().Be(notDueUntil);
+        }
+
+        [Fact]
+        public async Task MustRefuseADrainClaimAgainstAStaleObservedDueInstant()
+        {
+            // INVARIANT: the comparison is against the instant the POLL reported, not against whatever the message
+            // says by the time the claim runs. This drain reports the null a staged message carries while a
+            // recorded attempt has since moved the message on; the message is due, so only the stale report
+            // refuses the claim.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            var recordedDueInstant = DateTime.UtcNow.AddMinutes(-5);
+            await _pollableStore.RecordDispatchAttempt(stored["id-1"], recordedDueInstant);
+
+            var claimGranted = await _pollableStore.TryClaimForDispatch(stored["id-1"],
+                                                                       null,
+                                                                       DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(1)));
+
+            claimGranted.Should().BeFalse();
+            stored["id-1"].NextAttemptAtUtc.Should().Be(recordedDueInstant);
+        }
+
+        [Fact]
+        public async Task MustLeaveAClaimedMessageDueAgainOneBackoffLater()
+        {
+            // INVARIANT: a granted claim writes the instant the CALLER supplied, so a drain that then dies without
+            // dispatching leaves the message polled again one backoff later rather than held for good.
+            var stored = await SeedOutboxAsync(("id-1", 0));
+            var oneBackoffLater = DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(1));
+
+            (await _pollableStore.TryClaimForDispatch(stored["id-1"], null, oneBackoffLater)).Should().BeTrue();
+
+            stored["id-1"].NextAttemptAtUtc.Should().Be(oneBackoffLater);
+            (await _sut.GetUnprocessedMessagesFromOutbox()).Should().BeEmpty();
+        }
+
+        // Runs one drain claim synchronously against the store's stored copy of a message, which is what the test
+        // seam's callback needs: it runs inside the claim path, so anything it drives there must complete before
+        // that path resumes.
+        private static bool TakeDrainClaim(InMemoryBrokeredMessageOutbox store, string messageId, DateTime? observedNextAttemptAtUtc, DateTime claimedNextAttemptAtUtc)
+        {
+            var message = store.GetUnprocessedMessagesFromOutbox().GetAwaiter().GetResult().Single(m => m.MessageId == messageId);
+            return ((IPollableOutboxStore)store).TryClaimForDispatch(message, observedNextAttemptAtUtc, claimedNextAttemptAtUtc)
+                                                .GetAwaiter().GetResult();
+        }
+
         // Sends each message then overwrites its SentToOutboxAtUtc, because SendToOutbox stamps DateTime.UtcNow
         // and rapid sequential sends can tie. An explicit minute per message makes the expected poll order exact.
         // Returns the STORED rows, which are the very instances the store hands a poll, so a test can set the

@@ -81,8 +81,58 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 
                 var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
+
+                // INVARIANT: the value the drain claim's compare-and-set is made against is read HERE, before the
+                // unit of work opens, and never at claim time. A store may hand a poll THE STORED INSTANCE ITSELF -
+                // the shipped in-memory one does - so a second drain reading this value at claim time would read the
+                // FIRST drain's claim, compare it against itself, satisfy the set and be granted the row that drain
+                // is already publishing: both drains would win.
+                // Oracle: MustClaimAgainstTheDueTimeThePollRead; passing message.NextAttemptAtUtc at the call
+                // instead of this local reddens it alone (measured).
+                // The instant claimed is the one a FAILED attempt would have been scheduled by, so a drain that dies
+                // mid-publish holds the row back exactly as long as a failure would have. This introduces no number
+                // of its own.
+                var observedNextAttemptAtUtc = message.NextAttemptAtUtc;
+                var claimedNextAttemptAtUtc = DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(message.DispatchAttempts + 1));
+
                 await ((IUnitOfWork)_brokeredMessageOutbox).ExecuteAsync(async ct =>
                 {
+                    // INVARIANT: the DRAIN CLAIM is taken as the FIRST statement inside the unit of work, before the
+                    // publish. It arbitrates which of several drains that polled this row gets to try it, and it is
+                    // a different thing from the claim the processed stamp carries (ADR-0031 Option D), which
+                    // records that a message WAS dispatched. Taking it INSIDE the unit of work is what makes the
+                    // arbitration hold on a relational store: the losing drain blocks on the row's lock for the
+                    // winner's whole publish and then matches nothing, rather than being told it won a row that is
+                    // already on the broker. A denial RETURNS rather than throwing - a throw lands in the generic
+                    // catch below and spends a dispatch attempt on a row this drain never attempted - so a denied
+                    // drain publishes nothing, stamps nothing and costs the row nothing.
+                    // Oracles: MustTakeTheDrainClaimBeforeDispatching, MustDispatchNothingWhenTheDrainClaimIsDenied,
+                    // MustNotSpendADispatchAttemptWhenTheDrainClaimIsDenied and
+                    // MustRecordTheDispatchAttemptAfterTheRollbackDiscardsTheDrainClaim. Measured: dropping the
+                    // denial guard and dispatching anyway reddens MustDispatchNothingWhenTheDrainClaimIsDenied
+                    // ALONE; throwing instead of returning on a denial reddens
+                    // MustNotSpendADispatchAttemptWhenTheDrainClaimIsDenied ALONE; moving the claim BELOW the
+                    // publish reddens THREE - MustTakeTheDrainClaimBeforeDispatching,
+                    // MustDispatchNothingWhenTheDrainClaimIsDenied and
+                    // MustRecordTheDispatchAttemptAfterTheRollbackDiscardsTheDrainClaim.
+                    // INVARIANT: a write to NextAttemptAtUtc is exactly as durable as the fact it records, which is
+                    // why this claim and RecordDispatchAttempt write the same column from opposite sides of the unit
+                    // of work. RecordDispatchAttempt records something that HAPPENED - a publish that failed - and
+                    // has to outlive the rollback that failure caused, so it goes straight to the store OUTSIDE any
+                    // unit of work. This claim records something ABOUT TO happen and must not outlive a publish that
+                    // did not, so it goes INSIDE one. The two meet on the failure exit, in that order: the rollback
+                    // discards the claim and the attempt stamp lands after it, leaving the row scheduled by the
+                    // failure rather than by a claim the failure already voided.
+                    // Oracle: MustRecordTheDispatchAttemptAfterTheRollbackDiscardsTheDrainClaim, which reads the
+                    // SEQUENCE of writes rather than the row, because the claimed and the recorded instant are both
+                    // one backoff ahead of now and the row alone does not tell them apart. A store whose unit of
+                    // work does not roll back - the in-memory one keeps no transaction - keeps the claim instead,
+                    // and the attempt stamp that lands after it overwrites the same column either way.
+                    if (!await pollable.TryClaimForDispatch(message, observedNextAttemptAtUtc, claimedNextAttemptAtUtc, ct))
+                    {
+                        return;
+                    }
+
                     // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides, and it decides HERE
                     // rather than inside the scope. Argument evaluation precedes the guard INSIDE SendScope.Open,
                     // so a call site that reaches DispatchObserved has already resolved the persisted parent and
@@ -171,6 +221,12 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// it is what performs the claim, not a write that happens to restate what a tracker might still carry.
         /// No oracle separates the two paths: residue belongs to a relational store and a mocked one has none, so
         /// this is stated rather than pinned.
+        /// INVARIANT: no DRAIN CLAIM is taken here. The message is already on the broker, so there is nothing left
+        /// for a claim to arbitrate, and a claim that came back DENIED would abandon the processed stamp on a row
+        /// that WAS published - the one outcome this method exists to prevent. The rationale for the claim itself is
+        /// recorded once, at the call site in <see cref="Process"/>. No oracle separates this from a re-claim that
+        /// took one: every store grants an uncontended claim, so a claim added here would be granted on every path
+        /// that reaches this method.
         /// INVARIANT: a re-claim that throws is logged and reported unclaimed, so the caller falls through to the
         /// dispatch attempt and the row is held back by the backoff instead of being published again next poll.
         /// Oracle: MustRecordADispatchAttemptWhenTheReClaimAlsoFails; swallowing the failure and reporting the row

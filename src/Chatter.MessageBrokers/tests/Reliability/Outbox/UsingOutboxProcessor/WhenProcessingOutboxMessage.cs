@@ -41,6 +41,13 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
                    .Setup(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()))
                    .Returns<Func<CancellationToken, Task>, TransactionContext, CancellationToken>((operation, _, ct) => operation(ct));
 
+            // Moq PROXIES a default interface implementation rather than inheriting it, and a LOOSE mock's
+            // Task<bool> answers FALSE - so without this the drain claim is DENIED and every assertion that reads a
+            // drain which actually ran fails for a reason that has nothing to do with what it pins. Removing this
+            // grant reddens FIFTEEN facts in this fixture (measured). The granted claim is the uncontended baseline
+            // the rest of the fixture is written against; the facts that deny it do so deliberately, one at a time.
+            GrantTheDrainClaim();
+
             _sut = new OutboxProcessor(_infrastructureProvider.Object, _logger.Object, _bodyConverterFactory.Object, _outbox.Object);
         }
 
@@ -498,6 +505,199 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
 
             await process.Should().NotThrowAsync();
             _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+        }
+
+        private const string DrainClaimWrite = "drain-claim";
+        private const string DispatchWrite = "dispatch";
+        private const string RollbackWrite = "rollback";
+        private const string DispatchAttemptWrite = "dispatch-attempt";
+
+        /// <summary>
+        /// Answers the drain claim the way the shipped stores answer an uncontended one, which is the baseline every
+        /// fact in this fixture that is not ABOUT the claim is written against.
+        /// </summary>
+        private void GrantTheDrainClaim()
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.TryClaimForDispatch(It.IsAny<OutboxMessage>(), It.IsAny<DateTime?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(true);
+
+        /// <summary>
+        /// Answers the drain claim the way a store answers a drain that LOST the row to another drain already
+        /// publishing it.
+        /// </summary>
+        private void DenyTheDrainClaim()
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.TryClaimForDispatch(It.IsAny<OutboxMessage>(), It.IsAny<DateTime?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(false);
+
+        // ORDERING ORACLE: the drain claim is what arbitrates which of several drains gets to publish a row, so it is
+        // taken BEFORE the publish or it arbitrates nothing - a claim taken afterwards lets every drain publish and
+        // only then reports which one of them was supposed to. Presence alone would not catch that, so the oracle is
+        // the ORDER the two seams were reached in.
+        [Fact]
+        public async Task MustTakeTheDrainClaimBeforeDispatching()
+        {
+            var writes = new System.Collections.Generic.List<string>();
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.TryClaimForDispatch(It.IsAny<OutboxMessage>(), It.IsAny<DateTime?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                   .Callback(() => writes.Add(DrainClaimWrite))
+                   .ReturnsAsync(true);
+            _dispatcher.Setup(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null))
+                       .Callback<OutboundBrokeredMessage, TransactionContext>((_, __) => writes.Add(DispatchWrite))
+                       .Returns(Task.CompletedTask);
+
+            await _sut.Process(CreateOutboxMessage());
+
+            writes.Should().Equal(DrainClaimWrite, DispatchWrite);
+        }
+
+        // A DENIED DRAIN CLAIM PUBLISHES NOTHING. The row belongs to the drain that won the claim; publishing it here
+        // too is the duplicate delivery the claim exists to prevent. The processed stamp is asserted on the row - the
+        // state a later poll reads - so a drain that skipped the publish but stamped the row anyway still fails.
+        [Fact]
+        public async Task MustDispatchNothingWhenTheDrainClaimIsDenied()
+        {
+            var message = CreateOutboxMessage();
+            StampProcessedDateOnMark();
+            DenyTheDrainClaim();
+
+            await _sut.Process(message);
+
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Never);
+            message.ProcessedFromOutboxAtUtc.Should().BeNull();
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.UpdateProcessedDate(message, It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        // ...AND COSTS THE ROW NOTHING. A drain that was denied never attempted the publish, so charging it an attempt
+        // would push the due time of a row ANOTHER drain is publishing right now and, under a configured attempt
+        // ceiling, burn a healthy row's budget on contention alone. This is why the denial RETURNS rather than
+        // throwing: a throw lands in the generic catch, which spends exactly that attempt.
+        [Fact]
+        public async Task MustNotSpendADispatchAttemptWhenTheDrainClaimIsDenied()
+        {
+            var message = CreateOutboxMessage();
+            RecordAttemptStateOnRecord();
+            DenyTheDrainClaim();
+
+            await _sut.Process(message);
+
+            message.DispatchAttempts.Should().Be(0);
+            message.NextAttemptAtUtc.Should().BeNull();
+            _outbox.As<IPollableOutboxStore>()
+                   .Verify(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        /// <summary>
+        /// Lets ANOTHER drain claim the row in the window between the poll that handed this message back and this
+        /// drain's own claim, writing through to the very instance this drain holds - which is what the shipped
+        /// in-memory store hands a poll.
+        /// </summary>
+        private void ClaimTheRowFromAnotherDrainAsTheUnitOfWorkOpens(OutboxMessage row, DateTime anotherDrainsClaim)
+            => _outbox.As<IUnitOfWork>()
+                      .Setup(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()))
+                      .Returns<Func<CancellationToken, Task>, TransactionContext, CancellationToken>((operation, _, ct) =>
+                      {
+                          row.NextAttemptAtUtc = anotherDrainsClaim;
+                          return operation(ct);
+                      });
+
+        // THE COMPARE-AND-SET IS MADE AGAINST WHAT THE POLL READ, not against whatever the row says by the time the
+        // claim runs. A store may hand a poll THE STORED INSTANCE ITSELF, so a drain reading the observed value at
+        // claim time would read the OTHER drain's claim, compare it against itself, satisfy the set and be granted
+        // the row that drain is already publishing - both drains win. The oracle is the value handed to the store,
+        // because a self-satisfying comparison is granted by every store and is therefore invisible in the answer.
+        [Fact]
+        public async Task MustClaimAgainstTheDueTimeThePollRead()
+        {
+            var message = CreateOutboxMessage();
+            var whatThePollRead = new DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc);
+            message.NextAttemptAtUtc = whatThePollRead;
+            DateTime? observed = null;
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.TryClaimForDispatch(It.IsAny<OutboxMessage>(), It.IsAny<DateTime?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                   .Callback<OutboxMessage, DateTime?, DateTime, CancellationToken>((_, observedNextAttemptAtUtc, __, ___) => observed = observedNextAttemptAtUtc)
+                   .ReturnsAsync(true);
+            ClaimTheRowFromAnotherDrainAsTheUnitOfWorkOpens(message, whatThePollRead.AddMinutes(5));
+
+            await _sut.Process(message);
+
+            observed.Should().Be(whatThePollRead);
+        }
+
+        /// <summary>
+        /// Stages the drain claim on the row the way a store inside a unit of work stages it, and records the write,
+        /// so the order this write and the attempt stamp land in is observable.
+        /// </summary>
+        private void StageTheDrainClaimOnTheRow(System.Collections.Generic.IList<string> writes)
+            => _outbox.As<IPollableOutboxStore>()
+                      .Setup(o => o.TryClaimForDispatch(It.IsAny<OutboxMessage>(), It.IsAny<DateTime?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                      .Callback<OutboxMessage, DateTime?, DateTime, CancellationToken>((row, _, claimedNextAttemptAtUtc, __) =>
+                      {
+                          writes.Add(DrainClaimWrite);
+                          row.NextAttemptAtUtc = claimedNextAttemptAtUtc;
+                      })
+                      .ReturnsAsync(true);
+
+        /// <summary>
+        /// Rolls the work staged inside a failed unit of work back the way a real relational one rolls its
+        /// transaction back, and records the rollback.
+        /// </summary>
+        private void RollBackTheDrainClaimWhenTheUnitOfWorkFails(OutboxMessage row, System.Collections.Generic.IList<string> writes)
+            => _outbox.As<IUnitOfWork>()
+                      .Setup(u => u.ExecuteAsync(It.IsAny<Func<CancellationToken, Task>>(), It.IsAny<TransactionContext>(), It.IsAny<CancellationToken>()))
+                      .Returns<Func<CancellationToken, Task>, TransactionContext, CancellationToken>((operation, _, ct) => RunAndRollBackTheClaim(operation, row, writes, ct));
+
+        private static async Task RunAndRollBackTheClaim(Func<CancellationToken, Task> operation,
+                                                         OutboxMessage row,
+                                                         System.Collections.Generic.IList<string> writes,
+                                                         CancellationToken cancellationToken)
+        {
+            var nextAttemptBeforeTheWork = row.NextAttemptAtUtc;
+
+            try
+            {
+                await operation(cancellationToken);
+            }
+            catch
+            {
+                row.NextAttemptAtUtc = nextAttemptBeforeTheWork;
+                writes.Add(RollbackWrite);
+                throw;
+            }
+        }
+
+        // THE TWO WRITES TO THE SAME COLUMN, IN ORDER. The drain claim and the attempt stamp both move
+        // NextAttemptAtUtc, and on a failed publish they meet: the rollback discards the claim, and only then does
+        // the attempt stamp land, outside the unit of work. That order is what leaves the row scheduled by the
+        // FAILURE rather than by a claim the failure already voided. The oracle is the sequence of writes plus the
+        // value the row is finally left at, because the claim instant and the attempt instant are both "now plus one
+        // backoff" and are not told apart by reading the row alone.
+        [Fact]
+        public async Task MustRecordTheDispatchAttemptAfterTheRollbackDiscardsTheDrainClaim()
+        {
+            var message = CreateOutboxMessage();
+            var writes = new System.Collections.Generic.List<string>();
+            DateTime? recorded = null;
+            StageTheDrainClaimOnTheRow(writes);
+            _outbox.As<IPollableOutboxStore>()
+                   .Setup(o => o.RecordDispatchAttempt(It.IsAny<OutboxMessage>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                   .Callback<OutboxMessage, DateTime, CancellationToken>((row, nextAttemptAtUtc, _) =>
+                   {
+                       writes.Add(DispatchAttemptWrite);
+                       recorded = nextAttemptAtUtc;
+                       row.DispatchAttempts++;
+                       row.NextAttemptAtUtc = nextAttemptAtUtc;
+                   })
+                   .Returns(Task.CompletedTask);
+            RollBackTheDrainClaimWhenTheUnitOfWorkFails(message, writes);
+            FailTheDispatch();
+
+            await _sut.Process(message);
+
+            writes.Should().Equal(DrainClaimWrite, RollbackWrite, DispatchAttemptWrite);
+            message.DispatchAttempts.Should().Be(1);
+            message.NextAttemptAtUtc.Should().Be(recorded);
         }
     }
 }
