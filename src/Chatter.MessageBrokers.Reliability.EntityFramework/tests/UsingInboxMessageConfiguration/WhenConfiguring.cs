@@ -54,6 +54,18 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingInboxMes
             property.IsNullable.Should().BeTrue();
         }
 
+        // INVARIANT: ReceivedByInboxAtUtc is the inbox's sole concurrency token, which is what puts the column in
+        // the WHERE clause of the claim's own UPDATE so two deliveries racing the same message id are separated by
+        // the store rather than by a read. A token on MessageId would put the primary key in that predicate twice.
+        [Fact]
+        public void MustTreatReceivedDateAsTheOnlyConcurrencyToken()
+        {
+            var concurrencyTokens = EntityType.GetProperties().Where(p => p.IsConcurrencyToken);
+
+            concurrencyTokens.Should().ContainSingle()
+                .Which.Name.Should().Be(nameof(InboxMessage.ReceivedByInboxAtUtc));
+        }
+
         private sealed class ConfiguredContext : DbContext
         {
             public ConfiguredContext(DbContextOptions options) : base(options) { }
