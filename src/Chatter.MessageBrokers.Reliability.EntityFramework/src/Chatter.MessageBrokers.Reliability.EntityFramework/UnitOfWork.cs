@@ -80,9 +80,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                     // over the same scoped context reads a row the store does not hold (#512). The tracker is cleared
                     // wholesale rather than entry by entry: a targeted detach leaves the flushed entity's companions
                     // tracked, which is the same wrong answer read through a different object.
-                    // Oracle: WhenExecutingUnitOfWorkOverSqlite.MustLeaveNoTrackedChangesWhenAUnitOfWorkItBeganRollsBack.
-                    // Deleting this reconciliation reddens that ONE fact and nothing else, on both target frameworks -
-                    // measured by deleting it and counting, not predicted.
+                    // Oracles: WhenExecutingUnitOfWorkOverSqlite.MustLeaveNoTrackedChangesWhenAUnitOfWorkItBeganRollsBack
+                    // and WhenReceivingViaInbox.MustNotSuppressARedeliveryOverTheSameContextWhenTheCommitFailedAfterTheHandlerReturned.
+                    // Deleting this reconciliation reddens those TWO facts and nothing else, on both target
+                    // frameworks - measured by deleting it and counting, not predicted.
                     // The BegunHere gate carries the ownership rule this type states below: a unit of work that
                     // adopted a caller's transaction rolls nothing back and did not begin the state staged on it, so
                     // it leaves that state to the owner who completes the transaction. Oracle:
