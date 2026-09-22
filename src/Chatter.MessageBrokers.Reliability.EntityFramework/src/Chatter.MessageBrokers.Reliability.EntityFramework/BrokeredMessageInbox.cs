@@ -20,8 +20,10 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         // and issues no Commit and no Rollback of its own, leaving UnitOfWorkBehavior's single commit as the only
         // one, which is what keeps the marker atomic with the handler's work.
         // Oracle: MustFlushTheClaimWithoutCommittingIt, which counts commits through an IDbTransactionInterceptor;
-        // committing the ambient transaction after the stamp below reddens eight facts, measured on net8.0, of
-        // which that one is the oracle and the other seven are the blast radius of ending the transaction early.
+        // committing the ambient transaction after the stamp below reddens thirteen facts, measured on net8.0 and
+        // net10.0, of which that one is the oracle and the other twelve are the blast radius of ending the
+        // transaction early. Those twelve are not listed here because they name no rule of their own: each fails
+        // because the transaction it reads through has already ended, not because it pins this invariant.
         // See docs/adr/0006-two-tier-reliability-relational-ambient-tx-vs-nosql-stage-then-commit.md and
         // docs/adr/0033-the-relational-inbox-claims-before-the-handler-and-stamps-handled-after-it-in-the-same-row.md.
         private readonly TContext _context;
@@ -64,7 +66,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// MustFlushAClaimCarryingNoTimestampBeforeInvokingTheHandler,
         /// MustFlushTheStampWhenTheHandlerReturnsAndCommitIt and
         /// MustCommitAnUnstampedClaimWhenACallerSwallowsTheHandlersFailure; writing the handled time at claim time
-        /// instead of after the handler returns reddens four facts, measured on net8.0.
+        /// instead of after the handler returns reddens five facts, measured on net8.0 and net10.0:
+        /// MustFlushAClaimCarryingNoTimestampBeforeInvokingTheHandler,
+        /// MustCommitAnUnstampedClaimWhenACallerSwallowsTheHandlersFailure,
+        /// MustCarryEachClaimsOwnOutcomeWhenANestedDeliverysFailureIsSwallowed,
+        /// MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed and
+        /// MustInvokeTheHandlerOnceWhenTwoRedeliveriesRaceAnExpiredMarker.
         /// The atomicity of the marker and the handler's work holds whenever every reliability extension call names the same
         /// <typeparamref name="TContext"/>, including a lone WithInboxBehavior&lt;TContext&gt;()
         /// call, which registers the matching unit of work itself. IUnitOfWork resolves to the
@@ -130,7 +137,7 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             // the span between the handler returning and the commit - which is the span a caller that catches the
             // handler's exception occupies. Oracle: MustFlushTheStampWhenTheHandlerReturnsAndCommitIt, which reads
             // the row back from the store before any commit and so separates a flushed stamp from a staged one;
-            // deleting the SaveChangesAsync below reddens that one fact and no other, measured on net8.0.
+            // deleting the SaveChangesAsync below reddens that one fact and no other, measured on net8.0 and net10.0.
             claim.ReceivedByInboxAtUtc = DateTime.UtcNow;
             _logger.LogTrace($"Stamping the inbox claim on message id '{messageId}' as handled at '{claim.ReceivedByInboxAtUtc}'.");
             await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -146,14 +153,22 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         // lock the store gives it - before the handler runs. Oracles:
         // MustFlushAClaimCarryingNoTimestampBeforeInvokingTheHandler and
         // MustInvokeHandlerAndRefreshTheMarkerWhenDeduplicationWindowHasElapsed, which read the row back from the
-        // store at handler entry; deleting the SaveChangesAsync below reddens those two and no others, measured on
-        // net8.0.
+        // store at handler entry, and the four SQL Server facts that race two deliveries of one message id -
+        // MustInvokeTheHandlerOnceWhenTwoDeliveriesRaceForTheSameMessageId,
+        // MustInvokeTheHandlerOnceWhenTwoRedeliveriesRaceAClaimNoHandlerCompleted,
+        // MustInvokeTheHandlerOnceWhenTwoRedeliveriesRaceAnExpiredMarker and
+        // MustMakeASecondDeliverysClaimWaitOnTheFirstsRowLock - which have no row lock to order them on when the
+        // claim stays staged. Deleting the SaveChangesAsync below reddens those six and no others, measured on
+        // net8.0 and net10.0.
         //
         // INVARIANT: the claim's write is FORCED for an existing row, so the UPDATE runs even when the row already
         // carried no timestamp and the claim writes null over null. The forced write is what takes the row's own
         // lock, which is how two deliveries of one message id are ordered by the store rather than by a read both
-        // could pass. No test in this suite pins the forcing: the value written is the value already there, so its
-        // only observable effect is the lock and the statement that takes it.
+        // could pass. The value written is the value already there, so the forcing's only observable effect is the
+        // lock and the statement that takes it. Oracle:
+        // MustInvokeTheHandlerOnceWhenTwoRedeliveriesRaceAClaimNoHandlerCompleted, which races two redeliveries
+        // against a row already carrying no timestamp, where that lock is the only thing ordering them; deleting
+        // the IsModified line below reddens that one fact and no other, measured on net8.0 and net10.0.
         private async Task<InboxMessage> ClaimMessageIdAsync(string messageId, InboxMessage existingMarker, CancellationToken cancellationToken)
         {
             if (_context.Database.CurrentTransaction is null)
