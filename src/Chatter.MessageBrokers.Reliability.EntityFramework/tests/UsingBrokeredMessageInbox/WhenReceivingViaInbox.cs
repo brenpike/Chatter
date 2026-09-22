@@ -172,6 +172,32 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
             committedMarker.ReceivedByInboxAtUtc.Should().NotBeNull();
         }
 
+        // The handler clears the change tracker of the SAME context the claim was flushed through, which is what a
+        // handler that batches its own work over the shared TContext ordinarily does. The claim is then detached,
+        // so a stamp written onto it alone reaches no row and the transaction commits the claim still carrying no
+        // timestamp - which the next delivery reads as unhandled.
+        [Fact]
+        public async Task MustStampAClaimTheHandlerDetachedFromTheChangeTracker()
+        {
+            var messageId = Guid.NewGuid().ToString();
+            var handlerInvoked = false;
+
+            await _relationalUnitOfWork.ExecuteAsync(
+                ct => _relationalSut.ReceiveViaInbox("payload", CreateContext(messageId, ct), () =>
+                {
+                    handlerInvoked = true;
+                    _relationalContext.ChangeTracker.Clear();
+                    return Task.CompletedTask;
+                }),
+                null);
+
+            handlerInvoked.Should().BeTrue();
+
+            var committedMarker = await ReadCommittedMarkerAsync(messageId);
+            committedMarker.Should().NotBeNull();
+            committedMarker.ReceivedByInboxAtUtc.Should().NotBeNull();
+        }
+
         [Fact]
         public async Task MustFlushTheClaimWithoutCommittingIt()
         {

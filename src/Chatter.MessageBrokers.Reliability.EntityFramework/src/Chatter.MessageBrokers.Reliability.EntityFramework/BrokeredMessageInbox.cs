@@ -138,7 +138,22 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
             // handler's exception occupies. Oracle: MustFlushTheStampWhenTheHandlerReturnsAndCommitIt, which reads
             // the row back from the store before any commit and so separates a flushed stamp from a staged one;
             // deleting the SaveChangesAsync below reddens that one fact and no other, measured on net8.0 and net10.0.
+            //
+            // INVARIANT: the stamp is RESTATED through the set rather than assigned to whatever the change tracker
+            // still holds, so a handler that detached the claim - ChangeTracker.Clear() over the shared
+            // TContext is the ordinary way to do it - does not turn the stamp into an assignment to an object no
+            // SaveChangesAsync will look at, leaving the transaction to commit a claim carrying no timestamp that
+            // the next delivery reads as unhandled. The original value is stated as null for the same reason
+            // BrokeredMessageOutbox.UpdateProcessedDate states its own: ReceivedByInboxAtUtc is the concurrency
+            // token, and Update on a DETACHED claim sets original from current, which would make the predicate read
+            // '= the stamp just written' and match no row. The rationale for that statement is written once, on
+            // UpdateProcessedDate. Oracle: MustStampAClaimTheHandlerDetachedFromTheChangeTracker; assigning the
+            // timestamp without the Update below reddens that one fact and no other, and dropping the
+            // original-value statement while keeping the Update reddens that same one and no other, measured on
+            // net8.0 and net10.0.
             claim.ReceivedByInboxAtUtc = DateTime.UtcNow;
+            var stamp = _inbox.Update(claim);
+            stamp.OriginalValues[nameof(InboxMessage.ReceivedByInboxAtUtc)] = null;
             _logger.LogTrace($"Stamping the inbox claim on message id '{messageId}' as handled at '{claim.ReceivedByInboxAtUtc}'.");
             await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
