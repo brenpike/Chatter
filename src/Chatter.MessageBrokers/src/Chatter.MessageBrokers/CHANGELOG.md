@@ -8,6 +8,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.33.0] - 2026-09-22
+
+### Added
+
 - **`IPollableOutboxStore.TryClaimForDispatch(OutboxMessage, DateTime?, DateTime, CancellationToken)` takes the drain claim on a row: a compare-and-set that moves the row's `NextAttemptAtUtc` from the instant the poll reported to an instant one backoff ahead, and answers whether THIS caller is the one that moved it.** It is a **default interface implementation that GRANTS**, so a third-party pollable store written against the previous shape of the interface still compiles, still satisfies the cast at the poll site and keeps exactly today's behaviour; it follows the precedent `RecordDispatchAttempt` set on the same interface, and granting is the only default that could do that, since a default that DENIED would silently stop such a store dispatching anything. What a store inheriting the default forgoes is the arbitration itself — every one of its drains is told it won — and nothing inspects what a store answers, exactly as nothing inspects what a poll hands back for size, order or dueness. The observed instant is an EXPLICIT parameter rather than a read of the message taken at claim time, because a store may hand a poll THE STORED INSTANCES THEMSELVES — the shipped in-memory one does — so a second drain reading the observed value off the message would compare the first drain's claim against itself and be granted the claim too. **The claim rides `OutboxMessage.NextAttemptAtUtc`, which 0.32.0 already added, so there is no new column, no schema change and no migration**, and no lease or reaper either: a claim is a due-time push, so the poll's ordinary due gate takes the row again once the claimed instant passes. Pinned by `OutboxCustomPrimaryImplementingBoth_TryClaimForDispatchGrantsByDefault`, whose store deliberately does not implement the member, `MustClaimAgainstTheDueTimeThePollRead`, `MustGrantExactlyOneOfTwoCompetingDrainClaims`, `MustRefuseADrainClaimAgainstAStaleObservedDueInstant`, `MustRefuseADrainClaimOnAMessageAnotherDrainHolds`, `MustRefuseADrainClaimOnAProcessedMessage`, `MustRefuseADrainClaimOnAMessageThatIsNotDue` and `MustLeaveAClaimedMessageDueAgainOneBackoffLater` (#444, #519).
 
 ### Changed
