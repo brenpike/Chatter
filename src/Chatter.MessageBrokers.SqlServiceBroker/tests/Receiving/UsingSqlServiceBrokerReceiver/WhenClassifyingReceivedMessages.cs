@@ -7,9 +7,11 @@ using Xunit;
 
 namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServiceBrokerReceiver
 {
-    // Characterization decision-table: pins the FULL message-classification logic extracted from
-    // SqlServiceBrokerReceiver.ReceiveMessageAsync AS-IS. These rows are the SPEC that
-    // STEP-004's ServiceBrokerMessageClassifier must satisfy.
+    // Decision-table: pins the FULL message-classification logic of
+    // SqlServiceBrokerReceiver.ReceiveMessageAsync. These rows are the SPEC that
+    // ServiceBrokerMessageClassifier must satisfy. The rows were originally a verbatim
+    // characterization of the receive flow and have since been amended — the Error type now
+    // classifies as DiscardErroredConversation rather than DiscardWrongType (#357).
     //
     // The classification rows are exercised against the production
     // ServiceBrokerMessageClassifier (introduced in STEP-004); the ClassificationOutcome enum
@@ -60,11 +62,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
                 ClassificationOutcome.EndDialog,
                 "EndDialogType with null body must still be classified as EndDialog" };
 
-            // Row 4: ErrorType → DiscardWrongType
+            // Row 4: ErrorType → DiscardErroredConversation
             yield return new object[] {
                 BuildMessage(ServicesMessageTypes.ErrorType, body: body),
-                ClassificationOutcome.DiscardWrongType,
-                "ErrorType must be classified as DiscardWrongType" };
+                ClassificationOutcome.DiscardErroredConversation,
+                "the Error type is classified separately from any other unaccepted type so the receiver can end the errored conversation rather than leaving it open" };
 
             // Row 5: QueryNotificationType → DiscardWrongType
             yield return new object[] {
@@ -118,6 +120,71 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
             ClassificationOutcome actual = classifier.Classify(message);
 
             actual.Should().Be(expectedOutcome, because);
+        }
+
+        [Fact]
+        public void MustStillClassifyAnEndDialogBeforeTheErrorCheck()
+        {
+            var classifier = new ServiceBrokerMessageClassifier();
+
+            var endDialog = classifier.Classify(BuildMessage(ServicesMessageTypes.EndDialogType, body: new byte[] { 1, 2, 3 }));
+            var endDialogWithNullBody = classifier.Classify(BuildMessage(ServicesMessageTypes.EndDialogType, body: null));
+
+            endDialog.Should().Be(ClassificationOutcome.EndDialog,
+                "inserting the Error branch must not move the end-dialog branch out of its position ahead of it");
+            endDialogWithNullBody.Should().Be(ClassificationOutcome.EndDialog,
+                "the end-dialog branch still fires before the body check, so a null body must not change its outcome");
+        }
+
+        // -----------------------------------------------------------------------
+        // Ends-conversation rule — every outcome that settles a real received message
+        // ends that message's conversation. See
+        // docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md.
+        // -----------------------------------------------------------------------
+
+        public static IEnumerable<object[]> EndsConversationRows()
+        {
+            yield return new object[] { ClassificationOutcome.EndDialog, true,
+                "an end-dialog message settles the received message and must end its conversation" };
+            yield return new object[] { ClassificationOutcome.DiscardErroredConversation, true,
+                "an errored conversation is terminal and must be ended rather than left open" };
+            yield return new object[] { ClassificationOutcome.DiscardWrongType, true,
+                "a wrong-type message will never be dispatched, so its conversation must be ended" };
+            yield return new object[] { ClassificationOutcome.DiscardNullBody, true,
+                "a null-body message will never be dispatched, so its conversation must be ended" };
+            yield return new object[] { ClassificationOutcome.DiscardNull, false,
+                "there is no received message and no conversation handle to end" };
+            yield return new object[] { ClassificationOutcome.DispatchChatterBrokeredMessage, false,
+                "a dispatched message is settled later by its ack, nack or deadletter" };
+            yield return new object[] { ClassificationOutcome.DispatchDefault, false,
+                "a dispatched message is settled later by its ack, nack or deadletter" };
+        }
+
+        // INVARIANT: this method is internal for the same CS0051 reason as
+        // MustProduceExpectedOutcome — its ClassificationOutcome parameter is internal.
+        [Theory]
+        [MemberData(nameof(EndsConversationRows))]
+        internal void MustEndTheConversationForEveryOutcomeThatSettlesAReceivedMessage(
+            ClassificationOutcome outcome,
+            bool expectedEndsConversation,
+            string because)
+            => ServiceBrokerMessageClassifier.EndsConversation(outcome)
+                .Should().Be(expectedEndsConversation, because);
+
+        // INVARIANT: the ends-conversation theory above enumerates every ClassificationOutcome,
+        // so a newly added outcome cannot ship without a stated ends-conversation decision.
+        [Fact]
+        public void MustCoverEveryClassificationOutcomeInTheEndsConversationRows()
+        {
+            var coveredOutcomes = new HashSet<object>();
+            foreach (var row in EndsConversationRows())
+            {
+                coveredOutcomes.Add(row[0]);
+            }
+
+            coveredOutcomes.Count.Should().Be(
+                Enum.GetValues(typeof(ClassificationOutcome)).Length,
+                "every ClassificationOutcome member must have an ends-conversation row");
         }
 
         // -----------------------------------------------------------------------
