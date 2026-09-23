@@ -6,6 +6,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-23
+
+### Changed
+
+- **Comments on `RabbitMqHeaderMarshaller` are corrected to name the core's `DateTime` kind test on `MessageContext.ExpiryTimeUtc` instead of a `(DateTime?)` cast that no longer exists, after `Chatter.MessageBrokers` 0.34.0 changed `OutboundBrokeredMessage.RefreshTimeToLive` to read `ExpiryTimeUtc` via `TryGetMessageContextByKey<DateTime>` rather than a cast.** This carries no code change and no user-facing effect, and satisfies no formal SemVer trigger. It ships as its own release because this repository's version-check gate is path-based and cannot distinguish a comment edit from a behavioural one. See `docs/adr/0036-a-message-context-read-tests-the-persisted-kind-rather-than-casting-it.md` (#418).
+
 ## [0.5.0] - 2026-09-15
 
 ### Added
