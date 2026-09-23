@@ -7,6 +7,7 @@ using Chatter.MessageBrokers.Diagnostics;
 using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Options;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -21,18 +22,21 @@ namespace Chatter.MessageBrokers.Sending
         private readonly IBrokeredMessageAttributeDetailProvider _brokeredMessageDetailProvider;
         private readonly IBodyConverterFactory _bodyConverterFactory;
         private readonly IMessageIdGenerator _messageIdGenerator;
+        private readonly ILogger<BrokeredMessageDispatcher> _logger;
 
         public BrokeredMessageDispatcher(IRouteBrokeredMessages messageRouter,
                                          IForwardMessages forwarder,
                                          IBrokeredMessageAttributeDetailProvider brokeredMessageDetailProvider,
                                          IBodyConverterFactory bodyConverterFactory,
-                                         IMessageIdGenerator messageIdGenerator)
+                                         IMessageIdGenerator messageIdGenerator,
+                                         ILogger<BrokeredMessageDispatcher> logger)
         {
             _messageRouter = messageRouter ?? throw new ArgumentNullException(nameof(messageRouter));
             _forwarder = forwarder ?? throw new ArgumentNullException(nameof(forwarder));
             _brokeredMessageDetailProvider = brokeredMessageDetailProvider ?? throw new ArgumentNullException(nameof(brokeredMessageDetailProvider));
             _bodyConverterFactory = bodyConverterFactory ?? throw new ArgumentNullException(nameof(bodyConverterFactory));
             _messageIdGenerator = messageIdGenerator ?? throw new ArgumentNullException(nameof(messageIdGenerator));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         /// <inheritdoc/>
@@ -93,8 +97,7 @@ namespace Chatter.MessageBrokers.Sending
             if (!BrokerDiagnostics.IsEnabled)
             {
                 var outbounds = Dispatch(messages, destinationPath, options, traceContextActivity: null, batchObservation: null);
-                options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
-                return _messageRouter.Route(outbounds, transactionContext, (string)infraType);
+                return _messageRouter.Route(outbounds, transactionContext, ReadInfrastructureType(options));
             }
 
             return DispatchWithDiagnostics(messages, transactionContext, options, destinationPath);
@@ -126,12 +129,10 @@ namespace Chatter.MessageBrokers.Sending
         where TMessage : IMessage
         where TOptions : RoutingOptions, new()
         {
-            options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
-
             // The Messaging Infrastructure the routing options name is the only messaging-system identity this
             // package has; it is passed through here AS-IS. BrokerDiagnostics normalizes a blank identifier to an
             // unset span attribute (the metric keeps the key with a null value) rather than inventing one.
-            var messagingSystem = (string)infraType;
+            var messagingSystem = ReadInfrastructureType(options);
             var batchObservation = new SendBatchObservation();
 
             // The scope opens with a count of zero because nothing has been enumerated yet, and — on the overloads
@@ -234,6 +235,33 @@ namespace Chatter.MessageBrokers.Sending
 
                 yield return outbound;
             }
+        }
+
+        private string ReadInfrastructureType(RoutingOptions options)
+        {
+            // INVARIANT: both dispatch paths read the infrastructure type HERE, by a KIND TEST, so a value that is
+            // present but not a string - one inherited from a delivery's application properties by a handler sending
+            // through its IMessageHandlerContext (#464) - is routed via the default Messaging Infrastructure rather
+            // than failing every send with InvalidCastException, and the misroute is logged so it is observable
+            // rather than silent. An absent key or a stored null names no infrastructure and logs nothing.
+            // Oracles: MustRouteViaTheDefaultInfrastructureWhenTheInfrastructureTypeIsNotAString,
+            // MustRouteViaTheDefaultInfrastructureWhenAnInheritedInfrastructureTypeIsNotAString,
+            // MustLeaveTheMessagingSystemUnsetOnTheDispatchSpanWhenTheInfrastructureTypeIsNotAString and
+            // MustLogThatTheInfrastructureTypeWasUnreadable - restoring the (string) cast reddens all four; dropping
+            // the warning reddens MustLogThatTheInfrastructureTypeWasUnreadable alone; warning unconditionally
+            // reddens MustNotLogWhenNoInfrastructureTypeIsPresent alone - each measured across this suite on both
+            // target frameworks.
+            if (options.MessageContext.TryReadMessageContext<string>(MessageContext.InfrastructureType, out var infrastructureType))
+            {
+                return infrastructureType;
+            }
+
+            if (options.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var unreadableInfrastructureType) && unreadableInfrastructureType != null)
+            {
+                _logger.LogWarning($"The message context carries a '{MessageContext.InfrastructureType}' of kind '{unreadableInfrastructureType.GetType()}' rather than a string. Dispatching via the default messaging infrastructure.");
+            }
+
+            return null;
         }
 
         private SendOptions MergeSendOptionsWithMessageContext(IMessageHandlerContext messageHandlerContext, SendOptions options)

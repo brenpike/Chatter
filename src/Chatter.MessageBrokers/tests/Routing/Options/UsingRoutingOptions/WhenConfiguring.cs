@@ -28,6 +28,16 @@ namespace Chatter.MessageBrokers.Tests.Routing.Options.UsingRoutingOptions
         }
 
         [Fact]
+        public void MustReadContentTypeAsNullWhenTheStoredKindIsNotAString()
+        {
+            var options = new SendOptions();
+
+            options.WithMessageContext(MessageContext.ContentType, 7L);
+
+            options.ContentType.Should().BeNull();
+        }
+
+        [Fact]
         public void MustWriteCorrelationIdToMessageContext()
         {
             var options = new SendOptions();

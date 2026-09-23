@@ -4,6 +4,7 @@ using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Options;
 using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System;
 using System.Collections.Generic;
@@ -41,7 +42,8 @@ namespace Chatter.MessageBrokers.Tests.Sending.UsingBrokeredMessageDispatcher
                 _forwarder.Object,
                 _detailProvider.Object,
                 _bodyConverterFactory.Object,
-                _idGenerator.Object);
+                _idGenerator.Object,
+                NullLogger<BrokeredMessageDispatcher>.Instance);
         }
 
         private class FakeEvent : IEvent { }

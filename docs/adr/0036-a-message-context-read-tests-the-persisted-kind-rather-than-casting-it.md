@@ -141,6 +141,27 @@ drain logs a `Warning` naming the message id and the key (`MustLogThatThePersist
    caller in this repository casts it; its one production reader, `ReceiveAttempts`, converts under an exception
    filter. *Rejected remediation:* Option D.
 
+**Amendment (2026-09-23) — the raw-dictionary reads were casts of the same class.** Three reads outside
+`OutboundBrokeredMessage` read a Message Context as a raw dictionary and cast what they found:
+`BrokeredMessageDispatcher` read the infrastructure type out of the routing options with `(string)` on both the
+diagnostics-off and diagnostics-on paths, `ReplyRouter` read the delivery's infrastructure type with `(string)` to label
+the reply's send span, and `RoutingOptions.ContentType` cast its stored content type. The dispatcher's needed no
+persisted context to reach: a handler sending through its `IMessageHandlerContext` inherits the delivery's Message
+Context, so a non-string infrastructure type made every send from that handler throw — the #464 shape. They are closed
+by a second construction point with the same contract, the internal
+`MessageContextReadExtensions.TryReadMessageContext<TValue>` over `IDictionary<string, object>`: `true` only when the
+key is present AND its value is a `TValue`, and `false` for an absent key, a value of another kind and a stored `null`
+alike. A mismatch reads as absent there too. The dispatcher routes via the default Messaging Infrastructure
+(`MustRouteViaTheDefaultInfrastructureWhenTheInfrastructureTypeIsNotAString`) and, like the drain, logs a `Warning`
+naming the key (`MustLogThatTheInfrastructureTypeWasUnreadable`); it is a resolved service that holds a logger, so
+residual 1 does not reach it. The dispatch and reply send spans leave `messaging.system` unset, as for an absent value
+(`MustLeaveTheMessagingSystemUnsetOnTheDispatchSpanWhenTheInfrastructureTypeIsNotAString`,
+`MustLeaveTheMessagingSystemUnsetOnTheReplySpanWhenTheInfrastructureTypeIsNotAString`). `RoutingOptions.ContentType`
+answers `null`, which the dispatcher refuses as it refuses a blank content type
+(`MustReadContentTypeAsNullWhenTheStoredKindIsNotAString`). The single construction point of the Decision is therefore
+single per surface: the Try on `OutboundBrokeredMessage` for the message type, and the internal extension for a reader
+that holds only the dictionary.
+
 ## Consequences
 
 - **`OutboundBrokeredMessage` gains one public member**, `TryGetMessageContextByKey<TValue>`. No signature, type or
@@ -171,3 +192,12 @@ drain logs a `Warning` naming the message id and the key (`MustLogThatThePersist
   `src/Chatter.MessageBrokers/tests/Reliability/Outbox/UsingOutboxProcessor/WhenProcessingOutboxMessage.cs` and
   `src/Chatter.MessageBrokers.AzureServiceBus/tests/Sending/UsingOutboundBrokeredMessageExtensions/WhenAccessingMessageContext.cs`
   — the facts named throughout.
+- `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/MessageContextReadExtensions.cs` — the raw-dictionary Try
+  (amendment of 2026-09-23).
+- `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Sending/BrokeredMessageDispatcher.cs`,
+  `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Routing/ReplyRouter.cs` and
+  `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Routing/Options/RoutingOptions.cs` — the three reads it closes.
+- `src/Chatter.MessageBrokers/tests/UsingMessageContext/WhenReadingAMessageContextValueByKind.cs`,
+  `src/Chatter.MessageBrokers/tests/Sending/UsingBrokeredMessageDispatcher/WhenSending.cs`,
+  `src/Chatter.MessageBrokers/tests/Diagnostics/WhenSendingWithoutAnInfrastructureType.cs` and
+  `src/Chatter.MessageBrokers/tests/Routing/Options/UsingRoutingOptions/WhenConfiguring.cs` — the amendment's facts.

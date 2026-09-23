@@ -88,6 +88,7 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         private readonly List<string> _dispatchTimeline = new List<string>();
         private readonly bool _routerEnumerates;
         private readonly string _infrastructureType;
+        private readonly object _unreadableInfrastructureType;
         private readonly Mock<IRouteBrokeredMessages> _messageRouter = new Mock<IRouteBrokeredMessages>();
         private readonly Mock<IForwardMessages> _forwarder = new Mock<IForwardMessages>();
         private readonly Mock<IBrokeredMessageAttributeDetailProvider> _detailProvider = new Mock<IBrokeredMessageAttributeDetailProvider>();
@@ -141,8 +142,17 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
                 _forwarder.Object,
                 _detailProvider.Object,
                 _bodyConverterFactory.Object,
-                _idGenerator.Object);
+                _idGenerator.Object,
+                NullLogger<BrokeredMessageDispatcher>.Instance);
         }
+
+        /// <param name="unreadableInfrastructureType">
+        /// A value of some kind other than <see cref="string"/> that the routing options carry under the
+        /// infrastructure-type key in place of an identity, as an inherited delivery context can.
+        /// </param>
+        public DiagnosticsSendHarness(object unreadableInfrastructureType)
+            : this()
+            => _unreadableInfrastructureType = unreadableInfrastructureType;
 
         /// <summary>The sequence handed to the Router, captured WITHOUT being enumerated.</summary>
         /// <remarks>
@@ -201,15 +211,25 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         private SendOptions BuildSendOptions()
         {
             var options = new SendOptions();
-            options.UseMessagingInfrastructure(_ => _infrastructureType);
+            StampInfrastructureType(options);
             return options;
         }
 
         private PublishOptions BuildPublishOptions()
         {
             var options = new PublishOptions();
-            options.UseMessagingInfrastructure(_ => _infrastructureType);
+            StampInfrastructureType(options);
             return options;
+        }
+
+        private void StampInfrastructureType(RoutingOptions options)
+        {
+            options.UseMessagingInfrastructure(_ => _infrastructureType);
+
+            if (_unreadableInfrastructureType != null)
+            {
+                options.WithMessageContext(MessageContext.InfrastructureType, _unreadableInfrastructureType);
+            }
         }
 
         // The materialisation happens HERE, inside the Router, because that is where it happens in production.

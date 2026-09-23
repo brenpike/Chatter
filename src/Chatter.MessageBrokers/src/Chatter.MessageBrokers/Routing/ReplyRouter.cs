@@ -95,9 +95,14 @@ namespace Chatter.MessageBrokers.Routing
                 // span attribute (the metric keeps the key with a null value) rather than inventing one. It is read
                 // off the INBOUND context because the reply ALIASES that same dictionary, so it is the identity the
                 // reply carries - and it is known before the reply is built.
-                inboundBrokeredMessage.MessageContext.TryGetValue(MessageContext.InfrastructureType, out var infraType);
+                // INVARIANT: it is read by a KIND TEST, so a delivery whose application properties carried a value of
+                // another kind under that key leaves messaging.system unset, as an absent one does, rather than
+                // failing the reply with InvalidCastException. Oracle:
+                // MustLeaveTheMessagingSystemUnsetOnTheReplySpanWhenTheInfrastructureTypeIsNotAString; restoring the
+                // (string) cast reddens it.
+                inboundBrokeredMessage.MessageContextImpl.TryReadMessageContext<string>(MessageContext.InfrastructureType, out var infraType);
 
-                sendScope = SendScope.Open((string)infraType, BrokerDiagnostics.OperationTypes.Send, destinationRouterContext.DestinationPath, messageCount: 0);
+                sendScope = SendScope.Open(infraType, BrokerDiagnostics.OperationTypes.Send, destinationRouterContext.DestinationPath, messageCount: 0);
 
                 var outbound = BuildReply(inboundBrokeredMessage, destinationRouterContext);
 
