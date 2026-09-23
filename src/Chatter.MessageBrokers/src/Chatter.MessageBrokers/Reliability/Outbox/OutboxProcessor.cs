@@ -81,8 +81,73 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 _logger.LogTrace($"Processing message '{message.MessageId}' from outbox.");
 
                 var pollable = (IPollableOutboxStore)_brokeredMessageOutbox;
+
+                // INVARIANT: the value the drain claim's compare-and-set is made against is read HERE, before the
+                // unit of work opens, and never at claim time. Why the comparison is pinned to what the poll
+                // reported rather than to whatever the row says by the time the claim runs is recorded once, on
+                // IPollableOutboxStore.TryClaimForDispatch.
+                // Oracle: MustClaimAgainstTheDueTimeThePollRead; passing message.NextAttemptAtUtc at the call
+                // instead of this local reddens it and nothing else - measured across both suites and both target
+                // frameworks.
+                // The instant claimed is the one a FAILED attempt would have been scheduled by. This introduces no
+                // number of its own. What that instant does to the row, and what ends a claim carrying it, is
+                // recorded once in the remarks on IPollableOutboxStore.TryClaimForDispatch.
+                var observedNextAttemptAtUtc = message.NextAttemptAtUtc;
+                var claimedNextAttemptAtUtc = DateTime.UtcNow.Add(_reliabilityOptions.CalculateDispatchBackoff(message.DispatchAttempts + 1));
+
                 await ((IUnitOfWork)_brokeredMessageOutbox).ExecuteAsync(async ct =>
                 {
+                    // INVARIANT: the DRAIN CLAIM is taken as the FIRST statement inside the unit of work, before the
+                    // publish. It arbitrates which of several drains that polled this row gets to try it; how it
+                    // differs from the claim the processed stamp carries is recorded once, on
+                    // IPollableOutboxStore.TryClaimForDispatch. Taking it INSIDE the unit of work is what makes the
+                    // arbitration hold on a relational store: the losing drain blocks on the row's lock for the
+                    // winner's whole publish and then matches nothing, rather than being told it won a row that is
+                    // already on the broker. A denial RETURNS rather than throwing - a throw lands in the generic
+                    // catch below and spends a dispatch attempt on a row this drain never attempted - so a denied
+                    // drain publishes nothing, stamps nothing and costs the row nothing.
+                    // Measured sets, each taken across BOTH suites and both target frameworks - none of these three
+                    // mutations is exclusive to one fact, because the same decision is read by the mock-store
+                    // fixture here, by the real in-memory drain, and by the SQL Server arbitration fixture:
+                    //  - dropping the denial guard and dispatching anyway reddens FOUR facts -
+                    //    MustDispatchNothingWhenTheDrainClaimIsDenied,
+                    //    WhenDrainingTheDefaultInMemoryOutbox.MustDispatchTheRacedRowExactlyOnce,
+                    //    WhenDrainingTheDefaultInMemoryOutbox.MustCostTheRowNothingWhenTheDrainLosesTheRace and
+                    //    the EntityFramework suite's
+                    //    Integration.WhenArbitratingOutboxDrainsOnSqlServer.MustDenyTheWaitingDrainsClaimOnceTheWinningDrainCommits
+                    //    (both of its cases);
+                    //  - throwing instead of returning on a denial reddens THREE -
+                    //    MustNotSpendADispatchAttemptWhenTheDrainClaimIsDenied,
+                    //    WhenDrainingTheDefaultInMemoryOutbox.MustCostTheRowNothingWhenTheDrainLosesTheRace and
+                    //    that same SQL Server fact;
+                    //  - moving the claim BELOW the publish reddens FIVE facts here and in
+                    //    WhenDrainingTheDefaultInMemoryOutbox - MustTakeTheDrainClaimBeforeDispatching,
+                    //    MustDispatchNothingWhenTheDrainClaimIsDenied,
+                    //    MustRecordTheDispatchAttemptAfterTheRollbackDiscardsTheDrainClaim,
+                    //    MustDispatchTheRacedRowExactlyOnce and MustCostTheRowNothingWhenTheDrainLosesTheRace -
+                    //    plus the WHOLE of Integration.WhenArbitratingOutboxDrainsOnSqlServer, all four of its
+                    //    facts in both of their cases. That last set is the one that shows the position is a
+                    //    relational claim and not only a mock-ordering one.
+                    // INVARIANT: a write to NextAttemptAtUtc is exactly as durable as the fact it records, which is
+                    // why this claim and RecordDispatchAttempt write the same column from opposite sides of the unit
+                    // of work. RecordDispatchAttempt records something that HAPPENED - a publish that failed - and
+                    // has to outlive the rollback that failure caused, so it goes straight to the store OUTSIDE any
+                    // unit of work. This claim records something ABOUT TO happen and must not outlive a publish that
+                    // did not, so it goes INSIDE one. The two meet on the failure exit, in that order: the rollback
+                    // discards the claim and the attempt stamp lands after it, leaving the row scheduled by the
+                    // failure rather than by a claim the failure already voided.
+                    // Oracle: MustRecordTheDispatchAttemptAfterTheRollbackDiscardsTheDrainClaim, which reads the
+                    // SEQUENCE of writes rather than the row, because the claimed and the recorded instant are both
+                    // one backoff ahead of now and the row alone does not tell them apart. A store whose unit of
+                    // work does not roll back - the in-memory one keeps no transaction - keeps the claim instead,
+                    // and the attempt stamp that lands after it overwrites the same column either way; what ends
+                    // a claim no rollback ends is recorded once in the remarks on
+                    // IPollableOutboxStore.TryClaimForDispatch.
+                    if (!await pollable.TryClaimForDispatch(message, observedNextAttemptAtUtc, claimedNextAttemptAtUtc, ct))
+                    {
+                        return;
+                    }
+
                     // INVARIANT: ADR-0010 R1/R4 - Chatter's own off-guard is what decides, and it decides HERE
                     // rather than inside the scope. Argument evaluation precedes the guard INSIDE SendScope.Open,
                     // so a call site that reaches DispatchObserved has already resolved the persisted parent and
@@ -102,15 +167,21 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                     // INVARIANT: the flag reads "this message is on the broker", so it is raised AFTER the publish
                     // returns and BEFORE the claim - the two exits below branch on it and neither may treat a
                     // message the broker never took as delivered. Raising it before the dispatch instead turns
-                    // every failed publish into a re-claim, and reddens eight facts and nothing else (observed):
-                    // every WhenProcessingOutboxMessage fact whose dispatch fails -
-                    // MustLeaveOutboxMessageUnprocessedWhenDispatchFails, MustRecordADispatchAttemptWhenDispatchFails,
+                    // every failed publish into a re-claim, and reddens TWELVE facts and nothing else (measured
+                    // across both suites and both target frameworks): the seven WhenProcessingOutboxMessage facts
+                    // whose dispatch fails - MustLeaveOutboxMessageUnprocessedWhenDispatchFails,
+                    // MustRecordADispatchAttemptWhenDispatchFails,
                     // MustRecordADispatchAttemptWhenDispatchIsCancelledByAnotherToken,
                     // MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork,
-                    // MustScheduleTheNextAttemptOneBackoffAhead,
-                    // MustGrowTheScheduledWaitWithTheAttemptsTheRowAlreadyCarries - plus both real-store drain facts
-                    // in WhenDrainingTheDefaultInMemoryOutbox, MustRecordTheFailedDispatchAndLeaveTheRowUnprocessed
-                    // and MustDispatchTheSameRowOnTheNextDrainOnceItsBackoffHasElapsed.
+                    // MustRecordTheDispatchAttemptAfterTheRollbackDiscardsTheDrainClaim,
+                    // MustScheduleTheNextAttemptOneBackoffAhead and
+                    // MustGrowTheScheduledWaitWithTheAttemptsTheRowAlreadyCarries - the three real-store drain facts
+                    // in WhenDrainingTheDefaultInMemoryOutbox, MustRecordTheFailedDispatchAndLeaveTheRowUnprocessed,
+                    // MustDispatchTheSameRowOnTheNextDrainOnceItsBackoffHasElapsed and
+                    // MustCostTheRowNothingWhenTheDrainLosesTheRace - and, in the EntityFramework suite, the two
+                    // Integration.WhenDrainingPastAPermanentlyFailingRowOnSqlServer facts that read attempt state
+                    // back out of the database, MustCarryTheAttemptStateOfEveryRefusedMessageInTheDatabase and
+                    // MustClaimAMessageWhoseAttemptStateWasWrittenOutsideTheChangeTracker.
                     published = true;
 
                     _logger.LogTrace($"Message '{message.MessageId}' dispatched to messaging infrastructure from outbox.");
@@ -127,15 +198,23 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                // INVARIANT: a drain the host stopped is NOT a failed dispatch. It spends no attempt and pushes no
-                // due time out, so the row stays due now and the next host start takes it; spending one would defer
-                // a perfectly good row and, under a configured attempt ceiling, burn its budget on restarts alone.
+                // INVARIANT: a drain the host stopped is NOT a failed dispatch. It spends no attempt, because
+                // spending one would defer a perfectly good row and, under a configured attempt ceiling, burn its
+                // budget on restarts alone.
+                // This exit neither records an attempt nor undoes the drain claim taken above, so where the row is
+                // LEFT follows from that claim's lifetime, recorded once in the remarks on
+                // IPollableOutboxStore.TryClaimForDispatch.
                 // The filter is deliberate and matches ReliabilityRetentionPurgeService's stop handling: a
                 // cancellation raised by any OTHER token - a broker client's own send timeout - is a real dispatch
                 // failure and falls through to the catch below.
-                // Oracles: MustNotRecordADispatchAttemptWhenProcessingIsCancelled pins the exemption, and
-                // MustRecordADispatchAttemptWhenDispatchIsCancelledByAnotherToken pins its bound. Dropping the
-                // `when` filter reddens the second and nothing else (observed).
+                // Oracles: MustNotRecordADispatchAttemptWhenProcessingIsCancelled pins the NO-ATTEMPT half of the
+                // exemption ALONE - it drives a mocked store and asserts only that RecordDispatchAttempt is never
+                // called - and MustRecordADispatchAttemptWhenDispatchIsCancelledByAnotherToken pins its bound.
+                // Dropping the `when` filter reddens the second and nothing else - measured across both suites and
+                // both target frameworks. NO oracle pins where the row is LEFT: releasing the claim back to an
+                // instant long past on this exit reddens NOTHING in either suite on either target framework
+                // (measured, against a control mutation that reddens each of the four test binaries), because no
+                // fact drives a drain's OWN token to cancellation against a store that keeps a row at all.
                 _logger.LogTrace($"Processing of outbox message with id '{message.Id}' was cancelled.");
             }
             catch (Exception e)
@@ -161,9 +240,13 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// broker never took as delivered; the flag it is gated on is raised at the one point where that becomes
         /// true, and the mutations that redden its position are named there.
         /// Oracles: MustReClaimTheRowWhenTheClaimCommitFailsAfterAPublish and
-        /// MustNotRecordADispatchAttemptWhenTheReClaimSucceeds; removing the re-claim reddens both together and
-        /// nothing else (observed), and recording an attempt after a re-claim that SUCCEEDED reddens the second
-        /// alone (observed). There is no mutation that reddens the first alone.
+        /// MustNotRecordADispatchAttemptWhenTheReClaimSucceeds, joined over a relational store by the
+        /// EntityFramework suite's
+        /// <c>WhenReclaimingAfterAFailedClaimOverSqlite.MustLeaveTheRowProcessedAndSpendNoAttemptWhenTheClaimFailsAfterAPublish</c>.
+        /// Measured across both suites and both target frameworks: removing the re-claim reddens all THREE, and
+        /// recording an attempt after a re-claim that SUCCEEDED reddens TWO of them,
+        /// MustNotRecordADispatchAttemptWhenTheReClaimSucceeds and the SQLite fact. Neither measured mutation
+        /// isolates MustReClaimTheRowWhenTheClaimCommitFailsAfterAPublish.
         /// INVARIANT: the claim is STAGED here rather than inherited. Where the rolled-back unit of work began its
         /// own transaction, rollback clears its change tracker, so no residue of the staged claim survives for a
         /// later unit of work to flush by accident; where it adopted a caller's transaction, the caller owns
@@ -171,10 +254,16 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// it is what performs the claim, not a write that happens to restate what a tracker might still carry.
         /// No oracle separates the two paths: residue belongs to a relational store and a mocked one has none, so
         /// this is stated rather than pinned.
+        /// INVARIANT: no DRAIN CLAIM is taken here. The message is already on the broker, so there is nothing left
+        /// for a claim to arbitrate, and a claim that came back DENIED would abandon the processed stamp on a row
+        /// that WAS published - the one outcome this method exists to prevent. The rationale for the claim itself is
+        /// recorded once, at the call site in <see cref="Process"/>. No oracle separates this from a re-claim that
+        /// took one: every store grants an uncontended claim, so a claim added here would be granted on every path
+        /// that reaches this method.
         /// INVARIANT: a re-claim that throws is logged and reported unclaimed, so the caller falls through to the
         /// dispatch attempt and the row is held back by the backoff instead of being published again next poll.
         /// Oracle: MustRecordADispatchAttemptWhenTheReClaimAlsoFails; swallowing the failure and reporting the row
-        /// claimed reddens it and nothing else (observed).
+        /// claimed reddens it and nothing else - measured across both suites and both target frameworks.
         /// </remarks>
         private async Task<bool> TryReClaimPublishedMessage(OutboxMessage message, CancellationToken cancellationToken)
         {
@@ -205,7 +294,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// BrokeredMessageOutbox.RecordDispatchAttempt. Oracle:
         /// MustRecordTheDispatchAttemptOutsideTheRolledBackUnitOfWork, whose unit of work reverts attempt state
         /// staged by an operation that threw and which also counts the units of work opened. Wrapping this call in
-        /// a unit of work reddens it and nothing else (observed).
+        /// a unit of work reddens it and nothing else - measured across both suites and both target frameworks.
         /// INVARIANT: this covers the two exits that leave the row unclaimed: a dispatch that threw, and a dispatch
         /// that SUCCEEDED whose claim AND re-claim both threw. The second is what keeps the due gate from
         /// re-publishing an already-published message on the very next poll.
@@ -214,11 +303,21 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// INVARIANT: the backoff is taken from the attempt count THIS failure leaves the row at, so the waits run
         /// 5s, 10s, 20s rather than repeating the base for the first two failures.
         /// Oracle: MustGrowTheScheduledWaitWithTheAttemptsTheRowAlreadyCarries; passing the row's pre-increment
-        /// count reddens it and nothing else, and scheduling the attempt at now rather than a backoff ahead reddens
-        /// it together with MustScheduleTheNextAttemptOneBackoffAhead (both observed).
-        /// A failure to record is itself logged and swallowed, which leaves the row exactly as it is without this
-        /// method - due now, at the attempts it already carried, re-attempted next drain - so the drain can never
-        /// be worse off than the behaviour this replaced. Oracle: MustNotThrowWhenRecordingTheDispatchAttemptFails.
+        /// count reddens it and nothing else (measured across both suites and both target frameworks).
+        /// Scheduling the attempt at now rather than a backoff ahead is a much wider mutation: it reddens EIGHT
+        /// facts - that one, MustScheduleTheNextAttemptOneBackoffAhead, both
+        /// WhenDrainingTheDefaultInMemoryOutbox facts that let a backoff elapse
+        /// (MustRecordTheFailedDispatchAndLeaveTheRowUnprocessed and
+        /// MustDispatchTheSameRowOnTheNextDrainOnceItsBackoffHasElapsed), and all four
+        /// Integration.WhenDrainingPastAPermanentlyFailingRowOnSqlServer facts in the EntityFramework suite, which
+        /// is what a backoff of zero costs: a failing message is handed to the very next poll again. The breadth
+        /// belongs to that mutation, not to the reasoning above it.
+        /// A failure to record is itself logged and swallowed, so the row keeps the attempts it already carried and
+        /// is re-attempted rather than lost, and the drain can never be worse off than the behaviour this replaced.
+        /// WHEN the row comes back then follows from the drain claim's lifetime, recorded once in the remarks on
+        /// IPollableOutboxStore.TryClaimForDispatch.
+        /// Oracle: MustNotThrowWhenRecordingTheDispatchAttemptFails, which pins only that the
+        /// failure does not escape; NO oracle pins the due time this exit leaves.
         /// </remarks>
         private async Task RecordFailedDispatchAttempt(OutboxMessage message, CancellationToken cancellationToken)
         {

@@ -48,20 +48,18 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
         // THE ROW ENDS PROCESSED AND NO ATTEMPT IS SPENT. The message reaches the broker, the claim that follows it
         // is faulted with a failure that is not a concurrency conflict, and the drain re-claims. The end state is
         // read back through a FRESH context, so what is asserted is what SQLite stores rather than what the change
-        // tracker still carries - a later poll in another scope can read nothing else. The two modifying statements
-        // counted are the claim that failed and the re-claim that replaced it; a third would mean another write
-        // reached the row.
-        // MEASURED: restoring the pre-ff05ce3 failure path in OutboxProcessor - a single catch that records the
-        // attempt inside a unit of work, with no published flag and no re-claim - reddens this fact and no other in
-        // this project, on both target frameworks (215 of 216 passed), with:
-        //   Expected _faultingClaim.ObservedModificationCount to be 2 because the claim that failed and the
-        //   re-claim that replaced it are the only writes this drain makes, but found 3.
-        // Every assertion ABOVE that one passes under the revert, and that is exactly what the count is here to
-        // catch. The old path opened a unit of work of its own, wrote the attempt through it, and its save then
-        // flushed the staged claim over the row it had just written - restoring DispatchAttempts to the 0 the
-        // tracked message was loaded with and NextAttemptAtUtc to null. So the row reaches the same end state, but
-        // by a write nothing named, and the attempt it meant to record is discarded on the way. A fact asserting
-        // only the stored columns cannot see that; this one counts the statements that produced them.
+        // tracker still carries - a later poll in another scope can read nothing else. The three modifying
+        // statements counted are the DRAIN CLAIM this drain was granted, the claim that failed and the re-claim
+        // that replaced it; a fourth would mean another write reached the row.
+        // MEASURED, the re-claim: deleting the re-claim call from OutboxProcessor's failure catch reddens this fact
+        // and no other in this project (241 of 242 passed), with:
+        //   Expected stored.ProcessedFromOutboxAtUtc to have a value ..., but found <null>.
+        // MEASURED, the count: issuing the re-claim's unit of work TWICE reddens this fact and no other in this
+        // project (241 of 242 passed), with:
+        //   Expected _faultingClaim.ObservedModificationCount to be 3 ..., but found 4.
+        // Every assertion ABOVE the count passes under that second mutation, and that is exactly what the count is
+        // here to catch: a write that reaches the row leaving every column reading as it should, so a fact
+        // asserting only the stored columns cannot see it. This one counts the statements that produced them.
         [Fact]
         public async Task MustLeaveTheRowProcessedAndSpendNoAttemptWhenTheClaimFailsAfterAPublish()
         {
@@ -78,14 +76,14 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingBrokered
                 "the message is on the broker, so the row it came from must never be published again");
             stored.DispatchAttempts.Should().Be(0,
                 "a delivered message spends no attempt - the claim failed, the dispatch did not");
-            stored.NextAttemptAtUtc.Should().BeNull(
-                "nothing is scheduled for a message that was delivered");
+            stored.NextAttemptAtUtc.Should().Be(polled.NextAttemptAtUtc,
+                "the row keeps the instant the DRAIN CLAIM wrote, not one a failure scheduled");
 
             _dispatcher.Verify(d => d.Dispatch(It.Is<OutboundBrokeredMessage>(published => published.MessageId == staged.MessageId), null), Times.Once);
             _faultingClaim.InjectedFailureCount.Should().Be(1,
                 "the fact proves nothing unless the claim genuinely failed");
-            _faultingClaim.ObservedModificationCount.Should().Be(2,
-                "the claim that failed and the re-claim that replaced it are the only writes this drain makes");
+            _faultingClaim.ObservedModificationCount.Should().Be(3,
+                "the drain claim, the claim that failed and the re-claim that replaced it are the only writes this drain makes");
         }
 
         // THE FIXTURE'S OWN PREMISE. A DbUpdateConcurrencyException would take BrokeredMessageOutbox's compensation

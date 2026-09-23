@@ -88,11 +88,14 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// never leaves the database. Both clauses also sit BEFORE the OrderBy/Take: filtering rows the take has
         /// already claimed shrinks the batch rather than filling it from behind, so as few as
         /// <see cref="ReliabilityOptions.OutboxPollBatchSize"/> held-back messages would leave this poll returning
-        /// nothing at all. Moving the due clause into a Where AFTER the Take reddens
-        /// WhenGettingUnprocessedMessages.MustSpendNoBatchSlotOnAMessageThatIsNotDue and nothing else (observed);
-        /// moving the ceiling clause there reddens
-        /// WhenGettingUnprocessedMessages.MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling and nothing
-        /// else (observed).
+        /// nothing at all. Moving the due clause into a Where AFTER the Take reddens THREE facts (measured):
+        /// <c>WhenGettingUnprocessedMessages.MustSpendNoBatchSlotOnAMessageThatIsNotDue</c>, plus
+        /// <c>Integration.WhenDrainingPastAPermanentlyFailingRowOnSqlServer.MustDispatchEachPermanentlyFailingMessageExactlyOnceInOneDrain</c>
+        /// and <c>.MustDispatchTheMessageBehindAFullBatchOfPermanentlyFailingMessages</c>, which are the two facts
+        /// that fill a whole batch with held-back messages over a real server and so feel the shrinking batch
+        /// directly. Moving the ceiling clause there instead reddens
+        /// <c>WhenGettingUnprocessedMessages.MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling</c> and
+        /// nothing else (measured). Both mutations leave the core <c>Chatter.MessageBrokers</c> suite green.
         /// </para>
         /// <para>
         /// INVARIANT: both clauses TRANSLATE, so a message that is not due never leaves the database. Every other
@@ -100,11 +103,19 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// process and so cannot tell a translated predicate from one EF would refuse. Oracle:
         /// <c>WhenGettingUnprocessedMessages.MustTranslateTheDueGateAndTheCeilingToSqlOverARelationalProvider</c>,
         /// which runs this poll over SQLite. Rewriting the due clause as a call to a static helper - a shape EF
-        /// refuses - reddens it, plus the two other facts that poll over a relational provider
-        /// (<c>WhenUpdatingProcessed.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed</c> and
-        /// <c>WhenConfiguringReliabilityBehaviors.MustResolveOutboxThroughTheBatchSizeAwareConstructor</c>), and
-        /// nothing else (observed). The mutation is not exclusive because translation is a property of the query
-        /// every relational caller shares, not of one fact.
+        /// refuses - reddens it and EIGHTEEN further facts in this suite, 23 test cases in all once the
+        /// two-case theories are counted, and nothing in the core <c>Chatter.MessageBrokers</c> suite (measured on
+        /// both target frameworks). Everything that polls through this query over a relational provider falls with
+        /// it: six of the eight <c>WhenClaimingForDispatch</c> facts - all but its two refusal facts, which get the
+        /// refusal they expect either way - both <c>WhenReclaimingAfterAFailedClaimOverSqlite</c> facts, all four
+        /// facts of each of the two SQL Server integration fixtures that drain the outbox
+        /// (<c>WhenArbitratingOutboxDrainsOnSqlServer</c> and
+        /// <c>WhenDrainingPastAPermanentlyFailingRowOnSqlServer</c>),
+        /// <c>WhenUpdatingProcessed.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed</c> and
+        /// <c>WhenConfiguringReliabilityBehaviors.MustResolveOutboxThroughTheBatchSizeAwareConstructor</c>. The
+        /// mutation is nowhere near exclusive, because translation is a property of the query every relational
+        /// caller shares rather than of one fact - which is also why the one fact named above is the oracle worth
+        /// citing: it is the only one that fails for THIS reason rather than as collateral.
         /// </para>
         /// <para>
         /// NOTE: no oracle pins the boundary between <c>&lt;=</c> and <c>&lt;</c> against now. The instant is read
@@ -141,8 +152,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// applies. Its caller runs it once per unit of work with no re-poll loop behind it, so any of the three
         /// would drop a message nothing would ever come back for rather than deferring it. Oracle for the due
         /// clause and the ceiling:
-        /// <c>WhenGettingUnprocessedMessages.MustNeitherDueGateNorCeilingTheUnprocessedBatch</c>; adding either
-        /// clause here reddens it and nothing else (observed). NO oracle pins the absence of a CAP - the fact
+        /// <c>WhenGettingUnprocessedMessages.MustNeitherDueGateNorCeilingTheUnprocessedBatch</c>; adding the due
+        /// clause here reddens it and nothing else - measured across both suites and both target frameworks.
+        /// NO oracle pins the absence of a CAP - the fact
         /// stages a single message, so a Take would still return it - and none is added here, because a fact that
         /// staged more would pin a number this method does not otherwise name.
         /// </remarks>
@@ -178,7 +190,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// took unprocessed for the next poll to publish again. Stating the original as null emits the same
         /// predicate either way. Oracle:
         /// <c>WhenUpdatingProcessed.MustStateTheClaimAsUnprocessedWhenTheMessageIsDetached</c>; dropping the
-        /// original-value statement reddens it and nothing else (measured).
+        /// original-value statement reddens it and nothing else - measured across both suites and both target
+        /// frameworks.
         /// </remarks>
         private void UpdateProcessedDate(DbSet<OutboxMessage> outbox, OutboxMessage outboxMessage)
         {
@@ -195,24 +208,29 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// SaveChangesAsync would re-emit the very 'still unprocessed' predicate that just failed - and would commit
         /// the claim if it now matched. Oracle:
         /// <c>WhenUpdatingProcessed.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed</c>;
-        /// recording through <c>Update</c> plus <c>SaveChangesAsync</c> instead reddens it and nothing else
-        /// (observed) - the other two facts here survive that mutation, because their message is clean and a
-        /// tracked save reaches the row just as well.
+        /// recording through <c>Update</c> plus <c>SaveChangesAsync</c> instead reddens it and nothing else -
+        /// measured across both suites and both target frameworks. The other two facts here survive that
+        /// mutation, because their message is clean and a tracked save reaches the row just as well.
         /// <para>
         /// INVARIANT: it is also a write that must LAND, which is the second reason it is not staged. The
         /// transaction that carried the claim has already rolled back and there is no unit of work left to commit
         /// with, so a staged attempt would be discarded and the message would come back due now with nothing spent.
         /// Oracle: <c>WhenUpdatingProcessed.MustCountOneMoreDispatchAttemptOnTheStoredRow</c>, which reads the row
         /// back through a second context rather than off the tracked instance. Staging the write without saving
-        /// reddens that fact and BOTH others here (observed) - this is a claim all three pin rather than one, since
-        /// every one of them reads the stored row.
+        /// reddens SEVEN facts (measured): that one and BOTH others here - this is a claim all three pin rather
+        /// than one, since every one of them reads the stored row - and all four
+        /// <c>Integration.WhenDrainingPastAPermanentlyFailingRowOnSqlServer</c> facts, which are exactly the
+        /// drains that depend on a spent attempt surviving to the next poll.
         /// </para>
         /// <para>
         /// INVARIANT: the predicate is the message's own <see cref="OutboxMessage.Id"/>, so the write touches
         /// exactly the message it was handed; a wider one would spend an attempt, and push out a next attempt
         /// instant, on messages whose dispatch never failed. Oracle:
         /// <c>WhenUpdatingProcessed.MustRecordTheAttemptOnlyOnTheMessageItWasHanded</c>; dropping the Where reddens
-        /// it and nothing else (observed).
+        /// THREE facts (measured): that one, and
+        /// <c>Integration.WhenDrainingPastAPermanentlyFailingRowOnSqlServer.MustDispatchEachPermanentlyFailingMessageExactlyOnceInOneDrain</c>
+        /// together with <c>.MustDispatchTheMessageBehindAFullBatchOfPermanentlyFailingMessages</c>, which hold
+        /// several messages at once and so notice an attempt spent on the wrong ones.
         /// </para>
         /// <para>
         /// NOTE: the count is incremented in the database rather than from the count the supplied message carries,
@@ -254,6 +272,113 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
                                                    .SetProperty(message => message.DispatchAttempts, message => message.DispatchAttempts + 1)
                                                    .SetProperty(message => message.NextAttemptAtUtc, nextAttemptAtUtc),
                                                cancellationToken);
+        }
+
+        /// <remarks>
+        /// INVARIANT: the drain claim is ONE statement, so the read of the observed value and the write of the
+        /// claimed one cannot be separated by another drain. A read-then-write pair would let two drains both find
+        /// the observed value and both go on to dispatch the same message. Oracle:
+        /// <c>WhenClaimingForDispatch.MustGrantTheDrainClaimToOnlyOneOfTwoDrainsThatObservedTheSameNextAttempt</c>;
+        /// dropping the observed-value conjunct reddens it and the three other facts that name an observed value -
+        /// <c>MustRefuseTheDrainClaimAgainstAStaleObservedNextAttempt</c>,
+        /// <c>MustCompareANullObservedNextAttemptAsIsNull</c> and
+        /// <c>MustCompareANonNullObservedNextAttemptAsAParameter</c> - and nothing else: 4 reddened, measured
+        /// across both suites and both target frameworks. The mutation is not exclusive because the conjunct is
+        /// the whole compare-and-set, which every one of those facts reads.
+        /// <para>
+        /// INVARIANT: the predicate seeks a SINGLE ROW by <see cref="OutboxMessage.Id"/>, which is the outbox's
+        /// primary key under <see cref="OutboxMessageConfiguration"/>. A drain must not push out the next attempt
+        /// instant of a message it never polled, and - over a server that locks what a statement touches - the
+        /// arbitration a losing drain waits on is confined to the one row only because the seek is. A range or scan
+        /// predicate takes locks beyond that one row, and nothing here says what a drain blocked behind THOSE locks
+        /// would do.
+        /// Oracle: <c>WhenClaimingForDispatch.MustClaimOnlyTheMessageItWasHanded</c>; dropping the Id conjunct
+        /// reddens it and one more (measured):
+        /// <c>Integration.WhenArbitratingOutboxDrainsOnSqlServer.MustLeaveADifferentRowClaimableWhileADrainIsBlockedOnTheRacedRow</c>,
+        /// in both of its cases. That second one is the lock half of this claim - it pins over a real server that
+        /// a drain blocked on the raced row leaves a DIFFERENT row claimable, which is only true while the seek
+        /// confines the locks.
+        /// </para>
+        /// <para>
+        /// INVARIANT: the claim carries no DUE clause, unlike
+        /// <see cref="GetUnprocessedMessagesFromOutbox(CancellationToken)"/>. The claim it writes is invisible to
+        /// every other connection until this unit of work commits, so a drain cannot decide from the claimed instant
+        /// alone whether a message is still being tried; the compare-and-set on the observed value is what arbitrates
+        /// instead. NO oracle pins its absence: a due clause would refuse only a message claimed into the future by
+        /// a drain still running, which is the concurrent case SQLite cannot stage.
+        /// </para>
+        /// <para>
+        /// INVARIANT: the observed value is compared as a NULLABLE parameter, so a null one emits a literal
+        /// <c>IS NULL</c> rather than an equality against a null parameter, which matches no row in SQL. A staged
+        /// message carries no next attempt instant at all, so that is the commonest claim there is and refusing it
+        /// would leave the outbox undrained. Oracle:
+        /// <c>WhenClaimingForDispatch.MustCompareANullObservedNextAttemptAsIsNull</c>, which captures the emitted
+        /// SQL rather than inferring the shape from the outcome, and its counterpart
+        /// <c>MustCompareANonNullObservedNextAttemptAsAParameter</c>. Both read the PREDICATE alone rather than the
+        /// whole statement, because the SET clause assigns the same column from a parameter too and a
+        /// statement-wide search would be satisfied by the assignment. The only mutation measured to redden them is
+        /// dropping the conjunct outright, above. Rewriting the comparison as <c>object.Equals(...)</c> reddens
+        /// NOTHING - re-measured across both suites and both target frameworks, with the compiled assemblies
+        /// checked to be newer than the edit, because a green run is the one result a stale binary can fake. EF
+        /// translates that shape to the identical null-safe SQL, so which of the two is written here is a free
+        /// choice and NO oracle separates them.
+        /// </para>
+        /// <para>
+        /// INVARIANT: only a message that is still unprocessed may be claimed, so a message another drain dispatched
+        /// between this drain's poll and this claim is refused rather than published a second time. Oracle:
+        /// <c>WhenClaimingForDispatch.MustRefuseTheDrainClaimOnAMessageAlreadyProcessed</c>; dropping the
+        /// ProcessedFromOutboxAtUtc conjunct reddens it and nothing else - measured across both suites and both
+        /// target frameworks.
+        /// </para>
+        /// <para>
+        /// INVARIANT: a granted claim is written onto the supplied instance as well as the row, because this
+        /// statement writes outside the change tracker - the same reason
+        /// <see cref="RecordDispatchAttempt(OutboxMessage, DateTime, CancellationToken)"/> above does it. Without
+        /// the write-through the tracked message would still carry the instant the poll loaded, and a later
+        /// <c>Update</c>, which marks EVERY property modified, would restate that stale instant and revert the claim
+        /// inside the very transaction that took it. Oracle:
+        /// <c>WhenClaimingForDispatch.MustWriteTheGrantedClaimOntoTheSuppliedMessage</c>; deleting the write-through
+        /// reddens it and nothing else - measured across both suites and both target frameworks.
+        /// </para>
+        /// <para>
+        /// NOTE: this method neither opens a transaction nor saves. ExecuteUpdateAsync enlists in whatever
+        /// transaction the caller has open, and the caller takes this claim inside the drain's unit of work - which
+        /// is what leaves a losing drain waiting on the row rather than reading round it. Oracle:
+        /// <c>WhenClaimingForDispatch.MustEnlistTheClaimInTheAmbientTransaction</c>, which abandons the unit of work
+        /// after the claim is granted and reads the row back unchanged, having first checked through an interceptor
+        /// that a statement genuinely reached the database. That oracle pins EF's behaviour rather than a choice
+        /// made here: no mutation of this method can detach the statement from the context's current transaction, so
+        /// none reddens it exclusively - it is here to catch that property of EF changing under this claim. The
+        /// WAITING itself is pinned over a real server by
+        /// <c>Integration.WhenArbitratingOutboxDrainsOnSqlServer.MustMakeASecondDrainsClaimWaitOnTheWinningDrainsRowLock</c>,
+        /// which reads the blocked request out of the server's own view and names the session it waits on. No fact
+        /// in <c>WhenClaimingForDispatch</c> can stage that: it needs two connections contending over one row, and
+        /// the single-connection SQLite harness those facts use cannot.
+        /// </para>
+        /// </remarks>
+        public async Task<bool> TryClaimForDispatch(OutboxMessage outboxMessage, DateTime? observedNextAttemptAtUtc, DateTime claimedNextAttemptAtUtc, CancellationToken cancellationToken = default)
+        {
+            _ = outboxMessage ?? throw new ArgumentNullException(nameof(outboxMessage));
+
+            var outboxMessageId = outboxMessage.Id;
+
+            var claimedRows = await _context.Set<OutboxMessage>()
+                                            .Where(message => message.Id == outboxMessageId
+                                                              && message.ProcessedFromOutboxAtUtc == null
+                                                              && message.NextAttemptAtUtc == observedNextAttemptAtUtc)
+                                            .ExecuteUpdateAsync(setters => setters
+                                                                    .SetProperty(message => message.NextAttemptAtUtc, claimedNextAttemptAtUtc),
+                                                                cancellationToken)
+                                            .ConfigureAwait(false);
+
+            if (claimedRows == 0)
+            {
+                return false;
+            }
+
+            outboxMessage.NextAttemptAtUtc = claimedNextAttemptAtUtc;
+
+            return true;
         }
 
         public async Task SendToOutbox(IEnumerable<OutboundBrokeredMessage> outboundBrokeredMessages, TransactionContext transactionContext, CancellationToken cancellationToken = default)

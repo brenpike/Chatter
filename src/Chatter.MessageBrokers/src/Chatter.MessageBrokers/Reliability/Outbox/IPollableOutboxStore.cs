@@ -72,8 +72,10 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// poll site. It follows the precedent <see cref="IBrokeredMessageOutbox"/> set with its single-message
         /// <c>SendToOutbox</c> overload. Oracle:
         /// <c>WhenResolvingReliabilityStores.OutboxCustomPrimaryImplementingBoth_RecordDispatchAttemptDefaultsToANoOp</c>,
-        /// whose store deliberately does not implement this member; giving this body any statement that touches the
-        /// supplied message reddens it and nothing else.
+        /// whose store deliberately does not implement this member; giving this body a statement that raises the
+        /// supplied message's attempt count and due instant reddens that ONE fact and nothing else - measured across
+        /// both suites that see this interface, the core <c>Chatter.MessageBrokers</c> one and the EntityFramework
+        /// reliability one, on both target frameworks.
         /// <para>
         /// A store inheriting the default keeps the pre-existing behaviour: its rows stay at zero attempts and due now,
         /// so a message whose dispatch keeps failing is re-attempted on every poll the way it is today.
@@ -81,6 +83,59 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// </remarks>
         Task RecordDispatchAttempt(OutboxMessage outboxMessage, DateTime nextAttemptAtUtc, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
+
+        /// <summary>
+        /// Takes the drain claim on <paramref name="outboxMessage"/>: a compare-and-set that moves the row's
+        /// <see cref="OutboxMessage.NextAttemptAtUtc"/> from <paramref name="observedNextAttemptAtUtc"/> - the value
+        /// the poll that handed this message back reported - to <paramref name="claimedNextAttemptAtUtc"/>, and
+        /// answers whether THIS caller is the one that moved it.
+        /// </summary>
+        /// <remarks>
+        /// The drain claim is a different thing from the claim the processed stamp carries
+        /// (<see cref="OutboxMessage.ProcessedFromOutboxAtUtc"/>): that one records that a message was dispatched,
+        /// while this one only arbitrates which of several drains running at once gets to try.
+        /// <para>
+        /// The observed value is an EXPLICIT PARAMETER rather than a read of
+        /// <see cref="OutboxMessage.NextAttemptAtUtc"/> taken at claim time, and that is what leaves the
+        /// compare-and-set honest rather than a style preference. A store may hand a poll THE STORED INSTANCES
+        /// THEMSELVES - the shipped in-memory one does - so a second drain reading the observed value off the
+        /// message would read the FIRST drain's claim, compare it against itself, satisfy the set, and be granted
+        /// the claim too: both drains would win. The parameter pins the comparison to what the poll reported
+        /// instead of to whatever the row says by the time the claim runs.
+        /// </para>
+        /// <para>
+        /// The CALLER'S UNIT OF WORK is what a granted claim lives inside, and that unit of work's lifetime is the
+        /// claim's. A unit of work able to discard what it did - a relational transaction - ends the claim at its
+        /// rollback, IMMEDIATELY, and <paramref name="claimedNextAttemptAtUtc"/> is never reached. A unit of work
+        /// that discards nothing leaves the claim standing, and that instant is then the only thing that ends it.
+        /// So the claimed instant is a CEILING on the claim rather than a SCHEDULE for it: it bounds the claim only
+        /// where the unit of work carrying it does not. A third-party store is not a third case - the same
+        /// derivation answers it, from what that store's caller's unit of work can discard. Oracles, one per leg:
+        /// <c>Integration.WhenArbitratingOutboxDrainsOnSqlServer.MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack</c>,
+        /// where the winning drain's publish fails, its transaction rolls back, and the drain waiting on that row is
+        /// granted the claim and publishes the message there and then rather than at the claimed instant; and
+        /// <c>UsingInMemoryBrokeredMessageOutbox.WhenManagingOutbox.MustLeaveAClaimedMessageDueAgainOneBackoffLater</c>,
+        /// where a granted claim writes the caller's instant onto the row and the next poll hands that row back no
+        /// longer, so nothing but that instant can end the claim. This derivation is also why the drain wants
+        /// neither a reaper nor a lease on EITHER tier, though not for one reason: a unit of work that rolls back
+        /// has already handed the row back, and a unit of work that cannot roll back holds nothing outliving the
+        /// claimed instant. There is no release to miss either way.
+        /// </para>
+        /// <para>
+        /// INVARIANT: this is a default interface implementation that GRANTS, so a third-party pollable store
+        /// written against the previous shape of this interface still compiles and still satisfies the cast at the
+        /// poll site - the same reason <c>RecordDispatchAttempt</c> above carries a default body. Granting is the
+        /// answer that keeps such a store's behaviour exactly what it is today and costs it nothing; what the store
+        /// gives up in exchange is arbitration, because every drain is told it won and nothing then holds two of
+        /// them off one message. Oracle:
+        /// <c>WhenResolvingReliabilityStores.OutboxCustomPrimaryImplementingBoth_TryClaimForDispatchGrantsByDefault</c>,
+        /// whose store deliberately does not implement this member; answering <c>false</c> from this body reddens
+        /// that ONE fact and nothing else - measured across both suites that see this interface, the core
+        /// <c>Chatter.MessageBrokers</c> one and the EntityFramework reliability one, on both target frameworks.
+        /// </para>
+        /// </remarks>
+        Task<bool> TryClaimForDispatch(OutboxMessage outboxMessage, DateTime? observedNextAttemptAtUtc, DateTime claimedNextAttemptAtUtc, CancellationToken cancellationToken = default)
+            => Task.FromResult(true);
 
         /// <summary>
         /// Takes every unprocessed row of one staged batch. This is a lookup by batch id and is NOT an Outbox Poll
