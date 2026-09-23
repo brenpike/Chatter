@@ -192,5 +192,35 @@
 
             return false;
         }
+
+        /// <summary>
+        /// Determines if a SqlException is terminal by leveraging the error number
+        /// </summary>
+        /// <param name="errorNumber">The error number from the <see cref="SqlError"/></param>
+        /// <returns></returns>
+        /// <remarks>
+        /// This package provisions no Service Broker topology, so a missing queue or a malformed statement
+        /// is deterministic misconfiguration rather than a transient fault: retrying cannot make it succeed.
+        /// </remarks>
+        // INVARIANT: an error number is never both terminal and transient. Pinned by
+        // WhenCheckingErrorNumberTerminality.MustReturnFalseForTransientErrorNumber, which adding
+        // `case 1205:` below reddens; the 102/208 direction is pinned by
+        // WhenCheckingErrorNumberTerminality.MustNeverClassifyATerminalErrorNumberAsTransient, which
+        // removing `case 102:` reddens (ADR-0027).
+        public static bool IsErrorNumberTerminal(int errorNumber)
+        {
+            switch (errorNumber)
+            {
+                // SQL Error Code: 208
+                // Invalid object name '%.*ls'.
+                case 208:
+                // SQL Error Code: 102
+                // Incorrect syntax near '%.*ls'.
+                case 102:
+                    return true;
+            }
+
+            return false;
+        }
     }
 }
