@@ -100,11 +100,30 @@ namespace Chatter.CQRS.DependencyInjection
                    s.FromAssemblies(openGenericBehaviorType.Assembly)
                        .AddClasses(c => c.AssignableTo(openGenericBehaviorType))
                        .UsingRegistrationStrategy(RegistrationStrategy.Replace(ReplacementBehavior.ImplementationType))
-                       .AsImplementedInterfaces()
+                       // INVARIANT: for a scanned class that declares ICommandBehavior<> at a single closing, this
+                       // selector emits exactly one service type, so Replace(ReplacementBehavior.ImplementationType)
+                       // cannot delete a descriptor this same scan just added for that class. A collateral generic
+                       // interface on the class is not a service type here, in either declaration order.
+                       // Oracle: MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredAfterIt
+                       // and MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredBeforeIt.
+                       // Mutation that reddens them: restoring .AsImplementedInterfaces() in place of this .As(...).
+                       // Residual, unpinned: a class implementing ICommandBehavior<> at two different closings still
+                       // yields two service types and still self-deletes all but the last. That is pre-existing and no
+                       // test pins it. Replace(ReplacementBehavior.ServiceType) is not the escape, because distinct
+                       // behaviors legitimately share ICommandBehavior<> as their service type.
+                       .As(behavior => GetCommandBehaviorServiceTypes(behavior))
                        .WithTransientLifetime());
 
             return services;
         }
+
+        private static IEnumerable<Type> GetCommandBehaviorServiceTypes(Type behaviorType)
+            => behaviorType.GetImplementedInterfacesThatMatchOpenGenericType(typeof(ICommandBehavior<>))
+                .Where(commandBehaviorInterface => !behaviorType.IsGenericType
+                    || behaviorType.GetGenericArguments().Length == commandBehaviorInterface.GetGenericArguments().Length)
+                .Select(commandBehaviorInterface => behaviorType.IsGenericTypeDefinition
+                    ? commandBehaviorInterface.GetGenericTypeDefinition()
+                    : commandBehaviorInterface);
 
         public static IServiceCollection RegisterBehaviorForCommand(this IServiceCollection services, Type closedGenericBehaviorType)
         {
