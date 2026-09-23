@@ -157,6 +157,17 @@ namespace Chatter.MessageBrokers.Tests.Sending.UsingOutboundBrokeredMessage
             => CreateSut().TryGetMessageContextByKey<string>("missing", out _).Should().BeFalse();
 
         [Fact]
+        public void MustReportAStoredNullAsNotFoundFromTheTryAccessor()
+        {
+            var context = new Dictionary<string, object> { ["key"] = null };
+            var sut = CreateSut(context);
+            sut.TryGetMessageContextByKey<string>("key", out var referenceValue).Should().BeFalse();
+            referenceValue.Should().BeNull();
+            sut.TryGetMessageContextByKey<int?>("key", out var nullableValue).Should().BeFalse();
+            nullableValue.Should().BeNull();
+        }
+
+        [Fact]
         public void MustReadInfrastructureTypeAsNullWhenPersistedKindIsNotAString()
         {
             var context = new Dictionary<string, object> { [MessageContext.InfrastructureType] = 42L };
