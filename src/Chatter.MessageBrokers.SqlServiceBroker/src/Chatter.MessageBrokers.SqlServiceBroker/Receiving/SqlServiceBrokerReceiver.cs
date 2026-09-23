@@ -107,14 +107,30 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 message = await ReceiveAsync(connection, transaction, cancellationToken);
             }
 #if NET5_0_OR_GREATER
-            catch (SqlException e) when (e.IsTransient)
+            // Microsoft.Data.SqlClient owns IsTransient and may report a terminal error number as transient,
+            // so the terminal guard keeps a terminal number from being shadowed by this filter, which sits
+            // above the critical filter below. Same asymmetry the retry and circuit-breaker predicate
+            // providers correct. INVARIANT: no test pins this guard — the driver reports 208 as NOT transient
+            // (observed live against SQL Server 2022), so removing `&& !SqlExceptionHelper
+            // .IsErrorNumberTerminal(e.Number)` reddens nothing. It is defence-in-depth against a future
+            // driver reclassification (ADR-0027).
+            catch (SqlException e) when (e.IsTransient && !SqlExceptionHelper.IsErrorNumberTerminal(e.Number))
             {
                 await session.DisposeAsync();
                 _logger.LogWarning(e, "Failure to receive message from Sql Service Broker due to transient error");
                 throw;
             }
 #endif
-            catch (SqlException e) when (e.Number == 102)
+            // This package provisions no Service Broker topology, so a missing queue (208) or a malformed
+            // RECEIVE statement (102) is deterministic misconfiguration: retrying cannot make it succeed. Fail
+            // fast as critical, naming the configured queue, instead of letting the raw SqlException reach the
+            // core recovery pipeline.
+            // INVARIANT: a terminal SQL error number surfaces as CriticalReceiverException naming
+            // _options.MessageReceiverPath. Pinned by Integration.SsbMissingQueueTests
+            // .ReceivingFromAMissingQueueSurfacesACriticalReceiverExceptionNamingTheQueue (Docker-gated;
+            // SKIPPED when Docker is absent), which reverting this filter to `e.Number == 102` reddens
+            // (ADR-0027).
+            catch (SqlException e) when (SqlExceptionHelper.IsErrorNumberTerminal(e.Number))
             {
                 await session.DisposeAsync();
                 throw new CriticalReceiverException($"Unable to receive message from configured queue '{_options.MessageReceiverPath}'", e);
