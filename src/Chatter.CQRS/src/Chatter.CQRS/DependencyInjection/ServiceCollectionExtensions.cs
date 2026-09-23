@@ -101,16 +101,24 @@ namespace Chatter.CQRS.DependencyInjection
                        .AddClasses(c => c.AssignableTo(openGenericBehaviorType))
                        .UsingRegistrationStrategy(RegistrationStrategy.Replace(ReplacementBehavior.ImplementationType))
                        // INVARIANT: for a scanned class that declares ICommandBehavior<> at a single closing, this
-                       // selector emits exactly one service type, so Replace(ReplacementBehavior.ImplementationType)
-                       // cannot delete a descriptor this same scan just added for that class. A collateral generic
-                       // interface on the class is not a service type here, in either declaration order.
-                       // Oracle: MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredAfterIt
-                       // and MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredBeforeIt.
+                       // selector emits at most one service type, so Replace(ReplacementBehavior.ImplementationType)
+                       // cannot delete a descriptor this same scan just added for that class. A collateral interface
+                       // on the class, generic or not, is not a service type here, in either declaration order.
+                       // Oracle: MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredAfterIt,
+                       // MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredBeforeIt and
+                       // MustNotRegisterABehaviorUnderANonGenericCollateralInterface.
                        // Mutation that reddens them: restoring .AsImplementedInterfaces() in place of this .As(...).
                        // Residual, unpinned: a class implementing ICommandBehavior<> at two different closings still
                        // yields two service types and still self-deletes all but the last. That is pre-existing and no
                        // test pins it. Replace(ReplacementBehavior.ServiceType) is not the escape, because distinct
                        // behaviors legitimately share ICommandBehavior<> as their service type.
+                       // Residual, unpinned: "at most one" is none for a scanned class whose own generic arity differs
+                       // from ICommandBehavior<>'s - e.g. Behavior<TMessage, TDependency> : ICommandBehavior<TMessage>,
+                       // which passes this method's validation and matches the scan, yet registers nothing. Inherited,
+                       // not introduced: .AsImplementedInterfaces() dropped that same interface for the same reason,
+                       // because the arity gate here reproduces Scrutor's own. No test pins it. Rejecting such a type
+                       // at composition time would be a new breaking failure for callers it silently no-ops for today,
+                       // and supporting the mapping is a separate feature; both are product decisions, not taken here.
                        .As(behavior => GetCommandBehaviorServiceTypes(behavior))
                        .WithTransientLifetime());
 
