@@ -74,8 +74,10 @@ namespace Chatter.MessageBrokers.Receiving
         internal InboundBrokeredMessage UpdateVia(string via)
         {
             var key = MessageBrokers.MessageContext.Via;
-            // INVARIANT: a stored 'via' that is not a string reads as absent, so the receiver being
-            // visited replaces it rather than being appended to an uncastable value.
+            // INVARIANT: a stored 'via' whose kind is not string reads as absent, so the receiver being
+            // visited REPLACES it rather than appending to a value of another kind. Oracle:
+            // WhenMutatingMessageContext.MustReplaceViaWhenStoredValueIsNotAString, which goes red the moment
+            // GetMessageContextByKey<T> casts with `(T)output` instead of kind-testing with `output is T typedOutput`.
             var currentVia = GetMessageContextByKey<string>(key);
             if (currentVia != null)
             {
