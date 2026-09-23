@@ -14,7 +14,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [0.11.0] - 2026-09-22
 
-**No DDL. No new column. No migration.** The drain claim below rides the `NextAttemptAtUtc` column the 0.9.0 schema already has. No property, mapping or annotation changes, so there is nothing for `dotnet ef migrations add` to emit and nothing for you to generate — this package ships no migrations of its own. Both deploy directions are safe in either order: an old binary reading rows a new one has claimed sees an ordinary deferred row, and a new binary reading rows an old one wrote sees `NULL` or a past instant, both of which are claimable.
+**No DDL. No new column. No migration.** The drain claim below rides the `NextAttemptAtUtc` column the 0.9.0 schema already has. No property, mapping or annotation changes, so there is nothing for `dotnet ef migrations add` to emit and nothing for you to generate — this package ships no migrations of its own. Both deploy directions are safe in either order: a claim is invisible outside the transaction that took it, so no other binary ever reads a row mid-claim, and a claim that rolls back leaves the row exactly as the poll found it, so the drain that was waiting takes its own claim against the instant its own poll read and publishes the message; a new binary reading rows an old one wrote sees `NULL` or a past instant, both of which are claimable. Pinned by `WhenClaimingForDispatch.MustEnlistTheClaimInTheAmbientTransaction` and, over a real SQL Server, by `Integration/WhenArbitratingOutboxDrainsOnSqlServer.MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack`.
 
 ### Added
 

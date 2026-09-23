@@ -119,6 +119,25 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
         // Hoisting the claim OUT of the unit of work reddens this fact too, but at its VACUITY GUARD and not at its
         // claim: a denial that never had to wait is still a denial. What this fact carries alone is the DENIAL; the
         // wait it guards on belongs to MustMakeASecondDrainsClaimWaitOnTheWinningDrainsRowLock.
+        // INVARIANT: a drain claim that COMMITTED carries the processed stamp written with it. The claim and the
+        // stamp land in ONE unit of work, so a row showing the winner's claimed instant shows its stamp too and no
+        // poll can read the row claimed but unstamped and publish it a second time. The stored-row assertion below
+        // reads BOTH columns as a pair, which is what states that rather than the stamp alone.
+        // Oracle: this fact. Making the stamp CONDITIONAL inside the unit of work - skipping UpdateProcessedDate
+        // unless the row already carries a dispatch attempt - reddens it at
+        //   Expected (racedMessage.NextAttemptAtUtc, racedMessage.ProcessedFromOutboxAtUtc.HasValue) to be equal to
+        //   { Item1 = <instant>, Item2 = True } ... but found { Item1 = <the SAME instant>, Item2 = False }
+        // - the claim is on the row and the stamp is not, which is the state this pin forbids. MEASURED, that
+        // mutation reddens TEN facts on EACH target framework, counted over both suites: this fact's two cases;
+        // MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack's two, at their own stamp assertion;
+        // UsingBrokeredMessageOutbox.WhenReclaimingAfterAFailedClaimOverSqlite.MustLeaveTheRowProcessedAndSpendNoAttemptWhenTheClaimFailsAfterAPublish;
+        // Integration.WhenDrainingPastAPermanentlyFailingRowOnSqlServer.MustDispatchTheMessageBehindAFullBatchOfPermanentlyFailingMessages;
+        // and four Chatter.MessageBrokers facts in WhenProcessingOutboxMessage - MustMarkOutboxMessageProcessed,
+        // MustMarkProcessedWhenContextContainsNonStringValues, MustReClaimTheRowWhenTheClaimCommitFailsAfterAPublish
+        // and MustRecordADispatchAttemptWhenTheReClaimAlsoFails. It is NOT exclusive: every fact that reads a stamped
+        // row sees it. What this one holds is the PAIR read off a row whose drain claim COMMITTED over a real server.
+        // The nearest sibling, WhenReclaimingAfterAFailedClaimOverSqlite.MustLeaveTheRowProcessedAndSpendNoAttemptWhenTheClaimFailsAfterAPublish,
+        // reads the same two columns on the RE-CLAIM exit over SQLite, where the drain's own unit of work rolled back.
         [RequiresDockerTheory]
         [InlineData(true)]
         [InlineData(false)]
@@ -152,7 +171,9 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
                 "a denied drain publishes nothing, so the message the winner already put on the broker is not published twice");
 
             var racedMessage = await harness.ReadMessageAsync(harness.RacedMessageId);
-            racedMessage.ProcessedFromOutboxAtUtc.Should().NotBeNull("the winning drain stamped the row processed");
+            (racedMessage.NextAttemptAtUtc, racedMessage.ProcessedFromOutboxAtUtc.HasValue).Should().Be(
+                (winnerMessage.NextAttemptAtUtc, true),
+                "a drain claim that COMMITTED carries the processed stamp written with it: the row holds the instant the winner's claim wrote AND the stamp, so no poll can read it claimed but unstamped");
             racedMessage.DispatchAttempts.Should().Be(0,
                 "a denied drain never attempted the dispatch, so the denial spends no attempt");
 

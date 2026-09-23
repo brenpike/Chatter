@@ -104,6 +104,24 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// instead of to whatever the row says by the time the claim runs.
         /// </para>
         /// <para>
+        /// The CALLER'S UNIT OF WORK is what a granted claim lives inside, and that unit of work's lifetime is the
+        /// claim's. A unit of work able to discard what it did - a relational transaction - ends the claim at its
+        /// rollback, IMMEDIATELY, and <paramref name="claimedNextAttemptAtUtc"/> is never reached. A unit of work
+        /// that discards nothing leaves the claim standing, and that instant is then the only thing that ends it.
+        /// So the claimed instant is a CEILING on the claim rather than a SCHEDULE for it: it bounds the claim only
+        /// where the unit of work carrying it does not. A third-party store is not a third case - the same
+        /// derivation answers it, from what that store's caller's unit of work can discard. Oracles, one per leg:
+        /// <c>Integration.WhenArbitratingOutboxDrainsOnSqlServer.MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack</c>,
+        /// where the winning drain's publish fails, its transaction rolls back, and the drain waiting on that row is
+        /// granted the claim and publishes the message there and then rather than at the claimed instant; and
+        /// <c>UsingInMemoryBrokeredMessageOutbox.WhenManagingOutbox.MustLeaveAClaimedMessageDueAgainOneBackoffLater</c>,
+        /// where a granted claim writes the caller's instant onto the row and the next poll hands that row back no
+        /// longer, so nothing but that instant can end the claim. This derivation is also why the drain wants
+        /// neither a reaper nor a lease on EITHER tier, though not for one reason: a unit of work that rolls back
+        /// has already handed the row back, and a unit of work that cannot roll back holds nothing outliving the
+        /// claimed instant. There is no release to miss either way.
+        /// </para>
+        /// <para>
         /// INVARIANT: this is a default interface implementation that GRANTS, so a third-party pollable store
         /// written against the previous shape of this interface still compiles and still satisfies the cast at the
         /// poll site - the same reason <c>RecordDispatchAttempt</c> above carries a default body. Granting is the
