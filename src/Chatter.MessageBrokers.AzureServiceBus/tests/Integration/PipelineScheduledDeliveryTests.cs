@@ -62,8 +62,10 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Integration
 
             // Chatter's scheduled-enqueue is set via the ASB-specific header on SendOptions; the outbound mapper
             // (AsAzureServiceBusMessage) reads ASBMessageContext.ScheduledEnqueueTimeUtc and stamps
-            // ServiceBusMessage.ScheduledEnqueueTime. The value must be a DateTime (GetScheduledEnqueueTimeUtc
-            // casts to DateTime?).
+            // ServiceBusMessage.ScheduledEnqueueTime. GetScheduledEnqueueTimeUtc kind-tests the persisted value
+            // (TryGetMessageContextByKey<DateTime>, see OutboundBrokeredMessageExtensions) and answers null for
+            // any other kind, so a non-DateTime would leave ServiceBusMessage.ScheduledEnqueueTime unstamped
+            // rather than fault the send.
             var scheduledTimeUtc = DateTime.UtcNow + ScheduleDelay;
             var options = new SendOptions();
             options.WithMessageContext(ASBMessageContext.ScheduledEnqueueTimeUtc, scheduledTimeUtc);
