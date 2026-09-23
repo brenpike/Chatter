@@ -348,9 +348,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework
         /// after the claim is granted and reads the row back unchanged, having first checked through an interceptor
         /// that a statement genuinely reached the database. That oracle pins EF's behaviour rather than a choice
         /// made here: no mutation of this method can detach the statement from the context's current transaction, so
-        /// none reddens it exclusively - it is here to catch that property of EF changing under this claim. NO
-        /// oracle in this project pins the WAITING itself: that needs two connections contending over one row, which
-        /// the single-connection SQLite harness every fact here uses cannot stage.
+        /// none reddens it exclusively - it is here to catch that property of EF changing under this claim. The
+        /// WAITING itself is pinned over a real server by
+        /// <c>Integration.WhenArbitratingOutboxDrainsOnSqlServer.MustMakeASecondDrainsClaimWaitOnTheWinningDrainsRowLock</c>,
+        /// which reads the blocked request out of the server's own view and names the session it waits on. No fact
+        /// in <c>WhenClaimingForDispatch</c> can stage that: it needs two connections contending over one row, and
+        /// the single-connection SQLite harness those facts use cannot.
         /// </para>
         /// </remarks>
         public async Task<bool> TryClaimForDispatch(OutboxMessage outboxMessage, DateTime? observedNextAttemptAtUtc, DateTime claimedNextAttemptAtUtc, CancellationToken cancellationToken = default)

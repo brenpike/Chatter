@@ -196,16 +196,26 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                // INVARIANT: a drain the host stopped is NOT a failed dispatch. It spends no attempt and pushes no
-                // due time out, so the row stays due now and the next host start takes it; spending one would defer
-                // a perfectly good row and, under a configured attempt ceiling, burn its budget on restarts alone.
+                // INVARIANT: a drain the host stopped is NOT a failed dispatch. It spends no attempt, because
+                // spending one would defer a perfectly good row and, under a configured attempt ceiling, burn its
+                // budget on restarts alone.
+                // Where the row is LEFT on this exit depends on the store, because the drain claim above has
+                // already written the claimed instant and this exit neither records an attempt nor undoes it. A
+                // unit of work that ROLLS BACK - the relational one - discards that write, so the row keeps the
+                // instant the poll read and the next host start takes it. A store whose unit of work keeps no
+                // transaction - the shipped in-memory one - keeps the write, so the row is held back by the one
+                // backoff the claim scheduled, which is the wait a failed attempt would have given it anyway.
                 // The filter is deliberate and matches ReliabilityRetentionPurgeService's stop handling: a
                 // cancellation raised by any OTHER token - a broker client's own send timeout - is a real dispatch
                 // failure and falls through to the catch below.
-                // Oracles: MustNotRecordADispatchAttemptWhenProcessingIsCancelled pins the exemption, and
-                // MustRecordADispatchAttemptWhenDispatchIsCancelledByAnotherToken pins its bound. Dropping the
-                // `when` filter reddens the second and nothing else - measured across both suites and both target
-                // frameworks.
+                // Oracles: MustNotRecordADispatchAttemptWhenProcessingIsCancelled pins the NO-ATTEMPT half of the
+                // exemption ALONE - it drives a mocked store and asserts only that RecordDispatchAttempt is never
+                // called - and MustRecordADispatchAttemptWhenDispatchIsCancelledByAnotherToken pins its bound.
+                // Dropping the `when` filter reddens the second and nothing else - measured across both suites and
+                // both target frameworks. NO oracle pins where the row is LEFT: releasing the claim back to an
+                // instant long past on this exit reddens NOTHING in either suite on either target framework
+                // (measured, against a control mutation that reddens each of the four test binaries), because no
+                // fact drives a drain's OWN token to cancellation against a store that keeps a row at all.
                 _logger.LogTrace($"Processing of outbox message with id '{message.Id}' was cancelled.");
             }
             catch (Exception e)
@@ -303,9 +313,13 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// Integration.WhenDrainingPastAPermanentlyFailingRowOnSqlServer facts in the EntityFramework suite, which
         /// is what a backoff of zero costs: a failing message is handed to the very next poll again. The breadth
         /// belongs to that mutation, not to the reasoning above it.
-        /// A failure to record is itself logged and swallowed, which leaves the row exactly as it is without this
-        /// method - due now, at the attempts it already carried, re-attempted next drain - so the drain can never
-        /// be worse off than the behaviour this replaced. Oracle: MustNotThrowWhenRecordingTheDispatchAttemptFails.
+        /// A failure to record is itself logged and swallowed, so the row keeps the attempts it already carried and
+        /// is re-attempted rather than lost, and the drain can never be worse off than the behaviour this replaced.
+        /// WHEN the row comes back depends on the store, for the reason given on the cancellation exit above: a
+        /// unit of work that ROLLED BACK discarded the drain claim, leaving the row due now, while a store whose
+        /// unit of work keeps no transaction kept it and holds the row back one backoff - the same wait this method
+        /// would have written. Oracle: MustNotThrowWhenRecordingTheDispatchAttemptFails, which pins only that the
+        /// failure does not escape; NO oracle pins the due time this exit leaves.
         /// </remarks>
         private async Task RecordFailedDispatchAttempt(OutboxMessage message, CancellationToken cancellationToken)
         {
