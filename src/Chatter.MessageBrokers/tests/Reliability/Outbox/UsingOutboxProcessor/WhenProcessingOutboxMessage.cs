@@ -44,22 +44,17 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             // Moq PROXIES a default interface implementation rather than inheriting it, and a LOOSE mock's
             // Task<bool> answers FALSE - so without this the drain claim is DENIED and every assertion that reads a
             // drain which actually ran fails for a reason that has nothing to do with what it pins. Removing this
-            // grant reddens FIFTEEN facts in this fixture (measured). The granted claim is the uncontended baseline
+            // grant reddens SIXTEEN facts in this fixture (measured). The granted claim is the uncontended baseline
             // the rest of the fixture is written against; the facts that deny it do so deliberately, one at a time.
             GrantTheDrainClaim();
 
             _sut = new OutboxProcessor(_infrastructureProvider.Object, _logger.Object, _bodyConverterFactory.Object, _outbox.Object);
         }
 
-        // The MessageContext column persists a Newtonsoft-serialized IDictionary<string, object> as a
-        // JSON object string. Process deserializes it via JsonConvert.DeserializeObject and then performs
-        // hard (string) casts on the ContentType (:43) and InfrastructureType (:48) values. Under Newtonsoft
-        // those values deserialize to System.String, so the casts succeed.
-        //
-        // ORACLE: under System.Text.Json, DeserializeObject<IDictionary<string, object>> yields JsonElement
-        // values, and the (string) casts at :43 and :48 throw InvalidCastException. Process swallows that
-        // into _logger.LogError, so dispatch would silently never fire. These positive-dispatch assertions
-        // are what make that future break visible — a "does not throw" assertion alone would still pass.
+        // The MessageContext column persists an IDictionary<string, object> as a JSON object string.
+        // Process swallows a failed read into _logger.LogError, so dispatch would silently never fire. These
+        // positive-dispatch assertions are what make such a break visible — a "does not throw" assertion alone
+        // would still pass.
         private static string NewtonsoftSerializedContext()
             => $"{{\"{MessageContext.ContentType}\":\"{ContentType}\",\"{MessageContext.InfrastructureType}\":\"{Infra}\"}}";
 
@@ -69,7 +64,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
                 Id = 1,
                 MessageId = "message-id",
                 Destination = "destination",
-                // Left empty so Process falls through to the (string) cast on messageContext[ContentType] at :43.
+                // Left empty so Process falls through to messageContext[ContentType].
                 MessageContentType = null,
                 MessageContext = NewtonsoftSerializedContext(),
                 MessageBody = "message-body",
@@ -698,6 +693,108 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingOutboxProcessor
             writes.Should().Equal(DrainClaimWrite, RollbackWrite, DispatchAttemptWrite);
             message.DispatchAttempts.Should().Be(1);
             message.NextAttemptAtUtc.Should().Be(recorded);
+        }
+
+        private const int NotAString = 42;
+
+        /// <summary>
+        /// Persists <paramref name="context"/> the way the outbox writers persist a Message Context, with the
+        /// content type left off the row so the drain has to read it back out of the context.
+        /// </summary>
+        private static OutboxMessage CreateOutboxMessageWithContext(System.Collections.Generic.IDictionary<string, object> context)
+            => new OutboxMessage
+            {
+                Id = 4,
+                MessageId = "message-id",
+                Destination = "destination",
+                MessageContentType = null,
+                MessageContext = System.Text.Json.JsonSerializer.Serialize(context, ChatterJson.Options),
+                MessageBody = "message-body",
+            };
+
+        private void VerifyFailureLoggedAs<TException>() where TException : Exception
+            => _logger.Verify(
+                l => l.Log(
+                    LogLevel.Error,
+                    It.IsAny<EventId>(),
+                    It.IsAny<It.IsAnyType>(),
+                    It.IsAny<TException>(),
+                    (Func<It.IsAnyType, Exception, string>)It.IsAny<object>()),
+                Times.Once);
+
+        // A PERSISTED INFRASTRUCTURE TYPE OF THE WRONG KIND MISROUTES RATHER THAN WEDGES. The row is otherwise
+        // dispatchable, so refusing it on every poll would strand it for good; the drain reads the value as absent
+        // and hands the dispatch to the default Messaging Infrastructure, which is what an absent value already did.
+        [Fact]
+        public async Task MustDispatchViaTheDefaultInfrastructureWhenThePersistedInfrastructureTypeIsNotAString()
+        {
+            var message = CreateOutboxMessageWithContext(new System.Collections.Generic.Dictionary<string, object>
+            {
+                [MessageContext.ContentType] = ContentType,
+                [MessageContext.InfrastructureType] = NotAString,
+            });
+
+            await _sut.Process(message);
+
+            _infrastructureProvider.Verify(p => p.GetDispatcher(null), Times.Once);
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Once);
+        }
+
+        // ...AND SAYS SO. A present-but-unreadable infrastructure type is a misroute the operator has to be able to
+        // see, so it is logged naming the key rather than silently treated the way an absent one is.
+        [Fact]
+        public async Task MustLogThatThePersistedInfrastructureTypeWasUnreadable()
+        {
+            var message = CreateOutboxMessageWithContext(new System.Collections.Generic.Dictionary<string, object>
+            {
+                [MessageContext.ContentType] = ContentType,
+                [MessageContext.InfrastructureType] = NotAString,
+            });
+
+            await _sut.Process(message);
+
+            _logger.Verify(
+                l => l.Log(
+                    LogLevel.Warning,
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((state, _) => state.ToString().Contains(MessageContext.InfrastructureType)),
+                    It.IsAny<Exception>(),
+                    (Func<It.IsAnyType, Exception, string>)It.IsAny<object>()),
+                Times.Once);
+        }
+
+        // A PERSISTED CONTENT TYPE OF THE WRONG KIND IS REFUSED THE WAY A MISSING ONE IS - through the classified
+        // "a content type is required" refusal, not an InvalidCastException from reading it. The Dispatch assertion
+        // keeps the refusal from being satisfied by a drain that published anyway.
+        [Fact]
+        public async Task MustRefuseAnOutboxMessageWhosePersistedContentTypeIsNotAString()
+        {
+            var message = CreateOutboxMessageWithContext(new System.Collections.Generic.Dictionary<string, object>
+            {
+                [MessageContext.ContentType] = NotAString,
+                [MessageContext.InfrastructureType] = Infra,
+            });
+
+            await _sut.Process(message);
+
+            VerifyFailureLoggedAs<ArgumentNullException>();
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Never);
+        }
+
+        // ...AND SO IS A CONTEXT THAT CARRIES NO CONTENT TYPE AT ALL, rather than failing on a KeyNotFoundException
+        // from reading a key the writer never set.
+        [Fact]
+        public async Task MustRefuseAnOutboxMessageWhosePersistedContentTypeKeyIsAbsent()
+        {
+            var message = CreateOutboxMessageWithContext(new System.Collections.Generic.Dictionary<string, object>
+            {
+                [MessageContext.InfrastructureType] = Infra,
+            });
+
+            await _sut.Process(message);
+
+            VerifyFailureLoggedAs<ArgumentNullException>();
+            _dispatcher.Verify(d => d.Dispatch(It.IsAny<OutboundBrokeredMessage>(), null), Times.Never);
         }
     }
 }

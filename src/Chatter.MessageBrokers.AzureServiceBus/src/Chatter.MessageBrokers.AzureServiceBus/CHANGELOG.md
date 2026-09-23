@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.3] - 2026-09-23
+
+### Fixed
+
+- `GetScheduledEnqueueTimeUtc` and `GetToAddress` now read the Message Context by kind test instead of casting the non-generic `GetMessageContextByKey` overload. Via `Chatter.MessageBrokers` 0.34.0's `TryGetMessageContextByKey<TValue>` / typed `GetMessageContextByKey<TValue>`, a persisted value of the wrong kind — a string or a boxed `long` inherited from an inbound header or a replayed persisted context — now reads as null instead of throwing `InvalidCastException` on every send: `GetScheduledEnqueueTimeUtc` reads null when the persisted Scheduled Enqueue Time Utc is not a `DateTime`, and `GetToAddress` reads null when the persisted To is not a `string`. Pinned by `MustReadScheduledEnqueueTimeUtcAsNullWhenPersistedKindIsNotADateTime`, `MustReadToAddressAsNullWhenPersistedKindIsNotAString` and `MustBuildAnAzureServiceBusMessageWhenEveryPersistedKindMismatches`; recorded in `docs/adr/0036-a-message-context-read-tests-the-persisted-kind-rather-than-casting-it.md`. Requires `Chatter.MessageBrokers` 0.34.0 (an in-repo `ProjectReference`, so the pack-time package dependency moves with it) (#418, #464).
+
 ## [2.5.2] - 2026-09-18
 
 ### Fixed

@@ -159,8 +159,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         // application header must (a) publish without throwing — the TimeSpan TimeToLive is lifted onto the native
         // BasicProperties.Expiration rather than the field table, which the client cannot encode (P2) — and
         // (b) reach the handler with its auto-stamped string CorrelationId and the custom string header intact,
-        // even though a real broker delivers both as AMQP longstr (byte[]); the inbound (string) cast would
-        // otherwise throw InvalidCastException before the handler ran (P1). Both halves are proven through
+        // even though a real broker delivers both as AMQP longstr (byte[]); the inbound kind-tested string read
+        // would otherwise answer the undecoded byte[] as ABSENT, silently dropping the value before the handler ran
+        // (P1). Both halves are proven through
         // Chatter's own send + receive path, not raw RabbitMQ.Client types.
         [RequiresDockerFact]
         public async Task SentCommandWithTimeToLiveAndStringHeaderRoundTripsToHandler()
@@ -195,7 +196,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
                 var inbound = handled.Context.BrokeredMessage;
 
                 // P1: the auto-stamped string CorrelationId survives the longstr coercion and is surfaced as a CLR
-                // string — the receive would otherwise have thrown InvalidCastException before the handler ran.
+                // string — the receive would otherwise have read the undecoded byte[] as absent, leaving CorrelationId
+                // null.
                 inbound.CorrelationId.Should().NotBeNullOrEmpty(
                     "the string CorrelationId must decode back to a CLR string on the real broker round-trip");
 

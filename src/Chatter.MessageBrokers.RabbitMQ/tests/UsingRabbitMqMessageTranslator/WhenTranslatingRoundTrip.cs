@@ -156,8 +156,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
         }
 
         // DECISION-D fallback: a delivery carrying CorrelationId ONLY as a longstr header (no native frame) still
-        // surfaces a CLR string into the core key (decoded via the marshaller helper), so the core's unguarded
-        // (string) cast holds.
+        // surfaces a CLR string into the core key (decoded via the marshaller helper), so the core's kind-tested string
+        // read FINDS it; an undecoded byte[] would read as absent and the correlation id would be silently dropped.
         [Fact]
         public void MustDecodeCorrelationIdFromHeaderWhenFrameAbsentOnReceive()
         {
@@ -420,8 +420,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
         // --- ExpiryTimeUtc header key: symmetric DateTime<->ISO("O") coercion (closes the encoded-only asymmetry) ---
 
         // A delivery carrying ExpiryTimeUtc as a UTF-8 byte[] of an ISO("O") DateTime (how a real broker surfaces the
-        // ISO string the send path wrote) rehydrates to a CLR DateTime on receive, so the core's (DateTime?) cast in
-        // RefreshTimeToLive does not throw. Reproduces + proves the cast-break fix.
+        // ISO string the send path wrote) rehydrates to a CLR DateTime on receive, so RefreshTimeToLive's kind test finds
+        // it rather than reading it as absent.
         [Fact]
         public void MustRehydrateExpiryTimeUtcFromByteArrayOnReceive()
         {
@@ -436,10 +436,9 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
                 RabbitMqMessageTranslator.CaptureFacts(Delivered(headers: headers)),
                 headers);
 
-            coreContext[MessageContext.ExpiryTimeUtc].Should().BeOfType<DateTime>().Which.Should().Be(expiry);
-
-            Action cast = () => _ = (DateTime?)coreContext[MessageContext.ExpiryTimeUtc];
-            cast.Should().NotThrow("the core's RefreshTimeToLive (DateTime?) cast must hold after a round trip");
+            coreContext[MessageContext.ExpiryTimeUtc].Should().BeOfType<DateTime>(
+                "ExpiryTimeUtc must be a DateTime after a round trip, the only kind RefreshTimeToLive's kind test finds")
+                .Which.Should().Be(expiry);
         }
 
         // send -> wire -> receive: a DateTime ExpiryTimeUtc on the outbound context is encoded to an ISO string on the
@@ -466,10 +465,11 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
             coreContext[MessageContext.ExpiryTimeUtc].Should().Be(expiry);
         }
 
-        // end-to-end: a rehydrated context feeds OutboundBrokeredMessage.RefreshTimeToLive() without throwing and
-        // yields a positive TimeSpan TTL for a future expiry.
+        // end-to-end: the rehydrated DateTime is FOUND by OutboundBrokeredMessage.RefreshTimeToLive()'s kind test and
+        // yields a positive TimeSpan TTL for a future expiry; an undecoded value would read as absent and leave the TTL
+        // unset.
         [Fact]
-        public void MustFeedRehydratedExpiryTimeUtcIntoRefreshTimeToLiveWithoutThrowing()
+        public void MustFeedRehydratedExpiryTimeUtcIntoRefreshTimeToLiveSoTheTimeToLiveIsSet()
         {
             var expiry = DateTime.UtcNow.AddMinutes(10);
             var headers = new Dictionary<string, object>
@@ -485,8 +485,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
             var outbound = new OutboundBrokeredMessage(
                 Guid.NewGuid().ToString(), new byte[] { 1 }, coreContext, Destination, new RabbitMqBodyConverter());
 
-            Action refresh = () => outbound.RefreshTimeToLive();
-            refresh.Should().NotThrow();
+            outbound.RefreshTimeToLive();
             outbound.GetTimeToLive().Should().NotBeNull();
             outbound.GetTimeToLive().Value.Should().BeGreaterThan(TimeSpan.Zero);
         }
@@ -565,10 +564,10 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
 
         // (a) REGRESSION (root finding): a delivery carrying a raw Chatter.TimeToLive longstr byte[] header and NO
         // native Expiration must not throw on ToCore, and the resulting core context must not surface a byte[] under
-        // TimeToLive — otherwise OutboundBrokeredMessage.GetTimeToLive()'s (string) cast throws InvalidCastException.
-        // With the key dropped, GetTimeToLive() returns null.
+        // TimeToLive. With the key dropped, GetTimeToLive() kind-tests TimeSpan then string and reads none, so it
+        // returns null rather than throwing.
         [Fact]
-        public void MustDropForeignTimeToLiveHeaderSoGetTimeToLiveDoesNotThrowOnReceive()
+        public void MustDropForeignTimeToLiveHeaderSoGetTimeToLiveReadsNoneOnReceive()
         {
             var headers = ByteArrayHeader(MessageContext.TimeToLive, "90000");
 
@@ -584,9 +583,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
             var outbound = new OutboundBrokeredMessage(
                 Guid.NewGuid().ToString(), new byte[] { 1 }, result.coreContext, Destination, new RabbitMqBodyConverter());
 
-            Action getTtl = () => outbound.GetTimeToLive();
-            getTtl.Should().NotThrow("a dropped key leaves no byte[] for the (string) cast in GetTimeToLive to choke on");
-            outbound.GetTimeToLive().Should().BeNull();
+            outbound.GetTimeToLive().Should().BeNull(
+                "a dropped key leaves no byte[] under TimeToLive, so GetTimeToLive's TimeSpan-then-string kind test reads none");
         }
 
         // (b) NEXT LANDMINE: a delivery carrying a raw Chatter.IsError longstr byte[] header must not surface a byte[]
@@ -595,7 +593,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
         // load-bearing invariant — the key is dropped — directly at the translator seam (InboundBrokeredMessage's ctor
         // is internal to Chatter.MessageBrokers and not constructable here).
         [Fact]
-        public void MustDropForeignIsErrorHeaderSoBoolCastHoldsOnReceive()
+        public void MustDropForeignIsErrorHeaderSoTheBoolKindTestReadsFalseOnReceive()
         {
             var headers = ByteArrayHeader(MessageContext.IsError, "true");
 
@@ -739,8 +737,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
 
         // (a) DecodeString totality (CorrelationId via header-only fallback, non-string wire value): a delivery carrying
         // CorrelationId ONLY as a header (native frame ABSENT) with a non-string wire value (int / bool) surfaces a CLR
-        // string under the core key, and the translator's native-frame fallback path (which casts to string) yields a
-        // usable value — building an InboundBrokeredMessage / the unguarded (string) cast must NOT throw.
+        // string under the core key: the translator's native-frame fallback reads the decoded header copy `as string`,
+        // and the core's kind-tested string read must FIND it, never read it as absent.
         [Theory]
         [InlineData(42)]
         [InlineData(true)]
@@ -755,11 +753,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
                 headers);
 
             coreContext[MessageContext.CorrelationId].Should().BeOfType<string>(
-                "a non-string CorrelationId wire value must be coerced to a string, never left as its raw type");
-
-            // The unguarded (string) cast the core uses (InboundBrokeredMessage casts CorrelationId at ctor) must hold.
-            Action cast = () => _ = (string)coreContext[MessageContext.CorrelationId];
-            cast.Should().NotThrow("the type-total DecodeString guarantees the core's (string) cast never faults");
+                "a non-string CorrelationId wire value must be coerced to a string, never left as its raw type the " +
+                "core's kind-tested string read would answer as absent");
         }
 
         // (a) DecodeString totality (Via, non-string wire value): a raw int wire value surfaces as a CLR string under

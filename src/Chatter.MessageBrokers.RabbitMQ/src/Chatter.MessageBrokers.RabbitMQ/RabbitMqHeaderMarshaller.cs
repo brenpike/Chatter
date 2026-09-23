@@ -38,9 +38,10 @@ namespace Chatter.MessageBrokers.RabbitMQ
     /// copy must survive in the core context as a fallback for the translator's native-frame assignment (the
     /// translator re-sources them from the native frame when present and overwrites; when the native frame is
     /// absent the decoded copy is the authoritative value — <c>Drop</c> removed that copy and broke the fallback);
-    /// <see cref="HeaderDisposition.DecodeDateTime"/> parses the wire value back to a <c>DateTime</c> (so the core's
-    /// <c>(DateTime?)</c> cast in <c>OutboundBrokeredMessage.RefreshTimeToLive</c> on
-    /// <see cref="MessageContext.ExpiryTimeUtc"/> holds after a round trip), null-dropping on a malformed value;
+    /// <see cref="HeaderDisposition.DecodeDateTime"/> parses the wire value back to a <c>DateTime</c> so
+    /// <c>OutboundBrokeredMessage.RefreshTimeToLive</c>'s <c>DateTime</c> kind test on
+    /// <see cref="MessageContext.ExpiryTimeUtc"/> still FINDS the value after a round trip — an undecoded wire value
+    /// would read as absent and the refresh would be skipped, null-dropping on a malformed value;
     /// <see cref="HeaderDisposition.Drop"/> omits the key from the core context entirely because its authoritative value
     /// comes from elsewhere (TimeToLive is lifted onto native Expiration; ReceiveAttempts is the numeric delivery-count
     /// path owned by <c>RabbitMqReceiver.ReadHeaderAsLong</c>; IsError is receiver-derived;
@@ -341,10 +342,10 @@ namespace Chatter.MessageBrokers.RabbitMQ
             => value is DateTime expiry ? expiry.ToString("O", CultureInfo.InvariantCulture) : CoerceOutboundValue(value);
 
         // ExpiryTimeUtc DECODE (inbound): the wire value (a byte[] longstr from a real broker or a string from an
-        // in-process double) is parsed back to a DateTime so the core's (DateTime?) cast in RefreshTimeToLive holds.
-        // RoundtripKind preserves the "O" form's UTC/offset semantics. A malformed/unparseable value returns null so
-        // ToContext DROPS the key (the core's null-guard short-circuits) rather than stamping a bogus DateTime or
-        // faulting — NEVER throws.
+        // in-process double) is parsed back to a DateTime so RefreshTimeToLive's DateTime kind test finds it rather
+        // than reading it as absent. RoundtripKind preserves the "O" form's UTC/offset semantics. A malformed/
+        // unparseable value returns null so ToContext DROPS the key (the core's null-guard short-circuits) rather
+        // than stamping a bogus DateTime or faulting — NEVER throws.
         private static object DecodeExpiryTimeUtc(object value)
         {
             string text;

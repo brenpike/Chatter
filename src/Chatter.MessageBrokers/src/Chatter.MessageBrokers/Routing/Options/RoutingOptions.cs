@@ -22,14 +22,17 @@ namespace Chatter.MessageBrokers.Routing.Options
         {
             get
             {
-                if (MessageContext.TryGetValue(MessageBrokers.MessageContext.ContentType, out var contentType))
+                // INVARIANT: a stored content type is read by a KIND TEST, so a value of another kind reads as null
+                // rather than throwing InvalidCastException from this getter, and the dispatcher then refuses the send
+                // as it refuses a blank content type. Oracles: MustReadContentTypeAsNullWhenTheStoredKindIsNotAString
+                // and MustRefuseTheSendAsContentTypeRequiredWhenTheContentTypeIsNotAString; restoring the
+                // `(string)contentType` cast reddens both.
+                if (MessageContext.TryReadMessageContext<string>(MessageBrokers.MessageContext.ContentType, out var contentType))
                 {
-                    return (string)contentType;
+                    return contentType;
                 }
-                else
-                {
-                    return DefaultContentType;
-                }
+
+                return MessageContext.ContainsKey(MessageBrokers.MessageContext.ContentType) ? null : DefaultContentType;
             }
             set
             {

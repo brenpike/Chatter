@@ -1,6 +1,7 @@
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System;
 using Xunit;
@@ -17,27 +18,32 @@ namespace Chatter.MessageBrokers.Tests.Sending.UsingBrokeredMessageDispatcher
 
         [Fact]
         public void MustThrowWhenMessageRouterIsNull()
-            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(null, _forwarder.Object, _detailProvider.Object, _bodyConverterFactory.Object, _idGenerator.Object))
+            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(null, _forwarder.Object, _detailProvider.Object, _bodyConverterFactory.Object, _idGenerator.Object, NullLogger<BrokeredMessageDispatcher>.Instance))
                 .Should().Throw<ArgumentNullException>();
 
         [Fact]
         public void MustThrowWhenForwarderIsNull()
-            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, null, _detailProvider.Object, _bodyConverterFactory.Object, _idGenerator.Object))
+            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, null, _detailProvider.Object, _bodyConverterFactory.Object, _idGenerator.Object, NullLogger<BrokeredMessageDispatcher>.Instance))
                 .Should().Throw<ArgumentNullException>();
 
         [Fact]
         public void MustThrowWhenDetailProviderIsNull()
-            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, _forwarder.Object, null, _bodyConverterFactory.Object, _idGenerator.Object))
+            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, _forwarder.Object, null, _bodyConverterFactory.Object, _idGenerator.Object, NullLogger<BrokeredMessageDispatcher>.Instance))
                 .Should().Throw<ArgumentNullException>();
 
         [Fact]
         public void MustThrowWhenBodyConverterFactoryIsNull()
-            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, _forwarder.Object, _detailProvider.Object, null, _idGenerator.Object))
+            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, _forwarder.Object, _detailProvider.Object, null, _idGenerator.Object, NullLogger<BrokeredMessageDispatcher>.Instance))
                 .Should().Throw<ArgumentNullException>();
 
         [Fact]
         public void MustThrowWhenMessageIdGeneratorIsNull()
-            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, _forwarder.Object, _detailProvider.Object, _bodyConverterFactory.Object, null))
+            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, _forwarder.Object, _detailProvider.Object, _bodyConverterFactory.Object, null, NullLogger<BrokeredMessageDispatcher>.Instance))
+                .Should().Throw<ArgumentNullException>();
+
+        [Fact]
+        public void MustThrowWhenLoggerIsNull()
+            => FluentActions.Invoking(() => new BrokeredMessageDispatcher(_messageRouter.Object, _forwarder.Object, _detailProvider.Object, _bodyConverterFactory.Object, _idGenerator.Object, null))
                 .Should().Throw<ArgumentNullException>();
     }
 }

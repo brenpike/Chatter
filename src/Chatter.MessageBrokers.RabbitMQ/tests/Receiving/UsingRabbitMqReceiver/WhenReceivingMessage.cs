@@ -243,20 +243,20 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Receiving.UsingRabbitMqReceiver
         }
 
         // P1 REPRODUCTION: a real broker delivers the string CorrelationId application header as an AMQP longstr
-        // (byte[]). The core's InboundBrokeredMessage casts MessageContext.CorrelationId straight to (string) at
-        // construction (which MessageBrokerContext does inside ReceiveMessageAsync), so before the marshaller a
-        // byte[] CorrelationId threw InvalidCastException on a self-published round-trip BEFORE the handler ran.
-        // The marshaller decodes the known string-typed key back to string, so the receive no longer throws and
-        // the decoded value is surfaced.
+        // (byte[]). The core's InboundBrokeredMessage reads MessageContext.CorrelationId as a string by kind test at
+        // construction (which MessageBrokerContext does inside ReceiveMessageAsync), so an undecoded byte[] reads as
+        // absent and the correlation id is silently dropped. The marshaller decodes the known string-typed key back
+        // to string, which is what keeps the value.
         [Fact]
-        public async Task MustDecodeByteArrayCorrelationIdSoReceiveDoesNotThrow()
+        public async Task MustDecodeByteArrayCorrelationIdSoTheCoreStringReadFindsIt()
         {
             var harness = ReceiverHarness.Create();
             var headers = new Dictionary<string, object> { [MessageContext.CorrelationId] = "corr-round-trip" };
             // Default coercion models the broker: the string CorrelationId is delivered as a UTF-8 byte[].
             await harness.PushAsync(deliveryTag: 1, headers: headers);
 
-            // Before the fix this threw InvalidCastException inside ReceiveMessageAsync -> InboundBrokeredMessage.
+            // Before the marshaller decode this surfaced a raw byte[], which the core's kind-tested string read answers
+            // as absent.
             var context = await harness.ReceiveAsync();
 
             context.BrokeredMessage.MessageContext[MessageContext.CorrelationId].Should().Be("corr-round-trip");

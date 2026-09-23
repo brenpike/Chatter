@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.14.5] - 2026-09-23
+
+### Changed
+
+- **A comment on `SqlServiceBrokerReceiver` is corrected to name the kind-tested Message Context reads that `Chatter.MessageBrokers` 0.34.0 ships.** The comment beside the receiver's null-guard on the deserialized envelope's Message Context no longer says an upstream-stamped non-string header avoids an `InvalidCastException` on the downstream `GetMessageContextByKey<T>` casts — those reads no longer cast, so no such exception can arise; it now says the header is found by those kind-tested reads rather than read as absent. **This carries no code change and no user-facing effect: it corrects prose inside an internal type to match behaviour a sibling change already shipped, and satisfies no formal SemVer trigger.** It ships as its own release because this repository's version-check gate is path-based and cannot distinguish a comment edit from a behavioural one. See `docs/adr/0036-a-message-context-read-tests-the-persisted-kind-rather-than-casting-it.md` (#418).
+
 ## [0.14.4] - 2026-09-14
 
 ### Changed

@@ -129,5 +129,101 @@ namespace Chatter.MessageBrokers.Tests.Sending.UsingOutboundBrokeredMessage
             sut.RefreshTimeToLive();
             sut.GetTimeToLive().Should().BeNull();
         }
+
+        [Fact]
+        public void MustReadAMismatchedKindAsAbsentFromTheTypedAccessor()
+        {
+            var context = new Dictionary<string, object> { ["key"] = 42L };
+            CreateSut(context).GetMessageContextByKey<int>("key").Should().Be(0);
+        }
+
+        [Fact]
+        public void MustReportAMismatchedKindAsNotFoundFromTheTryAccessor()
+        {
+            var context = new Dictionary<string, object> { ["key"] = 42L };
+            CreateSut(context).TryGetMessageContextByKey<int>("key", out _).Should().BeFalse();
+        }
+
+        [Fact]
+        public void MustReportAPresentMatchingKindFromTheTryAccessor()
+        {
+            var context = new Dictionary<string, object> { ["key"] = 42L };
+            var found = CreateSut(context).TryGetMessageContextByKey<long>("key", out var value);
+            (found, value).Should().Be((true, 42L));
+        }
+
+        [Fact]
+        public void MustReportAnAbsentKeyAsNotFoundFromTheTryAccessor()
+            => CreateSut().TryGetMessageContextByKey<string>("missing", out _).Should().BeFalse();
+
+        [Fact]
+        public void MustReportAStoredNullAsNotFoundFromTheTryAccessor()
+        {
+            var context = new Dictionary<string, object> { ["key"] = null };
+            var sut = CreateSut(context);
+            sut.TryGetMessageContextByKey<string>("key", out var referenceValue).Should().BeFalse();
+            referenceValue.Should().BeNull();
+            sut.TryGetMessageContextByKey<int?>("key", out var nullableValue).Should().BeFalse();
+            nullableValue.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustReadInfrastructureTypeAsNullWhenPersistedKindIsNotAString()
+        {
+            var context = new Dictionary<string, object> { [MessageContext.InfrastructureType] = 42L };
+            CreateSut(context).InfrastructureType.Should().BeNull();
+        }
+
+        [Fact]
+        public void MustStampAFreshCorrelationIdWhenThePersistedCorrelationIdIsNotAString()
+        {
+            var context = new Dictionary<string, object> { [MessageContext.CorrelationId] = 42L };
+            Guid.TryParse(CreateSut(context).CorrelationId, out _).Should().BeTrue();
+        }
+
+        [Fact]
+        public void MustLeaveTimeToLiveAbsentWhenPersistedKindIsNeitherTimeSpanNorString()
+        {
+            var context = new Dictionary<string, object> { [MessageContext.TimeToLive] = 120L };
+            CreateSut(context).GetTimeToLive().Should().BeNull();
+        }
+
+        [Fact]
+        public void MustLeaveTimeToLiveAbsentWhenPersistedStringIsNotAParsableDuration()
+        {
+            var context = new Dictionary<string, object> { [MessageContext.TimeToLive] = "not-a-duration" };
+            CreateSut(context).GetTimeToLive().Should().BeNull();
+        }
+
+        [Fact]
+        public void MustLeaveTimeToLiveUnchangedWhenExpiryKindIsNotADateTime()
+        {
+            var ttl = TimeSpan.FromMinutes(7);
+            var context = new Dictionary<string, object> { [MessageContext.ExpiryTimeUtc] = "not-a-date" };
+            var sut = CreateSut(context).WithTimeToLive(ttl);
+            sut.RefreshTimeToLive();
+            sut.GetTimeToLive().Should().Be(ttl);
+        }
+
+        [Fact]
+        public void MustReadReceiveAttemptsAsZeroWhenPersistedKindIsNotConvertible()
+        {
+            var context = new Dictionary<string, object> { [MessageContext.ReceiveAttempts] = Guid.NewGuid() };
+            CreateSut(context).ReceiveAttempts.Should().Be(0);
+        }
+
+        [Fact]
+        public void MustReadReceiveAttemptsAsZeroWhenPersistedStringIsNotNumeric()
+        {
+            var context = new Dictionary<string, object> { [MessageContext.ReceiveAttempts] = "not-a-number" };
+            CreateSut(context).ReceiveAttempts.Should().Be(0);
+        }
+
+        [Fact]
+        public void MustReadReceiveAttemptsAsZeroWhenPersistedNumberOverflowsAnInt()
+        {
+            var context = new Dictionary<string, object> { [MessageContext.ReceiveAttempts] = long.MaxValue };
+            CreateSut(context).ReceiveAttempts.Should().Be(0);
+        }
     }
 }

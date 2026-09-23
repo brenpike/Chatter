@@ -1,4 +1,5 @@
 using Chatter.MessageBrokers.Diagnostics;
+using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Routing.Context;
 using Chatter.Testing.Core.Diagnostics;
@@ -113,6 +114,33 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         }
 
         [Fact]
+        public async Task MustLeaveTheMessagingSystemUnsetOnTheDispatchSpanWhenTheInfrastructureTypeIsNotAString()
+        {
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var harness = new DiagnosticsSendHarness(unreadableInfrastructureType: 7L);
+
+                await harness.SendOne();
+
+                AssertMessagingSystemUnset(activityScope);
+            }
+        }
+
+        [Fact]
+        public async Task MustLeaveTheMessagingSystemUnsetOnTheReplySpanWhenTheInfrastructureTypeIsNotAString()
+        {
+            using (var activityScope = new RecordingActivityScope(BrokerDiagnostics.ActivitySourceName))
+            {
+                var inbound = CapturingRoutingHarness.BuildInbound(traceParent: null);
+                inbound.MessageContextImpl[MessageContext.InfrastructureType] = 7L;
+
+                await ReplyAsync(inbound);
+
+                AssertMessagingSystemUnset(activityScope);
+            }
+        }
+
+        [Fact]
         public async Task MustCarryTheConfiguredMessagingSystemOnTheDispatchMetrics()
         {
             using (var meterScope = new RecordingMeterScope(BrokerDiagnostics.MeterName))
@@ -134,9 +162,11 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
         }
 
         private static Task ReplyAsync(string infrastructureType)
+            => ReplyAsync(CapturingRoutingHarness.BuildInbound(traceParent: null, infrastructureType: infrastructureType));
+
+        private static Task ReplyAsync(InboundBrokeredMessage inbound)
         {
             var routing = new CapturingRoutingHarness();
-            var inbound = CapturingRoutingHarness.BuildInbound(traceParent: null, infrastructureType: infrastructureType);
 
             return new ReplyRouter(routing.Router, routing.MessageIdGenerator)
                 .Route(inbound, null, new ReplyToRoutingContext(ReplyDestination, ReplyGroupId));

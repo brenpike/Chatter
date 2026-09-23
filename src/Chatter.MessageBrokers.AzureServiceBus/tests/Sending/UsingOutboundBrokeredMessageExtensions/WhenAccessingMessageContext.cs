@@ -58,6 +58,43 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
         public void MustReturnNullToAddressWhenAbsent()
             => CreateSut().GetToAddress().Should().BeNull();
 
+        [Theory]
+        [InlineData("2026-05-29T12:00:00Z")]
+        [InlineData(42L)]
+        public void MustReadScheduledEnqueueTimeUtcAsNullWhenPersistedKindIsNotADateTime(object persistedValue)
+        {
+            var sut = CreateSut();
+            sut.MessageContext[ASBMessageContext.ScheduledEnqueueTimeUtc] = persistedValue;
+            sut.GetScheduledEnqueueTimeUtc().Should().BeNull();
+        }
+
+        [Fact]
+        public void MustReadToAddressAsNullWhenPersistedKindIsNotAString()
+        {
+            var sut = CreateSut();
+            sut.MessageContext[ASBMessageContext.To] = 42L;
+            sut.GetToAddress().Should().BeNull();
+        }
+
+        [Fact]
+        public void MustBuildAnAzureServiceBusMessageWhenEveryPersistedKindMismatches()
+        {
+            var sut = CreateSut();
+            sut.MessageContext[ASBMessageContext.ScheduledEnqueueTimeUtc] = 42L;
+            sut.MessageContext[ASBMessageContext.To] = 42L;
+            sut.MessageContext[ASBMessageContext.ViaPartitionKey] = 42L;
+            sut.MessageContext[ASBMessageContext.PartitionKey] = 42L;
+            sut.MessageContext[MessageContext.Subject] = 42L;
+            sut.MessageContext[MessageContext.ReplyToAddress] = 42L;
+            sut.MessageContext[MessageContext.ReplyToGroupId] = 42L;
+            sut.MessageContext[MessageContext.GroupId] = 42L;
+            sut.MessageContext[MessageContext.TimeToLive] = 42L;
+
+            var asbMessage = sut.AsAzureServiceBusMessage();
+
+            asbMessage.ScheduledEnqueueTime.Should().Be(default);
+        }
+
         [Fact]
         public void MustReturnApplicationPropertyWhenPresent()
         {
@@ -70,10 +107,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Sending.UsingOutboundBrok
             => CreateSut().GetApplicationPropertyByKey("missing").Should().BeNull();
 
         // OUTBOX-REPLAY TYPED-READER GATE (the HIGH finding): proves typed MessageContext values survive
-        // the full serialize -> persist -> materialize -> typed-read round-trip WITHOUT a mock that bypasses
-        // the casts. Before the materializer fix the replayed context held the RAW persisted shapes
-        // (JsonElement / string / boxed long), so GetScheduledEnqueueTimeUtc()'s (DateTime?) cast,
-        // GetTimeToLive()'s TimeSpan handling, and ReceiveAttempts' (int) unbox each threw on replay. This
+        // the full serialize -> persist -> materialize -> typed-read round-trip WITHOUT a mock. This
         // test reconstructs the SAME materialized context the outbox hands back and asserts the REAL readers
         // return the correct typed values and AsAzureServiceBusMessage() maps them onto the SDK Message.
         [Fact]

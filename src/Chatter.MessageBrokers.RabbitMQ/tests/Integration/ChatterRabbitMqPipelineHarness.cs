@@ -188,7 +188,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.Integration
         // marshalling boundary against a REAL broker: WithTimeToLive stamps a TimeSpan (which the field table
         // cannot encode — it must be lifted onto the native Expiration), and the string CorrelationId / custom
         // header is delivered as an AMQP longstr (byte[]) that must decode back to string before the inbound
-        // (string) cast.
+        // kind-tested string read, which answers an undecoded byte[] as absent.
         public Task SendToQueueWithTimeToLiveAndHeaderAsync<TMessage>(
             TMessage message,
             string workQueueName,

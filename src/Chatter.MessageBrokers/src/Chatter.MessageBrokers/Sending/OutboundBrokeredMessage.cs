@@ -60,26 +60,43 @@ namespace Chatter.MessageBrokers.Sending
         public string CorrelationId => GetMessageContextByKey<string>(MessageBrokers.MessageContext.CorrelationId);
         public string ContentType => _bodyConverter.ContentType;
         public string InfrastructureType => GetMessageContextByKey<string>(MessageBrokers.MessageContext.InfrastructureType);
-        // A live-receive context holds a native int here, but an outbox-replayed context (deserialized
-        // JSON) materializes the numeric value to a boxed long (see MessageContext.MaterializePersistedContextValue,
-        // matching Newtonsoft). Unboxing a boxed long with (int) throws InvalidCastException, so read as
-        // object and convert — mirroring GetTimeToLive()'s tolerant TimeSpan-or-string handling below.
-        // Absent key yields null, preserving the prior default(int) == 0 behavior.
         public int ReceiveAttempts
         {
             get
             {
+                // INVARIANT: ReceiveAttempts converts rather than kind-testing. A live-receive context holds a native int,
+                // but an outbox-replayed context materializes the number to a boxed long
+                // (MessageContext.MaterializePersistedContextValue), which TryGetMessageContextByKey<int> would read as
+                // absent. Oracles: MustExposeReceiveAttemptsReadableAsInt (SqlServiceBroker tests) and
+                // MustReadTypedContextValuesAfterOutboxSerializeMaterializeRoundTrip (AzureServiceBus tests) — reading
+                // through TryGetMessageContextByKey<int> instead of Convert.ToInt32 reddens both.
                 var receiveAttempts = GetMessageContextByKey(MessageBrokers.MessageContext.ReceiveAttempts);
-                return receiveAttempts == null ? default : Convert.ToInt32(receiveAttempts);
+                if (receiveAttempts == null)
+                {
+                    return default;
+                }
+
+                try
+                {
+                    return Convert.ToInt32(receiveAttempts);
+                }
+                catch (Exception ex) when (ex is InvalidCastException or FormatException or OverflowException)
+                {
+                    // INVARIANT: a value Convert.ToInt32 cannot convert reads as absent (0) rather than faulting the read.
+                    // Oracles: MustReadReceiveAttemptsAsZeroWhenPersistedKindIsNotConvertible (InvalidCastException),
+                    // MustReadReceiveAttemptsAsZeroWhenPersistedStringIsNotNumeric (FormatException) and
+                    // MustReadReceiveAttemptsAsZeroWhenPersistedNumberOverflowsAnInt (OverflowException) — dropping an
+                    // exception type from this filter reddens its fact.
+                    return default;
+                }
             }
         }
 
         public OutboundBrokeredMessage RefreshTimeToLive()
         {
-            var expiryTimeUtc = (DateTime?)GetMessageContextByKey(MessageBrokers.MessageContext.ExpiryTimeUtc);
-            if (expiryTimeUtc != null)
+            if (TryGetMessageContextByKey<DateTime>(MessageBrokers.MessageContext.ExpiryTimeUtc, out var expiryTimeUtc))
             {
-                var ttl = expiryTimeUtc.Value - DateTime.UtcNow;
+                var ttl = expiryTimeUtc - DateTime.UtcNow;
                 if (ttl.Duration().TotalMilliseconds > 0)
                 {
                     WithTimeToLive(ttl);
@@ -100,32 +117,48 @@ namespace Chatter.MessageBrokers.Sending
 
         public TimeSpan? GetTimeToLive()
         {
-            var ttl = GetMessageContextByKey(MessageBrokers.MessageContext.TimeToLive);
-            if (ttl == null)
+            if (TryGetMessageContextByKey<TimeSpan>(MessageBrokers.MessageContext.TimeToLive, out var timeToLive))
             {
-                return null;
+                return timeToLive;
             }
 
-            if (ttl is TimeSpan ts)
+            if (TryGetMessageContextByKey<string>(MessageBrokers.MessageContext.TimeToLive, out var timeToLiveText)
+                && TimeSpan.TryParse(timeToLiveText, out var parsedTimeToLive))
             {
-                return ts;
+                return parsedTimeToLive;
             }
-            else
-            {
-                return TimeSpan.Parse((string)ttl);
-            }
+
+            return null;
         }
 
         public TValue GetMessageContextByKey<TValue>(string key)
+            => TryGetMessageContextByKey<TValue>(key, out var value) ? value : default;
+
+        /// <summary>
+        /// Reads the message context value stored under <paramref name="key"/> when that value is a <typeparamref name="TValue"/>.
+        /// </summary>
+        /// <param name="key">The message context key to read.</param>
+        /// <param name="value">The stored value when found; otherwise <see langword="default"/>.</param>
+        /// <returns>
+        /// <see langword="true"/> when <paramref name="key"/> is present and its value is a <typeparamref name="TValue"/>;
+        /// otherwise <see langword="false"/>. No conversion is attempted, so a stored <see cref="long"/> is not found as an <see cref="int"/>.
+        /// </returns>
+        public bool TryGetMessageContextByKey<TValue>(string key, out TValue value)
         {
-            if (MessageContext.TryGetValue(key, out var output))
+            // INVARIANT: this is the only place a message context value becomes a TValue, and it kind-tests rather than
+            // casts. An outbox-replayed context is deserialized JSON, so a value may come back as a different kind than it
+            // was stamped as (a number becomes a boxed long); a hard cast here threw InvalidCastException on every replay
+            // attempt. Oracles: MustReadAMismatchedKindAsAbsentFromTheTypedAccessor and
+            // MustReportAMismatchedKindAsNotFoundFromTheTryAccessor — replacing `output is TValue typed` with a
+            // `(TValue)output` cast reddens both.
+            if (MessageContext.TryGetValue(key, out var output) && output is TValue typed)
             {
-                return (TValue)output;
+                value = typed;
+                return true;
             }
-            else
-            {
-                return default;
-            }
+
+            value = default;
+            return false;
         }
 
         public object GetMessageContextByKey(string key) => GetMessageContextByKey<object>(key);

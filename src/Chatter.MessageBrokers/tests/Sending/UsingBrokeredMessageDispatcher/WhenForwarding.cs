@@ -3,6 +3,7 @@ using Chatter.MessageBrokers.Receiving;
 using Chatter.MessageBrokers.Routing;
 using Chatter.MessageBrokers.Sending;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -25,7 +26,8 @@ namespace Chatter.MessageBrokers.Tests.Sending.UsingBrokeredMessageDispatcher
                 _forwarder.Object,
                 _detailProvider.Object,
                 _bodyConverterFactory.Object,
-                _idGenerator.Object);
+                _idGenerator.Object,
+                NullLogger<BrokeredMessageDispatcher>.Instance);
 
         private InboundBrokeredMessage CreateInbound()
         {
