@@ -71,9 +71,9 @@ annotation added or removed.
 **One due instant, one writer per transition, one predicate.** That is the whole reason the claim rides an existing
 column instead of a new one, and it is what keeps the claim from becoming a SECOND durable selection input — which
 ADR-0031 forbids, for the reasons given there and not restated here. It is also why there is **NO REAPER and NO LEASE
-EXPIRY CLOCK**: a claim is a due-time PUSH, and the clock passes it. A row whose claiming drain died is selected again
-the moment its claimed instant is in the past, by the ordinary due gate, with nothing to release and nothing to
-reconcile. Compare a lease, whose missed release converts a duplicate into a message that is never sent.
+EXPIRY CLOCK** — but that follows from what a granted claim's lifetime IS, which is not one rule holding on both
+tiers and is not this document's to state. It is recorded once, in the `<remarks>` on
+`IPollableOutboxStore.TryClaimForDispatch`, with an oracle per leg, and cited here.
 
 ### Why ADR-0033's inbox encoding cannot be borrowed
 
@@ -123,11 +123,13 @@ off the message would read the FIRST drain's claim, compare it against itself an
 ### The L/D asymmetry, named and justified
 
 The two shipped stores implement the same compare-and-set with different lifetimes, and the divergence is deliberate.
+The *Lifetime* row below states no rule of its own: it is the rule on `IPollableOutboxStore.TryClaimForDispatch` read
+once per tier, from what each tier's caller's unit of work can discard.
 
 | | Relational (`BrokeredMessageOutbox<TContext>`) | In-memory (`InMemoryBrokeredMessageOutbox`) |
 | --- | --- | --- |
 | Statement | One `ExecuteUpdateAsync` compare-and-set, seeking the row by `Id` | One monitor-guarded compare-and-set on the stored instance |
-| Lifetime | TRANSACTION-SCOPED: invisible until commit, discarded by rollback | IMMEDIATE and SELF-EXPIRING: visible at once, expires when the claimed instant passes |
+| Lifetime (the seam's rule, per tier) | TRANSACTION-SCOPED: invisible until commit, discarded by rollback | IMMEDIATE and SELF-EXPIRING: visible at once, expires when the claimed instant passes |
 | A losing drain | BLOCKS on the row's lock for the winner's whole publish, then matches zero rows | Is denied at once and walks away |
 | Due gate at claim time | Absent | PRESENT |
 
@@ -283,9 +285,10 @@ ahead, taken as the FIRST statement inside the unit of work that carries the pub
   on a row this drain never attempted. A denied drain publishes nothing, stamps nothing and costs the row nothing.
   Oracles: `WhenProcessingOutboxMessage.MustDispatchNothingWhenTheDrainClaimIsDenied` and
   `.MustNotSpendADispatchAttemptWhenTheDrainClaimIsDenied`, joined over a real server by M2.
-- **The instant claimed is the one a FAILED attempt would have been scheduled by**, so a drain that dies mid-publish
-  holds the row back exactly as long as a failure would have. This decision introduces no number of its own, no new
-  option, and no new knob anywhere.
+- **The instant claimed is the one a FAILED attempt would have been scheduled by**, so this decision introduces no
+  number of its own, no new option, and no new knob anywhere. What that instant then does to the row is settled by the
+  unit of work the claim was taken inside, under the rule recorded on `IPollableOutboxStore.TryClaimForDispatch` and
+  cited rather than repeated here.
 - **Relational**: one `ExecuteUpdateAsync` over `Id == id && ProcessedFromOutboxAtUtc == null &&
   NextAttemptAtUtc == observed`, which enlists in whatever transaction the caller has open. Because the caller opens
   one, the relational transaction genuinely ENFORCES the arbitration — that is the one place in this decision where
@@ -311,8 +314,10 @@ locations can disagree, and therefore no NEXT window for a subsequent finding to
 
 Three properties follow from that and are not separate mechanisms:
 
-- **No reaper and no lease-expiry clock can be needed**, because a claim is a due-time push and the ordinary due gate
-  reclaims it when the clock passes. There is no release to miss.
+- **No reaper and no lease-expiry clock can be needed**, because there is no release to miss on EITHER tier — and not
+  for the same reason on both. The two derivations, one per tier from what that tier's caller's unit of work can
+  discard, are the ones recorded on `IPollableOutboxStore.TryClaimForDispatch`, each with its own oracle; the two
+  lifetimes they land on are the *Lifetime* row of *The L/D asymmetry* above.
 - **No second selection input is created**, so ADR-0031's rule that selection derives from durable attempt state is
   not merely respected but unreachable to violate: the claim IS attempt state's own column.
 - **No schema surface is added**, so there is no migration, backfill or column-drift finding available either.
@@ -355,9 +360,14 @@ retyped; no mapping or annotation moves. `NextAttemptAtUtc` already exists, is a
 written by `RecordDispatchAttempt` on every deployed binary that carries ADR-0031. An upgraded binary reads and writes
 the same column it read and wrote before, with one more statement in front of the publish.
 
-**Both directions are safe.** An old binary against a database a new one has been claiming into sees an ordinary
-deferred row, which is what a failed attempt would have left it. A new binary against rows an old one wrote sees
-`NULL` or a past instant, both of which are claimable.
+**Both directions are safe.** A new binary's claim is invisible outside the transaction that took it:
+`WhenClaimingForDispatch.MustEnlistTheClaimInTheAmbientTransaction` asserts that the claim never lands on its own,
+reading the row back at the value the poll found after the unit of work that took the claim was abandoned — what a
+concurrent old binary would see is an entailment of that rather than something the fact measures. And a claim that
+rolled back leaves the row as the poll found it, measured over a real server by
+`Integration.WhenArbitratingOutboxDrainsOnSqlServer.MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack`, where
+the drain waiting on that row is granted the claim it took against its OWN poll's value. A new binary against rows an
+old one wrote sees `NULL` or a past instant, both of which are claimable.
 
 **The one behavioural note for an operator** is not a migration step: a drain now takes a brief exclusive lock on one
 row for the duration of its own publish. Drains of DIFFERENT rows do not contend, pinned by M4.
@@ -387,6 +397,15 @@ row for the duration of its own publish. Drains of DIFFERENT rows do not contend
 - **No public type, member or signature is removed or changed.** One member is ADDED to `IPollableOutboxStore`, with a
   default body, which is the same compatibility shape `RecordDispatchAttempt` used.
 
+## Correction
+
+Four passages of this ADR once gave a TIER-NEUTRAL account of what ends a drain claim, written as one rule holding on
+both tiers, while the *Lifetime* row of *The L/D asymmetry* gave the right one — so the document contradicted itself.
+The same account had spread: eleven sentences across seven files carried some version of it. The canonical rule now
+lives in one place, the `<remarks>` on `IPollableOutboxStore.TryClaimForDispatch`, and every surface that needs it
+cites it there, this ADR included. The status stays `accepted` because the drift was in the prose and never in the
+mechanism or the measurements.
+
 ## References
 
 - Issue #444 — *In-memory outbox: concurrent drains can dispatch the same row twice*; the occasion for this decision,
@@ -407,7 +426,8 @@ row for the duration of its own publish. Drains of DIFFERENT rows do not contend
 - ADR-0006 — *Two-tier reliability*. The tier split that makes this a relational-tier decision: the Document Tier
   implements no `IPollableOutboxStore` and dispatches through the change-feed Outbox Relay, so nothing here reaches it.
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/Outbox/IPollableOutboxStore.cs` —
-  `TryClaimForDispatch`, its grant-by-default body, and why the observed instant is a parameter.
+  `TryClaimForDispatch`, its grant-by-default body, why the observed instant is a parameter, and the canonical
+  statement of a granted claim's lifetime with an oracle per leg — which this ADR cites rather than owns.
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/Outbox/OutboxProcessor.cs` — the claim's position
   as the first statement inside the unit of work, the denial's early return, and the durability rule's two sides.
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Reliability/InMemoryBrokeredMessageOutbox.cs` — the
