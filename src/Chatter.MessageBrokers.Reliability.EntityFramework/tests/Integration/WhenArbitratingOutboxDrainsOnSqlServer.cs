@@ -181,10 +181,12 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.Integration
                 "the denial is only measured if the challenging drain reached the claim and waited on it");
         }
 
-        // INVARIANT: the drain claim is exactly as durable as the unit of work carrying it, so a publish that fails
-        // rolls the claim back and the drain waiting on that row's lock is GRANTED it. This is what taking the claim
-        // inside the unit of work buys beyond arbitration: a drain that dies mid-publish hands the row back rather
-        // than stranding it.
+        // INVARIANT: the drain claim this fact takes is only as durable as the TRANSACTION carrying it, so a publish
+        // that fails rolls the claim back and the drain waiting on that row's lock is GRANTED it. This is what taking
+        // the claim inside the unit of work buys beyond arbitration: a drain that dies mid-publish hands the row back
+        // rather than stranding it. The rule this tier instantiates - what a granted claim's lifetime follows from on
+        // ANY store - is recorded once in the remarks on IPollableOutboxStore.TryClaimForDispatch and cited rather
+        // than restated here; this fact is the RELATIONAL leg those remarks name, and measures that leg alone.
         // Oracle: this fact. Hoisting the claim OUT of the unit of work, so it survives the rollback that failure
         // caused, reddens it at "challenger.Dispatcher.DispatchedMessageIds to contain a single item, but the
         // collection is empty" - the drain waiting on the row is denied a message nothing ever published. That
