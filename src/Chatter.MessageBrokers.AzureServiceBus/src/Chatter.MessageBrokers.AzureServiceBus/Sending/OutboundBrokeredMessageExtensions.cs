@@ -63,7 +63,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             return outboundBrokeredMessage;
         }
 
-        public static DateTime? GetScheduledEnqueueTimeUtc(this OutboundBrokeredMessage outboundBrokeredMessage) => (DateTime?)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.ScheduledEnqueueTimeUtc);
+        public static DateTime? GetScheduledEnqueueTimeUtc(this OutboundBrokeredMessage outboundBrokeredMessage) => outboundBrokeredMessage.TryGetMessageContextByKey<DateTime>(ASBMessageContext.ScheduledEnqueueTimeUtc, out var scheduledEnqueueTimeUtc) ? scheduledEnqueueTimeUtc : (DateTime?)null;
 
         public static OutboundBrokeredMessage WithTo(this OutboundBrokeredMessage outboundBrokeredMessage, string to)
         {
@@ -71,7 +71,7 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Sending
             return outboundBrokeredMessage;
         }
 
-        public static string GetToAddress(this OutboundBrokeredMessage outboundBrokeredMessage) => (string)outboundBrokeredMessage.GetMessageContextByKey(ASBMessageContext.To);
+        public static string GetToAddress(this OutboundBrokeredMessage outboundBrokeredMessage) => outboundBrokeredMessage.GetMessageContextByKey<string>(ASBMessageContext.To);
 
         public static OutboundBrokeredMessage WithViaPartitionKey(this OutboundBrokeredMessage outboundBrokeredMessage, string viaPartitionKey)
         {
