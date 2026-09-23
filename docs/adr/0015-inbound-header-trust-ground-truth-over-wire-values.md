@@ -201,7 +201,9 @@ intended. This is accepted rather than fixed: removing it would break the propag
 `(DateTime?)GetMessageContextByKey(ASBMessageContext.ScheduledEnqueueTimeUtc)`, and
 `OutboundBrokeredMessage.RefreshTimeToLive` hard-casts `(DateTime?)` on `MessageContext.ExpiryTimeUtc`, so a
 wire value of the wrong type that is inherited outward throws on dispatch. That is tracked by the still-open
-#464 and is not closed by this ADR.
+#464 and is not closed by this ADR. **Amended per ADR-0036 (2026-09-23).** Both reads now test the kind rather
+than cast it, so a wrong-kind value inherited outward reads as absent — no scheduled enqueue time, or a time to
+live left as it stands — instead of throwing on dispatch, and #464 is closed by that change.
 
 **An application that reads a `Chatter.*` header as an assertion about its sender is wrong to, and Chatter
 will not stop it.** `Via`, `ReplyToAddress`, `ReplyToGroupId`, `FailureDetails`, `FailureDescription` and
@@ -235,7 +237,7 @@ precedence over one the application added itself. Nobody should read these fixes
 - **#322, #326 and #464 stay open as known, accepted exposure**, not as work queued behind this ADR. They
   describe real properties of the system; this decision is that the properties are not worth the fix at the
   current evidence, and closing them requires the trigger below rather than a fresh reading of the same
-  facts.
+  facts. **Amended per ADR-0036:** #464 is no longer among them.
 - **The allowlist question is settled ONCE, here, as the epic asked — with the answer "no allowlist".** A
   future contributor who reaches for a per-key ingress rule should know the rule was specified, costed and
   declined, and that the reason is the missing sender identity rather than the difficulty of the rule.
@@ -268,7 +270,7 @@ precedence over one the application added itself. Nobody should read these fixes
   accepted exposure. Issue #323 — *Handler send/publish copies the entire inbound context, laundering
   control-plane headers through trusted hops* — is CLOSED with this decision: the context inheritance it
   calls laundering is by design, as recorded above, and its one remaining finding, the outbound hard casts,
-  was split out into #464.
+  was split out into #464. **Amended per ADR-0036:** #464 is closed by the change that ADR records.
 - Issue #324 — *Unvalidated casts of broker-supplied headers; failed delivery-count probe leaves the message
   permanently unsettled*; issue #325 — *`TryGetRoutingSlip` catch-all masks tampering and deserialization
   faults as 'no slip present'*. The robustness fixes shipping alongside this ADR.

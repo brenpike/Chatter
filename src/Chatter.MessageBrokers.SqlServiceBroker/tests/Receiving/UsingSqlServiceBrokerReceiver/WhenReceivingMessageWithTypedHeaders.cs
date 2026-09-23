@@ -10,8 +10,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
     // deserializes the ChatterBrokeredMessage envelope via JsonUnicodeBodyConverter (System.Text.Json),
     // which leaves OutboundBrokeredMessage.MessageContext's object-typed values as raw JsonElements. The
     // receiver routes those through MessageContext.MaterializePersistedContext BEFORE they feed downstream
-    // GetMessageContextByKey<T> casts, so an upstream-stamped NON-STRING header (e.g. a numeric
-    // ReceiveAttempts from a prior SSB hop) does not throw InvalidCastException on the live receive path.
+    // kind-tested GetMessageContextByKey<T> reads, so an upstream-stamped NON-STRING header (e.g. a numeric
+    // ReceiveAttempts from a prior SSB hop) is found rather than read as absent on the live receive path.
     //
     // -----------------------------------------------------------------------------------------------
     // REACHABLE-vs-DEFERRED LEDGER (mirrors the WhenDispatching ledger style)
@@ -27,8 +27,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
     //   via JsonUnicodeBodyConverter, then feed brokeredMessage.MessageContext through
     //   MessageContext.MaterializePersistedContext. We reproduce that seam exactly (same body converter,
     //   same materializer entry point) and assert the inbound headers expose a non-string value as its CLR
-    //   type such that a downstream GetMessageContextByKey<int>/<string> read SUCCEEDS rather than throwing
-    //   InvalidCastException. This is the regression gate; it does NOT fake the live RECEIVE.
+    //   type such that a downstream GetMessageContextByKey<long>/<string> read finds it rather than reading it as
+    //   absent. This is the regression gate; it does NOT fake the live RECEIVE.
     // -----------------------------------------------------------------------------------------------
     public class WhenReceivingMessageWithTypedHeaders : Testing.Core.Context
     {
@@ -54,8 +54,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
 
         // INVARIANT: a numeric header stamped upstream (e.g. ReceiveAttempts from a prior SSB hop) survives
         // the STJ envelope round-trip as a JsonElement, is materialized to a boxed long, and a downstream
-        // GetMessageContextByKey<int> read (via Convert.ToInt32) SUCCEEDS instead of throwing
-        // InvalidCastException — the live-receive regression gate.
+        // GetMessageContextByKey<long> read finds it rather than reading it as absent — the live-receive
+        // regression gate.
         [Fact]
         public void MustExposeNumericHeaderAsClrTypeSoTypedReadSucceeds()
         {

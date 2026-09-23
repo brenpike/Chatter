@@ -420,8 +420,8 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
         // --- ExpiryTimeUtc header key: symmetric DateTime<->ISO("O") coercion (closes the encoded-only asymmetry) ---
 
         // A delivery carrying ExpiryTimeUtc as a UTF-8 byte[] of an ISO("O") DateTime (how a real broker surfaces the
-        // ISO string the send path wrote) rehydrates to a CLR DateTime on receive, so the core's (DateTime?) cast in
-        // RefreshTimeToLive does not throw. Reproduces + proves the cast-break fix.
+        // ISO string the send path wrote) rehydrates to a CLR DateTime on receive, so RefreshTimeToLive's kind test finds
+        // it rather than reading it as absent.
         [Fact]
         public void MustRehydrateExpiryTimeUtcFromByteArrayOnReceive()
         {
@@ -439,7 +439,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
             coreContext[MessageContext.ExpiryTimeUtc].Should().BeOfType<DateTime>().Which.Should().Be(expiry);
 
             Action cast = () => _ = (DateTime?)coreContext[MessageContext.ExpiryTimeUtc];
-            cast.Should().NotThrow("the core's RefreshTimeToLive (DateTime?) cast must hold after a round trip");
+            cast.Should().NotThrow("ExpiryTimeUtc must be a DateTime after a round trip, the only kind RefreshTimeToLive reads");
         }
 
         // send -> wire -> receive: a DateTime ExpiryTimeUtc on the outbound context is encoded to an ISO string on the
@@ -565,8 +565,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
 
         // (a) REGRESSION (root finding): a delivery carrying a raw Chatter.TimeToLive longstr byte[] header and NO
         // native Expiration must not throw on ToCore, and the resulting core context must not surface a byte[] under
-        // TimeToLive — otherwise OutboundBrokeredMessage.GetTimeToLive()'s (string) cast throws InvalidCastException.
-        // With the key dropped, GetTimeToLive() returns null.
+        // TimeToLive. With the key dropped, GetTimeToLive() returns null.
         [Fact]
         public void MustDropForeignTimeToLiveHeaderSoGetTimeToLiveDoesNotThrowOnReceive()
         {
@@ -585,7 +584,7 @@ namespace Chatter.MessageBrokers.RabbitMQ.Tests.UsingRabbitMqMessageTranslator
                 Guid.NewGuid().ToString(), new byte[] { 1 }, result.coreContext, Destination, new RabbitMqBodyConverter());
 
             Action getTtl = () => outbound.GetTimeToLive();
-            getTtl.Should().NotThrow("a dropped key leaves no byte[] for the (string) cast in GetTimeToLive to choke on");
+            getTtl.Should().NotThrow("a dropped key leaves no byte[] under TimeToLive for GetTimeToLive to read");
             outbound.GetTimeToLive().Should().BeNull();
         }
 

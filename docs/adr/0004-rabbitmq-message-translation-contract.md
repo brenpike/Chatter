@@ -98,6 +98,11 @@ closure shipped: `_dispositions` is asserted complete over the core key registry
 new core key cannot ship without an explicit inbound disposition. The pairing is what is missing:
 the two directions are declared in separate places and nothing ties them together (issue #465).
 
+**Amended per ADR-0036 (2026-09-23).** `RefreshTimeToLive` no longer casts: it tests the stored
+expiry for a `DateTime`. The inbound decode is still needed, but an `ExpiryTimeUtc` left undecoded
+now reads as absent and skips the time-to-live refresh, where the `(DateTime?)` cast named in the
+table and paragraph above threw `InvalidCastException`.
+
 OPTION (a) — **keep ExpiryTimeUtc as a header field** (rather than dropping it or mapping it onto a
 native frame field) — was chosen because ExpiryTimeUtc is the absolute-expiry-**instant** concept,
 which is distinct from the relative TTL the contract already lifts onto `BasicProperties.Expiration`

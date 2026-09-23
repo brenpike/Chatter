@@ -54,8 +54,8 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 // WithScheduledEnqueueTimeUtc writes a DateTime, and SSB receive/deadletter paths write an
                 // integer ReceiveAttempts. MaterializePersistedContext deserializes the string through
                 // ChatterJson.Options, where the registered MaterializingObjectConverter restores inline the
-                // CLR types Newtonsoft's untyped read produced — so the (string)/(DateTime?)/integer reads
-                // downstream remain correct.
+                // CLR types Newtonsoft's untyped read produced, which is what the kind-tested reads below and
+                // downstream find (ADR-0036).
                 IDictionary<string, object> messageContext = MessageContext.MaterializePersistedContext(message.MessageContext);
 
                 var contentType = message.MessageContentType;

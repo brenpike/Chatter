@@ -58,8 +58,11 @@ namespace Chatter.MessageBrokers
         /// </summary>
         /// <remarks>
         /// INVARIANT: this is a deserialize-only companion to the header constants below — it must
-        /// reproduce Newtonsoft's default untyped read semantics so that the (string), (DateTime?), and
-        /// integer reads on the replayed context continue to hold:
+        /// reproduce Newtonsoft's default untyped read semantics, because a read on the replayed context
+        /// tests the kind rather than casting it (ADR-0036), so a value restored as any other kind reads
+        /// as absent. Oracles: each bullet's kind is pinned by its own fact in
+        /// WhenMaterializingPersistedContext (e.g. MustRestoreJsonIntegerAsLong,
+        /// MustRestoreIso8601DateTimeStringAsDateTime) — restoring a different kind reddens that fact:
         /// <list type="bullet">
         /// <item>Number -> <c>long</c> when it fits an Int64, else <c>double</c> (matches Newtonsoft).</item>
         /// <item>String -> <see cref="System.DateTime"/> when it is a strict ISO-8601 value
