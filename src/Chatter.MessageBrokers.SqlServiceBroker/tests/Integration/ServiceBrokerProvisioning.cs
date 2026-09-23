@@ -81,6 +81,11 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
         public static readonly ObjectSet TransactionSet = CreateSet("transaction");
         public static readonly ObjectSet NoneSet = CreateSet("none");
 
+        // #357 errored-conversation set. SsbErroredConversationTests faults a dialog with END CONVERSATION WITH
+        // ERROR, which leaves an Error-typed system message and an endpoint in the 'ER' state on the TARGET side.
+        // That residue must never reach another test class's queue, so the scenario gets its own isolated set.
+        public static readonly ObjectSet ErrorSet = CreateSet("errored");
+
         // C10 forwarding set. Beyond the standard target+deadletter set, forwarding requires a SECOND, DISTINCT
         // destination service+queue so a handler on the primary target can Forward/Send to a service OTHER than the
         // one it received on. Modeled as a primary ObjectSet plus a dedicated forward-destination service+queue;
@@ -102,6 +107,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Integration
             TransactionSet,
             NoneSet,
             ForwardingSet,
+            ErrorSet,
         };
 
         // Bounded readiness retry. A freshly started SQL Server container can refuse connections or report the

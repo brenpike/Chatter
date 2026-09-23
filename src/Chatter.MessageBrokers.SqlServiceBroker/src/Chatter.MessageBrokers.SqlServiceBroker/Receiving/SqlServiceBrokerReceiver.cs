@@ -148,21 +148,46 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             {
                 case ClassificationOutcome.DiscardNull:
                     // Empty RECEIVE (null message from an idle WAITFOR timeout): settle once and continue the loop.
-                    await DiscardMessageAsync(session, "Discarding null message", cancellationToken);
+                    // There is no message, so there is no conversation to end.
+                    await DiscardMessageAsync(session, message, outcome, "Discarding null message", cancellationToken);
                     return null;
                 case ClassificationOutcome.EndDialog:
                     await AckEndDialogAsync(session, message.ConvHandle, cancellationToken);
                     return null;
+                case ClassificationOutcome.DiscardErroredConversation:
+                    await DiscardMessageAsync(session
+                        , message
+                        , outcome
+                        , $"Ending errored conversation '{message.ConvHandle}' on service '{message.ServiceName}'. Service Broker reported: {ServiceBrokerErrorPayload.Describe(message.Body)}"
+                        , cancellationToken);
+                    return null;
                 case ClassificationOutcome.DiscardWrongType:
                     await DiscardMessageAsync(session
+                        , message
+                        , outcome
                         , $"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received."
                         , cancellationToken);
                     return null;
                 case ClassificationOutcome.DiscardNullBody:
                     await DiscardMessageAsync(session
+                        , message
+                        , outcome
                         , $"Discarding message of type '{message.MessageTypeName}' with null message body"
                         , cancellationToken);
                     return null;
+                case ClassificationOutcome.DispatchChatterBrokeredMessage:
+                case ClassificationOutcome.DispatchDefault:
+                    break;
+                default:
+                    // Fail closed. A future ClassificationOutcome with no arm above must never fall through into
+                    // the dispatch path below — that is exactly how DiscardErroredConversation reached the
+                    // dispatcher before #357 fixed it.
+                    // INVARIANT: no test pins this arm. Every declared outcome has an arm above and the
+                    // classifier is constructed internally, so the arm is unreachable and cannot be driven from
+                    // a test; it exists so the NEXT added outcome fails loudly instead of silently dispatching
+                    // (ADR-0027).
+                    await session.DisposeAsync();
+                    throw new CriticalReceiverException($"Unhandled {nameof(ClassificationOutcome)} '{outcome}' receiving from queue '{_options.MessageReceiverPath}'");
             }
 
             transactionContext.Container.Include(connection);
@@ -264,12 +289,38 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
         }
 
-        private async Task DiscardMessageAsync(ReceiveSession session, string discardMessage, CancellationToken cancellationToken)
+        // INVARIANT: a discard that settles a real received message also ends that message's conversation, in
+        // the SAME transaction as the RECEIVE, so no terminal outcome leaves a conversation endpoint open.
+        // Rationale: docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md.
+        // Pinned by Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRatherThanLeftInTheErrorState
+        // and .ANullBodyDiscardEndsItsConversation (Docker-gated; SKIPPED when Docker is absent), which
+        // committing without the EndDialogConversationCommand below reddens, plus the outcome-set oracle
+        // ServiceBrokerMessageClassifier.EndsConversation.
+        private async Task DiscardMessageAsync(ReceiveSession session,
+                                               ReceivedMessage message,
+                                               ClassificationOutcome outcome,
+                                               string discardMessage,
+                                               CancellationToken cancellationToken)
         {
             try
             {
+                if (message != null && ServiceBrokerMessageClassifier.EndsConversation(outcome))
+                {
+                    var edc = new EndDialogConversationCommand(session.Connection,
+                                      message.ConvHandle,
+                                      enableCleanup: _ssbOptions.CleanupOnEndConversation,
+                                      transaction: session.Transaction);
+                    await edc.ExecuteAsync(cancellationToken);
+                }
+
                 await session.CommitAsync(cancellationToken);
-                _logger.LogTrace(discardMessage);
+
+                // An errored conversation is an operator-visible fault carrying a Service Broker diagnostic
+                // payload, so it alone is reported at Error; the routine discards stay at Trace.
+                var discardLogLevel = outcome == ClassificationOutcome.DiscardErroredConversation
+                    ? LogLevel.Error
+                    : LogLevel.Trace;
+                _logger.Log(discardLogLevel, discardMessage);
             }
             finally
             {
