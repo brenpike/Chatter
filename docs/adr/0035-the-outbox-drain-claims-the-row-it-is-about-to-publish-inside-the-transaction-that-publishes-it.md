@@ -229,8 +229,10 @@ Per ADR-0027, where nothing pins a claim this says so rather than leaving a read
 ### Option A — move the existing due column by a compare-and-set, inside the publishing unit of work (ACCEPTED)
 
 One column, one predicate, one writer per transition. The claim is a value of the row it claims, so there is no second
-place for the answer to live and nothing to reconcile. Its durability is the publishing transaction's, which is what
-makes a drain that dies mid-publish hand the row back rather than strand it.
+place for the answer to live and nothing to reconcile. Its durability is settled by the unit of work the claim is
+taken inside, under the rule recorded on `IPollableOutboxStore.TryClaimForDispatch` and cited rather than repeated
+here; that a drain dying mid-publish needs no reaper on either tier follows from it, and is why this option beats
+Option B below.
 
 ### Option B — a dedicated `ClaimedAtUtc` column (REJECTED)
 
