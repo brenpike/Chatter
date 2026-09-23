@@ -72,8 +72,10 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// poll site. It follows the precedent <see cref="IBrokeredMessageOutbox"/> set with its single-message
         /// <c>SendToOutbox</c> overload. Oracle:
         /// <c>WhenResolvingReliabilityStores.OutboxCustomPrimaryImplementingBoth_RecordDispatchAttemptDefaultsToANoOp</c>,
-        /// whose store deliberately does not implement this member; giving this body any statement that touches the
-        /// supplied message reddens it and nothing else.
+        /// whose store deliberately does not implement this member; giving this body a statement that raises the
+        /// supplied message's attempt count and due instant reddens that ONE fact and nothing else - measured across
+        /// both suites that see this interface, the core <c>Chatter.MessageBrokers</c> one and the EntityFramework
+        /// reliability one, on both target frameworks.
         /// <para>
         /// A store inheriting the default keeps the pre-existing behaviour: its rows stay at zero attempts and due now,
         /// so a message whose dispatch keeps failing is re-attempted on every poll the way it is today.
@@ -111,7 +113,7 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
         /// <c>WhenResolvingReliabilityStores.OutboxCustomPrimaryImplementingBoth_TryClaimForDispatchGrantsByDefault</c>,
         /// whose store deliberately does not implement this member; answering <c>false</c> from this body reddens
         /// that ONE fact and nothing else - measured across both suites that see this interface, the core
-        /// <c>Chatter.MessageBrokers</c> one and the EntityFramework reliability one.
+        /// <c>Chatter.MessageBrokers</c> one and the EntityFramework reliability one, on both target frameworks.
         /// </para>
         /// </remarks>
         Task<bool> TryClaimForDispatch(OutboxMessage outboxMessage, DateTime? observedNextAttemptAtUtc, DateTime claimedNextAttemptAtUtc, CancellationToken cancellationToken = default)

@@ -36,6 +36,14 @@ namespace Chatter.MessageBrokers.Reliability
         // same fields UNGATED, because which rows a poll selects was already documented rather than enforced
         // (IPollableOutboxStore) and the worst a torn read there can do is hand back a row whose claim the gated
         // compare-and-set then refuses.
+        // NO TEST PINS THIS GATE. Removing the monitor from all four write sites while leaving each site's
+        // read-then-write order exactly as it is reddens NOTHING in either suite, on either target framework
+        // (measured; the compile was proved fresh by an added warning, because a green run is the one result a
+        // stale binary can fake). The interference seam below fires BEFORE the monitor is entered, so every
+        // deterministic single-threaded fact reaches the same answer with the gate gone. What the gate buys is a
+        // torn read a single-threaded fact cannot stage, so it is stated here rather than pinned. Hoisting the
+        // claim's read-and-compare OUT of the monitor and leaving only the write inside reddens nothing either
+        // (measured the same way), so the read-compare-write ORDER is unpinned as well.
         private readonly object _claimGate = new();
 
         IPersistanceTransaction IUnitOfWork.CurrentTransaction => null;
@@ -114,8 +122,9 @@ namespace Chatter.MessageBrokers.Reliability
         // only the relational one. Moving the due clause into a Where AFTER the Take reddens
         // MustSpendNoBatchSlotOnAMessageThatIsNotDue and MustGiveTheBatchSlotOfAFailingMessageToTheNextMessage -
         // the second because at a batch size of one the held-back message takes the only slot and is then
-        // filtered out of it - and nothing else (observed). Moving the ceiling clause there reddens
-        // MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling and nothing else (observed).
+        // filtered out of it - and nothing else. Moving the ceiling clause there reddens
+        // MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling and nothing else. Both measured across both
+        // suites and both target frameworks.
         // NOTE: no oracle pins the boundary between `<=` and `<` against now. The instant is read from the wall
         // clock inside this method, so no test can name a row due at exactly it; the two differ only for a row
         // whose next attempt lands on that very tick, and a row a tick early is taken by the following poll.
@@ -165,12 +174,16 @@ namespace Chatter.MessageBrokers.Reliability
         // re-attempted on every poll, which is exactly what the no-op default interface implementation still does
         // for a store that does not override it. Oracle: MustHoldTheRecordedAttemptStateOnTheStoredRow, which
         // records the attempt through the interface and then reads it back out of a fresh poll. Recording onto a
-        // copy of the message instead reddens six facts, every one of them an oracle for this same write-through:
-        // that one, MustCountOneMoreDispatchAttemptWhenRecordingAnAttempt,
+        // copy of the message instead reddens NINE facts and nothing else, measured across both suites and both
+        // target frameworks. Six are oracles for this same write-through: that one,
+        // MustCountOneMoreDispatchAttemptWhenRecordingAnAttempt,
         // MustAccumulateDispatchAttemptsAcrossRecordedAttempts,
         // MustExcludeAMessageThatHasSpentTheConfiguredAttemptCeiling,
         // MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling and
-        // MustGiveTheBatchSlotOfAFailingMessageToTheNextMessage - and nothing else (observed).
+        // MustGiveTheBatchSlotOfAFailingMessageToTheNextMessage. The other three read the due instant this method
+        // also writes, so they fall out with it: MustRefuseADrainClaimAgainstAStaleObservedDueInstant here, and
+        // MustRecordTheFailedDispatchAndLeaveTheRowUnprocessed and MustCostTheRowNothingWhenTheDrainLosesTheRace
+        // in UsingOutboxProcessor.WhenDrainingTheDefaultInMemoryOutbox.
         // The due instant written here is the other field the drain claim arbitrates on, so this write is taken
         // under the claim gate as well - see the gate's INVARIANT above for why.
         public Task RecordDispatchAttempt(OutboxMessage outboxMessage, DateTime nextAttemptAtUtc, CancellationToken cancellationToken = default)
@@ -194,29 +207,33 @@ namespace Chatter.MessageBrokers.Reliability
         // cannot both hold here, and it is write-through that six named facts pin and the single-operation shape
         // that none pin, so the single-operation shape is the one that yields.
         // A claim is granted only when the row is unprocessed, its due instant is still the one the poll reported,
-        // and it is due at claim time. Each conjunct was measured by removing it:
+        // and it is due at claim time. Each conjunct was measured by removing it, across both suites and both
+        // target frameworks:
         // Dropping the comparison against the reported instant reddens
         // MustGrantExactlyOneOfTwoCompetingDrainClaims, MustRefuseADrainClaimAgainstAStaleObservedDueInstant and
-        // UsingOutboxProcessor.WhenProcessingOutboxMessage.MustNotSpendADispatchAttemptWhenTheDrainClaimIsDenied
-        // - three facts (observed).
-        // Dropping the processed conjunct reddens MustRefuseADrainClaimOnAProcessedMessage and nothing else
-        // (observed).
+        // UsingOutboxProcessor.WhenDrainingTheDefaultInMemoryOutbox.MustCostTheRowNothingWhenTheDrainLosesTheRace
+        // - three facts. No fact in WhenProcessingOutboxMessage is among them: that fixture drives OutboxProcessor
+        // against a MOCK outbox, so no mutation of this store executes there at all.
+        // Dropping the processed conjunct reddens MustRefuseADrainClaimOnAProcessedMessage and nothing else.
         // Writing any instant other than the one the caller supplied - DateTime.MaxValue was measured - reddens
         // MustLeaveAClaimedMessageDueAgainOneBackoffLater, MustRefuseADrainClaimOnAMessageAnotherDrainHolds and
-        // MustGrantExactlyOneOfTwoCompetingDrainClaims - three facts (observed).
+        // MustGrantExactlyOneOfTwoCompetingDrainClaims - three facts.
         // Replacing this in-place write with a ConcurrentDictionary.TryUpdate of a copy reddens those same three
-        // plus UsingOutboxProcessor.WhenDrainingTheDefaultInMemoryOutbox.
-        // MustDispatchTheSameRowOnTheNextDrainOnceItsBackoffHasElapsed - four facts (observed), the last of them
-        // reading the orphaned instance directly. The six write-through facts named on RecordDispatchAttempt stay
-        // GREEN under it, because that mutation only orphans a row a claim touched and those six take no claim -
-        // the breadth belongs to the mutation, not to the reasoning.
+        // plus two in UsingOutboxProcessor.WhenDrainingTheDefaultInMemoryOutbox -
+        // MustDispatchTheSameRowOnTheNextDrainOnceItsBackoffHasElapsed and
+        // MustCostTheRowNothingWhenTheDrainLosesTheRace - five facts, the last two reading the orphaned instance
+        // through a real drain. The six write-through facts named on RecordDispatchAttempt stay GREEN under it,
+        // because that mutation only orphans a row a claim touched and those six take no claim - the breadth
+        // belongs to the mutation, not to the reasoning.
         // NOTE: the due gate is applied HERE and deliberately nowhere else. GetUnprocessedMessagesFromOutbox is
         // due-gated too, but GetUnprocessedBatch is not (see its remarks on IPollableOutboxStore), so in this
         // store an in-request drain can read a row AFTER another drain claimed it, observe the claim's own value
         // and satisfy a bare comparison; refusing a row that is not due at claim time is what closes that. A
         // store whose claim is invisible until it commits does not have that window and must not carry this gate.
-        // Dropping the due gate reddens MustRefuseADrainClaimOnAMessageThatIsNotDue and 24 further facts across
-        // UsingOutboxProcessor and Diagnostics that drive a real drain through this store - 25 in all (observed).
+        // Dropping the due gate reddens MustRefuseADrainClaimOnAMessageThatIsNotDue and nothing else - ONE fact,
+        // measured across both suites and both target frameworks. That is the whole of its pinned reach: the
+        // window it closes needs a second drain to read a row between another drain's claim and that drain's
+        // publish, and the only fact that stages it is the one named.
         // NOTE: as with the poll's due clause, no oracle pins the boundary between `<=` and `<` against now, and
         // for the same reason given there.
         public Task<bool> TryClaimForDispatch(OutboxMessage outboxMessage, DateTime? observedNextAttemptAtUtc, DateTime claimedNextAttemptAtUtc, CancellationToken cancellationToken = default)
