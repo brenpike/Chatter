@@ -10,7 +10,7 @@ Where the core library defines `IMessagingInfrastructureReceiver`, `IMessagingIn
 
 - `SqlServiceBrokerReceiver` dequeues messages with `WAITFOR (RECEIVE ...)`.
 - `SqlServiceBrokerSender` enqueues messages by opening a dialog (`BEGIN DIALOG`), `SEND ON CONVERSATION`, and (optionally) `END CONVERSATION`.
-- `SqlCircuitBreakerExceptionPredicatesProvider` and `SqlRetryExceptionPredicatesProvider` teach the core recovery pipeline which SQL exceptions are transient.
+- `SqlCircuitBreakerExceptionPredicatesProvider` and `SqlRetryExceptionPredicatesProvider` teach the core recovery pipeline which SQL exceptions are transient and which are terminal.
 
 It registers itself with Chatter through an `IChatterBuilder` extension, `AddSqlServiceBroker(...)`, chained off `AddMessageBrokers(...)` — the same way the sibling `Chatter.MessageBrokers.AzureServiceBus` package adds `AddAzureServiceBus(...)`.
 
@@ -89,7 +89,9 @@ Options are modeled by `SqlServiceBrokerOptions` and assembled with `SqlServiceB
 
 `SqlServiceBrokerOptionsBuilder.Build()` throws if no options were configured, if the connection string is null/whitespace, or if the message body type is missing.
 
-Recovery (retry and circuit breaker) is supplied automatically: `AddSqlServiceBroker` registers `SqlRetryExceptionPredicatesProvider` and `SqlCircuitBreakerExceptionPredicatesProvider`, which classify SQL failures as transient (e.g. `SqlException.IsTransient` on net8.0+, known transient error numbers, and error `208` "invalid object name") so the core Chatter recovery pipeline retries or trips the breaker appropriately.
+Recovery (retry and circuit breaker) is supplied automatically: `AddSqlServiceBroker` registers `SqlRetryExceptionPredicatesProvider` and `SqlCircuitBreakerExceptionPredicatesProvider`, which classify SQL failures as transient (`SqlException.IsTransient` on net8.0+ and the package's own list of known transient error numbers) so the core Chatter recovery pipeline retries or trips the breaker appropriately.
+
+Errors `208` "invalid object name" and `102` "incorrect syntax" are **terminal**, not transient. Because this package provisions no Service Broker topology, a missing queue or a malformed statement is deterministic misconfiguration that no retry can fix, so both providers exclude those numbers and the receiver surfaces them as a `CriticalReceiverException` naming the configured queue — a host started before its queue exists stops instead of retrying forever. See [ADR-0037](https://github.com/brenpike/Chatter/blob/master/docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md).
 
 ## SQL Setup
 
@@ -99,7 +101,7 @@ This package is a **transport over existing SQL Service Broker objects** — it 
 | --- | --- | --- |
 | `BeginDialogConversationCommand` | `BEGIN DIALOG ... FROM SERVICE ... TO SERVICE ... [ON CONTRACT ...] WITH ENCRYPTION = ON\|OFF [, LIFETIME ...]` | Sender, per outbound message. |
 | `SendOnConversationCommand` | `SEND ON CONVERSATION @handle [MESSAGE TYPE ...] (@body)` (wrapped in `compress(...)` when compression is on) | Sender, after the dialog opens. |
-| `EndDialogConversationCommand` | `END CONVERSATION @handle [WITH ERROR ... DESCRIPTION ...] [WITH CLEANUP]` | Sender (when `EndConversationAfterDispatch`), and receiver on ack/deadletter/`EndDialog`. |
+| `EndDialogConversationCommand` | `END CONVERSATION @handle [WITH ERROR ... DESCRIPTION ...] [WITH CLEANUP]` | Sender (when `EndConversationAfterDispatch`), and receiver on ack/deadletter/`EndDialog` and on every discard of a received message. |
 | `ReceiveMessageFromQueueCommand` | `WAITFOR (RECEIVE TOP(1) ... FROM <queue>) [, TIMEOUT ...]` | Receiver, to dequeue. |
 
 > Note: the queue name is **bracket-quoted** into the emitted `RECEIVE` statement rather than interpolated
@@ -118,7 +120,7 @@ You are responsible for provisioning the Service Broker schema **manually** (or 
 - The **queues** you reference in `AddQueueReceiver<T>(queueName, ...)` (the receive path) and any dead-letter queue/service path you configure.
 - The **services** you send to (the `destinationPath` / target service supplied when sending).
 
-On receive, the library filters by message type: only `//Chatter/BrokeredMessage` and `DEFAULT` are surfaced to handlers; `http://schemas.microsoft.com/SQL/ServiceBroker/EndDialog` messages are acknowledged and ended, and any other type is discarded. The receiver also handles dialog lifecycle (ack = `END CONVERSATION`, nack = transaction rollback, deadletter = resend to the configured dead-letter service path).
+On receive, the library filters by message type: only `//Chatter/BrokeredMessage` and `DEFAULT` are surfaced to handlers; `http://schemas.microsoft.com/SQL/ServiceBroker/EndDialog` messages are acknowledged and ended, and every other type is discarded. A discarded message — a Service Broker `Error`, a message of a type this package does not accept, or an accepted type with a null body — has its conversation ended before the `RECEIVE` commits, in that same transaction, so a discard never leaves a conversation endpoint open. `http://schemas.microsoft.com/SQL/ServiceBroker/Error` messages are additionally logged at `Error` with the Service Broker error payload decoded from the message body; the other discards are logged at `Trace`. See [ADR-0037](https://github.com/brenpike/Chatter/blob/master/docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md). The receiver also handles dialog lifecycle (ack = `END CONVERSATION`, nack = transaction rollback, deadletter = resend to the configured dead-letter service path).
 
 > Note: automatic provisioning of Service Broker objects (queues, services, contracts, message types, `ENABLE_BROKER`) lives in the separate `Chatter.SqlChangeFeed` package, not here.
 
