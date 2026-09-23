@@ -54,19 +54,38 @@ namespace Chatter.MessageBrokers.Reliability.Outbox
                 // WithScheduledEnqueueTimeUtc writes a DateTime, and SSB receive/deadletter paths write an
                 // integer ReceiveAttempts. MaterializePersistedContext deserializes the string through
                 // ChatterJson.Options, where the registered MaterializingObjectConverter restores inline the
-                // CLR types Newtonsoft's untyped read produced — so the (string)/(DateTime?)/integer reads on
-                // the replayed context below and downstream remain correct.
+                // CLR types Newtonsoft's untyped read produced — so the (string)/(DateTime?)/integer reads
+                // downstream remain correct.
                 IDictionary<string, object> messageContext = MessageContext.MaterializePersistedContext(message.MessageContext);
 
                 var contentType = message.MessageContentType;
                 if (string.IsNullOrWhiteSpace(message.MessageContentType))
                 {
-                    contentType = (string)messageContext[MessageContext.ContentType];
+                    // INVARIANT: the persisted content type is read by a KIND TEST, so a context whose value is
+                    // absent or is not a string reaches the classified "a content type is required" refusal below
+                    // rather than a KeyNotFoundException or an InvalidCastException from the read itself.
+                    // Oracles: MustRefuseAnOutboxMessageWhosePersistedContentTypeIsNotAString and
+                    // MustRefuseAnOutboxMessageWhosePersistedContentTypeKeyIsAbsent; restoring the indexer-and-cast
+                    // read reddens both and nothing else - measured across this suite on both target frameworks.
+                    messageContext.TryGetValue(MessageContext.ContentType, out var persistedContentType);
+                    contentType = persistedContentType as string;
                     _logger.LogTrace($"Outbox message did not contain content type. Retrieved from message context.");
                 }
 
+                // INVARIANT: a persisted infrastructure type that is present but not a string is read as ABSENT, so
+                // the row is dispatched via the default Messaging Infrastructure rather than refused on every poll,
+                // and the misroute is logged so it is observable rather than silent.
+                // Oracles: MustDispatchViaTheDefaultInfrastructureWhenThePersistedInfrastructureTypeIsNotAString and
+                // MustLogThatThePersistedInfrastructureTypeWasUnreadable; restoring the (string) cast reddens both,
+                // and dropping the warning reddens the second alone - each measured across this suite on both
+                // target frameworks.
                 messageContext.TryGetValue(MessageContext.InfrastructureType, out var infra);
-                var infrastructureType = (string)infra;
+                var infrastructureType = infra as string;
+                if (infra != null && infrastructureType == null)
+                {
+                    _logger.LogWarning($"Outbox message '{message.MessageId}' carries a '{MessageContext.InfrastructureType}' that is not a string. Dispatching it via the default messaging infrastructure.");
+                }
+
                 var dispatcherInfrastructure = _infrastructureProvider.GetDispatcher(infrastructureType);
 
                 if (string.IsNullOrWhiteSpace(contentType))
