@@ -11,14 +11,16 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.CircuitBreaker
         private readonly SqlCircuitBreakerExceptionPredicatesProvider _sut = new SqlCircuitBreakerExceptionPredicatesProvider();
 
         // INVARIANT: the `#if NET5_0_OR_GREATER` block in the provider adds the
-        // `exception.IsTransient` predicate only on net5.0+, so the count is 3 there and 2 on
-        // netcoreapp3.1. The #if below mirrors the production directive exactly.
+        // `exception.IsTransient` predicate only on net5.0+, so the count is 2 there and 1 on
+        // netcoreapp3.1. The #if below mirrors the production directive exactly. Re-adding a
+        // standalone `exception.Number == 208` predicate to the provider reddens this fact
+        // (ADR-0027).
         [Fact]
         public void MustYieldExpectedNumberOfPredicatesForTargetFramework()
 #if NET5_0_OR_GREATER
-            => _sut.GetExceptionPredicates().Should().HaveCount(3);
-#else
             => _sut.GetExceptionPredicates().Should().HaveCount(2);
+#else
+            => _sut.GetExceptionPredicates().Should().HaveCount(1);
 #endif
 
         [Fact]
@@ -40,7 +42,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.CircuitBreaker
         }
 
         // CHARACTERIZATION BOUNDARY: the SqlException-positive branches of each predicate
-        // (e is SqlException && IsTransient / IsErrorNumberTransient(Number) / Number == 208)
+        // (e is SqlException && IsTransient && !IsErrorNumberTerminal(Number) / IsErrorNumberTransient(Number))
         // are NOT directly pinnable here. SqlException is sealed with no public constructor and
         // cannot be mocked by Moq or instantiated without a live SQL connection, so only the
         // non-SqlException and null branches plus the predicate count are pinned.
