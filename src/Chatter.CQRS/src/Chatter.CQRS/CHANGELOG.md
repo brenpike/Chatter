@@ -12,6 +12,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.17.0] - 2026-09-23
+
+### Changed
+
+- `AddPipelineBehavior` / `RegisterBehaviorForAllCommands` no longer register a discovered command behavior under every interface it implements. Assembly scanning previously used Scrutor's `AsImplementedInterfaces()`, so a command behavior class was registered against `ICommandBehavior<TMessage>` — or, for an open-generic behavior, the open definition `ICommandBehavior<>` — *and* any other interface it happened to implement. A command behavior is now registered only under the `ICommandBehavior<TMessage>` interface(s) it implements (the open definition `ICommandBehavior<>` for an open-generic behavior). **This is a breaking change**: if a behavior class also implements any other interface the scan previously registered it under — generic or non-generic — and you resolved that interface from the container, that registration no longer exists. Register it explicitly (#445).
+
+### Fixed
+
+- A command behavior class that also implemented a second generic interface of matching arity could lose its own `ICommandBehavior<>` registration: both interfaces were registered with the same implementation type under `RegistrationStrategy.Replace(ReplacementBehavior.ImplementationType)`, so the later descriptor deleted the earlier one, and which one survived depended on the unspecified order of `Type.GetInterfaces()` (#445).
+
 ## [0.16.0] - 2026-09-12
 
 ### Added

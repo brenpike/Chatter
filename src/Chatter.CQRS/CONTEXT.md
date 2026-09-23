@@ -19,7 +19,7 @@ _Avoid_: read request.
 
 **Aggregate**: A domain consistency boundary whose state changes via Commands and which emits Domain Events.
 
-**Command Pipeline**: An ordered chain applying cross-cutting concerns (e.g. logging) across all command handlers.
+**Command Pipeline**: An ordered chain applying cross-cutting concerns (e.g. logging) across all command handlers. A discovered behavior is registered only under the `ICommandBehavior<TMessage>` interface(s) it implements (the open definition `ICommandBehavior<>` for an open-generic behavior), not under any other interface the behavior class may implement.
 _Avoid_: middleware.
 
 **Message Context**: Per-dispatch contextual data flowing alongside a message through dispatch and handling.

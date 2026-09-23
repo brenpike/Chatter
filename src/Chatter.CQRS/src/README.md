@@ -308,6 +308,8 @@ services.AddPipelineBehavior(typeof(LoggingBehavior<>)); // open generic → all
 services.AddPipelineBehavior(typeof(ValidateCreateOrderBehavior)); // closed generic → one command
 ```
 
+A discovered behavior is registered only under the `ICommandBehavior<TMessage>` interface(s) it implements (the open definition `ICommandBehavior<>` for an open-generic behavior), not under any other interface the behavior class may implement.
+
 ## Diagnostics (optional, opt-in)
 
 Command and Event dispatch are instrumented with OpenTelemetry-compatible tracing and metrics. The instrumentation is **off until an application opts in**, and `Chatter.CQRS` takes **no dependency on any `OpenTelemetry.*` NuGet package** — it is built on the .NET base class library only: `System.Diagnostics.ActivitySource` for spans and `System.Diagnostics.Metrics.Meter` for instruments.

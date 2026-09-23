@@ -86,6 +86,54 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingServiceCollectionExtension
             cb2.Should().ContainItemsAssignableTo<FakeCommandBehavior<AnotherFakeCommand>>();
         }
 
+        [Fact]
+        public void MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredAfterIt()
+        {
+            var sc = new ServiceCollection();
+
+            sc.RegisterBehaviorForAllCommands(typeof(CollateralAfterBehavior<>));
+
+            var sp = sc.BuildServiceProvider();
+            var behaviors = sp.GetServices<ICommandBehavior<FakeCommand>>();
+
+            behaviors.Should().HaveCount(1);
+            behaviors.Should().ContainItemsAssignableTo<CollateralAfterBehavior<FakeCommand>>();
+            sc.Should().OnlyContain(d => d.ServiceType == typeof(ICommandBehavior<>));
+            sc.Should().HaveCount(1);
+        }
+
+        [Fact]
+        public void MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredBeforeIt()
+        {
+            var sc = new ServiceCollection();
+
+            sc.RegisterBehaviorForAllCommands(typeof(CollateralBeforeBehavior<>));
+
+            var sp = sc.BuildServiceProvider();
+            var behaviors = sp.GetServices<ICommandBehavior<FakeCommand>>();
+
+            behaviors.Should().HaveCount(1);
+            behaviors.Should().ContainItemsAssignableTo<CollateralBeforeBehavior<FakeCommand>>();
+            sc.Should().OnlyContain(d => d.ServiceType == typeof(ICommandBehavior<>));
+            sc.Should().HaveCount(1);
+        }
+
+        [Fact]
+        public void MustNotRegisterABehaviorUnderANonGenericCollateralInterface()
+        {
+            var sc = new ServiceCollection();
+
+            sc.RegisterBehaviorForAllCommands(typeof(NonGenericCollateralBaseBehavior<>));
+
+            sc.Should().NotContain(d => d.ServiceType == typeof(IFakeNonGenericCollateral));
+            sc.Should().OnlyContain(d => d.ServiceType == typeof(ICommandBehavior<>) || d.ServiceType == typeof(ICommandBehavior<FakeCommand>));
+            sc.Should().HaveCount(2);
+
+            var sp = sc.BuildServiceProvider();
+            sp.GetService<IFakeNonGenericCollateral>().Should().BeNull();
+            sp.GetServices<ICommandBehavior<FakeCommand>>().Should().ContainItemsAssignableTo<NonGenericCollateralBehavior>();
+        }
+
         private class NotACommand { }
         private class FakeCommand : ICommand { }
         private class AnotherFakeCommand : ICommand { }
@@ -94,5 +142,20 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingServiceCollectionExtension
             public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) => throw new NotImplementedException();
         }
         private class FakeCommandBehavior3<TMessage> { }
+        private interface IFakeGenericCollateral<T> { }
+        private class CollateralAfterBehavior<TMessage> : ICommandBehavior<TMessage>, IFakeGenericCollateral<TMessage> where TMessage : ICommand
+        {
+            public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) => throw new NotImplementedException();
+        }
+        private class CollateralBeforeBehavior<TMessage> : IFakeGenericCollateral<TMessage>, ICommandBehavior<TMessage> where TMessage : ICommand
+        {
+            public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) => throw new NotImplementedException();
+        }
+        private interface IFakeNonGenericCollateral { }
+        private class NonGenericCollateralBaseBehavior<TMessage> : ICommandBehavior<TMessage> where TMessage : ICommand
+        {
+            public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next) => throw new NotImplementedException();
+        }
+        private class NonGenericCollateralBehavior : NonGenericCollateralBaseBehavior<FakeCommand>, IFakeNonGenericCollateral { }
     }
 }
