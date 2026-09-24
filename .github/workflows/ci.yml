@@ -85,7 +85,7 @@ jobs:
       - name: Generate aggregate coverage
         run: |
           reportgenerator \
-            -reports:'artifacts/coverage/*.cobertura.*.xml' \
+            -reports:'artifacts/coverage/*.cobertura.xml' \
             -targetdir:'artifacts/coverage/report' \
             -reporttypes:'Cobertura;TextSummary;MarkdownSummaryGithub'
           cat artifacts/coverage/report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
@@ -96,7 +96,7 @@ jobs:
           name: coverage-report
           path: |
             artifacts/coverage/report/**
-            artifacts/coverage/*.cobertura.*.xml
+            artifacts/coverage/*.cobertura.xml
 
   integration:
     name: integration (docker)
