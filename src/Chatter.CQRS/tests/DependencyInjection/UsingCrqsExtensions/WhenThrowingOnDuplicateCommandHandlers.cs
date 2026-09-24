@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -196,6 +197,42 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
                          .Which.Message.Should().Contain("the enumeration order of each assembly's loadable types")
                          .And.Contain("neither of which is specified")
                          .And.NotContain("the order in which an assembly defines its types");
+        }
+
+        [Fact]
+        public void MustProbeTheAssemblySetCapturedAtRegistrationWhenTheSourceGrowsAfterwards()
+        {
+            var sourceAssemblies = new List<Assembly>
+            {
+                New.Common().Assembly.WithFullName("Chatter.Fake.Registered").WithTypes(typeof(FakeFirstCommandHandler)).Creation
+            };
+            var sourceProvider = new Mock<IAssemblyFilterSourceProvider>();
+            sourceProvider.Setup(provider => provider.GetSourceAssemblies()).Returns(() => sourceAssemblies.ToList());
+            var chatterBuilder = new ServiceCollection().AddChatterCqrs(Mock.Of<IConfiguration>(),
+                                                                        messageHandlerSourceBuilder: b => b.WithSourceProvider(sourceProvider.Object)
+                                                                                                           .WithNamespaceSelector("Chatter.Fake*"));
+
+            sourceAssemblies.Add(New.Common().Assembly.WithFullName("Chatter.Fake.Late").WithTypes(typeof(FakeSecondCommandHandler)).Creation);
+
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().NotThrow();
+        }
+
+        /// <summary>
+        /// Characterization pin, not a red-first test: a builder that carries no scanned assembly set, here one made
+        /// by the public <see cref="ChatterBuilder.Create(IServiceCollection, IConfiguration, IAssemblySourceFilter)"/>,
+        /// is checked against the result of applying its filter.
+        /// </summary>
+        [Fact]
+        public void MustProbeTheFilterWhenTheBuilderCarriesNoScanSet()
+        {
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeFirstCommandHandler), typeof(FakeSecondCommandHandler)).Creation;
+            var filter = AssemblySourceFilterBuilder.New().WithExplicitAssemblies(assembly).Build();
+            var chatterBuilder = ChatterBuilder.Create(new ServiceCollection(), Mock.Of<IConfiguration>(), filter);
+
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers())
+                         .Should().ThrowExactly<InvalidOperationException>()
+                         .Which.Message.Should().Contain(typeof(FakeFirstCommandHandler).FullName)
+                         .And.Contain(typeof(FakeSecondCommandHandler).FullName);
         }
 
         private static int PositionOf(string message, Type type)

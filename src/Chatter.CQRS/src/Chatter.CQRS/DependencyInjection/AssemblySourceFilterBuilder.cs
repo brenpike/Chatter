@@ -27,6 +27,21 @@ namespace Chatter.CQRS.DependencyInjection
         }
 
         /// <summary>
+        /// Sets the provider that returns the base set of assemblies on this builder, so that a builder handed to a
+        /// configuration delegate can still have its source provider replaced.
+        /// </summary>
+        /// <param name="assemblySourceProvider">The assembly provider</param>
+        internal AssemblySourceFilterBuilder WithSourceProvider(IAssemblyFilterSourceProvider assemblySourceProvider)
+        {
+            // INVARIANT: a null provider is refused here rather than stored, because Build() replaces a null provider
+            // with CurrentAppDomainAssemblyProvider.Default, which would silently widen the scan to the whole AppDomain.
+            // Oracle: WhenSettingAssemblySourceProvider.MustThrowWhenTheSourceProviderIsNull.
+            // Mutation that reddens it: removing this guard.
+            _searchAssemblyProvider = assemblySourceProvider ?? throw new ArgumentNullException(nameof(assemblySourceProvider));
+            return this;
+        }
+
+        /// <summary>
         /// Sets a namespace selector which is used to filter assemblies containing types with matching namespaces or assemblies with matching names.
         /// Supports '*' and '?' wildcard values.
         /// </summary>
