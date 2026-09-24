@@ -68,37 +68,43 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
                 ClassificationOutcome.DiscardErroredConversation,
                 "the Error type is classified separately from any other unaccepted type so the receiver can end the errored conversation rather than leaving it open" };
 
-            // Row 5: QueryNotificationType → DiscardWrongType
+            // Row 5: ErrorType with null body → DiscardErroredConversation  (branch fires before body check)
+            yield return new object[] {
+                BuildMessage(ServicesMessageTypes.ErrorType, body: null),
+                ClassificationOutcome.DiscardErroredConversation,
+                "the Error branch fires before the null-body check, so ErrorType with a null body must still be classified as DiscardErroredConversation" };
+
+            // Row 6: QueryNotificationType → DiscardWrongType
             yield return new object[] {
                 BuildMessage(ServicesMessageTypes.QueryNotificationType, body: body),
                 ClassificationOutcome.DiscardWrongType,
                 "QueryNotificationType must be classified as DiscardWrongType" };
 
-            // Row 6: arbitrary unknown type → DiscardWrongType
+            // Row 7: arbitrary unknown type → DiscardWrongType
             yield return new object[] {
                 BuildMessage("http://example.com/UnknownType", body: body),
                 ClassificationOutcome.DiscardWrongType,
                 "an unknown message type must be classified as DiscardWrongType" };
 
-            // Row 7: DefaultType with null body → DiscardNullBody
+            // Row 8: DefaultType with null body → DiscardNullBody
             yield return new object[] {
                 BuildMessage(ServicesMessageTypes.DefaultType, body: null),
                 ClassificationOutcome.DiscardNullBody,
                 "DefaultType with null body must be classified as DiscardNullBody" };
 
-            // Row 8: ChatterBrokeredMessageType with null body → DiscardNullBody
+            // Row 9: ChatterBrokeredMessageType with null body → DiscardNullBody
             yield return new object[] {
                 BuildMessage(ServicesMessageTypes.ChatterBrokeredMessageType, body: null),
                 ClassificationOutcome.DiscardNullBody,
                 "ChatterBrokeredMessageType with null body must be classified as DiscardNullBody" };
 
-            // Row 9: ChatterBrokeredMessageType with body → DispatchChatterBrokeredMessage
+            // Row 10: ChatterBrokeredMessageType with body → DispatchChatterBrokeredMessage
             yield return new object[] {
                 BuildMessage(ServicesMessageTypes.ChatterBrokeredMessageType, body: body),
                 ClassificationOutcome.DispatchChatterBrokeredMessage,
                 "ChatterBrokeredMessageType with non-null body must be classified as DispatchChatterBrokeredMessage" };
 
-            // Row 10: DefaultType with body → DispatchDefault
+            // Row 11: DefaultType with body → DispatchDefault
             yield return new object[] {
                 BuildMessage(ServicesMessageTypes.DefaultType, body: body),
                 ClassificationOutcome.DispatchDefault,
@@ -122,8 +128,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
             actual.Should().Be(expectedOutcome, because);
         }
 
+        // Pins two real orderings ahead of the end-dialog branch: moving the null-body check
+        // ahead of it reddens the null-body assertion below (EndDialogType matches neither
+        // DefaultType nor ChatterBrokeredMessageType, so moving the wrong-type filter ahead of
+        // it reddens both assertions below).
         [Fact]
-        public void MustStillClassifyAnEndDialogBeforeTheErrorCheck()
+        public void MustClassifyAnEndDialogBeforeTheTypeAndBodyChecks()
         {
             var classifier = new ServiceBrokerMessageClassifier();
 
@@ -131,9 +141,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingSqlServic
             var endDialogWithNullBody = classifier.Classify(BuildMessage(ServicesMessageTypes.EndDialogType, body: null));
 
             endDialog.Should().Be(ClassificationOutcome.EndDialog,
-                "inserting the Error branch must not move the end-dialog branch out of its position ahead of it");
+                "the end-dialog branch fires before the wrong-type filter, so it must not be classified as DiscardWrongType");
             endDialogWithNullBody.Should().Be(ClassificationOutcome.EndDialog,
-                "the end-dialog branch still fires before the body check, so a null body must not change its outcome");
+                "the end-dialog branch fires before the body check, so a null body must not change its outcome");
         }
 
         // -----------------------------------------------------------------------

@@ -60,10 +60,24 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         public ClassificationOutcome Classify(ReceivedMessage message)
         {
             // INVARIANT: branch order is significant and must match SqlServiceBrokerReceiver.
-            // EndDialog fires before the body check, so an EndDialogType with a null body
-            // classifies EndDialog, NOT DiscardNullBody. Pinned by
-            // WhenClassifyingReceivedMessages.MustStillClassifyAnEndDialogBeforeTheErrorCheck;
-            // moving the Error branch ahead of the end-dialog branch reddens it.
+            // - EndDialog fires before the null-body check, so an EndDialogType with a null body
+            //   classifies EndDialog, NOT DiscardNullBody. Pinned by
+            //   WhenClassifyingReceivedMessages.MustClassifyAnEndDialogBeforeTheTypeAndBodyChecks;
+            //   moving the null-body check ahead of the end-dialog branch reddens it.
+            // - EndDialog fires before the wrong-type filter, so an EndDialogType (which matches
+            //   neither DefaultType nor ChatterBrokeredMessageType) classifies EndDialog, NOT
+            //   DiscardWrongType. Pinned by the same
+            //   MustClassifyAnEndDialogBeforeTheTypeAndBodyChecks; moving the wrong-type filter
+            //   ahead of the end-dialog branch reddens it.
+            // - The Error branch fires before the wrong-type filter, so an ErrorType (which also
+            //   matches neither DefaultType nor ChatterBrokeredMessageType) classifies
+            //   DiscardErroredConversation, NOT DiscardWrongType. Pinned by
+            //   MustProduceExpectedOutcome row 4 (ErrorType); moving the wrong-type filter ahead
+            //   of the Error branch reddens it.
+            // - The Error branch fires before the null-body check, so an ErrorType with a null
+            //   body classifies DiscardErroredConversation, NOT DiscardNullBody. Pinned by
+            //   MustProduceExpectedOutcome row 5 (ErrorType, null body); moving the null-body
+            //   check ahead of the Error branch reddens it.
             if (message is null)
             {
                 return ClassificationOutcome.DiscardNull;
