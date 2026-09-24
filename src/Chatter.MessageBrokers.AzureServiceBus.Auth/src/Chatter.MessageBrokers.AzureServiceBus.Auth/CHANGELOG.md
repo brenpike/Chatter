@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [4.0.0] - 2026-09-24
+
+### Removed
+
+- **`net8.0` is no longer a target framework. The package now targets `net10.0` only.** .NET 8 reaches end of support on 2026-11-10 and gets no security patches after that, so shipping a `net8.0` build would advertise support that cannot be delivered. **This is a breaking change** for any consumer still building against `net8.0`. They are not stranded: the last multi-targeting release stays installable on NuGet, but they get no newer versions of this package until they move to .NET 10 (#395).
+
 ## [3.2.1] - 2026-09-02
 
 ### Changed
