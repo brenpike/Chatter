@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.12.0] - 2026-09-24
+
+### Removed
+
+- **`net8.0` is no longer a target framework. The package now targets `net10.0` only.** .NET 8 reaches end of support on 2026-11-10 and gets no security patches after that, so shipping a `net8.0` build would advertise support that cannot be delivered. **This is a breaking change** for any consumer still building against `net8.0`. They are not stranded: the last multi-targeting release stays installable on NuGet, but they get no newer versions of this package until they move to .NET 10 (#395).
+
 ## [0.11.0] - 2026-09-22
 
 **No DDL. No new column. No migration.** The drain claim below rides the `NextAttemptAtUtc` column the 0.9.0 schema already has. No property, mapping or annotation changes, so there is nothing for `dotnet ef migrations add` to emit and nothing for you to generate — this package ships no migrations of its own. Both deploy directions are safe in either order: a claim is invisible outside the transaction that took it, so no other binary ever reads a row mid-claim, and a claim that rolls back leaves the row exactly as the poll found it, so the drain that was waiting takes its own claim against the instant its own poll read and publishes the message; a new binary reading rows an old one wrote sees `NULL` or a past instant, both of which are claimable. Pinned by `WhenClaimingForDispatch.MustEnlistTheClaimInTheAmbientTransaction` and, over a real SQL Server, by `Integration/WhenArbitratingOutboxDrainsOnSqlServer.MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack`.

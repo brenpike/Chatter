@@ -220,8 +220,8 @@ namespace Chatter.MessageBrokers.AzureServiceBus.Tests.Options.UsingServiceBusOp
         {
             // A key of the wrong TYPE never reaches the Azure SDK's setters: ConfigurationBinder cannot
             // convert it, so Build() throws its InvalidOperationException first. The message is asserted
-            // only for the KEY PATH — the framework words the rest of it differently on net8.0 and
-            // net10.0, and that wording is not this module's contract.
+            // only for the KEY PATH — the framework words the rest of it, and that wording is not this
+            // module's contract.
             var config = ConfigWith(new Dictionary<string, string>
             {
                 [$"{_sectionName}:ConnectionString"] = _sasConnectionString,

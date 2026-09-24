@@ -136,9 +136,8 @@ namespace Chatter.CQRS.Tests.Diagnostics
                 var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
                 span.IsAllDataRequested.Should().BeTrue();
 
-                // ActivityOutcome adds this event through Activity.AddException on net9.0+ and through a
-                // hand-rolled ActivityEvent on net8.0. Asserting the emitted event and its tags — never the API
-                // that produced them — is what keeps both target frameworks covered by one assertion.
+                // ActivityOutcome adds this event through Activity.AddException. The assertion reads the emitted
+                // event and its tags, never the API that produced them.
                 var exceptionEvent = ResolveSingleEvent(span, ChatterTelemetryTags.ExceptionEventName);
                 ResolveEventTag(exceptionEvent, ChatterTelemetryTags.ExceptionType).Should().Be(typeof(DiagnosticsProbeException).FullName);
                 ResolveEventTag(exceptionEvent, ChatterTelemetryTags.ExceptionMessage).Should().Be(expectedFailure.Message);

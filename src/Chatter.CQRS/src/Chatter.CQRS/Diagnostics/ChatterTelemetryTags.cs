@@ -37,7 +37,7 @@
 
         /// <summary>
         /// The exception type on an exception event, rendered by <c>Type.ToString()</c> — the spelling
-        /// <c>Activity.AddException</c> writes on net9.0 and later. It does not assembly-qualify a generic type's
+        /// <c>Activity.AddException</c> writes. It does not assembly-qualify a generic type's
         /// arguments, so for a generic exception type it differs from <see cref="ErrorType"/>'s <c>Type.FullName</c>.
         /// OpenTelemetry semantic convention <c>exception.type</c> (registry: exception, Stable, semconv v1.30.0).
         /// </summary>

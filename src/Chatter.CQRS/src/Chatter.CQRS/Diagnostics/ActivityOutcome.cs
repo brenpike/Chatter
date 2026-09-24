@@ -69,23 +69,6 @@ namespace Chatter.CQRS.Diagnostics
         /// <returns>The fully qualified exception type name, or <c>null</c> when <paramref name="exception"/> is <c>null</c>.</returns>
         public static string ResolveErrorType(Exception exception) => exception?.GetType().FullName;
 
-#if NET9_0_OR_GREATER
         private static void AddExceptionEvent(Activity activity, Exception exception) => activity.AddException(exception);
-#else
-        private static void AddExceptionEvent(Activity activity, Exception exception)
-        {
-            // Type.ToString(), not Type.FullName: this is the spelling Activity.AddException writes on net9.0+,
-            // and the two differ for a generic exception type. Matching it keeps exception.type identical on
-            // every target framework.
-            var exceptionTags = new ActivityTagsCollection
-            {
-                { ChatterTelemetryTags.ExceptionType, exception.GetType().ToString() },
-                { ChatterTelemetryTags.ExceptionMessage, exception.Message },
-                { ChatterTelemetryTags.ExceptionStackTrace, exception.ToString() }
-            };
-
-            activity.AddEvent(new ActivityEvent(ChatterTelemetryTags.ExceptionEventName, tags: exceptionTags));
-        }
-#endif
     }
 }

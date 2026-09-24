@@ -88,6 +88,13 @@ is present in `System.Diagnostics.DiagnosticSource.xml` under **both**
 Consequence: the emitting code compiles and behaves identically on both TFMs with no `#if`
 multi-targeting for the telemetry surface.
 
+**Amended 2026-09-24: the `net8.0` leg is gone.** The `net8.0` column of the table above, and the `net8.0`
+branch of `ActivityOutcome` described under D4's `exception.type` amendment, describe a target framework that
+#395 removed. The `net10.0` behaviour this ADR selected is now unconditional: `Activity.AddException` writes
+the exception event on every build, and the duration histograms' bucket-boundary advice, likewise
+`net10.0`-only until now, is applied on every build too. The history above is left as written; see ADR-0038 for the decision to single-target
+`net10.0`.
+
 ### D2 — The shared diagnostics surface lives in `Chatter.CQRS`, and it is public
 
 All eight other packages reach `Chatter.CQRS` through this verified `ProjectReference` chain:

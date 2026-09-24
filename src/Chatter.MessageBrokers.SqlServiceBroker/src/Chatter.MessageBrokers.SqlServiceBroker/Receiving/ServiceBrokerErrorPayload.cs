@@ -256,12 +256,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         // glyph and cannot forge a log record. Refusing it was considered and rejected: it is a legal
         // character, and the repair path that used to manufacture one no longer exists.
         //
-        // RES-B: UnicodeCategory tables are supplied by the runtime, so a code point newly assigned between
-        // net8.0 and net10.0 may print on one target framework and become a space on the other. Left as a
+        // RES-B: UnicodeCategory tables are supplied by the runtime, so a code point newly assigned in a later
+        // .NET runtime's tables may print on that runtime and become a space on an earlier one. Left as a
         // recorded residual — the divergence is cosmetic, and the categories that decide SAFETY (Control,
-        // Format, PrivateUse, LineSeparator, ParagraphSeparator) are stable across both. Pinning a
-        // private category table was considered and rejected: it re-opens the enumeration this allowlist
-        // replaced. Tests must therefore use category-stable code points only.
+        // Format, PrivateUse, LineSeparator, ParagraphSeparator) are stable across the .NET 8 and .NET 10
+        // runtimes. Pinning a private category table was considered and rejected: it re-opens the enumeration
+        // this allowlist replaced. Tests must therefore use category-stable code points only.
         private static bool IsPrinting(Rune rune)
         {
             switch (Rune.GetUnicodeCategory(rune))

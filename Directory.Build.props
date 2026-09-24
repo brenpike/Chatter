@@ -8,10 +8,12 @@
   <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
     <CoverletOutputFormat>cobertura</CoverletOutputFormat>
     <!-- coverlet 10.0.1 with an explicit (non-trailing-slash) filename inserts
-         '.$(TargetFramework)' before the final '.' segment of the supplied filename.
-         Supplying '<ProjectName>.cobertura.xml' therefore yields a unique-per-project,
-         unique-per-TFM file: artifacts/coverage/<ProjectName>.cobertura.<TFM>.xml
-         (empirically verified). Do NOT add $(TargetFramework) here — coverlet adds it. -->
+         '.$(TargetFramework)' before the final '.' segment ONLY when the project
+         multi-targets. Now that every project single-targets net10.0, supplying
+         '<ProjectName>.cobertura.xml' yields exactly that name, with no TFM segment:
+         artifacts/coverage/<ProjectName>.cobertura.xml (empirically verified). Do NOT
+         add $(TargetFramework) here — the per-project name is already unique, and CI's
+         aggregate-coverage glob in .github/workflows/ci.yml matches this exact shape. -->
     <CoverletOutput>$(MSBuildThisFileDirectory)artifacts/coverage/$(MSBuildProjectName).cobertura.xml</CoverletOutput>
     <ExcludeByAttribute>GeneratedCodeAttribute;CompilerGeneratedAttribute;ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
     <Exclude>[*.Tests]*;[Chatter.Testing.Core]*</Exclude>

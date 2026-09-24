@@ -10,10 +10,10 @@ using Xunit;
 namespace Chatter.CQRS.Tests.Diagnostics
 {
     /// <summary>
-    /// Pins ONE canonical spelling of <c>exception.type</c> across both target frameworks. A generic exception
-    /// type is what makes the assertion meaningful: for a non-generic type every candidate spelling renders
-    /// identically, so only a generic probe can tell the net8.0 hand-rolled event apart from the net9.0+ event
-    /// the BCL writes through <c>Activity.AddException</c>.
+    /// Pins ONE canonical spelling of <c>exception.type</c>: <c>Type.ToString()</c>, the spelling the BCL writes
+    /// through <c>Activity.AddException</c>. A generic exception type is what makes the assertion meaningful: for
+    /// a non-generic type every candidate spelling renders identically, so only a generic probe can tell
+    /// <c>Type.ToString()</c> apart from <c>Type.FullName</c>.
     /// </summary>
     [Collection(DiagnosticsCollection.Name)]
     public class WhenAGenericExceptionIsRecorded : IDisposable

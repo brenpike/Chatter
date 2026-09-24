@@ -347,23 +347,23 @@ Every row below states when its signal is emitted: a blank condition cell is a d
 | `error.type` | `dispatch` | The fully qualified exception type name | Failure only — when the dispatch threw | OpenTelemetry semantic convention |
 | Status — the span's own status field, not a tag | `dispatch` | `Error`, with the exception's message as the status description | Failure only — when the dispatch threw | `Activity.SetStatus`, .NET base class library |
 
-The `exception` event carries the same name **and the same default attribute values** on both target frameworks. Which code writes them still differs — on `net8.0` Chatter populates the attributes itself, on `net10.0` the .NET base class library's `Activity.AddException` does — so the table below states one canonical value per attribute rather than one value per target framework.
+The `exception` event and its attributes are written by the .NET base class library's `Activity.AddException`.
 
-`exception.type` carries `Type.ToString()`, the spelling `Activity.AddException` writes, which does not assembly-qualify a generic type's arguments. `error.type` deliberately keeps `Type.FullName`, which does: that value is already identical on both target frameworks and is the one consumer dashboards key on, so moving it would be a larger telemetry break than the one being fixed. For a **generic** exception type the two attributes therefore carry different strings by design — `exception.type` reads ``Acme.Ordering.NotFound`1[System.String]`` where `error.type` reads ``Acme.Ordering.NotFound`1[[System.String, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]``. For a non-generic exception type they are identical.
+`exception.type` carries `Type.ToString()`, the spelling `Activity.AddException` writes, which does not assembly-qualify a generic type's arguments. `error.type` deliberately keeps `Type.FullName`, which does: that value is the one consumer dashboards key on, so moving it would be a larger telemetry break than the one being fixed. For a **generic** exception type the two attributes therefore carry different strings by design — `exception.type` reads ``Acme.Ordering.NotFound`1[System.String]`` where `error.type` reads ``Acme.Ordering.NotFound`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]``. For a non-generic exception type they are identical.
 
-One `net10.0`-only behaviour is **not** emulated and cannot be. On `net9.0` and later, `Activity.AddException` first notifies an `ActivityListener.ExceptionRecorder` callback registered by a subscribed listener and lets that callback supply or override the exception tags before the event is added; `net8.0` has no such API and this package does not grow one for it. A consumer that registers an `ExceptionRecorder` therefore still sees different behaviour per target framework even though the default attribute values now match — `net10.0` simply has the richer surface. Every value in the table below is therefore the **default**: what Chatter emits when no `ExceptionRecorder` supplies or overrides it. Register one and any of the three attributes can carry whatever that callback writes on `net10.0`, while `net8.0`, having no such callback, keeps the default.
+`Activity.AddException` first notifies an `ActivityListener.ExceptionRecorder` callback registered by a subscribed listener and lets that callback supply or override the exception tags before the event is added. Every value in the table below is therefore the **default**: what Chatter emits when no `ExceptionRecorder` supplies or overrides it. Register one and any of the three attributes can carry whatever that callback writes.
 
 | Event | Span | Attributes | Emitted |
 | --- | --- | --- | --- |
-| `exception` | `dispatch` | `exception.type` — the exception type rendered by `Type.ToString()`, the same **default** value on both target frameworks; generic type arguments are not assembly-qualified, so for a generic exception type this differs from `error.type` | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
-| `exception` | `dispatch` | `exception.message` — `Exception.Message`, the same **default** value on both target frameworks | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
-| `exception` | `dispatch` | `exception.stacktrace` — the stringified exception, carrying its type, message and stack trace, the same **default** value on both target frameworks | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
+| `exception` | `dispatch` | `exception.type` — the exception type rendered by `Type.ToString()`; generic type arguments are not assembly-qualified, so for a generic exception type this differs from `error.type` | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
+| `exception` | `dispatch` | `exception.message` — `Exception.Message` | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
+| `exception` | `dispatch` | `exception.stacktrace` — the stringified exception, carrying its type, message and stack trace | Failure only, and only when the .NET `ActivityListener` requested all data (`Activity.IsAllDataRequested`) |
 
 **Metrics.**
 
 | Instrument | Type | Unit | Advised buckets | Records | Recorded when |
 | --- | --- | --- | --- | --- | --- |
-| `chatter.cqrs.dispatch.duration` | `Histogram<double>` | `s` (seconds) | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10` — published as instrument advice on `net10.0` only; on `net8.0` the instrument carries none. See **Histogram bucket boundaries** below. | Elapsed time of one Command or Event dispatch, measured from before the span is started until the handler — or, for an Event, the last handler — returns or throws | Once per dispatch, on success and on failure alike, and only while the instrument itself is enabled on a .NET `MeterListener`; a dispatch that ran with diagnostics off records nothing |
+| `chatter.cqrs.dispatch.duration` | `Histogram<double>` | `s` (seconds) | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10` — see **Histogram bucket boundaries** below. | Elapsed time of one Command or Event dispatch, measured from before the span is started until the handler — or, for an Event, the last handler — returns or throws | Once per dispatch, on success and on failure alike, and only while the instrument itself is enabled on a .NET `MeterListener`; a dispatch that ran with diagnostics off records nothing |
 
 | Attribute | Instruments | Value | Emitted |
 | --- | --- | --- | --- |
@@ -379,9 +379,7 @@ Query dispatch is not instrumented.
 
 **They are advice, not a setting.** The boundaries are published as instrument *advice* — a **default** that an application's own view **overrides**. An application that already registers a view for `chatter.cqrs.dispatch.duration` keeps winning exactly as it did before; nothing it configured changes. Advice is the right layer for this precisely because it cannot take that choice away from the application.
 
-**Advice is published on `net10.0` only.** The base class library type that carries instrument advice does not exist in the `net8.0` shared framework, and this package takes no package dependency to reach it. On `net8.0` the instrument therefore ships with no advice at all, and the collector falls back to its own millisecond-sized defaults.
-
-**On `net8.0`, configure the equivalent view in your own application.** `AddView` and `ExplicitBucketHistogramConfiguration` are `OpenTelemetry.Metrics` types that come from *your* application's OpenTelemetry packages — this package still takes **no dependency on any `OpenTelemetry.*` NuGet package**, and the snippet below adds none to it:
+**To choose other boundaries, register a view in your own application**, starting from the published set below. `AddView` and `ExplicitBucketHistogramConfiguration` are `OpenTelemetry.Metrics` types that come from *your* application's OpenTelemetry packages — this package still takes **no dependency on any `OpenTelemetry.*` NuGet package**, and the snippet below adds none to it:
 
 ```csharp
 using OpenTelemetry.Metrics;
@@ -394,8 +392,6 @@ services.AddOpenTelemetry()
                 Boundaries = new double[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 }
             }));
 ```
-
-The same view is harmless on `net10.0`: it overrides advice that already carries these boundaries. This `net8.0` caveat retires when `net8.0` is dropped and the package single-targets `net10.0` after .NET 8 reaches end of life on 2026-11-10 — tracked in [issue #395](https://github.com/brenpike/Chatter/issues/395).
 
 ### Off means off
 

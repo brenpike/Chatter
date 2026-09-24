@@ -89,7 +89,7 @@ Options are modeled by `SqlServiceBrokerOptions` and assembled with `SqlServiceB
 
 `SqlServiceBrokerOptionsBuilder.Build()` throws if no options were configured, if the connection string is null/whitespace, or if the message body type is missing.
 
-Recovery (retry and circuit breaker) is supplied automatically: `AddSqlServiceBroker` registers `SqlRetryExceptionPredicatesProvider` and `SqlCircuitBreakerExceptionPredicatesProvider`, which classify SQL failures as transient (`SqlException.IsTransient` on net8.0+ and the package's own list of known transient error numbers) so the core Chatter recovery pipeline retries or trips the breaker appropriately.
+Recovery (retry and circuit breaker) is supplied automatically: `AddSqlServiceBroker` registers `SqlRetryExceptionPredicatesProvider` and `SqlCircuitBreakerExceptionPredicatesProvider`, which classify SQL failures as transient (`SqlException.IsTransient` and the package's own list of known transient error numbers) so the core Chatter recovery pipeline retries or trips the breaker appropriately.
 
 Errors `208` "invalid object name" and `102` "incorrect syntax" are **terminal**, not transient: both the retry and circuit-breaker exception predicate providers exclude those numbers, and the receiver surfaces them as a `CriticalReceiverException` naming the configured queue — a host started before its queue exists stops instead of retrying forever. See [ADR-0037](https://github.com/brenpike/Chatter/blob/master/docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md).
 

@@ -37,17 +37,8 @@ namespace Chatter.MessageBrokers.Tests.Diagnostics
 
                 var durationHistogram = instrument.Should().BeAssignableTo<Instrument<double>>().Subject;
 
-#if NET9_0_OR_GREATER
                 durationHistogram.Advice.Should().NotBeNull();
                 durationHistogram.Advice.HistogramBucketBoundaries.Should().Equal(new[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 });
-#else
-                // The net8.0 shared framework carries no InstrumentAdvice<T> and no Instrument<T>.Advice, so there
-                // is no advice to publish on this leg. This pins a BCL FACT, not a Chatter behaviour, and is
-                // deliberately weak for that reason - do not read it as a behavioural guarantee. Issue #395
-                // ([Epic] Drop net8.0 and single-target net10.0 after .NET 8 EOL 2026-11-10) is the trigger to
-                // delete BOTH the production #if and this assertion.
-                durationHistogram.GetType().GetProperty("Advice").Should().BeNull();
-#endif
             }
         }
     }
