@@ -32,6 +32,40 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingServiceBr
             result.Description.Should().NotContain("<Description>");
         }
 
+        // The projected code is RENDERED from an Int32 this code parsed, never copied from the peer's bytes, so
+        // a peer's spelling of a number cannot survive into a log.
+        [Theory]
+        [InlineData("-08470", "-8470")]
+        [InlineData("+5", "5")]
+        [InlineData("0001", "1")]
+        [InlineData("-0", "0")]
+        public void MustRenderTheCodeFromTheParsedInteger(string peerCode, string projectedCode)
+        {
+            var result = ServiceBrokerErrorPayload.Describe(ErrorBody(peerCode, "x"));
+
+            result.Code.Should().Be(projectedCode);
+        }
+
+        // A Code that is not an Int32 is not a Service Broker error code, so the whole payload is unreadable
+        // rather than partly projected. The leading- and trailing-space rows pin that only a sign is tolerated.
+        [Theory]
+        [InlineData("abc")]
+        [InlineData("1.0")]
+        [InlineData("0x10")]
+        [InlineData("")]
+        [InlineData(" 1")]
+        [InlineData("1 ")]
+        [InlineData("2147483648")]
+        [InlineData("-2147483649")]
+        [InlineData("99999999999999999999")]
+        public void MustReturnTheUnreadableSentinelForACodeThatIsNotAnInt32(string peerCode)
+        {
+            var result = ServiceBrokerErrorPayload.Describe(ErrorBody(peerCode, "x"));
+
+            result.Code.Should().Be(ServiceBrokerErrorPayload.UnreadableErrorPayloadSentinel);
+            result.Description.Should().Be(ServiceBrokerErrorPayload.UnreadableErrorPayloadSentinel);
+        }
+
         // A live Error body is UTF-16LE WITH a byte order mark, which XmlReader rejects unless it is stripped
         // before the parse.
         [Fact]
@@ -82,9 +116,9 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingServiceBr
             result.Description.Should().Be(ServiceBrokerErrorPayload.UnreadableErrorPayloadSentinel);
         }
 
-        // Only the documented Error document projects a value. Everything else - a foreign root, the right
-        // root in the wrong namespace (or none), junk bytes, a missing child, or markup inside a child - is
-        // refused rather than echoed.
+        // A value is produced only from an Error-namespace Code and Description. Everything else - a foreign
+        // root, the right root in the wrong namespace (or none), junk bytes, a missing child, or markup inside
+        // a child - yields nothing to produce from and is refused rather than echoed.
         [Theory]
         [InlineData("<Whatever>surprise</Whatever>")]
         [InlineData("<Error><Code>1</Code><Description>surprise</Description></Error>")]
@@ -225,17 +259,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingServiceBr
             result.Description.Should().HaveLength(
                 ServiceBrokerErrorPayload.MaxDescriptionLength + ServiceBrokerErrorPayload.TruncationMarker.Length);
             result.Description.Should().EndWith(ServiceBrokerErrorPayload.TruncationMarker);
-        }
-
-        [Fact]
-        public void MustTruncateACodeLongerThanTheCodeBound()
-        {
-            var result = ServiceBrokerErrorPayload.Describe(
-                ErrorBody(new string('9', ServiceBrokerErrorPayload.MaxCodeLength + 1), "x"));
-
-            result.Code.Should().HaveLength(
-                ServiceBrokerErrorPayload.MaxCodeLength + ServiceBrokerErrorPayload.TruncationMarker.Length);
-            result.Code.Should().EndWith(ServiceBrokerErrorPayload.TruncationMarker);
         }
 
         private static byte[] ErrorBody(string code, string description)

@@ -52,7 +52,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         // green, because a lenient decode yields a U+FFFD the allowlist parse refuses anyway (verified)
         // (ADR-0027).
         //
-        // Service Broker Error bodies are the documented <Error><Code/><Description/></Error> XML, encoded
+        // NOTE: Service Broker Error bodies are the documented <Error><Code/><Description/></Error> XML, encoded
         // UTF-16LE and prefixed with a byte order mark (the bytes FF FE 3C 00, observed live). Decoding keeps
         // that mark as a leading U+FEFF — the encoding's byteOrderMark constructor argument governs
         // GetPreamble only, never the decode — and XmlReader reading an already-decoded string rejects it, so
@@ -93,15 +93,25 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private static ErrorDescription Unreadable()
             => ErrorDescription.Sanitized(UnreadableErrorPayloadSentinel, UnreadableErrorPayloadSentinel);
 
-        // INVARIANT: no document type definition is ever processed and no external resource is ever resolved —
-        // DtdProcessing.Prohibit makes a DTD an XmlException and XmlResolver = null denies resolution. Pinned by
-        // MustReturnTheUnreadableSentinelForADocumentThatDeclaresADtd, which switching DtdProcessing to Parse
-        // reddens (verified) (ADR-0027).
+        // INVARIANT: no document type definition is ever processed — DtdProcessing.Prohibit makes a DTD an
+        // XmlException. Pinned by MustReturnTheUnreadableSentinelForADocumentThatDeclaresADtd, which switching
+        // DtdProcessing to Parse reddens (verified). XmlResolver = null denies external resolution, but no test
+        // pins it: the DTD is already refused before a resolver could be consulted, so nulling the setting out
+        // reddens nothing (verified) (ADR-0027).
         //
-        // INVARIANT: only the documented Error document projects a value — a positive allowlist on the root
-        // element's local name AND namespace, then on the Code and Description children, so anything else is
-        // unrepresentable rather than echoed. Pinned by MustReturnTheUnreadableSentinelForANonErrorDocument,
-        // which dropping the NamespaceURI half of the allowlist reddens (verified) (ADR-0027).
+        // INVARIANT: every value this projects is one this code PRODUCES, never one it copies — Code is the
+        // invariant-culture rendering of an Int32 parsed from an Error-namespace <Code>, and Description is an
+        // Error-namespace <Description>'s content after the printing-category allowlist and the 3000 bound.
+        // Pinned by MustRenderTheCodeFromTheParsedInteger, which projecting the raw <Code> content instead of
+        // the parsed Int32 reddens; by MustReturnTheUnreadableSentinelForACodeThatIsNotAnInt32, which accepting
+        // raw content reddens; and by MustReturnTheUnreadableSentinelForANonErrorDocument, which dropping the
+        // NamespaceURI half of the element allowlist reddens (all verified) (ADR-0027).
+        //
+        // NOTE: the reader deliberately tolerates the rest of the document — trailing content after </Error>,
+        // attributes, unknown children, duplicate children (last one wins) and repeated leading byte order
+        // marks are all accepted. No test pins that tolerance. It is safe because nothing outside the two
+        // allowlisted elements is projected; why an Error body is read at all is in
+        // docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md.
         private static bool TryReadErrorDocument(string document, out string code, out string description)
         {
             code = null;
@@ -155,7 +165,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 // so each arm continues without advancing again.
                 if (IsErrorNamespaceElement(reader, CodeElementName))
                 {
-                    code = reader.ReadElementContentAsString();
+                    var rawCode = reader.ReadElementContentAsString();
+                    code = int.TryParse(rawCode, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var parsedCode)
+                        ? parsedCode.ToString(CultureInfo.InvariantCulture)
+                        : null;
                     continue;
                 }
 
@@ -176,8 +189,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         // the IsPrinting allowlist collapses to a single space. Pinned by
         // MustNeutraliseEveryNonPrintingCharacterInTheDescription and MustNeutraliseControlCharactersInTheDescription,
         // which adding UnicodeCategory.Control to the allowlist reddens, and by
-        // MustTruncateADescriptionLongerThanTheDescriptionBound and MustTruncateACodeLongerThanTheCodeBound;
-        // returning value unchanged reddens those four (verified) (ADR-0027).
+        // MustTruncateADescriptionLongerThanTheDescriptionBound; returning value unchanged reddens those three
+        // (verified) (ADR-0027).
+        //
+        // MaxCodeLength is unreachable by construction: the only codes that reach Sanitize are an Int32 rendered
+        // in the invariant culture (at most 11 characters) and the compile-time sentinel constants, all shorter
+        // than the bound. No test pins the code bound.
         //
         // INVARIANT: classification is per RUNE, so a legitimate surrogate pair is judged as the code point it
         // encodes rather than as two lone surrogates. Pinned by MustKeepPrintableTextIncludingNonBmpCharacters,
