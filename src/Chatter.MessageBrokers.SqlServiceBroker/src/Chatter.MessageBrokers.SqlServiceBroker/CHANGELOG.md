@@ -36,10 +36,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 - **A discarded message's conversation is now ended, so errored conversation endpoints no longer accumulate in
   `sys.conversation_endpoints`.** Every discard of a received message (a Service Broker `Error`, a message of a type the
-  receiver does not accept, or a Chatter message with no body) now issues `END CONVERSATION` before the RECEIVE
-  commits — in the same transaction under a transactional mode; separately under `TransactionMode.None`, the same
-  way ack, nack and deadletter already behave. Previously the RECEIVE committed and the endpoint was left open
-  (or in the error state) indefinitely. **This is a breaking change** for a deployment where a non-Chatter application shares the queue and
+  receiver does not accept, or a Chatter message with no body) now issues `END CONVERSATION` as part of settling it —
+  on the RECEIVE's own transaction under a transactional mode, so the two commit together; under
+  `TransactionMode.None` there is no receive transaction, so the RECEIVE has already autocommitted and the
+  `END CONVERSATION` follows it as a separate autocommit, the same way ack, nack and deadletter already behave.
+  Previously the RECEIVE committed and the endpoint was left open (or in the error state) indefinitely. **This is a
+  breaking change** for a deployment where a non-Chatter application shares the queue and
   keeps long-lived multi-message dialogs: such a dialog is now ended when Chatter discards one of its messages
   (previously that message was silently dropped). (#357)
 
