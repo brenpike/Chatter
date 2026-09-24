@@ -266,8 +266,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         // The largest interval Task.Delay accepts. Measured rather than quoted: Task.Delay takes
         // TimeSpan.FromMilliseconds(uint.MaxValue - 1) and throws ArgumentOutOfRangeException(paramName: "delay")
-        // one millisecond above it, identically on net8.0 and net10.0 (observed), so one constant serves both
-        // targets and no TFM conditional is needed.
+        // one millisecond above it, identically on net8.0 and net10.0 (observed).
         private static readonly TimeSpan MaxSchedulablePurgeInterval = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
 
         // INVARIANT: this door admits a span only from the range the ONE operation that consumes it can actually

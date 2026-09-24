@@ -57,7 +57,7 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Configuration.UsingReliabilit
         /// convert it, so it throws out of <c>Build()</c> before any runtime sink sees the value. Recorded
         /// here so the distinction between a conversion failure and the absent semantic validation issue
         /// #423 tracks is pinned rather than only described in prose. The message is asserted only for the
-        /// KEY PATH — the framework words the rest differently on net8.0 and net10.0.
+        /// KEY PATH, not the framework's wording of the rest.
         /// </summary>
         [Fact]
         public void MustFailInTheBinderNamingTheKeyWhenAConfiguredValueIsNotConvertible()

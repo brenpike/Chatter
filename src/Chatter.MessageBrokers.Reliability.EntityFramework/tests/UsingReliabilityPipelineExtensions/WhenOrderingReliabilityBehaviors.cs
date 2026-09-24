@@ -188,9 +188,8 @@ namespace Chatter.MessageBrokers.Reliability.EntityFramework.Tests.UsingReliabil
         // Scope, stated plainly. This test is GREEN against the code as it stood before the IsKeyedService
         // guard, because the Microsoft.Extensions.DependencyInjection.Abstractions assembly actually LOADED
         // here returns null from ServiceDescriptor.ImplementationType for a keyed descriptor. Read the LOADED
-        // assembly for this, not the lock file: packages.lock.json records resolved 8.0.2 on the net8.0 leg,
-        // but the assembly that package ships carries informational version 8.0.10, and the net10.0 leg loads
-        // 10.0.11. Both of those return null. The throwing form - 'if (IsKeyedService) ThrowKeyedDescriptor();'
+        // assembly for this, not the lock file: the net10.0 leg loads 10.0.11, which returns null. The throwing
+        // form - 'if (IsKeyedService) ThrowKeyedDescriptor();'
         // - is what the dotnet/runtime v8.0.0, v8.0.2 AND v8.0.5 sources all have; it became
         // 'IsKeyedService ? null : _implementationType' somewhere between 8.0.5 and 8.0.10. The vulnerable
         // window is therefore every version BEFORE ~8.0.10, not 8.0.0 alone. Consumers bind that assembly from

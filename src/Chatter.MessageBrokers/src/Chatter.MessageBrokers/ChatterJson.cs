@@ -86,7 +86,7 @@ namespace Chatter.MessageBrokers
                 // collection, silently dropping data on both JsonBodyConverter and JsonUnicodeBodyConverter.
                 // Populate makes STJ add into the existing initialized instance instead of replacing it,
                 // restoring Newtonsoft's behavior. DESERIALIZE-side only — it does NOT change serialized
-                // wire bytes, so golden byte-parity tests stay byte-identical. .NET 8+ API (net8.0 + net10.0).
+                // wire bytes, so golden byte-parity tests stay byte-identical. .NET 8+ API.
                 PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate,
 
                 // ---- Newtonsoft read-leniency parity ----
