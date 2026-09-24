@@ -149,16 +149,20 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 case ClassificationOutcome.DiscardNull:
                     // Empty RECEIVE (null message from an idle WAITFOR timeout): settle once and continue the loop.
                     // There is no message, so there is no conversation to end.
-                    await DiscardMessageAsync(session, message, outcome, "Discarding null message", cancellationToken);
+                    await DiscardMessageAsync(session, message, outcome, "Discarding null message", Array.Empty<object>(), cancellationToken);
                     return null;
                 case ClassificationOutcome.EndDialog:
                     await AckEndDialogAsync(session, message.ConvHandle, cancellationToken);
                     return null;
                 case ClassificationOutcome.DiscardErroredConversation:
+                    // The code and description are peer-controlled text, so they are logged as their own
+                    // structured parameters rather than interpolated into the template.
+                    var errorPayload = ServiceBrokerErrorPayload.Describe(message.Body);
                     await DiscardMessageAsync(session
                         , message
                         , outcome
-                        , $"Ending errored conversation '{message.ConvHandle}' on service '{message.ServiceName}'. Service Broker reported: {ServiceBrokerErrorPayload.Describe(message.Body)}"
+                        , "Ending errored conversation '{ConversationHandle}' on service '{ServiceName}'. Service Broker reported code {ServiceBrokerErrorCode}: {ServiceBrokerErrorDescription}"
+                        , new object[] { message.ConvHandle, message.ServiceName, errorPayload.Code, errorPayload.Description }
                         , cancellationToken);
                     return null;
                 case ClassificationOutcome.DiscardWrongType:
@@ -166,6 +170,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                         , message
                         , outcome
                         , $"Discarding message of type '{message.MessageTypeName}'. Only messages of type '{ServicesMessageTypes.DefaultType}' or '{ServicesMessageTypes.ChatterBrokeredMessageType}' will be received."
+                        , Array.Empty<object>()
                         , cancellationToken);
                     return null;
                 case ClassificationOutcome.DiscardNullBody:
@@ -173,6 +178,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                         , message
                         , outcome
                         , $"Discarding message of type '{message.MessageTypeName}' with null message body"
+                        , Array.Empty<object>()
                         , cancellationToken);
                     return null;
                 case ClassificationOutcome.DispatchChatterBrokeredMessage:
@@ -299,7 +305,8 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private async Task DiscardMessageAsync(ReceiveSession session,
                                                ReceivedMessage message,
                                                ClassificationOutcome outcome,
-                                               string discardMessage,
+                                               string discardMessageTemplate,
+                                               object[] discardMessageArgs,
                                                CancellationToken cancellationToken)
         {
             try
@@ -320,7 +327,7 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 var discardLogLevel = outcome == ClassificationOutcome.DiscardErroredConversation
                     ? LogLevel.Error
                     : LogLevel.Trace;
-                _logger.Log(discardLogLevel, discardMessage);
+                _logger.Log(discardLogLevel, discardMessageTemplate, discardMessageArgs);
             }
             finally
             {
