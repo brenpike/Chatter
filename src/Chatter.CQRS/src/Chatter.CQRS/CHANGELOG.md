@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.19.1] - 2026-09-24
+
+### Fixed
+
+- `ThrowOnDuplicateCommandHandlers()` now checks the assemblies `AddChatterCqrs` actually scanned, instead of re-applying the assembly source filter. Previously, in namespace-selector or whole-AppDomain mode, the second application re-read the loaded assemblies and could report handlers that were never registered, failing composition spuriously. A builder not created by `AddChatterCqrs` (for example one built by calling `ChatterBuilder.Create` directly) still re-applies the filter. ADR-0039 records the decision (#468).
+
 ## [0.19.0] - 2026-09-24
 
 ### Changed
