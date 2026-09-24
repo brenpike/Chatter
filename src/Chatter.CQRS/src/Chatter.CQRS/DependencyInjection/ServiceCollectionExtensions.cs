@@ -98,16 +98,31 @@ namespace Chatter.CQRS.DependencyInjection
 
             services.Scan(s =>
                    s.FromAssemblies(openGenericBehaviorType.Assembly)
-                       .AddClasses(c => c.AssignableTo(openGenericBehaviorType))
+                       // INVARIANT: this scan and the three handler scans in CqrsExtensions register non-public
+                       // classes, because consumer handlers and behaviors are often internal and Scrutor >= 6.0.1
+                       // defaults AddClasses to publicOnly: true, which would silently drop them.
+                       // Oracle: MustRegisterANonPublicOpenGenericBehavior, MustRegisterAndReportNonPublicCompetingHandlers
+                       // and, in the Azure Service Bus tests, MustRegisterTheInternalTransactionScopeSupressionBehavior;
+                       // the event and query scans are pinned by WhenAddingEventHandlers.MustRegisterEventHandler and
+                       // WhenAddingQueryHandlers.MustRegisterAllQueryHandlers, whose fixture handlers are private.
+                       // Mutation that reddens them: dropping the publicOnly: false argument (or setting it true) at
+                       // all four sites (observed under Scrutor 3.3.0 with publicOnly: true, and under 7.0.0 by
+                       // dropping the argument).
+                       .AddClasses(c => c.AssignableTo(openGenericBehaviorType), publicOnly: false)
                        .UsingRegistrationStrategy(RegistrationStrategy.Replace(ReplacementBehavior.ImplementationType))
                        // INVARIANT: for a scanned class that declares ICommandBehavior<> at a single closing, this
                        // selector emits at most one service type, so Replace(ReplacementBehavior.ImplementationType)
                        // cannot delete a descriptor this same scan just added for that class. A collateral interface
                        // on the class, generic or not, is not a service type here, in either declaration order.
-                       // Oracle: MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredAfterIt,
-                       // MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredBeforeIt and
-                       // MustNotRegisterABehaviorUnderANonGenericCollateralInterface.
-                       // Mutation that reddens them: restoring .AsImplementedInterfaces() in place of this .As(...).
+                       // Oracle: MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredAfterIt
+                       // and MustNotRegisterABehaviorUnderANonGenericCollateralInterface.
+                       // Mutation that reddens them: restoring .AsImplementedInterfaces() in place of this .As(...)
+                       // (observed under Scrutor 7.0.0).
+                       // Declared-before order:
+                       // MustKeepTheCommandBehaviorRegistrationWhenAGenericCollateralInterfaceIsDeclaredBeforeIt stays
+                       // green under that mutation, because the collateral descriptor is added first and Replace deletes
+                       // it when the ICommandBehavior<> descriptor lands, leaving the correct end state. It reddens only
+                       // if the UsingRegistrationStrategy line is also deleted (observed under 7.0.0).
                        // Residual, unpinned: a class implementing ICommandBehavior<> at two different closings still
                        // yields two service types and still self-deletes all but the last. That is pre-existing and no
                        // test pins it. Replace(ReplacementBehavior.ServiceType) is not the escape, because distinct
@@ -115,10 +130,15 @@ namespace Chatter.CQRS.DependencyInjection
                        // Residual, unpinned: "at most one" is none for a scanned class whose own generic arity differs
                        // from ICommandBehavior<>'s - e.g. Behavior<TMessage, TDependency> : ICommandBehavior<TMessage>,
                        // which passes this method's validation and matches the scan, yet registers nothing. Inherited,
-                       // not introduced: .AsImplementedInterfaces() dropped that same interface for the same reason,
-                       // because the arity gate here reproduces Scrutor's own. No test pins it. Rejecting such a type
-                       // at composition time would be a new breaking failure for callers it silently no-ops for today,
-                       // and supporting the mapping is a separate feature; both are product decisions, not taken here.
+                       // not introduced: .AsImplementedInterfaces() drops that same interface for the same reason. The
+                       // arity gate here reproduced Scrutor 3.3.0's; Scrutor 7.0.0's skips the comparison when the
+                       // interface has no open generic parameters, so for Behavior<TFirst, TSecond> :
+                       // ICommandBehavior<SomeCommand> .AsImplementedInterfaces() maps ICommandBehavior<> onto
+                       // Behavior<,> while this gate selects nothing (observed with a scratch probe under 7.0.0). The
+                       // shipped .As(...) path applies only this gate, so the Scrutor change does not reach it. No test
+                       // pins either case. Rejecting such a type at composition time would be a new breaking failure
+                       // for callers it silently no-ops for today, and supporting the mapping is a separate feature;
+                       // both are product decisions, not taken here.
                        .As(behavior => GetCommandBehaviorServiceTypes(behavior))
                        .WithTransientLifetime());
 

@@ -14,11 +14,35 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
     public class WhenAddingQueryHandlers : Testing.Core.Context
     {
         [Fact]
-        public void MustThrowIfDuplicateQueryHandlers()
+        public void MustThrowWhenTwoScannedHandlersHandleTheSameQuery()
         {
-            var assembly = New.Common().Assembly.WithTypes(typeof(FakeHandler), typeof(FakeHandler)).Creation;
+            // INVARIANT: the competing handler is scanned in its closed form so the open definition the test assembly
+            // itself carries is dropped by IsClosedHandlerType; a non-generic second FakeQuery handler makes every
+            // zero-arg AddChatterCqrs scan of this assembly throw under RegistrationStrategy.Throw. Oracle:
+            // WhenAddingChatterCqrs.MustRegisterHandlersFromLoadedAssembliesWhenNoAssembliesAreSupplied, observed red
+            // with DuplicateTypeRegistrationException when FakeCompetingHandler was non-generic.
+            var assembly = New.Common().Assembly.WithTypes(typeof(FakeHandler), typeof(FakeCompetingHandler<int>)).Creation;
             var sc = new ServiceCollection();
-            Assert.ThrowsAny<Exception>(() => sc.AddQueryHandlers(new Assembly[] { assembly }));
+
+            FluentActions.Invoking(() => sc.AddQueryHandlers(new Assembly[] { assembly })).Should().Throw<InvalidOperationException>();
+        }
+
+        [Fact]
+        public void MustNotThrowForOneQueryHandlerReachableFromTwoScannedAssemblies()
+        {
+            // INVARIANT: characterization pin on Scrutor 7's type dedup. TypeSourceSelector.AddSelector collects the
+            // scanned types with types.ToHashSet(), so one handler type reachable from two scanned assemblies registers
+            // once and RegistrationStrategy.Throw sees no duplicate; under Scrutor 3.3.0 this scan threw. Oracle: this
+            // fact. Observed red by scanning each assembly in its own services.Scan call in
+            // CqrsExtensions.AddQueryHandlers (each selector dedups only its own types, so the second scan's Throw
+            // fires). A Scrutor version without type dedup also reddens it.
+            var first = New.Common().Assembly.WithTypes(typeof(FakeHandler)).Creation;
+            var second = New.Common().Assembly.WithTypes(typeof(FakeHandler)).Creation;
+            var sc = new ServiceCollection();
+
+            FluentActions.Invoking(() => sc.AddQueryHandlers(new[] { first, second })).Should().NotThrow();
+
+            sc.Count(sd => sd.ServiceType == typeof(IQueryHandler<FakeQuery, string>)).Should().Be(1);
         }
 
         [Fact]
@@ -140,6 +164,11 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         }
 
         private class FakeHandler : IQueryHandler<FakeQuery, string>
+        {
+            public Task<string> Handle(FakeQuery query, IQueryHandlerContext context) => throw new NotImplementedException();
+        }
+
+        private class FakeCompetingHandler<TUnused> : IQueryHandler<FakeQuery, string>
         {
             public Task<string> Handle(FakeQuery query, IQueryHandlerContext context) => throw new NotImplementedException();
         }

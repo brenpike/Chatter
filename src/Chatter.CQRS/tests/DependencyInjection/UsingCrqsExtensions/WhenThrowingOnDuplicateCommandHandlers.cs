@@ -136,8 +136,10 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
 
         /// <summary>
         /// Characterization pin, not a red-first test: the handler scan uses Scrutor's
-        /// <c>AddClasses(Action&lt;IImplementationTypeFilter&gt;)</c> overload, which scans with
-        /// <c>publicOnly: false</c>, so non-public handlers are registered and therefore reported.
+        /// <c>AddClasses(Action&lt;IImplementationTypeFilter&gt;, bool)</c> overload, passing
+        /// <c>publicOnly: false</c> explicitly (see the INVARIANT at
+        /// ServiceCollectionExtensions.RegisterBehaviorForAllCommands), so non-public handlers are
+        /// registered and therefore reported.
         /// Locks that ground truth so a Scrutor upgrade breaks this test instead of silently
         /// narrowing both the registration and the check.
         /// </summary>
@@ -149,7 +151,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             var chatterBuilder = services.AddChatterCqrs(Mock.Of<IConfiguration>(),
                                                           messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
 
-            typeof(FakeFirstCommandHandler).IsPublic.Should().BeFalse();
+            typeof(FakeFirstCommandHandler).IsVisible.Should().BeFalse();
             services.Should().ContainSingle(sd => sd.ServiceType == typeof(IMessageHandler<FakeCommand>))
                     .Which.ImplementationType.Should().Be(typeof(FakeSecondCommandHandler));
 
@@ -182,6 +184,18 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             chatterBuilder.ThrowOnDuplicateCommandHandlers();
 
             services.Should().Equal(descriptorsBeforeCheck);
+        }
+
+        [Fact]
+        public void MustDescribeTheScanOrderTheScanActuallyUses()
+        {
+            var chatterBuilder = AddChatterCqrsScanning(typeof(FakeFirstCommandHandler), typeof(FakeSecondCommandHandler));
+
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers())
+                         .Should().Throw<InvalidOperationException>()
+                         .Which.Message.Should().Contain("the enumeration order of each assembly's loadable types")
+                         .And.Contain("neither of which is specified")
+                         .And.NotContain("the order in which an assembly defines its types");
         }
 
         private static int PositionOf(string message, Type type)

@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.35.1] - 2026-09-24
+
+### Removed
+
+- The direct `Scrutor` 3.3.0 package reference, which this package never used. Scrutor still arrives through Chatter.CQRS (#394).
+
 ## [0.35.0] - 2026-09-24
 
 ### Changed

@@ -55,6 +55,17 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingServiceCollectionExtension
         }
 
         [Fact]
+        public void MustRegisterANonPublicOpenGenericBehavior()
+        {
+            var sc = new ServiceCollection();
+
+            sc.RegisterBehaviorForAllCommands(typeof(FakeCommandBehavior<>));
+
+            typeof(FakeCommandBehavior<>).IsVisible.Should().BeFalse();
+            sc.Should().ContainSingle(d => d.ServiceType == typeof(ICommandBehavior<>) && d.ImplementationType == typeof(FakeCommandBehavior<>));
+        }
+
+        [Fact]
         public void MustReplaceRegistrationsThatHaveSameImplementationTypeWithTransientLifetimeScope()
         {
             var sc = new ServiceCollection();

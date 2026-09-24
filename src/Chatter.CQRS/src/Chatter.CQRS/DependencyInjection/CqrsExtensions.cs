@@ -128,7 +128,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static string DescribeAmbiguousCommands(IReadOnlyList<KeyValuePair<Type, IReadOnlyList<Type>>> ambiguousCommands)
         {
-            var description = new StringBuilder("More than one command handler was found for the same command. Command handlers are registered using a replace strategy, so only the last handler scanned is registered, and the scan order is derived from assembly load order and the order in which an assembly defines its types, neither of which is specified.");
+            var description = new StringBuilder("More than one command handler was found for the same command. Command handlers are registered using a replace strategy, so only the last handler scanned is registered, and the scan order is derived from assembly load order and the enumeration order of each assembly's loadable types, which the scan collects into a set, neither of which is specified.");
 
             foreach (var ambiguousCommand in ambiguousCommands)
             {
@@ -163,8 +163,9 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
+                   // publicOnly: false - see the INVARIANT at ServiceCollectionExtensions.RegisterBehaviorForAllCommands.
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
-                        .Where(handler => IsValidMessageHandler(handler, typeof(IEvent))))
+                        .Where(handler => IsValidMessageHandler(handler, typeof(IEvent))), publicOnly: false)
                    .UsingRegistrationStrategy(RegistrationStrategy.Append)
                    .As(handler => handler.GetMessageHandlerInterfacesFor(typeof(IEvent)))
                    .WithTransientLifetime());
@@ -183,8 +184,9 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
+                   // publicOnly: false - see the INVARIANT at ServiceCollectionExtensions.RegisterBehaviorForAllCommands.
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
-                        .Where(handler => IsValidMessageHandler(handler, typeof(ICommand))))
+                        .Where(handler => IsValidMessageHandler(handler, typeof(ICommand))), publicOnly: false)
                    .UsingRegistrationStrategy(strategy)
                    .As(handler => handler.GetMessageHandlerInterfacesFor(typeof(ICommand)))
                    .WithTransientLifetime());
@@ -207,8 +209,9 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             services.Scan(s =>
                    s.FromAssemblies(assemblies)
+                       // publicOnly: false - see the INVARIANT at ServiceCollectionExtensions.RegisterBehaviorForAllCommands.
                        .AddClasses(c => c.AssignableTo(typeof(IQueryHandler<,>))
-                            .Where(handler => handler.IsClosedHandlerType()))
+                            .Where(handler => handler.IsClosedHandlerType()), publicOnly: false)
                        .UsingRegistrationStrategy(RegistrationStrategy.Throw)
                        .As(handler => handler.GetImplementedInterfacesThatMatchOpenGenericType(typeof(IQueryHandler<,>)))
                        .WithTransientLifetime());
