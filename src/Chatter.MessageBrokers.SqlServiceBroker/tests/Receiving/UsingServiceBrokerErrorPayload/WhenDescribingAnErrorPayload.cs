@@ -100,12 +100,32 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingServiceBr
             result.Description.Should().Be(ServiceBrokerErrorPayload.UnreadableErrorPayloadSentinel);
         }
 
-        // Encoding.Unicode.GetString does not throw on an odd-length body - it yields a replacement character -
-        // so the allowlist parse is what makes a half-decoded body harmless.
+        // An odd-length body cannot be well-formed UTF-16, so it is refused at the decode - the trailing byte is
+        // never half-decoded into a replacement character for the parse to judge.
         [Fact]
         public void MustReturnTheUnreadableSentinelForAnOddLengthBody()
         {
             var result = ServiceBrokerErrorPayload.Describe(new byte[] { 0x3C, 0x00, 0x45 });
+
+            result.Code.Should().Be(ServiceBrokerErrorPayload.UnreadableErrorPayloadSentinel);
+            result.Description.Should().Be(ServiceBrokerErrorPayload.UnreadableErrorPayloadSentinel);
+        }
+
+        // The decode REFUSES malformed UTF-16 rather than repairing it. An unpaired surrogate is not rewritten
+        // to U+FFFD and echoed, so a peer cannot have broken bytes projected as a replacement glyph.
+        [Fact]
+        public void MustReturnTheUnreadableSentinelForABodyWithInvalidUtf16()
+        {
+            var head = Encoding.Unicode.GetBytes(
+                "<Error xmlns='" + ErrorNamespace + "'><Code>1</Code><Description>a");
+            var unpairedHighSurrogate = new byte[] { 0x00, 0xD8 };
+            var tail = Encoding.Unicode.GetBytes("b</Description></Error>");
+            var body = new byte[head.Length + unpairedHighSurrogate.Length + tail.Length];
+            Buffer.BlockCopy(head, 0, body, 0, head.Length);
+            Buffer.BlockCopy(unpairedHighSurrogate, 0, body, head.Length, unpairedHighSurrogate.Length);
+            Buffer.BlockCopy(tail, 0, body, head.Length + unpairedHighSurrogate.Length, tail.Length);
+
+            var result = ServiceBrokerErrorPayload.Describe(body);
 
             result.Code.Should().Be(ServiceBrokerErrorPayload.UnreadableErrorPayloadSentinel);
             result.Description.Should().Be(ServiceBrokerErrorPayload.UnreadableErrorPayloadSentinel);
@@ -145,6 +165,44 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.UsingServiceBr
             result.Description.Should().NotContain(lineFeed);
             result.Description.Should().NotContain(tab);
             result.Description.Should().NotContain(lineSeparator);
+        }
+
+        // Safety is decided by what a character IS, not by a list of the ones somebody thought to name: a C1
+        // control, a zero-width space, a bidi override and a private-use code point are all non-printing, so
+        // each collapses to a single space.
+        [Fact]
+        public void MustNeutraliseEveryNonPrintingCharacterInTheDescription()
+        {
+            var nextLine = ((char)0x0085).ToString();
+            var controlSequenceIntroducer = ((char)0x009B).ToString();
+            var zeroWidthSpace = ((char)0x200B).ToString();
+            var rightToLeftOverride = ((char)0x202E).ToString();
+            var privateUse = ((char)0xE000).ToString();
+
+            var result = ServiceBrokerErrorPayload.Describe(ErrorBody(
+                "1",
+                "a" + nextLine + "b" + controlSequenceIntroducer + "c" + zeroWidthSpace + "d"
+                + rightToLeftOverride + "e" + privateUse + "f"));
+
+            result.Description.Should().Be("a b c d e f");
+            result.Description.Should().NotContain(nextLine);
+            result.Description.Should().NotContain(controlSequenceIntroducer);
+            result.Description.Should().NotContain(zeroWidthSpace);
+            result.Description.Should().NotContain(rightToLeftOverride);
+            result.Description.Should().NotContain(privateUse);
+        }
+
+        // The allowlist admits printing text of any script, including a non-BMP code point that arrives as a
+        // surrogate PAIR - a per-character classifier would see two lone surrogates and blank them both.
+        [Fact]
+        public void MustKeepPrintableTextIncludingNonBmpCharacters()
+        {
+            var description = "h" + ((char)0x00E9) + "llo " + ((char)0x4E2D) + " "
+                              + char.ConvertFromUtf32(0x1F600) + " ok";
+
+            var result = ServiceBrokerErrorPayload.Describe(ErrorBody("1", description));
+
+            result.Description.Should().Be(description);
         }
 
         // A NUL is not a legal XML 1.0 character in any form, so a body carrying one is refused at the parse

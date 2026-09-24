@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Buffers;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Xml;
@@ -28,6 +30,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private const string DescriptionElementName = "Description";
         private const char ByteOrderMark = (char)0xFEFF;
 
+        // throwOnInvalidBytes makes the decoder REFUSE a body that is not well-formed UTF-16 instead of
+        // substituting U+FFFD, so no repaired byte is ever projected. bigEndian: false matches the UTF-16LE
+        // Service Broker writes; byteOrderMark governs GetPreamble only and strips nothing on decode.
+        private static readonly UnicodeEncoding StrictUnicode =
+            new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true);
+
         // INVARIANT: a body larger than MaxBodyLengthInBytes never reaches a projected value — it returns the
         // unreadable sentinel. Pinned by WhenDescribingAnErrorPayload
         // .MustReturnTheUnreadableSentinelWhenTheBodyExceedsTheParseBound. The same threshold is enforced
@@ -36,14 +44,23 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         // each alone is sufficient and removing EITHER one reddens nothing; removing BOTH reddens that oracle
         // (verified) (ADR-0027).
         //
+        // INVARIANT: a body that is not well-formed UTF-16 never reaches a projected value — StrictUnicode
+        // throws rather than repairing the bytes. Pinned by
+        // MustReturnTheUnreadableSentinelForABodyWithInvalidUtf16, which reverting the decode to
+        // Encoding.Unicode.GetString reddens (verified). An odd byte count is refused by this same decode, but
+        // MustReturnTheUnreadableSentinelForAnOddLengthBody does NOT pin that: the same mutation leaves it
+        // green, because a lenient decode yields a U+FFFD the allowlist parse refuses anyway (verified)
+        // (ADR-0027).
+        //
         // Service Broker Error bodies are the documented <Error><Code/><Description/></Error> XML, encoded
-        // UTF-16 (Encoding.Unicode) and prefixed with a UTF-16LE byte order mark (the bytes FF FE 3C 00,
-        // observed live). Encoding.Unicode.GetString keeps that mark as a leading U+FEFF, which XmlReader
-        // reading an already-decoded string rejects, so it is stripped explicitly; deleting the TrimStart reddens
-        // MustParseABomPrefixedBody (verified). No test pins the encoding choice itself, but
-        // ReceiveMessageFromQueueCommand's gzip test (SUBSTRING(message_body, 1, 2) = 0x1F8B) is what makes
-        // UTF-16 safe to decode here: a UTF-16LE byte order mark is the byte pair 0xFF 0xFE, not the 0x1F 0x8B
-        // gzip magic, so an Error body always passes the receive query through undecompressed.
+        // UTF-16LE and prefixed with a byte order mark (the bytes FF FE 3C 00, observed live). Decoding keeps
+        // that mark as a leading U+FEFF — the encoding's byteOrderMark constructor argument governs
+        // GetPreamble only, never the decode — and XmlReader reading an already-decoded string rejects it, so
+        // the TrimStart must stay; deleting it reddens MustParseABomPrefixedBody (verified). No test pins the
+        // UTF-16 choice itself, but ReceiveMessageFromQueueCommand's gzip test
+        // (SUBSTRING(message_body, 1, 2) = 0x1F8B) is what makes it safe to decode here: a UTF-16LE byte order
+        // mark is the byte pair 0xFF 0xFE, not the 0x1F 0x8B gzip magic, so an Error body always passes the
+        // receive query through undecompressed.
         internal static ErrorDescription Describe(byte[] body)
         {
             if (body is null || body.Length == 0)
@@ -56,7 +73,17 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 return Unreadable();
             }
 
-            var document = Encoding.Unicode.GetString(body).TrimStart(ByteOrderMark);
+            string decoded;
+            try
+            {
+                decoded = StrictUnicode.GetString(body);
+            }
+            catch (DecoderFallbackException)
+            {
+                return Unreadable();
+            }
+
+            var document = decoded.TrimStart(ByteOrderMark);
 
             return TryReadErrorDocument(document, out var code, out var description)
                 ? ErrorDescription.Sanitized(code, description)
@@ -145,11 +172,22 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         private static bool IsErrorNamespaceElement(XmlReader reader, string localName)
             => reader.LocalName == localName && reader.NamespaceURI == ErrorNamespace;
 
-        // INVARIANT: every projected value is bounded and carries no character that could forge a log record —
-        // C0 controls, DEL, U+2028 and U+2029 each collapse to a single space. Pinned by
-        // MustNeutraliseControlCharactersInTheDescription and
-        // MustTruncateADescriptionLongerThanTheDescriptionBound, which returning value unchanged reddens both
-        // (verified) (ADR-0027).
+        // INVARIANT: every projected value is bounded and carries only printing characters — anything outside
+        // the IsPrinting allowlist collapses to a single space. Pinned by
+        // MustNeutraliseEveryNonPrintingCharacterInTheDescription and MustNeutraliseControlCharactersInTheDescription,
+        // which adding UnicodeCategory.Control to the allowlist reddens, and by
+        // MustTruncateADescriptionLongerThanTheDescriptionBound and MustTruncateACodeLongerThanTheCodeBound;
+        // returning value unchanged reddens those four (verified) (ADR-0027).
+        //
+        // INVARIANT: classification is per RUNE, so a legitimate surrogate pair is judged as the code point it
+        // encodes rather than as two lone surrogates. Pinned by MustKeepPrintableTextIncludingNonBmpCharacters,
+        // which classifying per char reddens (verified); returning value unchanged leaves it GREEN, so that
+        // oracle pins the rune decision only (verified) (ADR-0027).
+        //
+        // INVARIANT: a surrogate pair is never split by the bound — the budget is spent a whole rune at a time,
+        // so a trailing pair that does not fit is dropped entirely rather than truncated to a lone surrogate.
+        // No test pins the split itself: MustKeepPrintableTextIncludingNonBmpCharacters drives a non-BMP rune
+        // but not one straddling maxLength (ADR-0027).
         private static string Sanitize(string value, int maxLength)
         {
             if (string.IsNullOrEmpty(value))
@@ -157,15 +195,32 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 return string.Empty;
             }
 
-            var keptLength = Math.Min(value.Length, maxLength);
-            var sanitized = new StringBuilder(keptLength + TruncationMarker.Length);
-            for (var index = 0; index < keptLength; index++)
+            var sanitized = new StringBuilder(Math.Min(value.Length, maxLength) + TruncationMarker.Length);
+            var remaining = value.AsSpan();
+            var keptLength = 0;
+
+            while (!remaining.IsEmpty)
             {
-                var character = value[index];
-                sanitized.Append(IsLogUnsafe(character) ? ' ' : character);
+                var status = Rune.DecodeFromUtf16(remaining, out var rune, out var consumed);
+                if (keptLength + consumed > maxLength)
+                {
+                    break;
+                }
+
+                if (status == OperationStatus.Done && IsPrinting(rune))
+                {
+                    sanitized.Append(remaining.Slice(0, consumed));
+                }
+                else
+                {
+                    sanitized.Append(' ');
+                }
+
+                keptLength += consumed;
+                remaining = remaining.Slice(consumed);
             }
 
-            if (value.Length > maxLength)
+            if (!remaining.IsEmpty)
             {
                 sanitized.Append(TruncationMarker);
             }
@@ -173,8 +228,55 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             return sanitized.ToString();
         }
 
-        private static bool IsLogUnsafe(char character)
-            => character < 0x20 || character == 0x7F || character == 0x2028 || character == 0x2029;
+        // A POSITIVE allowlist: a rune is projected only when its Unicode category is one that prints. Every
+        // other category — Control, Format, PrivateUse, LineSeparator, ParagraphSeparator and OtherNotAssigned
+        // — becomes a space without being named, so a code point nobody enumerated cannot reach a log. A lone
+        // surrogate never reaches this predicate at all: a Rune cannot hold one, so DecodeFromUtf16 reports a
+        // non-Done status and Sanitize spaces it there.
+        //
+        // RES-A: a peer-sent U+FFFD is OtherSymbol and therefore passes. Left as a recorded residual — after
+        // the refusing decode above a U+FFFD can only be one the peer typed, it is bounded to a single visible
+        // glyph and cannot forge a log record. Refusing it was considered and rejected: it is a legal
+        // character, and the repair path that used to manufacture one no longer exists.
+        //
+        // RES-B: UnicodeCategory tables are supplied by the runtime, so a code point newly assigned between
+        // net8.0 and net10.0 may print on one target framework and become a space on the other. Left as a
+        // recorded residual — the divergence is cosmetic, and the categories that decide SAFETY (Control,
+        // Format, PrivateUse, LineSeparator, ParagraphSeparator) are stable across both. Pinning a
+        // private category table was considered and rejected: it re-opens the enumeration this allowlist
+        // replaced. Tests must therefore use category-stable code points only.
+        private static bool IsPrinting(Rune rune)
+        {
+            switch (Rune.GetUnicodeCategory(rune))
+            {
+                case UnicodeCategory.UppercaseLetter:
+                case UnicodeCategory.LowercaseLetter:
+                case UnicodeCategory.TitlecaseLetter:
+                case UnicodeCategory.ModifierLetter:
+                case UnicodeCategory.OtherLetter:
+                case UnicodeCategory.NonSpacingMark:
+                case UnicodeCategory.SpacingCombiningMark:
+                case UnicodeCategory.EnclosingMark:
+                case UnicodeCategory.DecimalDigitNumber:
+                case UnicodeCategory.LetterNumber:
+                case UnicodeCategory.OtherNumber:
+                case UnicodeCategory.ConnectorPunctuation:
+                case UnicodeCategory.DashPunctuation:
+                case UnicodeCategory.OpenPunctuation:
+                case UnicodeCategory.ClosePunctuation:
+                case UnicodeCategory.InitialQuotePunctuation:
+                case UnicodeCategory.FinalQuotePunctuation:
+                case UnicodeCategory.OtherPunctuation:
+                case UnicodeCategory.MathSymbol:
+                case UnicodeCategory.CurrencySymbol:
+                case UnicodeCategory.ModifierSymbol:
+                case UnicodeCategory.OtherSymbol:
+                case UnicodeCategory.SpaceSeparator:
+                    return true;
+                default:
+                    return false;
+            }
+        }
 
         /// <summary>
         /// The projected Service Broker error, carrying the sanitized code and description as separate values
