@@ -186,6 +186,18 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             services.Should().Equal(descriptorsBeforeCheck);
         }
 
+        [Fact]
+        public void MustDescribeTheScanOrderTheScanActuallyUses()
+        {
+            var chatterBuilder = AddChatterCqrsScanning(typeof(FakeFirstCommandHandler), typeof(FakeSecondCommandHandler));
+
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers())
+                         .Should().Throw<InvalidOperationException>()
+                         .Which.Message.Should().Contain("the enumeration order of each assembly's loadable types")
+                         .And.Contain("neither of which is specified")
+                         .And.NotContain("the order in which an assembly defines its types");
+        }
+
         private static int PositionOf(string message, Type type)
             => message.IndexOf(type.FullName, StringComparison.Ordinal);
 

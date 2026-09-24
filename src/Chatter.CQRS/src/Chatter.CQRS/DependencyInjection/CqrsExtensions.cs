@@ -128,7 +128,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static string DescribeAmbiguousCommands(IReadOnlyList<KeyValuePair<Type, IReadOnlyList<Type>>> ambiguousCommands)
         {
-            var description = new StringBuilder("More than one command handler was found for the same command. Command handlers are registered using a replace strategy, so only the last handler scanned is registered, and the scan order is derived from assembly load order and the order in which an assembly defines its types, neither of which is specified.");
+            var description = new StringBuilder("More than one command handler was found for the same command. Command handlers are registered using a replace strategy, so only the last handler scanned is registered, and the scan order is derived from assembly load order and the enumeration order of each assembly's loadable types, which the scan collects into a set, neither of which is specified.");
 
             foreach (var ambiguousCommand in ambiguousCommands)
             {
