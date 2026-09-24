@@ -58,7 +58,7 @@ services.AddChatterCqrs(
 
 #### Failing composition when two handlers claim one command
 
-`ThrowOnDuplicateCommandHandlers()` is an opt-in check on the returned `IChatterBuilder`. It re-reads the same assembly source filter `AddChatterCqrs` scanned, and throws a single `InvalidOperationException` naming every command that more than one scanned handler handles, together with all of that command's competing handler types:
+`ThrowOnDuplicateCommandHandlers()` is an opt-in check on the returned `IChatterBuilder`. It checks the same assemblies `AddChatterCqrs` scanned, and throws a single `InvalidOperationException` naming every command that more than one scanned handler handles, together with all of that command's competing handler types:
 
 ```csharp
 services.AddChatterCqrs(configuration, typeof(CreateOrderHandler))

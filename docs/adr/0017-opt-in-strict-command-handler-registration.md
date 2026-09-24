@@ -68,6 +68,10 @@ what this ADR settles.
   are stated plainly under *Non-goals*: it only sees what the scan sees, and what the scan sees can move
   between two applications of the same filter.
 
+  **Amended 2026-09-24 (#468): the second weakness no longer applies to a builder returned by
+  `AddChatterCqrs`.** The check probes that builder with the assembly set the registration scanned; see the
+  amendment under *Decision* and ADR-0039.
+
 ### Why an `IChatterBuilder` extension rather than a parameter
 
 The module's one composition idiom is the `IChatterBuilder` extension — 15 extension methods across the
@@ -109,6 +113,17 @@ set is stable, because `AssemblySourceFilterBuilder` materializes a `List<Assemb
 filter set is not reported is pinned by `MustNotReportCompetingHandlersInAnAssemblyOutsideTheFilterSet`
 (`WhenThrowingOnDuplicateCommandHandlers.cs:113-123`); the deferred-set gap is recorded as a tracked
 non-goal below.
+
+**Amended 2026-09-24 (#468): for a builder returned by `AddChatterCqrs`, the check no longer re-applies the
+filter.** `AddChatterCqrs` now materializes `filter.Apply()` once, feeds that list to its scans and carries it on
+the builder, and the check probes that list (`GetAssembliesToProbe`, `CqrsExtensions.cs:127-138`). It re-applies
+the filter only for a builder that carries no set: a foreign `IChatterBuilder`, or one from the public
+`ChatterBuilder.Create`. The builder still exposes the same filter instance as `IChatterBuilder.AssemblySourceFilter`.
+The mechanism above is also stated too broadly. `Apply()` calls `GetSourceAssemblies()` once per `Apply()` call,
+not once per enumeration (`AssemblySourceFilter.cs:56-59,64-66`); only the `Where` over the returned sequence is
+deferred, so re-enumerating one result re-reads the source only when the provider's own sequence re-evaluates, and
+the default provider's is an array read when `Apply()` runs. The conclusion held for the check all the same,
+because the check was a second `Apply()` call. See ADR-0039.
 
 **Candidates are not chosen by the check. They are read back out of the scan.**
 `FindCommandsWithCompetingHandlers` (`CqrsExtensions.cs:118-127`) runs `ScanCommandHandlers`
@@ -230,6 +245,13 @@ whose `GetTypes()` throws anything other than `ReflectionTypeLoadException` stil
 aborts the check the same way; explicit-assembly mode never calls it. This is read from Scrutor 7.0.0's source and
 this module's; no test in this repository pins the loadable-subset composition or the abort.
 
+**Amended 2026-09-24 (#468): the re-derived-set caveat and the aborted check now apply only to a builder that
+carries no scanned set.** For a builder returned by `AddChatterCqrs`, the probe scans the list the registration
+scanned (ADR-0039), so it sees the same assembly set as well as the same loadable subset. It also does not run
+`Apply()`, so the namespace-selection pass cannot abort the check on that path. A foreign `IChatterBuilder`, or one
+from the public `ChatterBuilder.Create`, is still probed through `Apply()`, and both statements above still hold
+for it.
+
 **Grouping is by closed command-handler interface, not by handler type.** The probe groups the descriptors
 by `ServiceType` (`CqrsExtensions.cs:121`), and the scan registers each handler only as the interfaces
 returned by `GetMessageHandlerInterfacesFor(typeof(ICommand))` (`CqrsExtensions.cs:189,194-197`), so a class
@@ -316,6 +338,14 @@ is answered here rather than treated as a bug.
   collectible `AssemblyLoadContext.Unload()` removes assemblies. An earlier revision of this bullet bounded
   the impact to "the false-POSITIVE direction only" and claimed it "can never produce a false negative for
   what was registered". Neither is earned, and both are DELETED here rather than softened.
+
+  **Amended 2026-09-24 (#468): resolved by ADR-0039 for a builder returned by `AddChatterCqrs`.** The set is
+  materialized once in `AddChatterCqrs` (`CqrsExtensions.cs:47`) and carried on the builder in an internal
+  property, so neither route above was needed: no public `IChatterBuilder` member is added, the builder still
+  exposes the same filter instance, and `AddMessageBrokers` still applies that filter itself. The gap remains, in
+  both directions, for a builder that carries no set, a foreign `IChatterBuilder` or one from the public
+  `ChatterBuilder.Create`, which the check still probes by applying its filter. The correction to the `Apply()`
+  mechanism recorded under *Decision* applies to this bullet too.
 - **Events are out of scope by design.** `AddEventHandlers` uses `RegistrationStrategy.Append`
   (`CqrsExtensions.cs:168`), so several handlers for one Event all register and all run; that is the
   documented fan-out contract (see ADR-0012), not a displacement. Pinned by
@@ -343,6 +373,11 @@ not a minor.
   rebuilds every command-handler descriptor into a throwaway collection (`CqrsExtensions.cs:119`). That is
   startup-only and opt-in, and it is what buys the probe its agreement with the registration: the price of
   measuring the registration is performing it.
+
+  **Amended 2026-09-24 (#468): for a builder returned by `AddChatterCqrs` the check no longer re-applies the
+  filter** (ADR-0039); it scans the list the registration scanned. The second Scrutor type scan and the throwaway
+  descriptor collection remain, and they are still what buys the agreement. A builder that carries no scanned set
+  still pays for re-applying its filter.
 - **Documentation must not describe the replace strategy as enforcement.** The strategy selects ONE
   registration; it does not verify that only one candidate existed. Any claim that scanning "enforces that
   a Command resolves to exactly one handler" is false about registration and must be deleted rather than
@@ -416,3 +451,6 @@ conclusion depends on it.
   several handlers for one Event are intended and are not a displacement.
 - ADR-0015 — *Inbound header trust: ground truth stamped over wire values, and no trust boundary*. Source
   of the delete-the-unearned-claim doctrine applied to the documentation consequence above.
+- ADR-0039 — *The duplicate command-handler check probes the assembly set the registration scanned* (added
+  2026-09-24, #468). Resolves the #468 non-goal for a builder returned by `AddChatterCqrs`; the dated amendments
+  above record what it changed.
