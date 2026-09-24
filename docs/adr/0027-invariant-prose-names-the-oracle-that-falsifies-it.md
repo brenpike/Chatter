@@ -126,6 +126,17 @@ plural describing the loop `9e57ea2` deleted — and cited the `PurgeOnceAsync` 
 helper is `DeleteOneChunkAsync` and the block is `:87-117`. Both citations below are corrected and re-measured
 against the file as it now stands; the CLAIM they carry is unchanged and still holds.
 
+**Amended 2026-09-24: a second restatement-drift instance.** The packed `Chatter.MessageBrokers.SqlServiceBroker`
+README, written on the #357/#358 branch, restated ADR-0037 Decision 1's discard guarantee as "a discard never leaves
+a conversation endpoint open" — dropping the `TransactionMode.None` qualifier the mechanism comment carries, where
+the discard and its `END CONVERSATION` are two independent autocommits rather than one atomic unit (local-review
+findings `c0a1a80c`, prose half, and `c7b0e465`). The root cause is the one this section already names: the claim was
+authored on the README instead of cited from its one home, ADR-0037. The bounded impact is a misled reader — nothing
+executes a README paragraph, so no behaviour changed. The repair reduced the README and `CHANGELOG.md` to the
+observable guarantee plus a link to ADR-0037, rather than restating the qualifier on a third surface. This does NOT
+change the promotion count recorded below: restatement drift is excluded by the trigger's own terms, and the trigger
+is already tripped (#524).
+
 ### The strongest available form is not a comment at all
 
 `802ca9d5`'s fix went further than either rule requires. `DeleteOneChunkAsync` takes its query as
@@ -255,10 +266,39 @@ six dispatches across the drain and three of the row every poll carries. Its nam
 batch through the identity set before dispatch — is recorded by `bca45c2` as measured to redden that fact
 alone, on both target frameworks, which is the exclusivity Rule 1 asks of a named mutation.
 
-**The promotion trigger is NOT tripped.** The count stands at one where the trigger asks for three, the
-deferred lint stays deferred, and the trigger's wording is unchanged.
+**Instance #2 of the three the trigger asks for — local review of the #357/#358 `Chatter.MessageBrokers.SqlServiceBroker`
+branch, iteration 1.** `75e64a32` corrected the `INVARIANT:` remark on `ServiceBrokerMessageClassifier`'s
+ordering claim (pre-fix, before `16c3626`). The remark named the mutation "move the Error branch ahead of the
+end-dialog branch" as what reddens `MustStillClassifyAnEndDialogBeforeTheErrorCheck`. That mutation is vacuous:
+`EndDialogType` and `ErrorType` are distinct constants, so reordering the two branches changes which one a
+given message matches to neither, and the named oracle could not falsify the ordering claim the comment made.
+The repair, in `16c3626`, narrowed the comment to the four orderings a test can actually falsify and renamed
+the test to match. A single surface carried the false claim — not restatement drift.
 
-No tracker entry is opened. This is a decision with a stated reason, not outstanding work.
+**Instance #3 of the three the trigger asks for — same branch, iteration 3.** `cb3be8b7` corrected the
+`INVARIANT:` remark on `ServiceBrokerErrorPayload.cs`, which claimed that only the documented Error document
+projects a value and "anything else is unrepresentable." Its named mutation dropped the `NamespaceURI` half of
+the allowlist, which pins only the root-element namespace allowlist — not the "anything else is
+unrepresentable" claim — because the hand-driven reader accepts a PREFIX of the grammar rather than rejecting
+everything outside the documented shape. The claim was broader than any oracle behind it. A single surface
+carried the false claim — not restatement drift. The repair, in `ab3ac5c`, did not add a check: it RE-KEYED
+the comment onto producer provenance — `Code` is derived from a parsed `Int32` and re-rendered, and
+`Description` is filtered through the printing-category allowlist — which is the trigger's own prescribed
+response, to question what the comment is keyed on rather than to add a check.
+
+**Amended 2026-09-24: the promotion trigger IS tripped.** Instances #2 and #3 above are the second and third
+findings the trigger asks for. Both match its shape — an `INVARIANT:` naming an oracle that does not pin the
+claim the comment makes — and neither is excluded by the restatement-drift or dissolved-mechanism exceptions
+recorded above for the earlier near-miss: each false clause lived on one surface, the code comment itself. The
+count is three, not one, and the trigger's own condition is met. The corpus-audit residual recorded in this
+section is promoted to filed work:
+[#524 — "Audit INVARIANT comments so each claims only what its oracle pins (ADR-0027 trigger)"](https://github.com/brenpike/Chatter/issues/524).
+The `grep` lint considered and rejected under *Considered Options* stays rejected on the merits recorded
+there — such a lint can verify that an oracle is NAMED, not that it pins the claim made — and the trigger's
+own prescribed response to a tripped count is to question what a comment is keyed on, not to add a check; #524
+is that audit, not a lint.
+
+A tracker entry is now open at #524.
 
 ## Consequences
 

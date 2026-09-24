@@ -12,6 +12,43 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.15.0] - 2026-09-24
+
+### Changed
+
+- **A missing or misnamed queue now stops the receiver instead of retrying forever.** SQL errors 208 (invalid object name)
+  and 102 (syntax error) are now classified terminal rather than transient: both the retry and circuit-breaker exception
+  predicate providers exclude them, and the receiver surfaces them as `CriticalReceiverException` naming the configured
+  queue. **This is a breaking change**: a host started before its queue exists used to wait and recover when the queue
+  appeared; it now stops and must be restarted once the queue exists. Because the predicate providers are registered
+  globally, error 208 raised anywhere under Chatter's recovery pipeline (for example, a handler hitting a table that a
+  concurrent migration has not yet created) is no longer retried. (#358)
+- **Service Broker `Error` messages are logged at `Error`, with their payload decoded**, instead of at `Trace`. The
+  conversation handle, the service name, and the Service Broker error code and description are each logged as their
+  own structured field. The error code is parsed as a 32-bit integer and logged as that integer re-rendered — never
+  as the peer's own text for it. Only printable letters, marks, numbers, punctuation, symbols and spaces are logged
+  from the description, anything else becomes a space, and it is capped at 3000 characters. A body that is absent or
+  empty logs `<no error payload>`; a `<Code>` that is not a 32-bit integer —
+  including one produced by invalid UTF-16 or an otherwise unreadable payload — logs `<unreadable error payload>`
+  in place of both the code and the description. Other discarded messages stay at `Trace`. (#357)
+
+### Fixed
+
+- **A discarded message's conversation is now ended, so errored conversation endpoints no longer accumulate in
+  `sys.conversation_endpoints`.** Every discard of a received message (a Service Broker `Error`, a message of a type the
+  receiver does not accept, or a Chatter message with no body) now issues `END CONVERSATION` as part of settling it —
+  on the RECEIVE's own transaction under a transactional mode, so the two commit together; under
+  `TransactionMode.None` there is no receive transaction, so the RECEIVE has already autocommitted and the
+  `END CONVERSATION` follows it as a separate autocommit, the same way ack, nack and deadletter already behave.
+  Previously the RECEIVE committed and the endpoint was left open (or in the error state) indefinitely. **This is a
+  breaking change** for a deployment where a non-Chatter application shares the queue and
+  keeps long-lived multi-message dialogs: such a dialog is now ended when Chatter discards one of its messages
+  (previously that message was silently dropped). (#357)
+
+No public API or configuration option changed; both decisions are internal to the receiver and its recovery-pipeline
+predicate providers. See `docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md`
+for the rationale.
+
 ## [0.14.5] - 2026-09-23
 
 ### Changed
