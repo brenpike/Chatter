@@ -98,7 +98,16 @@ namespace Chatter.CQRS.DependencyInjection
 
             services.Scan(s =>
                    s.FromAssemblies(openGenericBehaviorType.Assembly)
-                       .AddClasses(c => c.AssignableTo(openGenericBehaviorType))
+                       // INVARIANT: this scan and the three handler scans in CqrsExtensions register non-public
+                       // classes, because consumer handlers and behaviors are often internal and Scrutor >= 6.0.1
+                       // defaults AddClasses to publicOnly: true, which would silently drop them.
+                       // Oracle: MustRegisterANonPublicOpenGenericBehavior, MustRegisterAndReportNonPublicCompetingHandlers
+                       // and, in the Azure Service Bus tests, MustRegisterTheInternalTransactionScopeSupressionBehavior;
+                       // the event and query scans are pinned by WhenAddingEventHandlers.MustRegisterEventHandler and
+                       // WhenAddingQueryHandlers.MustRegisterAllQueryHandlers, whose fixture handlers are private.
+                       // Mutation that reddens them: dropping the publicOnly: false argument (or setting it true) at
+                       // all four sites (observed under Scrutor 3.3.0 with publicOnly: true).
+                       .AddClasses(c => c.AssignableTo(openGenericBehaviorType), publicOnly: false)
                        .UsingRegistrationStrategy(RegistrationStrategy.Replace(ReplacementBehavior.ImplementationType))
                        // INVARIANT: for a scanned class that declares ICommandBehavior<> at a single closing, this
                        // selector emits at most one service type, so Replace(ReplacementBehavior.ImplementationType)

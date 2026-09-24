@@ -163,8 +163,9 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
+                   // publicOnly: false - see the INVARIANT at ServiceCollectionExtensions.RegisterBehaviorForAllCommands.
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
-                        .Where(handler => IsValidMessageHandler(handler, typeof(IEvent))))
+                        .Where(handler => IsValidMessageHandler(handler, typeof(IEvent))), publicOnly: false)
                    .UsingRegistrationStrategy(RegistrationStrategy.Append)
                    .As(handler => handler.GetMessageHandlerInterfacesFor(typeof(IEvent)))
                    .WithTransientLifetime());
@@ -183,8 +184,9 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             services.Scan(s =>
                s.FromAssemblies(assemblies)
+                   // publicOnly: false - see the INVARIANT at ServiceCollectionExtensions.RegisterBehaviorForAllCommands.
                    .AddClasses(c => c.AssignableTo(typeof(IMessageHandler<>))
-                        .Where(handler => IsValidMessageHandler(handler, typeof(ICommand))))
+                        .Where(handler => IsValidMessageHandler(handler, typeof(ICommand))), publicOnly: false)
                    .UsingRegistrationStrategy(strategy)
                    .As(handler => handler.GetMessageHandlerInterfacesFor(typeof(ICommand)))
                    .WithTransientLifetime());
@@ -207,8 +209,9 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             services.Scan(s =>
                    s.FromAssemblies(assemblies)
+                       // publicOnly: false - see the INVARIANT at ServiceCollectionExtensions.RegisterBehaviorForAllCommands.
                        .AddClasses(c => c.AssignableTo(typeof(IQueryHandler<,>))
-                            .Where(handler => handler.IsClosedHandlerType()))
+                            .Where(handler => handler.IsClosedHandlerType()), publicOnly: false)
                        .UsingRegistrationStrategy(RegistrationStrategy.Throw)
                        .As(handler => handler.GetImplementedInterfacesThatMatchOpenGenericType(typeof(IQueryHandler<,>)))
                        .WithTransientLifetime());
