@@ -121,15 +121,14 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 throw;
             }
 #endif
-            // This package provisions no Service Broker topology, so a missing queue (208) or a malformed
-            // RECEIVE statement (102) is deterministic misconfiguration: retrying cannot make it succeed. Fail
-            // fast as critical, naming the configured queue, instead of letting the raw SqlException reach the
-            // core recovery pipeline.
-            // INVARIANT: a terminal SQL error number surfaces as CriticalReceiverException naming
+            // INVARIANT: a terminal SQL error number, as classified by
+            // SqlExceptionHelper.IsErrorNumberTerminal, surfaces as CriticalReceiverException naming
             // _options.MessageReceiverPath. Pinned by Integration.SsbMissingQueueTests
             // .ReceivingFromAMissingQueueSurfacesACriticalReceiverExceptionNamingTheQueue (Docker-gated;
             // SKIPPED when Docker is absent), which reverting this filter to `e.Number == 102` reddens
-            // (ADR-0027).
+            // (ADR-0027). Rationale:
+            // docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md
+            // (Decision 2).
             catch (SqlException e) when (SqlExceptionHelper.IsErrorNumberTerminal(e.Number))
             {
                 await session.DisposeAsync();
@@ -155,8 +154,10 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                     await AckEndDialogAsync(session, message.ConvHandle, cancellationToken);
                     return null;
                 case ClassificationOutcome.DiscardErroredConversation:
-                    // The code and description are peer-controlled text, so they are logged as their own
-                    // structured parameters rather than interpolated into the template.
+                    // Code and Description are logged as their own structured parameters, never interpolated
+                    // into the template. See ServiceBrokerErrorPayload and
+                    // docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md
+                    // (Decision 1).
                     var errorPayload = ServiceBrokerErrorPayload.Describe(message.Body);
                     await DiscardMessageAsync(session
                         , message
@@ -295,17 +296,15 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
         }
 
-        // INVARIANT: a discard that settles a real received message also ends that message's conversation, so
-        // no terminal outcome leaves a conversation endpoint open. Under a transactional mode the END
-        // CONVERSATION runs on the RECEIVE's own transaction and commits with it; under TransactionMode.None
-        // CreateTransaction returns null, so the END CONVERSATION and the commit are separate autocommits —
-        // the non-atomicity ack, nack, deadletter and end-dialog already have under that mode (residual RES-1
-        // in the ADR below).
-        // Rationale: docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md.
-        // Pinned by Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRatherThanLeftInTheErrorState
+        // INVARIANT: a discard that settles a real received message also ends that message's conversation.
+        // The END CONVERSATION runs on the RECEIVE's own transaction, or as a separate autocommit under
+        // TransactionMode.None (ADR-0037 RES-1). Pinned by
+        // Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRatherThanLeftInTheErrorState
         // and .ANullBodyDiscardEndsItsConversation (Docker-gated; SKIPPED when Docker is absent), which
-        // committing without the EndDialogConversationCommand below reddens, plus the outcome-set oracle
-        // ServiceBrokerMessageClassifier.EndsConversation.
+        // committing without the EndDialogConversationCommand below reddens; which outcomes qualify is
+        // ServiceBrokerMessageClassifier.EndsConversation. Rationale:
+        // docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md
+        // (Decision 1).
         private async Task DiscardMessageAsync(ReceiveSession session,
                                                ReceivedMessage message,
                                                ClassificationOutcome outcome,

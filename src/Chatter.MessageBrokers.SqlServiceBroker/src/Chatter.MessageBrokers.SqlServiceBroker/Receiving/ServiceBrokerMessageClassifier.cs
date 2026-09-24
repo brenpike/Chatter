@@ -112,16 +112,21 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
         }
 
         /// <summary>
-        /// Whether <paramref name="outcome"/> settles a real received message and therefore ends
-        /// that message's conversation. The two dispatch outcomes are excluded because a dispatched
-        /// message is settled later by its ack, nack or deadletter; DiscardNull is excluded because
-        /// there is no message and no conversation handle to end.
+        /// Whether <paramref name="outcome"/> settles a real received message and so obliges its
+        /// caller to end that message's conversation. The two dispatch outcomes are excluded because
+        /// a dispatched message is settled later by its ack, nack or deadletter; DiscardNull is
+        /// excluded because there is no message and no conversation handle to end. The END
+        /// CONVERSATION itself, and its transaction-mode scope, live at
+        /// SqlServiceBrokerReceiver.DiscardMessageAsync.
         /// </summary>
-        // INVARIANT: every outcome that settles a received message ends its conversation, so no
-        // terminal discard leaves a conversation open. Rationale:
-        // docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md.
-        // Pinned by WhenClassifyingReceivedMessages.MustEndTheConversationForEveryOutcomeThatSettlesAReceivedMessage;
-        // returning false for DiscardWrongType reddens it.
+        // INVARIANT: this returns true for exactly EndDialog, DiscardErroredConversation,
+        // DiscardWrongType and DiscardNullBody, and false for every other outcome. Pinned by
+        // WhenClassifyingReceivedMessages.MustEndTheConversationForEveryOutcomeThatSettlesAReceivedMessage;
+        // returning false for DiscardWrongType reddens it. Every declared outcome has a row in that
+        // theory, pinned by MustCoverEveryClassificationOutcomeInTheEndsConversationRows; adding a
+        // ClassificationOutcome member without adding its row reddens it. Rationale:
+        // docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md
+        // (Decision 1).
         internal static bool EndsConversation(ClassificationOutcome outcome)
             => outcome == ClassificationOutcome.EndDialog
             || outcome == ClassificationOutcome.DiscardErroredConversation

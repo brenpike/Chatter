@@ -26,9 +26,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - **Service Broker `Error` messages are logged at `Error`, with their payload decoded**, instead of at `Trace`. The
   conversation handle, the service name, and the Service Broker error code and description are each logged as their
   own structured field. The error code is parsed as a 32-bit integer and logged as that integer re-rendered — never
-  as the peer's own text for it. The description is text the dialog peer chose: only printable letters, marks,
-  numbers, punctuation, symbols and spaces are logged from it, anything else becomes a space, and it is capped at
-  3000 characters. A body that is absent or empty logs `<no error payload>`; a `<Code>` that is not a 32-bit integer —
+  as the peer's own text for it. Only printable letters, marks, numbers, punctuation, symbols and spaces are logged
+  from the description, anything else becomes a space, and it is capped at 3000 characters. A body that is absent or
+  empty logs `<no error payload>`; a `<Code>` that is not a 32-bit integer —
   including one produced by invalid UTF-16 or an otherwise unreadable payload — logs `<unreadable error payload>`
   in place of both the code and the description. Other discarded messages stay at `Trace`. (#357)
 
@@ -37,9 +37,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - **A discarded message's conversation is now ended, so errored conversation endpoints no longer accumulate in
   `sys.conversation_endpoints`.** Every discard of a received message (a Service Broker `Error`, a message of a type the
   receiver does not accept, or a Chatter message with no body) now issues `END CONVERSATION` before the RECEIVE
-  commits — on the receive transaction itself under a transactional mode, so the two commit together; under
-  `TransactionMode.None` there is no receive transaction and each statement autocommits on its own, the same way ack,
-  nack and deadletter already behave under that mode. Previously the RECEIVE committed and the endpoint was left open
+  commits — in the same transaction under a transactional mode; separately under `TransactionMode.None`, the same
+  way ack, nack and deadletter already behave. Previously the RECEIVE committed and the endpoint was left open
   (or in the error state) indefinitely. **This is a breaking change** for a deployment where a non-Chatter application shares the queue and
   keeps long-lived multi-message dialogs: such a dialog is now ended when Chatter discards one of its messages
   (previously that message was silently dropped). (#357)

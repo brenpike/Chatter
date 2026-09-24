@@ -75,7 +75,8 @@ tolerates it.
 not atomic (residual RES-1 below). The rule is one predicate over the classification outcome,
 `ServiceBrokerMessageClassifier.EndsConversation`, and `SqlServiceBrokerReceiver.DiscardMessageAsync` issues
 `EndDialogConversationCommand` on the receive session's connection and transaction before it commits. The rationale is
-recorded once, at that method's `INVARIANT:` (ADR-0027), and the predicate is pinned by
+recorded here; `SqlServiceBrokerReceiver.DiscardMessageAsync`'s `INVARIANT:` cites rather than restates it
+(ADR-0027), and the predicate is pinned by
 `WhenClassifyingReceivedMessages.MustEndTheConversationForEveryOutcomeThatSettlesAReceivedMessage` with
 `MustCoverEveryClassificationOutcomeInTheEndsConversationRows` requiring a stated decision for every outcome that
 exists. `Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRatherThanLeftInTheErrorState` and
@@ -131,8 +132,10 @@ exists. `Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRat
 ### 2. A deterministic SQL fault is terminal
 
 **SQL errors `102` "incorrect syntax" and `208` "invalid object name" are terminal, classified by one pure
-predicate.** `SqlExceptionHelper.IsErrorNumberTerminal` is that predicate; the rationale is recorded once at its
-`INVARIANT:`. Because this package provisions no Service Broker topology, a missing queue or a malformed statement is
+predicate.** `SqlExceptionHelper.IsErrorNumberTerminal` is that predicate; the rationale is recorded here, and the
+`<remarks>` block on `SqlExceptionHelper.IsErrorNumberTerminal`, along with the receiver's terminal catch, cites
+rather than restates it (ADR-0027). Because this package provisions no Service Broker topology, a missing queue or a
+malformed statement is
 deterministic misconfiguration, and retrying cannot make it succeed.
 
 - **The predicate is subtracted from the transient set wherever the transient set is produced** — both
@@ -259,8 +262,8 @@ as an inherited residual.
   the process*.
 - ADR-0016 — *T-SQL identifier quoting: a round-trip parse*. The other half of the `102` story: a configured queue
   name is quoted rather than interpolated, so a malformed name is refused before it reaches the server.
-- ADR-0027 — *Invariant prose names the oracle that falsifies it*. Why each rationale above is recorded once, at its
-  mechanism, and named rather than restated here.
+- ADR-0027 — *Invariant prose names the oracle that falsifies it*. Why each rationale above is recorded here, once,
+  and cited by name — not restated — at its mechanism.
 - `src/Chatter.MessageBrokers.SqlServiceBroker/src/Chatter.MessageBrokers.SqlServiceBroker/Receiving/ServiceBrokerMessageClassifier.cs`
   — the outcome set and `EndsConversation`.
 - `src/Chatter.MessageBrokers.SqlServiceBroker/src/Chatter.MessageBrokers.SqlServiceBroker/Receiving/SqlServiceBrokerReceiver.cs`

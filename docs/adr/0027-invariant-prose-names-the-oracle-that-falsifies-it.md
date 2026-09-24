@@ -126,6 +126,17 @@ plural describing the loop `9e57ea2` deleted — and cited the `PurgeOnceAsync` 
 helper is `DeleteOneChunkAsync` and the block is `:87-117`. Both citations below are corrected and re-measured
 against the file as it now stands; the CLAIM they carry is unchanged and still holds.
 
+**Amended 2026-09-24: a second restatement-drift instance.** The packed `Chatter.MessageBrokers.SqlServiceBroker`
+README, written on the #357/#358 branch, restated ADR-0037 Decision 1's discard guarantee as "a discard never leaves
+a conversation endpoint open" — dropping the `TransactionMode.None` qualifier the mechanism comment carries, where
+the discard and its `END CONVERSATION` are two independent autocommits rather than one atomic unit (local-review
+findings `c0a1a80c`, prose half, and `c7b0e465`). The root cause is the one this section already names: the claim was
+authored on the README instead of cited from its one home, ADR-0037. The bounded impact is a misled reader — nothing
+executes a README paragraph, so no behaviour changed. The repair reduced the README and `CHANGELOG.md` to the
+observable guarantee plus a link to ADR-0037, rather than restating the qualifier on a third surface. This does NOT
+change the promotion count recorded below: restatement drift is excluded by the trigger's own terms, and the trigger
+is already tripped (#524).
+
 ### The strongest available form is not a comment at all
 
 `802ca9d5`'s fix went further than either rule requires. `DeleteOneChunkAsync` takes its query as
