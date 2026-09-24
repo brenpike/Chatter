@@ -37,7 +37,6 @@ namespace Chatter.CQRS.Diagnostics
         private static readonly string _telemetryVersion = ResolveTelemetryVersion();
         private static readonly ActivitySource _source = new ActivitySource(ActivitySourceName, _telemetryVersion);
         private static readonly Meter _meter = new Meter(MeterName, _telemetryVersion);
-#if NET9_0_OR_GREATER
         // INVARIANT: static field initializers run in TEXTUAL order, so this field must stay between _meter and
         // _dispatchDuration — declared after it, the histogram would be created with a null advice.
         // INVARIANT: the boundaries must stay strictly ascending and distinct. InstrumentAdvice<T> throws on any
@@ -50,9 +49,6 @@ namespace Chatter.CQRS.Diagnostics
         };
 
         private static readonly Histogram<double> _dispatchDuration = _meter.CreateHistogram<double>(DispatchDurationInstrumentName, "s", "Duration of a Chatter CQRS dispatch.", tags: null, advice: _dispatchDurationAdvice);
-#else
-        private static readonly Histogram<double> _dispatchDuration = _meter.CreateHistogram<double>(DispatchDurationInstrumentName, "s", "Duration of a Chatter CQRS dispatch.");
-#endif
 
         /// <summary>
         /// The <see cref="ActivitySource"/> Chatter emits dispatch spans from. Exposed so a call site can run the

@@ -93,7 +93,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
         private static readonly string _telemetryVersion = ResolveTelemetryVersion();
         private static readonly ActivitySource _source = new ActivitySource(ActivitySourceName, _telemetryVersion);
         private static readonly Meter _meter = new Meter(MeterName, _telemetryVersion);
-#if NET9_0_OR_GREATER
         // INVARIANT: each advice field is declared AFTER _meter and BEFORE the histogram it advises, because C# runs
         // static field initializers in TEXTUAL order; declared below its histogram it would still be null when the
         // histogram is created, and the histogram would silently publish no advice.
@@ -118,10 +117,6 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Diagnostics
             HistogramBucketBoundaries = new int[] { 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000 }
         };
         private static readonly Histogram<int> _drainBatchSize = _meter.CreateHistogram<int>(DrainBatchSizeInstrumentName, "{document}", "Number of documents in one change-feed batch handed to the Outbox Relay.", tags: null, advice: _drainBatchSizeAdvice);
-#else
-        private static readonly Histogram<double> _drainLag = _meter.CreateHistogram<double>(DrainLagInstrumentName, "s", "Age of an Outbox Document when the Outbox Relay admitted it.");
-        private static readonly Histogram<int> _drainBatchSize = _meter.CreateHistogram<int>(DrainBatchSizeInstrumentName, "{document}", "Number of documents in one change-feed batch handed to the Outbox Relay.");
-#endif
         private static readonly Counter<long> _drainedDocuments = _meter.CreateCounter<long>(DrainedDocumentsInstrumentName, "{document}", "Number of Outbox Documents the Outbox Relay resolved, by outcome.");
         private static readonly Counter<long> _drainedBatches = _meter.CreateCounter<long>(DrainedBatchesInstrumentName, "{batch}", "Number of change-feed batches the Outbox Relay handled, by lease.");
         private static readonly Counter<long> _drainFailures = _meter.CreateCounter<long>(DrainFailuresInstrumentName, "{failure}", "Number of drain attempts that faulted, by lease and error type.");

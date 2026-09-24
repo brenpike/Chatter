@@ -59,7 +59,7 @@ Rolling the binary first breaks the poll, and the breakage is **store-side only*
 dotnet add package Chatter.MessageBrokers.Reliability.EntityFramework
 ```
 
-The package targets `net8.0` and `net10.0`, and pulls in `Microsoft.EntityFrameworkCore` / `Microsoft.EntityFrameworkCore.Relational` for the matching framework.
+The package targets `net10.0` and pulls in `Microsoft.EntityFrameworkCore` / `Microsoft.EntityFrameworkCore.Relational` 10.0.0 or later.
 
 ## Getting Started
 

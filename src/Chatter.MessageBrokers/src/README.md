@@ -523,14 +523,14 @@ An **unset** attribute below is an unconditional write of a null value, not a sk
 | Event | Span | Attributes | Emitted |
 | --- | --- | --- | --- |
 | `chatter.messaging.receive.retry` | receive | `chatter.messaging.receive.attempts`, carrying the number of the attempt this event records. | On every Recovery attempt after the first, and only while `Activity.IsAllDataRequested` is true, so a sampled-out or recording-only span pays nothing to construct it. |
-| `exception` | send | Provenance-split by target framework: on `net10.0` the base class library's `Activity.AddException` writes them; on `net8.0` Chatter writes the `exception.*` set itself. The event name is `exception` either way. | Only when an exception ended the dispatch call and `Activity.IsAllDataRequested` is true. |
-| `exception` | receive | Provenance-split by target framework, exactly as on the send span: `Activity.AddException` on `net10.0`, Chatter-written `exception.*` tags on `net8.0`. | Only when an exception ended the delivery and `Activity.IsAllDataRequested` is true. A `Failed` Settlement Outcome the infrastructure returned without raising carries no event, deliberately: there is no exception, and a never-thrown marker exception would attach a synthetic stack trace as false evidence about something that never happened. A shutdown cancellation likewise carries none. |
+| `exception` | send | The `exception.*` set, written by the base class library's `Activity.AddException`. | Only when an exception ended the dispatch call and `Activity.IsAllDataRequested` is true. |
+| `exception` | receive | The `exception.*` set, written by `Activity.AddException` exactly as on the send span. | Only when an exception ended the delivery and `Activity.IsAllDataRequested` is true. A `Failed` Settlement Outcome the infrastructure returned without raising carries no event, deliberately: there is no exception, and a never-thrown marker exception would attach a synthetic stack trace as false evidence about something that never happened. A shutdown cancellation likewise carries none. |
 
 **Metrics**
 
 | Instrument | Type | Unit | Advised buckets | Records | Recorded when |
 | --- | --- | --- | --- | --- | --- |
-| `messaging.client.operation.duration` | `Histogram<double>` | `s` | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10` — published as instrument advice on `net10.0` only; on `net8.0` the instrument carries none. See **Histogram bucket boundaries** below. | The elapsed time of one dispatch call, of one outbox drain publish, or of one delivery. | Once per dispatch call that reaches the send path, once per row the outbox drain publishes, and once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing either; a reply whose `BuildReply` throws records here and on the send span alongside it. |
+| `messaging.client.operation.duration` | `Histogram<double>` | `s` | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10` — see **Histogram bucket boundaries** below. | The elapsed time of one dispatch call, of one outbox drain publish, or of one delivery. | Once per dispatch call that reaches the send path, once per row the outbox drain publishes, and once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing either; a reply whose `BuildReply` throws records here and on the send span alongside it. |
 | `messaging.client.sent.messages` | `Counter<long>` | `{message}` | Not applicable — a `Counter<long>` has no buckets. | The number of messages the dispatch call handed to broker infrastructure: the number a `Send` / `Publish` yielded, `1` for a forward, `1` for each row the outbox drain publishes, and for a reply `1` once the Router has been called or `0` when the call failed before that. | Once per dispatch call that reaches the send path, once per row the outbox drain publishes, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. The two no-op routes that start no span — a blank forward destination, a null reply routing context — record nothing here either. |
 | `messaging.client.consumed.messages` | `Counter<long>` | `{message}` | Not applicable — a `Counter<long>` has no buckets. | One message per delivery. "Consumed" is the pinned specification's wire spelling for what this module calls receiving. | Once per delivery, on the failing path as well as the succeeding one, and only while a .NET `MeterListener` has enabled this instrument. |
 
@@ -554,9 +554,7 @@ Where a span leaves an attribute **unset**, the instruments still carry that att
 
 **They are advice, not a setting.** The boundaries are published as instrument *advice* — a **default** that an application's own view **overrides**. An application that already registers a view for `messaging.client.operation.duration` keeps winning exactly as it did before; nothing it configured changes. Advice is the right layer for this precisely because it cannot take that choice away from the application.
 
-**Advice is published on `net10.0` only.** The base class library type that carries instrument advice does not exist in the `net8.0` shared framework, and this package takes no package dependency to reach it. On `net8.0` the instrument therefore ships with no advice at all, and the collector falls back to its own millisecond-sized defaults.
-
-**On `net8.0`, configure the equivalent view in your own application.** `AddView` and `ExplicitBucketHistogramConfiguration` are `OpenTelemetry.Metrics` types that come from *your* application's OpenTelemetry packages — this package still takes **no dependency on any `OpenTelemetry.*` NuGet package**, and the snippet below adds none to it:
+**To choose other boundaries, register a view in your own application**, starting from the published set below. `AddView` and `ExplicitBucketHistogramConfiguration` are `OpenTelemetry.Metrics` types that come from *your* application's OpenTelemetry packages — this package still takes **no dependency on any `OpenTelemetry.*` NuGet package**, and the snippet below adds none to it:
 
 ```csharp
 using OpenTelemetry.Metrics;
@@ -569,8 +567,6 @@ services.AddOpenTelemetry()
                 Boundaries = new double[] { 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10 }
             }));
 ```
-
-The same view is harmless on `net10.0`: it overrides advice that already carries these boundaries. This `net8.0` caveat retires when `net8.0` is dropped and the package single-targets `net10.0` after .NET 8 reaches end of life on 2026-11-10 — tracked in [issue #395](https://github.com/brenpike/Chatter/issues/395).
 
 ### Attribute names are data, not API
 

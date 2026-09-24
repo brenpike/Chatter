@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <PackageId>Chatter.MessageBrokers.SqlServiceBroker</PackageId>
     <Version>0.15.0</Version>
@@ -17,12 +17,8 @@
     <RootNamespace>Chatter.MessageBrokers.SqlServiceBroker</RootNamespace>
   </PropertyGroup>
 
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net10.0' ">
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
-  </ItemGroup>
-
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net8.0' ">
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
   </ItemGroup>
 
   <ItemGroup>

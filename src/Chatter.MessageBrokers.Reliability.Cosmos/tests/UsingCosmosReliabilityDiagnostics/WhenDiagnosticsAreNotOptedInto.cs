@@ -216,19 +216,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 meterScope.TryGetInstrument(CosmosReliabilityDiagnostics.DrainLagInstrumentName, out var drainLag).Should().BeTrue();
 
-#if NET9_0_OR_GREATER
                 var drainLagHistogram = drainLag.Should().BeAssignableTo<Instrument<double>>().Subject;
 
                 drainLagHistogram.Advice.Should().NotBeNull();
                 drainLagHistogram.Advice.HistogramBucketBoundaries.Should().Equal(new[] { 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600 });
-#else
-                // The net8.0 shared framework carries no InstrumentAdvice<T> and no Instrument<T>.Advice, so there
-                // is no advice to publish on this leg. This pins a BCL FACT, not a Chatter behaviour, and is
-                // deliberately weak for that reason - do not read it as a behavioural guarantee. Issue #395
-                // ([Epic] Drop net8.0 and single-target net10.0 after .NET 8 EOL 2026-11-10) is the trigger to
-                // delete BOTH the production #if and this assertion.
-                drainLag.GetType().GetProperty("Advice").Should().BeNull();
-#endif
             }
         }
 
@@ -246,15 +237,10 @@ namespace Chatter.MessageBrokers.Reliability.Cosmos.Tests.UsingCosmosReliability
             {
                 meterScope.TryGetInstrument(CosmosReliabilityDiagnostics.DrainBatchSizeInstrumentName, out var batchSize).Should().BeTrue();
 
-#if NET9_0_OR_GREATER
                 var batchSizeHistogram = batchSize.Should().BeAssignableTo<Instrument<int>>().Subject;
 
                 batchSizeHistogram.Advice.Should().NotBeNull();
                 batchSizeHistogram.Advice.HistogramBucketBoundaries.Should().Equal(new[] { 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000 });
-#else
-                // As above: a BCL fact on the net8.0 leg, deleted with the production #if under issue #395.
-                batchSize.GetType().GetProperty("Advice").Should().BeNull();
-#endif
             }
         }
 
