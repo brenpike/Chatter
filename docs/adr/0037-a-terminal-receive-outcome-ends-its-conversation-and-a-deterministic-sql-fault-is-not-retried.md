@@ -103,13 +103,17 @@ exists. `Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRat
   as if the host had logged it. This is the rationale the comments on `ServiceBrokerErrorPayload` and on the
   receiver's `DiscardErroredConversation` arm cite rather than restate (ADR-0027). So
   `ServiceBrokerErrorPayload.Describe` never hands a log a free-form string: it refuses a body over 64 KiB outright,
-  parses what remains with a hardened `XmlReader` (DTD processing prohibited, no resolver, a character bound), and
+  decodes it with a strict `UnicodeEncoding` that refuses a body whose bytes are not valid UTF-16 rather than
+  repairing them into a replacement character, parses what remains with a hardened `XmlReader` (DTD processing
+  prohibited, no resolver, a character bound), and
   accepts a value only from the documented `<Error><Code/><Description/></Error>` shape under the Service Broker
   `Error` namespace — a positive allowlist on both element name and namespace. The `Code` and `Description` it finds
-  are then sanitized (C0 controls, `DEL`, `U+2028` and `U+2029` each collapse to one space) and bounded (32 and 3000
+  are then sanitized against a positive per-rune Unicode-category allowlist (Letter, Mark, Number, Punctuation,
+  Symbol and Space Separator categories are kept; every other rune collapses to one space) and bounded (32 and 3000
   characters, with a truncation marker), and the receiver logs them as two separate structured parameters rather
   than interpolating them into the message template. A body that is absent or empty projects `<no error payload>`;
-  one that is oversized or does not conform projects `<unreadable error payload>`.
+  one that is oversized, not valid UTF-16, or does not conform to the documented shape projects
+  `<unreadable error payload>`.
 
 **Two live facts this decision rests on**, both observed against SQL Server 2022:
 
@@ -117,9 +121,10 @@ exists. `Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRat
   integration oracle accepts an absent row or the retained `CD` (closed) state that Service Broker documents for an
   ended conversation, so it holds whichever the server does; what it refuses is the endpoint still sitting in `ER`.
 - Service Broker `Error` message bodies are UTF-16LE **with** a byte order mark — the bytes `FF FE 3C 00`.
-  `Encoding.Unicode.GetString` keeps that mark as a leading `U+FEFF` and `string.Trim()` does not remove it on
+  The strict UTF-16 decode refuses a body whose bytes are malformed rather than repairing them, and the decode keeps
+  a well-formed body's leading byte order mark as `U+FEFF`; `string.Trim()` does not remove it on
   .NET Core, so `ServiceBrokerErrorPayload.Describe` strips it explicitly
-  (`WhenDescribingAnErrorPayload.MustNotIncludeAByteOrderMark`).
+  (`WhenDescribingAnErrorPayload.MustParseABomPrefixedBody`).
 
 ### 2. A deterministic SQL fault is terminal
 
@@ -155,11 +160,18 @@ receiver with no arm throws rather than dispatching.
 predicate, the two sets are pinned disjoint, and every site that classifies calls it. Adding a number changes one
 switch.
 
-**ELIMINATED CLASS 3: untrusted broker bytes surfaced as a free-form diagnostic string.** The only type that can carry
-an `Error` payload to a log is `ServiceBrokerErrorPayload.ErrorDescription`, whose constructor is private and whose
-sole producer sanitizes and bounds both values, so an unsanitized or unbounded projection is unrepresentable rather
-than merely unwritten. What reaches the log is two structured parameters drawn from an allowlisted document shape, so
-a peer cannot forge a log record and a new field cannot be added without passing the same producer.
+**ELIMINATED CLASS 3: untrusted broker bytes surfaced as a free-form diagnostic string.** Two failure modes are closed
+by construction, not merely fixed. First, a body whose bytes are not valid UTF-16 can no longer be repaired into a
+credible diagnostic: the decode throws instead of substituting a replacement character, so a malformed body projects
+the unreadable sentinel rather than text manufactured to look like something the peer said. Second, a log-unsafe code
+point can no longer reach the log as itself for want of an enumeration that missed it: the permitted set is positive
+— a rune is kept only when its Unicode category is one `IsPrinting` names, and every other category, including one no
+one has yet thought to name, collapses to a space by falling out of the switch rather than by matching an entry in
+it. The only type that can carry an `Error` payload to a log is `ServiceBrokerErrorPayload.ErrorDescription`, whose
+constructor is private and whose sole producer sanitizes and bounds both values, so an unsanitized or unbounded
+projection is unrepresentable rather than merely unwritten. What reaches the log is two structured parameters drawn
+from an allowlisted document shape, so a peer cannot forge a log record and a new field cannot be added without
+passing the same producer.
 
 **What neither makes impossible** is a wrong membership decision: a message type that should have been dispatched
 classified as a discard still ends its conversation correctly, and an error number wrongly added to the terminal set

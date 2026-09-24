@@ -26,9 +26,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - **Service Broker `Error` messages are logged at `Error`, with their payload decoded**, instead of at `Trace`. The
   conversation handle, the service name, and the Service Broker error code and description are each logged as their
   own structured field. Because the description is text the dialog peer chose, it is read only from the documented
-  `<Error>` document, control characters in it are replaced with spaces, and it is capped at 3000 characters; a body
-  that is missing or that cannot be read logs a placeholder (`<no error payload>` / `<unreadable error payload>`) in
-  place of the code and description. Other discarded messages stay at `Trace`. (#357)
+  `<Error>` document; only printable letters, marks, numbers, punctuation, symbols and spaces are logged from it, and
+  anything else becomes a space, and it is capped at 3000 characters. A body that is not valid UTF-16, that is
+  missing, or that cannot otherwise be read logs a placeholder (`<no error payload>` / `<unreadable error payload>`)
+  in place of the code and description. Other discarded messages stay at `Trace`. (#357)
 
 ### Fixed
 
