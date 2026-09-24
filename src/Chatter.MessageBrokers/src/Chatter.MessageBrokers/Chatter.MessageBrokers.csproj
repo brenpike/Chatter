@@ -24,10 +24,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Scrutor" Version="3.3.0" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\..\..\Chatter.CQRS\src\Chatter.CQRS\Chatter.CQRS.csproj" />
   </ItemGroup>
 
