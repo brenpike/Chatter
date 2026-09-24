@@ -149,7 +149,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             var chatterBuilder = services.AddChatterCqrs(Mock.Of<IConfiguration>(),
                                                           messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
 
-            typeof(FakeFirstCommandHandler).IsPublic.Should().BeFalse();
+            typeof(FakeFirstCommandHandler).IsVisible.Should().BeFalse();
             services.Should().ContainSingle(sd => sd.ServiceType == typeof(IMessageHandler<FakeCommand>))
                     .Which.ImplementationType.Should().Be(typeof(FakeSecondCommandHandler));
 
