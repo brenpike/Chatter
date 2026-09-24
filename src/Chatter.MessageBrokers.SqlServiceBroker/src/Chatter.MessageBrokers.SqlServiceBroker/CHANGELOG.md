@@ -23,16 +23,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
   appeared; it now stops and must be restarted once the queue exists. Because the predicate providers are registered
   globally, error 208 raised anywhere under Chatter's recovery pipeline (for example, a handler hitting a table that a
   concurrent migration has not yet created) is no longer retried. (#358)
-- **Service Broker `Error` messages are logged at `Error`, with their decoded payload**, conversation handle and service
-  name, instead of at `Trace`. Other discarded messages stay at `Trace`. (#357)
+- **Service Broker `Error` messages are logged at `Error`, with their payload decoded**, instead of at `Trace`. The
+  conversation handle, the service name, and the Service Broker error code and description are each logged as their
+  own structured field. Because the description is text the dialog peer chose, it is read only from the documented
+  `<Error>` document, control characters in it are replaced with spaces, and it is capped at 3000 characters; a body
+  that is missing or that cannot be read logs a placeholder (`<no error payload>` / `<unreadable error payload>`) in
+  place of the code and description. Other discarded messages stay at `Trace`. (#357)
 
 ### Fixed
 
 - **A discarded message's conversation is now ended, so errored conversation endpoints no longer accumulate in
   `sys.conversation_endpoints`.** Every discard of a received message (a Service Broker `Error`, a message of a type the
-  receiver does not accept, or a Chatter message with no body) now issues `END CONVERSATION` in the same transaction
-  before the RECEIVE commits. Previously the RECEIVE committed and the endpoint was left open (or in the error state)
-  indefinitely. **This is a breaking change** for a deployment where a non-Chatter application shares the queue and
+  receiver does not accept, or a Chatter message with no body) now issues `END CONVERSATION` before the RECEIVE
+  commits — on the receive transaction itself under a transactional mode, so the two commit together; under
+  `TransactionMode.None` there is no receive transaction and each statement autocommits on its own, the same way ack,
+  nack and deadletter already behave under that mode. Previously the RECEIVE committed and the endpoint was left open
+  (or in the error state) indefinitely. **This is a breaking change** for a deployment where a non-Chatter application shares the queue and
   keeps long-lived multi-message dialogs: such a dialog is now ended when Chatter discards one of its messages
   (previously that message was silently dropped). (#357)
 

@@ -69,8 +69,10 @@ tolerates it.
 
 ### 1. A terminal receive outcome ends its conversation
 
-**Every outcome that settles a received message ends that message's conversation, in the same transaction as the
-`RECEIVE`.** The rule is one predicate over the classification outcome,
+**Every outcome that settles a received message ends that message's conversation.** Under a transactional mode the
+`END CONVERSATION` and the `RECEIVE` share one transaction and commit together; under `TransactionMode.None`
+`SqlServiceBrokerReceiver.CreateTransaction` returns `null`, so each statement is its own autocommit and the two are
+not atomic (residual RES-1 below). The rule is one predicate over the classification outcome,
 `ServiceBrokerMessageClassifier.EndsConversation`, and `SqlServiceBrokerReceiver.DiscardMessageAsync` issues
 `EndDialogConversationCommand` on the receive session's connection and transaction before it commits. The rationale is
 recorded once, at that method's `INVARIANT:` (ADR-0027), and the predicate is pinned by
@@ -93,9 +95,21 @@ exists. `Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRat
   outcome with no arm in the receiver's switch reaches a fail-closed `default` that throws
   `CriticalReceiverException` rather than falling through into dispatch, which is how the `Error` message reached the
   dispatcher in the first place.
-- **An `Error` discard is reported at `Error` with its payload decoded; every other discard stays at `Trace`.** A
-  faulted conversation is an operator-visible fault carrying a Service Broker diagnostic, and the routine discards
-  are not. `ServiceBrokerErrorPayload.Describe` decodes the body for that log.
+- **An `Error` discard is reported at `Error` with its payload projected into structured fields; every other discard
+  stays at `Trace`.** A faulted conversation is an operator-visible fault carrying a Service Broker diagnostic, and
+  the routine discards are not. **Those bytes are untrusted.** The dialog peer chooses the `DESCRIPTION` text of
+  `END CONVERSATION ... WITH ERROR`, and Service Broker copies it verbatim into the `Error` body it delivers here, so
+  a peer that embeds a newline or a carriage return in its description writes whatever it likes into this host's log
+  as if the host had logged it. This is the rationale the comments on `ServiceBrokerErrorPayload` and on the
+  receiver's `DiscardErroredConversation` arm cite rather than restate (ADR-0027). So
+  `ServiceBrokerErrorPayload.Describe` never hands a log a free-form string: it refuses a body over 64 KiB outright,
+  parses what remains with a hardened `XmlReader` (DTD processing prohibited, no resolver, a character bound), and
+  accepts a value only from the documented `<Error><Code/><Description/></Error>` shape under the Service Broker
+  `Error` namespace — a positive allowlist on both element name and namespace. The `Code` and `Description` it finds
+  are then sanitized (C0 controls, `DEL`, `U+2028` and `U+2029` each collapse to one space) and bounded (32 and 3000
+  characters, with a truncation marker), and the receiver logs them as two separate structured parameters rather
+  than interpolating them into the message template. A body that is absent or empty projects `<no error payload>`;
+  one that is oversized or does not conform projects `<unreadable error payload>`.
 
 **Two live facts this decision rests on**, both observed against SQL Server 2022:
 
@@ -141,6 +155,12 @@ receiver with no arm throws rather than dispatching.
 predicate, the two sets are pinned disjoint, and every site that classifies calls it. Adding a number changes one
 switch.
 
+**ELIMINATED CLASS 3: untrusted broker bytes surfaced as a free-form diagnostic string.** The only type that can carry
+an `Error` payload to a log is `ServiceBrokerErrorPayload.ErrorDescription`, whose constructor is private and whose
+sole producer sanitizes and bounds both values, so an unsanitized or unbounded projection is unrepresentable rather
+than merely unwritten. What reaches the log is two structured parameters drawn from an allowlisted document shape, so
+a peer cannot forge a log record and a new field cannot be added without passing the same producer.
+
 **What neither makes impossible** is a wrong membership decision: a message type that should have been dispatched
 classified as a discard still ends its conversation correctly, and an error number wrongly added to the terminal set
 is wrongly terminal everywhere at once.
@@ -158,6 +178,39 @@ is wrongly terminal everywhere at once.
 - **No public surface changes.** `SqlExceptionHelper`, the classification outcome, the classifier and the
   error-payload decoder are all internal to the package, so nothing above is a compatibility surface. The README's
   recovery and receive-filtering sections are corrected to match the new behaviour.
+
+### Recorded residuals
+
+Both were raised by the local review of this change (finding `c03c94f2`) and are accepted rather than fixed.
+
+**RES-1 — under `TransactionMode.None` the discard and its `END CONVERSATION` are not atomic (inherited).** The root
+cause is `SqlServiceBrokerReceiver.CreateTransaction`: under `TransactionMode.None` it returns `null`, and
+`ReceiveSession` is written to be null-transaction-safe (its own `INVARIANT:` says so), so the `RECEIVE`, the
+`END CONVERSATION` and the "commit" are three independent statements of which only the first two do anything. This is
+not new to the discard path. Ack, deadletter and the end-dialog outcome have issued `END CONVERSATION` outside any
+transaction under this mode since before this change, and nack's rollback is likewise a no-op — both facts are stated
+at `AckMessageAsync` and `NackMessageAsync`. The worst case is a process that dies between the two autocommits: the
+message is gone and its conversation is still open, which is exactly the pre-#357 leak for that one message, not a
+regression introduced here. **Refusing `TransactionMode.None` for discards was rejected**: it would single out one
+settlement path for a non-atomicity every settlement path in this receiver shares, and would add a new failure mode —
+a host that cannot receive at all — to correct what is, on the discard path, a documentation defect.
+
+**RES-2 — under a transactional mode, an `END CONVERSATION` that keeps failing stalls the queue (introduced).** The
+root cause is that `DiscardMessageAsync` runs `EndDialogConversationCommand` before `CommitAsync`, so a throwing
+command propagates out of `ReceiveMessageAsync` with the session disposed unsettled; the transaction rolls back, the
+message returns to the queue, and the next `RECEIVE` classifies it identically and fails identically. The realistic
+trigger is a deterministic `END CONVERSATION` failure rather than a transient one — for example
+`CleanupOnEndConversation = true` under a login without the permission `WITH CLEANUP` requires — and such a failure
+already breaks `AckMessageAsync` for every successfully dispatched message, because ack issues the same command with
+the same `enableCleanup`. The loop is bounded and loud, not silent: `BrokeredMessageReceiver.MessageReceiverLoopAsync`
+runs the receive inside `_recoveryStrategy.ExecuteAsync` (`RetryWithCircuitBreakerStrategy` by default) and catches
+the non-critical throw, logging "Error receiving brokered message" at `Error` before continuing, so retry backoff and
+the circuit breaker pace the retries and every turn is visible in the log. The outcome is a stalled queue an operator
+can see, not a message lost or a tight spin. **Committing the `RECEIVE` anyway when the `END CONVERSATION` fails was
+rejected**: it silently reinstates the leak this ADR exists to close, and contradicts the rule stated above.
+**Rethrowing as `CriticalReceiverException` was also rejected**: that extends Decision 2's terminal classification
+from "the queue is misconfigured" to conversation and permission errors, which is a wider blast radius than the risk
+justifies, and it is not reachable from the Docker harness, so it would ship unpinned.
 
 ## References
 

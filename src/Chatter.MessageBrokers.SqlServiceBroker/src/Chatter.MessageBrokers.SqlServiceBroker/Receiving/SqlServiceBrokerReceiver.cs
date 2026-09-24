@@ -295,8 +295,12 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             }
         }
 
-        // INVARIANT: a discard that settles a real received message also ends that message's conversation, in
-        // the SAME transaction as the RECEIVE, so no terminal outcome leaves a conversation endpoint open.
+        // INVARIANT: a discard that settles a real received message also ends that message's conversation, so
+        // no terminal outcome leaves a conversation endpoint open. Under a transactional mode the END
+        // CONVERSATION runs on the RECEIVE's own transaction and commits with it; under TransactionMode.None
+        // CreateTransaction returns null, so the END CONVERSATION and the commit are separate autocommits —
+        // the non-atomicity ack, nack, deadletter and end-dialog already have under that mode (residual RES-1
+        // in the ADR below).
         // Rationale: docs/adr/0037-a-terminal-receive-outcome-ends-its-conversation-and-a-deterministic-sql-fault-is-not-retried.md.
         // Pinned by Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRatherThanLeftInTheErrorState
         // and .ANullBodyDiscardEndsItsConversation (Docker-gated; SKIPPED when Docker is absent), which
