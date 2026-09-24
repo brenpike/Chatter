@@ -106,7 +106,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
             {
                 message = await ReceiveAsync(connection, transaction, cancellationToken);
             }
-#if NET5_0_OR_GREATER
             // Microsoft.Data.SqlClient owns IsTransient and may report a terminal error number as transient,
             // so the terminal guard keeps a terminal number from being shadowed by this filter, which sits
             // above the critical filter below. Same asymmetry the retry and circuit-breaker predicate
@@ -120,7 +119,6 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Receiving
                 _logger.LogWarning(e, "Failure to receive message from Sql Service Broker due to transient error");
                 throw;
             }
-#endif
             // INVARIANT: a terminal SQL error number, as classified by
             // SqlExceptionHelper.IsErrorNumberTerminal, surfaces as CriticalReceiverException naming
             // _options.MessageReceiverPath. Pinned by Integration.SsbMissingQueueTests

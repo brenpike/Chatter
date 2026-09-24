@@ -10,18 +10,13 @@ namespace Chatter.MessageBrokers.SqlServiceBroker.Tests.Receiving.CircuitBreaker
     {
         private readonly SqlCircuitBreakerExceptionPredicatesProvider _sut = new SqlCircuitBreakerExceptionPredicatesProvider();
 
-        // INVARIANT: the `#if NET5_0_OR_GREATER` block in the provider adds the
-        // `exception.IsTransient` predicate only on net5.0+, so the count is 2 there and 1 on
-        // netcoreapp3.1. The #if below mirrors the production directive exactly. Re-adding a
-        // standalone `exception.Number == 208` predicate to the provider reddens this fact
-        // (ADR-0027).
+        // INVARIANT: the provider yields exactly two predicates — the driver-IsTransient-minus-terminal
+        // predicate and the package's own IsErrorNumberTransient predicate. Pinned by this fact:
+        // deleting either `yield return` in SqlCircuitBreakerExceptionPredicatesProvider reddens it
+        // and nothing else in the SqlServiceBroker unit suite (observed) (ADR-0027).
         [Fact]
-        public void MustYieldExpectedNumberOfPredicatesForTargetFramework()
-#if NET5_0_OR_GREATER
+        public void MustYieldBothSqlClassificationPredicates()
             => _sut.GetExceptionPredicates().Should().HaveCount(2);
-#else
-            => _sut.GetExceptionPredicates().Should().HaveCount(1);
-#endif
 
         [Fact]
         public void MustReturnFalseFromEveryPredicateForNonSqlException()
