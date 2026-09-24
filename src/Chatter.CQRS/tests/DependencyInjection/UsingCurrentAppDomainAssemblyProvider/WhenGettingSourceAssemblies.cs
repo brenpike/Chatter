@@ -18,7 +18,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceProvider
             // the test order-independent and tolerant of assemblies loaded between the two
             // calls, while still failing if the provider drops currently-loaded assemblies.
             // Dynamic assemblies are excluded from the snapshot because the provider intentionally
-            // filters them out (they are inherently unscannable).
+            // filters them out (see CurrentAppDomainAssemblyProvider.GetSourceAssemblies).
             var snapshot = AppDomain.CurrentDomain.GetAssemblies().Where(assembly => !assembly.IsDynamic).ToArray();
 
             var actual = CurrentAppDomainAssemblyProvider.Default.GetSourceAssemblies().ToList();
@@ -32,10 +32,8 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingAssemblySourceProvider
         [Fact]
         public void MustExcludeDynamicAssemblies()
         {
-            // Emit a dynamic assembly so it is present in the current AppDomain. Dynamic assemblies
-            // (e.g. mock/dynamic-proxy assemblies like DynamicProxyGenAssembly2) are inherently
-            // unscannable and would throw when handed to Scrutor's type enumeration, so the provider
-            // must exclude them at the source.
+            // Emit a dynamic assembly so it is present in the current AppDomain. Why the provider
+            // excludes it: see the INVARIANT on CurrentAppDomainAssemblyProvider.GetSourceAssemblies.
             var dynamicAssembly = AssemblyBuilder.DefineDynamicAssembly(
                 new AssemblyName($"Chatter.Tests.Dynamic.{Guid.NewGuid():N}"),
                 AssemblyBuilderAccess.Run);
