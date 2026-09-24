@@ -104,16 +104,18 @@ exists. `Integration.SsbErroredConversationTests.AnErroredConversationIsEndedRat
   receiver's `DiscardErroredConversation` arm cite rather than restate (ADR-0027). So
   `ServiceBrokerErrorPayload.Describe` never hands a log a free-form string: it refuses a body over 64 KiB outright,
   decodes it with a strict `UnicodeEncoding` that refuses a body whose bytes are not valid UTF-16 rather than
-  repairing them into a replacement character, parses what remains with a hardened `XmlReader` (DTD processing
-  prohibited, no resolver, a character bound), and
-  accepts a value only from the documented `<Error><Code/><Description/></Error>` shape under the Service Broker
-  `Error` namespace — a positive allowlist on both element name and namespace. The `Code` and `Description` it finds
-  are then sanitized against a positive per-rune Unicode-category allowlist (Letter, Mark, Number, Punctuation,
-  Symbol and Space Separator categories are kept; every other rune collapses to one space) and bounded (32 and 3000
-  characters, with a truncation marker), and the receiver logs them as two separate structured parameters rather
-  than interpolating them into the message template. A body that is absent or empty projects `<no error payload>`;
-  one that is oversized, not valid UTF-16, or does not conform to the documented shape projects
-  `<unreadable error payload>`.
+  repairing them into a replacement character, and parses what remains with a hardened `XmlReader` (DTD processing
+  prohibited, no resolver, a character bound) that reads values only from `<Code>` and `<Description>` elements in
+  the Service Broker `Error` namespace — a positive allowlist on both element name and namespace — while tolerating
+  the rest of the document around them (recorded as RES-C below). `Code` is never the raw element content: it is
+  parsed as an `Int32` and re-rendered in the invariant culture, so a `<Code>` that does not parse as an `Int32`
+  makes the whole payload unreadable, projecting `<unreadable error payload>` for both fields. `Description` is the
+  element content after sanitization: a positive per-rune Unicode-category allowlist (Letter, Mark, Number,
+  Punctuation, Symbol and Space Separator categories are kept; every other rune collapses to one space) and a
+  3000-character bound with a truncation marker, and the receiver logs `Code` and `Description` as two separate
+  structured parameters rather than interpolating them into the message template. A body that is absent or empty
+  projects `<no error payload>`; one that is oversized, not valid UTF-16, or does not yield both an
+  `Int32`-parseable `<Code>` and a `<Description>` in that namespace projects `<unreadable error payload>`.
 
 **Two live facts this decision rests on**, both observed against SQL Server 2022:
 
@@ -160,22 +162,29 @@ receiver with no arm throws rather than dispatching.
 predicate, the two sets are pinned disjoint, and every site that classifies calls it. Adding a number changes one
 switch.
 
-**ELIMINATED CLASS 3: untrusted broker bytes surfaced as a free-form diagnostic string.** Two failure modes are closed
-by construction, not merely fixed. First, a body whose bytes are not valid UTF-16 can no longer be repaired into a
-credible diagnostic: the decode throws instead of substituting a replacement character, so a malformed body projects
-the unreadable sentinel rather than text manufactured to look like something the peer said. Second, a log-unsafe code
-point can no longer reach the log as itself for want of an enumeration that missed it: the permitted set is positive
-— a rune is kept only when its Unicode category is one `IsPrinting` names, and every other category, including one no
-one has yet thought to name, collapses to a space by falling out of the switch rather than by matching an entry in
-it. The only type that can carry an `Error` payload to a log is `ServiceBrokerErrorPayload.ErrorDescription`, whose
-constructor is private and whose sole producer sanitizes and bounds both values, so an unsanitized or unbounded
-projection is unrepresentable rather than merely unwritten. What reaches the log is two structured parameters drawn
-from an allowlisted document shape, so a peer cannot forge a log record and a new field cannot be added without
-passing the same producer.
+**ELIMINATED CLASS 3: a peer-chosen byte reaching the log through `Code` is impossible.** `Code`'s only producers are
+`int.ToString(CultureInfo.InvariantCulture)` applied to an already-parsed `Int32`, and the compile-time sentinel
+constants (`NoErrorPayloadSentinel`, `UnreadableErrorPayloadSentinel`); a value that did not pass through one of
+those two producers is unrepresentable, not merely unwritten. `Description` is the one channel that still carries
+peer-chosen text verbatim, and two failure modes on that channel are closed by construction, not merely fixed.
+First, a body whose bytes are not valid UTF-16 can no longer be repaired into a credible diagnostic: the decode
+throws instead of substituting a replacement character, so a malformed body projects the unreadable sentinel rather
+than text manufactured to look like something the peer said. Second, a log-unsafe code point can no longer reach the
+log as itself for want of an enumeration that missed it: the permitted set is positive — a rune is kept only when
+its Unicode category is one `IsPrinting` names, and every other category, including one no one has yet thought to
+name, collapses to a space by falling out of the switch rather than by matching an entry in it. The only type that
+can carry an `Error` payload to a log is `ServiceBrokerErrorPayload.ErrorDescription`, whose constructor is private
+and whose sole producer sanitizes and bounds both values, so an unsanitized or unbounded `Description` is
+unrepresentable rather than merely unwritten. A peer cannot forge a log record through `Code`, and cannot forge one
+through `Description` beyond what the allowlist and the 3000-character cap permit.
 
 **What neither makes impossible** is a wrong membership decision: a message type that should have been dispatched
 classified as a discard still ends its conversation correctly, and an error number wrongly added to the terminal set
-is wrongly terminal everywhere at once.
+is wrongly terminal everywhere at once. Nor does it establish that the received bytes are the entire documented
+`<Error>` document: the reader parses a prefix of the grammar sufficient to find the two allowlisted elements and
+deliberately tolerates the rest (trailing content after `</Error>`, attributes, unknown children, duplicate
+children, repeated leading byte order marks; RES-C below). Whole-document canonicity is not established and is not
+claimed.
 
 ## Consequences
 
@@ -193,7 +202,9 @@ is wrongly terminal everywhere at once.
 
 ### Recorded residuals
 
-Both were raised by the local review of this change (finding `c03c94f2`) and are accepted rather than fixed.
+RES-1 and RES-2 were raised by the local review of this change (finding `c03c94f2`) and are accepted rather than
+fixed. RES-C was raised separately (finding `cb3be8b7`) and is likewise accepted rather than fixed, recorded as a
+design decision with a rejected alternative rather than an inherited residual.
 
 **RES-1 — under `TransactionMode.None` the discard and its `END CONVERSATION` are not atomic (inherited).** The root
 cause is `SqlServiceBrokerReceiver.CreateTransaction`: under `TransactionMode.None` it returns `null`, and
@@ -223,6 +234,21 @@ rejected**: it silently reinstates the leak this ADR exists to close, and contra
 **Rethrowing as `CriticalReceiverException` was also rejected**: that extends Decision 2's terminal classification
 from "the queue is misconfigured" to conversation and permission errors, which is a wider blast radius than the risk
 justifies, and it is not reachable from the Docker harness, so it would ship unpinned.
+
+**RES-C — the Error-document reader accepts more than the documented shape (introduced).** The root cause is that
+`ServiceBrokerErrorPayload`'s hand-driven `XmlReader` consumes only a PREFIX of the grammar sufficient to find the
+two allowlisted elements: it deliberately tolerates trailing content after `</Error>`, attributes, unknown children,
+duplicate children (last one wins) and repeated leading byte order marks, as recorded at the reader's own `NOTE:`
+comment. The bounded impact is ZERO: nothing outside `Code` and `Description` is ever projected, `Code` is derived
+from a parsed `Int32` rather than copied from the peer, and `Description` passes through the positive
+printing-category allowlist and the 3000-character cap before it reaches a log — the peer already controls both
+projected values verbatim by design, so tolerating more of the surrounding document grants no new capability.
+**Validating the whole document against an XSD via `XmlSchemaSet` was considered and rejected**: it adds a parsing
+stage rather than removing one, hardens a surface with zero blast radius, and closes none of the class that
+recurred — the class that recurred was untrusted bytes reaching the log as free-form text, which Decision 1's
+allowlist-and-bound already closes regardless of whether the surrounding document conforms. This tolerance was
+introduced on this branch (`2278dbf`), so it is recorded here as a design decision with a rejected alternative, not
+as an inherited residual.
 
 ## References
 
