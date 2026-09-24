@@ -25,8 +25,9 @@ deployment without a line of code changing.
 `ReflectionTypeLoadException` and to no types on any other exception — and `AddSelector` collects the result with
 `types.ToHashSet()`, so the scan order is the enumeration order of that set. The conclusion stands: neither the
 assembly order nor that enumeration order is specified. The same wording in the exception message
-(`CqrsExtensions.cs:131`, restated under *One exception names every ambiguous Command* below) was not changed by
-#394, and its conclusion still holds.
+(`CqrsExtensions.cs:131`, restated under *One exception names every ambiguous Command* below) was reworded by
+#394 to match — see the amendment under *One exception names every ambiguous Command* below; the conclusion is
+unchanged.
 
 This is the last child of epic #301 on the registration side. Its two predecessors narrowed the scan
 rather than the ambiguity: #329 narrowed WHICH assemblies are scanned when marker types or explicit
@@ -248,6 +249,13 @@ that the replace strategy keeps the last handler scanned, and that the scan orde
 load order and each assembly's type-definition order, neither of which is specified
 (`CqrsExtensions.cs:131`). Reporting all of them at once is the point — fixing one ambiguity only to
 recompose and meet the next is the failure mode a first-failure throw produces.
+
+**Amended 2026-09-24 (#394, Scrutor 7.0.0): the shipped message's own wording moved to match.** The opening
+sentence (`CqrsExtensions.cs:131`) now names the enumeration order of each assembly's loadable types, which the
+scan collects into a set — the same within-assembly order stated in the amendment above — rather than
+"type-definition order". The conclusion is unchanged: neither the assembly order nor that enumeration order is
+specified. Pinned by `MustDescribeTheScanOrderTheScanActuallyUses`
+(`WhenThrowingOnDuplicateCommandHandlers.cs:189-199`).
 
 **Ordering is ordinal by Command full name, then by handler full name**
 (`CqrsExtensions.cs:126,124`). This matters precisely because the INPUT order is the thing that is

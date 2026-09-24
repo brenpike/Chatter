@@ -19,6 +19,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - **Scrutor dependency raised from 3.3.0 to 7.0.0.** **This is a breaking change** for an application that pins Scrutor below 7.0.0 itself: NuGet reports a downgrade. Remove the pin or raise it to 7.0.0. Scrutor 7.0.0 also raises its own `Microsoft.Extensions.DependencyModel` dependency from 3.1.6 to 10.0.0 (#394).
 - Handler and behavior scanning still registers non-public (internal or private nested) classes. Every scan now passes `publicOnly: false` explicitly, because Scrutor 6 and later would otherwise skip them silently. What gets registered does not change (#394).
 - **An assembly whose types cannot all be loaded no longer makes `AddChatterCqrs` throw `ReflectionTypeLoadException`.** The scan registers the types that do load and skips the rest. If type loading fails for any other reason, an assembly passed explicitly (or through a marker type) contributes no handlers, while a namespace-selector or whole-`AppDomain` scan still throws. Check the registrations when an assembly depends on packages that may be missing at runtime (#394).
+- The exception message from `ThrowOnDuplicateCommandHandlers()` now describes the scan order Scrutor 7.0.0 actually uses — assembly load order and the enumeration order of each assembly's loadable types, which the scan collects into a set — instead of the assembly-defined type order it named before. Only the message text changed: which handler is registered, and when the check throws, are unchanged (#394).
 
 ## [0.18.0] - 2026-09-24
 
