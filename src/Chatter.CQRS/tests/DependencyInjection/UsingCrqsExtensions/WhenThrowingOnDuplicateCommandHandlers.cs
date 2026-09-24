@@ -136,8 +136,10 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
 
         /// <summary>
         /// Characterization pin, not a red-first test: the handler scan uses Scrutor's
-        /// <c>AddClasses(Action&lt;IImplementationTypeFilter&gt;)</c> overload, which scans with
-        /// <c>publicOnly: false</c>, so non-public handlers are registered and therefore reported.
+        /// <c>AddClasses(Action&lt;IImplementationTypeFilter&gt;, bool)</c> overload, passing
+        /// <c>publicOnly: false</c> explicitly (see the INVARIANT at
+        /// ServiceCollectionExtensions.RegisterBehaviorForAllCommands), so non-public handlers are
+        /// registered and therefore reported.
         /// Locks that ground truth so a Scrutor upgrade breaks this test instead of silently
         /// narrowing both the registration and the check.
         /// </summary>

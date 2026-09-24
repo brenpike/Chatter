@@ -19,6 +19,15 @@ enumerates `Assembly.DefinedTypes` (Scrutor 3.3.0, `TypeSourceSelector.InternalF
 specified anywhere, so which of two competing handlers wins can change between a developer's machine and a
 deployment without a line of code changing.
 
+**Amended 2026-09-24 (#394, Scrutor 7.0.0): the within-assembly citation above is Scrutor 3.3.0's.** Scrutor
+7.0.0's `TypeSourceSelector.InternalFromAssemblies` enumerates each assembly through
+`ReflectionExtensions.GetLoadableTypes` — `Assembly.GetTypes()`, falling back to the non-null loadable subset on
+`ReflectionTypeLoadException` and to no types on any other exception — and `AddSelector` collects the result with
+`types.ToHashSet()`, so the scan order is the enumeration order of that set. The conclusion stands: neither the
+assembly order nor that enumeration order is specified. The same wording in the exception message
+(`CqrsExtensions.cs:131`, restated under *One exception names every ambiguous Command* below) was not changed by
+#394, and its conclusion still holds.
+
 This is the last child of epic #301 on the registration side. Its two predecessors narrowed the scan
 rather than the ambiguity: #329 narrowed WHICH assemblies are scanned when marker types or explicit
 assemblies are supplied, and #330 narrowed WHICH interfaces a scanned handler is registered as — the
@@ -124,6 +133,28 @@ decompiled from `~/.nuget/packages/scrutor/3.3.0/lib/netstandard2.0/Scrutor.dll`
 is not a competing pair — pinned by `MustNotReportOneHandlerReachableFromTwoScannedAssemblies`
 (`WhenThrowingOnDuplicateCommandHandlers.cs:162-171`).
 
+**Amended 2026-09-24 (#394, Scrutor 7.0.0): the `ImplementationType` dedupe is now defensive, and the case it
+names is a fixture's.** The strategy facts above were re-read in Scrutor 7.0.0 and hold: `LifetimeSelector.Populate`
+still constructs the `ServiceDescriptor` before calling `strategy.Apply`, `Replace()` still resolves
+`ReplacementBehavior.Default` to `ReplacementBehavior.ServiceType`, and `Append` is still a bare
+`services.Add(descriptor)`. What changed is the type source: 7.0.0 collects a scan's types into a set
+(`TypeSourceSelector.AddSelector`, `types.ToHashSet()`), so one handler type reachable from two scanned assemblies
+enters the probe's single scan once and appends once. `MustNotReportOneHandlerReachableFromTwoScannedAssemblies`
+still passes, but because Scrutor never appends the type twice, not because of the `.Distinct()` at
+`CqrsExtensions.cs:124`. No test reddens when that `.Distinct()` is removed; it stays as a defensive guard that
+nothing pins. No `AddChatterCqrs` overload can construct the case either: a CLR type belongs to exactly one assembly,
+and Chatter deduplicates the assembly set before Scrutor sees it — `AssemblySourceFilter.Apply()` returns
+`ExplictAssemblies.Distinct()` or `ExplictAssemblies.Union(...)` (`AssemblySourceFilter.cs:56-59`), and
+`AssemblySourceFilterBuilder` accumulates marker-type and explicit assemblies with `Union`
+(`AssemblySourceFilterBuilder.cs:62,75`). Only a mocked `Assembly` that returns the same `Type` as another scanned
+`Assembly`, or a foreign `IAssemblySourceFilter` that yields one assembly twice, reaches it, and under 7.0.0 both
+land in one set. The query scan carries the matching characterization pin,
+`MustNotThrowForOneQueryHandlerReachableFromTwoScannedAssemblies`
+(`src/Chatter.CQRS/tests/DependencyInjection/UsingCrqsExtensions/WhenAddingQueryHandlers.cs:30-46`), which goes
+red if the scan stops deduplicating types; two DISTINCT scanned handler types for one closed
+`IQueryHandler<TQuery, TResult>` still throw, pinned by `MustThrowWhenTwoScannedHandlersHandleTheSameQuery`
+(`WhenAddingQueryHandlers.cs:16-28`).
+
 **This shape replaced a parallel copy of the candidate rule, and the copy had already drifted.** The
 previous check re-derived its own candidates — its own type source, its own
 `type.IsClass && !type.IsAbstract && type.IsValidMessageHandler(typeof(ICommand))` predicate and its own
@@ -135,6 +166,14 @@ it was caught by a red-first test, `MustNotReportACompilerGeneratedHandlerBecaus
 handler is absent from the registrations and that the check stays silent about it. The structural fix is
 the invariant recorded on the method itself (`CqrsExtensions.cs:111-117`): the probe must never re-derive
 what a candidate is, because whichever conjunct of a re-derived copy drifts first is incidental.
+
+**Amended 2026-09-24 (#394, Scrutor 7.0.0): the `[CompilerGenerated]` rejection moved, and still holds.** Under
+7.0.0 the `AddClasses(action, publicOnly)` overload asks `ReflectionExtensions.IsNonAbstractClass` for classes
+INCLUDING compiler-generated ones, runs the caller's filter, and then applies
+`ImplementationTypeFilter.WithoutAttribute<CompilerGeneratedAttribute>()` (still `IsDefined` with `inherit: true`)
+unless the filter opted in; `IsNonAbstractClass` still rejects `IsSpecialName` types. The scan still drops the
+compiler-generated handler, and `MustNotReportACompilerGeneratedHandlerBecauseItIsNeverRegistered` still pins it —
+one more reason the probe must not re-derive: the conjunct moved between two classes of the dependency.
 
 **Non-public handlers ARE registered, and therefore MUST be reported.** The scan calls Scrutor's
 `AddClasses(Action<IImplementationTypeFilter>)` (`CqrsExtensions.cs:186-187`), whose IL delegates to
@@ -148,6 +187,20 @@ characterization pin, `MustRegisterAndReportNonPublicCompetingHandlers`
 (`WhenThrowingOnDuplicateCommandHandlers.cs:137-160`), so a Scrutor upgrade that flips the default breaks a
 test instead of silently narrowing both the registration and the check.
 
+**Amended 2026-09-24 (#394, Scrutor 7.0.0): the default this paragraph reads out of 3.3.0's IL has flipped, and
+nothing depends on it any longer.** Scrutor 6.0.1 flipped it, and in 7.0.0 both `AddClasses()` and
+`AddClasses(Action<IImplementationTypeFilter>)` delegate with `publicOnly: true`; the shipped XML documentation
+("all public, non-abstract classes") now matches the code. All four scans in this module therefore pass
+`publicOnly: false` explicitly — the command scan (`CqrsExtensions.cs:188-189`), the event scan
+(`CqrsExtensions.cs:167-168`), the query scan (`CqrsExtensions.cs:213-214`) and the behavior scan
+(`ServiceCollectionExtensions.cs:111`) — so no registration depends on an overload default. The rationale and its
+oracles live once, in the `INVARIANT:` at `ServiceCollectionExtensions.cs:101-110`. The conclusion is unchanged:
+non-public handlers are registered, so the check must report them. `MustRegisterAndReportNonPublicCompetingHandlers`
+did what this paragraph asked of it: the `INVARIANT:` records it red under 7.0.0 once the explicit argument is
+dropped. It now asserts `IsVisible` rather than `IsPublic` for its nested fixture
+(`WhenThrowingOnDuplicateCommandHandlers.cs:152`). Its doc comment (`:137-143`) still says the one-argument overload
+scans with `publicOnly: false`; that sentence is stale, and it lives in a file outside this amendment.
+
 **Losing the check's own `ReflectionTypeLoadException` tolerance costs nothing.** The old check read types
 through `AssemblySourceFilter.SafeGetLoadableTypes` (`AssemblySourceFilter.cs:74-84`); the probe does not.
 That tolerance was already unreachable from this path. Registration runs first and enumerates
@@ -158,6 +211,23 @@ was NOT deleted — it is still the type source for
 `AssemblySourceFilter.GetAssembliesThatMatchNamespaceSelector` (`AssemblySourceFilter.cs:64-66`). The
 mock/dynamic-proxy case that helper names does not reach either path in the first place: dynamic assemblies
 are excluded by the source provider (`CurrentAppDomainAssemblyProvider.cs:17`).
+
+**Amended 2026-09-24 (#394, Scrutor 7.0.0): the premise of this paragraph is false, and its conclusion survives
+for a different reason.** Registration no longer throws first. Scrutor 7.0.0 enumerates each assembly through
+`ReflectionExtensions.GetLoadableTypes`, which returns the non-null subset of `ReflectionTypeLoadException.Types`
+and returns no types at all for any other exception from `Assembly.GetTypes()`. An assembly with unloadable types
+therefore composes silently on its loadable subset — a handler whose own type cannot load is simply not registered —
+and `ThrowOnDuplicateCommandHandlers()` IS reachable for it. Losing the check's own tolerance still costs nothing,
+because the probe needs none of its own: it runs `ScanCommandHandlers`, the same Scrutor scan as the registration,
+so it reads each assembly through the same `GetLoadableTypes` and sees the same subset the registration saw, for
+the same assembly set (the re-derived-set non-goal below still applies). Restoring `SafeGetLoadableTypes` in the
+probe would be the re-derivation the `INVARIANT:` at `CqrsExtensions.cs:114-116` forbids, and a divergent one: it
+tolerates only `ReflectionTypeLoadException` (`AssemblySourceFilter.cs:74-84`), where Scrutor also swallows every
+other exception. That difference does survive on one path. In namespace or unbounded mode `Apply()` runs every
+source assembly through `SafeGetLoadableTypes` to select it (`AssemblySourceFilter.cs:64-66`), so an assembly
+whose `GetTypes()` throws anything other than `ReflectionTypeLoadException` still aborts `AddChatterCqrs`, and
+aborts the check the same way; explicit-assembly mode never calls it. This is read from Scrutor 7.0.0's source and
+this module's; no test in this repository pins the loadable-subset composition or the abort.
 
 **Grouping is by closed command-handler interface, not by handler type.** The probe groups the descriptors
 by `ServiceType` (`CqrsExtensions.cs:121`), and the scan registers each handler only as the interfaces
@@ -284,6 +354,19 @@ not a minor.
 - **Epic #301's registration thread closes here.** With #329 (which assemblies), #330 (which interfaces)
   and #449 (what happens when two survive) answered, the scan's registration semantics are fully stated.
 
+**Amended 2026-09-24 (#394): line citations re-measured.** The explicit `publicOnly: false` argument and its
+cross-reference comment added one line to each handler scan in `CqrsExtensions.cs`, so citations in this ADR that
+reach past line 165 of that file (References included), and two in other files, have moved. The claims they carry
+are unchanged; the current lines are: `AddCommandHandlers` and its `Replace()` at `:175-176`; `ScanCommandHandlers` at `:183-194`, its
+`AddClasses` at `:188-189` and its `.As(...)` at `:191`; `GetMessageHandlerInterfacesFor` at `:196-199`;
+`IsClosedHandlerType` and `IsValidMessageHandler` at `:201-206`; the event scan at `:162-173` with `Append` at
+`:169`; the query scan at `:208-219` with `Throw` at `:215`; `Replace(ReplacementBehavior.ImplementationType)` at
+`ServiceCollectionExtensions.cs:112`; the dynamic-assembly exclusion at `CurrentAppDomainAssemblyProvider.cs:19`.
+Separately, and predating #394, the package citations under Options 2 and 3 (`Chatter.CQRS.csproj:20,21,26,27`)
+describe two target-framework legs: the module now targets `net10.0` only (ADR-0038), with
+`Microsoft.Extensions.Logging.Abstractions` at `:20` and `Microsoft.Extensions.Hosting` at `:21`. Neither option's
+conclusion depends on it.
+
 ## References
 
 - Issue #449 — *Command-handler displacement during assembly scanning is silent*. The report this ADR
@@ -306,6 +389,17 @@ not a minor.
   `TypeSourceSelector.InternalFromAssemblies`, `LifetimeSelector.Populate` and the `RegistrationStrategy`
   built-ins, read from the IL in `lib/netstandard2.0/Scrutor.dll` and `lib/netcoreapp3.1/Scrutor.dll`
   because the shipped `Scrutor.xml` is stale about `publicOnly`.
+- Scrutor 7.0.0 (added 2026-09-24, #394; the 3.3.0 entry above is kept as the record of what this decision was
+  measured against) — `TypeSourceSelector.InternalFromAssemblies` and `AddSelector`,
+  `ReflectionExtensions.GetLoadableTypes` and `IsNonAbstractClass`, `ImplementationTypeSelector.AddClasses` (all four
+  overloads), `ImplementationTypeFilter.WithoutAttribute`, `LifetimeSelector.Populate` and the `RegistrationStrategy`
+  built-ins, read from the `v7.0.0` tag of the source repository
+  ([khellang/Scrutor](https://github.com/khellang/Scrutor/tree/v7.0.0/src/Scrutor)); the dated amendments above
+  record what each read changed.
+- Issue #394 — *Scrutor pinned at 3.3.0, four majors behind 7.0.0, in a shipped package*. The upgrade those
+  amendments answer.
+- `src/Chatter.CQRS/tests/DependencyInjection/UsingCrqsExtensions/WhenAddingQueryHandlers.cs` — the query-scan pins
+  cited there: two distinct handler types throw, one type reachable from two assemblies does not.
 - `src/Chatter.CQRS/tests/DependencyInjection/UsingCrqsExtensions/WhenThrowingOnDuplicateCommandHandlers.cs`
   — the pinned behaviour: the throw and its contents, deterministic ordering, default-off, the untouched
   application collection, the Scrutor visibility characterization, and the seven cases that must NOT be
