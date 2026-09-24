@@ -98,8 +98,23 @@ work; this change removes the mixed-floor complication from it, not the upgrade 
 
 ## Consequences
 
-- **Runtime behaviour on `net10.0` is unchanged.** The code that runs on `net10.0` today is the code that runs after
-  this change; only the `net8.0` branches are deleted.
+- **Runtime behaviour on `net10.0` is unchanged, and the COMPILER is what holds that — no test pins it, and none
+  can.** A `net10.0` build defines both `NET5_0_OR_GREATER` and `NET9_0_OR_GREATER`, so every arm this change
+  deletes was the INACTIVE arm of its `#if` on that build: the deleted text was never in the `net10.0` compilation
+  unit, and the arm that survives is the code that already compiled. No mutation reddens an oracle for this claim,
+  because there is no mutation of text the `net10.0` build never compiled — so the claim names no oracle rather
+  than naming a weak one (ADR-0027 Rule 1). What tests DO pin is the behaviour of the SURVIVING arms, and this
+  change leaves every one of those facts asserting what it asserted before:
+  `WhenAGenericExceptionIsRecorded.MustSpellTheExceptionTypeIdenticallyOnEveryTargetFramework` (the
+  `exception.type` spelling `Activity.AddException` writes);
+  `WhenAggregatingTheDispatchDurationHistogram.MustPublishSecondsSizedBucketAdvice`,
+  `WhenAggregatingTheOperationDurationHistogram.MustPublishSecondsSizedBucketBoundariesAsInstrumentAdvice`,
+  `WhenDiagnosticsAreNotOptedInto.MustPublishSecondsSizedBucketBoundariesOnTheDrainLagHistogram` and
+  `MustPublishDocumentSizedBucketBoundariesOnTheBatchSizeHistogram` (the bucket-boundary advice); and
+  `MustYieldBothSqlClassificationPredicates` in both SqlServiceBroker predicate-provider facts (the
+  transient-minus-terminal and `IsErrorNumberTransient` predicate pair). The TEST side goes one step further than
+  the production side — those last two facts are renamed and their `INVARIANT:` remarks re-keyed off the deleted
+  directive onto the predicate pair itself — and that is a test change, not a runtime one.
 - **The `net10.0` side of each `#if NET9_0_OR_GREATER` block becomes unconditional.** Histogram bucket boundary
   advice and `Activity.AddException` are now used on every build. ADR-0010 is amended to say so.
 - **#392 is folded in.** Its always-true `#if NET5_0_OR_GREATER` directives are removed in the same change.
