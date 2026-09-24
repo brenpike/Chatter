@@ -12,6 +12,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.12.1] - 2026-09-24
+
+### Changed
+
+- Dependency lock file refreshed for Scrutor 7.0.0, which arrives through Chatter.CQRS. No code change (#394).
+
 ## [0.12.0] - 2026-09-24
 
 ### Removed
