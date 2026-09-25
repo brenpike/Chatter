@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -120,6 +121,51 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
             result.Should().BeAssignableTo<string>();
             result.Should().NotBeNullOrEmpty();
             result.Should().Be("result");
+        }
+
+        [Fact]
+        public async Task MustRethrowACallerRequestedCancellationAndLogItOnceAtDebugInsteadOfError()
+        {
+            var cancellation = ArrangeQueryHandlerThatFaultsAfterAnAwait(new OperationCanceledException("The caller cancelled the query."));
+
+            var thrown = await FluentActions.Invoking(async () => await _sut.Query(_query, ContextCancelledByTheCaller())).Should().ThrowAsync<OperationCanceledException>();
+
+            thrown.Which.Should().BeSameAs(cancellation);
+            _logger.VerifyWasCalled(LogLevel.Debug, $"Dispatch of query '{nameof(TestQuery)}' was cancelled by the caller.", cancellation, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, times: Times.Never());
+        }
+
+        [Fact]
+        public async Task MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller()
+        {
+            var cancellation = ArrangeQueryHandlerThatFaultsAfterAnAwait(new OperationCanceledException("A spontaneous timeout cancelled the query handler."));
+
+            await FluentActions.Invoking(async () => await _sut.Query(_query, new QueryHandlerContext(CancellationToken.None))).Should().ThrowAsync<OperationCanceledException>();
+
+            _logger.VerifyWasCalled(LogLevel.Error, $"Error dispatching query of type '{nameof(TestQuery)}'", cancellation, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, times: Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Never());
+        }
+
+        private TException ArrangeQueryHandlerThatFaultsAfterAnAwait<TException>(TException failure) where TException : Exception
+        {
+            _handler.Setup(h => h.Handle(It.IsAny<TestQuery>(), It.IsAny<IQueryHandlerContext>()))
+                .Returns(() => FaultAfterAnAwait(failure));
+            return failure;
+        }
+
+        private static QueryHandlerContext ContextCancelledByTheCaller()
+        {
+            using var cancellationSource = new CancellationTokenSource();
+            cancellationSource.Cancel();
+            return new QueryHandlerContext(cancellationSource.Token);
+        }
+
+        private static async Task<string> FaultAfterAnAwait(Exception failure)
+        {
+            await Task.Yield();
+            throw failure;
         }
     }
 }
