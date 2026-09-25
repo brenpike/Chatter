@@ -86,7 +86,8 @@ namespace Chatter.CQRS.Queries
                 return await handler.Handle(query, queryHandlerContext);
             }
             // INVARIANT: as the Query<TResult> clause above states; pinned here by
-            // WhenDispatchingGenericQuery.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller.
+            // WhenDispatchingGenericQuery.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller, which
+            // goes red when this filter is widened to catch (OperationCanceledException) with no predicate.
             catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, queryHandlerContext))
             {
                 _logger.LogDebug(e, "Dispatch of query '{QueryType}' was cancelled by the caller.", typeof(TQuery).Name);
