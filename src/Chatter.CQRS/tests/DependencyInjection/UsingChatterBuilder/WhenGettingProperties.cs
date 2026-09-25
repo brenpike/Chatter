@@ -35,17 +35,5 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingChatterBuilder
         [Fact]
         public void MustGetMarkerAssemblies()
             => _sut.AssemblySourceFilter.Should().NotBeNull().And.BeSameAs(_assemblySourceFilterMock.Object);
-
-        /// <summary>
-        /// Characterization pin, not a red-first test: a builder that also carries the scanned assemblies still
-        /// exposes the exact filter it was given.
-        /// </summary>
-        [Fact]
-        public void MustGetTheFilterFromABuilderThatCarriesTheScannedAssemblies()
-        {
-            var sut = ChatterBuilder.Create(_serviceCollection.Object, _configuration.Object, _assemblySourceFilterMock.Object, new List<Assembly>());
-
-            sut.AssemblySourceFilter.Should().BeSameAs(_assemblySourceFilterMock.Object);
-        }
     }
 }

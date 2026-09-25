@@ -33,22 +33,23 @@ namespace Microsoft.Extensions.DependencyInjection
             messageHandlerSourceBuilder?.Invoke(filterBuilder);
             var filter = filterBuilder.Build();
             // INVARIANT: the filter's result is materialized exactly once, here, and that one list feeds the command,
-            // event and query scans and is carried on the builder for ThrowOnDuplicateCommandHandlers. Apply() is
-            // deferred: every enumeration re-runs the filter over the sequence the IAssemblyFilterSourceProvider
-            // returned, so a provider whose sequence is re-evaluated per enumeration would hand each scan, and the
-            // later duplicate check, a different assembly set. Consequence for such a provider: an assembly its
-            // sequence first yields after this line reaches none of the scans, where it previously could reach the
-            // event and query scans; CurrentAppDomainAssemblyProvider is unaffected, because it snapshots
-            // AppDomain.GetAssemblies() into an array when Apply() reads it. A consumer who needs such an assembly
-            // scanned passes it explicitly (WithExplicitAssemblies or WithMarkerTypes).
+            // event and query scans and is recorded on the service collection for ThrowOnDuplicateCommandHandlers.
+            // Apply() is deferred: every enumeration re-runs the filter over the sequence the
+            // IAssemblyFilterSourceProvider returned, so a provider whose sequence is re-evaluated per enumeration
+            // hands each scan, and the later duplicate check, a different assembly set; an assembly such a sequence
+            // first yields after this line now reaches none of the scans, where it previously could reach the event
+            // and query scans. Only the internal WithSourceProvider seam can install such a provider on this path, so
+            // that change is a statement about the seam, not one a consumer can reach; CurrentAppDomainAssemblyProvider
+            // is unaffected, because it snapshots AppDomain.GetAssemblies() into an array when Apply() reads it.
             // Oracle: WhenAddingChatterCqrs.MustReadTheAssemblySourceOnlyOnceForEveryRegistrationScan and
             // MustRegisterHandlersFromOneAssemblySetEvenWhenTheSourceGrowsBetweenScans.
             // Mutation that reddens them: handing the three scans filter.Apply() in place of this list.
             var scannedAssemblies = filter.Apply().ToList();
-            var chatterBuilder = ChatterBuilder.Create(services, configuration, filter, scannedAssemblies);
+            var chatterBuilder = ChatterBuilder.Create(services, configuration, filter);
 
             chatterBuilder.Services.AddMessageHandlers(scannedAssemblies);
             chatterBuilder.Services.AddQueryHandlers(scannedAssemblies);
+            HandlerScanRecord.GetOrAdd(chatterBuilder.Services).Record(scannedAssemblies);
 
             chatterBuilder.Services.AddScoped<IMessageDispatcherProvider, MessageDispatcherProvider>();
 
@@ -104,7 +105,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <summary>
         /// Fails composition when more than one handler is found for the same command.
         /// </summary>
-        /// <param name="chatterBuilder">The <see cref="IChatterBuilder"/> whose assemblies are checked: the assemblies scanned by the <c>AddChatterCqrs</c> call that returned it, otherwise the assemblies its <see cref="IAssemblySourceFilter"/> yields</param>
+        /// <param name="chatterBuilder">The <see cref="IChatterBuilder"/> whose assemblies are checked: the assemblies scanned by every <c>AddChatterCqrs</c> call on its <see cref="IChatterBuilder.Services"/>, otherwise, when that collection records no such call, the assemblies its <see cref="IAssemblySourceFilter"/> yields</param>
         /// <returns>The same <see cref="IChatterBuilder"/> instance</returns>
         /// <exception cref="InvalidOperationException">Thrown when a command is handled by more than one scanned handler</exception>
         public static IChatterBuilder ThrowOnDuplicateCommandHandlers(this IChatterBuilder chatterBuilder)
@@ -120,21 +121,25 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         /// <summary>
-        /// Returns the assemblies <see cref="AddChatterCqrs(IServiceCollection, IConfiguration, Action{CommandPipelineBuilder}, Action{AssemblySourceFilterBuilder})"/>
-        /// scanned when <paramref name="chatterBuilder"/> carries them, otherwise the result of applying its
+        /// Returns the assemblies every <see cref="AddChatterCqrs(IServiceCollection, IConfiguration, Action{CommandPipelineBuilder}, Action{AssemblySourceFilterBuilder})"/>
+        /// call on the <see cref="IChatterBuilder.Services"/> of <paramref name="chatterBuilder"/> scanned, as its
+        /// <see cref="HandlerScanRecord"/> records them, otherwise the result of applying its
         /// <see cref="IAssemblySourceFilter"/>.
         /// </summary>
         private static IEnumerable<Assembly> GetAssembliesToProbe(IChatterBuilder chatterBuilder)
         {
-            // INVARIANT: the check probes the assembly set the registration scanned, not a fresh Apply() of the filter,
-            // which may yield a different set (see the INVARIANT on the materialization in AddChatterCqrs).
+            // INVARIANT: the check probes the assembly set the registration scanned, as recorded on the service
+            // collection, not a fresh Apply() of the filter, which may yield a different set (see the INVARIANT on the
+            // materialization in AddChatterCqrs).
             // Oracle: WhenThrowingOnDuplicateCommandHandlers.MustProbeTheAssemblySetCapturedAtRegistrationWhenTheSourceGrowsAfterwards.
             // Mutation that reddens it: returning chatterBuilder.AssemblySourceFilter.Apply() unconditionally.
-            // INVARIANT: a builder carrying no scanned set (a foreign IChatterBuilder, or one from the public
-            // ChatterBuilder.Create, whose ScannedAssemblies is null and never empty) is probed through its filter.
-            // Oracle: WhenThrowingOnDuplicateCommandHandlers.MustProbeTheFilterWhenTheBuilderCarriesNoScanSet.
-            // Mutations that redden it: dropping the ?? fallback, or initializing ScannedAssemblies to an empty set.
-            return (chatterBuilder as ChatterBuilder)?.ScannedAssemblies ?? chatterBuilder.AssemblySourceFilter.Apply();
+            // INVARIANT: a builder whose service collection carries no scan record (one from the public
+            // ChatterBuilder.Create over a collection no AddChatterCqrs call has seen) is probed through its filter,
+            // never through an empty set.
+            // Oracle: WhenThrowingOnDuplicateCommandHandlers.MustProbeTheFilterWhenTheServiceCollectionCarriesNoScanRecord.
+            // Mutations that redden it: dropping the ?? fallback, or HandlerScanRecord.Find returning an empty record
+            // for a collection that carries none.
+            return HandlerScanRecord.Find(chatterBuilder.Services)?.ScannedAssemblies ?? chatterBuilder.AssemblySourceFilter.Apply();
         }
 
         /// <summary>

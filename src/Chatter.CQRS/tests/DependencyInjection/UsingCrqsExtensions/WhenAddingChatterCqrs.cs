@@ -70,6 +70,21 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             services.Should().NotContain(sd => sd.ImplementationType == typeof(LateEventHandler));
         }
 
+        [Fact]
+        public void MustRecordTheHandlerScanOnceHoweverManyTimesChatterCqrsIsAdded()
+        {
+            var firstAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.First").WithTypes(typeof(SuppliedCommandHandler)).Creation;
+            var secondAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.Second").WithTypes(typeof(LateEventHandler)).Creation;
+            var services = new ServiceCollection();
+
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly));
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly, secondAssembly));
+
+            services.Should().ContainSingle(sd => sd.ServiceType == typeof(HandlerScanRecord))
+                    .Which.ImplementationInstance.Should().BeOfType<HandlerScanRecord>()
+                    .Which.ScannedAssemblies.Should().HaveCount(2).And.Contain(firstAssembly).And.Contain(secondAssembly);
+        }
+
         /// <summary>
         /// A source whose returned sequence is re-evaluated on every enumeration and yields the late assembly from its
         /// second read onwards, as a provider over a live assembly list would.

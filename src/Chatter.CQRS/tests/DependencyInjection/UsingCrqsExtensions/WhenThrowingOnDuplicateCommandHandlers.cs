@@ -218,12 +218,12 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         }
 
         /// <summary>
-        /// Characterization pin, not a red-first test: a builder that carries no scanned assembly set, here one made
-        /// by the public <see cref="ChatterBuilder.Create(IServiceCollection, IConfiguration, IAssemblySourceFilter)"/>,
-        /// is checked against the result of applying its filter.
+        /// Characterization pin, not a red-first test: a builder whose service collection carries no scan record, here
+        /// one made by the public <see cref="ChatterBuilder.Create(IServiceCollection, IConfiguration, IAssemblySourceFilter)"/>
+        /// over a fresh collection, is checked against the result of applying its filter.
         /// </summary>
         [Fact]
-        public void MustProbeTheFilterWhenTheBuilderCarriesNoScanSet()
+        public void MustProbeTheFilterWhenTheServiceCollectionCarriesNoScanRecord()
         {
             var assembly = New.Common().Assembly.WithTypes(typeof(FakeFirstCommandHandler), typeof(FakeSecondCommandHandler)).Creation;
             var filter = AssemblySourceFilterBuilder.New().WithExplicitAssemblies(assembly).Build();
@@ -235,6 +235,78 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
                          .And.Contain(typeof(FakeSecondCommandHandler).FullName);
         }
 
+        [Fact]
+        public void MustReportCompetingHandlersAcrossTwoAddChatterCqrsCallsOnOneServiceCollection()
+        {
+            var services = new ServiceCollection();
+            AddChatterCqrsScanningNamedAssembly(services, "Chatter.Fake.First", typeof(FakeFirstCommandHandler));
+            var secondChatterBuilder = AddChatterCqrsScanningNamedAssembly(services, "Chatter.Fake.Second", typeof(FakeSecondCommandHandler));
+
+            services.Should().ContainSingle(sd => sd.ServiceType == typeof(IMessageHandler<FakeCommand>))
+                    .Which.ImplementationType.Should().Be(typeof(FakeSecondCommandHandler));
+            FluentActions.Invoking(() => secondChatterBuilder.ThrowOnDuplicateCommandHandlers())
+                         .Should().Throw<InvalidOperationException>()
+                         .Which.Message.Should().Contain(typeof(FakeFirstCommandHandler).FullName)
+                         .And.Contain(typeof(FakeSecondCommandHandler).FullName);
+        }
+
+        [Fact]
+        public void MustReportCompetingHandlersWhenCheckedOnTheBuilderFromTheEarlierCall()
+        {
+            var services = new ServiceCollection();
+            var firstChatterBuilder = AddChatterCqrsScanningNamedAssembly(services, "Chatter.Fake.First", typeof(FakeFirstCommandHandler));
+            AddChatterCqrsScanningNamedAssembly(services, "Chatter.Fake.Second", typeof(FakeSecondCommandHandler));
+
+            FluentActions.Invoking(() => firstChatterBuilder.ThrowOnDuplicateCommandHandlers())
+                         .Should().Throw<InvalidOperationException>()
+                         .Which.Message.Should().Contain(typeof(FakeFirstCommandHandler).FullName)
+                         .And.Contain(typeof(FakeSecondCommandHandler).FullName);
+        }
+
+        /// <summary>
+        /// Characterization pin, not a red-first test: an assembly two <c>AddChatterCqrs</c> calls on one collection
+        /// both scan contributes its handler once, not as a competing pair. No mutation of Chatter code was observed to
+        /// redden it: dropping both the scan record's dedupe and the probe's <c>Distinct()</c> leaves it green, because
+        /// Scrutor's <c>FromAssemblies</c> collects the scanned types into a set. Locks that ground truth so a Scrutor
+        /// upgrade breaks this test instead of reporting a false competing pair.
+        /// </summary>
+        [Fact]
+        public void MustNotReportOneHandlerWhenTheSameAssemblyIsScannedByTwoCalls()
+        {
+            var assembly = New.Common().Assembly.WithFullName("Chatter.Fake.Shared").WithTypes(typeof(FakeFirstCommandHandler)).Creation;
+            var services = new ServiceCollection();
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
+            var chatterBuilder = services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
+
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().NotThrow();
+        }
+
+        [Fact]
+        public void MustProbeTheScanRecordThroughABuilderThatOnlyForwardsItsServices()
+        {
+            var sourceAssemblies = new List<Assembly>
+            {
+                New.Common().Assembly.WithFullName("Chatter.Fake.Registered").WithTypes(typeof(FakeFirstCommandHandler)).Creation
+            };
+            var sourceProvider = new Mock<IAssemblyFilterSourceProvider>();
+            sourceProvider.Setup(provider => provider.GetSourceAssemblies()).Returns(() => sourceAssemblies.ToList());
+            var chatterBuilder = new ForwardingChatterBuilder(
+                new ServiceCollection().AddChatterCqrs(Mock.Of<IConfiguration>(),
+                                                       messageHandlerSourceBuilder: b => b.WithSourceProvider(sourceProvider.Object)
+                                                                                          .WithNamespaceSelector("Chatter.Fake*")));
+
+            sourceAssemblies.Add(New.Common().Assembly.WithFullName("Chatter.Fake.Late").WithTypes(typeof(FakeSecondCommandHandler)).Creation);
+
+            FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().NotThrow();
+        }
+
+        private IChatterBuilder AddChatterCqrsScanningNamedAssembly(IServiceCollection services, string assemblyFullName, Type handlerType)
+        {
+            var assembly = New.Common().Assembly.WithFullName(assemblyFullName).WithTypes(handlerType).Creation;
+            return services.AddChatterCqrs(Mock.Of<IConfiguration>(),
+                                           messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
+        }
+
         private static int PositionOf(string message, Type type)
             => message.IndexOf(type.FullName, StringComparison.Ordinal);
 
@@ -243,6 +315,20 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             var assembly = New.Common().Assembly.WithTypes(scannedTypes).Creation;
             return new ServiceCollection().AddChatterCqrs(Mock.Of<IConfiguration>(),
                                                           messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(assembly));
+        }
+
+        /// <summary>
+        /// A transparent <see cref="IChatterBuilder"/> wrapper that exposes only what the public contract obliges.
+        /// </summary>
+        private class ForwardingChatterBuilder : IChatterBuilder
+        {
+            private readonly IChatterBuilder _innerChatterBuilder;
+
+            public ForwardingChatterBuilder(IChatterBuilder innerChatterBuilder) => _innerChatterBuilder = innerChatterBuilder;
+
+            public IServiceCollection Services => _innerChatterBuilder.Services;
+            public IConfiguration Configuration => _innerChatterBuilder.Configuration;
+            public IAssemblySourceFilter AssemblySourceFilter => _innerChatterBuilder.AssemblySourceFilter;
         }
 
         private class FakeCommand : ICommand { }
