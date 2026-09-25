@@ -1,9 +1,11 @@
 ﻿using Chatter.CQRS.Context;
+using Chatter.CQRS.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 
@@ -57,18 +59,9 @@ namespace Chatter.CQRS.Queries
                 var invoker = GetOrAddInvoker<TResult>(query.GetType());
                 return await invoker.Invoke(_serviceProvider, query, queryHandlerContext);
             }
-            // INVARIANT: only a cancellation the caller requested is logged as routine; any other fault, a spontaneous
-            // cancellation included, falls through to the Error record. Pinned by
-            // WhenDispatchingStrongTypedQuery.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller, which goes
-            // red when the filter is widened to catch (OperationCanceledException) with no predicate. Rationale: ADR-0040.
-            catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, queryHandlerContext))
-            {
-                _logger.LogDebug(e, "Dispatch of query '{QueryType}' was cancelled by the caller.", query.GetType().Name);
-                throw;
-            }
             catch (Exception e)
             {
-                _logger.LogError(e, "Error dispatching query of type '{QueryType}'", query.GetType().Name);
+                LogDispatchFault(e, query.GetType(), queryHandlerContext);
                 throw;
             }
         }
@@ -78,26 +71,101 @@ namespace Chatter.CQRS.Queries
 			=> Query<TQuery, TResult>(query, new QueryHandlerContext());
         
         ///<inheritdoc/>
-        public async Task<TResult> Query<TQuery, TResult>(TQuery query, IQueryHandlerContext queryHandlerContext) where TQuery : class, IQuery<TResult>
+        public Task<TResult> Query<TQuery, TResult>(TQuery query, IQueryHandlerContext queryHandlerContext) where TQuery : class, IQuery<TResult>
+        {
+            // INVARIANT: ADR-0010 R1/R4 (as amended), as CommandDispatcher.Dispatch applies them: the off-guard runs
+            // before any argument is constructed and the off path returns the uninstrumented dispatch's own Task. No
+            // test pins this for query dispatch.
+            if (!ChatterDiagnostics.IsEnabled)
+            {
+                return DispatchToHandler<TQuery, TResult>(query, queryHandlerContext, handleFault: true);
+            }
+
+            return DispatchToHandlerWithDiagnostics<TQuery, TResult>(query, queryHandlerContext);
+        }
+
+        private async Task<TResult> DispatchToHandler<TQuery, TResult>(TQuery query, IQueryHandlerContext queryHandlerContext, bool handleFault) where TQuery : class, IQuery<TResult>
         {
             try
             {
                 var handler = _serviceProvider.GetRequiredService<IQueryHandler<TQuery, TResult>>();
                 return await handler.Handle(query, queryHandlerContext);
             }
-            // INVARIANT: as the Query<TResult> clause above states; pinned here by
-            // WhenDispatchingGenericQuery.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller, which
-            // goes red when this filter is widened to catch (OperationCanceledException) with no predicate.
-            catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, queryHandlerContext))
+            // INVARIANT: exactly one frame logs a dispatch fault: this one on the diagnostics-off path, the diagnostics
+            // wrapper otherwise. Pinned by WhenDispatchingGenericQuery.MustLogTheAsynchronousFaultExactlyOnceWhenDiagnosticsAreEnabled
+            // and WhenChatterTracingIsOptedInto.MustWriteExactlyOneErrorRecordWhenTheCallerTokenIsSignalledOnlyAfterTheQueryFaultWasLoggedAsAnError,
+            // which go red when the handleFault filter is deleted so both frames log.
+            catch (Exception e) when (handleFault)
             {
-                _logger.LogDebug(e, "Dispatch of query '{QueryType}' was cancelled by the caller.", typeof(TQuery).Name);
+                LogDispatchFault(e, typeof(TQuery), queryHandlerContext);
                 throw;
             }
-            catch (Exception e)
+        }
+
+        private async Task<TResult> DispatchToHandlerWithDiagnostics<TQuery, TResult>(TQuery query, IQueryHandlerContext queryHandlerContext) where TQuery : class, IQuery<TResult>
+        {
+            var startTimestamp = Stopwatch.GetTimestamp();
+            string errorType = null;
+
+            using (var activity = ChatterDiagnostics.StartDispatch<TQuery>(ChatterTelemetryTags.DispatchKinds.Query))
             {
-                _logger.LogError(e, "Error dispatching query of type '{QueryType}'", typeof(TQuery).Name);
-                throw;
+                try
+                {
+                    return await DispatchToHandler<TQuery, TResult>(query, queryHandlerContext, handleFault: false);
+                }
+                catch (Exception e)
+                {
+                    // INVARIANT: the fault is classified once, by LogDispatchFault, and that one verdict decides both the
+                    // log level and whether the span and the metric are marked. Pinned by
+                    // WhenChatterTracingIsOptedInto.MustMarkTheSpanAsFailedWhenTheCallerTokenIsSignalledOnlyAfterTheQueryFaultWasLoggedAsAnError
+                    // and MustMarkTheMeasurementWithAnErrorTypeWhenTheCallerTokenIsSignalledOnlyAfterTheQueryFaultWasLoggedAsAnError,
+                    // which go red when this catch re-reads CallerRequestedCancellation.Explains instead of consuming
+                    // that verdict. Rationale: ADR-0040.
+                    if (LogDispatchFault(e, typeof(TQuery), queryHandlerContext))
+                    {
+                        // INVARIANT: the span status and the metric's error.type come from the same resolver (ADR-0010 D4).
+                        // WhenChatterTracingIsOptedInto.MustMarkTheSpanAndTheMeasurementWithTheSameErrorTypeWhenTheQueryHandlerFails
+                        // goes red when errorType is resolved as e.GetType().Name instead; MustLeaveTheSpanStatusUnsetWhenTheCallerCancelledTheQueryDispatch
+                        // and MustNotMarkTheMeasurementWithAnErrorTypeWhenTheCallerCancelledTheQueryDispatch go red when
+                        // this condition is deleted so a caller-requested cancellation marks both.
+                        errorType = ActivityOutcome.ResolveErrorType(e);
+                        ActivityOutcome.RecordFailure(activity, e);
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    ChatterDiagnostics.RecordDispatchDuration<TQuery>(startTimestamp, ChatterTelemetryTags.DispatchKinds.Query, errorType);
+                }
             }
+        }
+
+        /// <summary>
+        /// Logs a dispatch fault exactly once: at <see cref="LogLevel.Debug"/> when the caller requested the
+        /// cancellation that caused it, at <see cref="LogLevel.Error"/> otherwise.
+        /// </summary>
+        /// <param name="fault">The fault the dispatch raised.</param>
+        /// <param name="queryType">The type of the query being dispatched, named in the log record.</param>
+        /// <param name="queryHandlerContext">The context the query was dispatched with.</param>
+        /// <returns><see langword="true"/> when the fault was logged as a dispatch error, which is the only case in
+        /// which telemetry marks the dispatch as failed.</returns>
+        private bool LogDispatchFault(Exception fault, Type queryType, IQueryHandlerContext queryHandlerContext)
+        {
+            // INVARIANT: only a cancellation the caller requested is logged as routine; any other fault, a spontaneous
+            // cancellation included, is logged as an error. The caller's token is read here once per fault and nowhere
+            // else on the fault path of either Query overload. Pinned by
+            // WhenDispatchingGenericQuery.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller and
+            // WhenDispatchingStrongTypedQuery.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller, which
+            // go red when this condition is replaced by a bare `fault is OperationCanceledException`. Rationale: ADR-0040.
+            if (CallerRequestedCancellation.Explains(fault, queryHandlerContext))
+            {
+                _logger.LogDebug(fault, "Dispatch of query '{QueryType}' was cancelled by the caller.", queryType.Name);
+                return false;
+            }
+
+            _logger.LogError(fault, "Error dispatching query of type '{QueryType}'", queryType.Name);
+            return true;
         }
 
         private static QueryInvoker<TResult> GetOrAddInvoker<TResult>(Type queryType)
