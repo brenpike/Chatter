@@ -300,6 +300,52 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             FluentActions.Invoking(() => chatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().NotThrow();
         }
 
+        [Fact]
+        public void MustNotReportAHandlerScannedOnlyByACollectionItsDescriptorsWereCopiedInto()
+        {
+            var firstServices = new ServiceCollection();
+            var firstChatterBuilder = AddChatterCqrsScanningNamedAssembly(firstServices, "Chatter.Fake.First", typeof(FakeFirstCommandHandler));
+            var secondServices = CopyDescriptorsOf(firstServices);
+
+            AddChatterCqrsScanningNamedAssembly(secondServices, "Chatter.Fake.Second", typeof(FakeSecondCommandHandler));
+
+            FluentActions.Invoking(() => firstChatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().NotThrow();
+        }
+
+        /// <summary>
+        /// Characterization pin, not a red-first test: a scan record copied into another collection with its
+        /// descriptors is that collection's record, so a later <c>AddChatterCqrs</c> call on it extends the copy and the
+        /// check on its builder reports a handler the copied scan registered and the later call displaced.
+        /// Mutation observed to redden it: keying the record on the collection that wrote it, so that the write and
+        /// <see cref="HandlerScanRecord.Find(IServiceCollection)"/> ignore a record another collection wrote.
+        /// </summary>
+        [Fact]
+        public void MustReportCompetingHandlersBetweenACopiedScanAndALaterCall()
+        {
+            var firstServices = new ServiceCollection();
+            AddChatterCqrsScanningNamedAssembly(firstServices, "Chatter.Fake.First", typeof(FakeFirstCommandHandler));
+            var secondServices = CopyDescriptorsOf(firstServices);
+
+            var secondChatterBuilder = AddChatterCqrsScanningNamedAssembly(secondServices, "Chatter.Fake.Second", typeof(FakeSecondCommandHandler));
+
+            FluentActions.Invoking(() => secondChatterBuilder.ThrowOnDuplicateCommandHandlers())
+                         .Should().Throw<InvalidOperationException>()
+                         .Which.Message.Should().Contain(typeof(FakeFirstCommandHandler).FullName)
+                         .And.Contain(typeof(FakeSecondCommandHandler).FullName);
+        }
+
+        private static IServiceCollection CopyDescriptorsOf(IServiceCollection services)
+        {
+            IServiceCollection copiedServices = new ServiceCollection();
+
+            foreach (var descriptor in services)
+            {
+                copiedServices.Add(descriptor);
+            }
+
+            return copiedServices;
+        }
+
         private IChatterBuilder AddChatterCqrsScanningNamedAssembly(IServiceCollection services, string assemblyFullName, Type handlerType)
         {
             var assembly = New.Common().Assembly.WithFullName(assemblyFullName).WithTypes(handlerType).Creation;

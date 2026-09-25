@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using Xunit;
@@ -84,6 +85,48 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
                     .Which.ImplementationInstance.Should().BeOfType<HandlerScanRecord>()
                     .Which.ScannedAssemblies.Should().HaveCount(2).And.Contain(firstAssembly).And.Contain(secondAssembly);
         }
+
+        [Fact]
+        public void MustReplaceTheScanRecordRatherThanMutateItWhenChatterCqrsIsAddedAgain()
+        {
+            var firstAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.First").WithTypes(typeof(SuppliedCommandHandler)).Creation;
+            var secondAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.Second").WithTypes(typeof(LateEventHandler)).Creation;
+            var services = new ServiceCollection();
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly));
+            var firstRecord = HandlerScanRecord.Find(services);
+
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly, secondAssembly));
+
+            firstRecord.ScannedAssemblies.Should().Equal(firstAssembly);
+            services.Should().ContainSingle(sd => sd.ServiceType == typeof(HandlerScanRecord))
+                    .Which.ImplementationInstance.Should().NotBeSameAs(firstRecord)
+                    .And.BeOfType<HandlerScanRecord>()
+                    .Which.ScannedAssemblies.Should().Equal(firstAssembly, secondAssembly);
+        }
+
+        /// <summary>
+        /// Characterization pin, not a red-first test: a later <c>AddChatterCqrs</c> call replaces the scan record
+        /// descriptor at the index the collection already holds it at. The second call scans no command handler, so no
+        /// replace-strategy registration moves a descriptor ahead of the record.
+        /// Mutation observed to redden it: writing the new descriptor with
+        /// <c>ServiceCollectionDescriptorExtensions.Replace</c>, which removes the old descriptor and appends the new one.
+        /// </summary>
+        [Fact]
+        public void MustKeepTheScanRecordAtItsPositionWhenChatterCqrsIsAddedAgain()
+        {
+            var firstAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.First").WithTypes(typeof(SuppliedCommandHandler)).Creation;
+            var secondAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.Second").WithTypes(typeof(LateEventHandler)).Creation;
+            var services = new ServiceCollection();
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly));
+            var firstRecordIndex = IndexOfScanRecord(services);
+
+            services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(secondAssembly));
+
+            IndexOfScanRecord(services).Should().Be(firstRecordIndex);
+        }
+
+        private static int IndexOfScanRecord(IServiceCollection services)
+            => services.ToList().FindIndex(sd => sd.ServiceType == typeof(HandlerScanRecord));
 
         /// <summary>
         /// A source whose returned sequence is re-evaluated on every enumeration and yields the late assembly from its

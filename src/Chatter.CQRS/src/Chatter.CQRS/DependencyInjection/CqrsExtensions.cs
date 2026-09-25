@@ -49,7 +49,7 @@ namespace Microsoft.Extensions.DependencyInjection
 
             chatterBuilder.Services.AddMessageHandlers(scannedAssemblies);
             chatterBuilder.Services.AddQueryHandlers(scannedAssemblies);
-            HandlerScanRecord.GetOrAdd(chatterBuilder.Services).Record(scannedAssemblies);
+            HandlerScanRecord.Record(chatterBuilder.Services, scannedAssemblies);
 
             chatterBuilder.Services.AddScoped<IMessageDispatcherProvider, MessageDispatcherProvider>();
 

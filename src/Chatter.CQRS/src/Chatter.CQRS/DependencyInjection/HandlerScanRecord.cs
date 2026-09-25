@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Reflection;
 
@@ -18,48 +19,79 @@ namespace Chatter.CQRS.DependencyInjection
     /// MustProbeTheScanRecordThroughABuilderThatOnlyForwardsItsServices.
     /// Mutation that reddens them: keying the set on the builder, carried on <see cref="ChatterBuilder"/> and read
     /// through an <c>as ChatterBuilder</c> cast.
+    /// INVARIANT: a record is a frozen value; every write forks a new record, so a record descriptor copied into another
+    /// collection carries a snapshot no later <c>AddChatterCqrs</c> call, on either collection, can change.
+    /// Oracles: WhenThrowingOnDuplicateCommandHandlers.MustNotReportAHandlerScannedOnlyByACollectionItsDescriptorsWereCopiedInto
+    /// and WhenAddingChatterCqrs.MustReplaceTheScanRecordRatherThanMutateItWhenChatterCqrsIsAddedAgain.
+    /// Mutation that reddens them: adding the newly scanned assemblies to the existing record in place instead of
+    /// replacing its descriptor.
     /// </summary>
     internal sealed class HandlerScanRecord
     {
-        private readonly List<Assembly> _scannedAssemblies = new List<Assembly>();
+        private HandlerScanRecord(IList<Assembly> scannedAssemblies)
+            => ScannedAssemblies = new ReadOnlyCollection<Assembly>(scannedAssemblies);
 
         /// <summary>
         /// Every assembly recorded so far, each once, in the order first recorded.
         /// </summary>
-        internal IReadOnlyCollection<Assembly> ScannedAssemblies => _scannedAssemblies;
+        internal IReadOnlyCollection<Assembly> ScannedAssemblies { get; }
 
         /// <summary>
-        /// Adds the assemblies one <c>AddChatterCqrs</c> call scanned, skipping any already recorded.
+        /// Records on <paramref name="services"/> the assemblies one <c>AddChatterCqrs</c> call scanned: the record
+        /// descriptor <paramref name="services"/> carries is replaced, at its index, by one holding a new record of the
+        /// assemblies already recorded followed by those in <paramref name="scannedAssemblies"/> not yet recorded; a
+        /// collection that carries no record gains one.
+        /// INVARIANT: a collection carries exactly one record descriptor after any serialized sequence of
+        /// <c>AddChatterCqrs</c> calls. Oracle: WhenAddingChatterCqrs.MustRecordTheHandlerScanOnceHoweverManyTimesChatterCqrsIsAdded,
+        /// which composes its calls sequentially; concurrent composition on one collection is unsupported (ADR-0039 R4).
+        /// Mutation that reddens it: adding a new record descriptor unconditionally.
+        /// INVARIANT: the record descriptor keeps the index it was first added at.
+        /// Oracle: WhenAddingChatterCqrs.MustKeepTheScanRecordAtItsPositionWhenChatterCqrsIsAddedAgain.
+        /// Mutation that reddens it: writing the new descriptor with <c>ServiceCollectionDescriptorExtensions.Replace</c>,
+        /// which appends it.
         /// </summary>
-        internal void Record(IEnumerable<Assembly> scannedAssemblies)
+        internal static void Record(IServiceCollection services, IEnumerable<Assembly> scannedAssemblies)
         {
+            var recordIndex = IndexOfRecord(services);
+            var recordedAssemblies = new List<Assembly>();
+
+            if (recordIndex >= 0)
+            {
+                recordedAssemblies.AddRange(((HandlerScanRecord)services[recordIndex].ImplementationInstance).ScannedAssemblies);
+            }
+
             foreach (var scannedAssembly in scannedAssemblies)
             {
-                if (!_scannedAssemblies.Contains(scannedAssembly))
+                if (!recordedAssemblies.Contains(scannedAssembly))
                 {
-                    _scannedAssemblies.Add(scannedAssembly);
+                    recordedAssemblies.Add(scannedAssembly);
                 }
+            }
+
+            var recordDescriptor = new ServiceDescriptor(typeof(HandlerScanRecord), new HandlerScanRecord(recordedAssemblies));
+
+            if (recordIndex >= 0)
+            {
+                services[recordIndex] = recordDescriptor;
+            }
+            else
+            {
+                services.Add(recordDescriptor);
             }
         }
 
-        /// <summary>
-        /// Returns the record <paramref name="services"/> carries, adding one when it carries none.
-        /// INVARIANT: a collection carries exactly one record, however many <c>AddChatterCqrs</c> calls it receives.
-        /// Oracle: WhenAddingChatterCqrs.MustRecordTheHandlerScanOnceHoweverManyTimesChatterCqrsIsAdded.
-        /// Mutation that reddens it: adding a new record unconditionally.
-        /// </summary>
-        internal static HandlerScanRecord GetOrAdd(IServiceCollection services)
+        private static int IndexOfRecord(IServiceCollection services)
         {
-            var existingRecord = Find(services);
-
-            if (existingRecord is not null)
+            for (var descriptorIndex = 0; descriptorIndex < services.Count; descriptorIndex++)
             {
-                return existingRecord;
+                if (services[descriptorIndex].ServiceType == typeof(HandlerScanRecord)
+                    && services[descriptorIndex].ImplementationInstance is HandlerScanRecord)
+                {
+                    return descriptorIndex;
+                }
             }
 
-            var addedRecord = new HandlerScanRecord();
-            services.Add(new ServiceDescriptor(typeof(HandlerScanRecord), addedRecord));
-            return addedRecord;
+            return -1;
         }
 
         /// <summary>
