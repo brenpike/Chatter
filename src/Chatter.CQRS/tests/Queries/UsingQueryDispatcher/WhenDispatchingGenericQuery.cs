@@ -1,6 +1,9 @@
 ﻿using Chatter.CQRS.Context;
+using Chatter.CQRS.Diagnostics;
 using Chatter.CQRS.Queries;
+using Chatter.CQRS.Tests.Diagnostics;
 using Chatter.Testing.Core.Creators.Common;
+using Chatter.Testing.Core.Diagnostics;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -11,6 +14,10 @@ using Xunit;
 
 namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
 {
+    // Joined to the diagnostics collection because MustLogTheAsynchronousFaultExactlyOnceWhenDiagnosticsAreEnabled
+    // attaches a PROCESS-GLOBAL .NET ActivityListener to the Chatter source; running it beside the diagnostics
+    // absence tests would let those observe this class's listener.
+    [Collection(DiagnosticsCollection.Name)]
     public class WhenDispatchingGenericQuery : Testing.Core.Context
     {
         private readonly Mock<IServiceProvider> _serviceProvider = new Mock<IServiceProvider>();
@@ -111,6 +118,22 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
             _logger.VerifyWasCalled(LogLevel.Error, $"Error dispatching query of type '{typeof(IQuery<string>).Name}'", cancellation, Times.Once());
             _logger.VerifyWasCalled(LogLevel.Error, times: Times.Once());
             _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Never());
+        }
+
+        [Fact]
+        public async Task MustLogTheAsynchronousFaultExactlyOnceWhenDiagnosticsAreEnabled()
+        {
+            var failure = ArrangeQueryHandlerThatFaultsAfterAnAwait(new InvalidOperationException("The query handler failed after an await."));
+
+            using (new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+            {
+                ChatterDiagnostics.IsEnabled.Should().BeTrue();
+
+                await FluentActions.Invoking(async () => await _sut.Query<IQuery<string>, string>(_query, _context.Object)).Should().ThrowAsync<InvalidOperationException>();
+            }
+
+            _logger.VerifyWasCalled(LogLevel.Error, $"Error dispatching query of type '{typeof(IQuery<string>).Name}'", failure, Times.Once());
+            _logger.LoggedMessages.Should().ContainSingle(logged => logged.level == LogLevel.Error);
         }
 
         private TException ArrangeQueryHandlerThatFaultsAfterAnAwait<TException>(TException failure) where TException : Exception

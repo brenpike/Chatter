@@ -12,6 +12,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.21.0] - 2026-09-25
+
+### Added
+
+- Query dispatch is now instrumented like command and event dispatch: both `QueryDispatcher.Query` overloads that take an `IQueryHandlerContext` start a dispatch span and record `chatter.cqrs.dispatch.duration`, behind the same opt-in, with `chatter.dispatch.kind` = `query`. This supersedes the earlier note that query dispatch is not instrumented. (#529)
+- `ChatterTelemetryTags.DispatchKinds.Query` is back, now that it has an emitter. (#529)
+
+### Changed
+
+- A query's span name and `chatter.message.type` are the query's own type: the `TQuery` argument for `Query<TQuery, TResult>`, and the runtime type of the query for `Query<TResult>(IQuery<TResult>)` — never `IQuery<TResult>`. A query type that implements `IQuery<>` for two result types reports both under one name. Queries follow the same caller-requested cancellation rule as commands and events (ADR-0040). A `Query<TResult>` dispatch that fails because no handler invoker can be built for its runtime type, such as a value-type query, is logged once, rethrown unchanged, and emits a span and a measurement marked with `error.type`; only a null query emits no telemetry. Each distinct query type produces its own `chatter.cqrs.dispatch.duration` series under `chatter.message.type`, so an application that creates query types dynamically should use its telemetry SDK's cardinality limits. No consumer code change is needed. ADR-0010 (#529).
+
 ## [0.20.1] - 2026-09-25
 
 ### Fixed

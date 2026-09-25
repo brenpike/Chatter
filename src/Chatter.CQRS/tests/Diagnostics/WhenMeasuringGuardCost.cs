@@ -15,8 +15,9 @@ namespace Chatter.CQRS.Tests.Diagnostics
     /// <remarks>
     /// HONEST SCOPE OF THE CLAIM. The zero-allocation assertions cover the GUARD HELPERS only —
     /// <see cref="ChatterDiagnostics.IsEnabled"/> and the off-path returns of
-    /// <see cref="ChatterDiagnostics.StartDispatch{TMessage}"/> and
-    /// <see cref="ChatterDiagnostics.RecordDispatchDuration{TMessage}"/>. They do NOT claim a zero-allocation
+    /// <see cref="ChatterDiagnostics.StartDispatch{TMessage}"/>,
+    /// <see cref="ChatterDiagnostics.RecordDispatchDuration{TMessage}"/> and their overloads that take a runtime
+    /// <see cref="Type"/>. They do NOT claim a zero-allocation
     /// dispatch, because the real dispatch path already allocates per dispatch independently of diagnostics:
     /// <c>CommandDispatcher</c> allocates a log-argument array only when trace logging is enabled, and
     /// <c>CommandBehaviorPipeline.Execute</c> builds a fresh delegate chain per execution only when behaviours
@@ -71,6 +72,29 @@ namespace Chatter.CQRS.Tests.Diagnostics
                 () => ChatterDiagnostics.RecordDispatchDuration<TracedCommand>(startTimestamp, ChatterTelemetryTags.DispatchKinds.Command, null));
 
             measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no tag list may be built while off: " + measurement);
+        }
+
+        [Fact]
+        public void MustNotAllocateWhileStartingADispatchSpanForARuntimeTypeThatIsOff()
+        {
+            ChatterDiagnostics.Source.HasListeners().Should().BeFalse();
+
+            var measurement = GuardCostProbe.Measure<Activity>(
+                () => ChatterDiagnostics.StartDispatch(typeof(TracedQuery), ChatterTelemetryTags.DispatchKinds.Query));
+
+            measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no span name, tag or activity may be built while off: " + measurement);
+        }
+
+        [Fact]
+        public void MustNotAllocateWhileRecordingADispatchDurationForARuntimeTypeThatIsOff()
+        {
+            ChatterDiagnostics.IsEnabled.Should().BeFalse();
+
+            var startTimestamp = Stopwatch.GetTimestamp();
+            var measurement = GuardCostProbe.Measure(
+                () => ChatterDiagnostics.RecordDispatchDuration(typeof(TracedQuery), startTimestamp, ChatterTelemetryTags.DispatchKinds.Query, null));
+
+            measurement.MedianAllocatedBytesPerBatch.Should().Be(0, "no tag list or type name may be built while off: " + measurement);
         }
 
         [Fact]

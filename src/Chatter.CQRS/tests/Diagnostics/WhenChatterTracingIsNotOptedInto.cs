@@ -57,6 +57,18 @@ namespace Chatter.CQRS.Tests.Diagnostics
         }
 
         [Fact]
+        public async Task MustNotStartAnActivityForAQueryInAnEmptyProcess()
+        {
+            Activity.Current.Should().BeNull();
+
+            await _harness.QueryTracedByItsRuntimeType();
+
+            _harness.QueryHandler.InvocationCount.Should().Be(1);
+            _harness.QueryHandler.AmbientActivityWhileHandling.Should().BeNull();
+            Activity.Current.Should().BeNull();
+        }
+
+        [Fact]
         public void MustReportDiagnosticsDisabledWhileForeignInstrumentationIsRunning()
         {
             using (var foreignInstrumentation = new ForeignInstrumentationScope())
@@ -110,6 +122,7 @@ namespace Chatter.CQRS.Tests.Diagnostics
             {
                 await _harness.DispatchCommand();
                 await _harness.DispatchEvent();
+                await _harness.QueryTracedByItsRuntimeType();
 
                 ChatterDiagnostics.IsEnabled.Should().BeFalse();
                 foreignMeterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().BeEmpty();

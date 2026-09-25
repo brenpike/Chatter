@@ -129,6 +129,16 @@ ships:
 - **`ChatterTelemetryTags.DispatchKinds.Query` is removed.** It was public API with no emitter: query
   dispatch is an explicit [non-goal](#non-goals), so the tag can never carry that value.
 
+  **Amended 2026-09-25 (#529): `ChatterTelemetryTags.DispatchKinds.Query` returns, because it now has an emitter.**
+  Query dispatch is no longer a non-goal (see the amendment under [Non-goals](#non-goals)). Both awaiting
+  `QueryDispatcher` overloads tag their `dispatch` span and their `chatter.cqrs.dispatch.duration` measurement with
+  `chatter.dispatch.kind` = `DispatchKinds.Query`, whose value is `"query"`. Returning it is an addition to the public
+  diagnostics surface. The rule this bullet applied, that a public tag value with no emitter is an accident, is
+  unchanged; the constant now has an emitter. Pinned by `WhenChatterTracingIsOptedInto.MustStartOneSpanForAQueryDispatch`,
+  `MustRecordTheDispatchDurationForAQueryDispatch`, `MustNameTheSpanAfterTheRuntimeQueryTypeWhenDispatchedByItsResultTypeAlone`
+  and `MustRecordTheDispatchDurationForAQueryDispatchedByItsRuntimeType`. The `InternalsVisibleTo` citation in the
+  paragraph above, `Queries/QueryDispatcher.cs:8-9`, is now `:12-13`.
+
 **The instrumentation ENTRY POINTS are deliberately NOT narrowed.** `StartSend`, `StartReceive`,
 `RecordSend`, `RecordReceive`, `RecordFailure`, `RecordSettlement`, `StartDispatch`,
 `RecordDispatchDuration` and `IsEnabled` stay public even though none currently has a cross-assembly
@@ -268,6 +278,70 @@ The expectation recorded here is that Chatter's attribute names track the pinned
 **may change in a minor release** when the pin advances. Applications that hard-code attribute names
 in dashboards or alert queries should expect to revisit them on a semconv pin bump; the pin bump is
 announced in the affected package's CHANGELOG.
+
+**Amended 2026-09-25 (#529): what names a dispatched query, and why there is no result-type attribute.** Query
+dispatch is now instrumented with the same Chatter-native attributes as command and event dispatch:
+`chatter.message.type`, `chatter.dispatch.kind` and, for a failed dispatch, `error.type`, on a span named
+`dispatch {type name}` and on the `chatter.cqrs.dispatch.duration` measurement.
+
+- **A query is named by the query's own type.** For `Query<TQuery, TResult>` that is `TQuery`. For
+  `Query<TResult>(IQuery<TResult>)` it is the query's runtime type, which is the type `IQueryHandler<,>` is closed
+  over, and never the `IQuery<TResult>` the caller dispatched through. This is the rule commands and events already
+  follow: `CommandDispatcher` and `EventDispatcher` resolve `IMessageHandler<TMessage>` and name the dispatch by the
+  same compile-time `TMessage`. The query overloads resolve their handlers by different types, so the rule is stated
+  for both. It is stated with its oracles in the `INVARIANT:` on the telemetry identity in
+  `DispatchByRuntimeTypeWithDiagnostics` in `Queries/QueryDispatcher.cs`.
+- **No attribute records the result type.** Adding one was considered and rejected. No semantic convention covers
+  CQRS dispatch, so it would be one more Chatter-native name with nothing to conform to. For a query type that
+  implements one `IQuery<>` closing, the query type already fixes the result type, so the attribute would add a
+  dimension and no information. Leaving it out keeps one attribute set for command, event and query dispatch. The
+  limitation is bounded: a type that implements two `IQuery<>` closings, such as both `IQuery<string>` and
+  `IQuery<int>`, has two handlers, and dispatches to either carry the same `chatter.message.type` and the same span
+  name, so their durations share one series. No test pins this case.
+- **The span status and the measurement's `error.type` still come from one resolver.** Both query diagnostics
+  wrappers resolve `error.type` through `ActivityOutcome.ResolveErrorType`, as this decision requires. Pinned by
+  `WhenChatterTracingIsOptedInto.MustMarkTheSpanAndTheMeasurementWithTheSameErrorTypeWhenTheQueryHandlerFails` and
+  `MustMarkTheSpanAndTheMeasurementWithTheSameErrorTypeWhenAQueryDispatchedByItsRuntimeTypeFails`, which go red when
+  `error.type` is resolved as `e.GetType().Name`.
+- **Only a null query fails before the query's name is known.** `Query<TResult>` reads the runtime query type first,
+  then starts the span and records the measurement for that type itself, through internal non-generic
+  `ChatterDiagnostics` overloads, and not through the cached invoker. So a fault while the invoker is built, such as
+  the one a value-type query raises because it cannot satisfy the invoker's `class` constraint, is logged once at
+  `Error`, rethrown unchanged, and marked with `error.type` on both the span and the measurement. Pinned by
+  `WhenChatterTracingIsOptedInto.MustLogTheFaultOnceAndMarkTheSpanAndTheMeasurementWithTheErrorTypeWhenNoInvokerCanBeBuiltForTheRuntimeQueryType`.
+  The measurement is recorded while the span is still current, as at the other seams. Pinned by
+  `MustRecordTheDispatchDurationWhileTheDispatchSpanIsStillCurrentForAQueryDispatchedByItsRuntimeType`. A null query
+  has no runtime type to read: the returned `Task` faults with a `NullReferenceException`, and nothing is logged and
+  no span or measurement is emitted. Pinned by
+  `MustFaultTheReturnedTaskWithANullReferenceExceptionAndLogNothingAndEmitNoTelemetryWhenTheQueryIsNull`.
+
+**Recorded residual: the query identity is a caller-supplied runtime type, so `chatter.message.type` carries that
+type's cardinality out of the process.** Local review raised, at HIGH, that `Query<TResult>(IQuery<TResult>)` keys
+`chatter.message.type` and the span name on `query.GetType()`, so an application that dispatches many distinct
+runtime query types creates that many metric series and span identities in whatever collector it attached. The
+finding is accurate about the mechanism, and it is recorded here rather than fixed, for four reasons.
+
+- **It is inherited, not introduced.** `chatter.message.type` has been a dimension on command and event dispatch
+  since this decision shipped, and a message type has always been the value. Query dispatch is a third consumer of
+  the same dimension, not a new kind of key.
+- **The value set is the application's own.** A dispatch that succeeds resolved `IQueryHandler<TQuery, TResult>`
+  from the container, so its type was registered by the application; a dispatch that fails emits the type the
+  application chose to dispatch. `Chatter.CQRS` is an in-process API whose caller IS the application — no wire
+  value, no header and no broker payload reaches this seam, so there is no untrusted input to bound. An application
+  that synthesises query types at runtime already grows `QueryDispatcher._invokers` without eviction, which
+  ADR-0013 accepts and documents; what this decision adds is that the same types also appear as series in the
+  collector the application configured.
+- **The obvious remediation was considered and rejected on the merits.** Omitting or coarsening the dimension for
+  this one overload would make the two `Query` overloads report different identities for the same logical dispatch —
+  a second spelling for one concept, which D4 forbids — and would collapse every runtime-dispatched query into a
+  single undifferentiated series, which is the entire value of the histogram. Capping the dimension instead (an
+  allowlist, or an `_other` bucket past N types) would put a per-dispatch membership test on the instrumented path
+  and a policy surface in the public API, for a bound only the application can set correctly.
+- **The bound the application holds is the right one.** An application that needs to cap query cardinality caps it
+  in its collector, where `MeterListener` and every OpenTelemetry SDK already expose cardinality limits, and where
+  the limit can be set per deployment rather than compiled into the library.
+
+No issue is filed for this. ADR-0013's 2026-09-25 amendment records the in-process half of the same property.
 
 ### D5 — W3C trace-context keys live in `TraceContextHeaders`, declared OUTSIDE `MessageContext`
 
@@ -665,6 +739,16 @@ Noted separately and explicitly **not in scope**: `QueryDispatcher` already disp
 pre-existing DLR dependency and a pre-existing AOT/trimming constraint. This ADR neither introduces
 nor fixes it.
 
+**Amended 2026-09-25 (#529): `QueryDispatcher` no longer dispatches through `dynamic`.** #336 removed both
+`dynamic` conversions and replaced them with a cached closed-generic invoker (ADR-0013), so the citation above,
+`QueryDispatcher.cs:36-37`, no longer points at a DLR dependency. What remains is `CreateInvoker` in
+`Queries/QueryDispatcher.cs`, which calls `MakeGenericType` and `Activator.CreateInstance` once per distinct
+`(runtime query type, result type)` pair. That is still a pre-existing AOT and trimming constraint, and it is the one
+ADR-0013's revisit trigger names. Query instrumentation adds no reflection to it: `Query<TResult>` passes
+`query.GetType()` to the internal non-generic `ChatterDiagnostics.StartDispatch(Type, string)` and
+`RecordDispatchDuration(Type, long, string, string)`, which close no generic type, and `Query<TQuery, TResult>` calls
+the generic `StartDispatch<TQuery>` and `RecordDispatchDuration<TQuery>` with its own `TQuery`.
+
 ### D11 — The receive failure is retained at ONE choke point, and a shutdown-cancelled delivery is not a failure
 
 **The problem this replaces.** D4 as amended requires the receive metric to carry `error.type` for a
@@ -1053,6 +1137,61 @@ returned `Task` UNCONDITIONALLY, diagnostics on or off. A caller that separates 
 its `await` therefore sees such a fault at the `await` rather than at the call. That is caller-visible
 behaviour changed from 0.13.1 and is recorded in this release's CHANGELOG.
 
+**Amended 2026-09-25 (#529): both awaiting `QueryDispatcher` overloads run the off-guard, and no test pins it.**
+`Query<TResult>(IQuery<TResult>, IQueryHandlerContext)` and `Query<TQuery, TResult>(TQuery, IQueryHandlerContext)` are
+no longer `async` methods themselves. Each evaluates `ChatterDiagnostics.IsEnabled` first, before any argument is
+constructed, and on the off path returns the uninstrumented dispatch's own `Task`: `DispatchByRuntimeType` for the
+first, and `DispatchToHandler` with `handleFault: true` for the second. That is R1 and R4, as amended above, applied
+the way `CommandDispatcher.Dispatch` applies them. Both uninstrumented query dispatches are `async`, as both query
+overloads were before this change, so what R4 promises at the query seams is the cost sentence and not the withdrawn
+shape sentence. Both branches of each overload run through an `async` method, so the on/off throw-timing divergence
+recorded above does not arise at either query seam; no test pins that on the diagnostics path.
+
+What the tests pin is narrower than the guard. `WhenChatterTracingIsNotOptedInto.MustNotStartAnActivityForAQueryInAnEmptyProcess`
+pins that a query dispatched through `Query<TResult>` in a process that never opted in starts no `Activity`. It does not
+pin the off-guard: bypassing the guard so the diagnostics wrapper always runs leaves it green, because
+`ChatterDiagnostics.StartDispatch` and `RecordDispatchDuration` each run their own `HasListeners()` or
+`Instrument.Enabled` check and emit nothing. This was observed while #529 was built; the fact went red only when the
+bypass was combined with an `Activity` started without that check. `Query<TQuery, TResult>` has no such fact, and
+`WhenMeasuringGuardCost` measures no query dispatch. The query off path's cost property, that it reads no
+timestamp and makes no telemetry call, therefore holds by construction and is not pinned by a test, as the
+`INVARIANT:` on each overload's off-guard in `Queries/QueryDispatcher.cs` says.
+
+The internal non-generic overloads that `Query<TResult>` calls apply the off-guard as their first statement too.
+`ChatterDiagnostics.StartDispatch(Type, string)`'s guard is pinned by
+`WhenMeasuringGuardCost.MustNotAllocateWhileStartingADispatchSpanForARuntimeTypeThatIsOff`, which goes red when the
+span name is built above the guard or the guard is deleted. `RecordDispatchDuration(Type, long, string, string)`'s
+guard is not pinned: `MustNotAllocateWhileRecordingADispatchDurationForARuntimeTypeThatIsOff` stays green when the
+type name is read above the guard or the guard is deleted, as the `INVARIANT:` in `Diagnostics/ChatterDiagnostics.cs`
+says.
+
+**Amended 2026-09-25 (#529): recorded residual — a throwing telemetry listener callback escapes the instrumentation
+boundary at all four dispatch seams.** Local review raised, at HIGH (finding `76b1beb2`), that `CommandDispatcher`,
+`EventDispatcher` and both `QueryDispatcher` overloads call `ChatterDiagnostics.StartDispatch` before entering the
+protected body and `RecordDispatchDuration` in a `finally` inside the `using`, so the BCL runs an application's
+`ActivityListener` / `MeterListener` callbacks — the sampling callback, `Activity.Dispose`, `Histogram.Record` — on the
+dispatch's own call path with no exception isolation. A callback that throws therefore surfaces out of the dispatch,
+and one that throws after the handler has already succeeded reports a completed dispatch as a failed one. The finding
+is accurate about the mechanism. It is recorded here rather than fixed, and the record covers all four seams because
+the exposure is identical at each and the query seams inherited it.
+
+- **It is inherited, not introduced.** The query seams are byte-for-byte the shipped command and event pattern, and two
+  of the four sites are on `master`, outside this branch's diff. It is the .NET platform contract:
+  `ActivitySource.StartActivity`, `Activity.Dispose` and `Histogram.Record` all invoke listener delegates without
+  isolation, and no instrumented .NET library guards them.
+- **The impact is bounded.** Telemetry is opt-in (D1, D3), so reaching this at all takes an application-authored
+  `ActivityListener` or `MeterListener` on a `Chatter.*` source or meter whose callback throws; the OpenTelemetry SDK
+  does not throw into instrumented code. Such a listener fails every traced dispatch immediately and breaks every other
+  instrumented .NET operation in the process too, so it is loud and is caught in development. The quiet shape — a
+  successful dispatch reported as failed and then retried — needs a listener that throws only intermittently, and a
+  broker-delivered retry is already deduplicated by the inbox marker.
+- **The obvious remediation was considered and rejected on the merits.** Swallowing the callback's exception hides the
+  consumer's own broken listener and discards the telemetry it was meant to produce, spends on-path cost against the
+  budget this whole section defends, and contradicts the fail-loud posture recorded in ADR-0009 (D2). No instrumented
+  .NET library does it, and guarding only the seams this branch touched would leave the four seams inconsistent.
+- **Revisit trigger:** a report from a consumer actually affected by it. The guard then goes on all four seams
+  together, never on one of them.
+
 ## Propagation scope
 
 Propagation is bounded and stated honestly. Both limitations below are **PRE-EXISTING**, affect
@@ -1174,6 +1313,12 @@ Explicitly out of scope for this decision and the work it governs:
 
 - **Query dispatch instrumentation.** `QueryDispatcher` dispatches through `dynamic`
   (`QueryDispatcher.cs:36-37`) and is left untouched.
+
+  **Amended 2026-09-25 (#529): this non-goal is lifted.** The only reason it recorded was the `dynamic` dispatch,
+  and #336 removed that by replacing it with a cached closed-generic `QueryInvoker` (ADR-0013). Query dispatch is
+  now instrumented at both awaiting `QueryDispatcher` overloads. D4's 2026-09-25 amendment records what names a
+  query and why no attribute records its result type. D2's records the return of `DispatchKinds.Query`, and [The
+  off-guard](#the-off-guard) records how the query seams apply the off-guard.
 - **The unconditional `LogTrace` string interpolation in `CommandDispatcher`.** Both
   `_logger.LogTrace($"...")` calls (`CommandDispatcher.cs:47,51`) interpolate their message before
   the logging level is checked, so they allocate on every dispatch regardless of configured level.

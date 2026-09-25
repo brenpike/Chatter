@@ -452,7 +452,7 @@ Extension methods:
 
 ## Diagnostics
 
-Command and Event dispatch emit spans and a duration histogram. Nothing is emitted until your application subscribes. Chatter.CQRS takes no dependency on any `OpenTelemetry.*` package; it uses `System.Diagnostics.ActivitySource` and `System.Diagnostics.Metrics.Meter`.
+Command, Event and Query dispatch emit spans and a duration histogram. Nothing is emitted until your application subscribes. Chatter.CQRS takes no dependency on any `OpenTelemetry.*` package; it uses `System.Diagnostics.ActivitySource` and `System.Diagnostics.Metrics.Meter`.
 
 ### Enabling diagnostics
 
@@ -468,16 +468,16 @@ Chatter.MessageBrokers emits under its own scope, so the two can be sampled and 
 
 ### Spans
 
-At most one span per Command dispatch and per Event dispatch.
+At most one span per Command dispatch, per Event dispatch and per Query dispatch. A `Query` overload that takes no `IQueryHandlerContext` delegates to the one that does, so it starts one span, not two (`MustStartOneSpanForAQueryDispatch`).
 
 | Span | Name | Kind | Started by | Started when |
 | --- | --- | --- | --- | --- |
-| `dispatch` | `dispatch ` followed by the short name of the compile-time `TMessage` type argument, not the runtime type. A variable declared `PlaceOrder` gives `dispatch PlaceOrder`; a variable declared `ICommand` gives `dispatch ICommand`. | `ActivityKind.Internal` | `IMessageDispatcher.Dispatch` of a Command or an Event | A .NET `ActivityListener` is attached to the `Chatter.CQRS` source and samples this dispatch. Otherwise no span exists and only the metric can be recorded. |
+| `dispatch` | `dispatch ` followed by the short name of the type the dispatch is instrumented by. For a Command or an Event that is the compile-time `TMessage` type argument, not the runtime type: a variable declared `PlaceOrder` gives `dispatch PlaceOrder`; a variable declared `ICommand` gives `dispatch ICommand`. For a Query dispatched through `Query<TQuery, TResult>` it is the `TQuery` type argument; for a Query dispatched through `Query<TResult>(IQuery<TResult>)` it is the runtime type of the query, never `IQuery<TResult>` (`MustNameTheSpanAfterTheRuntimeQueryTypeWhenDispatchedByItsResultTypeAlone`). | `ActivityKind.Internal` | `IMessageDispatcher.Dispatch` of a Command or an Event, and `IQueryDispatcher.Query` of a Query | A .NET `ActivityListener` is attached to the `Chatter.CQRS` source and samples this dispatch. Otherwise no span exists and only the metric can be recorded. A `Query<TResult>` dispatch that faults while the dispatcher builds its invoker for the runtime query type, as a value-type query does, still starts its span, and the span and the measurement are marked with `error.type` like any other failed dispatch; the fault is logged once and rethrown (`MustLogTheFaultOnceAndMarkTheSpanAndTheMeasurementWithTheErrorTypeWhenNoInvokerCanBeBuiltForTheRuntimeQueryType`). A null query has no type to name: the returned `Task` faults with a `NullReferenceException`, nothing is logged, and no span or measurement is emitted (`MustFaultTheReturnedTaskWithANullReferenceExceptionAndLogNothingAndEmitNoTelemetryWhenTheQueryIsNull`). |
 
 | Attribute | Span | Value | Emitted | Name origin |
 | --- | --- | --- | --- | --- |
-| `chatter.message.type` | `dispatch` | The fully qualified name of the compile-time `TMessage` type argument, not the runtime type. A variable declared `PlaceOrder` gives `Contoso.Ordering.PlaceOrder`; a variable declared `ICommand` gives `Chatter.CQRS.Commands.ICommand`. | Always, on every started span | Chatter-native |
-| `chatter.dispatch.kind` | `dispatch` | `command` on the Command path, `event` on the Event path | Always, on every started span | Chatter-native |
+| `chatter.message.type` | `dispatch` | The fully qualified name of the type the dispatch is instrumented by, the type the span name is built from. For a Command or an Event that is the compile-time `TMessage` type argument, not the runtime type: a variable declared `PlaceOrder` gives `Contoso.Ordering.PlaceOrder`; a variable declared `ICommand` gives `Chatter.CQRS.Commands.ICommand`. For a Query it is the `TQuery` type argument of `Query<TQuery, TResult>`, or the runtime type of the query passed to `Query<TResult>`. | Always, on every started span | Chatter-native |
+| `chatter.dispatch.kind` | `dispatch` | `command` on the Command path, `event` on the Event path, `query` on the Query path | Always, on every started span | Chatter-native |
 | `error.type` | `dispatch` | The fully qualified exception type name | Failure only: the dispatch threw and it was not a [caller-requested cancellation](#caller-requested-cancellation) | OpenTelemetry semantic convention |
 | Status (the span's status field, not a tag) | `dispatch` | `Error`, with the exception message as the description | Failure only: the dispatch threw and it was not a caller-requested cancellation | `Activity.SetStatus`, .NET base class library |
 
@@ -495,17 +495,17 @@ The `exception` event is written by the base class library's `Activity.AddExcept
 
 | Instrument | Type | Unit | Advised buckets | Records | Recorded when |
 | --- | --- | --- | --- | --- | --- |
-| `chatter.cqrs.dispatch.duration` | `Histogram<double>` | `s` (seconds) | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10`; see [Histogram bucket boundaries](#histogram-bucket-boundaries) | Elapsed time of one Command or Event dispatch, from before the span starts until the handler (for an Event, the last handler) returns or throws | Once per dispatch, on success and on failure, and only while the instrument is enabled on a .NET `MeterListener`. A dispatch that ran with diagnostics off records nothing. |
+| `chatter.cqrs.dispatch.duration` | `Histogram<double>` | `s` (seconds) | `0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10`; see [Histogram bucket boundaries](#histogram-bucket-boundaries) | Elapsed time of one Command, Event or Query dispatch, from before the span starts until the handler (for an Event, the last handler) returns or throws | Once per dispatch, on success and on failure, and only while the instrument is enabled on a .NET `MeterListener`. A dispatch that ran with diagnostics off records nothing. |
 
 | Attribute | Instruments | Value | Emitted |
 | --- | --- | --- | --- |
-| `chatter.message.type` | `chatter.cqrs.dispatch.duration` | The fully qualified name of the compile-time `TMessage` type argument, the same value as the span attribute | Always |
-| `chatter.dispatch.kind` | `chatter.cqrs.dispatch.duration` | `command` on the Command path, `event` on the Event path | Always |
+| `chatter.message.type` | `chatter.cqrs.dispatch.duration` | The fully qualified name of the type the dispatch is instrumented by, the same value as the span attribute | Always |
+| `chatter.dispatch.kind` | `chatter.cqrs.dispatch.duration` | `command` on the Command path, `event` on the Event path, `query` on the Query path | Always |
 | `error.type` | `chatter.cqrs.dispatch.duration` | The fully qualified exception type name, resolved by the same code as the span's `error.type` | Failure only: the dispatch threw and it was not a caller-requested cancellation |
 
 A caller-requested cancellation leaves the span status `Unset`, adds no `error.type` and no `exception` event, and still records `chatter.cqrs.dispatch.duration` once, without `error.type`. An alert on `error.type` equal to `System.OperationCanceledException` or `System.Threading.Tasks.TaskCanceledException` does not see these dispatches.
 
-Query dispatch is not instrumented.
+A query type that implements `IQuery<TResult>` for two different result types is still one type, so its dispatches for both result types carry the same span name and the same `chatter.message.type`, and nothing on the span or the measurement tells them apart. See [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
 
 ### Histogram bucket boundaries
 
@@ -531,9 +531,9 @@ builder.Services.AddOpenTelemetry()
 
 ### Off means off
 
-When nothing subscribes to the `Chatter.CQRS` source or meter, nothing is emitted. Each dispatch first checks whether Chatter's own source or instrument has a subscriber, and returns to the plain path before building a span name, tags or a timestamp. The check is Chatter's own subscriber check, never `Activity.Current`, which is non-null in any host running unrelated instrumentation.
+When nothing subscribes to the `Chatter.CQRS` source or meter, nothing is emitted. Each dispatch first checks whether Chatter's own source or instrument has a subscriber, and returns to the plain path before building a span name, tags or a timestamp. The check is Chatter's own subscriber check, never `Activity.Current`, which is non-null in any host running unrelated instrumentation. The two `QueryDispatcher.Query` overloads that take an `IQueryHandlerContext` apply the same check as their first statement; no test pins that for query dispatch, because `WhenMeasuringGuardCost` measures command dispatch only.
 
-The guarantee is per dispatch. Creating the `ActivitySource` and `Meter` is a one-time static initialization per process. Command and Event dispatch are `async` whether diagnostics are on or off, because the dispatcher must await a faulting handler to log it.
+The guarantee is per dispatch. Creating the `ActivitySource` and `Meter` is a one-time static initialization per process. Command, Event and Query dispatch are `async` whether diagnostics are on or off, because the dispatcher must await a faulting handler to log it.
 
 ### Attribute names are data, not API
 

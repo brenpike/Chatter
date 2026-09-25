@@ -230,6 +230,19 @@ A mismatch is separately reachable on a type-keyed READ with no collision at all
   spanning inherited-chain shadowing, interop with the string-keyed overloads, the stored-`null` rule and
   first-write ordering; it needs its own ADR and test matrix. Making `GetOrAdd` throw on a mismatch was
   costed and declined: it does not close the class, and it contradicts the decision recorded above.
+
+  **Amended 2026-09-25 (#469): accepted limitation, not deferred work.** The owner closed #469 as won't fix.
+  The bullet's facts stand — the behaviour predates this ADR (which changed only the failure's direction) and
+  needs two distinct types sharing a namespace-qualified name, from different assemblies, both used as context
+  keys in the SAME per-dispatch container; every create-if-absent site in this repository keys on a
+  `Chatter.*` type, and the one end-to-end-silent shape stays confined to a single dispatch with nothing
+  persisted. What changes is why it stays open: a NON-breaking fix exists and was declined on
+  cost-versus-likelihood, not because every fix breaks something. A `Type`-keyed view kept alongside the
+  `FullName`-keyed one — a type-keyed read checks the type first and falls back to the name, and
+  `Include<T>(string, T)` supersedes any type entry sharing that name — would close the collision without
+  changing any read that succeeds today; the claim above that re-keying "changes reads that succeed today"
+  is true only of a pure re-key that drops the name view. #469 remains the historical tracker; no new tracker
+  entry is opened.
 - **A future contributor reaching for "just make `TryGet` throw again" is reaching for Option 1**, which was
   costed and declined here. The route to loudness is `Get<T>()`, and it is the route the container already
   offers.

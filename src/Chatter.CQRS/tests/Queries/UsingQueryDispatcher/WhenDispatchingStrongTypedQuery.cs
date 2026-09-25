@@ -1,5 +1,6 @@
 ﻿using Chatter.CQRS.Context;
 using Chatter.CQRS.Queries;
+using Chatter.CQRS.Tests.Diagnostics;
 using Chatter.Testing.Core.Creators.Common;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -11,6 +12,7 @@ using Xunit;
 
 namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
 {
+    [Collection(DiagnosticsCollection.Name)]
     public class WhenDispatchingStrongTypedQuery : Testing.Core.Context
     {
         private readonly Mock<IServiceProvider> _serviceProvider = new Mock<IServiceProvider>();
@@ -146,6 +148,30 @@ namespace Chatter.CQRS.Tests.Queries.UsingQueryDispatcher
             _logger.VerifyWasCalled(LogLevel.Error, $"Error dispatching query of type '{nameof(TestQuery)}'", cancellation, Times.Once());
             _logger.VerifyWasCalled(LogLevel.Error, times: Times.Once());
             _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Never());
+        }
+
+        [Fact]
+        public async Task MustLogTheFaultOnceAndRethrowItUnchangedWhenNoInvokerCanBeBuiltForTheRuntimeQueryType()
+        {
+            IQuery<string> valueTypeQuery = new ValueTypeQuery();
+
+            var thrown = await FluentActions.Invoking(async () => await _sut.Query(valueTypeQuery, new QueryHandlerContext())).Should().ThrowAsync<ArgumentException>();
+
+            _logger.VerifyWasCalled(LogLevel.Error, $"Error dispatching query of type '{nameof(ValueTypeQuery)}'", thrown.Which, Times.Once());
+            _logger.LoggedMessages.Should().ContainSingle();
+        }
+
+        [Fact]
+        public async Task MustFaultTheReturnedTaskWithANullReferenceExceptionAndLogNothingWhenTheQueryIsNull()
+        {
+            Task<string> dispatch = null;
+
+            Action startDispatch = () => dispatch = _sut.Query<string>(null, new QueryHandlerContext());
+
+            startDispatch.Should().NotThrow();
+
+            await FluentActions.Awaiting(() => dispatch).Should().ThrowAsync<NullReferenceException>();
+            _logger.LoggedMessages.Should().BeEmpty();
         }
 
         private TException ArrangeQueryHandlerThatFaultsAfterAnAwait<TException>(TException failure) where TException : Exception
