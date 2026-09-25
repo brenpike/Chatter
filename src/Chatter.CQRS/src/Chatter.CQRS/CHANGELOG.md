@@ -12,11 +12,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
-## [0.19.1] - 2026-09-24
+## [0.20.0] - 2026-09-24
+
+### Changed
+
+- `ThrowOnDuplicateCommandHandlers()` now covers every `AddChatterCqrs` call on the same service collection, not just the call that returned the builder, and it works through an `IChatterBuilder` wrapper that forwards `Services`. If you opted in and call `AddChatterCqrs` more than once, composition can now fail where it used to pass: this happens only when a command really has two handlers across those calls, and the later call was silently replacing the earlier handler. Remove one handler, or stop calling the check. Call the check after your last `AddChatterCqrs` (#468).
+- `AddChatterCqrs` now adds one internal bookkeeping entry to the service collection (#468).
 
 ### Fixed
 
-- `ThrowOnDuplicateCommandHandlers()` now checks the assemblies `AddChatterCqrs` actually scanned, instead of re-applying the assembly source filter. Previously, in namespace-selector or whole-AppDomain mode, the second application re-read the loaded assemblies and could report handlers that were never registered, failing composition spuriously. A builder not created by `AddChatterCqrs` (for example one built by calling `ChatterBuilder.Create` directly) still re-applies the filter. ADR-0039 records the decision (#468).
+- `ThrowOnDuplicateCommandHandlers()` no longer re-reads the loaded assemblies. In namespace-selector or whole-AppDomain mode the second read could see assemblies loaded after registration and report handlers that were never registered, failing composition spuriously. It now checks the assemblies `AddChatterCqrs` recorded; it re-reads the filter only when the service collection holds no such record, for example a builder made with `ChatterBuilder.Create` over a new collection. ADR-0039 records the decision (#468).
 
 ## [0.19.0] - 2026-09-24
 
