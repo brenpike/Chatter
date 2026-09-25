@@ -36,11 +36,21 @@ Each bounded context owns its ubiquitous language in a local `CONTEXT.md`; start
 ## Conventions Worth Pinning
 
 - xUnit + FluentAssertions + Moq + coverlet; each module has its own `*.Tests.csproj` and references `tests/Chatter.Testing.Core.csproj`.
-- `Chatter.MessageBrokers.SqlServiceBroker` does NOT auto-provision Service Broker objects — queues/services/contracts/`ENABLE_BROKER` are set up manually (README §SqlServiceBroker).
+- `Chatter.MessageBrokers.SqlServiceBroker` does NOT auto-provision Service Broker objects — queues/services/contracts/`ENABLE_BROKER` are set up manually (README §SQL setup).
 - `Chatter.MessageBrokers.RabbitMQ` provisions NO topology — exchanges, queues, bindings, and the DLX are created externally.
-- `Chatter.MessageBrokers.Reliability.EntityFramework` ships `IEntityTypeConfiguration` types meant to be applied inside the consumer's `DbContext.OnModelCreating` (README §Reliability).
+- `Chatter.MessageBrokers.Reliability.EntityFramework` ships `IEntityTypeConfiguration` types meant to be applied inside the consumer's `DbContext.OnModelCreating` (README §Map the Inbox and Outbox in your DbContext).
 - `IExternalDispatcher` is a no-op by default; a broker module replaces it (`./src/Chatter.CQRS/CONTEXT.md`).
 - `Forwarder` is a specialization of `Router` (`ForwardingRouter` / `IBrokeredMessageForwarder` overlap — `./src/Chatter.MessageBrokers/CONTEXT.md`).
+
+## README Conventions
+
+- Scope: root `README.md` (GitHub only) and module READMEs at `src/<Module>/src/README.md`, which are packed into each nupkg via `Directory.Build.props`'s `PackageReadmeFile` and render on nuget.org.
+- Module READMEs are pure Markdown: no raw HTML, no mermaid diagrams, no relative links (use absolute `https://github.com/brenpike/Chatter/blob/master/<path>` links instead), and no GitHub `> [!NOTE]`-style alerts. Callouts read `> **Note:**`, `> **Important:**`, or `> **Warning:**`, capped around three per README. The root README may use a centered `<div align="center">` header, mermaid diagrams, and relative links.
+- Layout: badge header, then the package's one-line bold description, Features, Installation, Quick start, module-specific usage sections, Configuration, Diagnostics, Related packages, Learn more, and License. Add a Contents list once a README passes roughly 150 lines. Use sentence-case headings, never rename a heading another README links to, and only link to headings that exist.
+- Voice: user-facing and present tense. No history wording (that belongs in the CHANGELOG, except an Upgrading section), no test names, no `INVARIANT:`/oracle language, and no ADR links or internal issue numbers — except a GitHub issue link for a user-visible known limitation. Use each context's ubiquitous language from its `CONTEXT.md` (e.g. Receiver, not consumer or listener).
+- Guarantees: summary surfaces (intros, Features bullets, section leads, choice tables, quick-start narration, the root README) describe what a component does or is for, never an outcome promise (once, exactly once, never, no duplicate, not lost, in order, atomic). State each outcome guarantee once per README, in the detailed section for the code that provides it, next to its preconditions and known exceptions, and link to it elsewhere. This does not apply to outcomes the broker or database guarantees unconditionally, or behavior the code enforces with no precondition.
+- Secrets: examples show configuration keys, never credential values. C# samples read credentials via `builder.Configuration.GetConnectionString(...)` or `builder.Configuration["..."]`; `appsettings.json` snippets hold only non-secret values; a credential placeholder appears only inside a `dotnet user-secrets set` command. Each README that shows where a credential goes has one `### Storing secrets` section, and other samples link to it. Security-weakening settings (`TrustServerCertificate=true`, RabbitMQ `guest`, emulator keys) appear only labelled local-development-only or with a stated reason.
+- Accuracy: README code samples are not compiled by CI, so verify every type, member, option, default, and configuration key against source. Describe what the code does today, and file code defects as issues rather than documenting intended behavior.
 
 ## Development Process
 
