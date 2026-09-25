@@ -22,7 +22,19 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         public Task Handle(TMessage message, IMessageHandlerContext messageHandlerContext, CommandHandlerDelegate next)
         {
             _logger.LogDebug($"Entering {nameof(InboxBehavior<TMessage>)}");
-            if (messageHandlerContext is IMessageBrokerContext messageBrokerContext)
+
+            // INVARIANT: only the Delivery Entry - the message this delivery admitted first - is received via the
+            // inbox; every other command dispatched on the same broker context (nested in-process dispatch
+            // inherits it) goes straight to next(), because the entry's handler already holds the delivery's
+            // message id (ADR-0041). Pinned by WhenHandling: restoring the bare `is IMessageBrokerContext` gate
+            // reddens MustInvokeTheNestedHandlerWhenAGatedHandlersOwnDispatchReEntersTheBehavior,
+            // MustReceiveViaInboxOnlyTheMessageTheDeliveryAdmitted and
+            // MustInvokeTheHandlerOfASiblingDispatchedAfterTheAdmittedMessageCompleted; binding on a first-call flag
+            // instead of the instance reddens MustReceiveViaInboxAgainWhenTheAdmittedMessageIsRedispatchedAfterItsHandlerFailed.
+            // A handler that re-dispatches the received INSTANCE itself is still gated, and so skipped while its
+            // own receipt holds the id; no test pins that.
+            if (messageHandlerContext is IMessageBrokerContext messageBrokerContext
+                && messageBrokerContext.Container.GetOrNew<InboxDeliveryEntry>().Admits(message))
             {
                 return _brokeredMessageInbox.ReceiveViaInbox(message, messageBrokerContext, () => next());
             }
