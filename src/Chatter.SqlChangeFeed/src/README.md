@@ -1,290 +1,458 @@
-# <a name="chatter-sqlchangefeed"></a> Chatter.SqlChangeFeed
+# Chatter.SqlChangeFeed
 
-Emit strongly-typed notifications whenever rows in a watched SQL Server table are inserted, updated, or deleted.
+[![NuGet](https://img.shields.io/nuget/v/Chatter.SqlChangeFeed.svg)](https://www.nuget.org/packages/Chatter.SqlChangeFeed)
+[![Downloads](https://img.shields.io/nuget/dt/Chatter.SqlChangeFeed.svg)](https://www.nuget.org/packages/Chatter.SqlChangeFeed)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![CI](https://github.com/brenpike/Chatter/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/brenpike/Chatter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/brenpike/Chatter/blob/master/LICENSE)
 
-## Overview
+**Strongly typed insert, update and delete notifications from a watched SQL Server table, delivered over SQL Server Service Broker.**
 
-`Chatter.SqlChangeFeed` turns row-level changes in a SQL Server table into a *change feed* of in-process messages, without polling. It provisions a SQL trigger on the watched table that publishes changes onto a SQL Server Service Broker queue; Chatter's Service Broker receiver picks those messages up and dispatches them to your handlers.
+This package installs a Trigger on a table you choose. The Trigger sends every row change onto a SQL Server Service Broker queue, and a Brokered Message Receiver hands each change to your Chatter.CQRS handlers as `RowInsertedEvent<T>`, `RowUpdatedEvent<T>` or `RowDeletedEvent<T>`. Nothing polls the table. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
 
-This package was originally named **Table Watcher** (`Chatter.TableWatcher`); it is now `Chatter.SqlChangeFeed`. The "watcher" terminology still appears throughout the domain language.
+## Contents
 
-By default, each change is delivered to your code as one of three strongly-typed events:
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Install requirements](#install-requirements)
+- [Handling changes](#handling-changes)
+- [Configuration](#configuration)
+- [Object names](#object-names)
+- [How it works](#how-it-works)
+- [Re-running the migration](#re-running-the-migration)
+- [Known limitations](#known-limitations)
+- [Diagnostics](#diagnostics)
+- [Upgrading](#upgrading)
+- [Related packages](#related-packages)
+- [Learn more](#learn-more)
+- [License](#license)
 
-- `RowInsertedEvent<TRowChangeData>`
-- `RowUpdatedEvent<TRowChangeData>`
-- `RowDeletedEvent<TRowChangeData>`
+## Features
 
-Alternatively you can opt out of that fan-out and handle the raw `ProcessChangeFeedCommand<TRowChangeData>` (a batch of `ChangeFeedItem<TRowChangeData>`) yourself.
+- **Typed row events**: each change arrives as `RowInsertedEvent<T>`, `RowUpdatedEvent<T>` (old and new values) or `RowDeletedEvent<T>`, where `T` is your row type.
+- **No polling**: a Trigger on the watched table pushes changes onto SQL Server Service Broker as they commit.
+- **Ordinary handlers**: you handle changes with Chatter.CQRS `IMessageHandler<T>`, and can send or publish Brokered Messages from those handlers.
+- **Change type filter**: watch any combination of inserts, updates and deletes.
+- **Manual mode**: handle the raw batch as `ProcessChangeFeedCommand<T>` instead of per-row events.
+- **Re-runnable Change Feed Migration**: one startup call installs the Service Broker objects, the Trigger and the install and uninstall Stored Procedures, and later runs reconcile rather than repeat.
+- **Schema drift repair**: re-running the migration rebuilds the Trigger when the watched table's columns change and leaves it alone when they do not.
+- **Safe refusals**: missing tables, tables without a primary key, unsupported platforms and diverged topology are refused with a named error before any Service Broker object or Trigger is created.
 
 ## Installation
 
-```
+```shell
 dotnet add package Chatter.SqlChangeFeed
 ```
 
-This package builds on `Chatter.CQRS` and `Chatter.MessageBrokers.SqlServiceBroker`, which are pulled in transitively.
+Targets .NET 10 (`net10.0`).
 
-## Getting Started
+Dependencies: Chatter.MessageBrokers.SqlServiceBroker, Microsoft.Data.SqlClient 7.0.1.
 
-### 1. Register the change feed
+Chatter.MessageBrokers and Chatter.CQRS come in transitively. `AddSqlChangeFeed` registers the SQL Server Service Broker transport for you, so you do not call `AddSqlServiceBroker` yourself.
 
-`AddSqlChangeFeed<TRowChangedData>` is the primary entry point. It is an extension on `IChatterBuilder`, so chain it off your existing Chatter registration. `TRowChangedData` is a type implementing `IMessage` whose properties map to the columns of the watched row.
+## Quick start
+
+The samples use `Host.CreateApplicationBuilder` with `builder.Services` and `builder.Configuration`, and assume the implicit usings of the Worker or Web SDK. `WebApplication.CreateBuilder` works the same way, and so does any `IServiceCollection` plus `IConfiguration`. Read [Install requirements](#install-requirements) before you point this at a live database.
+
+### 1. Define a row type
+
+The row type is a class that implements `IMessage` and has a public parameterless constructor. Its properties are named after the watched table's columns; names match without regard to case.
 
 ```csharp
-using Chatter.CQRS.DependencyInjection;
-using Chatter.SqlChangeFeed.DependencyInjection;
+using Chatter.CQRS;
 
-public void ConfigureServices(IServiceCollection services)
-{
-    services.AddChatterCqrs(typeof(Startup).Assembly)
-            .AddSqlChangeFeed<MyRow>(
-                connectionString: Configuration.GetConnectionString("Chatter"),
-                databaseName: "MyDatabase",   // optional; falls back to the connection string's Initial Catalog
-                tableName: "MyTable",
-                optionsBuilder: opts => opts
-                    .WithSchema("dbo")
-                    .WithTypesOfChangesToWatch(ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete));
-}
-
-// The IMessage that maps to a row in MyTable
-public class MyRow : Chatter.CQRS.IMessage
+public class OrderRow : IMessage
 {
     public int Id { get; set; }
-    public string Name { get; set; }
+    public string CustomerId { get; set; }
+    public decimal Total { get; set; }
+    public string Status { get; set; }
 }
 ```
 
-A non-generic overload, `AddSqlChangeFeed(Type rowChangedDataType, ...)`, is available when the row type is only known at runtime.
+### 2. Register the change feed
 
-### 2. Provision the SQL dependencies
-
-The Trigger, Stored Procedures, and Service Broker objects are **not** created at registration time. Call `UseChangeFeedSqlMigrationsAsync<TRowChangedData>` on the `IServiceProvider` during startup to run the Change Feed Migration:
+Chain `AddSqlChangeFeed<T>` after `AddChatterCqrs` and `AddMessageBrokers`. The change feed's receiver depends on services that `AddMessageBrokers` registers.
 
 ```csharp
-public static async Task ProvisionChangeFeedAsync(IHost host, CancellationToken token)
-{
-    await host.Services.UseChangeFeedSqlMigrationsAsync<MyRow>(token);
-}
+using Chatter.SqlChangeFeed;
+using Chatter.SqlChangeFeed.DependencyInjection;
+
+var builder = Host.CreateApplicationBuilder(args);
+
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddSqlChangeFeed<OrderRow>(
+        builder.Configuration.GetConnectionString("Orders"),
+        databaseName: null,
+        tableName: "Orders",
+        optionsBuilder: o => o
+            .WithSchema("dbo")
+            .WithTypesOfChangesToWatch(ChangeTypes.Insert | ChangeTypes.Update | ChangeTypes.Delete));
 ```
 
-A blocking bridge, `UseChangeFeedSqlMigrations<TRowChangedData>`, is also available; it is now `[Obsolete]` at warning level — it still compiles and still works. It now runs the install on the thread pool instead of blocking the calling thread directly, so it no longer deadlocks on a host that carries a `SynchronizationContext`. `Async` remains the recommended, eventual-destination form; prefer it wherever the host lets you await. Non-generic overloads of both take the row type as a `Type` argument, for when it is only known at runtime.
+`databaseName: null` uses the `Initial Catalog` of the connection string. `AddChatterCqrs` scans the assembly you pass for handlers, so put your handlers there.
 
-Read [Install Requirements](#install-requirements) before running this against a live database.
+### 3. Run the Change Feed Migration
 
-#### The `IApplicationBuilder` overloads are gone
-
-The package no longer references `Microsoft.AspNetCore.Http.Abstractions`, and these four overloads were removed:
-
-- `UseChangeFeedSqlMigrations<TRowChangedData>(this IApplicationBuilder, CancellationToken)`
-- `UseChangeFeedSqlMigrations(this IApplicationBuilder, Type, CancellationToken)`
-- `UseChangeFeedSqlMigrationsAsync<TRowChangedData>(this IApplicationBuilder, CancellationToken)`
-- `UseChangeFeedSqlMigrationsAsync(this IApplicationBuilder, Type, CancellationToken)`
-
-If one of those is now a compile error, reach the surviving `IServiceProvider` form through one property access:
+Registration only wires up dependency injection; it creates nothing in SQL Server. Run the Change Feed Migration once at startup, after `Build()` and before the host starts:
 
 ```csharp
-// before
-app.UseChangeFeedSqlMigrations<MyRow>();
+using var host = builder.Build();
 
-// after - the surviving form is asynchronous, so await it from an async startup
-// path; discarding the returned Task lets the app start before provisioning finishes
-await app.ApplicationServices.UseChangeFeedSqlMigrationsAsync<MyRow>();
+await host.Services.UseChangeFeedSqlMigrationsAsync<OrderRow>();
+
+await host.RunAsync();
 ```
 
-A caller with nowhere to await — a synchronous `Configure(IApplicationBuilder app)` — can still reach `app.ApplicationServices.UseChangeFeedSqlMigrations<MyRow>()`, which blocks until the migration completes: it is deprecated (`[Obsolete]`, warning-level), not removed.
+With `WebApplication`, call `await app.Services.UseChangeFeedSqlMigrationsAsync<OrderRow>();` before `app.Run()`. Both methods also accept a `CancellationToken`. Running the migration on every startup is safe; see [Re-running the migration](#re-running-the-migration).
 
-### 3. Handle the change notifications
+### 4. Handle row changes
 
-With the default behavior (`ProcessChangeFeedCommandViaChatter = true`), implement `IMessageHandler<T>` for whichever events you care about:
+Implement `IMessageHandler<T>` for the events you care about:
 
 ```csharp
 using Chatter.CQRS;
 using Chatter.CQRS.Context;
 using Chatter.SqlChangeFeed;
 
-public class MyRowChangeHandler :
-    IMessageHandler<RowInsertedEvent<MyRow>>,
-    IMessageHandler<RowUpdatedEvent<MyRow>>,
-    IMessageHandler<RowDeletedEvent<MyRow>>
+public class OrderRowChangedHandler :
+    IMessageHandler<RowInsertedEvent<OrderRow>>,
+    IMessageHandler<RowUpdatedEvent<OrderRow>>,
+    IMessageHandler<RowDeletedEvent<OrderRow>>
 {
-    public Task Handle(RowInsertedEvent<MyRow> message, IMessageHandlerContext context)
+    private readonly ILogger<OrderRowChangedHandler> _logger;
+
+    public OrderRowChangedHandler(ILogger<OrderRowChangedHandler> logger) => _logger = logger;
+
+    public Task Handle(RowInsertedEvent<OrderRow> message, IMessageHandlerContext context)
     {
-        var inserted = message.Inserted;
-        // ...
+        _logger.LogInformation("Order {OrderId} inserted", message.Inserted.Id);
         return Task.CompletedTask;
     }
 
-    public Task Handle(RowUpdatedEvent<MyRow> message, IMessageHandlerContext context)
+    public Task Handle(RowUpdatedEvent<OrderRow> message, IMessageHandlerContext context)
     {
-        var before = message.OldValue;
-        var after = message.NewValue;
-        // ...
+        _logger.LogInformation("Order {OrderId} status {Old} -> {New}",
+            message.NewValue.Id, message.OldValue.Status, message.NewValue.Status);
         return Task.CompletedTask;
     }
 
-    public Task Handle(RowDeletedEvent<MyRow> message, IMessageHandlerContext context)
+    public Task Handle(RowDeletedEvent<OrderRow> message, IMessageHandlerContext context)
     {
-        var deleted = message.Deleted;
-        // ...
+        _logger.LogInformation("Order {OrderId} deleted", message.Deleted.Id);
         return Task.CompletedTask;
     }
 }
 ```
 
-### Handling the raw change feed instead
+Insert, update or delete a row in `dbo.Orders` and the matching handler runs.
 
-If you call `ProcessTableChangesManually()` on the options builder, Chatter does **not** fan out to the row events. Instead, handle the batch command directly:
+## Install requirements
 
-```csharp
-public class MyChangeFeedHandler : IMessageHandler<ProcessChangeFeedCommand<MyRow>>
-{
-    public Task Handle(ProcessChangeFeedCommand<MyRow> message, IMessageHandlerContext context)
-    {
-        foreach (ChangeFeedItem<MyRow> change in message.Changes)
-        {
-            // change.Inserted and/or change.Deleted are populated depending on the operation
-        }
-        return Task.CompletedTask;
-    }
-}
-```
-
-## Install Requirements
-
-The Change Feed Migration runs DDL against the consumer's own database. Read this before running it against a live one.
+The Change Feed Migration runs DDL against your own database. Check these before you run it.
 
 ### Supported platforms
 
-| Target | Supported | Why |
+| Target | Supported | Reason |
 | --- | --- | --- |
-| SQL Server (on-premises, VM, container) | Yes | Full SQL Server Service Broker. |
+| SQL Server (on-premises, VM or container) | Yes | Full SQL Server Service Broker. |
 | Azure SQL Managed Instance | Yes | Full SQL Server Service Broker. |
-| Azure SQL Database | **No** | The engine has no Service Broker at all. |
+| Azure SQL Database | No | The engine has no Service Broker. |
 
-On Azure SQL Database (`SERVERPROPERTY('EngineEdition') = 5`) the install procedure refuses with a named error identifying the engine edition and the watched table, before creating any object — rather than failing obscurely part-way through.
-
-**Server floor: SQL Server 2016 SP1.** The install and uninstall Stored Procedures are created with `CREATE OR ALTER`, so an upgraded package replaces a stale procedure body instead of silently keeping it. `CREATE OR ALTER` arrived in SQL Server 2016 SP1.
+On Azure SQL Database the install Stored Procedure refuses with a named error, naming the engine edition and the watched table, before it creates any Service Broker object. The minimum server version is SQL Server 2016 SP1, because the Stored Procedures are created with `CREATE OR ALTER`.
 
 ### Privileges
 
-The installing principal must already hold `ALTER` on the target database. **Sysadmin is no longer required**, and install no longer transfers database ownership: the `ALTER AUTHORIZATION ON DATABASE::<db> TO [sa]` statement earlier versions emitted alongside `ENABLE_BROKER` is gone. Reassigning ownership to `sa` silently widened the privileges of every `EXECUTE AS OWNER` module in the consumer's database.
+The principal in the connection string needs `ALTER` on the target database. It does not need `sysadmin`, and the migration does not change the database owner.
 
-### Enabling Service Broker terminates other sessions
+### Enabling Service Broker disconnects other sessions
 
-When the target database has Service Broker disabled, the migration issues:
+When Service Broker is disabled on the target database, the migration runs:
 
 ```sql
 ALTER DATABASE [YourDatabase] SET ENABLE_BROKER WITH ROLLBACK IMMEDIATE;
 ```
 
-`WITH ROLLBACK IMMEDIATE` **rolls back other sessions' open transactions on that database and disconnects them.** Without it the statement waits for every other session on the database to close, so a first install behind a connection pool blocks indefinitely with no timeout and no diagnostic. This applies to the *first* install only — the statement sits behind an `is_broker_enabled = 0` guard, so once the broker is on it is skipped on every later run.
+> **Warning:** `WITH ROLLBACK IMMEDIATE` rolls back other sessions' open transactions on that database and disconnects them. This happens on the first install only; once Service Broker is enabled the statement is skipped. Run the first install in a maintenance window, or enable Service Broker yourself beforehand.
 
 ### Watched-table preconditions
 
-Before any Service Broker object is created, the install procedure refuses — with an error naming the cause and the watched table — when:
+Before it creates any Service Broker object, the install Stored Procedure refuses with a named error when:
 
 - the watched table does not exist, or
-- the watched table has no `PRIMARY KEY`. The Change Feed Trigger joins `INSERTED` to `DELETED` on the primary key columns, so a table carrying only a `UNIQUE` constraint is refused.
+- the watched table has no `PRIMARY KEY`. A `UNIQUE` constraint is not enough, because the Trigger joins `INSERTED` to `DELETED` on the primary key columns.
 
-Because every precondition is checked first, a refused install leaves no partially created queue, service, or Trigger behind.
+A refused install leaves no partly created queue, service or Trigger behind.
+
+## Handling changes
+
+### Row events
+
+By default each changed row becomes one event, all in namespace `Chatter.SqlChangeFeed`:
+
+| Event | Properties | Raised when the Change Feed Item has |
+| --- | --- | --- |
+| `RowInsertedEvent<T>` | `Inserted` | an inserted row only |
+| `RowUpdatedEvent<T>` | `NewValue`, `OldValue` | both an inserted and a deleted row |
+| `RowDeletedEvent<T>` | `Deleted` | a deleted row only |
+
+These are `IEvent`s, so any number of handlers can handle each one, and you only implement the ones you need. A statement that changes several rows arrives as one message; the receiver dispatches one event per row, in order, each awaited before the next.
+
+When a handler throws, the whole message fails, including rows already handled from that statement. The message is then received again under the Chatter.MessageBrokers [Recovery](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#recovery) rules, so write handlers that tolerate seeing a row change more than once.
+
+### Watching only some changes
+
+`WithTypesOfChangesToWatch` sets which operations the Trigger fires on. Changes you do not watch never leave the database.
+
+```csharp
+.AddSqlChangeFeed<OrderRow>(connectionString, databaseName: null, tableName: "Orders",
+    optionsBuilder: o => o.WithTypesOfChangesToWatch(ChangeTypes.Insert))
+```
+
+### Sending and publishing from a handler
+
+Change feed handlers run inside a Brokered Message Receiver, so the Chatter.MessageBrokers handler-context extensions work there. For example, publish an integration event when an order row is inserted:
+
+```csharp
+public Task Handle(RowInsertedEvent<OrderRow> message, IMessageHandlerContext context)
+    => context.Publish(new OrderPlaced { OrderId = message.Inserted.Id });
+```
+
+`OrderPlaced` is an `IEvent` mapped to a broker path, as described in the Chatter.MessageBrokers [Quick start](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#quick-start).
+
+### Processing the batch yourself
+
+Call `ProcessTableChangesManually()` to skip the row events and receive each message as a `ProcessChangeFeedCommand<T>`. Its `Changes` property holds one `ChangeFeedItem<T>` per changed row, each with `Inserted` and `Deleted` values.
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddSqlChangeFeed<OrderRow>(
+        builder.Configuration.GetConnectionString("Orders"),
+        databaseName: null,
+        tableName: "Orders",
+        optionsBuilder: o => o.ProcessTableChangesManually());
+```
+
+```csharp
+using Chatter.CQRS;
+using Chatter.CQRS.Context;
+using Chatter.SqlChangeFeed;
+
+public class OrderRowBatchHandler : IMessageHandler<ProcessChangeFeedCommand<OrderRow>>
+{
+    public Task Handle(ProcessChangeFeedCommand<OrderRow> message, IMessageHandlerContext context)
+    {
+        foreach (ChangeFeedItem<OrderRow> change in message.Changes)
+        {
+            // Inserted only: insert. Deleted only: delete. Both: update (Inserted is the new value).
+        }
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+`ProcessChangeFeedCommand<T>` is a Command, so register exactly one handler for it.
 
 ## Configuration
 
-`AddSqlChangeFeed` takes the connection string, database, and table directly. Everything else is configured through the optional `Action<SqlChangeFeedOptionsBuilder>`, which produces a `SqlChangeFeedOptions`.
+Configuration is fluent only; this package reads no `appsettings.json` section.
 
-### Core arguments / `SqlChangeFeedOptions`
+### AddSqlChangeFeed arguments
 
-| Property | Meaning |
+`AddSqlChangeFeed<TRowChangedData>` extends `IChatterBuilder` (namespace `Chatter.SqlChangeFeed.DependencyInjection`). `TRowChangedData` must be a class that implements `IMessage` and has a public parameterless constructor. A non-generic overload, `AddSqlChangeFeed(Type rowChangedDataType, ...)`, takes the row type at runtime.
+
+| Argument | Description |
 | --- | --- |
-| `ConnectionString` | Connection to the SQL Server hosting the watched table. |
-| `DatabaseName` | Database containing the table. Optional; defaults to the connection string's `Initial Catalog`. |
-| `TableName` | The table to watch. |
-| `SchemaName` | Schema of the table. Defaults to `dbo`. |
-| `ChangeFeedTriggerTypes` | Which operations to watch (`ChangeTypes.Insert \| Update \| Delete`). Defaults to all three. |
-| `ChangeFeedQueueName` | Name of the backing Service Broker queue. Drives the installed topology: the Change Feed Migration creates this queue and the receiver reads it. Defaults to a Chatter-generated name based on the row type. |
-| `ChangeFeedDeadLetterServiceName` | Service Broker service to which dead-lettered messages are routed. Drives the installed topology: the Change Feed Migration creates this service. Defaults to a generated name. |
-| `ProcessChangeFeedCommandViaChatter` | When `true` (default), Chatter fans changes out as `RowInserted`/`RowUpdated`/`RowDeleted` events. When `false`, you handle `ProcessChangeFeedCommand<T>` directly. |
+| `connectionString` | Connection to the SQL Server that hosts the watched table. Required. |
+| `databaseName` | Database that contains the table. Pass `null` to use the connection string's `Initial Catalog`. |
+| `tableName` | Table to watch, without its schema. Required. |
+| `optionsBuilder` | Optional `Action<SqlChangeFeedOptionsBuilder>` for everything else. |
 
-### `SqlChangeFeedOptionsBuilder` methods
+`AddSqlChangeFeed` throws `ArgumentNullException` for a blank connection string or table name. It throws `InvalidOperationException` when neither `databaseName` nor the connection string names a database, and `ChangeFeedObjectNameCollisionException` for colliding names (see [Object names](#object-names)).
 
-| Method | Effect |
-| --- | --- |
-| `WithNameOfDatabaseToWatch(string)` | Sets the database name. |
-| `WithSchema(string)` | Sets the table schema (default `dbo`). |
-| `WithTypesOfChangesToWatch(ChangeTypes)` | Restricts which operations raise notifications. |
-| `EmitRowChangeEvents()` | Fan out to the row-change events (default). |
-| `ProcessTableChangesManually()` | Deliver the raw `ProcessChangeFeedCommand<T>` instead. |
-| `WithChangeFeedQueueName(string)` | Overrides the Service Broker queue name — both the queue the Change Feed Migration creates and the queue the receiver reads. |
-| `WithChangeFeedDeadLetterServiceName(string)` | Overrides the dead-letter service name — both the dead-letter service the Change Feed Migration creates and the receiver's dead-letter path. |
-| `WithErrorQueueName(string)` | Sets the error queue path for the receiver. |
-| `WithTransactionMode(TransactionMode)` | Atomicity of the receiver (default `FullAtomicityViaInfrastructure`). |
-| `WithMaxReceiveAttempts(int)` | Max receive attempts before recovery action (default `10`). |
-| `WithReceiverTimeoutInMilliseconds(int)` | Receiver wait timeout (default `-1`, unlimited). |
-| `WithConversationLifetimeInSeconds(int)` | Service Broker dialog lifetime. |
-| `EnableConversationEncryption()` / `DisableConversationEncryption()` | Toggle Service Broker dialog encryption (default disabled). |
-| `WithCompressedMessageBody()` / `WithUncompressedMessageBody()` | Toggle message-body compression (default compressed). |
-| `WithMessageBodyType(string)` / `WithApplicationJsonUtf16CharsetMessageBodyType()` | Set the message body content type (default `application/json; charset=utf-16`). |
+### Options reference
 
-> **A change feed queue name must be a single unqualified identifier — no dot, no brackets.** The two sides
-> read the configured value differently and neither side can be worked around from the other. The Change Feed
-> Migration installs it as **one** object inside the configured schema (`CREATE QUEUE [schema].[<the configured
-> value>]`), and a bracket in the value is escaped as a literal name character, so
-> `WithChangeFeedQueueName("[my.queue]")` installs a queue whose name really is `[my.queue]`. The receiver
-> instead reads the value as a possibly schema-qualified path — `dbo.MyQueue` is read as `schema.queue` — and
-> never qualifies it with the configured schema. So a value carrying a dot or a bracket makes the receiver poll
-> an object the migration never created, and pre-bracketing does not fix it. This is **not** new in 0.14.2:
-> before the receiver bracket-quoted the queue name it interpolated it raw, and T-SQL parses an unquoted `a.b`
-> as `schema.object` in exactly the same way.
+All methods are on `SqlChangeFeedOptionsBuilder` (namespace `Chatter.SqlChangeFeed.Configuration`) and return the builder.
 
-> **Configured names now reach the installed topology.** Previously `WithChangeFeedQueueName` bound only the receiver while the Change Feed Migration provisioned a default-named queue, so a consumer who set a queue name got a receiver reading a queue the migration never created. `WithChangeFeedDeadLetterServiceName` was dropped before it reached anything: the public `SqlChangeFeedOptions.ChangeFeedDeadLetterServiceName` property was never assigned during `Build()`, so both the migration and the receiver fell back to the generated name. Both configured names now flow through to the objects the migration installs, so **a consumer who already set either one will see the effective object name change** on the next migration run. The conversation *service* name stays derived from the row type in every case; that derived service is created on the configured queue, and the Trigger routes to the service rather than to the queue.
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `WithNameOfDatabaseToWatch` | `string` | the `databaseName` argument | Sets the database that contains the watched table. |
+| `WithSchema` | `string` | `dbo` | Schema of the watched table. The change feed's queues, Trigger and Stored Procedures are created in this schema too. |
+| `WithTypesOfChangesToWatch` | `ChangeTypes` | `Insert \| Update \| Delete` | Operations the Trigger fires on. |
+| `EmitRowChangeEvents` | — | on | Dispatch `RowInsertedEvent<T>`, `RowUpdatedEvent<T>` and `RowDeletedEvent<T>`. |
+| `ProcessTableChangesManually` | — | off | Dispatch `ProcessChangeFeedCommand<T>` instead of row events. |
+| `WithChangeFeedQueueName` | `string` | `Chatter_Queue_<RowType>` | Queue the migration creates and the receiver reads. Must be a single unqualified identifier. |
+| `WithChangeFeedDeadLetterServiceName` | `string` | `Chatter_DeadLetterService_<RowType>` | Dead-letter service the migration creates and the receiver deadletters to. |
+| `WithErrorQueueName` | `string` | — | Error Queue for messages that fail on every receive attempt. |
+| `WithTransactionMode` | `TransactionMode` | `FullAtomicityViaInfrastructure` | Transaction mode of the change feed's receiver. |
+| `WithMaxReceiveAttempts` | `int` | `10` | Has no effect; the receiver always uses `10`. See [Known limitations](#known-limitations). |
+| `WithReceiverTimeoutInMilliseconds` | `int` | `-1` (wait indefinitely) | How long each Service Broker receive waits for a message before it is issued again. |
+| `WithMessageBodyType` | `string` | `application/json; charset=utf-16` | Content type the transport uses to read and write bodies. The Trigger writes UTF-16 JSON, so keep the default. |
+| `WithApplicationJsonUtf16CharsetMessageBodyType` | — | — | Resets the body type to `application/json; charset=utf-16`. |
+| `WithConversationLifetimeInSeconds` | `int` | `int.MaxValue` | Dialog lifetime for messages Chatter sends over Service Broker. |
+| `EnableConversationEncryption` / `DisableConversationEncryption` | — | disabled | Dialog encryption for messages Chatter sends over Service Broker. |
+| `WithCompressedMessageBody` / `WithUncompressedMessageBody` | — | compressed | Body compression for messages Chatter sends over Service Broker. |
 
-> **A diverged topology is refused, not installed over.** Because a configured name changes the objects the migration installs, a database still carrying the objects a *previous* configuration installed is a divergence the migration cannot detect by name: a `SERVICE` records its queue binding in `sys.services.service_queue_id`, and no name-existence guard reads that column. Before it creates or alters any Service Broker object, the install Stored Procedure now checks those bindings and **refuses the run with a named error** when the derived conversation service is bound to a queue other than the configured one, or when a service other than the configured dead-letter service is bound to this change feed's dead-letter queue. The refusal is **non-destructive and does not repair the divergence** — see [Re-running the migration](#re-running-the-migration-and-watched-table-schema-drift) for the remedy.
+The last three rows configure the SQL Server Service Broker transport that `AddSqlChangeFeed` registers, which applies to messages your application sends over Service Broker. They do not change the Trigger: it always sends compressed, unencrypted messages with no lifetime, and the receiver decompresses them automatically. `TransactionMode` is in namespace `Chatter.MessageBrokers.Receiving`.
 
-> **Configured names must also be distinct within their catalog.** `AddSqlChangeFeed` throws `ChangeFeedObjectNameCollisionException` when a configured name collides with another derived name in the same catalog namespace, compared case-insensitively to match SQL Server's default collation. `WithChangeFeedQueueName` is rejected when it equals the dead-letter queue name, the Change Feed Trigger name, or either Change Feed Stored Procedure name — queues, triggers, and stored procedures all share the schema-scoped `sys.objects` namespace. `WithChangeFeedDeadLetterServiceName` is rejected when it equals the derived conversation service name, with which it shares the database-scoped service catalog. A queue name and a service name may still be identical: different catalogs, no collision.
+### Common configurations
 
-> **Known limitation — default names key on the row type's *simple* name.** Every default name `ChangeFeedObjectNames` derives — the conversation queue and service, the dead-letter queue and service, the Change Feed Trigger, and the install and uninstall Change Feed Stored Procedures — comes from the row type's **simple** name and never its namespace, so two row types sharing a simple name in different namespaces derive identical installed object names. When both watched tables live in the same schema the install **aborts** on the duplicate Change Feed Trigger name — that failure is the collision guard, not a defect. Configuration is not a full escape hatch: `WithChangeFeedQueueName` and `WithChangeFeedDeadLetterServiceName` override only 2 of those 7 names, so the other 5 still collide. The resolution is to give colliding row types **distinct simple names**.
+A dedicated schema, explicit names, an Error Queue and a finite receiver timeout:
 
-## How It Works
+```csharp
+using Chatter.MessageBrokers.Receiving;
+using Chatter.SqlChangeFeed;
+using Chatter.SqlChangeFeed.DependencyInjection;
 
-When you call `UseChangeFeedSqlMigrationsAsync<T>`, `SqlDependencyManager<T>` runs a set of generated SQL scripts (via `ISqlDependencyManager`) against the target database. For each watched row type it provisions:
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddSqlChangeFeed<OrderRow>(
+        builder.Configuration.GetConnectionString("Orders"),
+        databaseName: "Sales",
+        tableName: "Orders",
+        optionsBuilder: o => o
+            .WithSchema("sales")
+            .WithTypesOfChangesToWatch(ChangeTypes.Insert | ChangeTypes.Update)
+            .WithChangeFeedQueueName("OrdersChangeFeed")
+            .WithChangeFeedDeadLetterServiceName("OrdersChangeFeedDeadLetter")
+            .WithErrorQueueName("OrdersChangeFeedErrors")
+            .WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure)
+            .WithReceiverTimeoutInMilliseconds(5000));
+```
 
-1. **Service Broker objects** — enables Service Broker on the database if needed (`ENABLE_BROKER WITH ROLLBACK IMMEDIATE`; see [Install Requirements](#install-requirements)) and creates the message type, contract, a conversation queue + service, and a dead-letter queue + service (`InstallAndConfigureSqlServiceBroker`). Names come from a single derivation, `ChangeFeedObjectNames`: the conversation queue and the dead-letter service honour `ChangeFeedQueueName` / `ChangeFeedDeadLetterServiceName` where configured, and every other name is derived from `ChatterServiceBrokerConstants` and the row type's simple name.
-2. **A trigger on the watched table** (`CreateChangeFeedTrigger`) — an `AFTER INSERT/UPDATE/DELETE` trigger (scoped to `ChangeFeedTriggerTypes`) that serializes the affected `inserted`/`deleted` rows and `SEND`s them onto a Service Broker conversation as a compressed message.
-3. **Install / uninstall Stored Procedures** (`CreateInstallationProcedure`, `CreateUninstallProcedure`) — both are emitted with `CREATE OR ALTER`, so re-running the migration replaces a stale procedure body rather than keeping it. The install procedure checks the preconditions, wires everything together, and creates or refreshes the Trigger; the uninstall procedure tears the Trigger, queues, services, and procedures back down.
+Watching two tables takes one `AddSqlChangeFeed` call and one migration call per row type:
 
-At runtime the queue is drained by Chatter's SQL Service Broker receiver. A `ChangeFeedReceiver<T>` (a `BrokeredMessageReceiver`) deserializes each batch into a `ProcessChangeFeedCommand<T>` of `ChangeFeedItem<T>`. Each item carries an `Inserted` and/or `Deleted` snapshot, which the receiver uses to decide whether the change was an insert (inserted only), delete (deleted only), or update (both), dispatching the matching event — unless you chose `ProcessTableChangesManually()`.
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddSqlChangeFeed<OrderRow>(connectionString, databaseName: null, tableName: "Orders")
+    .AddSqlChangeFeed<CustomerRow>(connectionString, databaseName: null, tableName: "Customers");
 
-**Provisioning is manual, not automatic.** Registration (`AddSqlChangeFeed`) only wires up DI; the SQL objects are created only when the Change Feed Migration is invoked at startup.
+using var host = builder.Build();
 
-### Re-running the migration, and watched-table schema drift
+await host.Services.UseChangeFeedSqlMigrationsAsync<OrderRow>();
+await host.Services.UseChangeFeedSqlMigrationsAsync<CustomerRow>();
+```
 
-Re-running the Change Feed Migration is safe while the installed topology still matches your configuration, and it is also the repair path for a watched table whose schema changed. The Service Broker objects keep their `IF NOT EXISTS` guards, the Stored Procedures are replaced in place via `CREATE OR ALTER`, and the Trigger is reconciled against the watched table's *current* columns:
+Give each row type a distinct class name; see [Object names](#object-names).
 
-- On every run the install procedure re-derives the watched table's column set from `INFORMATION_SCHEMA` and hashes it into a fingerprint, which it embeds as a leading comment in the Trigger it creates.
-- **Fingerprint matches** the one the installed Trigger carries — nothing changes. The Trigger is left completely untouched; its `object_id` and `modify_date` do not move.
-- **Fingerprint differs, or is absent** (a Trigger installed by an earlier package version carries no marker) — the Trigger is dropped and recreated from the current column set.
+## Object names
 
-Only a Trigger installed *on the watched table* is a refresh candidate. A same-named trigger on some other table is left alone, so the install fails loudly on the duplicate name rather than dropping an object the change feed does not own.
+The migration installs seven objects per row type. Each default name is a fixed prefix plus the row type's class name, without its namespace.
 
-**When the installed topology no longer matches the configuration, the re-run is refused.** The `IF NOT EXISTS` guards above key on *names*, and a name says nothing about the queue a `SERVICE` is actually bound to. So when `WithChangeFeedQueueName` or `WithChangeFeedDeadLetterServiceName` changed since the last run — or the installed objects were renamed out from under the change feed — the install Stored Procedure refuses with a named error, before it creates or alters any Service Broker object, if either of these holds:
+| Object | Default name | Override |
+| --- | --- | --- |
+| Conversation queue | `Chatter_Queue_<RowType>` | `WithChangeFeedQueueName` |
+| Conversation service | `Chatter_Service_<RowType>` | — |
+| Dead-letter queue | `Chatter_DeadLetterQueue_<RowType>` | — |
+| Dead-letter service | `Chatter_DeadLetterService_<RowType>` | `WithChangeFeedDeadLetterServiceName` |
+| Trigger | `Chatter_ChangeFeedTrigger_<RowType>` | — |
+| Install Stored Procedure | `Chatter_InstallChangeFeed_<RowType>` | — |
+| Uninstall Stored Procedure | `Chatter_UninstallChangeFeed_<RowType>` | — |
 
-- the derived conversation service is bound to a queue other than the configured conversation queue, or
-- a service other than the configured dead-letter service is bound to this change feed's dead-letter queue.
+Rules for configured names:
 
-**The refusal does not repair the divergence.** Nothing is rebound, dropped, or renamed — dropping an orphaned queue would destroy the notifications still sitting on it — and because the gate runs ahead of every Service Broker statement, a refused run leaves no partially created object behind. **The remedy is explicit: run the already-installed `Chatter_UninstallChangeFeed_<TRowChangedData>` Stored Procedure for that change feed, then re-run the migration.** That handle survives a refusal by design — the uninstall procedure is regenerated only *after* an install succeeds, so a refused or failed run leaves the procedure that tears down your existing objects untouched.
+- Configured names are used for the installed objects and by the receiver. The conversation service keeps its derived name and is created on the configured queue.
+- A queue name must be a single unqualified identifier, with no dot and no brackets. The migration creates it as one object inside the configured schema, while the receiver reads a dot as a schema separator, so a dotted or bracketed name leaves the receiver polling a queue that does not exist.
+- Queues, the Trigger and the Stored Procedures share one schema-scoped namespace, so `WithChangeFeedQueueName` may not equal the dead-letter queue, Trigger or either Stored Procedure name. Services share a database-wide namespace, so `WithChangeFeedDeadLetterServiceName` may not equal the conversation service name.
+- A collision throws `ChangeFeedObjectNameCollisionException` from `AddSqlChangeFeed`. Names are compared without regard to case, matching SQL Server's default collation. A queue and a service may share a name.
 
-**The failure mode this replaces.** The Trigger's `SELECT` column list is fixed at the moment the Trigger is created. Previously a re-run early-returned as soon as the Trigger existed, so dropping or renaming a watched column left the Trigger referencing a column that no longer exists — and because the Trigger fires inside the consumer's own `INSERT`/`UPDATE`/`DELETE`, it aborted *their* writes to the watched table until someone manually uninstalled and reinstalled the change feed. Re-running the migration now repairs that instead.
+## How it works
 
-## Header Propagation (including Trace Context)
+`UseChangeFeedSqlMigrationsAsync<T>` installs, in order:
 
-Change-feed messages carry **no headers at all**. They originate from the SQL trigger this package provisions, which `SEND`s a `DEFAULT`-message-type message directly onto the Service Broker queue — there is no producer-side Chatter dispatch to stamp a Message Context, so there is nothing to propagate and nothing for a receiver to extract.
+1. **Service Broker objects.** It enables Service Broker if needed, then creates the message type, the contract, the conversation queue and service, and the dead-letter queue and service.
+2. **The Trigger.** An `AFTER INSERT, UPDATE, DELETE` Trigger on the watched table, limited to the change types you watch. It serializes the `INSERTED` and `DELETED` rows to JSON and sends them to the conversation service as one compressed message per statement.
+3. **The install and uninstall Stored Procedures.** The install procedure checks the preconditions and creates or refreshes the Trigger. The uninstall procedure removes the Trigger, the queues, the services and both procedures.
 
-The consequence for the opt-in tracing added in [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md): W3C trace context (`traceparent` / `tracestate`) does **not** flow into a change-feed message, so handling a row change **starts a new trace** rather than continuing the trace of whatever wrote the row.
+At runtime a Brokered Message Receiver reads the conversation queue and deserializes each message into a `ProcessChangeFeedCommand<T>`. With row events on, it classifies each `ChangeFeedItem<T>`: inserted only is an insert, deleted only is a delete, and both is an update. It then dispatches the matching event.
 
-This is inherent to the change feed's trigger origin and is a **pre-existing property that affects all headers alike** — it is not something tracing introduced. It compounds with the receive side: because the trigger sends the `DEFAULT` message type, the queue is drained through the SQL Service Broker receiver's `DEFAULT` path, which itself builds a fresh header dictionary (see [Header Propagation in the SqlServiceBroker README](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md#header-propagation-including-trace-context)). Both ends are pinned by conformance tests, so a change that accidentally alters either is visible.
+## Re-running the migration
 
-## Domain Language
+Re-running the Change Feed Migration is safe, and it is how you repair a change feed after the watched table's schema changes. Service Broker objects that already exist are kept, and the Stored Procedures are replaced in place. The Trigger is reconciled against the table's current columns:
 
-See [`../CONTEXT.md`](https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/CONTEXT.md) for the change-feed / Table Watcher glossary and relationships.
+- Each run hashes the watched table's column set into a fingerprint and stores it in a comment in the Trigger.
+- When the fingerprint matches the installed Trigger's, the Trigger is left untouched.
+- When it differs or is missing, the Trigger is dropped and recreated from the current columns.
 
-[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)
+Only a Trigger on the watched table is refreshed. A same-named trigger on another table is left alone, and the install fails on the duplicate name.
+
+### Diverged topology is refused
+
+If the installed objects do not match your configuration, for example after you change `WithChangeFeedQueueName`, the install Stored Procedure refuses the run with a named error before it creates or alters any Service Broker object. It refuses when the conversation service is bound to a queue other than the configured one, or when a service other than the configured dead-letter service is bound to the dead-letter queue.
+
+The refusal does not repair anything; nothing is rebound, renamed or dropped. To fix it, run the uninstall Stored Procedure that is already installed, then run the migration again:
+
+```sql
+EXEC [dbo].[Chatter_UninstallChangeFeed_OrderRow];
+```
+
+A refused or failed run never replaces the installed uninstall Stored Procedure, so it always removes the objects your last successful run installed. Running it drops the queues, which discards any notifications still on them.
+
+## Known limitations
+
+- **`WithMaxReceiveAttempts` has no effect.** The value is recorded but never reaches the receiver, which always allows `10` receive attempts before a message is deadlettered.
+- **The `WithTransactionMode` IntelliSense text names the wrong default.** Its XML documentation says `ReceiveOnly`; the actual default is `FullAtomicityViaInfrastructure`.
+- **Default names use the row type's class name only.** Two row types with the same class name in different namespaces derive the same seven object names. When both tables are in the same schema, the install fails on the duplicate Trigger name. The two overridable names cannot fix this, because the other five still collide, so give the row types distinct class names.
+- **Transport options are shared.** Each `AddSqlChangeFeed` call registers its own SQL Server Service Broker transport options, and the transport uses the last registration. When you register several change feeds, give them the same receiver timeout, body type, lifetime, encryption and compression settings.
+- **No trace context.** Change feed messages carry no headers; see [Diagnostics](#diagnostics).
+- **Azure SQL Database is not supported.** It has no Service Broker; see [Install requirements](#install-requirements).
+
+## Diagnostics
+
+This package emits no telemetry of its own. The change feed's receiver is a Chatter.MessageBrokers Brokered Message Receiver, so with diagnostics on it emits the receive spans and metrics described in the Chatter.MessageBrokers [Diagnostics](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#diagnostics) section.
+
+Change feed messages carry no headers. They come from the Trigger, not from a Chatter sender, so no W3C trace context (`traceparent`, `tracestate`) or other Message Context travels with them. Handling a row change therefore starts a new trace instead of continuing the trace of whatever wrote the row. See [Trace context propagation](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#trace-context-propagation) and the SQL Server Service Broker [Header propagation](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/README.md#header-propagation) notes.
+
+## Upgrading
+
+Each item below lists what to change in your application. The [changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/Chatter.SqlChangeFeed/CHANGELOG.md) gives the release for each one.
+
+### IApplicationBuilder migration overloads were removed
+
+The `UseChangeFeedSqlMigrations` and `UseChangeFeedSqlMigrationsAsync` overloads on `IApplicationBuilder` no longer exist, and the package no longer references `Microsoft.AspNetCore.Http.Abstractions`. Call the `IServiceProvider` form instead:
+
+```csharp
+// Before
+app.UseChangeFeedSqlMigrations<OrderRow>();
+
+// After
+await app.ApplicationServices.UseChangeFeedSqlMigrationsAsync<OrderRow>();
+```
+
+Await the call from an async startup path; discarding the task lets the application start before the migration finishes.
+
+### The synchronous migration is obsolete
+
+`UseChangeFeedSqlMigrations<T>` and `UseChangeFeedSqlMigrations(Type)` on `IServiceProvider` are marked `[Obsolete]` at warning level and still work. They run the migration on the thread pool and block until it completes, so they do not deadlock under a `SynchronizationContext`. Move to `UseChangeFeedSqlMigrationsAsync` wherever you can await.
+
+### Configured names reach the installed objects
+
+`WithChangeFeedQueueName` and `WithChangeFeedDeadLetterServiceName` apply to the objects the migration installs, not only to the receiver. If you set either one on an existing install, the objects created under the default names are not renamed or dropped, and the migration refuses the run because the installed topology diverges. Run the installed `Chatter_UninstallChangeFeed_<RowType>` Stored Procedure, then run the migration again.
+
+A configured name that collides with another object name throws `ChangeFeedObjectNameCollisionException` at registration. Choose a distinct name.
+
+### Triggers are refreshed on schema change
+
+A Trigger installed by an older version carries no column fingerprint, so the next migration run drops and recreates it once. After that, re-running the migration rebuilds the Trigger only when the watched table's columns change.
+
+## Related packages
+
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): the in-process Commands, Queries, Events and handlers that receive row changes.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): Brokered Message Receivers, sending and publishing, and Recovery.
+- [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): the SQL Server Service Broker transport this package runs on.
+
+## Learn more
+
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/CONTEXT.md)
+- [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.SqlChangeFeed/src/Chatter.SqlChangeFeed/CHANGELOG.md)
+- [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
+- [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)
+
+## License
+
+Licensed under the [MIT License](https://github.com/brenpike/Chatter/blob/master/LICENSE).

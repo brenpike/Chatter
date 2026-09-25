@@ -1,107 +1,232 @@
-# <a name="chatter-azureservicebus-auth"></a> Chatter.MessageBrokers.AzureServiceBus.Auth
+# Chatter.MessageBrokers.AzureServiceBus.Auth
 
-Azure Active Directory (AAD) token-based authentication for the Chatter Azure Service Bus broker.
+[![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.AzureServiceBus.Auth.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth)
+[![Downloads](https://img.shields.io/nuget/dt/Chatter.MessageBrokers.AzureServiceBus.Auth.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![CI](https://github.com/brenpike/Chatter/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/brenpike/Chatter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/brenpike/Chatter/blob/master/LICENSE)
 
-## Overview
+**Azure AD (Microsoft Entra ID) token authentication for the Azure Service Bus transport: client secret, certificate, interactive and managed identity.**
 
-`Chatter.MessageBrokers.AzureServiceBus.Auth` lets the [Chatter.MessageBrokers.AzureServiceBus](https://github.com/brenpike/Chatter/blob/master/README.md#chatter-azureservicebus) broker authenticate to Azure Service Bus with **Azure Active Directory access tokens** instead of a connection-string shared-access key (SAS).
+This package lets [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus) connect with a Microsoft Entra ID token instead of a shared access key. You add one `UseAadTokenProvider*` call to the `AddAzureServiceBus` builder and give it an endpoint-only connection string. The package builds an `Azure.Identity` credential for you. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
 
-Instead of embedding a `SharedAccessKey`/`SharedAccessSignature` in the connection string, you supply a service-principal client ID (and a secret, certificate, or interactive redirect URI), or ask for an Azure managed identity outright. The package builds an `Azure.Core.TokenCredential` (e.g. a `ClientSecretCredential`, `ClientCertificateCredential`, `InteractiveBrowserCredential`, or `ManagedIdentityCredential`) and hands it to the Service Bus connection. When no explicit credential is supplied, it falls back to `DefaultAzureCredential` (managed identity, environment, Azure CLI, etc.), so the same code works locally and in Azure-hosted environments.
+## Contents
 
-The package extends the `ServiceBusOptionsBuilder` exposed by the base broker — you opt in by calling one of the `UseAadTokenProvider*` extension methods. The base broker only applies the token provider when the configured connection string does **not** already contain a SAS token or key, so AAD auth is purely additive.
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Credential modes](#credential-modes)
+- [Local development](#local-development)
+- [Configuration](#configuration)
+- [How it works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
+- [Diagnostics](#diagnostics)
+- [Related packages](#related-packages)
+- [Learn more](#learn-more)
+- [License](#license)
+
+## Features
+
+- **Four credential modes**: client secret, client certificate, interactive browser sign-in and managed identity, each one builder call.
+- **System-assigned and user-assigned managed identity**: omit the client id for system-assigned, or pass it for user-assigned.
+- **Exact identity for managed identity**: the managed identity mode builds a `ManagedIdentityCredential` directly, so no other credential on the host can answer in its place.
+- **Default credential fallback**: leave the secret, thumbprint or redirect URI blank and you get a `DefaultAzureCredential`, which honors `az login`.
+- **Certificate store lookup**: certificates are found by thumbprint in the `My` store, `CurrentUser` first, then `LocalMachine`.
+- **Sovereign clouds**: the authority host comes from the `authority` URL, or from `AuthorityHost` for managed identity.
+- **SAS still wins**: the token is used only when the connection string holds no shared access key or signature.
 
 ## Installation
 
-```sh
+```shell
 dotnet add package Chatter.MessageBrokers.AzureServiceBus.Auth
 ```
 
-## Getting Started
+Targets .NET 10 (`net10.0`).
 
-Enable AAD auth inside the `AddAzureServiceBus` options builder. Supply a connection string **without** a shared-access key (just the `Endpoint`), then call one of the `UseAadTokenProvider*` extensions:
+Dependencies: `Chatter.MessageBrokers.AzureServiceBus`, `Azure.Identity` 1.21.0.
 
-```csharp
-using Chatter.MessageBrokers;
-using Microsoft.Extensions.DependencyInjection;
+The extension methods are in the `Microsoft.Extensions.DependencyInjection` namespace, so no extra `using` line is needed.
 
-services.AddChatter()
-        .AddAzureServiceBus(sb =>
-        {
-            // Endpoint only — no SharedAccessKey/SharedAccessSignature
-            sb.WithConnectionString("Endpoint=sb://my-namespace.servicebus.windows.net/");
+## Quick start
 
-            // Authenticate with an AAD app registration + client secret
-            sb.UseAadTokenProviderWithSecret(
-                clientId:     "00000000-0000-0000-0000-000000000000",
-                clientSecret: "<client-secret>",
-                authority:    "https://login.microsoftonline.com/<tenant-id>/");
-        });
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`). Any `IServiceCollection` with an `IConfiguration` works the same way. For messages, handlers and receivers, see the [Azure Service Bus quick start](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#quick-start).
+
+### 1. Use an endpoint-only connection string
+
+Leave out `SharedAccessKeyName`, `SharedAccessKey` and `SharedAccessSignature`. The client connects to the fully qualified namespace taken from `Endpoint`.
+
+```text
+Endpoint=sb://<namespace>.servicebus.windows.net/
 ```
 
-Four extension methods are available on `ServiceBusOptionsBuilder`:
+### 2. Register the transport with a credential mode
 
-- **`UseAadTokenProviderWithSecret(clientId, clientSecret, authority, optBuilder = null)`** — authenticate as a confidential client using a client secret.
-- **`UseAadTokenProviderWithCert(clientId, thumbPrint, authority, optBuilder = null, validCertsOnly = true)`** — authenticate using a client certificate located by thumbprint in the `CurrentUser`/`LocalMachine` `My` store. Set `validCertsOnly: false` for self-signed certs.
-- **`UseAadTokenProviderInteractively(clientId, redirectUri, optBuilder = null)`** — authenticate via an interactive flow using the supplied redirect URI.
-- **`UseAadTokenProviderWithManagedIdentity(clientId = null, optBuilder = null)`** — authenticate as an Azure managed identity. Pass the client ID of a user-assigned managed identity, or omit it (or pass null/whitespace) for the system-assigned identity.
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb
+        .WithConnectionString("Endpoint=sb://<namespace>.servicebus.windows.net/")
+        .UseAadTokenProviderWithManagedIdentity()
+        .AddQueueReceiver<PlaceOrder>("orders"));
+```
+
+### 3. Grant the identity access
+
+Assign the identity a Service Bus data role on the namespace or entity, such as Azure Service Bus Data Sender and Azure Service Bus Data Receiver.
+
+## Credential modes
+
+Call one mode per `AddAzureServiceBus`. A later call replaces an earlier one, but each call still builds its credential when it runs.
+
+### Choosing a mode
+
+| Mode | Method | Use when |
+| --- | --- | --- |
+| Managed identity, system-assigned | `UseAadTokenProviderWithManagedIdentity()` | Your application runs on an Azure host with a system-assigned identity. |
+| Managed identity, user-assigned | `UseAadTokenProviderWithManagedIdentity(clientId)` | Your application runs on Azure with a user-assigned identity, or on AKS workload identity. |
+| Client secret | `UseAadTokenProviderWithSecret(clientId, clientSecret, authority)` | Your application runs outside Azure as an app registration with a secret. |
+| Client certificate | `UseAadTokenProviderWithCert(clientId, thumbPrint, authority)` | As for client secret, with a certificate installed in the machine's certificate store. |
+| Interactive | `UseAadTokenProviderInteractively(clientId, redirectUri)` | A developer or desktop tool signs in through a browser. |
 
 ### Managed identity
 
-To authenticate as an Azure managed identity, use the managed-identity mode:
-
 ```csharp
-// User-assigned managed identity
-sb.UseAadTokenProviderWithManagedIdentity(clientId: "<user-assigned-mi-client-id>");
+// system-assigned
+asb.UseAadTokenProviderWithManagedIdentity();
 
-// System-assigned managed identity — omit the client id
-sb.UseAadTokenProviderWithManagedIdentity();
+// user-assigned: pass the identity's client id
+asb.UseAadTokenProviderWithManagedIdentity(clientId: "<managed-identity-client-id>");
 ```
 
-This mode returns a `ManagedIdentityCredential` whose identity **is** the client ID you passed. It never consults the `DefaultAzureCredential` chain, so no other credential source — an environment-backed service principal, a developer's `az login` session — can answer in the managed identity's place. `AZURE_TOKEN_CREDENTIALS` and the `Exclude*` credential flags have no effect here, because there is no chain for them to narrow.
+The credential names the identity itself and never consults the `DefaultAzureCredential` chain. `AZURE_TOKEN_CREDENTIALS` and the `Exclude*` options have no effect on it, and `optBuilder` cannot change which identity is requested.
 
-A null or whitespace `clientId` asks for the **system-assigned** managed identity. One caveat: on a federated-token host (for example AKS workload identity), the Azure SDK's token-exchange managed-identity source falls back to the `AZURE_CLIENT_ID` environment variable when no identity was supplied, so the blank case authenticates as the platform-bound workload identity rather than literally system-assigned. Passing a client ID explicitly avoids that fallback entirely.
+> **Important:** On a federated-token host such as AKS workload identity, a blank client id falls back to the `AZURE_CLIENT_ID` environment variable, so you authenticate as the workload identity, not the system-assigned one. Pass the client id explicitly to avoid this.
 
-**This credential fails loudly off Azure.** With no managed-identity endpoint reachable, token acquisition raises `CredentialUnavailableException` instead of quietly falling through to another credential — and it may take a noticeable moment to surface, since the SDK's IMDS probe timeout for this path is internal and not caller-tunable. That is the intended trade: on the previous chained behavior a developer machine silently authenticated as **the developer** rather than as the managed identity, and the failure only appeared once something depended on the managed identity's role assignments. To keep one code path across environments, switch modes by environment — the managed-identity mode in Azure, and one of the `DefaultAzureCredential` fallbacks below locally, which still honor `az login`:
+`optBuilder` configures `ManagedIdentityCredentialOptions`, for example the authority host of a sovereign cloud. Name the argument; a bare lambda lands in the `clientId` slot and does not compile.
 
 ```csharp
-if (env.IsDevelopment())
-{
-    // Blank redirect URI falls back to DefaultAzureCredential, which picks up `az login`
-    sb.UseAadTokenProviderInteractively(clientId: "<app-client-id>", redirectUri: null);
-}
-else
-{
-    sb.UseAadTokenProviderWithManagedIdentity(clientId: "<user-assigned-mi-client-id>");
-}
+asb.UseAadTokenProviderWithManagedIdentity(
+    optBuilder: o => o.AuthorityHost = new Uri("https://login.microsoftonline.us/"));
 ```
 
-> **Named argument required for `optBuilder`-only calls.** `optBuilder` configures `ManagedIdentityCredentialOptions`, whose most useful settable member is the inherited `AuthorityHost` (for sovereign clouds); it cannot redirect the identity, because the SDK's `ManagedIdentityId` property is internal and get-only. The first parameter is `string clientId`, so a bare lambda in the first positional slot is a compile error. Write it as:
->
-> ```csharp
-> sb.UseAadTokenProviderWithManagedIdentity(
->     optBuilder: opts => opts.AuthorityHost = new Uri("https://login.microsoftonline.us/"));
-> ```
+### Client secret
+
+```csharp
+asb.UseAadTokenProviderWithSecret(
+    clientId: "<app-client-id>",
+    clientSecret: builder.Configuration["<secret-key>"],
+    authority: "https://login.microsoftonline.com/<tenant-id>/");
+```
+
+The tenant id is the first non-empty path segment of `authority`, and deeper segments are ignored, so the `/v2.0` issuer URL from the Azure portal also works. The scheme and host become the credential's `AuthorityHost`.
+
+### Client certificate
+
+```csharp
+asb.UseAadTokenProviderWithCert(
+    clientId: "<app-client-id>",
+    thumbPrint: "<certificate-thumbprint>",
+    authority: "https://login.microsoftonline.com/<tenant-id>/",
+    validCertsOnly: false); // allow a self-signed certificate
+```
+
+The certificate is read from the `My` store, `CurrentUser` then `LocalMachine`, when this line runs at registration. `authority` is parsed as for client secret.
+
+### Interactive
+
+```csharp
+asb.UseAadTokenProviderInteractively(
+    clientId: "<app-client-id>",
+    redirectUri: "http://localhost");
+```
+
+This builds an `InteractiveBrowserCredential` from the client id and redirect URI only. It takes no authority, so the sign-in is not scoped to a tenant by this package. The redirect URI must be registered on the app registration.
+
+## Local development
 
 ### Default credential fallback
 
-If the credential argument (`clientSecret` / `thumbPrint` / `redirectUri`) is null or whitespace, the secret, certificate, and interactive modes fall back to `DefaultAzureCredential` and resolve the identity **ambiently** from host state. This is the package's only ambient path, and the one that honors `az login` — which makes it the local-development counterpart to the managed-identity mode above. Use the optional `optBuilder` delegate to configure `DefaultAzureCredentialOptions` for that fallback:
+When `clientSecret`, `thumbPrint` or `redirectUri` is null or whitespace, that mode returns a `DefaultAzureCredential` and ignores `clientId` and `authority`. This is the only path that resolves an identity from the host, and it honors `az login`. `optBuilder` configures its `DefaultAzureCredentialOptions`:
 
 ```csharp
-sb.UseAadTokenProviderInteractively(
-    clientId:    "00000000-0000-0000-0000-000000000000",
-    redirectUri: null,                        // fall back to DefaultAzureCredential
-    optBuilder:  opts => opts.ExcludeAzureCliCredential = true);
+asb.UseAadTokenProviderInteractively(
+    clientId: null,
+    redirectUri: null, // falls back to DefaultAzureCredential
+    optBuilder: o => o.ExcludeAzureCliCredential = true);
 ```
 
-## How It Works
+> **Warning:** A secret or thumbprint read from configuration that turns out to be missing also takes the fallback. Check the value at startup if a silent switch to an ambient identity is not acceptable.
 
-- **AAD Token Credential** — every extension method ultimately produces an `Azure.Core.TokenCredential`. This is registered on the builder via `ServiceBusOptionsBuilder.AddTokenProvider(Func<TokenCredential>)`. The factory delegate is invoked **eagerly** at registration time — `AddTokenProvider` calls `tokenCredentialFactory?.Invoke()` immediately rather than deferring construction until the options are built. A practical consequence: when using `UseAadTokenProviderWithCert`, the X509 certificate store is read at registration time, not at first token acquisition.
-- **`AadTokenProviderFactory`** — created with `AadTokenProviderFactory.Create(clientId)`, the factory exposes `WithSecret(...)`, `WithCert(...)`, `WithInteractive(...)`, and `WithManagedIdentity(...)`, each returning a `TokenCredential` (`ClientSecretCredential`, `ClientCertificateCredential`, `InteractiveBrowserCredential`, or `DefaultAzureCredential` on fallback). `WithManagedIdentity(...)` is the only method that returns none of those — it constructs a `ManagedIdentityCredential` directly, so it is also the only method that never involves the `DefaultAzureCredential` chain.
-- **Token acquisition** — for explicit credentials the factory constructs the corresponding `Azure.Identity` credential type directly. `WithSecret(...)` and `WithCert(...)` parse the tenant ID and authority host out of the supplied `authority` URL (the tenant ID is the first non-empty path segment and any deeper segments are ignored, so both a bare directory URL of the form `https://login.microsoftonline.com/<tenant-id>/` and the `/v2.0`-suffixed issuer URL the Azure portal hands out are accepted; the scheme+host becomes `AuthorityHost`) and build a `ClientSecretCredential` or `ClientCertificateCredential`; for the certificate path the cert is resolved from the X509 `My` store (`CurrentUser`, then `LocalMachine`) by thumbprint, throwing if not found. Because the first segment is taken as-is, any authority whose first segment is not the tenant ID — a non-AAD routing prefix such as Azure AD B2C's `/tfp/<tenant>/<policy>`, ADFS, or DSTS, or a malformed AAD URL that omits the tenant (e.g. a pasted `/oauth2/v2.0/token` endpoint) — resolves to a well-formed but wrong tenant ID, so the credential constructs and the misconfiguration surfaces at first token acquisition rather than at credential construction. The credential still carries the client ID and the secret or certificate you supplied; what a request made with a wrong tenant ID yields at token acquisition is decided by Microsoft Entra, and this package makes no guarantee about that outcome. `WithInteractive(...)` takes no `authority` — it builds an `InteractiveBrowserCredential` from `InteractiveBrowserCredentialOptions` carrying only `ClientId` and `RedirectUri`, so the interactive path is not tenant-scoped by an authority value. When no explicit credential is provided, it returns a `DefaultAzureCredential`. `WithManagedIdentity(...)` takes no `authority` either — it resolves the factory's client ID to a `ManagedIdentityId` (`FromUserAssignedClientId`, or `SystemAssigned` when the client ID is null or whitespace), hands that to `ManagedIdentityCredentialOptions`, invokes the caller's `optBuilder`, and constructs a `ManagedIdentityCredential`. The identity travels on the credential itself rather than being selected from a chain, so `optBuilder` can adjust transport settings such as `AuthorityHost` but cannot change which identity is requested.
-- **Connection wiring** — during `ServiceBusOptionsBuilder.Build()`, the token credential is assigned to the Service Bus options **only if** the connection string has no SAS token/key. The Service Bus connection then uses the issued AAD bearer token in place of a shared key.
+### Switching by environment
 
-## Domain Language
+Managed identity fails off Azure, so select the mode by environment and keep one code path:
 
-See the module domain glossary: [`../CONTEXT.md`](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/CONTEXT.md).
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb =>
+    {
+        asb.WithConnectionString("Endpoint=sb://<namespace>.servicebus.windows.net/");
 
-[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)
+        if (builder.Environment.IsDevelopment())
+        {
+            asb.UseAadTokenProviderInteractively(clientId: null, redirectUri: null); // az login
+        }
+        else
+        {
+            asb.UseAadTokenProviderWithManagedIdentity(clientId: "<managed-identity-client-id>");
+        }
+    });
+```
+
+## Configuration
+
+This package binds no configuration section. The endpoint-only connection string can come from the transport's `ConnectionString` key instead of `WithConnectionString`; see [Azure Service Bus configuration](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#configuration). Read credential values from your own configuration keys and pass them to the methods below.
+
+| Method | Description |
+| --- | --- |
+| `UseAadTokenProviderWithSecret(string clientId, string clientSecret, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null)` | `ClientSecretCredential`; `DefaultAzureCredential` when `clientSecret` is blank. |
+| `UseAadTokenProviderWithCert(string clientId, string thumbPrint, string authority, Action<DefaultAzureCredentialOptions> optBuilder = null, bool validCertsOnly = true)` | `ClientCertificateCredential`; `DefaultAzureCredential` when `thumbPrint` is blank. `validCertsOnly: false` accepts self-signed certificates. |
+| `UseAadTokenProviderInteractively(string clientId, string redirectUri, Action<DefaultAzureCredentialOptions> optBuilder = null)` | `InteractiveBrowserCredential`; `DefaultAzureCredential` when `redirectUri` is blank. |
+| `UseAadTokenProviderWithManagedIdentity(string clientId = null, Action<ManagedIdentityCredentialOptions> optBuilder = null)` | `ManagedIdentityCredential`: user-assigned when `clientId` is given, system-assigned when it is blank. |
+
+For the first three methods, `optBuilder` applies only to the `DefaultAzureCredential` fallback.
+
+## How it works
+
+- Each method calls `ServiceBusOptionsBuilder.AddTokenProvider` with a factory that runs at once, so the credential is built at registration, not at first use.
+- `AadTokenProviderFactory` (namespace `Chatter.MessageBrokers.AzureServiceBus.Auth`) builds the credential through `Create(clientId)` and `WithSecret`, `WithCert`, `WithInteractive` or `WithManagedIdentity`. You can call it directly and pass the result to `AddTokenProvider`.
+- When the options are built, the credential is applied only if the connection string has no `SharedAccessSignature` and no `SharedAccessKeyName` plus `SharedAccessKey` pair. See [Authentication](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#authentication).
+- With a credential applied, the shared `ServiceBusClient` connects to the fully qualified namespace from `Endpoint`.
+
+## Troubleshooting
+
+- **`CredentialUnavailableException` with managed identity**: no managed identity endpoint is reachable, typically on a developer machine. It fails at first token acquisition, possibly after a delay, and never falls through to another credential. Use [Switching by environment](#switching-by-environment).
+- **Exception at registration with a certificate**: the thumbprint was not found in either `My` store (`ArgumentException`), or the platform cannot open a store. Check the thumbprint, and pass `validCertsOnly: false` for a self-signed certificate.
+- **`ArgumentNullException` at registration with a secret or certificate**: `authority` is blank, not an absolute URL, or has no path segment, so there is no tenant id.
+- **Authentication fails with a non-Entra authority**: an authority whose first segment is not the tenant id (Azure AD B2C `/tfp/...`, ADFS, DSTS, or a pasted `/oauth2/v2.0/token` endpoint) yields a wrong tenant id. The credential still builds and the error appears at first token acquisition; what Entra returns then is not guaranteed. Use `https://<authority-host>/<tenant-id>/`.
+- **The credential is ignored**: the connection string still carries a shared access key or signature, and SAS takes precedence.
+- **Wrong identity on AKS**: a blank managed identity client id picks up `AZURE_CLIENT_ID`; pass the client id.
+
+## Diagnostics
+
+This package emits no telemetry of its own; see [Azure Service Bus diagnostics](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#diagnostics).
+
+## Related packages
+
+| Package | Description |
+| --- | --- |
+| [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus) | The Azure Service Bus transport this package authenticates. |
+| [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers) | Broker abstractions: receivers, routing, Inbox/Outbox and Recovery. |
+| [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS) | In-process Commands, Queries, Events and the Command Pipeline. |
+
+## Learn more
+
+- [Azure Service Bus Auth domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/CONTEXT.md)
+- [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/Chatter.MessageBrokers.AzureServiceBus.Auth/CHANGELOG.md)
+- [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
+- [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)
+
+## License
+
+Licensed under the [MIT License](https://github.com/brenpike/Chatter/blob/master/LICENSE).
