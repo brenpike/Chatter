@@ -46,9 +46,10 @@ namespace Chatter.CQRS.Events
         /// <c>LogError</c> call is the only one Chatter makes for that dispatch. A cancellation the caller requested —
         /// an <see cref="OperationCanceledException"/> raised while the token on <paramref name="messageHandlerContext"/>
         /// is signalled — is not a failed dispatch: the dispatcher makes one <c>LogDebug</c> call for it in place of
-        /// the <c>LogError</c> call and rethrows it unchanged (ADR-0040). <c>BrokeredMessageReceiver</c> already stays
-        /// silent for a cancellation raised once its receive loop is being stopped: it swallows the exception without
-        /// logging it (ADR-0010 D11). These count the calls Chatter makes,
+        /// the <c>LogError</c> call and rethrows it unchanged (ADR-0040). When such a cancellation instead reaches
+        /// <c>BrokeredMessageReceiver</c> because its receive loop is being stopped, the receiver makes its own
+        /// <c>LogDebug</c> call for it, once, at the dispatch seam; the worker's error ladder then swallows the
+        /// exception without a further record (ADR-0010 D11; ADR-0040). These count the calls Chatter makes,
         /// not the records an application sees: whether a call produces a record, and how many, is decided by the log
         /// levels and logging providers the application configures.
         /// Handlers are resolved from the service provider by event type, not by the delivery that triggered the
