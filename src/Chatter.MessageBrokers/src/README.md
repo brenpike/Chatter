@@ -261,7 +261,7 @@ await context.Publish(new OrderPlaced { OrderId = message.OrderId }, "order-even
 await context.InMemory().Dispatch(new ReserveStock { OrderId = message.OrderId });
 ```
 
-`context.Send` and `context.Publish` copy the entire inbound Message Context onto each outbound message, and options you pass win over inherited entries; see [Inbound header trust](#inbound-header-trust). They do nothing when the context holds no brokered dispatcher, which happens only if `AddMessageBrokers` was not called. `context.InMemory().Dispatch(...)` dispatches in-process on the caller's own Message Context, so await each nested dispatch before starting the next. If you use the in-memory Inbox, read [Inbox](#inbox) before dispatching a Command this way.
+`context.Send` and `context.Publish` copy the entire inbound Message Context onto each outbound message, and options you pass win over inherited entries; see [Inbound header trust](#inbound-header-trust). They do nothing when the context holds no brokered dispatcher, which happens only if `AddMessageBrokers` was not called. `context.InMemory().Dispatch(...)` dispatches in-process on the caller's own Message Context, so await each nested dispatch before starting the next.
 
 ### Send options
 
@@ -466,7 +466,9 @@ The Inbox reserves the message id before your handler runs, and a concurrent del
 - its id was evicted at the entry cap;
 - the process restarted, or the redelivery reached another instance, because each process keeps its own in-memory Inbox.
 
-`InboxBehavior<>` acts on a command dispatched with an `IMessageBrokerContext`, which a Brokered Message Receiver supplies; a command dispatched from outside a received handler passes through. A command your handler dispatches with `context.InMemory()` carries the inbound message id, so the in-memory Inbox skips its handler while your handler holds that id ([#534](https://github.com/brenpike/Chatter/issues/534)). A received message without a `MessageId` makes the in-memory Inbox throw `ArgumentException`, and the handler does not run.
+`InboxBehavior<>` acts on a command dispatched with an `IMessageBrokerContext`, which a Brokered Message Receiver supplies; a command dispatched from outside a received handler passes through. It gates only the **Delivery Entry** — the message the delivery admitted into the Command Pipeline, the first message it sees on that delivery's context; a recovery retry re-presents that same message and is gated again. A Command your handler dispatches in-process with `context.InMemory()` belongs to the same delivery, so it passes through the Inbox and runs. A broker-received event is not itself deduplicated, since the Inbox is a Command behavior; the first Command its handler dispatches in-process is the one the Inbox gates, and later ones run. See [ADR-0041](https://github.com/brenpike/Chatter/blob/master/docs/adr/0041-the-inbox-gates-the-message-the-delivery-admitted-not-every-command-that-carries-its-context.md). A received message without a `MessageId` makes the in-memory Inbox throw `ArgumentException`, and the handler does not run.
+
+The Inbox is not a loop guard: a handler that dispatches back into itself in-process belongs to the same delivery each time, so the dispatch passes through and the handler will now loop on every inbox tier.
 
 The in-memory Inbox has two settings:
 
