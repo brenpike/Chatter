@@ -1,7 +1,6 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Linq;
 using System.Reflection;
 
 namespace Chatter.CQRS.DependencyInjection
@@ -37,14 +36,18 @@ namespace Chatter.CQRS.DependencyInjection
         internal IReadOnlyCollection<Assembly> ScannedAssemblies { get; }
 
         /// <summary>
-        /// Records on <paramref name="services"/> the assemblies one <c>AddChatterCqrs</c> call scanned: the record
+        /// Records on <paramref name="services"/> the assemblies one <c>AddChatterCqrs</c> call scanned: the first record
         /// descriptor <paramref name="services"/> carries is replaced, at its index, by one holding a new record of the
-        /// assemblies already recorded followed by those in <paramref name="scannedAssemblies"/> not yet recorded; a
-        /// collection that carries no record gains one.
+        /// assemblies every record descriptor it carries holds, as <see cref="FindScannedAssemblies"/> unites them,
+        /// followed by those in <paramref name="scannedAssemblies"/> not among them, and every other record descriptor is
+        /// removed; a collection that carries no record gains one.
         /// INVARIANT: a collection carries exactly one record descriptor after any serialized sequence of
-        /// <c>AddChatterCqrs</c> calls. Oracle: WhenAddingChatterCqrs.MustRecordTheHandlerScanOnceHoweverManyTimesChatterCqrsIsAdded,
-        /// which composes its calls sequentially; concurrent composition on one collection is unsupported (ADR-0039 R4).
-        /// Mutation that reddens it: adding a new record descriptor unconditionally.
+        /// <c>AddChatterCqrs</c> calls, whatever record descriptors were copied into it before the last call.
+        /// Oracles: WhenAddingChatterCqrs.MustRecordTheHandlerScanOnceHoweverManyTimesChatterCqrsIsAdded and
+        /// MustCollapseEveryScanRecordTheCollectionCarriesIntoOne, which compose their calls sequentially; concurrent
+        /// composition on one collection is unsupported (ADR-0039 R4).
+        /// Mutations that redden them: adding a new record descriptor unconditionally; leaving the other record
+        /// descriptors in place (observed to redden MustCollapseEveryScanRecordTheCollectionCarriesIntoOne).
         /// INVARIANT: the record descriptor keeps the index it was first added at.
         /// Oracle: WhenAddingChatterCqrs.MustKeepTheScanRecordAtItsPositionWhenChatterCqrsIsAddedAgain.
         /// Mutation that reddens it: writing the new descriptor with <c>ServiceCollectionDescriptorExtensions.Replace</c>,
@@ -52,56 +55,91 @@ namespace Chatter.CQRS.DependencyInjection
         /// </summary>
         internal static void Record(IServiceCollection services, IEnumerable<Assembly> scannedAssemblies)
         {
-            var recordIndex = IndexOfRecord(services);
-            var recordedAssemblies = new List<Assembly>();
-
-            if (recordIndex >= 0)
-            {
-                recordedAssemblies.AddRange(((HandlerScanRecord)services[recordIndex].ImplementationInstance).ScannedAssemblies);
-            }
-
-            foreach (var scannedAssembly in scannedAssemblies)
-            {
-                if (!recordedAssemblies.Contains(scannedAssembly))
-                {
-                    recordedAssemblies.Add(scannedAssembly);
-                }
-            }
-
+            var recordIndexes = IndexesOfRecords(services);
+            var recordedAssemblies = UniteRecordedAssemblies(services, recordIndexes);
+            AddUnrecordedAssemblies(recordedAssemblies, scannedAssemblies);
             var recordDescriptor = new ServiceDescriptor(typeof(HandlerScanRecord), new HandlerScanRecord(recordedAssemblies));
 
-            if (recordIndex >= 0)
-            {
-                services[recordIndex] = recordDescriptor;
-            }
-            else
+            if (recordIndexes.Count == 0)
             {
                 services.Add(recordDescriptor);
+                return;
+            }
+
+            services[recordIndexes[0]] = recordDescriptor;
+
+            for (var recordPosition = recordIndexes.Count - 1; recordPosition > 0; recordPosition--)
+            {
+                services.RemoveAt(recordIndexes[recordPosition]);
             }
         }
 
-        private static int IndexOfRecord(IServiceCollection services)
+        /// <summary>
+        /// Returns every assembly the record descriptors <paramref name="services"/> carries hold, each once: the records
+        /// in descriptor order, and each record's assemblies in the order it recorded them; or <see langword="null"/>
+        /// when <paramref name="services"/> is <see langword="null"/> or carries no record.
+        /// INVARIANT: the result is a pure function of the record descriptors <paramref name="services"/> carries, all of
+        /// them, and reading it writes nothing; only <see cref="Record"/> collapses several records into one.
+        /// Oracles: WhenThrowingOnDuplicateCommandHandlers.MustProbeEveryScanRecordTheCollectionCarries,
+        /// MustLeaveTheApplicationServiceCollectionUntouched and MustLeaveACollectionCarryingSeveralScanRecordsUntouched.
+        /// Mutations observed to redden them: returning the first record's assemblies only (the first oracle);
+        /// collapsing the records through <see cref="Record"/> on every read (the second); collapsing them only when
+        /// there are several (the third).
+        /// </summary>
+        internal static IReadOnlyCollection<Assembly> FindScannedAssemblies(IServiceCollection services)
         {
+            if (services == null)
+            {
+                return null;
+            }
+
+            var recordIndexes = IndexesOfRecords(services);
+
+            if (recordIndexes.Count == 0)
+            {
+                return null;
+            }
+
+            return new ReadOnlyCollection<Assembly>(UniteRecordedAssemblies(services, recordIndexes));
+        }
+
+        private static List<int> IndexesOfRecords(IServiceCollection services)
+        {
+            var recordIndexes = new List<int>();
+
             for (var descriptorIndex = 0; descriptorIndex < services.Count; descriptorIndex++)
             {
                 if (services[descriptorIndex].ServiceType == typeof(HandlerScanRecord)
                     && services[descriptorIndex].ImplementationInstance is HandlerScanRecord)
                 {
-                    return descriptorIndex;
+                    recordIndexes.Add(descriptorIndex);
                 }
             }
 
-            return -1;
+            return recordIndexes;
         }
 
-        /// <summary>
-        /// Returns the record <paramref name="services"/> carries, or <see langword="null"/> when
-        /// <paramref name="services"/> is <see langword="null"/> or carries no record.
-        /// </summary>
-        internal static HandlerScanRecord Find(IServiceCollection services)
-            => services?.Where(descriptor => descriptor.ServiceType == typeof(HandlerScanRecord))
-                        .Select(descriptor => descriptor.ImplementationInstance)
-                        .OfType<HandlerScanRecord>()
-                        .FirstOrDefault();
+        private static List<Assembly> UniteRecordedAssemblies(IServiceCollection services, IEnumerable<int> recordIndexes)
+        {
+            var recordedAssemblies = new List<Assembly>();
+
+            foreach (var recordIndex in recordIndexes)
+            {
+                AddUnrecordedAssemblies(recordedAssemblies, ((HandlerScanRecord)services[recordIndex].ImplementationInstance).ScannedAssemblies);
+            }
+
+            return recordedAssemblies;
+        }
+
+        private static void AddUnrecordedAssemblies(List<Assembly> recordedAssemblies, IEnumerable<Assembly> assemblies)
+        {
+            foreach (var assembly in assemblies)
+            {
+                if (!recordedAssemblies.Contains(assembly))
+                {
+                    recordedAssemblies.Add(assembly);
+                }
+            }
+        }
     }
 }

@@ -317,7 +317,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
         /// descriptors is that collection's record, so a later <c>AddChatterCqrs</c> call on it extends the copy and the
         /// check on its builder reports a handler the copied scan registered and the later call displaced.
         /// Mutation observed to redden it: keying the record on the collection that wrote it, so that the write and
-        /// <see cref="HandlerScanRecord.Find(IServiceCollection)"/> ignore a record another collection wrote.
+        /// <see cref="HandlerScanRecord.FindScannedAssemblies(IServiceCollection)"/> ignore a record another collection wrote.
         /// </summary>
         [Fact]
         public void MustReportCompetingHandlersBetweenACopiedScanAndALaterCall()
@@ -332,6 +332,56 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
                          .Should().Throw<InvalidOperationException>()
                          .Which.Message.Should().Contain(typeof(FakeFirstCommandHandler).FullName)
                          .And.Contain(typeof(FakeSecondCommandHandler).FullName);
+        }
+
+        /// <summary>
+        /// The second collection runs its own <c>AddChatterCqrs</c> BEFORE the first collection's descriptors are copied
+        /// in, and nothing is added afterwards, so it carries two record descriptors: its own first, the copied one
+        /// after it. Copying first and adding afterwards would fold the copy into one record on the write and pass
+        /// without the read ever seeing two records.
+        /// </summary>
+        [Fact]
+        public void MustProbeEveryScanRecordTheCollectionCarries()
+        {
+            IServiceCollection secondServices = new ServiceCollection();
+            var secondChatterBuilder = AddChatterCqrsScanningNamedAssembly(secondServices, "Chatter.Fake.Second", typeof(FakeSecondCommandHandler));
+            var firstServices = new ServiceCollection();
+            AddChatterCqrsScanningNamedAssembly(firstServices, "Chatter.Fake.First", typeof(FakeFirstCommandHandler));
+
+            foreach (var descriptor in firstServices)
+            {
+                secondServices.Add(descriptor);
+            }
+
+            FluentActions.Invoking(() => secondChatterBuilder.ThrowOnDuplicateCommandHandlers())
+                         .Should().Throw<InvalidOperationException>()
+                         .Which.Message.Should().Contain(typeof(FakeFirstCommandHandler).FullName)
+                         .And.Contain(typeof(FakeSecondCommandHandler).FullName);
+        }
+
+        /// <summary>
+        /// Characterization pin, not a red-first test: the check on a collection that carries two record descriptors
+        /// leaves both in place. Mutation observed to redden it: collapsing the records into one while reading them,
+        /// only when there are several, which <see cref="MustLeaveTheApplicationServiceCollectionUntouched"/> does not
+        /// see because it carries one record.
+        /// </summary>
+        [Fact]
+        public void MustLeaveACollectionCarryingSeveralScanRecordsUntouched()
+        {
+            IServiceCollection secondServices = new ServiceCollection();
+            var secondChatterBuilder = AddChatterCqrsScanningNamedAssembly(secondServices, "Chatter.Fake.Second", typeof(FakeSecondCommandHandler));
+            var firstServices = new ServiceCollection();
+            AddChatterCqrsScanningNamedAssembly(firstServices, "Chatter.Fake.First", typeof(FakeFirstCommandHandler));
+
+            foreach (var descriptor in firstServices)
+            {
+                secondServices.Add(descriptor);
+            }
+
+            var descriptorsBeforeCheck = secondServices.ToList();
+
+            FluentActions.Invoking(() => secondChatterBuilder.ThrowOnDuplicateCommandHandlers()).Should().Throw<InvalidOperationException>();
+            secondServices.Should().Equal(descriptorsBeforeCheck);
         }
 
         private static IServiceCollection CopyDescriptorsOf(IServiceCollection services)

@@ -122,9 +122,9 @@ namespace Microsoft.Extensions.DependencyInjection
 
         /// <summary>
         /// Returns the assemblies every <see cref="AddChatterCqrs(IServiceCollection, IConfiguration, Action{CommandPipelineBuilder}, Action{AssemblySourceFilterBuilder})"/>
-        /// call on the <see cref="IChatterBuilder.Services"/> of <paramref name="chatterBuilder"/> scanned, as its
-        /// <see cref="HandlerScanRecord"/> records them, otherwise the result of applying its
-        /// <see cref="IAssemblySourceFilter"/>.
+        /// call on the <see cref="IChatterBuilder.Services"/> of <paramref name="chatterBuilder"/> scanned, as the
+        /// <see cref="HandlerScanRecord"/> descriptors that collection carries record them, otherwise the result of
+        /// applying its <see cref="IAssemblySourceFilter"/>.
         /// </summary>
         private static IEnumerable<Assembly> GetAssembliesToProbe(IChatterBuilder chatterBuilder)
         {
@@ -137,9 +137,9 @@ namespace Microsoft.Extensions.DependencyInjection
             // ChatterBuilder.Create over a collection no AddChatterCqrs call has seen) is probed through its filter,
             // never through an empty set.
             // Oracle: WhenThrowingOnDuplicateCommandHandlers.MustProbeTheFilterWhenTheServiceCollectionCarriesNoScanRecord.
-            // Mutations that redden it: dropping the ?? fallback, or HandlerScanRecord.Find returning an empty record
-            // for a collection that carries none.
-            return HandlerScanRecord.Find(chatterBuilder.Services)?.ScannedAssemblies ?? chatterBuilder.AssemblySourceFilter.Apply();
+            // Mutations that redden it: dropping the ?? fallback, or HandlerScanRecord.FindScannedAssemblies returning an
+            // empty set for a collection that carries no record.
+            return HandlerScanRecord.FindScannedAssemblies(chatterBuilder.Services) ?? chatterBuilder.AssemblySourceFilter.Apply();
         }
 
         /// <summary>

@@ -93,7 +93,7 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             var secondAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.Second").WithTypes(typeof(LateEventHandler)).Creation;
             var services = new ServiceCollection();
             services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly));
-            var firstRecord = HandlerScanRecord.Find(services);
+            var firstRecord = services.Single(sd => sd.ServiceType == typeof(HandlerScanRecord)).ImplementationInstance as HandlerScanRecord;
 
             services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly, secondAssembly));
 
@@ -123,6 +123,29 @@ namespace Chatter.CQRS.Tests.DependencyInjection.UsingCrqsExtensions
             services.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(secondAssembly));
 
             IndexOfScanRecord(services).Should().Be(firstRecordIndex);
+        }
+
+        [Fact]
+        public void MustCollapseEveryScanRecordTheCollectionCarriesIntoOne()
+        {
+            var secondAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.Second").WithTypes(typeof(SuppliedCommandHandler)).Creation;
+            var firstAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.First").WithTypes(typeof(UnsuppliedCommandHandler)).Creation;
+            var thirdAssembly = New.Common().Assembly.WithFullName("Chatter.Fake.Third").WithTypes(typeof(LateEventHandler)).Creation;
+            IServiceCollection secondServices = new ServiceCollection();
+            secondServices.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(secondAssembly));
+            var firstServices = new ServiceCollection();
+            firstServices.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(firstAssembly));
+
+            foreach (var descriptor in firstServices)
+            {
+                secondServices.Add(descriptor);
+            }
+
+            secondServices.AddChatterCqrs(Mock.Of<IConfiguration>(), messageHandlerSourceBuilder: b => b.WithExplicitAssemblies(thirdAssembly));
+
+            secondServices.Should().ContainSingle(sd => sd.ServiceType == typeof(HandlerScanRecord))
+                          .Which.ImplementationInstance.Should().BeOfType<HandlerScanRecord>()
+                          .Which.ScannedAssemblies.Should().Equal(secondAssembly, firstAssembly, thirdAssembly);
         }
 
         private static int IndexOfScanRecord(IServiceCollection services)
