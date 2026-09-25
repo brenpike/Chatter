@@ -1,134 +1,73 @@
-# <a name="chatter-reliability-entityframework"></a> Chatter.MessageBrokers.Reliability.EntityFramework
+# Chatter.MessageBrokers.Reliability.EntityFramework
 
-Durable EF Core inbox/outbox and unit-of-work for [Chatter.MessageBrokers](#chatter-messagebrokers).
+[![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.Reliability.EntityFramework.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework)
+[![Downloads](https://img.shields.io/nuget/dt/Chatter.MessageBrokers.Reliability.EntityFramework.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![CI](https://github.com/brenpike/Chatter/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/brenpike/Chatter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/brenpike/Chatter/blob/master/LICENSE)
 
-## Overview
+**EF Core Inbox, Outbox and Unit of Work for Chatter.MessageBrokers, stored in your own DbContext.**
 
-`Chatter.MessageBrokers.Reliability.EntityFramework` is the EF Core implementation of the reliability ports defined by [Chatter.MessageBrokers](#chatter-messagebrokers): the brokered message **inbox**, **outbox**, and **unit of work**. Out of the box Chatter wires these ports to in-memory defaults; registering this package **replaces those in-memory defaults with durable, relational storage** backed by your application's `DbContext`.
+This package replaces the in-memory Inbox and Outbox of [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers) with durable tables in your application's `DbContext`. The Unit of Work saves your domain changes, the Inbox marker and the staged Outbox messages through that `DbContext` in one EF Core transaction; see [Unit of Work](#unit-of-work) for what it covers. There is no separate Chatter context: you apply the shipped entity configurations in your own `OnModelCreating` and own the migrations. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
 
-This gives you:
+## Contents
 
-- **Idempotent (once-only) message handling** via a persisted inbox of processed message ids.
-- **Reliable publish** via the transactional outbox pattern — outgoing messages are written to your database in the *same* transaction as your domain state, then dispatched separately.
-- **Atomic units of work** that commit your domain changes and inbox/outbox writes together (or roll them all back) through a single EF transaction.
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Pipeline registration](#pipeline-registration)
+- [Inbox](#inbox)
+- [Outbox](#outbox)
+- [Unit of Work](#unit-of-work)
+- [Retention purge](#retention-purge)
+- [Database schema](#database-schema)
+- [Configuration](#configuration)
+- [Diagnostics](#diagnostics)
+- [Upgrading](#upgrading)
+- [Related packages](#related-packages)
+- [Learn more](#learn-more)
+- [License](#license)
 
-Because the inbox, outbox, and unit of work all run against the same `DbContext`, your business state and the messaging bookkeeping share one transaction and one commit.
+## Features
 
-## Migration: the inbox marker's two states
-
-**No DDL. No new column. No backfill.** The inbox marker now tells *claimed* from *handled*, and the nullable `ReceivedByInboxAtUtc` column the previous schema already has is what carries that distinction. The table shape does not change.
-
-**Generate one empty migration and commit it.** `InboxMessageConfiguration` maps `ReceivedByInboxAtUtc` with `IsConcurrencyToken()`, which is a model annotation rather than a column, so `dotnet ef migrations add <name>` produces a migration whose `Up()` and `Down()` are empty and whose model snapshot carries the annotation. From EF Core 9 onward, applying migrations against a model that differs from the last snapshot raises `PendingModelChangesWarning` as an error, so the empty migration is required there; EF Core 8 has no such check and it is optional.
-
-**Your existing rows read as handled, exactly as before.** Every marker a released version of this package has written carries a stamp, because the marker was previously inserted or refreshed only after the handler returned.
-
-**Optionally**, if you hand-wrote inbox rows with a null `ReceivedByInboxAtUtc` expecting them to suppress their message ids, those rows now read as unfinished claims and no longer suppress. One statement restores the old reading, against the table your model maps `InboxMessage` to:
-
-```sql
-UPDATE [InboxMessages] SET [ReceivedByInboxAtUtc] = SYSUTCDATETIME() WHERE [ReceivedByInboxAtUtc] IS NULL;
-```
-
-## Migration: the outbox attempt columns
-
-`OutboxMessageConfiguration` maps two columns the 0.8.0 schema does not have — `DispatchAttempts` and `NextAttemptAtUtc` — so an existing outbox table needs two additive statements. Generate the migration with `dotnet ef migrations add` as you would for any other model change; against SQL Server it emits the two statements below, where `OutboxMessages` is whatever table your model maps `OutboxMessage` to:
-
-```sql
-ALTER TABLE [OutboxMessages] ADD [NextAttemptAtUtc] datetime2 NULL;
-ALTER TABLE [OutboxMessages] ADD [DispatchAttempts] int NOT NULL DEFAULT 0;
-```
-
-Those types follow the configuration: `NextAttemptAtUtc` is mapped `IsRequired(false)`, and `DispatchAttempts` is mapped `IsRequired()` with `HasDefaultValue(0)`.
-
-**No backfill.** Both statements are additive and neither rewrites an existing row: the store default fills `DispatchAttempts` with `0`, and a null `NextAttemptAtUtc` means *due now*, so every row staged before the migration is selectable by the first poll after it.
-
-**The DDL is backward-compatible with the previous binary**, which names neither column, so **schema-first is the required deploy order: apply the migration, then roll the binaries.** That is a normal two-step upgrade rather than a coordinated cutover.
-
-Rolling the binary first breaks the poll, and the breakage is **store-side only**. `OutboxMessage` declares both as public scalar properties, which EF maps by convention whether or not `OutboxMessageConfiguration` names them, so an upgraded binary has a complete model; what an unmigrated database does not have is the two columns, and the first outbox poll fails reading them. That failure surfaces as your database provider's own error rather than one this package raises, and no test in this repository pins its text.
-
-## Migration: the drain claim needs none
-
-**No DDL. No new column. No migration.** A drain now claims the row it is about to publish *before* it publishes it, and that claim is a value of the `NextAttemptAtUtc` column [Migration: the outbox attempt columns](#migration-the-outbox-attempt-columns) already added. No property, mapping or annotation changes, so `dotnet ef migrations add` has nothing to emit for it — and this package ships no migrations of its own, because your application owns the schema through the `IEntityTypeConfiguration` types it applies.
-
-**Both deploy directions are safe, in either order.** A claim is invisible outside the transaction that took it — it never lands on its own, so no other binary ever reads a row mid-claim — and a claim that rolls back leaves the row exactly as the poll found it, which is what lets the drain that was waiting take its own claim against the instant its own poll read and publish the message. A new binary reading rows an old one wrote sees `NULL` or a past instant, and both are claimable. Pinned by `WhenClaimingForDispatch.MustEnlistTheClaimInTheAmbientTransaction` and, over a real SQL Server, by `Integration/WhenArbitratingOutboxDrainsOnSqlServer.MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack`.
-
-**The one operational note is not a migration step.** A drain now holds an exclusive lock on the single row it is publishing for the duration of that publish, so a second host that polled the same row waits there. Drains of *different* rows do not contend — see [Outbox (reliable publish)](#outbox-reliable-publish).
+- **Transactional Outbox**: messages your handler sends or publishes are staged as rows and commit with your domain changes, then are published after the commit.
+- **Deduplicating Inbox**: a received command's message id is claimed before the handler runs and stamped after it, in the same transaction as the handler's work; [Inbox](#inbox) lists when a handler runs again.
+- **Unit of Work**: one `ReadCommitted` transaction per command, committed only if it was begun here; an existing transaction is joined, not replaced.
+- **Your DbContext, your schema**: `IEntityTypeConfiguration` types for both tables, applied in your `OnModelCreating` and migrated with your own EF Core migrations.
+- **Fixed behavior order**: the Outbox wraps the Unit of Work, which wraps the Inbox, whatever order you register them in.
+- **Multi-host draining**: a drain claims each row inside its own transaction before it publishes it, so drains on several hosts wait on that row's lock; see [Several hosts on one database](#several-hosts-on-one-database).
+- **Retention purge**: an optional hosted service deletes expired Inbox markers and processed Outbox rows in bounded batches.
+- **Opt-in poll index**: a separate configuration adds an index for the Outbox poll when you want one.
 
 ## Installation
 
-```sh
+```shell
 dotnet add package Chatter.MessageBrokers.Reliability.EntityFramework
 ```
 
-The package targets `net10.0` and pulls in `Microsoft.EntityFrameworkCore` / `Microsoft.EntityFrameworkCore.Relational` 10.0.0 or later.
+Targets .NET 10 (`net10.0`).
 
-## Getting Started
+Dependencies: Chatter.MessageBrokers, Microsoft.EntityFrameworkCore 10.0.0, Microsoft.EntityFrameworkCore.Relational 10.0.0.
 
-Registration happens against the **command pipeline builder**, which Chatter exposes through the `pipelineBuilder` action on `AddChatterCqrs(...)` (the same `IChatterBuilder` you call `AddMessageBrokers(...)` on). Each extension method is generic over *your* `DbContext` type (`TContext : DbContext`).
+The database provider is yours to add, along with a transport for Chatter.MessageBrokers. For example, SQL Server and Azure Service Bus:
 
-```csharp
-public void ConfigureServices(IServiceCollection services)
-{
-    // Register your DbContext as usual.
-    services.AddDbContext<MyDbContext>(opt =>
-        opt.UseSqlServer(Configuration.GetConnectionString("Chatter")));
-
-    services.AddChatterCqrs(Configuration, pipeline =>
-            {
-                // Replace the in-memory inbox with the durable EF inbox
-                // (idempotent / once-only handling).
-                pipeline.WithInboxBehavior<MyDbContext>();
-
-                // Process the EF outbox for reliable publish.
-                pipeline.WithOutboxProcessingBehavior<MyDbContext>();
-
-                // Or, to opt into transactional units of work only:
-                // pipeline.WithUnitOfWorkBehavior<MyDbContext>();
-
-                // Optional: put inbox markers and processed outbox rows on a
-                // retention window. Both windows are disabled by default.
-                pipeline.WithReliabilityRetention<MyDbContext>(retention =>
-                {
-                    retention.InboxDeduplicationWindow = TimeSpan.FromDays(7);
-                    retention.ProcessedOutboxRetention = TimeSpan.FromDays(3);
-                    retention.PurgeInterval = TimeSpan.FromMinutes(5);
-                });
-            })
-            .AddMessageBrokers(/* message broker options */);
-}
+```shell
+dotnet add package Microsoft.EntityFrameworkCore.SqlServer
+dotnet add package Chatter.MessageBrokers.AzureServiceBus
 ```
 
-The available pipeline extension methods (`Microsoft.Extensions.DependencyInjection.Extensions`):
+To generate migrations you also need the EF Core design package and the `dotnet-ef` tool:
 
-| Method | Effect |
-| --- | --- |
-| `WithUnitOfWorkBehavior<TContext>()` | Replaces `IUnitOfWork` with the EF `UnitOfWork<TContext>` (scoped) and adds the `UnitOfWorkBehavior`. |
-| `WithInboxBehavior<TContext>()` | Adds the unit of work, replaces `IBrokeredMessageInbox` with `BrokeredMessageInbox<TContext>`, and adds the `InboxBehavior`. |
-| `WithOutboxProcessingBehavior<TContext>()` | Adds the `OutboxProcessingBehavior`, replaces `IBrokeredMessageOutbox` with `BrokeredMessageOutbox<TContext>` and `IRouteBrokeredMessages` with the outbox router, and adds the unit of work. |
-| `WithReliabilityRetention<TContext>(configure)` | Registers the `EntityFrameworkReliabilityOptions` the configure delegate populates, replacing any instance an earlier call registered, and adds the `ReliabilityRetentionPurgeService<TContext>` hosted service. Adds no pipeline behavior. |
+```shell
+dotnet add package Microsoft.EntityFrameworkCore.Design
+dotnet tool install --global dotnet-ef
+```
 
-`WithReliabilityRetention<TContext>` refuses a non-positive `InboxDeduplicationWindow`, `ProcessedOutboxRetention`, or `PurgeInterval` with an `ArgumentOutOfRangeException` at registration rather than at the first purge. It is one door over both tables, so it reads the same whichever reliability behaviors a host registered; the last call wins, and the purge service is added once however many times you call it. Each purge pass issues **exactly one bounded `DELETE` per configured table** — the oldest 1,000 eligible rows — and leaves the remainder for the next pass, so a table is reclaimed at no more than 1,000 rows per `PurgeInterval`: **288,000 rows per table per day at the five-minute default**. **A table accruing eligible rows faster than that is never drained** — `PurgeInterval` is the dial, so shorten it to raise the ceiling, and size `InboxDeduplicationWindow` and `ProcessedOutboxRetention` knowing that retention bounds table growth only up to that rate. Pinned by `WhenPurgingRetentionOverSqlite.MustPurgeAnOutboxBacklogOneBoundedStatementPerPass` and `.MustPurgeAnInboxBacklogOneBoundedStatementPerPass`; the reasoning is recorded in the `INVARIANT:` on `ReliabilityRetentionPurgeService.PurgeOnceAsync`.
+## Quick start
 
-> The order in which you call these methods does not affect the resolved pipeline order — see [Reliability Behavior Order](#reliability-behavior-order) below.
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
 
-### Reliability Behavior Order
-
-Regardless of which order you call `WithInboxBehavior<TContext>()`, `WithOutboxProcessingBehavior<TContext>()`, and `WithUnitOfWorkBehavior<TContext>()` — and no matter how many times you call them — the package always resolves the three reliability behaviors into the same nesting: **outbox processing wraps the unit of work, which wraps the inbox**.
-
-- The pipeline composes last-to-first, so the first-resolved behavior ends up outermost.
-- The inbox marker sits inside the unit of work so that, given the precondition below, it commits or rolls back together with the handler's work.
-- Outbox processing dispatches to the broker after the handler returns and must only dispatch committed rows, so it sits outside the unit of work.
-
-This guarantee is independent of call order and call count — calling the extension methods in any sequence, or calling one of them more than once, always produces the same nesting. A behavior your application registers between the extension calls keeps the pipeline slot it was registered into, but may end up on a different side of the reliability behaviors than before.
-
-> **Scope:** this ordering guarantee covers only descriptors registered through `WithUnitOfWorkBehavior<TContext>()`, `WithInboxBehavior<TContext>()`, and `WithOutboxProcessingBehavior<TContext>()`. Later direct `WithBehavior` calls, and closed-generic, factory, keyed, or decorated registrations of these behavior types, are intentionally outside normalization and are not reordered.
-
-> **One `DbContext`, enforced at registration (durability, not ordering):** the ordering above is independent of `TContext`, but the commit-together guarantee is not — the unit of work has to commit the very context that holds the inbox marker and the staged outbox rows. `WithUnitOfWorkBehavior<TContext>()`, `WithInboxBehavior<TContext>()`, `WithOutboxProcessingBehavior<TContext>()`, and `WithReliabilityRetention<TContext>(...)` each bind that context as their first statement. The first call to arrive records its `TContext`; a later call naming the same one is a no-op however many times it arrives; a later call naming a *different* one throws an `InvalidOperationException` naming both contexts. Because the binding is checked before anything is registered, a refused call leaves the service collection exactly as it found it. A lone `WithInboxBehavior<TContext>()` call is sufficient — it registers the matching unit of work itself. Retention is bound on the same terms, because its purge deletes through `TContext` too.
->
-> This replaces earlier behavior in which the last call simply won: `IUnitOfWork` resolved to the `TContext` of the last call to any of the three behavior methods while `IBrokeredMessageInbox` resolved to the `TContext` of the last `WithInboxBehavior<TContext>()`, so a mismatched pair ran with the unit of work committing a different `DbContext` than the one holding the marker, and nothing said so.
-
-### Configuring the DbContext
-
-The inbox and outbox entities — `InboxMessage` and `OutboxMessage` (from `Chatter.MessageBrokers.Reliability.Inbox` / `.Outbox`) — must be mapped onto your `DbContext`. This package ships `IEntityTypeConfiguration<>` classes for both. Apply them in `OnModelCreating`:
+### 1. Map the Inbox and Outbox in your DbContext
 
 ```csharp
 using Chatter.MessageBrokers.Reliability.EntityFramework;
@@ -136,11 +75,13 @@ using Chatter.MessageBrokers.Reliability.Inbox;
 using Chatter.MessageBrokers.Reliability.Outbox;
 using Microsoft.EntityFrameworkCore;
 
-public class MyDbContext : DbContext
+public class OrdersDbContext : DbContext
 {
-    public MyDbContext(DbContextOptions<MyDbContext> options) : base(options) { }
+    public OrdersDbContext(DbContextOptions<OrdersDbContext> options) : base(options) { }
 
-    // Your own aggregates / tables also live here.
+    // Your own aggregates live here too.
+    public DbSet<Order> Orders { get; set; }
+
     public DbSet<InboxMessage> InboxMessages { get; set; }
     public DbSet<OutboxMessage> OutboxMessages { get; set; }
 
@@ -150,17 +91,303 @@ public class MyDbContext : DbContext
 
         modelBuilder.ApplyConfiguration(new InboxMessageConfiguration());
         modelBuilder.ApplyConfiguration(new OutboxMessageConfiguration());
+
+        // Optional: index the Outbox poll (see Database schema).
+        // modelBuilder.ApplyConfiguration(new OutboxMessagePollIndexConfiguration());
     }
 }
 ```
 
-There is no separate "Chatter DbContext" — you supply your own, and the inbox/outbox tables live alongside your domain tables so they share the same transaction. Use EF migrations to create the tables.
+The `DbSet` properties are optional; they name the tables `InboxMessages` and `OutboxMessages`. Without them EF Core names the tables after the entity types.
 
-#### Opt-in: the outbox poll index
+### 2. Register the behaviors
 
-`OutboxMessageConfiguration` declares no index, so out of the box the outbox poll has none to use. This package ships a second, separate `IEntityTypeConfiguration<OutboxMessage>` — `OutboxMessagePollIndexConfiguration` — that adds one over `ProcessedFromOutboxAtUtc` then `SentToOutboxAtUtc`: the leading column is the one both unprocessed-message polls filter on, and the second follows it because a drain works the oldest staged message first. The index is neither filtered nor unique, so it stays provider-neutral.
+```csharp
+using Microsoft.EntityFrameworkCore;
 
-It is a separate configuration rather than part of `OutboxMessageConfiguration` precisely so that it is *your* decision. Applying it is a model change like any other, and you generate and own the migration for it exactly as you would for any other model change:
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddDbContext<OrdersDbContext>(o =>
+    o.UseSqlServer(builder.Configuration.GetConnectionString("Orders")));
+
+builder.Services.AddChatterCqrs(builder.Configuration,
+        pipeline => pipeline
+            .WithInboxBehavior<OrdersDbContext>()
+            .WithOutboxProcessingBehavior<OrdersDbContext>()
+            .WithReliabilityRetention<OrdersDbContext>(r =>
+            {
+                r.InboxDeduplicationWindow = TimeSpan.FromDays(7);
+                r.ProcessedOutboxRetention = TimeSpan.FromDays(3);
+            }),
+        typeof(Program))
+    .AddMessageBrokers(o => o.AddReliabilityOptions(r => r.WithOutboxPollingProcessor()))
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
+```
+
+The extension methods live in the `Microsoft.Extensions.DependencyInjection` namespace, class `Extensions`, and extend the `CommandPipelineBuilder` passed to `AddChatterCqrs`. `WithOutboxPollingProcessor()` re-drains any message whose immediate publish failed; keep it on whenever you use the Outbox. Any transport works in place of `AddAzureServiceBus`.
+
+### 3. Create the tables
+
+```shell
+dotnet ef migrations add AddChatterReliability
+dotnet ef database update
+```
+
+This package ships no migrations. The tables are part of your model, so every schema change goes through your own migrations.
+
+### 4. Write the handler
+
+```csharp
+using Chatter.CQRS;
+using Chatter.CQRS.Context;
+
+public class PlaceOrderHandler : IMessageHandler<PlaceOrder>
+{
+    private readonly OrdersDbContext _db;
+
+    public PlaceOrderHandler(OrdersDbContext db) => _db = db;
+
+    public async Task Handle(PlaceOrder message, IMessageHandlerContext context)
+    {
+        _db.Orders.Add(new Order { Id = message.OrderId, Sku = message.Sku });
+
+        await context.Publish(new OrderPlaced { OrderId = message.OrderId }, "order-events");
+    }
+}
+```
+
+You do not call `SaveChangesAsync`. The Unit of Work saves and commits the new `Order`, the Inbox marker for `PlaceOrder` and the staged `OrderPlaced` row together. After the commit, the Outbox publishes `OrderPlaced` to `order-events`; if the handler throws, nothing is saved and nothing is published.
+
+## Pipeline registration
+
+| Method | Description |
+| --- | --- |
+| `WithUnitOfWorkBehavior<TContext>()` | Registers `UnitOfWork<TContext>` as `IUnitOfWork` and adds `UnitOfWorkBehavior<>`. |
+| `WithInboxBehavior<TContext>()` | Registers `BrokeredMessageInbox<TContext>` as `IBrokeredMessageInbox` and adds `InboxBehavior<>`, plus the Unit of Work. |
+| `WithOutboxProcessingBehavior<TContext>()` | Registers `BrokeredMessageOutbox<TContext>` as `IBrokeredMessageOutbox`, routes sends and publishes to it through `OutboxBrokeredMessageRouter`, and adds `OutboxProcessingBehavior<>`, plus the Unit of Work. |
+| `WithReliabilityRetention<TContext>(Action<EntityFrameworkReliabilityOptions>)` | Sets the retention options and adds the `ReliabilityRetentionPurgeService<TContext>` hosted service. Adds no behavior. |
+
+Every method takes `TContext : DbContext` and returns the `CommandPipelineBuilder`, so calls chain. Calling a method more than once is harmless.
+
+### Inbox and Outbox
+
+Use the registration from [Quick start](#quick-start) step 2. Received commands are deduplicated by message id (see [Inbox](#inbox)), and outgoing messages commit with the handler's work.
+
+### Outbox only
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration,
+        pipeline => pipeline.WithOutboxProcessingBehavior<OrdersDbContext>(),
+        typeof(Program))
+    .AddMessageBrokers(o => o.AddReliabilityOptions(r => r.WithOutboxPollingProcessor()))
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
+```
+
+Outgoing messages commit with the handler's work. Received messages are not deduplicated.
+
+### Inbox only
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration,
+        pipeline => pipeline.WithInboxBehavior<OrdersDbContext>(),
+        typeof(Program))
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
+```
+
+Received commands are deduplicated by message id (see [Inbox](#inbox)). Messages the handler sends or publishes go straight to the broker as it calls `Send` or `Publish`, not with the commit.
+
+### Unit of Work only
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration,
+        pipeline => pipeline.WithUnitOfWorkBehavior<OrdersDbContext>(),
+        typeof(Program))
+    .AddMessageBrokers();
+```
+
+Each command handler runs inside one transaction that is saved and committed when it returns. No Inbox or Outbox tables are used.
+
+### Which messages the behaviors wrap
+
+These are Command Pipeline behaviors, so they wrap Command handlers only; Event handlers run without them. The Inbox acts only on a command delivered by a Brokered Message Receiver, because it needs the received message id. A command dispatched in-process still runs inside the Unit of Work, and its sends and publishes still go through the Outbox.
+
+### Behavior order
+
+Whatever order you call the three behavior methods in, and however many times, they resolve to the same nesting: the Outbox wraps the Unit of Work, which wraps the Inbox. The Inbox marker commits with the handler's work, and the Outbox publishes only after that commit.
+
+The guarantee covers descriptors added by `WithUnitOfWorkBehavior`, `WithInboxBehavior` and `WithOutboxProcessingBehavior`. A behavior of your own keeps the slot it was registered in, but may land on a different side of the reliability behaviors. Direct `WithBehavior` calls, and closed-generic, factory, keyed or decorated registrations of these behavior types, are not reordered.
+
+### One DbContext per pipeline
+
+All four methods must name the same `TContext`, because the Unit of Work commits the context that holds the Inbox marker, the Outbox rows and the rows retention purges. The first call records its `TContext`. A later call with a different one throws `InvalidOperationException` naming both contexts, and the refused call leaves the service collection exactly as it was.
+
+## Inbox
+
+`BrokeredMessageInbox<TContext>` keeps one `InboxMessage` row per message id. `ReceivedByInboxAtUtc` records its state: no value means the id is claimed and its handler has not completed; a value means the handler completed at that time.
+
+When a command arrives, the Inbox reads the marker for its `MessageId`:
+
+| Marker | Result |
+| --- | --- |
+| None | Fresh id: claim it and run the handler. |
+| Stamped, inside the deduplication window (or any stamp when no window is set) | Skip the handler and log at Information. |
+| Stamped, older than the deduplication window | Re-claim it and run the handler. |
+| Not stamped | A claim no handler completed: re-claim it and run the handler. |
+
+For a message with a `MessageId`, a stamped marker stops the handler from running again while it is inside the deduplication window. Because the marker commits in the same transaction as the handler's work, that work commits once in that time, except in the cases listed under [Claim and stamp](#claim-and-stamp) and [Deduplication window](#deduplication-window).
+
+### Claim and stamp
+
+The Inbox writes the claim and flushes it before the handler runs, then stamps it and flushes again after the handler returns. Both flushes go into the Unit of Work's transaction, so the marker and the handler's work commit together. The claim's flush takes the row lock, so a concurrent delivery of the same id waits behind it.
+
+- **An ambient transaction is required.** Without one, `ReceiveViaInbox` throws `InvalidOperationException`. `WithInboxBehavior` registers the Unit of Work that supplies it.
+- **A failing handler frees the id.** Its exception rolls back the claim, so the redelivery runs the handler again.
+- **A failed commit frees the id.** If the transaction fails to commit after the handler returns, the claim and stamp roll back with the handler's work, and the redelivery runs the handler again.
+- **Effects outside `TContext` repeat.** Anything the handler does outside `TContext`, such as an HTTP call, happens again each time the handler runs, so make it idempotent.
+- **A swallowed failure reruns the handler.** If something catches the handler's exception and lets the Unit of Work commit, the claim commits without a stamp, and the next delivery runs the handler again.
+- **No message id, no deduplication.** A message without a `MessageId` runs the handler directly.
+- **`HasBeenReceived` answers for the handler.** It returns `true` only for a stamped marker, and only one inside the window when a window is set.
+
+### Deduplication window
+
+`InboxDeduplicationWindow` is `null` by default, so a marker suppresses its id forever. Set it through `WithReliabilityRetention` to let ids expire. Expiry is decided when a message is received, not by the purge, so an id is suppressed for exactly the window.
+
+Size the window at or above your worst-case redelivery time. `MessageId` is chosen by whoever produced the message, so a forged or reused id suppresses a legitimate message for as long as its marker is inside the window.
+
+Two deliveries racing on the same expired id are ordered by the claim. The one that loses the race gets a `DbUpdateConcurrencyException` and its handler does not run. The message is not lost: the exception reaches the receive pipeline, and the broker's redelivery finds the winner's stamp.
+
+## Outbox
+
+`BrokeredMessageOutbox<TContext>` stores outgoing messages as `OutboxMessage` rows. `WithOutboxProcessingBehavior` routes every send and publish to it, so a handler's messages are staged rather than sent.
+
+1. The handler calls `Send` or `Publish`. The Outbox adds a row, tagged with the current transaction id as its `BatchId`, and does not save it.
+2. The Unit of Work saves and commits the row together with your domain changes.
+3. `OutboxProcessingBehavior` then publishes the rows staged under that transaction.
+4. Each row is claimed, published, and stamped with `ProcessedFromOutboxAtUtc`.
+
+> **Warning:** A send or publish made outside a Unit of Work, for example from a controller through `IBrokeredMessageDispatcher`, is added to the `DbContext` but not saved. Dispatch a command and send from its handler, or call `SaveChangesAsync` yourself.
+
+### Failed publishes and the polling processor
+
+A failed publish is logged and does not fail your command, which has already committed. The Outbox records the attempt with one database-side update: it increments `DispatchAttempts` and moves `NextAttemptAtUtc` one backoff ahead. Only the polling processor from Chatter.MessageBrokers publishes that row again, so enable it with `WithOutboxPollingProcessor()`.
+
+Each poll selects rows that are unprocessed and due (`NextAttemptAtUtc` is null or past), oldest `SentToOutboxAtUtc` first, capped at `OutboxPollBatchSize`. When `OutboxMaxDispatchAttempts` is set, rows that have used up their attempts are skipped and stay in the table. The immediate publish after a commit takes every row of its own batch, with no cap, due check or attempt ceiling.
+
+### Tuning the polling processor
+
+The processor and its settings belong to Chatter.MessageBrokers:
+
+```csharp
+.AddMessageBrokers(o => o
+    .AddReliabilityOptions(r => r
+        .WithOutboxPollingProcessor(5000)      // poll every 5 seconds after a short batch
+        .WithOutboxPollBatchSize(100)          // at most 100 rows per poll
+        .WithOutboxDispatchBackoff(5, 60)      // wait 5 s after a failure, doubling to 60 s
+        .WithOutboxMaxDispatchAttempts(20)))   // optional: stop polling a row after 20 failures
+```
+
+The same values can come from `appsettings.json`, where a configured key wins over the fluent call:
+
+```json
+{
+  "Chatter": {
+    "MessageBrokers": {
+      "Reliability": {
+        "EnableOutboxPollingProcessor": true,
+        "OutboxProcessingIntervalInMilliseconds": 5000,
+        "OutboxPollBatchSize": 100,
+        "OutboxDispatchBackoffBaseInSeconds": 5,
+        "OutboxDispatchBackoffCapInSeconds": 60,
+        "OutboxMaxDispatchAttempts": null
+      }
+    }
+  }
+}
+```
+
+After a full batch the processor polls again at once; after a shorter one it waits the interval. See the [Chatter.MessageBrokers configuration](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#configuration) for every option and the values it refuses.
+
+### Several hosts on one database
+
+Before publishing a row, a drain claims it with one update keyed on the row's `Id`, matching the `NextAttemptAtUtc` value its poll read. The claim runs inside the drain's transaction, so no other connection sees it until that transaction commits. A second host that polled the same row waits on that row's lock for the whole publish, then matches nothing and publishes nothing. The lock covers only that row, so other rows stay claimable.
+
+If a publish takes longer than the `DbContext` command timeout (30 seconds by the provider default), the waiting drain's claim fails instead. That drain spends one dispatch attempt and the row is deferred, which is harmless while the first host publishes it.
+
+### Delivery guarantee
+
+`ProcessedFromOutboxAtUtc` is a concurrency token, so if two processors stamp the same row only one stamp survives and the other commit fails with a logged `DbUpdateConcurrencyException`. The stamp is written after the publish, so a publish followed by a failed stamp can publish the message again later. A row whose publish failed is retried only while the polling processor runs and, when `OutboxMaxDispatchAttempts` is set, only until it has used its attempts; a row past that ceiling stays in the table unpublished. Put Command handlers that are not naturally idempotent behind the Inbox, and make Event handlers idempotent.
+
+## Unit of Work
+
+`UnitOfWork<TContext>.ExecuteAsync` runs the rest of the pipeline inside an EF Core execution strategy. It begins a `ReadCommitted` transaction, or joins the one already open on the context, then calls `SaveChangesAsync`.
+
+Everything saved through `TContext` while the command runs, including your changes, the Inbox marker and the Outbox rows, commits in that transaction or rolls back with it. Work outside `TContext`, such as another `DbContext`, a separate connection or an HTTP call, is not part of it.
+
+- **It commits and disposes only what it began.** A transaction you opened yourself is saved into but left open, on success and on failure; you commit or roll it back.
+- **A rollback clears the change tracker, for its own transaction only.** After rolling back a transaction it began, it clears `TContext`'s change tracker so no entity looks saved when it was not. If you catch the failure and keep using the same `DbContext`, expect its entities to be detached. It leaves the tracker alone when it joined your transaction.
+- **Cleanup never hides the real error.** A rollback or dispose that fails is logged at Warning and swallowed, so the exception that caused the failure is the one you see. A dispose failure after a successful commit does not turn the commit into an error.
+
+> **Important:** The Unit of Work refuses a `DbContext` configured with `EnableRetryOnFailure(...)`. `ExecuteAsync` throws `InvalidOperationException` before any transaction begins, because re-running a failed commit would commit an empty transaction and lose your writes. Remove `EnableRetryOnFailure(...)` from that context, or stop registering the Unit of Work for it. Chatter's Recovery and broker redelivery already retry at their own layers.
+
+### Persistance Transaction
+
+The transaction is exposed as `IPersistanceTransaction` (namespace `Chatter.MessageBrokers.Reliability`), with `TransactionId`, `CommitAsync` and `RollbackAsync`. The type is spelled `Persistance` in code; use that spelling when you reference it. `CommitAsync` and `RollbackAsync` throw `ObjectDisposedException` once the handle is disposed.
+
+`IUnitOfWork.CurrentTransaction` returns the context's current transaction. With none open, it returns a handle whose `TransactionId` is `Guid.Empty` and whose `CommitAsync` and `RollbackAsync` throw `InvalidOperationException`. Only a live transaction is placed in the `TransactionContext`, which is where the Outbox reads the `BatchId` from.
+
+## Retention purge
+
+By default nothing is deleted: Inbox markers and processed Outbox rows stay forever. Call `WithReliabilityRetention` to set a window for either table and start the purge:
+
+```csharp
+pipeline.WithReliabilityRetention<OrdersDbContext>(r =>
+{
+    r.InboxDeduplicationWindow = TimeSpan.FromDays(7);    // also how long an id is suppressed
+    r.ProcessedOutboxRetention = TimeSpan.FromDays(3);
+    r.PurgeInterval = TimeSpan.FromMinutes(5);
+});
+```
+
+`ReliabilityRetentionPurgeService<TContext>` runs one pass per `PurgeInterval`. A table is purged only when its window is set.
+
+- **Bounded passes.** Each pass issues one `DELETE` per table for the 1,000 oldest eligible rows. That caps reclamation at 288,000 rows per table per day at the 5-minute default. If a table gains eligible rows faster, shorten `PurgeInterval`.
+- **Inbox.** Markers stamped longer ago than the window, and markers claimed but never stamped, are deleted.
+- **Outbox.** Only rows stamped processed longer ago than the retention are deleted; a row still waiting to publish is never deleted.
+- **Errors.** A failed pass is logged at Error and retried on the next pass; it does not stop the host.
+
+The last `WithReliabilityRetention` call wins, and the purge service is added once however often you call it.
+
+## Database schema
+
+Table names follow your `DbSet` property names, or the entity type names when there is no `DbSet`.
+
+### InboxMessage table
+
+| Column | Type | Constraints |
+| --- | --- | --- |
+| `MessageId` | `string` | Primary key, required. |
+| `ReceivedByInboxAtUtc` | `DateTime?` | Nullable; concurrency token. When the handler completed; `null` while the id is only claimed. |
+
+### OutboxMessage table
+
+| Column | Type | Constraints |
+| --- | --- | --- |
+| `Id` | `int` | Primary key, required, generated on add. |
+| `MessageId` | `string` | Required. |
+| `ProcessedFromOutboxAtUtc` | `DateTime?` | Nullable; concurrency token. `null` until published. |
+| `SentToOutboxAtUtc` | `DateTime` | Required. |
+| `MessageBody` | `string` | Required. The serialized message. |
+| `MessageContext` | `string` | Required. The JSON-serialized Message Context. |
+| `MessageContentType` | `string` | Required. |
+| `Destination` | `string` | Required. |
+| `BatchId` | `Guid` | Required. The transaction id the row was staged under. |
+| `DispatchAttempts` | `int` | Required; store default `0`. Failed publishes so far. |
+| `NextAttemptAtUtc` | `DateTime?` | Nullable. `null` means due now; otherwise the earliest next attempt. |
+
+### Outbox poll index
+
+Neither configuration declares an index beyond the primary keys. To index the Outbox poll, apply `OutboxMessagePollIndexConfiguration` and generate a migration for it:
 
 ```csharp
 protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -169,112 +396,98 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
     modelBuilder.ApplyConfiguration(new InboxMessageConfiguration());
     modelBuilder.ApplyConfiguration(new OutboxMessageConfiguration());
-
-    // Opt in to the poll index — then generate a migration for it.
     modelBuilder.ApplyConfiguration(new OutboxMessagePollIndexConfiguration());
 }
 ```
 
-## Inbox & Outbox
+It adds one non-unique, unfiltered index over (`ProcessedFromOutboxAtUtc`, `SentToOutboxAtUtc`), which works on any provider. It does not include `NextAttemptAtUtc`.
 
-### Inbox (idempotency)
+## Configuration
 
-`BrokeredMessageInbox<TContext>` enforces **once-only handling**, and the marker row carries its own answer. `ReceivedByInboxAtUtc` records which of two states a message id is in: **no stamp means claimed, with the handler not completed; a stamp means handled, at that instant.** When a message arrives, the inbox reads the marker for its `MessageId` by key:
+`EntityFrameworkReliabilityOptions` (namespace `Chatter.MessageBrokers.Reliability.EntityFramework`) is set in code through `WithReliabilityRetention`. It has no configuration section of its own.
 
-- If a marker is present carrying a stamp within the deduplication window, the handler is skipped and the suppression is logged at Information with the message id.
-- If a marker is present carrying a stamp older than the window, it is treated as spent and the message is handled again.
-- If a marker is present carrying **no** stamp, it records a claim no handler completed, so the message is handled again.
-- If no marker is present, the message id is fresh.
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `InboxDeduplicationWindow` | `TimeSpan?` | `null` | How long a stamped Inbox marker suppresses its id and is kept. `null` suppresses and keeps forever. |
+| `ProcessedOutboxRetention` | `TimeSpan?` | `null` | How long a processed Outbox row is kept. `null` keeps it forever. |
+| `PurgeInterval` | `TimeSpan` | 5 minutes | Wait between purge passes. |
 
-In each of the three handling cases the inbox then **claims the id before running the handler**: it writes `ReceivedByInboxAtUtc` as null — inserting the row for a fresh id, updating it for one already there — and flushes that write into the ambient transaction. `MessageId` is the primary key, so an existing row is re-claimed in place; a second row for the same id would not insert. The flush is what takes the store's lock on the row, which is how the store orders a concurrent delivery of the same id behind the claim rather than letting both read no marker and both run. When the handler returns, the inbox stamps the claim with the handled time and flushes again.
+A zero or negative value for any of the three throws `ArgumentOutOfRangeException` at registration, as does a `PurgeInterval` longer than `Task.Delay` accepts (about 49.7 days).
 
-Both flushes go into the transaction the surrounding unit of work commits; the inbox itself issues no commit and no rollback, so the marker and the handler's effects still land together or not at all. `ReceiveViaInbox` therefore **refuses to run without an ambient transaction**, throwing `InvalidOperationException`: the flush would otherwise commit on its own and leave a claim standing outside the unit of work meant to carry it. Register through `WithInboxBehavior<TContext>()`, which registers the matching unit of work, or run the call inside `IUnitOfWork.ExecuteAsync`.
+To read the values from configuration, bind them inside the delegate:
 
-Because the claim is durable only for as long as the transaction carrying it, a handler that throws takes its claim down with the rollback and the message id is free again. A caller that *catches* the handler's failure and lets the unit of work commit anyway commits the claim without a stamp — its own work lands, and the message id reads as unhandled, so the next delivery runs the handler again rather than being dropped.
+```csharp
+pipeline.WithReliabilityRetention<OrdersDbContext>(r =>
+    builder.Configuration.GetSection("Orders:Retention").Bind(r));
+```
 
-If the incoming message has no message id, the inbox simply executes the handler (no idempotency tracking is possible), with no marker and no transaction requirement. The registration guard in [Reliability Behavior Order](#reliability-behavior-order) is what makes every relational reliability participant share one `DbContext`, so the transaction the unit of work commits is the one holding the marker. The reasoning is recorded in [ADR-0033](https://github.com/brenpike/Chatter/blob/master/docs/adr/0033-the-relational-inbox-claims-before-the-handler-and-stamps-handled-after-it-in-the-same-row.md).
+```json
+{
+  "Orders": {
+    "Retention": {
+      "InboxDeduplicationWindow": "7.00:00:00",
+      "ProcessedOutboxRetention": "3.00:00:00",
+      "PurgeInterval": "00:05:00"
+    }
+  }
+}
+```
 
-`HasBeenReceived` answers for the **handler**, not for the row: it reports `true` only for a marker carrying a stamp — and, where a window is configured, only one still inside it. A message id whose handler is still running, or has already failed, is not reported as received.
+`Bind` is the `ConfigurationBinder` extension (namespace `Microsoft.Extensions.Configuration`) from Microsoft.Extensions.Configuration.Binder. The Chatter packages this package depends on already reference it, so you add no package for it.
 
-#### The deduplication window
+The Outbox polling, batch size, backoff and attempt ceiling are `ReliabilityOptions` in Chatter.MessageBrokers; see [Tuning the polling processor](#tuning-the-polling-processor) and the [Chatter.MessageBrokers configuration](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#configuration).
 
-`EntityFrameworkReliabilityOptions.InboxDeduplicationWindow` is **`null` — disabled — by default**, and `WithReliabilityRetention<TContext>(...)` is what sets it. With no window configured, nothing expires: every existing marker suppresses its id however old that marker is. A finite default was deliberately not chosen, because it would change the behavior of a host already running this package — a late redelivery its inbox suppresses today would start being handled again.
+## Diagnostics
 
-When a window *is* configured, expiry is decided at receive rather than left to the purge, so the period an id is actually suppressed is the window itself and not the window plus however long the next purge pass takes to arrive. A marker carrying no `ReceivedByInboxAtUtc` has no age to compare against and never suppresses at all, so the window has nothing to say about it; the purge reclaims it on the same pass as an aged-out one.
+This package emits no spans or metrics of its own; see [Chatter.MessageBrokers diagnostics](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#diagnostics). An Outbox row stores the trace context of the code that staged it. With diagnostics on, the drain publishes the row under a Chatter.MessageBrokers send span parented to that stored context, so the trace reads write, drain, receive (see [Trace context propagation](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#trace-context-propagation)).
 
-Size the window **at or above your worst-case redelivery horizon**. `MessageId` is a wire value chosen by whatever produced the message, so a forged or merely reused id suppresses a legitimate message for as long as its marker stays live; a window sized that way spends its suppression on genuine redeliveries and releases the id afterwards.
+Log categories are the generic types, such as `BrokeredMessageInbox<TContext>`, `UnitOfWork<TContext>` and `ReliabilityRetentionPurgeService<TContext>`. Notable entries: a suppressed duplicate at Information, a failed transaction cleanup at Warning, and a failed purge pass at Error.
 
-Two deliveries racing on the same expired id are ordered by the claim rather than by the window: both read the marker and find it expired, but only one of them re-claims the row, and the other waits on the lock that claim took. The waiter reads no outcome — it **surfaces a `DbUpdateConcurrencyException`**, because the winner replaced the timestamp the waiter's own re-claim was written against, so that re-claim matches no row and its handler never runs. Pinned over a real database by `Integration/WhenDeduplicatingInboxOnSqlServer.MustInvokeTheHandlerOnceWhenTwoRedeliveriesRaceAnExpiredMarker`. The message is not lost — the exception reaches the receive pipeline and the broker's redelivery reads the winner's stamp — but it is a behavior change for an application that was previously getting two handler invocations and no exception, recorded in [ADR-0033](https://github.com/brenpike/Chatter/blob/master/docs/adr/0033-the-relational-inbox-claims-before-the-handler-and-stamps-handled-after-it-in-the-same-row.md). The reasoning behind the disabled default is recorded in [ADR-0026](https://github.com/brenpike/Chatter/blob/master/docs/adr/0026-the-relational-inbox-decides-expiry-at-receive-so-purge-timing-cannot-suppress-a-legitimate-message.md).
+## Upgrading
 
-### Outbox (reliable publish)
+Your application owns the schema, so each change below arrives as a model change you migrate yourself. Apply every row between your current version and the new one.
 
-`BrokeredMessageOutbox<TContext>` implements the transactional outbox. Outgoing messages are serialized and staged as `OutboxMessage` rows via `SendToOutbox`. Each row captures the serialized body, message context (JSON), destination, content type, send time, and a `BatchId` (the current transaction id). `SendToOutbox` participates in the surrounding unit of work, so the staged row and the work that produced it commit together — the outbox never saves on its own, and a message is never published unless the local state change commits. An enqueue with no surrounding unit of work is staged, not persisted. The registration guard in [Reliability Behavior Order](#reliability-behavior-order) is what makes every relational reliability participant share one `DbContext`, so the transaction the unit of work commits is the one holding the staged rows.
-
-Processing then drains the outbox separately:
-
-- `GetUnprocessedMessagesFromOutbox` selects **unprocessed and due**, returning **at most `ReliabilityOptions.OutboxPollBatchSize` rows (default 100), oldest-staged first** — it translates to `WHERE ProcessedFromOutboxAtUtc IS NULL AND (NextAttemptAtUtc IS NULL OR NextAttemptAtUtc <= @now) ORDER BY SentToOutboxAtUtc` with the batch size applied as the row limit, so one poll never drags the whole backlog into memory. When `ReliabilityOptions.OutboxMaxDispatchAttempts` carries a value, `DispatchAttempts < @max` joins that predicate; it has none by default, so no attempt ceiling applies. Both added clauses sit ahead of the ordering and the row limit, so a message being held back costs no batch slot. Pinned by `WhenGettingUnprocessedMessages.MustSpendNoBatchSlotOnAMessageThatIsNotDue`, `.MustSpendNoBatchSlotOnAMessageThatHasSpentTheAttemptCeiling` and `.MustTranslateTheDueGateAndTheCeilingToSqlOverARelationalProvider`, which runs the poll over a relational provider; the reasoning is recorded in the `INVARIANT:` comments on `GetUnprocessedMessagesFromOutbox`, and the decision in [ADR-0031](https://github.com/brenpike/Chatter/blob/master/docs/adr/0031-outbox-selection-is-derived-from-durable-attempt-state-not-from-the-absence-of-success.md). The batch-size bound comes from the constructor taking `ReliabilityOptions`, which is the one the container resolves and which refuses a batch size below 1 with an `ArgumentOutOfRangeException`. The older two-argument constructor remains as the uncapped path for a caller that builds the outbox by hand; it applies neither the cap nor the ceiling, but the due clause is not options-dependent and holds there too (`.MustDueGateWithoutReliabilityOptions`).
-- When a dispatch fails, `RecordDispatchAttempt` spends one attempt on the row and pushes `NextAttemptAtUtc` a backoff ahead, which is what the due clause above reads. It writes both columns with a single set-based `ExecuteUpdateAsync` keyed on the message's own `Id`, incrementing the count **in the database** rather than from the value the supplied message carries, and it bypasses the change tracker deliberately — the reasoning is recorded in the `INVARIANT:` comments on `RecordDispatchAttempt`, pinned by `WhenUpdatingProcessed.MustCountOneMoreDispatchAttemptOnTheStoredRow`, `.MustRecordTheAttemptAfterAFailedClaimLeftTheMessageStagedAsProcessed` and `.MustRecordTheAttemptOnlyOnTheMessageItWasHanded`.
-- `BrokeredMessageOutboxProcessor` then **drains rather than trickles**: within one processing interval it re-polls for as long as a poll comes back full, and stops on the first poll that returns fewer rows than the batch size or adds no message identity the drain has not already seen. The seen set spans the **whole drain** rather than only the poll before, and is keyed on the `(Id, MessageId)` pair of each row. It is what keeps a full batch that cannot be dispatched from spinning against the store — dispatch failures are logged and swallowed, so such a batch is otherwise re-fetched identically forever. A drain also ends once it has seen `MaxDrainIdentities` — 10,000 — identities, which is what bounds that set; the ceiling is read after a poll's identities are tallied, so the poll that crosses it is kept whole, and whatever is still unprocessed is taken by the next poll after the interval wait.
-- `GetUnprocessedBatch(batchId)` is deliberately left **uncapped, un-due-gated and unceilinged**: its caller dispatches one unit of work's staged messages with no re-poll behind it, so any of the three would drop a message nothing would ever come back for rather than defer it. Pinned by `WhenGettingUnprocessedMessages.MustNeitherDueGateNorCeilingTheUnprocessedBatch`.
-- Both polls stay **tracked**, but the claim below does not depend on it: `OutboxMessageConfiguration` marks `ProcessedFromOutboxAtUtc` with `IsConcurrencyToken()`, so EF emits the entry's *original* value as a `WHERE ProcessedFromOutboxAtUtc IS NULL` predicate on the claiming update, and `UpdateProcessedDate` states that original as `null` itself rather than relying on the value a tracked message was loaded with. A message emits the same predicate whether it arrives tracked or detached.
-- Before it publishes, a drain **claims the row** through `TryClaimForDispatch`: one set-based `ExecuteUpdateAsync` moving `NextAttemptAtUtc` one backoff ahead, matched on `Id = @id AND ProcessedFromOutboxAtUtc IS NULL AND NextAttemptAtUtc = @observed` — `@observed` being the instant that drain's own poll read. It neither opens a transaction nor saves, so it enlists in the drain's unit of work: the claim is **invisible to every other connection until that unit of work commits, and discarded by its rollback**. That is what arbitrates two hosts polling one database. The losing host's claim **waits on the winner's row lock for the winner's whole publish and then matches zero rows**, so that drain publishes nothing, stamps nothing and spends no attempt. Previously both hosts published and only the stamp conflicted, after the fact. Pinned by the eight `WhenClaimingForDispatch` facts and, over a real SQL Server with `READ_COMMITTED_SNAPSHOT` both ON and OFF and with the wait read from `sys.dm_exec_requests` rather than from elapsed time, by `Integration/WhenArbitratingOutboxDrainsOnSqlServer.MustMakeASecondDrainsClaimWaitOnTheWinningDrainsRowLock`, `.MustDenyTheWaitingDrainsClaimOnceTheWinningDrainCommits`, `.MustGrantTheWaitingDrainsClaimOnceTheWinningDrainRollsBack` and `.MustLeaveADifferentRowClaimableWhileADrainIsBlockedOnTheRacedRow`; the decision is recorded in [ADR-0035](https://github.com/brenpike/Chatter/blob/master/docs/adr/0035-the-outbox-drain-claims-the-row-it-is-about-to-publish-inside-the-transaction-that-publishes-it.md).
-  - The lock is confined to **the one row the drain is publishing**, because the claim seeks it by primary key, so a drain blocked on one row leaves every other row claimable *during* the block — that is what the last of those four facts measures. Everything measured covers that single-row primary-key seek only.
-  - **If a publish outruns the `DbContext` command timeout** — 30 seconds by the provider's default, not a value this package sets — the waiting drain's claim statement throws instead, and that drain spends a dispatch attempt it never used. Nothing is given up: `OutboxMaxDispatchAttempts` has no value by default, so the row is simply deferred, which is what you want while the winner is publishing it. **No option was added for this**, here or elsewhere.
-- After a row is dispatched, `UpdateProcessedDate` stages the `ProcessedFromOutboxAtUtc` stamp. This column is an **optimistic concurrency token**, so two processors racing on the same row produce a `DbUpdateConcurrencyException` when the surrounding unit of work commits; the outbox's `IUnitOfWork.ExecuteAsync`, which wraps that commit, logs the time the winner recorded, resyncs the losing entry against the stored row, and rethrows. The token's guarantee is narrower than "exactly once": it prevents two *stale, competing* updates from both committing, so only one racer's stamp survives. It is **not** what keeps two drains from publishing the same row: the stamp is written *after* the dispatch returns, so the token can only conflict once both have already published. The drain claim above is what arbitrates that, before either publishes. Delivery remains at-least-once and handlers are expected to be idempotent.
-
-### Unit of Work / Persistance Transaction
-
-`UnitOfWork<TContext>` coordinates a single atomic commit. Its `ExecuteAsync` runs your operation inside an EF execution strategy: it either **begins** a `ReadCommitted` transaction or **participates** in one already active on the context, runs the operation, and calls `SaveChangesAsync`, which flushes into whichever transaction is active regardless of who began it.
-
-Commit and dispose are scoped to ownership, not merely to activity: `ExecuteAsync` commits and disposes only the transaction it began. If the caller opened the ambient transaction, the unit of work leaves it open on both the success path and the failure path — on failure the original exception propagates and it is the caller's own dispose that discards the work. A caller who opens their own transaction around dispatch must therefore commit or roll it back themselves; SQL Server holds locks for as long as they leave it open. That is the caller's choice, and the correct semantics for participating in someone else's unit of work.
-
-**A rollback of a transaction the unit of work began also clears `TContext`'s change tracker.** EF accepts changes when it saves, not when it commits, so without this the entities a failed attempt had flushed stay tracked as though the write had landed, and a later read on the same scoped context resolves them out of the identity map ahead of the store. The tracker is cleared wholesale rather than entry by entry, because detaching one flushed entity leaves its companions tracked — the same wrong answer read through a different object. Ownership scopes this exactly as it scopes the rollback: **where the unit of work adopted the caller's transaction it leaves the tracker alone**, since the caller owns both that transaction and the state staged into it. The success path is untouched, because a commit that stood leaves a truthful tracker. If your application catches the failure outside the unit of work and keeps using the same `DbContext`, expect its entities to be detached — that transaction had already rolled back, so the work was gone either way. The reasoning is recorded in [ADR-0034](https://github.com/brenpike/Chatter/blob/master/docs/adr/0034-a-rolled-back-unit-of-work-reconciles-its-contexts-change-tracker.md).
-
-Every terminal step runs through one guard that logs the failure at Warning and swallows it, so no terminal step can become the failure the caller is told about. On the failure path — rolling back and disposing — that keeps the exception which actually caused the failure the one that propagates. On the success path, where only the dispose remains, it keeps a provider whose disposal faults from turning a committed unit of work into a thrown exception: the commit has already stood by then, and reporting it as a failure would have the caller compensate for work that is durable. `SaveChangesAsync` and the commit itself stay inside the guarded region, so a save or commit failure still propagates. That cleanup runs under `CancellationToken.None`: honouring the token that failed the operation would make a cancelled operation skip exactly the rollback cancellation called for. Beginning the transaction stays outside the guarded region, so a failure to begin one propagates untouched, with no scope in existence to clean up.
-
-> **The guard buys exception fidelity, not a closed transaction.** It keeps a failing rollback or dispose from replacing the causal exception. It does not resurrect the transaction: a provider whose own disposal aborts still leaves that transaction attached to the context, and nothing here can undo that.
-
-> **If you have called `EnableRetryOnFailure(...)`, you get a throw.** `ExecuteAsync` reads `RetriesOnFailure` on the context's execution strategy and, when it is `true`, throws an `InvalidOperationException` before the strategy runs and before any transaction is begun — so re-execution is unreachable rather than handled. Re-execution cannot be made safe here: the first attempt's `SaveChangesAsync` accepts every tracked change, so a retry after a failed commit saves nothing and commits an empty transaction, leaving the caller looking at success with the writes gone. Only the application can supply the `verifySucceeded` predicate that would close that. **Either remove `EnableRetryOnFailure(...)` from that `DbContext`, or stop registering the unit of work for it** (`WithUnitOfWorkBehavior`, `WithInboxBehavior`, `WithOutboxProcessingBehavior`) — the exception message names both ways out. Nothing is lost by the refusal: Chatter's recovery pipeline and broker redelivery already retry at their own layers. EF Core's default SQL Server strategy does not retry, so this affects only consumers who opted in. The reasoning is recorded in [ADR-0025](https://github.com/brenpike/Chatter/blob/master/docs/adr/0025-the-unit-of-work-refuses-a-retrying-execution-strategy-rather-than-re-executing-the-handler.md).
-
-The transaction itself is exposed through `IPersistanceTransaction`, implemented by `PersistanceTransaction`, which wraps EF's `IDbContextTransaction` and surfaces `TransactionId`, `CommitAsync`, and `RollbackAsync`. It refuses a null transaction at creation, and `CommitAsync` / `RollbackAsync` throw `ObjectDisposedException` once the handle has been disposed. The current transaction is also published into the `TransactionContext` container so the outbox can stamp each message's `BatchId` with the active transaction id.
-
-`IUnitOfWork.CurrentTransaction` reads whatever transaction the context currently holds. When the context holds none, it hands back a **no-active-transaction** handle rather than a wrapper around `null`: its `TransactionId` is `Guid.Empty`, disposing it is a no-op, and `CommitAsync` / `RollbackAsync` throw `InvalidOperationException` telling you to begin a transaction or run the work through `ExecuteAsync` first. That handle is never published into the `TransactionContext` container — only a live transaction is — so an application that took a transaction out of the container still holds a real one. Both of these paths previously produced a `NullReferenceException`.
-
-> Note: the type is intentionally spelled **`Persistance`** (and `IPersistanceTransaction`) in the codebase. The README uses the correct English spelling _persistence_ in prose, but you must use `Persistance` when referencing the actual type.
-
-## Database Schema
-
-The entity configurations map two tables (table names default to the `DbSet`/entity names unless you override them).
-
-### Inbox — `InboxMessage`
-
-| Column | Type | Constraints |
+| Upgrading past | Change | What to do |
 | --- | --- | --- |
-| `MessageId` | `string` | Primary key, required |
-| `ReceivedByInboxAtUtc` | `DateTime?` | Nullable; **concurrency token**; when the handler completed, and `null` while the id is only claimed |
+| 0.9.0 | Outbox gains `DispatchAttempts` and `NextAttemptAtUtc`. | Generate a migration, apply it, then deploy the new binaries (schema first). |
+| 0.9.0 | A `DbContext` with `EnableRetryOnFailure` is refused; mixing `TContext` types is refused. | Remove `EnableRetryOnFailure` from the context; name one `TContext` in every call. |
+| 0.10.0 | `ReceivedByInboxAtUtc` becomes a concurrency token (a model annotation, no DDL). | Generate and commit the migration even though it is empty. Optionally backfill hand-written rows. |
+| 0.11.0 | The Outbox drain claims rows before publishing. | Nothing. No schema change; deploy in either order. |
+| 0.12.0 | Targets `net10.0` only. | Build your application on .NET 10. |
 
-### Outbox — `OutboxMessage`
+**Outbox attempt columns (0.9.0).** Against SQL Server, the generated migration emits:
 
-| Column | Type | Constraints |
-| --- | --- | --- |
-| `Id` | `int` | Primary key, required, generated on add (identity) |
-| `MessageId` | `string` | Required |
-| `ProcessedFromOutboxAtUtc` | `DateTime?` | Nullable; **concurrency token**; `null` until dispatched |
-| `SentToOutboxAtUtc` | `DateTime` | Required |
-| `MessageBody` | `string` | Required; serialized message payload |
-| `MessageContext` | `string` | Required; JSON-serialized message context |
-| `MessageContentType` | `string` | Required |
-| `Destination` | `string` | Required |
-| `BatchId` | `Guid` | Required; the transaction id the message was written under |
-| `DispatchAttempts` | `int` | Required; store default `0`; incremented in the database by `RecordDispatchAttempt` |
-| `NextAttemptAtUtc` | `DateTime?` | Nullable; `null` means **due now**; advanced a backoff ahead by `RecordDispatchAttempt` |
+```sql
+ALTER TABLE [OutboxMessages] ADD [NextAttemptAtUtc] datetime2 NULL;
+ALTER TABLE [OutboxMessages] ADD [DispatchAttempts] int NOT NULL DEFAULT 0;
+```
 
-The last two are the columns [Migration: the outbox attempt columns](#migration-the-outbox-attempt-columns) adds.
+Both are additive and need no backfill: existing rows get `0` attempts and a `null` next attempt, which means due now. The previous binaries ignore the new columns, so apply the migration first. New binaries against an unmigrated database fail the Outbox poll with a provider error.
 
-**Indexes.** `OutboxMessageConfiguration` declares none beyond the `Id` primary key, so the poll has no supporting index unless you ask for one. Applying the opt-in `OutboxMessagePollIndexConfiguration` adds a single non-unique, non-filtered index over (`ProcessedFromOutboxAtUtc`, `SentToOutboxAtUtc`) — see [Opt-in: the outbox poll index](#opt-in-the-outbox-poll-index). That index does not lead with `NextAttemptAtUtc`: extending it would force a second migration on anyone who has already applied it, so the index shape is carried by [#381](https://github.com/brenpike/Chatter/issues/381) instead. `InboxMessageConfiguration` declares no index beyond the `MessageId` primary key, which is also the key the inbox reads a marker by.
+**Inbox concurrency token (0.10.0).** `dotnet ef migrations add <name>` produces a migration with empty `Up()` and `Down()` whose model snapshot records the annotation. Commit it: EF Core 10 raises `PendingModelChangesWarning` as an error when the model differs from the last snapshot. Existing markers are all stamped and keep suppressing. If you wrote Inbox rows by hand with a null `ReceivedByInboxAtUtc`, they read as unfinished claims and do not suppress; this restores them:
 
-## Domain Language
+```sql
+UPDATE [InboxMessages] SET [ReceivedByInboxAtUtc] = SYSUTCDATETIME() WHERE [ReceivedByInboxAtUtc] IS NULL;
+```
 
-See [CONTEXT.md](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/CONTEXT.md) for the domain glossary (Brokered Message Inbox/Outbox, Unit of Work, Persistance Transaction, Inbox Deduplication Window, Retention Purge, Outbox Attempt State, Outbox Poll Index).
+Replace `OutboxMessages` and `InboxMessages` with your table names.
 
-[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)
+## Related packages
+
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): The Commands, Events and Command Pipeline the behaviors plug into.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): The Inbox, Outbox, polling processor and Recovery this package makes durable.
+- [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus): Azure Service Bus transport.
+- [Chatter.MessageBrokers.RabbitMQ](https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ): RabbitMQ transport.
+- [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): SQL Server Service Broker transport.
+- [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB reliability for the same abstractions.
+
+## Learn more
+
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/CONTEXT.md)
+- [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/Chatter.MessageBrokers.Reliability.EntityFramework/CHANGELOG.md)
+- [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
+- [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)
+
+## License
+
+Licensed under the [MIT License](https://github.com/brenpike/Chatter/blob/master/LICENSE).

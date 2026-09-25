@@ -46,7 +46,7 @@ Each bounded context owns its ubiquitous language in a local `CONTEXT.md`; start
 
 Production code changes are developed test-first via the `hivemind:tdd` skill (red-green-refactor). Use judgment where TDD does not meaningfully apply — documentation, changelog/release-metadata edits, version bumps, and pure configuration. Pairs with the `dotnet test` validation procedure and the test conventions above.
 
-An `INVARIANT:` comment names the oracle that pins its claim and the mutation that reddens that oracle, or says no test pins it; the rationale is written once, next to the mechanism, and cited — not restated — elsewhere (`docs/adr/0027-invariant-prose-names-the-oracle-that-falsifies-it.md`).
+An `INVARIANT:` comment names the oracle that pins its claim and the mutation that reddens that oracle, or says no test pins it (`docs/adr/0027-invariant-prose-names-the-oracle-that-falsifies-it.md`, Rule 1). That ADR's Rule 2 is retired: READMEs and CHANGELOGs state behavior plainly for the people using the packages and cite no test names or oracles; the proof lives in the `INVARIANT:` comment.
 
 ## Workflow & Agents
 
