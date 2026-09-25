@@ -57,6 +57,15 @@ namespace Chatter.CQRS.Queries
                 var invoker = GetOrAddInvoker<TResult>(query.GetType());
                 return await invoker.Invoke(_serviceProvider, query, queryHandlerContext);
             }
+            // INVARIANT: only a cancellation the caller requested is logged as routine; any other fault, a spontaneous
+            // cancellation included, falls through to the Error record. Pinned by
+            // WhenDispatchingStrongTypedQuery.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller, which goes
+            // red when the filter is widened to catch (OperationCanceledException) with no predicate. Rationale: ADR-0040.
+            catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, queryHandlerContext))
+            {
+                _logger.LogDebug(e, "Dispatch of query '{QueryType}' was cancelled by the caller.", query.GetType().Name);
+                throw;
+            }
             catch (Exception e)
             {
                 _logger.LogError(e, "Error dispatching query of type '{QueryType}'", query.GetType().Name);
@@ -75,6 +84,14 @@ namespace Chatter.CQRS.Queries
             {
                 var handler = _serviceProvider.GetRequiredService<IQueryHandler<TQuery, TResult>>();
                 return await handler.Handle(query, queryHandlerContext);
+            }
+            // INVARIANT: as the Query<TResult> clause above states; pinned here by
+            // WhenDispatchingGenericQuery.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller, which
+            // goes red when this filter is widened to catch (OperationCanceledException) with no predicate.
+            catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, queryHandlerContext))
+            {
+                _logger.LogDebug(e, "Dispatch of query '{QueryType}' was cancelled by the caller.", typeof(TQuery).Name);
+                throw;
             }
             catch (Exception e)
             {

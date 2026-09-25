@@ -372,12 +372,16 @@ namespace Chatter.MessageBrokers.Receiving
         /// DECIDED, not incidental (ADR-0010 D11): a shutdown-cancelled delivery is NOT a failed receive, so it is
         /// neither retained for <c>error.type</c> nor marked on the span. Every deployment would otherwise emit a
         /// burst of failed receives — one per delivery in flight — and the resulting error-rate spike on every
-        /// clean restart is worse than the lost cancellation signal, which the receiver already logs.
+        /// clean restart is worse than staying silent about it. The signal is not actually lost: this same predicate
+        /// gates a Debug-level log of the cancellation at the dispatch seam
+        /// (<see cref="BrokeredMessageReceiver{TMessage}.DispatchReceivedMessageAsync"/>), so the exemption and the
+        /// record of why it applies are the one condition (ADR-0040).
         /// The predicate deliberately MIRRORS the worker error ladder's own shutdown-swallow filters
         /// (<c>catch (OperationCanceledException) when (workerToken.IsCancellationRequested)</c> and its
-        /// <c>ObjectDisposedException</c> twin), so "the ladder swallowed this as benign teardown" and "diagnostics
-        /// did not count this as a failure" are one and the same condition. A cancellation raised while the worker
-        /// token is NOT cancelled is a genuine failure, is settled by the ladder as one, and IS retained.
+        /// <c>ObjectDisposedException</c> twin), so "the ladder swallowed this as benign teardown", "diagnostics did
+        /// not count this as a failure", and "the dispatch seam logged it at Debug" are one and the same condition,
+        /// read from three call sites. A cancellation raised while the worker token is NOT cancelled is a genuine
+        /// failure, is settled by the ladder as one, and IS retained.
         /// </remarks>
         private static bool IsShutdownCancellation(Exception deliveryFault, CancellationToken workerToken)
             => workerToken.IsCancellationRequested

@@ -12,6 +12,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Fixed
 
+## [0.20.1] - 2026-09-25
+
+### Fixed
+
+- All four dispatch paths (command, event, and both query overloads) now log a cancellation the caller requested — an `OperationCanceledException` raised while the token on the dispatch context is signalled, as during host shutdown — once at `Debug` instead of `Error`, and rethrow it unchanged. A cancellation the caller did not request (for example an `HttpClient` timeout) is still logged at `Error`. ADR-0040 (#453).
+- Command and event dispatch telemetry no longer marks a caller-requested cancellation as a failure: the span status is left unset, no `error.type` tag or `exception` event is added, and `chatter.cqrs.dispatch.duration` is still recorded once but without the `error.type` dimension. If you alert on `error.type = System.OperationCanceledException` (or `TaskCanceledException`) from that metric, that series no longer includes caller-cancelled dispatches. An `ObjectDisposedException` is still treated as a failure. ADR-0040 (#453).
+
 ## [0.20.0] - 2026-09-24
 
 ### Changed

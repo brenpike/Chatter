@@ -2,9 +2,12 @@ using Chatter.CQRS.Commands;
 using Chatter.CQRS.Context;
 using Chatter.CQRS.Events;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -35,6 +38,12 @@ namespace Chatter.CQRS.Tests.Diagnostics
 
     /// <summary>A Command whose handler always fails, so failure spans and failure metrics can be observed.</summary>
     public sealed class FailingCommand : ICommand { }
+
+    /// <summary>A Command whose handler always faults with an <see cref="OperationCanceledException"/>.</summary>
+    public sealed class CancelledCommand : ICommand { }
+
+    /// <summary>An Event whose handler always faults with an <see cref="OperationCanceledException"/>.</summary>
+    public sealed class CancelledEvent : IEvent { }
 
     /// <summary>The exception a <see cref="ThrowingMessageHandler{TMessage}"/> raises.</summary>
     public sealed class DiagnosticsProbeException : Exception
@@ -94,6 +103,17 @@ namespace Chatter.CQRS.Tests.Diagnostics
     }
 
     /// <summary>
+    /// A handler that always throws <see cref="Failure"/>, an <see cref="OperationCanceledException"/>, the same
+    /// instance on every invocation, whether or not the dispatch's cancellation token is signalled.
+    /// </summary>
+    public sealed class ThrowingCancellationHandler<TMessage> : IMessageHandler<TMessage> where TMessage : IMessage
+    {
+        public OperationCanceledException Failure { get; } = new OperationCanceledException("The handled message was cancelled deliberately.");
+
+        public Task Handle(TMessage message, IMessageHandlerContext context) => throw Failure;
+    }
+
+    /// <summary>
     /// A real Message Dispatcher over a real service provider, so the diagnostics tests exercise the whole
     /// dispatch path rather than a mocked stand-in for it.
     /// </summary>
@@ -105,20 +125,29 @@ namespace Chatter.CQRS.Tests.Diagnostics
     {
         private readonly ServiceProvider _serviceProvider;
 
-        public DiagnosticsDispatchHarness()
+        /// <param name="commandDispatcherLogger">The logger the Command dispatcher writes to; <see cref="NullLogger{T}"/> when omitted.</param>
+        /// <param name="eventDispatcherLogger">The logger the Event dispatcher writes to; <see cref="NullLogger{T}"/> when omitted.</param>
+        internal DiagnosticsDispatchHarness(ILogger<CommandDispatcher> commandDispatcherLogger = null, ILogger<EventDispatcher> eventDispatcherLogger = null)
         {
+            var resolvedCommandDispatcherLogger = commandDispatcherLogger ?? NullLogger<CommandDispatcher>.Instance;
+            var resolvedEventDispatcherLogger = eventDispatcherLogger ?? NullLogger<EventDispatcher>.Instance;
+
             CommandHandler = new AmbientActivityRecordingHandler<TracedCommand>();
             EventMessageHandler = new AmbientActivityRecordingHandler<TracedEvent>();
             FailingCommandHandler = new ThrowingMessageHandler<FailingCommand>();
             GenericFailingCommandHandler = new ThrowingGenericMessageHandler<GenericFailingCommand>();
+            CancelledCommandHandler = new ThrowingCancellationHandler<CancelledCommand>();
+            CancelledEventHandler = new ThrowingCancellationHandler<CancelledEvent>();
 
             var services = new ServiceCollection();
             services.AddSingleton<IMessageHandler<TracedCommand>>(CommandHandler);
             services.AddSingleton<IMessageHandler<TracedEvent>>(EventMessageHandler);
             services.AddSingleton<IMessageHandler<FailingCommand>>(FailingCommandHandler);
             services.AddSingleton<IMessageHandler<GenericFailingCommand>>(GenericFailingCommandHandler);
-            services.AddSingleton<IDispatchMessages>(provider => new CommandDispatcher(provider, NullLogger<CommandDispatcher>.Instance));
-            services.AddSingleton<IDispatchMessages>(provider => new EventDispatcher(provider, NullLogger<EventDispatcher>.Instance));
+            services.AddSingleton<IMessageHandler<CancelledCommand>>(CancelledCommandHandler);
+            services.AddSingleton<IMessageHandler<CancelledEvent>>(CancelledEventHandler);
+            services.AddSingleton<IDispatchMessages>(provider => new CommandDispatcher(provider, resolvedCommandDispatcherLogger));
+            services.AddSingleton<IDispatchMessages>(provider => new EventDispatcher(provider, resolvedEventDispatcherLogger));
             services.AddSingleton<IMessageDispatcherProvider, MessageDispatcherProvider>();
             services.AddSingleton<IExternalDispatcher, NoOpExternalDispatcher>();
             services.AddSingleton<IMessageDispatcher, MessageDispatcher>();
@@ -138,6 +167,10 @@ namespace Chatter.CQRS.Tests.Diagnostics
 
         public ThrowingGenericMessageHandler<GenericFailingCommand> GenericFailingCommandHandler { get; }
 
+        public ThrowingCancellationHandler<CancelledCommand> CancelledCommandHandler { get; }
+
+        public ThrowingCancellationHandler<CancelledEvent> CancelledEventHandler { get; }
+
         public Task DispatchCommand() => Dispatcher.Dispatch(new TracedCommand());
 
         public Task DispatchEvent() => Dispatcher.Dispatch(new TracedEvent());
@@ -146,6 +179,58 @@ namespace Chatter.CQRS.Tests.Diagnostics
 
         public Task DispatchGenericFailingCommand() => Dispatcher.Dispatch(new GenericFailingCommand());
 
+        /// <summary>Dispatches a <see cref="CancelledCommand"/> under a context carrying <paramref name="callerToken"/>.</summary>
+        public Task DispatchCancelledCommand(CancellationToken callerToken)
+            => Dispatcher.Dispatch(new CancelledCommand(), new MessageHandlerContext(callerToken));
+
+        /// <summary>Dispatches a <see cref="CancelledEvent"/> under a context carrying <paramref name="callerToken"/>.</summary>
+        public Task DispatchCancelledEvent(CancellationToken callerToken)
+            => Dispatcher.Dispatch(new CancelledEvent(), new MessageHandlerContext(callerToken));
+
         public void Dispose() => _serviceProvider.Dispose();
+    }
+
+    /// <summary>
+    /// A logger that records every entry at <see cref="LogLevel.Debug"/> or above and signals
+    /// <see cref="CancellationTokenSource"/> on its FIRST <see cref="LogLevel.Error"/> entry, so a test can make the
+    /// caller's token become signalled in the window between a dispatch fault being logged and being marked on
+    /// telemetry.
+    /// </summary>
+    /// <typeparam name="TCategory">The logger category.</typeparam>
+    public sealed class CancelOnFirstErrorLogger<TCategory> : ILogger<TCategory>
+    {
+        private readonly List<(LogLevel level, string message, Exception exception)> _loggedEntries = new List<(LogLevel level, string message, Exception exception)>();
+        private bool _hasSignalledCancellation;
+
+        public CancelOnFirstErrorLogger(CancellationTokenSource cancellationSource)
+        {
+            CancellationSource = cancellationSource ?? throw new ArgumentNullException(nameof(cancellationSource));
+        }
+
+        /// <summary>The source cancelled on the first <see cref="LogLevel.Error"/> entry, and never on any other level.</summary>
+        public CancellationTokenSource CancellationSource { get; }
+
+        /// <summary>Every entry recorded, in the order it was logged.</summary>
+        public IReadOnlyList<(LogLevel level, string message, Exception exception)> LoggedEntries => _loggedEntries;
+
+        public IDisposable BeginScope<TState>(TState state) => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Debug;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            if (!IsEnabled(logLevel))
+            {
+                return;
+            }
+
+            _loggedEntries.Add((logLevel, formatter(state, exception), exception));
+
+            if (logLevel == LogLevel.Error && !_hasSignalledCancellation)
+            {
+                _hasSignalledCancellation = true;
+                CancellationSource.Cancel();
+            }
+        }
     }
 }

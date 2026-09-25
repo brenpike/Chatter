@@ -47,13 +47,13 @@ namespace Chatter.CQRS.Commands
             // and that single state machine exists whether or not diagnostics are on.
             if (!ChatterDiagnostics.IsEnabled)
             {
-                return DispatchToHandler(message, messageHandlerContext);
+                return DispatchToHandler(message, messageHandlerContext, handleFault: true);
             }
 
             return DispatchToHandlerWithDiagnostics(message, messageHandlerContext);
         }
 
-        private async Task DispatchToHandler<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext) where TMessage : IMessage
+        private async Task DispatchToHandler<TMessage>(TMessage message, IMessageHandlerContext messageHandlerContext, bool handleFault) where TMessage : IMessage
         {
             try
             {
@@ -78,9 +78,13 @@ namespace Chatter.CQRS.Commands
 
                 await pipeline.Execute(message, messageHandlerContext, handler).ConfigureAwait(false);
             }
-            catch (Exception e)
+            // INVARIANT: exactly one frame logs a dispatch fault: this one on the diagnostics-off path, the diagnostics
+            // wrapper otherwise. Pinned by WhenDispatching.MustLogTheAsynchronousFaultExactlyOnceWhenDiagnosticsAreEnabled
+            // and WhenChatterTracingIsOptedInto.MustWriteExactlyOneErrorRecordWhenTheCallerTokenIsSignalledOnlyAfterTheCommandFaultWasLoggedAsAnError,
+            // which go red when the handleFault filter is deleted so both frames log.
+            catch (Exception e) when (handleFault)
             {
-                _logger.LogError(e, "Error dispatching command of type '{MessageType}'.", MessageTypeNames<TMessage>.Name);
+                LogDispatchFault<TMessage>(e, messageHandlerContext);
                 throw;
             }
         }
@@ -94,14 +98,29 @@ namespace Chatter.CQRS.Commands
             {
                 try
                 {
-                    await DispatchToHandler(message, messageHandlerContext).ConfigureAwait(false);
+                    await DispatchToHandler(message, messageHandlerContext, handleFault: false).ConfigureAwait(false);
                 }
                 catch (Exception e)
                 {
-                    // INVARIANT: the span status and the metric's error.type come from the same resolver, so the
-                    // two signals can never disagree about how a dispatch failed (ADR-0010 D4).
-                    errorType = ActivityOutcome.ResolveErrorType(e);
-                    ActivityOutcome.RecordFailure(activity, e);
+                    // INVARIANT: the fault is classified once, by LogDispatchFault, and that one verdict decides both the
+                    // log level and whether the span and the metric are marked, so a caller token signalled after the log
+                    // cannot leave an Error record beside an unmarked span or metric. Pinned by
+                    // WhenChatterTracingIsOptedInto.MustMarkTheSpanAsFailedWhenTheCallerTokenIsSignalledOnlyAfterTheCommandFaultWasLoggedAsAnError
+                    // and MustMarkTheMeasurementWithAnErrorTypeWhenTheCallerTokenIsSignalledOnlyAfterTheCommandFaultWasLoggedAsAnError,
+                    // which go red when this catch re-reads CallerRequestedCancellation.Explains instead of consuming
+                    // that verdict. Rationale: ADR-0040.
+                    if (LogDispatchFault<TMessage>(e, messageHandlerContext))
+                    {
+                        // INVARIANT: the span status and the metric's error.type are set together from the same
+                        // resolver, so the two signals cannot disagree about how a dispatch failed (ADR-0010 D4).
+                        // WhenChatterTracingIsOptedInto.MustMarkTheSpanAndTheMeasurementWithTheSameErrorTypeWhenTheHandlerFails
+                        // goes red when errorType is resolved as e.GetType().Name instead; MustLeaveTheSpanStatusUnsetWhenTheCallerCancelledTheCommandDispatch
+                        // and MustNotMarkTheMeasurementWithAnErrorTypeWhenTheCallerCancelledTheCommandDispatch go red
+                        // when this condition is deleted so a caller-requested cancellation marks both.
+                        errorType = ActivityOutcome.ResolveErrorType(e);
+                        ActivityOutcome.RecordFailure(activity, e);
+                    }
+
                     throw;
                 }
                 finally
@@ -109,6 +128,31 @@ namespace Chatter.CQRS.Commands
                     ChatterDiagnostics.RecordDispatchDuration<TMessage>(startTimestamp, ChatterTelemetryTags.DispatchKinds.Command, errorType);
                 }
             }
+        }
+
+        /// <summary>
+        /// Logs a dispatch fault exactly once: at <see cref="LogLevel.Debug"/> when the caller requested the
+        /// cancellation that caused it, at <see cref="LogLevel.Error"/> otherwise.
+        /// </summary>
+        /// <typeparam name="TMessage">The compile-time type of the command being dispatched.</typeparam>
+        /// <param name="fault">The fault the dispatch raised.</param>
+        /// <param name="messageHandlerContext">The context the command was dispatched with.</param>
+        /// <returns><see langword="true"/> when the fault was logged as a dispatch error, which is the only case in
+        /// which telemetry marks the dispatch as failed.</returns>
+        private bool LogDispatchFault<TMessage>(Exception fault, IMessageHandlerContext messageHandlerContext)
+        {
+            // INVARIANT: only a cancellation the caller requested is logged as routine; any other fault, a spontaneous
+            // cancellation included, is logged as an error. The caller's token is read here once per fault and nowhere
+            // else on the fault path. Pinned by WhenDispatching.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller,
+            // which goes red when this condition is replaced by a bare `fault is OperationCanceledException`. Rationale: ADR-0040.
+            if (CallerRequestedCancellation.Explains(fault, messageHandlerContext))
+            {
+                _logger.LogDebug(fault, "Dispatch of command '{MessageType}' was cancelled by the caller.", MessageTypeNames<TMessage>.Name);
+                return false;
+            }
+
+            _logger.LogError(fault, "Error dispatching command of type '{MessageType}'.", MessageTypeNames<TMessage>.Name);
+            return true;
         }
 
         /// <summary>

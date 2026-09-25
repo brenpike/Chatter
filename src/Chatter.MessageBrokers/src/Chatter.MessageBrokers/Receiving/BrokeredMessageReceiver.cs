@@ -1039,6 +1039,21 @@ namespace Chatter.MessageBrokers.Receiving
             {
                 await _receivedMessageDispatcher.DispatchAsync(payload, messageContext, receiverTokenSource);
             }
+            // INVARIANT: a dispatch cancelled because the receiver is shutting down is not a failed dispatch, so it is
+            // logged at Debug, not Error, and rethrown unchanged (ADR-0010 D11; ADR-0040). The filter is
+            // IsShutdownCancellation itself, so the log decision and the diagnostics exemption apply one RULE, not
+            // two that can be changed apart; they can still reach different ANSWERS. Each reader reads the worker
+            // token at its own point, so a token signalled between those reads can still give an Error record with
+            // an unmarked receive — a read race inherited from ADR-0010 D11's readers, ADR-0040 R3; no test pins it.
+            // Pinned by WhenDispatchingReceivedMessage: deleting this clause reddens its two Debug-instead-of-Error
+            // facts; widening the filter to a bare catch (OperationCanceledException) reddens
+            // MustStillLogErrorWhenTheCancellationWasNotRequestedByTheReceiverShutdown; wrapping the rethrow reddens
+            // MustRethrowTheShutdownCancellationUnchanged.
+            catch (Exception e) when (IsShutdownCancellation(e, receiverTokenSource))
+            {
+                _logger.LogDebug(e, "Dispatch of brokered message was cancelled because the receiver is shutting down.");
+                throw;
+            }
             catch (Exception e)
             {
                 _logger.LogError(e, "Error dispatching brokered message to handler(s)");

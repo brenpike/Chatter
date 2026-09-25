@@ -7,6 +7,7 @@ using Moq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -21,6 +22,7 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
 
         private static string _eventHandlerInvokedLogMessage = $"Invoked event handler for '{typeof(IMessage)}'.";
         private static string _eventDispatchFailedLogMessage = $"Error dispatching event of type '{typeof(IMessage).Name}'.";
+        private static string _eventDispatchCancelledLogMessage = $"Dispatch of event '{typeof(IMessage).Name}' was cancelled by the caller.";
 
         public WhenDispatching()
         {
@@ -108,6 +110,52 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         }
 
         [Fact]
+        public async Task MustRethrowACallerRequestedCancellationFromTheFirstHandlerAndLogItOnceAtDebugInsteadOfError()
+        {
+            var cancellingHandler = new Mock<IMessageHandler<IMessage>>();
+            var subsequentHandler = new Mock<IMessageHandler<IMessage>>();
+            var cancellation = ArrangeHandlerThatFaultsAfterAnAwait(cancellingHandler, new OperationCanceledException("The caller cancelled the dispatch."));
+            ArrangeRegisteredHandlers(cancellingHandler.Object, subsequentHandler.Object);
+
+            var thrown = await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, ContextCancelledByTheCaller())).Should().ThrowAsync<OperationCanceledException>();
+
+            thrown.Which.Should().BeSameAs(cancellation);
+            subsequentHandler.Verify(p => p.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>()), Times.Never());
+            _logger.VerifyWasCalled(LogLevel.Debug, _eventDispatchCancelledLogMessage, cancellation, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, times: Times.Never());
+        }
+
+        [Fact]
+        public async Task MustLogACallerRequestedCancellationFromALaterHandlerOnceAtDebugInsteadOfError()
+        {
+            var invokedHandler = new Mock<IMessageHandler<IMessage>>();
+            var cancellingHandler = new Mock<IMessageHandler<IMessage>>();
+            var cancellation = ArrangeHandlerThatFaultsAfterAnAwait(cancellingHandler, new OperationCanceledException("The caller cancelled the dispatch."));
+            ArrangeRegisteredHandlers(invokedHandler.Object, cancellingHandler.Object);
+
+            var thrown = await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, ContextCancelledByTheCaller())).Should().ThrowAsync<OperationCanceledException>();
+
+            thrown.Which.Should().BeSameAs(cancellation);
+            invokedHandler.Verify(p => p.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>()), Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Debug, _eventDispatchCancelledLogMessage, cancellation, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, times: Times.Never());
+        }
+
+        [Fact]
+        public async Task MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller()
+        {
+            var cancellation = ArrangeHandlerThatFaultsAfterAnAwait(_handler, new OperationCanceledException("A spontaneous timeout cancelled the handler."));
+
+            await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, new MessageHandlerContext(CancellationToken.None))).Should().ThrowAsync<OperationCanceledException>();
+
+            _logger.VerifyWasCalled(LogLevel.Error, _eventDispatchFailedLogMessage, cancellation, Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Error, times: Times.Once());
+            _logger.VerifyWasCalled(LogLevel.Debug, times: Times.Never());
+        }
+
+        [Fact]
         public async Task MustRenderAConstructedGenericEventTypeTheWayInterpolationRenderedIt()
         {
             var genericHandler = new Mock<IMessageHandler<GenericEvent<Payload>>>();
@@ -130,6 +178,29 @@ namespace Chatter.CQRS.Tests.Events.UsingEventDispatcher
         {
             _serviceProvider.Setup(p => p.GetService(typeof(IEnumerable<IMessageHandler<IMessage>>))).Throws<Exception>();
             await FluentActions.Invoking(async () => await _sut.Dispatch<IMessage>(null, null)).Should().ThrowAsync<Exception>();
+        }
+
+        private void ArrangeRegisteredHandlers(params IMessageHandler<IMessage>[] handlers)
+            => _serviceProvider.Setup(p => p.GetService(typeof(IEnumerable<IMessageHandler<IMessage>>))).Returns(handlers.TakeWhile(_ => true));
+
+        private static TException ArrangeHandlerThatFaultsAfterAnAwait<TException>(Mock<IMessageHandler<IMessage>> handler, TException failure) where TException : Exception
+        {
+            handler.Setup(h => h.Handle(It.IsAny<IMessage>(), It.IsAny<IMessageHandlerContext>()))
+                .Returns(() => FaultAfterAnAwait(failure));
+            return failure;
+        }
+
+        private static MessageHandlerContext ContextCancelledByTheCaller()
+        {
+            using var cancellationSource = new CancellationTokenSource();
+            cancellationSource.Cancel();
+            return new MessageHandlerContext(cancellationSource.Token);
+        }
+
+        private static async Task FaultAfterAnAwait(Exception failure)
+        {
+            await Task.Yield();
+            throw failure;
         }
 
         public sealed class GenericEvent<T> : IEvent

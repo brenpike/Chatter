@@ -766,6 +766,13 @@ decided:
 - The lost signal is small and is not lost from the system: the receiver already logs the shutdown
   path, and a delivery cancelled at teardown is not settled as failed either — it is left for
   redelivery, which is normal at-least-once behavior, not an error.
+
+  **Amended 2026-09-25 (#453): the receiver's record of a shutdown-cancelled dispatch is now at `Debug`.**
+  `BrokeredMessageReceiver.DispatchReceivedMessageAsync` logs an `OperationCanceledException` or
+  `ObjectDisposedException` raised while its token is signalled at `Debug` instead of `Error`, and rethrows it
+  unchanged. Its filter is this same `IsShutdownCancellation`, so the exemption and the record key on one condition.
+  The exemption decided here is unchanged. Pinned by
+  `WhenDispatchingReceivedMessage.MustLogAShutdownCancelledDispatchAtDebugInsteadOfError`; see ADR-0040.
 - The predicate deliberately **mirrors the ladder's own shutdown-swallow filters**
   (`when (workerToken.IsCancellationRequested)`), so "the ladder swallowed this as benign teardown"
   and "diagnostics did not count it as a failure" are one condition, not two that can drift apart.
@@ -929,6 +936,14 @@ failures worth logging, and silence was never an acceptable price for avoiding o
 consequence, stated plainly: **that state machine now exists whether or not diagnostics are on.** It
 belongs to the dispatch itself, not to the instrumentation, and it is no longer something the off
 path can be described as avoiding.
+
+**Amended 2026-09-25 (#453): the `CommandDispatcher` citation above is re-measured.** Deciding a dispatch
+fault once, so that the log and the telemetry cannot read the caller's token separately, moved the line
+ranges the paragraph above cites. `Dispatch` is unchanged at `:40-54`; `DispatchToHandler` is now at
+`:56-90`, having gained a `handleFault` filter on its `catch` and a call to the private `LogDispatchFault`
+that classifies the fault. Nothing the amendment above decides changes — the uninstrumented dispatch is
+still `async`, and that state machine still exists whether or not diagnostics are on. Only the line numbers
+move. See ADR-0040.
 
 R4's INTENT is unchanged and is still enforced by the off-guard: `Dispatch` evaluates
 `ChatterDiagnostics.IsEnabled` before any argument is constructed and returns the uninstrumented
