@@ -1165,6 +1165,33 @@ guard is not pinned: `MustNotAllocateWhileRecordingADispatchDurationForARuntimeT
 type name is read above the guard or the guard is deleted, as the `INVARIANT:` in `Diagnostics/ChatterDiagnostics.cs`
 says.
 
+**Amended 2026-09-25 (#529): recorded residual — a throwing telemetry listener callback escapes the instrumentation
+boundary at all four dispatch seams.** Local review raised, at HIGH (finding `76b1beb2`), that `CommandDispatcher`,
+`EventDispatcher` and both `QueryDispatcher` overloads call `ChatterDiagnostics.StartDispatch` before entering the
+protected body and `RecordDispatchDuration` in a `finally` inside the `using`, so the BCL runs an application's
+`ActivityListener` / `MeterListener` callbacks — the sampling callback, `Activity.Dispose`, `Histogram.Record` — on the
+dispatch's own call path with no exception isolation. A callback that throws therefore surfaces out of the dispatch,
+and one that throws after the handler has already succeeded reports a completed dispatch as a failed one. The finding
+is accurate about the mechanism. It is recorded here rather than fixed, and the record covers all four seams because
+the exposure is identical at each and the query seams inherited it.
+
+- **It is inherited, not introduced.** The query seams are byte-for-byte the shipped command and event pattern, and two
+  of the four sites are on `master`, outside this branch's diff. It is the .NET platform contract:
+  `ActivitySource.StartActivity`, `Activity.Dispose` and `Histogram.Record` all invoke listener delegates without
+  isolation, and no instrumented .NET library guards them.
+- **The impact is bounded.** Telemetry is opt-in (D1, D3), so reaching this at all takes an application-authored
+  `ActivityListener` or `MeterListener` on a `Chatter.*` source or meter whose callback throws; the OpenTelemetry SDK
+  does not throw into instrumented code. Such a listener fails every traced dispatch immediately and breaks every other
+  instrumented .NET operation in the process too, so it is loud and is caught in development. The quiet shape — a
+  successful dispatch reported as failed and then retried — needs a listener that throws only intermittently, and a
+  broker-delivered retry is already deduplicated by the inbox marker.
+- **The obvious remediation was considered and rejected on the merits.** Swallowing the callback's exception hides the
+  consumer's own broken listener and discards the telemetry it was meant to produce, spends on-path cost against the
+  budget this whole section defends, and contradicts the fail-loud posture recorded in ADR-0009 (D2). No instrumented
+  .NET library does it, and guarding only the seams this branch touched would leave the four seams inconsistent.
+- **Revisit trigger:** a report from a consumer actually affected by it. The guard then goes on all four seams
+  together, never on one of them.
+
 ## Propagation scope
 
 Propagation is bounded and stated honestly. Both limitations below are **PRE-EXISTING**, affect
