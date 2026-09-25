@@ -43,7 +43,12 @@ namespace Chatter.CQRS.Events
         /// broker-delivered event is passed to <c>LogError</c> at least twice: once by <c>EventDispatcher</c> and at
         /// least once more by <c>BrokeredMessageReceiver</c>. When an event is dispatched directly through
         /// <see cref="IMessageDispatcher"/>, with no receiver around the dispatch, the dispatcher's one
-        /// <c>LogError</c> call is the only one Chatter makes for that dispatch. These count the calls Chatter makes,
+        /// <c>LogError</c> call is the only one Chatter makes for that dispatch. A cancellation the caller requested —
+        /// an <see cref="OperationCanceledException"/> raised while the token on <paramref name="messageHandlerContext"/>
+        /// is signalled — is not a failed dispatch: the dispatcher makes one <c>LogDebug</c> call for it in place of
+        /// the <c>LogError</c> call and rethrows it unchanged (ADR-0040). <c>BrokeredMessageReceiver</c> already stays
+        /// silent for a cancellation raised once its receive loop is being stopped: it swallows the exception without
+        /// logging it (ADR-0010 D11). These count the calls Chatter makes,
         /// not the records an application sees: whether a call produces a record, and how many, is decided by the log
         /// levels and logging providers the application configures.
         /// Handlers are resolved from the service provider by event type, not by the delivery that triggered the
@@ -83,6 +88,15 @@ namespace Chatter.CQRS.Events
                         _logger.LogTrace("Invoked event handler for '{MessageType}'.", MessageTypeNames<TMessage>.Display);
                     }
                 }
+            }
+            // INVARIANT: only a cancellation the caller requested is logged as routine; any other fault, a spontaneous
+            // cancellation included, falls through to the Error record. Pinned by
+            // WhenDispatching.MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller, which goes red when the
+            // filter is widened to catch (OperationCanceledException) with no predicate. Rationale: ADR-0040.
+            catch (OperationCanceledException e) when (CallerRequestedCancellation.Explains(e, messageHandlerContext))
+            {
+                _logger.LogDebug(e, "Dispatch of event '{MessageType}' was cancelled by the caller.", MessageTypeNames<TMessage>.Name);
+                throw;
             }
             catch (Exception e)
             {
