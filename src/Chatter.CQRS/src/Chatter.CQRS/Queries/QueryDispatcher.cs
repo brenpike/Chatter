@@ -52,17 +52,77 @@ namespace Chatter.CQRS.Queries
 			=> Query<TResult>(query, new QueryHandlerContext());
 		
 		///<inheritdoc/>
-		public async Task<TResult> Query<TResult>(IQuery<TResult> query, IQueryHandlerContext queryHandlerContext)
+		public Task<TResult> Query<TResult>(IQuery<TResult> query, IQueryHandlerContext queryHandlerContext)
         {
+            // INVARIANT: ADR-0010 R1/R4 as Query<TQuery, TResult> applies them below. No test pins this for query
+            // dispatch.
+            if (!ChatterDiagnostics.IsEnabled)
+            {
+                return DispatchByRuntimeType(query, queryHandlerContext);
+            }
+
+            return DispatchByRuntimeTypeWithDiagnostics(query, queryHandlerContext);
+        }
+
+        private async Task<TResult> DispatchByRuntimeType<TResult>(IQuery<TResult> query, IQueryHandlerContext queryHandlerContext)
+        {
+            // INVARIANT: the runtime query type is read once, as the first statement of each dispatch path and
+            // outside its try, so a null query faults the returned Task with a NullReferenceException that is not
+            // logged. Pinned by WhenDispatchingStrongTypedQuery.MustFaultTheReturnedTaskWithANullReferenceExceptionAndLogNothingWhenTheQueryIsNull,
+            // which goes red when the read moves up into the synchronous Query<TResult> entry so the call itself
+            // throws. It is the read the invoker cache key needs anyway; no test pins that it costs nothing more.
+            var queryType = query.GetType();
+
             try
             {
-                var invoker = GetOrAddInvoker<TResult>(query.GetType());
+                var invoker = GetOrAddInvoker<TResult>(queryType);
                 return await invoker.Invoke(_serviceProvider, query, queryHandlerContext);
             }
             catch (Exception e)
             {
-                LogDispatchFault(e, query.GetType(), queryHandlerContext);
+                LogDispatchFault(e, queryType, queryHandlerContext);
                 throw;
+            }
+        }
+
+        private async Task<TResult> DispatchByRuntimeTypeWithDiagnostics<TResult>(IQuery<TResult> query, IQueryHandlerContext queryHandlerContext)
+        {
+            var queryType = query.GetType();
+            var startTimestamp = Stopwatch.GetTimestamp();
+            string errorType = null;
+            Activity activity = null;
+            QueryInvoker<TResult> invoker = null;
+
+            try
+            {
+                // INVARIANT: the invoker is resolved inside the try, so a fault building it is logged exactly once and
+                // rethrown unchanged; such a fault precedes the query's telemetry identity, so it emits no span and no
+                // measurement. Pinned by WhenChatterTracingIsOptedInto.MustLogTheFaultOnceAndEmitNoSpanAndNoMeasurementWhenNoInvokerCanBeBuiltForTheRuntimeQueryType
+                // and, off the diagnostics path, WhenDispatchingStrongTypedQuery.MustLogTheFaultOnceAndRethrowItUnchangedWhenNoInvokerCanBeBuiltForTheRuntimeQueryType,
+                // which go red when GetOrAddInvoker is hoisted above the try.
+                invoker = GetOrAddInvoker<TResult>(queryType);
+                activity = invoker.StartDispatch();
+                return await invoker.Invoke(_serviceProvider, query, queryHandlerContext);
+            }
+            catch (Exception e)
+            {
+                // INVARIANT: one verdict and one error-type resolver, exactly as in DispatchToHandlerWithDiagnostics.
+                // Pinned here by WhenChatterTracingIsOptedInto.MustMarkTheSpanAndTheMeasurementWithTheSameErrorTypeWhenAQueryDispatchedByItsRuntimeTypeFails,
+                // red when errorType is resolved as e.GetType().Name, and
+                // MustLeaveTheSpanStatusUnsetAndRecordNoErrorTypeWhenTheCallerCancelledAQueryDispatchedByItsRuntimeType,
+                // red when this condition is deleted. Rationale: ADR-0040, ADR-0010 D4.
+                if (LogDispatchFault(e, queryType, queryHandlerContext))
+                {
+                    errorType = ActivityOutcome.ResolveErrorType(e);
+                    ActivityOutcome.RecordFailure(activity, e);
+                }
+
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+                invoker?.RecordDispatchDuration(startTimestamp, errorType);
             }
         }
 
@@ -182,6 +242,19 @@ namespace Chatter.CQRS.Queries
         private abstract class QueryInvoker<TResult>
         {
             internal abstract Task<TResult> Invoke(IServiceProvider serviceProvider, IQuery<TResult> query, IQueryHandlerContext queryHandlerContext);
+
+            /// <summary>
+            /// Starts the dispatch span named after the runtime query type this invoker was built for.
+            /// </summary>
+            /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
+            internal abstract Activity StartDispatch();
+
+            /// <summary>
+            /// Records the dispatch duration tagged with the runtime query type this invoker was built for.
+            /// </summary>
+            /// <param name="startTimestamp">The <see cref="Stopwatch.GetTimestamp"/> value read when dispatch began.</param>
+            /// <param name="errorType">The error type of a failed dispatch, or <c>null</c>.</param>
+            internal abstract void RecordDispatchDuration(long startTimestamp, string errorType);
         }
 
         /// <summary>
@@ -197,6 +270,17 @@ namespace Chatter.CQRS.Queries
                 var handler = serviceProvider.GetRequiredService<IQueryHandler<TQuery, TResult>>();
                 return handler.Handle((TQuery)query, queryHandlerContext);
             }
+
+            // INVARIANT: the telemetry identity is TQuery, the runtime query type the handler was resolved by, never
+            // the IQuery<TResult> the caller dispatched through. Pinned by
+            // WhenChatterTracingIsOptedInto.MustNameTheSpanAfterTheRuntimeQueryTypeWhenDispatchedByItsResultTypeAlone and
+            // MustRecordTheDispatchDurationForAQueryDispatchedByItsRuntimeType, which go red when the span or the
+            // measurement is emitted for the compile-time IQuery<TResult> type argument instead.
+            internal override Activity StartDispatch()
+                => ChatterDiagnostics.StartDispatch<TQuery>(ChatterTelemetryTags.DispatchKinds.Query);
+
+            internal override void RecordDispatchDuration(long startTimestamp, string errorType)
+                => ChatterDiagnostics.RecordDispatchDuration<TQuery>(startTimestamp, ChatterTelemetryTags.DispatchKinds.Query, errorType);
         }
     }
 }

@@ -55,6 +55,12 @@ namespace Chatter.CQRS.Tests.Diagnostics
     /// <summary>A Query whose handler always faults with an <see cref="OperationCanceledException"/>.</summary>
     public sealed class CancelledQuery : IQuery<string> { }
 
+    /// <summary>
+    /// A value-type Query, so a dispatch by its runtime type faults while the dispatcher builds its invoker, before
+    /// any handler is resolved: the invoker constrains its query type to a reference type.
+    /// </summary>
+    public struct ValueTypeQuery : IQuery<string> { }
+
     /// <summary>The exception a <see cref="ThrowingMessageHandler{TMessage}"/> raises.</summary>
     public sealed class DiagnosticsProbeException : Exception
     {
@@ -264,6 +270,22 @@ namespace Chatter.CQRS.Tests.Diagnostics
         /// <summary>Dispatches a <see cref="CancelledQuery"/> under a context carrying <paramref name="callerToken"/>.</summary>
         public Task<string> QueryCancelled(CancellationToken callerToken)
             => QueryDispatcher.Query<CancelledQuery, string>(new CancelledQuery(), new QueryHandlerContext(callerToken));
+
+        /// <summary>Dispatches a <see cref="TracedQuery"/> by its runtime type, the dispatch seeing only <see cref="IQuery{TResult}"/>.</summary>
+        public Task<string> QueryTracedByItsRuntimeType() => QueryByItsRuntimeType(new TracedQuery(), new QueryHandlerContext());
+
+        /// <summary>Dispatches a <see cref="FailingQuery"/> by its runtime type, the dispatch seeing only <see cref="IQuery{TResult}"/>.</summary>
+        public Task<string> QueryFailingByItsRuntimeType() => QueryByItsRuntimeType(new FailingQuery(), new QueryHandlerContext());
+
+        /// <summary>Dispatches a <see cref="CancelledQuery"/> by its runtime type under a context carrying <paramref name="callerToken"/>.</summary>
+        public Task<string> QueryCancelledByItsRuntimeType(CancellationToken callerToken)
+            => QueryByItsRuntimeType(new CancelledQuery(), new QueryHandlerContext(callerToken));
+
+        /// <summary>Dispatches a <see cref="ValueTypeQuery"/> by its runtime type, the dispatch seeing only <see cref="IQuery{TResult}"/>.</summary>
+        public Task<string> QueryValueTypeByItsRuntimeType() => QueryByItsRuntimeType(new ValueTypeQuery(), new QueryHandlerContext());
+
+        private Task<string> QueryByItsRuntimeType(IQuery<string> query, IQueryHandlerContext queryHandlerContext)
+            => QueryDispatcher.Query<string>(query, queryHandlerContext);
 
         public void Dispose() => _serviceProvider.Dispose();
     }

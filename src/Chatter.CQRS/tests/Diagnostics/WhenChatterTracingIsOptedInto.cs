@@ -565,6 +565,110 @@ namespace Chatter.CQRS.Tests.Diagnostics
             }
         }
 
+        [Fact]
+        public async Task MustNameTheSpanAfterTheRuntimeQueryTypeWhenDispatchedByItsResultTypeAlone()
+        {
+            using (var activityScope = new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+            {
+                await _harness.QueryTracedByItsRuntimeType();
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.OperationName.Should().Be("dispatch " + nameof(TracedQuery));
+                span.GetTagItem(ChatterTelemetryTags.MessageType).Should().Be(typeof(TracedQuery).FullName)
+                    .And.NotBe(typeof(IQuery<string>).FullName);
+                span.GetTagItem(ChatterTelemetryTags.DispatchKind).Should().Be(ChatterTelemetryTags.DispatchKinds.Query);
+                span.GetTagItem(ChatterTelemetryTags.ErrorType).Should().BeNull();
+                span.Status.Should().Be(ActivityStatusCode.Unset);
+                _harness.QueryHandler.AmbientActivityWhileHandling.Should().BeSameAs(span);
+            }
+        }
+
+        [Fact]
+        public async Task MustRecordTheDispatchDurationForAQueryDispatchedByItsRuntimeType()
+        {
+            using (var meterScope = new RecordingMeterScope(ChatterDiagnostics.MeterName))
+            {
+                await _harness.QueryTracedByItsRuntimeType();
+
+                var measurement = meterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().ContainSingle().Subject;
+                measurement.Value.Should().BeGreaterThanOrEqualTo(0d);
+                ResolveTag(measurement, ChatterTelemetryTags.MessageType).Should().Be(typeof(TracedQuery).FullName);
+                ResolveTag(measurement, ChatterTelemetryTags.DispatchKind).Should().Be(ChatterTelemetryTags.DispatchKinds.Query);
+                measurement.TryGetTag(ChatterTelemetryTags.ErrorType, out _).Should().BeFalse();
+            }
+        }
+
+        [Fact]
+        public async Task MustMarkTheSpanAndTheMeasurementWithTheSameErrorTypeWhenAQueryDispatchedByItsRuntimeTypeFails()
+        {
+            var expectedFailure = _harness.FailingQueryHandler.Failure;
+
+            using (var activityScope = new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+            using (var meterScope = new RecordingMeterScope(ChatterDiagnostics.MeterName))
+            {
+                var thrown = await FluentActions.Invoking(async () => await _harness.QueryFailingByItsRuntimeType())
+                    .Should().ThrowAsync<DiagnosticsProbeException>();
+
+                thrown.Which.Should().BeSameAs(expectedFailure);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.OperationName.Should().Be("dispatch " + nameof(FailingQuery));
+                span.Status.Should().Be(ActivityStatusCode.Error);
+                span.StatusDescription.Should().Be(expectedFailure.Message);
+                span.GetTagItem(ChatterTelemetryTags.ErrorType).Should().Be(typeof(DiagnosticsProbeException).FullName);
+
+                var measurement = meterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().ContainSingle().Subject;
+                ResolveTag(measurement, ChatterTelemetryTags.MessageType).Should().Be(typeof(FailingQuery).FullName);
+                ResolveTag(measurement, ChatterTelemetryTags.ErrorType).Should().Be(typeof(DiagnosticsProbeException).FullName);
+            }
+        }
+
+        [Fact]
+        public async Task MustLeaveTheSpanStatusUnsetAndRecordNoErrorTypeWhenTheCallerCancelledAQueryDispatchedByItsRuntimeType()
+        {
+            using (var activityScope = new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+            using (var meterScope = new RecordingMeterScope(ChatterDiagnostics.MeterName))
+            {
+                var thrown = await FluentActions.Invoking(async () => await _harness.QueryCancelledByItsRuntimeType(CallerCancelledToken))
+                    .Should().ThrowAsync<OperationCanceledException>();
+
+                thrown.Which.Should().BeSameAs(_harness.CancelledQueryHandler.Failure);
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                span.OperationName.Should().Be("dispatch " + nameof(CancelledQuery));
+                span.Status.Should().Be(ActivityStatusCode.Unset);
+                span.GetTagItem(ChatterTelemetryTags.ErrorType).Should().BeNull();
+
+                var measurement = meterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().ContainSingle().Subject;
+                ResolveTag(measurement, ChatterTelemetryTags.MessageType).Should().Be(typeof(CancelledQuery).FullName);
+                measurement.TryGetTag(ChatterTelemetryTags.ErrorType, out _).Should().BeFalse();
+            }
+        }
+
+        [Fact]
+        public async Task MustLogTheFaultOnceAndEmitNoSpanAndNoMeasurementWhenNoInvokerCanBeBuiltForTheRuntimeQueryType()
+        {
+            using (var unusedCancellation = new CancellationTokenSource())
+            {
+                var dispatcherLogger = new CancelOnFirstErrorLogger<QueryDispatcher>(unusedCancellation);
+
+                using (var harness = new DiagnosticsDispatchHarness(queryDispatcherLogger: dispatcherLogger))
+                using (var activityScope = new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+                using (var meterScope = new RecordingMeterScope(ChatterDiagnostics.MeterName))
+                {
+                    var thrown = await FluentActions.Invoking(async () => await harness.QueryValueTypeByItsRuntimeType())
+                        .Should().ThrowAsync<ArgumentException>();
+
+                    var loggedEntry = dispatcherLogger.LoggedEntries.Should().ContainSingle().Subject;
+                    loggedEntry.level.Should().Be(LogLevel.Error);
+                    loggedEntry.message.Should().Be($"Error dispatching query of type '{nameof(ValueTypeQuery)}'");
+                    loggedEntry.exception.Should().BeSameAs(thrown.Which);
+                    activityScope.StoppedActivities.Should().BeEmpty();
+                    meterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().BeEmpty();
+                }
+            }
+        }
+
         private static CancellationToken CallerCancelledToken => new CancellationToken(canceled: true);
 
         private Task DispatchCancelledCommandExpectingTheHandlerFault(CancellationToken callerToken)
