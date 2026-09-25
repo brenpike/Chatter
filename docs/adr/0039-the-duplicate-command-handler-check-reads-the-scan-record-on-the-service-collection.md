@@ -210,7 +210,8 @@ the one member that the public `IChatterBuilder` contract obliges every implemen
 So a second `AddChatterCqrs` call, a builder from an earlier call, and a forwarding wrapper all reach the same record.
 And on the recorded path nothing enumerates the filter a second time, so no provider behaviour and no assembly load or
 unload between registration and the check can make them disagree. Both the growth and the shrink direction ADR-0017
-records are closed on that path.
+records are closed on that path. What the record fixes is the assembly SET, not the type set inside each assembly; R7
+records the one way that distinction still shows.
 
 **ELIMINATED CLASS: "a collection's recorded scan set depends on what happened to some other collection"**, with its
 sub-class **"which of a collection's record descriptors is authoritative"**. Any mutable state reachable through a
@@ -299,6 +300,29 @@ These are decisions, not open work, and no issues are filed for them.
   selective copying; a wholesale copy carries every registration the record describes, so its record is exact. Why
   not closed: making the probe agree with what the collection holds means cross-checking the application's
   collection, which R1 already rejects. Linked finding: F3.
+- **R6: the record descriptor holds an `Assembly` reference for every assembly the scan covered, whether or not that
+  assembly held a handler, and it does so on the default path.** Root cause: `Record` runs on every `AddChatterCqrs`
+  call (`CqrsExtensions.cs:52`) because that call cannot know whether the opt-in check will follow, which is the same
+  reason Option B is rejected. Impact: bounded, and mostly already paid. An assembly that yielded a handler is already
+  held for the collection's lifetime by the handler registration's own `ImplementationType`, so the record adds
+  retention only for scanned assemblies that yielded nothing, and only for as long as the collection or a provider
+  built from it lives. It does not grow per call: the write forks a deduplicated union, so the set is bounded by the
+  distinct assemblies the filter has yielded, not by the number of calls. The consequence to name plainly is that a
+  collectible `AssemblyLoadContext` whose assemblies were scanned but held no handler is now kept alive by the record
+  where it previously was not. Why not closed: the two obvious remediations are Options G and D, both rejected above —
+  moving the bookkeeping out of the collection reintroduces hidden process-wide state that a descriptor copy loses,
+  and making the write conditional on the check requires knowing at `AddChatterCqrs` time whether the check will be
+  called. Linked finding: local review iteration 3, `fd452d21`.
+- **R7: an assembly already in the record can gain a handler type after registration, and the probe will see it.**
+  Root cause: the record fixes the assembly set, and both the registration scan and the probe re-enumerate each
+  assembly's loadable types through Scrutor, so the probe reads the types those assemblies hold when the check runs.
+  Impact: bounded to a consumer that supplies a mutable `AssemblyBuilder` explicitly and defines a competing command
+  handler into it between `AddChatterCqrs` and the check; for every assembly a consumer can reach through the public
+  overloads the type set is fixed once loaded. In that case the check can name a handler the registration scan never
+  observed, which is the #468 shape narrowed from assembly-set drift to type-set drift within a recorded assembly. Why
+  not closed: recording the handler candidates rather than the assemblies is Option B, rejected above on the cost of a
+  second full scan on a path where the feature is off by default. Linked finding: local review iteration 3,
+  `d51e8780`.
 
 ## References
 
