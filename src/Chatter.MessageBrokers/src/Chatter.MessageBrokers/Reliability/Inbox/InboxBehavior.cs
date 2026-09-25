@@ -23,10 +23,15 @@ namespace Chatter.MessageBrokers.Reliability.Inbox
         {
             _logger.LogDebug($"Entering {nameof(InboxBehavior<TMessage>)}");
 
-            // INVARIANT: only the Delivery Entry - the message this delivery admitted first - is received via the
-            // inbox; every other command dispatched on the same broker context (nested in-process dispatch
-            // inherits it) goes straight to next(), because the entry's handler already holds the delivery's
-            // message id (ADR-0041). Pinned by WhenHandling: restoring the bare `is IMessageBrokerContext` gate
+            // INVARIANT: only the Delivery Entry - the message the current receive attempt admitted first - is received
+            // via the inbox; every other command dispatched on the same broker context in that attempt (nested
+            // in-process dispatch inherits it) goes straight to next(), because the entry's handler already holds the
+            // delivery's message id (ADR-0041). The entry is attempt-scoped: the receiver installs a fresh one at the
+            // start of every Recovery attempt (BrokeredMessageReceiver.BeginReceiveAttempt), so a retry that constructs
+            // a fresh command is gated again; GetOrNew still creates one lazily for a dispatch that never passed that
+            // seam. Pinned by WhenGatingTheInboxAcrossRecoveryAttempts: deleting the Include in BeginReceiveAttempt
+            // reddens MustGateTheFirstCommandOfEveryRecoveryAttemptWhenTheHandlerBuildsAFreshOne and
+            // MustGateTheFirstCommandOfEveryAttemptWhenAReceiverOverridesTheDispatch. Pinned by WhenHandling: restoring the bare `is IMessageBrokerContext` gate
             // reddens MustInvokeTheNestedHandlerWhenAGatedHandlersOwnDispatchReEntersTheBehavior,
             // MustReceiveViaInboxOnlyTheMessageTheDeliveryAdmitted and
             // MustInvokeTheHandlerOfASiblingDispatchedAfterTheAdmittedMessageCompleted; binding on a first-call flag
