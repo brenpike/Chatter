@@ -230,6 +230,12 @@ var correlationId = inbound?.CorrelationId;
 var transaction = context.GetTransactionContext();
 ```
 
+### Inbound header trust
+
+Chatter does not authenticate an inbound message's Message Context. The receiving transport overwrites a few entries with values only it knows, such as which transport the message arrived on, but every other entry is whatever the sender wrote: the correlation id, subject, group id, reply-to address, Routing Slip, trace context and your own entries alike. Use these values for correlation and diagnostics, never as an authorization input or as proof of who sent the message. Grant send rights on the queues, topics and services you receive from only to principals you already trust to invoke your handlers.
+
+Inbound values also travel onward. `context.Send`, `context.Publish` and every `IBrokeredMessageDispatcher` overload that takes an `IMessageHandlerContext` copy the entire inbound Message Context onto each outbound message, and options you pass override inherited entries key by key. `Forward` and `IReplyRouter` re-send the inbound message itself, carrying its Message Context. A dispatcher call that passes a `TransactionContext` or no context carries only the options you pass, and so does a Routing Slip send, plus the slip.
+
 ## Sending and publishing
 
 `IBrokeredMessageDispatcher` is the single outbound surface. It combines `IBrokeredMessageSender` (`Send` a command), `IBrokeredMessagePublisher` (`Publish` one event or a batch) and `IBrokeredMessageForwarder` (`Forward` a received message to a new destination). Inject it anywhere:
@@ -253,7 +259,7 @@ await context.Publish(new OrderPlaced { OrderId = message.OrderId }, "order-even
 await context.InMemory().Dispatch(new ReserveStock { OrderId = message.OrderId });
 ```
 
-`context.Send` and `context.Publish` do nothing when the context holds no brokered dispatcher, which happens only if `AddMessageBrokers` was not called. `context.InMemory().Dispatch(...)` dispatches in-process on the caller's own Message Context, so await each nested dispatch before starting the next.
+`context.Send` and `context.Publish` copy the entire inbound Message Context onto each outbound message, and options you pass win over inherited entries; see [Inbound header trust](#inbound-header-trust). They do nothing when the context holds no brokered dispatcher, which happens only if `AddMessageBrokers` was not called. `context.InMemory().Dispatch(...)` dispatches in-process on the caller's own Message Context, so await each nested dispatch before starting the next.
 
 ### Send options
 
@@ -345,6 +351,8 @@ await dispatcher.Send(new PlaceOrder { OrderId = id }, slip);
 ```
 
 Inside a handler, `context.Send(command, slip)` does the same, `context.Forward(slip)` forwards the inbound message to the slip's next step, and `context.TryGetRoutingSlip(out var slip)` reads the slip and its `Attachments`. `SendOptions.WithRoutingSlip(slip)` attaches a slip to options you already have.
+
+`RoutingSlipBehavior` follows the slip an inbound message carries exactly as the sender wrote it, and `context.TryGetRoutingSlip` returns that inbound slip ahead of any slip your application added. The behavior sends the handled command to the step that slip names next, using your application's own broker credentials. Add it only in services whose queues accept messages solely from senders you trust to choose that destination; see [Inbound header trust](#inbound-header-trust).
 
 ### Forwarding and replies
 

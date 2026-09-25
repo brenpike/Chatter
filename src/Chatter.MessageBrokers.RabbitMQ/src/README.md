@@ -211,7 +211,7 @@ The Chatter.MessageBrokers retry and circuit breaker policies treat these errors
 
 ### From a handler
 
-Handlers send Commands and publish Events through the `Send` and `Publish` extensions on `IMessageHandlerContext` (namespace `Chatter.CQRS.Context`). The destination path is a queue name unless you route through an exchange (see [Addressing](#addressing)).
+Handlers send Commands and publish Events through the `Send` and `Publish` extensions on `IMessageHandlerContext` (namespace `Chatter.CQRS.Context`). The destination path is a queue name unless you route through an exchange (see [Addressing](#addressing)). The outbound message inherits the inbound Message Context. Chatter does not authenticate inherited values; see [Inbound header trust](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#inbound-header-trust).
 
 ```csharp
 using Chatter.CQRS;

@@ -205,7 +205,7 @@ The transaction mode decides how messages are received. `TransactionMode.None` r
 
 ### From a handler
 
-Handlers send Commands and publish Events through the `Send` and `Publish` extensions on `IMessageHandlerContext` (namespace `Chatter.CQRS.Context`). The outbound message inherits the inbound message context; see [Inbound context inheritance](#inbound-context-inheritance).
+Handlers send Commands and publish Events through the `Send` and `Publish` extensions on `IMessageHandlerContext` (namespace `Chatter.CQRS.Context`). The outbound message inherits the entire inbound message context; see [Inbound context inheritance](#inbound-context-inheritance).
 
 ```csharp
 using Chatter.CQRS;
@@ -316,7 +316,7 @@ options.WithMessageContext(ASBMessageContext.PartitionKey, id.ToString());
 
 ### Inbound context inheritance
 
-A handler that sends or publishes through `IMessageHandlerContext` inherits the inbound message context. The outbound message carries the inbound `CorrelationId`, `Subject`, `ReplyTo`, `ReplyToSessionId`, `To`, `TimeToLive` and Group Id, so a message received in a session is sent with the same `SessionId`. On a plain queue or topic an inherited Group Id has no effect; on a session-enabled or partitioned destination it does.
+A handler that sends or publishes through `IMessageHandlerContext` inherits the entire inbound message context: every application property on the inbound message, plus the values the receiver sets from the delivery. That includes the `CorrelationId`, `Subject`, `ReplyTo`, `ReplyToSessionId`, `To`, `TimeToLive` and Group Id, so a message received in a session is sent with the same `SessionId`. On a plain queue or topic an inherited Group Id has no effect; on a session-enabled or partitioned destination it does. Chatter does not authenticate any of these values; see [Inbound header trust](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#inbound-header-trust).
 
 To opt out, supply your own Group Id on the outbound options, because options you supply win the merge. Alternatively, send through the `IBrokeredMessageDispatcher` overload that takes a `TransactionContext` instead of an `IMessageHandlerContext`; that overload does not merge the inbound context.
 

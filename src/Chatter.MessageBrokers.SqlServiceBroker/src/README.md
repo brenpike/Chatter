@@ -350,7 +350,7 @@ Send with all three keys set, as in the [Quick start](#quick-start), so the rece
 
 ### From a handler
 
-A send or publish from a handler inherits the inbound Message Context, including these keys. Without explicit keys, it begins its dialog from the service the message arrived on, with the same contract and message type. Options you supply win over inherited values.
+A send or publish from a handler inherits the entire inbound Message Context, including these keys. Without explicit keys, it begins its dialog from the service the message arrived on, with the same contract and message type. Options you supply win over inherited values. The receiver sets these keys and a few others itself; the rest are whatever the sender wrote in the Chatter envelope, and Chatter does not authenticate them; see [Inbound header trust](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#inbound-header-trust).
 
 ```csharp
 using Chatter.CQRS;
