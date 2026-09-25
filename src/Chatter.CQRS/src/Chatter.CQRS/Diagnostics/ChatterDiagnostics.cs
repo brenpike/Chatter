@@ -77,7 +77,7 @@ namespace Chatter.CQRS.Diagnostics
         /// <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/> scope or the listener
         /// declined to sample.
         /// </summary>
-        /// <typeparam name="TMessage">The compile-time type of the message being dispatched.</typeparam>
+        /// <typeparam name="TMessage">The type the dispatch is instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams, and, at the query overload that takes an <c>IQuery</c> of the result type alone, the runtime query type the handler was resolved by, which the cached invoker closes this parameter over (ADR-0010 D4).</typeparam>
         /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
         /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
         public static Activity StartDispatch<TMessage>(string dispatchKind)
@@ -95,7 +95,7 @@ namespace Chatter.CQRS.Diagnostics
         /// <summary>
         /// Records the duration of a dispatch of <typeparamref name="TMessage"/>, in seconds.
         /// </summary>
-        /// <typeparam name="TMessage">The compile-time type of the message that was dispatched.</typeparam>
+        /// <typeparam name="TMessage">The type the dispatch was instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams, and, at the query overload that takes an <c>IQuery</c> of the result type alone, the runtime query type the handler was resolved by, which the cached invoker closes this parameter over (ADR-0010 D4).</typeparam>
         /// <param name="startTimestamp">The <see cref="Stopwatch.GetTimestamp"/> value read when dispatch began.</param>
         /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
         /// <param name="errorType">The value for <see cref="ChatterTelemetryTags.ErrorType"/>, or <c>null</c> when the dispatch succeeded.</param>
@@ -158,7 +158,7 @@ namespace Chatter.CQRS.Diagnostics
         /// <summary>
         /// Names computed once per closed generic, so a dispatch never builds a span name or a type name.
         /// </summary>
-        /// <typeparam name="TMessage">The compile-time type of the message being dispatched.</typeparam>
+        /// <typeparam name="TMessage">The type the dispatch is instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams, and, at the query overload that takes an <c>IQuery</c> of the result type alone, the runtime query type the handler was resolved by, which the cached invoker closes this parameter over (ADR-0010 D4).</typeparam>
         private static class DispatchNames<TMessage>
         {
             internal static readonly string MessageTypeName = typeof(TMessage).FullName;

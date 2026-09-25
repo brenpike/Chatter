@@ -309,6 +309,34 @@ dispatch is now instrumented with the same Chatter-native attributes as command 
   rethrown unchanged with no span and no measurement. Pinned by
   `WhenChatterTracingIsOptedInto.MustLogTheFaultOnceAndEmitNoSpanAndNoMeasurementWhenNoInvokerCanBeBuiltForTheRuntimeQueryType`.
 
+**Recorded residual: the query identity is a caller-supplied runtime type, so `chatter.message.type` carries that
+type's cardinality out of the process.** Local review raised, at HIGH, that `Query<TResult>(IQuery<TResult>)` keys
+`chatter.message.type` and the span name on `query.GetType()`, so an application that dispatches many distinct
+runtime query types creates that many metric series and span identities in whatever collector it attached. The
+finding is accurate about the mechanism, and it is recorded here rather than fixed, for four reasons.
+
+- **It is inherited, not introduced.** `chatter.message.type` has been a dimension on command and event dispatch
+  since this decision shipped, and a message type has always been the value. Query dispatch is a third consumer of
+  the same dimension, not a new kind of key.
+- **The value set is the application's own.** A dispatch that succeeds resolved `IQueryHandler<TQuery, TResult>`
+  from the container, so its type was registered by the application; a dispatch that fails emits the type the
+  application chose to dispatch. `Chatter.CQRS` is an in-process API whose caller IS the application — no wire
+  value, no header and no broker payload reaches this seam, so there is no untrusted input to bound. An application
+  that synthesises query types at runtime already grows `QueryDispatcher._invokers` without eviction, which
+  ADR-0013 accepts and documents; what this decision adds is that the same types also appear as series in the
+  collector the application configured.
+- **The obvious remediation was considered and rejected on the merits.** Omitting or coarsening the dimension for
+  this one overload would make the two `Query` overloads report different identities for the same logical dispatch —
+  a second spelling for one concept, which D4 forbids — and would collapse every runtime-dispatched query into a
+  single undifferentiated series, which is the entire value of the histogram. Capping the dimension instead (an
+  allowlist, or an `_other` bucket past N types) would put a per-dispatch membership test on the instrumented path
+  and a policy surface in the public API, for a bound only the application can set correctly.
+- **The bound the application holds is the right one.** An application that needs to cap query cardinality caps it
+  in its collector, where `MeterListener` and every OpenTelemetry SDK already expose cardinality limits, and where
+  the limit can be set per deployment rather than compiled into the library.
+
+No issue is filed for this. ADR-0013's 2026-09-25 amendment records the in-process half of the same property.
+
 ### D5 — W3C trace-context keys live in `TraceContextHeaders`, declared OUTSIDE `MessageContext`
 
 `"traceparent"` and `"tracestate"` are declared in a `TraceContextHeaders` static in

@@ -131,6 +131,12 @@ The code is unchanged by this decision.
   that invoker's `StartDispatch` and `RecordDispatchDuration` make the same two calls, closed over the runtime type. It
   adds no cache and no entry beyond the one per pair this ADR already records. The `DispatchNames<TMessage>` citation
   above, `ChatterDiagnostics.cs:166`, is now `:162`.
+
+  This bounds the IN-PROCESS half only. Instrumenting the runtime-type overload also exports the caller-supplied
+  query type out of the process, as the `chatter.message.type` value on the span and on the measurement, so the
+  retention this ADR accepts now has a collector-side counterpart: one metric series per distinct runtime query
+  type ever dispatched. Local review raised that at HIGH and it is recorded, not fixed, as a residual under
+  ADR-0010 D4's 2026-09-25 amendment, which carries the reasoning and the rejected remediations.
 - **Option 1 remains on the table** under the revisit trigger above, and it is the option to reach for
   — a per-instance cache is not.
 
