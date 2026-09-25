@@ -91,7 +91,7 @@ namespace Chatter.CQRS.Queries
             var startTimestamp = Stopwatch.GetTimestamp();
             string errorType = null;
 
-            // INVARIANT: the telemetry identity is queryType, the runtime query type the handler is resolved by, never
+            // INVARIANT: the telemetry identity is queryType, the query's own runtime type, never
             // the IQuery<TResult> the caller dispatched through. Pinned by
             // WhenChatterTracingIsOptedInto.MustNameTheSpanAfterTheRuntimeQueryTypeWhenDispatchedByItsResultTypeAlone and
             // MustRecordTheDispatchDurationForAQueryDispatchedByItsRuntimeType, which go red when the span or the

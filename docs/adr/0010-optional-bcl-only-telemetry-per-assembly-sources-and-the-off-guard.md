@@ -284,7 +284,7 @@ dispatch is now instrumented with the same Chatter-native attributes as command 
 `chatter.message.type`, `chatter.dispatch.kind` and, for a failed dispatch, `error.type`, on a span named
 `dispatch {type name}` and on the `chatter.cqrs.dispatch.duration` measurement.
 
-- **A query is named by the type its handler was resolved by.** For `Query<TQuery, TResult>` that is `TQuery`. For
+- **A query is named by the query's own type.** For `Query<TQuery, TResult>` that is `TQuery`. For
   `Query<TResult>(IQuery<TResult>)` it is the query's runtime type, which is the type `IQueryHandler<,>` is closed
   over, and never the `IQuery<TResult>` the caller dispatched through. This is the rule commands and events already
   follow: `CommandDispatcher` and `EventDispatcher` resolve `IMessageHandler<TMessage>` and name the dispatch by the
