@@ -53,7 +53,7 @@ Chatter.MessageBrokers and Chatter.CQRS come in transitively. `AddSqlChangeFeed`
 
 ## Quick start
 
-The samples use `Host.CreateApplicationBuilder` with `builder.Services` and `builder.Configuration`, and assume the implicit usings of the Worker or Web SDK. `WebApplication.CreateBuilder` works the same way, and so does any `IServiceCollection` plus `IConfiguration`. Read [Install requirements](#install-requirements) before you point this at a live database.
+The samples use `Host.CreateApplicationBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. `WebApplication.CreateBuilder(args)` works the same way, and so does any `IServiceCollection` with an `IConfiguration`. Read [Install requirements](#install-requirements) before you point this at a live database.
 
 ### 1. Define a row type
 
@@ -395,10 +395,10 @@ A refused or failed run never replaces the installed uninstall Stored Procedure,
 
 ## Known limitations
 
-- **`WithMaxReceiveAttempts` has no effect.** The value is recorded but never reaches the receiver, which always allows `10` receive attempts before a message is deadlettered.
-- **The `WithTransactionMode` IntelliSense text names the wrong default.** Its XML documentation says `ReceiveOnly`; the actual default is `FullAtomicityViaInfrastructure`.
+- **`WithMaxReceiveAttempts` has no effect.** The value is recorded but never reaches the receiver, which always allows `10` receive attempts before a message is deadlettered. Tracked in [#531](https://github.com/brenpike/Chatter/issues/531).
+- **The `WithTransactionMode` IntelliSense text names the wrong default.** Its XML documentation says `ReceiveOnly`; the actual default is `FullAtomicityViaInfrastructure`. Tracked in [#531](https://github.com/brenpike/Chatter/issues/531).
 - **Default names use the row type's class name only.** Two row types with the same class name in different namespaces derive the same seven object names. When both tables are in the same schema, the install fails on the duplicate Trigger name. The two overridable names cannot fix this, because the other five still collide, so give the row types distinct class names.
-- **Transport options are shared.** Each `AddSqlChangeFeed` call registers its own SQL Server Service Broker transport options, and the transport uses the last registration. When you register several change feeds, give them the same receiver timeout, body type, lifetime, encryption and compression settings.
+- **Transport options are shared.** Each `AddSqlChangeFeed` call registers its own SQL Server Service Broker transport options, and the transport uses the last registration. When you register several change feeds, give them the same receiver timeout, body type, lifetime, encryption and compression settings. Tracked in [#531](https://github.com/brenpike/Chatter/issues/531).
 - **No trace context.** Change feed messages carry no headers; see [Diagnostics](#diagnostics).
 - **Azure SQL Database is not supported.** It has no Service Broker; see [Install requirements](#install-requirements).
 
@@ -442,9 +442,9 @@ A Trigger installed by an older version carries no column fingerprint, so the ne
 
 ## Related packages
 
-- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): the in-process Commands, Queries, Events and handlers that receive row changes.
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): The in-process Commands, Queries, Events and handlers that receive row changes.
 - [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): Brokered Message Receivers, sending and publishing, and Recovery.
-- [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): the SQL Server Service Broker transport this package runs on.
+- [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): The SQL Server Service Broker transport this package runs on.
 
 ## Learn more
 

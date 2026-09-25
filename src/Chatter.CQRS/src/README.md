@@ -51,7 +51,7 @@ Add [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBroke
 
 ## Quick start
 
-The samples use a `WebApplication` with implicit usings enabled. Any `IServiceCollection` plus an `IConfiguration` works the same way, including `Host.CreateApplicationBuilder`.
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
 
 ### 1. Register Chatter.CQRS
 
@@ -547,12 +547,12 @@ Attributes prefixed `chatter.` are Chatter-native, because no OpenTelemetry sema
 - [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): SQL Server Service Broker transport.
 - [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): EF Core Inbox, Outbox and Unit of Work.
 - [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB reliability.
-- [Chatter.SqlChangeFeed](https://www.nuget.org/packages/Chatter.SqlChangeFeed): typed notifications from a watched SQL Server table.
+- [Chatter.SqlChangeFeed](https://www.nuget.org/packages/Chatter.SqlChangeFeed): Typed notifications from a watched SQL Server table.
 
 ## Learn more
 
-- [Chatter.CQRS domain language (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/CONTEXT.md)
-- [Chatter.CQRS CHANGELOG](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/Chatter.CQRS/CHANGELOG.md)
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/CONTEXT.md)
+- [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.CQRS/src/Chatter.CQRS/CHANGELOG.md)
 - [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
 - [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)
 

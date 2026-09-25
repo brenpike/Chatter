@@ -56,7 +56,7 @@ Companion packages:
 
 ## Quick start
 
-The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`). Any `IServiceCollection` with an `IConfiguration` works the same way.
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
 
 ### 1. Define your messages
 
@@ -361,6 +361,18 @@ Set the ceiling with `WithMaxMessageLockRenewalDuration(TimeSpan)` or the `MaxMe
 
 The transaction mode comes from the receiver's `transactionMode` argument, or from the global Chatter.MessageBrokers `TransactionMode` (see [Chatter.MessageBrokers configuration](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#configuration)).
 
+A receiver's own `transactionMode` wins over the global mode. Set the global mode on `AddMessageBrokers`; a `Chatter:MessageBrokers:TransactionMode` key in configuration wins over this fluent call:
+
+```csharp
+using Chatter.MessageBrokers.Receiving;
+
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers(options => options.WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure))
+    .AddAzureServiceBus(asb => asb
+        .WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"))
+        .AddQueueReceiver<PlaceOrder>("orders"));
+```
+
 | Mode | Receive mode | Behaviour |
 | --- | --- | --- |
 | `None` | `ReceiveAndDelete` | No transaction. The message is removed on receipt. |
@@ -549,17 +561,15 @@ Chatter's broker spans follow OpenTelemetry semantic conventions v1.30.0 and emi
 
 ## Related packages
 
-| Package | Description |
-| --- | --- |
-| [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS) | In-process Commands, Queries, Events and the Command Pipeline. |
-| [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers) | The broker abstractions this transport implements: receivers, routing, Inbox/Outbox and Recovery. |
-| [Chatter.MessageBrokers.AzureServiceBus.Auth](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth) | Microsoft Entra ID token authentication for this transport. |
-| [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework) | EF Core Inbox, Outbox and Unit of Work. |
-| [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos) | Azure Cosmos DB Inbox and Outbox Relay. |
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): In-process Commands, Queries, Events and the Command Pipeline.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): The broker abstractions this transport implements: receivers, routing, Inbox/Outbox and Recovery.
+- [Chatter.MessageBrokers.AzureServiceBus.Auth](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth): Microsoft Entra ID token authentication for this transport.
+- [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): EF Core Inbox, Outbox and Unit of Work.
+- [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB Inbox and Outbox Relay.
 
 ## Learn more
 
-- [Azure Service Bus domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/CONTEXT.md)
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/CONTEXT.md)
 - [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/CHANGELOG.md)
 - [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
 - [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)

@@ -57,7 +57,7 @@ Companion packages:
 
 ## Quick start
 
-The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`). Any `IServiceCollection` with an `IConfiguration` works the same way.
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
 
 ### 1. Define a message
 
@@ -524,18 +524,16 @@ Other discarded messages are logged at `Trace` level.
 
 ## Related packages
 
-| Package | Description |
-| --- | --- |
-| [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS) | In-process Commands, Queries, Events and the Command Pipeline. |
-| [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers) | The broker abstractions this transport implements: receivers, routing, Inbox/Outbox and Recovery. |
-| [Chatter.SqlChangeFeed](https://www.nuget.org/packages/Chatter.SqlChangeFeed) | Typed insert, update and delete notifications from a watched SQL Server table, delivered over this transport. |
-| [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework) | EF Core Inbox, Outbox and Unit of Work. |
-| [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus) | Azure Service Bus transport. |
-| [Chatter.MessageBrokers.RabbitMQ](https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ) | RabbitMQ transport. |
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): In-process Commands, Queries, Events and the Command Pipeline.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): The broker abstractions this transport implements: receivers, routing, Inbox/Outbox and Recovery.
+- [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus): Azure Service Bus transport.
+- [Chatter.MessageBrokers.RabbitMQ](https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ): RabbitMQ transport.
+- [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): EF Core Inbox, Outbox and Unit of Work.
+- [Chatter.SqlChangeFeed](https://www.nuget.org/packages/Chatter.SqlChangeFeed): Typed insert, update and delete notifications from a watched SQL Server table, delivered over this transport.
 
 ## Learn more
 
-- [SQL Server Service Broker domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/CONTEXT.md)
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/CONTEXT.md)
 - [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.SqlServiceBroker/src/Chatter.MessageBrokers.SqlServiceBroker/CHANGELOG.md)
 - [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
 - [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)

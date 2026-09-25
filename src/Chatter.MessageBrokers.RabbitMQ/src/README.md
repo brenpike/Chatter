@@ -58,7 +58,7 @@ Companion packages:
 
 ## Quick start
 
-The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`). Any `IServiceCollection` with an `IConfiguration` works the same way.
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
 
 ### 1. Define your messages
 
@@ -596,18 +596,16 @@ This package emits no telemetry of its own. Broker spans and metrics come from t
 
 ## Related packages
 
-| Package | Description |
-| --- | --- |
-| [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS) | In-process Commands, Queries, Events and the Command Pipeline. |
-| [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers) | The broker abstractions this transport implements: receivers, routing, Inbox/Outbox and Recovery. |
-| [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework) | EF Core Inbox, Outbox and Unit of Work. |
-| [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos) | Azure Cosmos DB Inbox and Outbox Relay. |
-| [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus) | Azure Service Bus transport. |
-| [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker) | SQL Server Service Broker transport. |
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): In-process Commands, Queries, Events and the Command Pipeline.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): The broker abstractions this transport implements: receivers, routing, Inbox/Outbox and Recovery.
+- [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus): Azure Service Bus transport.
+- [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): SQL Server Service Broker transport.
+- [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): EF Core Inbox, Outbox and Unit of Work.
+- [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB Inbox and Outbox Relay.
 
 ## Learn more
 
-- [RabbitMQ domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/CONTEXT.md)
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/CONTEXT.md)
 - [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.RabbitMQ/src/Chatter.MessageBrokers.RabbitMQ/CHANGELOG.md)
 - [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
 - [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)

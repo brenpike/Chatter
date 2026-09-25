@@ -49,7 +49,7 @@ The extension methods are in the `Microsoft.Extensions.DependencyInjection` name
 
 ## Quick start
 
-The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`). Any `IServiceCollection` with an `IConfiguration` works the same way. For messages, handlers and receivers, see the [Azure Service Bus quick start](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#quick-start).
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way. For messages, handlers and receivers, see the [Azure Service Bus quick start](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#quick-start).
 
 ### 1. Use an endpoint-only connection string
 
@@ -214,15 +214,13 @@ This package emits no telemetry of its own; see [Azure Service Bus diagnostics](
 
 ## Related packages
 
-| Package | Description |
-| --- | --- |
-| [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus) | The Azure Service Bus transport this package authenticates. |
-| [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers) | Broker abstractions: receivers, routing, Inbox/Outbox and Recovery. |
-| [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS) | In-process Commands, Queries, Events and the Command Pipeline. |
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): In-process Commands, Queries, Events and the Command Pipeline.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): Broker abstractions: receivers, routing, Inbox/Outbox and Recovery.
+- [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus): The Azure Service Bus transport this package authenticates.
 
 ## Learn more
 
-- [Azure Service Bus Auth domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/CONTEXT.md)
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/CONTEXT.md)
 - [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/Chatter.MessageBrokers.AzureServiceBus.Auth/CHANGELOG.md)
 - [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
 - [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)

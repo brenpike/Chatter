@@ -255,8 +255,9 @@ For a relational database, install Chatter.MessageBrokers.Reliability.EntityFram
 
 ```csharp
 builder.Services.AddChatterCqrs(builder.Configuration,
-        pipeline => pipeline.WithOutboxProcessingBehavior<OrdersDbContext>()
-                            .WithInboxBehavior<OrdersDbContext>(),
+        pipeline => pipeline
+            .WithOutboxProcessingBehavior<OrdersDbContext>()
+            .WithInboxBehavior<OrdersDbContext>(),
         typeof(Program))
     .AddMessageBrokers()
     .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));

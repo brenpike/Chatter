@@ -82,7 +82,7 @@ Use `defaultTtl = -1` on a monitored container. Items without a `ttl` field then
 
 ## Quick start
 
-This quick start uses the Document Tier. The samples use `builder.Services` and `builder.Configuration`, but any `IServiceCollection` plus `IConfiguration` works.
+This quick start uses the Document Tier. The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
 
 ### 1. Create the containers
 
@@ -134,8 +134,8 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton(new CosmosClient(builder.Configuration.GetConnectionString("Cosmos")));
 
-builder.Services.AddChatterCqrs(builder.Configuration, pipeline => pipeline
-        .WithCosmosDocumentReliability<PlaceOrder>(
+builder.Services.AddChatterCqrs(builder.Configuration,
+        pipeline => pipeline.WithCosmosDocumentReliability<PlaceOrder>(
             database: "shop",
             container: "orders",
             lease: "orders-leases",
@@ -421,13 +421,13 @@ using Microsoft.Azure.Cosmos;
 builder.Services.AddSingleton(new CosmosClient(builder.Configuration.GetConnectionString("Cosmos")));
 
 builder.Services.AddChatterCqrs(builder.Configuration,
-                                pipeline => pipeline.WithCosmosInbox(inbox =>
-                                {
-                                    inbox.Database = "shop";
-                                    inbox.Container = "idempotency";
-                                    inbox.MarkerTimeToLive = 7 * 24 * 60 * 60; // seconds
-                                }),
-                                typeof(Program))
+        pipeline => pipeline.WithCosmosInbox(inbox =>
+        {
+            inbox.Database = "shop";
+            inbox.Container = "idempotency";
+            inbox.MarkerTimeToLive = 7 * 24 * 60 * 60; // seconds
+        }),
+        typeof(Program))
     .AddMessageBrokers()
     .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
 ```
@@ -642,12 +642,12 @@ Instrument and attribute names are emitted data, not a compile-time API, so **th
 
 ## Related packages
 
-- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): the brokered messaging, Inbox and Outbox abstractions this package implements.
-- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): the Commands, Events and Command Pipeline your handlers use.
-- [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): the relational alternative, an EF Core Inbox, Outbox and Unit of Work.
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): The Commands, Events and Command Pipeline your handlers use.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): The brokered messaging, Inbox and Outbox abstractions this package implements.
 - [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus): Azure Service Bus transport.
 - [Chatter.MessageBrokers.RabbitMQ](https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ): RabbitMQ transport.
 - [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): SQL Server Service Broker transport.
+- [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): The relational alternative, an EF Core Inbox, Outbox and Unit of Work.
 
 ## Learn more
 

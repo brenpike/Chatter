@@ -65,6 +65,8 @@ dotnet tool install --global dotnet-ef
 
 ## Quick start
 
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
+
 ### 1. Map the Inbox and Outbox in your DbContext
 
 ```csharp
@@ -108,7 +110,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<OrdersDbContext>(o =>
     o.UseSqlServer(builder.Configuration.GetConnectionString("Orders")));
 
-builder.Services.AddChatterCqrs(builder.Configuration, pipeline => pipeline
+builder.Services.AddChatterCqrs(builder.Configuration,
+        pipeline => pipeline
             .WithInboxBehavior<OrdersDbContext>()
             .WithOutboxProcessingBehavior<OrdersDbContext>()
             .WithReliabilityRetention<OrdersDbContext>(r =>
@@ -121,7 +124,7 @@ builder.Services.AddChatterCqrs(builder.Configuration, pipeline => pipeline
     .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
 ```
 
-The extension methods live in the `Microsoft.Extensions.DependencyInjection` namespace, class `Extensions`, and extend the `CommandPipelineBuilder` passed to `AddChatterCqrs`. `WithOutboxPollingProcessor()` re-drains any message whose immediate publish failed; keep it on whenever you use the Outbox. Any transport works in place of `AddAzureServiceBus`. The samples use `builder.Services` and `builder.Configuration`, but any `IServiceCollection` plus `IConfiguration` works.
+The extension methods live in the `Microsoft.Extensions.DependencyInjection` namespace, class `Extensions`, and extend the `CommandPipelineBuilder` passed to `AddChatterCqrs`. `WithOutboxPollingProcessor()` re-drains any message whose immediate publish failed; keep it on whenever you use the Outbox. Any transport works in place of `AddAzureServiceBus`.
 
 ### 3. Create the tables
 
@@ -424,6 +427,8 @@ pipeline.WithReliabilityRetention<OrdersDbContext>(r =>
 }
 ```
 
+`Bind` is the `ConfigurationBinder` extension (namespace `Microsoft.Extensions.Configuration`) from Microsoft.Extensions.Configuration.Binder. The Chatter packages this package depends on already reference it, so you add no package for it.
+
 The Outbox polling, batch size, backoff and attempt ceiling are `ReliabilityOptions` in Chatter.MessageBrokers; see [Tuning the polling processor](#tuning-the-polling-processor) and the [Chatter.MessageBrokers configuration](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#configuration).
 
 ## Diagnostics
@@ -463,12 +468,12 @@ Replace `OutboxMessages` and `InboxMessages` with your table names.
 
 ## Related packages
 
-- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): the Inbox, Outbox, polling processor and Recovery this package makes durable.
-- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): the Commands, Events and Command Pipeline the behaviors plug into.
-- [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB reliability for the same abstractions.
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): The Commands, Events and Command Pipeline the behaviors plug into.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): The Inbox, Outbox, polling processor and Recovery this package makes durable.
 - [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus): Azure Service Bus transport.
 - [Chatter.MessageBrokers.RabbitMQ](https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ): RabbitMQ transport.
 - [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): SQL Server Service Broker transport.
+- [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB reliability for the same abstractions.
 
 ## Learn more
 

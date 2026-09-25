@@ -61,6 +61,8 @@ For a durable Inbox and Outbox, add [Chatter.MessageBrokers.Reliability.EntityFr
 
 ## Quick start
 
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
+
 ### 1. Register Chatter, the message brokers and a transport
 
 ```csharp
@@ -71,7 +73,7 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
 ```
 
-`AddMessageBrokers` extends the `IChatterBuilder` that `AddChatterCqrs` returns. Any transport works in place of `AddAzureServiceBus`; see that transport's README. The samples use `builder.Services` and `builder.Configuration`, but any `IServiceCollection` plus `IConfiguration` works.
+`AddMessageBrokers` extends the `IChatterBuilder` that `AddChatterCqrs` returns. Any transport works in place of `AddAzureServiceBus`; see that transport's README.
 
 ### 2. Map a message to broker paths
 
@@ -322,8 +324,8 @@ Add the behavior to the Command Pipeline in every service on the route:
 
 ```csharp
 builder.Services.AddChatterCqrs(builder.Configuration,
-                                pipeline => pipeline.WithRoutingSlipBehavior(),
-                                typeof(Program))
+        pipeline => pipeline.WithRoutingSlipBehavior(),
+        typeof(Program))
     .AddMessageBrokers()
     .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
 ```
@@ -439,8 +441,8 @@ Add `InboxBehavior<>` to the Command Pipeline to deduplicate received commands:
 using Chatter.MessageBrokers.Reliability.Inbox;
 
 builder.Services.AddChatterCqrs(builder.Configuration,
-                                pipeline => pipeline.WithBehavior(typeof(InboxBehavior<>)),
-                                typeof(Program))
+        pipeline => pipeline.WithBehavior(typeof(InboxBehavior<>)),
+        typeof(Program))
     .AddMessageBrokers(options => options
         .AddReliabilityOptions(r => r
             .WithInMemoryInboxDeduplicationWindow(60)   // minutes
@@ -485,6 +487,8 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
 | `RetryWhen(params Predicate<Exception>[])` / `RetryWhen<TException>()` | Adds exception types that should be retried. |
 
 An exception is retried when any registered predicate matches it. The default set has one predicate, matching a transient `BrokeredMessageReceiverException`; `RetryWhen` adds to that set rather than replacing it. Predicates match on exception type; no default predicate reads the exception message.
+
+Neither the receiver nor the retry and circuit breaker policies wrap your handler's exception before testing it, so `RetryWhen<TimeoutException>()` and `IsTrippedBy<TimeoutException>()` match a `TimeoutException` your handler throws.
 
 ### Circuit breaker
 
@@ -786,14 +790,14 @@ The Cosmos Outbox Relay uses this package's send span and emits no span of its o
 
 ## Related packages
 
-- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): the in-process Commands, Queries, Events and Command Pipeline this package builds on.
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): The in-process Commands, Queries, Events and Command Pipeline this package builds on.
 - [Chatter.MessageBrokers.AzureServiceBus](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus): Azure Service Bus transport.
 - [Chatter.MessageBrokers.AzureServiceBus.Auth](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth): Microsoft Entra ID authentication for the Azure Service Bus transport.
 - [Chatter.MessageBrokers.RabbitMQ](https://www.nuget.org/packages/Chatter.MessageBrokers.RabbitMQ): RabbitMQ transport.
 - [Chatter.MessageBrokers.SqlServiceBroker](https://www.nuget.org/packages/Chatter.MessageBrokers.SqlServiceBroker): SQL Server Service Broker transport.
 - [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): EF Core Inbox, Outbox and Unit of Work.
 - [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB Inbox and Outbox Relay.
-- [Chatter.SqlChangeFeed](https://www.nuget.org/packages/Chatter.SqlChangeFeed): typed change notifications from a SQL Server table.
+- [Chatter.SqlChangeFeed](https://www.nuget.org/packages/Chatter.SqlChangeFeed): Typed change notifications from a SQL Server table.
 
 ## Learn more
 
