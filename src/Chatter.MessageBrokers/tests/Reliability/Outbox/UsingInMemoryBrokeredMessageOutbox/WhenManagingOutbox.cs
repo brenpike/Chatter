@@ -174,9 +174,10 @@ namespace Chatter.MessageBrokers.Tests.Reliability.Outbox.UsingInMemoryBrokeredM
         {
             // INVARIANT: the scan compares ELAPSED minutes against the ttl instead of adding the ttl to the
             // processed timestamp, so a ttl no elapsed time can ever reach costs nothing and expires nothing.
-            // Adding it threw an ArgumentOutOfRangeException out of UpdateProcessedDate, which OutboxProcessor
-            // calls inside its unit of work BEFORE dispatching and catches around the whole block, so every
-            // message was stamped processed, logged and then never dispatched and never retried.
+            // This test is the oracle that INVARIANT names: restoring the AddMinutes form reddens it. What the
+            // AddMinutes form actually cost - a throw out of UpdateProcessedDate raised AFTER the publish and
+            // after the stamp, so no message was lost and none was published twice - is recorded once next to
+            // the mechanism, on InMemoryBrokeredMessageOutbox.RemoveExpiredFromInboxOutbox (ADR-0027).
             _reliabilityOptions.MinutesToLiveInMemory = 1e300;
             await _sut.SendToOutbox(CreateOutbound("id-1"), new TransactionContext());
             var message = (await _sut.GetUnprocessedMessagesFromOutbox()).Single();
