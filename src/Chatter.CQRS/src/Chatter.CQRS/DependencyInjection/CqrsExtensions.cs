@@ -105,7 +105,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// <summary>
         /// Fails composition when more than one handler is found for the same command.
         /// </summary>
-        /// <param name="chatterBuilder">The <see cref="IChatterBuilder"/> whose assemblies are checked: the assemblies scanned by every <c>AddChatterCqrs</c> call on its <see cref="IChatterBuilder.Services"/>, otherwise, when that collection records no such call, the assemblies its <see cref="IAssemblySourceFilter"/> yields</param>
+        /// <param name="chatterBuilder">The <see cref="IChatterBuilder"/> whose assemblies are checked: the assemblies recorded on its <see cref="IChatterBuilder.Services"/> by every <c>AddChatterCqrs</c> call, including records copied in with another collection's registrations; otherwise, when that collection carries no record, the assemblies its <see cref="IAssemblySourceFilter"/> yields</param>
         /// <returns>The same <see cref="IChatterBuilder"/> instance</returns>
         /// <exception cref="InvalidOperationException">Thrown when a command is handled by more than one scanned handler</exception>
         public static IChatterBuilder ThrowOnDuplicateCommandHandlers(this IChatterBuilder chatterBuilder)

@@ -17,7 +17,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Changed
 
 - `ThrowOnDuplicateCommandHandlers()` now covers every `AddChatterCqrs` call on the same service collection, not just the call that returned the builder, and it works through an `IChatterBuilder` wrapper that forwards `Services`. If you opted in and call `AddChatterCqrs` more than once, composition can now fail where it used to pass: this happens only when a command really has two handlers across those calls, and the later call was silently replacing the earlier handler. Remove one handler, or stop calling the check. Call the check after your last `AddChatterCqrs` (#468).
-- `AddChatterCqrs` now adds one internal bookkeeping entry to the service collection (#468).
+- `AddChatterCqrs` now adds one internal bookkeeping entry to the service collection. Copying a service collection's registrations into another copies a snapshot of that entry, so a later `AddChatterCqrs` on the copy does not change what the check on the original sees (#468).
 
 ### Fixed
 

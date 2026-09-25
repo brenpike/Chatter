@@ -117,10 +117,12 @@ non-goal below.
 **Amended 2026-09-24 (#468): the check no longer re-applies the filter when the builder's service collection
 carries a scan record.** `AddChatterCqrs` now materializes `filter.Apply()` once (`CqrsExtensions.cs:47`), feeds
 that list to its scans, and records it in an internal `HandlerScanRecord` on the `IServiceCollection`
-(`CqrsExtensions.cs:52`). A collection carries one record, which accumulates the assemblies of every
-`AddChatterCqrs` call on it. The check reads that record through `IChatterBuilder.Services` (`GetAssembliesToProbe`,
-`CqrsExtensions.cs:129-143`), so it also covers two `AddChatterCqrs` calls on one collection, a check on the builder
-from the earlier call, and a wrapper that forwards `Services`. It re-applies the filter only when the collection
+(`CqrsExtensions.cs:52`). Each call forks a new, frozen record, holding the assemblies of every record the
+collection carries followed by those it scanned, and writes it in place of the collection's first record
+descriptor, removing any other (`HandlerScanRecord.Record`; ADR-0039, *Decision*). The check reads the union of
+every record the collection carries (`HandlerScanRecord.FindScannedAssemblies`) through `IChatterBuilder.Services`
+(`GetAssembliesToProbe`, `CqrsExtensions.cs:129-143`), so it also covers two `AddChatterCqrs` calls on one
+collection, a check on the builder from the earlier call, and a wrapper that forwards `Services`. It re-applies the filter only when the collection
 carries no record, for example a builder from the public `ChatterBuilder.Create` over a collection that no
 `AddChatterCqrs` call has seen. `ChatterBuilder` is unchanged and still exposes the same filter instance as
 `IChatterBuilder.AssemblySourceFilter`. The mechanism above is also stated too broadly. `Apply()` calls
@@ -477,7 +479,7 @@ constructs the filter from that list at `:101`, so `:12,75,86` reads `:12,90,101
 `IsVisible` assertion at `:155`; `MustNotReportOneHandlerReachableFromTwoScannedAssemblies` at `:165-174`;
 `MustLeaveTheApplicationServiceCollectionUntouched` at `:176-188`; `MustDescribeTheScanOrderTheScanActuallyUses` at
 `:190-200`; and the fixture pattern, `New.Common().Assembly.WithTypes(...)` with `WithExplicitAssemblies`, in the
-`AddChatterCqrsScanning` helper at `:313-318`. That doc comment no longer carries the stale sentence the #394
+`AddChatterCqrsScanning` helper at `:409-414`. That doc comment no longer carries the stale sentence the #394
 amendment describes; it names the two-argument overload with `publicOnly: false` passed explicitly, and it read that
 way before this change. Separately, and predating this change, the dynamic-assembly exclusion that the body cites
 as `CurrentAppDomainAssemblyProvider.cs:17` and the #394 amendment as `:19` is at `:22`.
