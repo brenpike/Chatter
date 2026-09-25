@@ -34,7 +34,7 @@ This package receives messages from a message broker and dispatches them to your
 - **Transport independence**: the same code runs over Azure Service Bus, RabbitMQ or SQL Server Service Broker, and one application can use several at once.
 - **Routing slips**: a message can carry its own itinerary of destinations and advance through it step by step.
 - **Outbox**: route outgoing messages through a store and drain it with a background poller, with dispatch backoff and an optional attempt ceiling.
-- **Inbox**: skip redelivered messages by message id so handlers run once per deduplication window.
+- **Inbox**: skip redelivered commands by message id within a deduplication window; see [Inbox](#inbox) for when a handler runs again.
 - **Recovery**: retry with no, constant or exponential delay, a circuit breaker, an Error Queue for messages past their receive limit, and deadlettering for poisoned bodies.
 - **Configuration binding**: every option can come from `appsettings.json`, and bad values are refused at startup with a named exception.
 - **Opt-in diagnostics**: OpenTelemetry-compatible spans and metrics plus W3C trace context propagation, with no `OpenTelemetry.*` dependency.
@@ -190,6 +190,8 @@ You must supply `sendingPath` or `receivingPath`; the attribute throws `Argument
 
 Each receiver runs inside its own `IHostedService`, and only one receiver instance runs per message type. For each delivery it deserializes the body, dispatches to your handler in a fresh DI scope under Recovery, then settles the delivery. A handler that completes acknowledges the message. A failing handler leaves the message for redelivery until its delivery count reaches `MaxReceiveAttempts`, and then it is deadlettered and sent to the Error Queue (see [Recovery](#recovery)).
 
+Under `TransactionMode.None` the transport removes the message as it is received, so a failed message is not redelivered.
+
 Every receiver carries `ReceiverOptions`:
 
 | Option | Type | Default | Description |
@@ -259,7 +261,7 @@ await context.Publish(new OrderPlaced { OrderId = message.OrderId }, "order-even
 await context.InMemory().Dispatch(new ReserveStock { OrderId = message.OrderId });
 ```
 
-`context.Send` and `context.Publish` copy the entire inbound Message Context onto each outbound message, and options you pass win over inherited entries; see [Inbound header trust](#inbound-header-trust). They do nothing when the context holds no brokered dispatcher, which happens only if `AddMessageBrokers` was not called. `context.InMemory().Dispatch(...)` dispatches in-process on the caller's own Message Context, so await each nested dispatch before starting the next.
+`context.Send` and `context.Publish` copy the entire inbound Message Context onto each outbound message, and options you pass win over inherited entries; see [Inbound header trust](#inbound-header-trust). They do nothing when the context holds no brokered dispatcher, which happens only if `AddMessageBrokers` was not called. `context.InMemory().Dispatch(...)` dispatches in-process on the caller's own Message Context, so await each nested dispatch before starting the next. If you use the in-memory Inbox, read [Inbox](#inbox) before dispatching a Command this way.
 
 ### Send options
 
@@ -405,7 +407,7 @@ A `bool?` reads JSON `null` as `null`. Any other quoted value, such as `{"Enable
 
 ## Reliability
 
-Two stores make brokered messaging reliable. The **Outbox** records outgoing messages so they are published alongside your local state change. The **Inbox** records received message ids so a redelivery is skipped. This package ships in-memory versions of both, registered as process-lifetime singletons, for development and single-node hosts.
+Two stores make brokered messaging reliable. The **Outbox** stages outgoing messages in a store and publishes them from there, so a failed publish can be retried. The **Inbox** records the ids of received commands so it can skip redeliveries. This package ships in-memory versions of both, registered as process-lifetime singletons, for development and single-node hosts; they keep nothing across a restart.
 
 For durable stores, use [Chatter.MessageBrokers.Reliability.EntityFramework](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md) or [Chatter.MessageBrokers.Reliability.Cosmos](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.Reliability.Cosmos/src/README.md).
 
@@ -431,9 +433,9 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
 
 **Backoff and giving up.** A failed publish leaves the message in the Outbox and schedules its next attempt one backoff ahead: 5 s, then 10 s, 20 s and so on up to 60 s. The backoff always applies. No attempt ceiling applies unless you set `OutboxMaxDispatchAttempts`; with it set, a message that has failed that many times is skipped by every later poll and stays in the store.
 
-**Delivery is at-least-once.** A publish that succeeds followed by a failure to mark the row can publish the same message twice. Put handlers that are not naturally idempotent behind the Inbox. The in-memory Outbox throws `InvalidOperationException` if you add a message whose `MessageId` it already holds.
+**Publishing can repeat.** A row is marked published only after its publish returns, so a publish that succeeds followed by a failure to mark the row can publish the same message twice. A failed publish is retried only while the poller runs, only until the row reaches `OutboxMaxDispatchAttempts` when that is set, and only while the store keeps the row; the in-memory Outbox keeps nothing across a restart. Put Command handlers that are not naturally idempotent behind the [Inbox](#inbox), and make Event handlers idempotent. The in-memory Outbox throws `InvalidOperationException` if you add a message whose `MessageId` it already holds.
 
-**Several hosts draining one Outbox.** Before publishing a row, a drain claims it by moving the row's next-attempt time forward, and publishes only if the claim succeeds. Over a relational store the claim is part of the publishing transaction, so a second drain waits on that row's lock and then publishes nothing. A publish slower than the `DbContext` command timeout (30 seconds by the provider default) makes the waiting drain give up and defer the row. Over the in-memory store the claim lasts one backoff, so a publish longer than one backoff can be duplicated, never lost.
+**Several hosts draining one Outbox.** Before publishing a row, a drain claims it by moving the row's next-attempt time forward, and publishes only if the claim succeeds. Over a relational store the claim is part of the publishing transaction, so a second drain waits on that row's lock and then publishes nothing. A publish slower than the `DbContext` command timeout (30 seconds by the provider default) makes the waiting drain give up and defer the row. Over the in-memory store the claim lasts one backoff, so a publish that takes longer than one backoff can be published again by another drain; the row itself stays in the store.
 
 #### Implementing a custom outbox store
 
@@ -457,7 +459,14 @@ builder.Services.AddChatterCqrs(builder.Configuration,
             .WithInMemoryInboxMaxEntries(200000)));
 ```
 
-The Inbox reserves the message id before your handler runs. A concurrent delivery of the same id is skipped without running the handler and without throwing. If the handler throws, the reservation is released so a retry runs the handler again.
+The Inbox reserves the message id before your handler runs, and a concurrent delivery of the same id is skipped without running the handler and without throwing. Within one process, a command whose id is still reserved, or completed inside the deduplication window, does not run its handler again. The handler runs again when:
+
+- it threw, which releases the reservation so a retry runs it;
+- it ran past the deduplication window, which ends its reservation;
+- its id was evicted at the entry cap;
+- the process restarted, or the redelivery reached another instance, because each process keeps its own in-memory Inbox.
+
+`InboxBehavior<>` acts on a command dispatched with an `IMessageBrokerContext`, which a Brokered Message Receiver supplies; a command dispatched from outside a received handler passes through. A command your handler dispatches with `context.InMemory()` carries the inbound message id, so the in-memory Inbox skips its handler while your handler holds that id ([#534](https://github.com/brenpike/Chatter/issues/534)). A received message without a `MessageId` makes the in-memory Inbox throw `ArgumentException`, and the handler does not run.
 
 The in-memory Inbox has two settings:
 

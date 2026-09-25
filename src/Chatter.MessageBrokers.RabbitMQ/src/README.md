@@ -302,7 +302,9 @@ Each receiver counts deliveries so it can dead-letter a message once `maxReceive
 
 ### Quorum queues
 
-Quorum is the default and the recommended choice. RabbitMQ increments the native `x-delivery-count` header on every redelivery, and the receiver reads it. A failed message is negatively acknowledged with requeue, so RabbitMQ redelivers it with a higher count. There is no duplicate and no ordering change.
+Quorum is the default and the recommended choice. A failed message is negatively acknowledged with requeue, which returns the same message to the queue rather than publishing a copy. On its next delivery the receiver reads the attempt number from the native `x-delivery-count` header. RabbitMQ decides where a returned message goes, so it can be delivered after messages that were queued behind it.
+
+The count rises only when RabbitMQ counts a `basic.nack` with requeue as a failed delivery, which RabbitMQ versions before 4.3 do. From RabbitMQ 4.3, `basic.nack` does not increment `x-delivery-count` or count toward the queue's `delivery-limit`, so a message that keeps failing is redelivered indefinitely and never reaches `maxReceiveAttempts`. On RabbitMQ 4.3 or later, use classic queues, which count with their own header.
 
 > **Note:** From RabbitMQ 4.0, quorum queues have a broker-side `delivery-limit` of 20 by default. RabbitMQ drops or dead-letters a message past that limit itself, so keep `maxReceiveAttempts` below the queue's `delivery-limit`.
 
@@ -310,7 +312,7 @@ Quorum is the default and the recommended choice. RabbitMQ increments the native
 
 Classic queues have no native delivery counter. On a failure, the receiver republishes the message to its own queue with an incremented `x-chatter-delivery-count` header, waits for the broker's confirm, and then acknowledges the original. This has two costs:
 
-- **A rare duplicate, never a loss.** A crash between the confirmed republish and the acknowledgement leaves both copies. The Inbox absorbs the duplicate (see [Reliability](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#reliability)).
+- **A rare duplicate, never a loss.** The original is acknowledged only after the broker confirms the republished copy, so a crash or a lost connection between the two leaves both copies. The Inbox can skip the second copy of a Command (see [Reliability](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#reliability)); an Event handler receives both.
 - **Lost head-of-queue order.** The republished copy joins the tail of the queue.
 
 Choose classic queues only when quorum queues are unavailable and you accept both costs.
@@ -589,6 +591,10 @@ The application's RabbitMQ user needs:
 ### One RabbitMQ queue receiver per process
 
 A process supports exactly one RabbitMQ queue receiver. The connection owns one receive channel and one AMQP subscription, so a second receiver would displace the first. Registering a second one, whether through `AddQueueReceiver` or a `[BrokeredMessage]` receiver that resolves to RabbitMQ, makes `AddRabbitMq` throw `NotSupportedException` before the host starts. Split receivers across processes or services; multi-receiver support is tracked in [#195](https://github.com/brenpike/Chatter/issues/195).
+
+### Quorum-queue counting on RabbitMQ 4.3 and later
+
+On RabbitMQ 4.3 and later, a quorum-queue receiver's attempt count does not rise when a delivery fails, so a failing message is redelivered without reaching `maxReceiveAttempts`. See [Quorum queues](#quorum-queues). Tracked in [#533](https://github.com/brenpike/Chatter/issues/533).
 
 ## Diagnostics
 

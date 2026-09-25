@@ -32,7 +32,7 @@ Chatter lets the same Command and Event handlers serve both in-process dispatch 
 - **Command Pipeline**: wrap every Command handler in ordered, reusable behaviors such as logging, a unit of work or an Inbox check.
 - **Brokered Message Receivers**: each receiver runs as a hosted service and hands received messages to your existing handlers.
 - **Three transports**: Azure Service Bus, RabbitMQ and SQL Server Service Broker behind one sending and receiving model.
-- **Inbox and Outbox**: once-only handling and reliable publishing, on a relational tier (EF Core) or a document tier (Azure Cosmos DB).
+- **Inbox and Outbox**: deduplicate redelivered commands and publish outgoing messages from a store, on a relational tier (EF Core) or a document tier (Azure Cosmos DB).
 - **Recovery**: Retry, Circuit Breaker and an Error Queue for messages that exceed their maximum receive attempts.
 - **SQL Change Feed**: strongly typed insert, update and delete notifications from a SQL Server table.
 - **Opt-in diagnostics**: tracing and metrics through the .NET base class library; nothing is emitted until your application subscribes.
@@ -116,7 +116,7 @@ flowchart LR
 
 ### Inbox and Outbox flow
 
-With the relational tier, the Inbox record, the Outbox record and your own state change commit in one database transaction. The Outbox is dispatched only after that commit, and a redelivered message is skipped instead of handled twice.
+With the relational tier, your state change, the Inbox record and the Outbox record are saved in one database transaction, and the Outbox publishes only after that commit. A redelivered command skips its handler while its stamped Inbox record is inside the deduplication window. The [EF Core README](src/Chatter.MessageBrokers.Reliability.EntityFramework/src/README.md) covers when a handler can run again and when a message can be published twice.
 
 ```mermaid
 flowchart LR
@@ -131,7 +131,7 @@ flowchart LR
     OP --> OUT[("Transport")]
 ```
 
-- EF Core: `WithOutboxProcessingBehavior<TContext>()` and `WithInboxBehavior<TContext>()` add the behaviors and the Unit of Work to the Command Pipeline. `AddMessageBrokers(mb => mb.AddReliabilityOptions(r => r.WithOutboxPollingProcessor()))` adds a hosted poller that dispatches unprocessed Outbox records on an interval, which picks up anything a failed dispatch left behind.
+- EF Core: `WithOutboxProcessingBehavior<TContext>()` and `WithInboxBehavior<TContext>()` add the behaviors and the Unit of Work to the Command Pipeline. `AddMessageBrokers(mb => mb.AddReliabilityOptions(r => r.WithOutboxPollingProcessor()))` adds a hosted poller that dispatches unprocessed Outbox records on an interval, retrying records whose dispatch failed, with backoff and an optional attempt ceiling.
 - Azure Cosmos DB: the Document Tier writes the aggregate, a Co-Resident Outbox Document and a Batched Inbox Marker in one `TransactionalBatch`, and the change-feed Outbox Relay publishes the pending Outbox Documents.
 - The Inbox and Outbox behaviors run in the Command Pipeline, so they apply to Commands.
 

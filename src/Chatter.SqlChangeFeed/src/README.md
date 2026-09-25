@@ -8,7 +8,7 @@
 
 **Strongly typed insert, update and delete notifications from a watched SQL Server table, delivered over SQL Server Service Broker.**
 
-This package installs a Trigger on a table you choose. The Trigger sends every row change onto a SQL Server Service Broker queue, and a Brokered Message Receiver hands each change to your Chatter.CQRS handlers as `RowInsertedEvent<T>`, `RowUpdatedEvent<T>` or `RowDeletedEvent<T>`. Nothing polls the table. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
+This package installs a Trigger on a table you choose. The Trigger sends the row changes you watch onto a SQL Server Service Broker queue, and a Brokered Message Receiver hands each change to your Chatter.CQRS handlers as `RowInsertedEvent<T>`, `RowUpdatedEvent<T>` or `RowDeletedEvent<T>`. Nothing polls the table. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
 
 ## Contents
 
@@ -368,6 +368,8 @@ Rules for configured names:
 1. **Service Broker objects.** It enables Service Broker if needed, then creates the message type, the contract, the conversation queue and service, and the dead-letter queue and service.
 2. **The Trigger.** An `AFTER INSERT, UPDATE, DELETE` Trigger on the watched table, limited to the change types you watch. It serializes the `INSERTED` and `DELETED` rows to JSON and sends them to the conversation service as one compressed message per statement.
 3. **The install and uninstall Stored Procedures.** The install procedure checks the preconditions and creates or refreshes the Trigger. The uninstall procedure removes the Trigger, the queues, the services and both procedures.
+
+The Trigger sends a message only when SQL Server fires it for a change type you watch. `TRUNCATE TABLE`, a bulk load run without `FIRE_TRIGGERS`, and changes made while the Trigger is disabled or the conversation service does not exist send nothing.
 
 At runtime a Brokered Message Receiver reads the conversation queue and deserializes each message into a `ProcessChangeFeedCommand<T>`. With row events on, it classifies each `ChangeFeedItem<T>`: inserted only is an insert, deleted only is a delete, and both is an update. It then dispatches the matching event.
 

@@ -8,7 +8,7 @@
 
 **EF Core Inbox, Outbox and Unit of Work for Chatter.MessageBrokers, stored in your own DbContext.**
 
-This package replaces the in-memory Inbox and Outbox of [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers) with durable tables in your application's `DbContext`. Your domain changes, the Inbox marker and the staged Outbox messages commit in one EF Core transaction, or none of them do. There is no separate Chatter context: you apply the shipped entity configurations in your own `OnModelCreating` and own the migrations. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
+This package replaces the in-memory Inbox and Outbox of [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers) with durable tables in your application's `DbContext`. The Unit of Work saves your domain changes, the Inbox marker and the staged Outbox messages through that `DbContext` in one EF Core transaction; see [Unit of Work](#unit-of-work) for what it covers. There is no separate Chatter context: you apply the shipped entity configurations in your own `OnModelCreating` and own the migrations. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
 
 ## Contents
 
@@ -31,11 +31,11 @@ This package replaces the in-memory Inbox and Outbox of [Chatter.MessageBrokers]
 ## Features
 
 - **Transactional Outbox**: messages your handler sends or publishes are staged as rows and commit with your domain changes, then are published after the commit.
-- **Once-only Inbox**: a received command's message id is claimed before the handler runs and stamped after it, in the same transaction as the handler's work.
+- **Deduplicating Inbox**: a received command's message id is claimed before the handler runs and stamped after it, in the same transaction as the handler's work; [Inbox](#inbox) lists when a handler runs again.
 - **Unit of Work**: one `ReadCommitted` transaction per command, committed only if it was begun here; an existing transaction is joined, not replaced.
 - **Your DbContext, your schema**: `IEntityTypeConfiguration` types for both tables, applied in your `OnModelCreating` and migrated with your own EF Core migrations.
 - **Fixed behavior order**: the Outbox wraps the Unit of Work, which wraps the Inbox, whatever order you register them in.
-- **Safe multi-host draining**: a drain claims the row it publishes inside its own transaction, so two hosts polling one database do not both publish it.
+- **Multi-host draining**: a drain claims each row inside its own transaction before it publishes it, so drains on several hosts wait on that row's lock; see [Several hosts on one database](#several-hosts-on-one-database).
 - **Retention purge**: an optional hosted service deletes expired Inbox markers and processed Outbox rows in bounded batches.
 - **Opt-in poll index**: a separate configuration adds an index for the Outbox poll when you want one.
 
@@ -171,7 +171,7 @@ Every method takes `TContext : DbContext` and returns the `CommandPipelineBuilde
 
 ### Inbox and Outbox
 
-Use the registration from [Quick start](#quick-start) step 2. Received commands are handled once per message id, and outgoing messages commit with the handler's work.
+Use the registration from [Quick start](#quick-start) step 2. Received commands are deduplicated by message id (see [Inbox](#inbox)), and outgoing messages commit with the handler's work.
 
 ### Outbox only
 
@@ -195,7 +195,7 @@ builder.Services.AddChatterCqrs(builder.Configuration,
     .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
 ```
 
-Received commands are handled once per message id. Messages the handler sends or publishes go straight to the broker as it calls `Send` or `Publish`, not with the commit.
+Received commands are deduplicated by message id (see [Inbox](#inbox)). Messages the handler sends or publishes go straight to the broker as it calls `Send` or `Publish`, not with the commit.
 
 ### Unit of Work only
 
@@ -235,12 +235,16 @@ When a command arrives, the Inbox reads the marker for its `MessageId`:
 | Stamped, older than the deduplication window | Re-claim it and run the handler. |
 | Not stamped | A claim no handler completed: re-claim it and run the handler. |
 
+For a message with a `MessageId`, a stamped marker stops the handler from running again while it is inside the deduplication window. Because the marker commits in the same transaction as the handler's work, that work commits once in that time, except in the cases listed under [Claim and stamp](#claim-and-stamp) and [Deduplication window](#deduplication-window).
+
 ### Claim and stamp
 
 The Inbox writes the claim and flushes it before the handler runs, then stamps it and flushes again after the handler returns. Both flushes go into the Unit of Work's transaction, so the marker and the handler's work commit together. The claim's flush takes the row lock, so a concurrent delivery of the same id waits behind it.
 
 - **An ambient transaction is required.** Without one, `ReceiveViaInbox` throws `InvalidOperationException`. `WithInboxBehavior` registers the Unit of Work that supplies it.
 - **A failing handler frees the id.** Its exception rolls back the claim, so the redelivery runs the handler again.
+- **A failed commit frees the id.** If the transaction fails to commit after the handler returns, the claim and stamp roll back with the handler's work, and the redelivery runs the handler again.
+- **Effects outside `TContext` repeat.** Anything the handler does outside `TContext`, such as an HTTP call, happens again each time the handler runs, so make it idempotent.
 - **A swallowed failure reruns the handler.** If something catches the handler's exception and lets the Unit of Work commit, the claim commits without a stamp, and the next delivery runs the handler again.
 - **No message id, no deduplication.** A message without a `MessageId` runs the handler directly.
 - **`HasBeenReceived` answers for the handler.** It returns `true` only for a stamped marker, and only one inside the window when a window is set.
@@ -312,11 +316,13 @@ If a publish takes longer than the `DbContext` command timeout (30 seconds by th
 
 ### Delivery guarantee
 
-`ProcessedFromOutboxAtUtc` is a concurrency token, so if two processors stamp the same row only one stamp survives and the other commit fails with a logged `DbUpdateConcurrencyException`. The stamp is written after the publish, so delivery is at-least-once: a publish followed by a failed stamp publishes the message again later. Put handlers that are not naturally idempotent behind the Inbox.
+`ProcessedFromOutboxAtUtc` is a concurrency token, so if two processors stamp the same row only one stamp survives and the other commit fails with a logged `DbUpdateConcurrencyException`. The stamp is written after the publish, so a publish followed by a failed stamp can publish the message again later. A row whose publish failed is retried only while the polling processor runs and, when `OutboxMaxDispatchAttempts` is set, only until it has used its attempts; a row past that ceiling stays in the table unpublished. Put Command handlers that are not naturally idempotent behind the Inbox, and make Event handlers idempotent.
 
 ## Unit of Work
 
 `UnitOfWork<TContext>.ExecuteAsync` runs the rest of the pipeline inside an EF Core execution strategy. It begins a `ReadCommitted` transaction, or joins the one already open on the context, then calls `SaveChangesAsync`.
+
+Everything saved through `TContext` while the command runs, including your changes, the Inbox marker and the Outbox rows, commits in that transaction or rolls back with it. Work outside `TContext`, such as another `DbContext`, a separate connection or an HTTP call, is not part of it.
 
 - **It commits and disposes only what it began.** A transaction you opened yourself is saved into but left open, on success and on failure; you commit or roll it back.
 - **A rollback clears the change tracker, for its own transaction only.** After rolling back a transaction it began, it clears `TContext`'s change tracker so no entity looks saved when it was not. If you catch the failure and keep using the same `DbContext`, expect its entities to be detached. It leaves the tracker alone when it joined your transaction.

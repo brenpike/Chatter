@@ -308,7 +308,7 @@ Event handlers are not isolated from one another. The dispatcher guarantees the 
 
 Your host decides the rest:
 
-- **Effects of earlier handlers**: inside an ambient `TransactionScope`, the throw rolls back work those handlers enlisted in it. A Brokered Message Receiver using `TransactionMode.FullAtomicityViaInfrastructure` opens that scope. Work that did not enlist, such as an HTTP call, stands.
+- **Effects of earlier handlers**: inside an ambient `TransactionScope`, the throw rolls back work those handlers enlisted in it. Of the transports, only the Azure Service Bus receiver opens that scope, under `TransactionMode.FullAtomicityViaInfrastructure`. Work that did not enlist, such as an HTTP call, stands.
 - **Redelivery**: a redelivered Event runs every handler again, including those that succeeded. The Inbox deduplicates Commands, not Events, so Event handlers must be idempotent.
 - **Logging**: `EventDispatcher` logs the failure once at `Error`. When the Event came through a Brokered Message Receiver, the receiver logs it again, so expect at least two `Error` entries. A cancellation you requested is logged at `Debug` instead.
 - **Isolating a subscriber**: handlers are resolved by Event type, not by delivery, so a second queue or subscription in the same host still runs every sibling handler. A subscriber runs apart from its siblings only when it has its own delivery and a separate host whose only handler for the Event is that subscriber.

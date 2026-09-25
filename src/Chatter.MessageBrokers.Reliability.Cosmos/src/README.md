@@ -8,7 +8,7 @@
 
 **Azure Cosmos DB reliability for Chatter.MessageBrokers: the Document Tier, a Standalone Inbox Gate and a change-feed Outbox Relay.**
 
-This package makes brokered messaging reliable when your state lives in Azure Cosmos DB. It ships three primitives you can register on their own: the Document Tier commits a handler's aggregate write, its outgoing messages and its inbox dedup in one Cosmos `TransactionalBatch`; the Outbox Relay publishes pending Outbox Documents from a container's change feed; and the Standalone Inbox Gate stops a service from handling the same message twice. Your application owns the `CosmosClient` and every Cosmos resource. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
+This package makes brokered messaging reliable when your state lives in Azure Cosmos DB. It ships three primitives you can register on their own: the Document Tier stages a handler's aggregate write, its outgoing messages and its Batched Inbox Marker in one Cosmos `TransactionalBatch`; the Outbox Relay publishes pending Outbox Documents from a container's change feed; and the Standalone Inbox Gate deduplicates redelivered commands for services that keep no state in Cosmos. Your application owns the `CosmosClient` and every Cosmos resource. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
 
 ## Contents
 
@@ -60,7 +60,7 @@ dotnet add package Chatter.MessageBrokers.SqlServiceBroker
 | --- | --- | --- |
 | Document Tier | `WithCosmosDocumentReliability<TCommand>` on the Command Pipeline | A handler writes an aggregate to Cosmos and sends or publishes messages, and the write, the outgoing messages and the inbox dedup must commit together. It includes its own Outbox Relay. |
 | Standalone Outbox Relay | `AddCosmosOutboxRelay` on the service collection | You write Outbox Documents or trigger documents yourself, or want to drain a container without the Command Pipeline. |
-| Standalone Inbox Gate | `WithCosmosInbox` on the Command Pipeline | A stateless service persists nothing through Chatter but must not handle the same message twice. |
+| Standalone Inbox Gate | `WithCosmosInbox` on the Command Pipeline | A stateless service persists nothing through Chatter but wants redelivered commands skipped. Its handlers must still be idempotent; see [What handlers must guarantee](#what-handlers-must-guarantee). |
 
 Combining them:
 
@@ -222,6 +222,8 @@ The Document Tier does not read before your handler runs. It stages the Batched 
 
 A 409 on the marker is only a candidate duplicate. The behavior point-reads the conflicting document and treats the message as a duplicate only when that document is a genuine Chatter inbox marker for the same message id; anything else is redelivered. Batched Inbox Markers carry no `ttl`, so they stay in the container.
 
+Both halves hold only for a Participant whose resolver returns a partition key, and only when it returns the same key for every delivery of a message, because the marker lives in that partition: a redelivery resolved to a different key is not detected and commits again. A `null` key runs the handler with no batch and no dedup. Two deliveries in flight at once both run the handler, and after one of their batches commits, the other commits nothing.
+
 ### Several commands and containers
 
 Each registration is independent, so different command types can use different databases and containers, and many command types can share one container. Registering the same command type twice throws. The Document-Tier Outbox Relay runs one change feed processor per distinct Change-Feed Source Identity, so command types that share a container share one processor.
@@ -255,7 +257,7 @@ Cosmos change feed delivers every change in the container, so the relay admits o
 
 Everything else is skipped, including the relay's own delivered stamps, so a delivered document is never published again.
 
-**Delivery is at-least-once.** If the publish succeeds and the stamp fails, the document stays pending and is published again on a later pass, so receivers must dedup; the Document Tier's inbox marker does that. A publish that fails issues no stamp, and the lease does not advance past it.
+**Publishing can repeat.** If the publish succeeds and the stamp fails, the document stays pending and is published again on a later pass, so receivers must deduplicate, for example with the Document Tier or the Standalone Inbox Gate. A publish that fails issues no stamp, and the lease does not advance past it, so the document is tried again. An admitted document goes unpublished only in the cases described under [Outbox Body Resolver](#outbox-body-resolver) and [Stopping safely](#stopping-safely).
 
 **Processors.** The relay runs one change feed processor per Change-Feed Source Identity: the account endpoint, database and container of both the monitored and the lease container, or the pair you declared. The processor name is stable per source, so every instance of your application cooperates on one processor, and each host uses a unique instance name. A processor with no leases yet starts at the beginning of the change feed, so documents written before the first start are drained.
 
@@ -450,7 +452,7 @@ Before your handler runs, the gate creates a pending Claimed Inbox Marker keyed 
 - **Safe under concurrent execution of the same message id.** The gate dedups redeliveries, not concurrent deliveries: two deliveries of one message in flight at once both run the handler. Keeping a second delivery out while the first is in flight is the transport's job, through its message lock or session.
 - **Messages carry a `MessageId`.** A message with none throws `InvalidOperationException` before anything is written, and the handler does not run.
 
-A handler that throws leaves its pending marker in place, and the next redelivery takes it over. The marker only moves forward, from absent to pending to completed, and TTL is the only thing that removes it. Without `MarkerTimeToLive`, markers accumulate indefinitely.
+A handler that throws leaves its pending marker in place, and the next redelivery takes it over. The marker only moves forward, from absent to pending to completed, and TTL is the only thing that removes it. Without `MarkerTimeToLive`, markers accumulate indefinitely. After `MarkerTimeToLive` removes a completed marker, a redelivery of that id runs the handler again, so set it above the longest time your transport can redeliver a message.
 
 ## Configuration
 
