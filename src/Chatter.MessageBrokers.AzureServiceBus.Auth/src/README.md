@@ -53,10 +53,14 @@ The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `build
 
 ### 1. Use an endpoint-only connection string
 
-Leave out `SharedAccessKeyName`, `SharedAccessKey` and `SharedAccessSignature`. The client connects to the fully qualified namespace taken from `Endpoint`.
+Leave out `SharedAccessKeyName`, `SharedAccessKey` and `SharedAccessSignature`. The client connects to the fully qualified namespace taken from `Endpoint`. The string contains no secret, so it can live in `appsettings.json`:
 
-```text
-Endpoint=sb://<namespace>.servicebus.windows.net/
+```json
+{
+  "ConnectionStrings": {
+    "ServiceBus": "Endpoint=sb://<namespace>.servicebus.windows.net/"
+  }
+}
 ```
 
 ### 2. Register the transport with a credential mode
@@ -65,7 +69,7 @@ Endpoint=sb://<namespace>.servicebus.windows.net/
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddAzureServiceBus(asb => asb
-        .WithConnectionString("Endpoint=sb://<namespace>.servicebus.windows.net/")
+        .WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"))
         .UseAadTokenProviderWithManagedIdentity()
         .AddQueueReceiver<PlaceOrder>("orders"));
 ```
@@ -111,10 +115,12 @@ asb.UseAadTokenProviderWithManagedIdentity(
 
 ### Client secret
 
+Read the client secret from configuration, stored as described in [Storing secrets](#storing-secrets):
+
 ```csharp
 asb.UseAadTokenProviderWithSecret(
     clientId: "<app-client-id>",
-    clientSecret: builder.Configuration["<secret-key>"],
+    clientSecret: builder.Configuration["ServiceBusAuth:ClientSecret"],
     authority: "https://login.microsoftonline.com/<tenant-id>/");
 ```
 
@@ -126,11 +132,12 @@ The tenant id is the first non-empty path segment of `authority`, and deeper seg
 asb.UseAadTokenProviderWithCert(
     clientId: "<app-client-id>",
     thumbPrint: "<certificate-thumbprint>",
-    authority: "https://login.microsoftonline.com/<tenant-id>/",
-    validCertsOnly: false); // allow a self-signed certificate
+    authority: "https://login.microsoftonline.com/<tenant-id>/");
 ```
 
 The certificate is read from the `My` store, `CurrentUser` then `LocalMachine`, when this line runs at registration. `authority` is parsed as for client secret.
+
+By default the store lookup returns only a certificate that passes .NET certificate validation on this machine. To use a self-signed certificate, pass `validCertsOnly: false`; the flag changes only which certificate the lookup returns, not how any server certificate is validated.
 
 ### Interactive
 
@@ -166,7 +173,7 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddAzureServiceBus(asb =>
     {
-        asb.WithConnectionString("Endpoint=sb://<namespace>.servicebus.windows.net/");
+        asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"));
 
         if (builder.Environment.IsDevelopment())
         {
@@ -191,6 +198,17 @@ This package binds no configuration section. The endpoint-only connection string
 | `UseAadTokenProviderWithManagedIdentity(string clientId = null, Action<ManagedIdentityCredentialOptions> optBuilder = null)` | `ManagedIdentityCredential`: user-assigned when `clientId` is given, system-assigned when it is blank. |
 
 For the first three methods, `optBuilder` applies only to the `DefaultAzureCredential` fallback.
+
+### Storing secrets
+
+A client secret is the only secret these methods take. Keep it out of `appsettings.json` and source control: in development, store it with .NET user secrets; in production, supply it from an environment variable or Azure Key Vault, or switch to managed identity or a certificate so there is no secret to store.
+
+```shell
+dotnet user-secrets init
+dotnet user-secrets set "ServiceBusAuth:ClientSecret" "<client-secret>"
+```
+
+As an environment variable, the key is `ServiceBusAuth__ClientSecret`. The client id, tenant id, certificate thumbprint and endpoint-only connection string are not secrets and can stay in `appsettings.json`.
 
 ## How it works
 

@@ -109,10 +109,12 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
 ```json
 {
   "ConnectionStrings": {
-    "Orders": "Server=<server>;Database=Orders;Integrated Security=true;TrustServerCertificate=true"
+    "Orders": "Server=<server>;Database=Orders;Integrated Security=true"
   }
 }
 ```
+
+Integrated security keeps the password out of the connection string. For a SQL login, or for a local SQL Server whose certificate your machine does not trust, see [Storing secrets](#storing-secrets).
 
 ### 6. Send a command from your API
 
@@ -396,6 +398,8 @@ SEND ON CONVERSATION @handle (CAST(N'{"OrderId":"3f2b8c1e-5d4a-4b7e-9c61-0a2f4e8
 END CONVERSATION @handle;
 ```
 
+The sample uses `ENCRYPTION = OFF` because both services are in the same database. For a target service in another SQL Server instance, use `ENCRYPTION = ON`, which is what `UseConversationEncryption()` selects for the dialogs Chatter begins.
+
 ## Transactions
 
 The transaction mode comes from the receiver's `transactionMode` argument, or from the global Chatter.MessageBrokers `TransactionMode` (see [Chatter.MessageBrokers configuration](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#configuration)). All three modes are supported.
@@ -448,6 +452,17 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
         .UseConversationEncryption()
         .AddQueueReceiver<PlaceOrder>("Orders_Queue", deadLetterServicePath: "Orders_DeadLetter_Service"));
 ```
+
+### Storing secrets
+
+A connection string that contains a SQL login password is a secret. Keep it out of `appsettings.json` and source control: in development, store it with .NET user secrets; in production, supply it from an environment variable or Azure Key Vault, or use integrated security so the string holds no password.
+
+```shell
+dotnet user-secrets init
+dotnet user-secrets set "ConnectionStrings:Orders" "Server=<server>;Database=Orders;User ID=<login>;Password=<password>"
+```
+
+As an environment variable, the key is `ConnectionStrings__Orders`. `TrustServerCertificate=true` skips validation of the server's certificate. Add it only to a development user secret for a local SQL Server with a self-signed certificate, never to a shared or production connection string.
 
 ### Options
 

@@ -36,7 +36,7 @@ This package connects the Chatter.MessageBrokers abstractions to Azure Service B
 - **Message lock renewal**: PeekLock message locks are renewed while a handler runs, up to a configurable ceiling.
 - **Cross-entity transactions**: settle the received message and the messages your handler sends in one Azure Service Bus transaction.
 - **SAS or token authentication**: use a connection string with a shared access key, or any `TokenCredential` against an endpoint-only connection string.
-- **Configuration or fluent setup**: bind every option from `appsettings.json`; an explicit fluent call wins over configuration.
+- **Configuration or fluent setup**: bind options from any configuration source, such as `appsettings.json`, user secrets or environment variables; an explicit fluent call wins over configuration.
 - **Transient fault detection**: Azure Service Bus transient errors feed the Chatter.MessageBrokers retry and circuit breaker recovery policies.
 
 ## Installation
@@ -116,13 +116,14 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
 
 ### 4. Add the connection string
 
-```json
-{
-  "ConnectionStrings": {
-    "ServiceBus": "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<key-name>;SharedAccessKey=<key>"
-  }
-}
+Store the namespace connection string as a user secret, not in `appsettings.json`, because it contains a shared access key:
+
+```shell
+dotnet user-secrets init
+dotnet user-secrets set "ConnectionStrings:ServiceBus" "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<key-name>;SharedAccessKey=<key>"
 ```
+
+For production, and to connect without a key, see [Storing secrets](#storing-secrets).
 
 The `orders` and `orders-errors` queues, the `order-events` topic and its `billing` subscription must exist in the namespace.
 
@@ -391,7 +392,7 @@ A connection string that contains `SharedAccessKeyName` and `SharedAccessKey`, o
 
 ### Token credential
 
-Pass any `Azure.Core.TokenCredential` to `AddTokenProvider` with an endpoint-only connection string. The credential is used only when the connection string contains no SAS; with SAS present, SAS is used. The `Func<TokenCredential>` overload is called immediately, at registration.
+Pass any `Azure.Core.TokenCredential` to `AddTokenProvider` with an endpoint-only connection string, such as `Endpoint=sb://<namespace>.servicebus.windows.net/`, which holds no secret and can live in `appsettings.json`. The credential is used only when the connection string contains no SAS; with SAS present, SAS is used. The `Func<TokenCredential>` overload is called immediately, at registration.
 
 ```csharp
 using Azure.Identity; // from the Azure.Identity package
@@ -399,7 +400,7 @@ using Azure.Identity; // from the Azure.Identity package
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddAzureServiceBus(asb => asb
-        .WithConnectionString("Endpoint=sb://<namespace>.servicebus.windows.net/")
+        .WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"))
         .AddTokenProvider(new DefaultAzureCredential())
         .AddQueueReceiver<PlaceOrder>("orders"));
 ```
@@ -408,18 +409,23 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
 
 [Chatter.MessageBrokers.AzureServiceBus.Auth](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth) adds builder extensions for client secret, certificate, interactive and managed identity authentication, for example `asb.UseAadTokenProviderWithManagedIdentity()`. See its [README](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md).
 
+### Storing secrets
+
+A connection string that contains `SharedAccessKey` or `SharedAccessSignature` is a secret. Keep it out of `appsettings.json` and source control: in development, store it with .NET user secrets as in the [Quick start](#quick-start); in production, supply it from an environment variable or Azure Key Vault. As environment variables, `ConnectionStrings:ServiceBus` is `ConnectionStrings__ServiceBus` and the configuration-section key is `Chatter__Infrastructure__AzureServiceBus__ConnectionString`.
+
+To store no key at all, use an endpoint-only connection string with a token credential, such as managed identity through the Auth package; see [Token credential](#token-credential) and [Microsoft Entra ID with the Auth package](#microsoft-entra-id-with-the-auth-package).
+
 ## Configuration
 
 ### Configuration section
 
-`AddAzureServiceBus` binds `ServiceBusOptions` from `Chatter:Infrastructure:AzureServiceBus` whenever that section exists. Choose another section with `UseConfig("<section>")`. Keys you omit keep their defaults.
+`AddAzureServiceBus` binds `ServiceBusOptions` from `Chatter:Infrastructure:AzureServiceBus` whenever that section exists. Choose another section with `UseConfig("<section>")`. Keys you omit keep their defaults. Supply the `ConnectionString` key from a secret store, not this file; see [Storing secrets](#storing-secrets).
 
 ```json
 {
   "Chatter": {
     "Infrastructure": {
       "AzureServiceBus": {
-        "ConnectionString": "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<key-name>;SharedAccessKey=<key>",
         "MaxConcurrentCalls": 4,
         "PrefetchCount": 0,
         "EnableCrossEntityTransactions": false,

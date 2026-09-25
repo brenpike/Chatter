@@ -106,11 +106,20 @@ The chain is always `AddChatterCqrs`, then `AddMessageBrokers`, then `AddRabbitM
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddRabbitMq(rmq => rmq
-        .AddRabbitMqOptions(hostName: "localhost", userName: "guest", password: "guest")
+        .AddRabbitMqOptions(uri: builder.Configuration.GetConnectionString("RabbitMq"))
         .AddQueueReceiver<PlaceOrder>("orders", deadLetterQueuePath: "orders-deadletter"));
 ```
 
 `AddRabbitMq` lives in the `Microsoft.Extensions.DependencyInjection` namespace, so no extra `using` is needed.
+
+The connection string is an AMQP URI read from configuration. For a broker on your own machine, such as the one in [Local development with Docker Compose](#local-development-with-docker-compose), store the URI of RabbitMQ's well-known local-development `guest` account as a user secret:
+
+```shell
+dotnet user-secrets init
+dotnet user-secrets set "ConnectionStrings:RabbitMq" "amqp://guest:guest@localhost:5672/"
+```
+
+For any other broker, see [Storing secrets](#storing-secrets).
 
 ### 4. Create the queues
 
@@ -171,7 +180,7 @@ using Chatter.MessageBrokers.Receiving;
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddRabbitMq(rmq => rmq
-        .AddRabbitMqOptions(hostName: "localhost", userName: "guest", password: "guest")
+        .AddRabbitMqOptions(uri: builder.Configuration.GetConnectionString("RabbitMq"))
         .AddQueueReceiver<PlaceOrder>(
             "orders",
             errorQueuePath: "orders-errors",
@@ -323,7 +332,7 @@ using Chatter.MessageBrokers.RabbitMQ.Configuration;
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddRabbitMq(rmq => rmq
-        .AddRabbitMqOptions(hostName: "localhost", userName: "guest", password: "guest")
+        .AddRabbitMqOptions(uri: builder.Configuration.GetConnectionString("RabbitMq"))
         .WithQueueType(QueueType.Classic)
         .AddQueueReceiver<PlaceOrder>("orders", deadLetterQueuePath: "orders-deadletter"));
 ```
@@ -363,13 +372,7 @@ Options are set in code through `RabbitMqOptionsBuilder`. There is no configurat
 
 ### Connecting with a URI
 
-```json
-{
-  "ConnectionStrings": {
-    "RabbitMq": "amqp://orders-app:<password>@rabbitmq.internal:5672/orders"
-  }
-}
-```
+Read the AMQP URI from configuration. It carries the password, so store it as described in [Storing secrets](#storing-secrets) rather than in `appsettings.json`.
 
 ```csharp
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
@@ -383,12 +386,13 @@ A URI sets the host, port, virtual host and credentials in one value. When a URI
 
 ### Connecting with host settings
 
+Keep the host and user names in `appsettings.json` and the password in a secret store; see [Storing secrets](#storing-secrets).
+
 ```json
 {
   "RabbitMq": {
     "HostName": "rabbitmq.internal",
-    "UserName": "orders-app",
-    "Password": "<password>"
+    "UserName": "orders-app"
   }
 }
 ```
@@ -405,7 +409,18 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
         .AddQueueReceiver<PlaceOrder>("orders", deadLetterQueuePath: "orders-deadletter"));
 ```
 
-The host settings have no port or virtual host option: they connect to the default virtual host `/` on port 5672, or 5671 with TLS. Use a URI for any other port or virtual host. An omitted user name or password falls back to the RabbitMQ client default.
+The host settings have no port or virtual host option: they connect to the default virtual host `/` on port 5672, or 5671 with TLS. Use a URI for any other port or virtual host. An omitted user name or password falls back to the RabbitMQ client default, `guest`.
+
+### Storing secrets
+
+A RabbitMQ password, and any AMQP URI that contains one, is a secret. Keep it out of `appsettings.json` and source control: in development, store it with .NET user secrets; in production, supply it from an environment variable or a secret store such as Azure Key Vault. Store whichever value your registration reads:
+
+```shell
+dotnet user-secrets set "ConnectionStrings:RabbitMq" "amqps://orders-app:<password>@rabbitmq.internal:5671/orders"
+dotnet user-secrets set "RabbitMq:Password" "<password>"
+```
+
+As environment variables, the keys are `ConnectionStrings__RabbitMq` and `RabbitMq__Password`. The `guest` account in the [Quick start](#quick-start) and in [Local development with Docker Compose](#local-development-with-docker-compose) is for a broker on your own machine only. Everywhere else, connect as a dedicated user with the permissions in [Permissions](#permissions).
 
 ### Options
 
@@ -469,24 +484,27 @@ TLS can be turned on in two ways. Only one applies to a connection.
 - **An `amqps://` URI.** The RabbitMQ client handles TLS for the URI.
 - **`WithTls(serverName)` with host settings.** The certificate is validated against `serverName`, or `HostName` when you pass none, and the port becomes 5671.
 
-With host settings:
+With host settings, read as in [Connecting with host settings](#connecting-with-host-settings):
 
 ```csharp
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddRabbitMq(rmq => rmq
-        .AddRabbitMqOptions(hostName: "broker.example.com", userName: "orders-app", password: "<password>")
-        .WithTls("broker.example.com")
+        .AddRabbitMqOptions(
+            hostName: builder.Configuration["RabbitMq:HostName"],
+            userName: builder.Configuration["RabbitMq:UserName"],
+            password: builder.Configuration["RabbitMq:Password"])
+        .WithTls()
         .AddQueueReceiver<PlaceOrder>("orders", deadLetterQueuePath: "orders-deadletter"));
 ```
 
-With a URI:
+With a URI, store an `amqps://` URI, usually on port 5671, as `ConnectionStrings:RabbitMq` (see [Storing secrets](#storing-secrets)):
 
 ```csharp
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddRabbitMq(rmq => rmq
-        .AddRabbitMqOptions(uri: "amqps://orders-app:<password>@broker.example.com:5671/")
+        .AddRabbitMqOptions(uri: builder.Configuration.GetConnectionString("RabbitMq"))
         .AddQueueReceiver<PlaceOrder>("orders", deadLetterQueuePath: "orders-deadletter"));
 ```
 
@@ -531,13 +549,15 @@ This `definitions.json` declares the Quick start queues plus an exchange for [Pu
 
 ### Local development with Docker Compose
 
+For local development only: this file publishes the broker on localhost and keeps RabbitMQ's well-known `guest` account.
+
 ```yaml
 services:
   rabbitmq:
     image: rabbitmq:4-management
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -555,12 +575,12 @@ docker compose exec rabbitmq rabbitmqctl import_definitions /etc/rabbitmq/chatte
 
 ### Declaring from code
 
-For test fixtures or a deployment tool, declare the same objects with `RabbitMQ.Client`. Run this before your application starts, not inside it.
+For test fixtures or a deployment tool, declare the same objects with `RabbitMQ.Client`. Run this before your application starts, not inside it. The tool reads its broker URI, with the credentials of a user allowed to declare queues and exchanges, from the `RABBITMQ_URI` environment variable.
 
 ```csharp
 using RabbitMQ.Client;
 
-var factory = new ConnectionFactory { Uri = new Uri("amqp://guest:guest@localhost:5672/") };
+var factory = new ConnectionFactory { Uri = new Uri(Environment.GetEnvironmentVariable("RABBITMQ_URI")) };
 await using var connection = await factory.CreateConnectionAsync();
 await using var channel = await connection.CreateChannelAsync();
 

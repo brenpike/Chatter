@@ -207,7 +207,7 @@ When a handler throws, the whole message fails, including rows already handled f
 `WithTypesOfChangesToWatch` sets which operations the Trigger fires on. Changes you do not watch never leave the database.
 
 ```csharp
-.AddSqlChangeFeed<OrderRow>(connectionString, databaseName: null, tableName: "Orders",
+.AddSqlChangeFeed<OrderRow>(builder.Configuration.GetConnectionString("Orders"), databaseName: null, tableName: "Orders",
     optionsBuilder: o => o.WithTypesOfChangesToWatch(ChangeTypes.Insert))
 ```
 
@@ -327,6 +327,8 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
 Watching two tables takes one `AddSqlChangeFeed` call and one migration call per row type:
 
 ```csharp
+var connectionString = builder.Configuration.GetConnectionString("Orders");
+
 builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddMessageBrokers()
     .AddSqlChangeFeed<OrderRow>(connectionString, databaseName: null, tableName: "Orders")

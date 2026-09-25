@@ -219,13 +219,14 @@ builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
     .AddAzureServiceBus(asb => asb.WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus")));
 ```
 
-```json
-{
-  "ConnectionStrings": {
-    "ServiceBus": "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<key-name>;SharedAccessKey=<key>"
-  }
-}
+Store the connection string as a user secret, not in `appsettings.json`, because it contains a shared access key:
+
+```shell
+dotnet user-secrets init
+dotnet user-secrets set "ConnectionStrings:ServiceBus" "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<key-name>;SharedAccessKey=<key>"
 ```
+
+In production, supply it from an environment variable or Azure Key Vault, or connect with managed identity and no key at all; see [Storing secrets](src/Chatter.MessageBrokers.AzureServiceBus/src/README.md#storing-secrets).
 
 Publish from a handler. `context.Publish` sends to the Event's sending path, here the `order-events` topic:
 
