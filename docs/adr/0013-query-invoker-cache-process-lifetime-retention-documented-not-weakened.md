@@ -119,6 +119,18 @@ The code is unchanged by this decision.
   `IQuery<TResult>` overload, and nothing detects it afterwards.
 - **The escape hatch is the strongly-typed overload**, `Query<TQuery, TResult>`, which resolves
   `IQueryHandler<TQuery, TResult>` directly and writes nothing to the cache.
+
+  **Amended 2026-09-25 (#529): the escape hatch still holds now that query dispatch is instrumented.**
+  `Query<TQuery, TResult>` still resolves its handler directly and still writes nothing to `_invokers`; no test pins
+  that it leaves the cache untouched. With diagnostics on, it emits its span and its measurement through
+  `ChatterDiagnostics.StartDispatch<TQuery>` and `ChatterDiagnostics.RecordDispatchDuration<TQuery>`, which take the
+  names they emit from the static generic class `DispatchNames<TQuery>`. The first bullet under *What this is NOT*
+  already rules that shape out as the default-context root the unloadability documentation warns about, so the
+  instrumented overload adds no process-lifetime root keyed by a caller's `Type`. `Query<TResult>(IQuery<TResult>)`
+  carries its telemetry on the cached `QueryInvoker<TQuery, TResult>` it already resolves for the runtime query type:
+  that invoker's `StartDispatch` and `RecordDispatchDuration` make the same two calls, closed over the runtime type. It
+  adds no cache and no entry beyond the one per pair this ADR already records. The `DispatchNames<TMessage>` citation
+  above, `ChatterDiagnostics.cs:166`, is now `:162`.
 - **Option 1 remains on the table** under the revisit trigger above, and it is the option to reach for
   — a per-instance cache is not.
 

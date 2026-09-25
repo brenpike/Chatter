@@ -29,7 +29,7 @@ _Avoid_: middleware.
 **Message Dispatcher**: Routes a Command (to one handler) or an Event (to many) — `IMessageDispatcher`.
 _Avoid_: mediator (used as the pattern name, not the type).
 
-**Query Dispatcher**: Routes a Query to its `IQueryHandler<TQuery,TResult>` — `IQueryDispatcher`, separate from the Message Dispatcher. It caches one invoker per distinct Query type and Read Model type pair for the life of the process, and never evicts. See ADR-0013.
+**Query Dispatcher**: Routes a Query to its `IQueryHandler<TQuery,TResult>` — `IQueryDispatcher`, separate from the Message Dispatcher. It caches one invoker per distinct Query type and Read Model type pair for the life of the process, and never evicts. See ADR-0013. The Diagnostics Surface observes its dispatches, naming each after the Query type it resolved the handler by. See ADR-0010.
 
 **External Dispatcher**: The outbound-publish seam (`IExternalDispatcher`), a no-op by default (`NoOpExternalDispatcher`); a broker module replaces it to publish Integration Events.
 
@@ -47,7 +47,7 @@ _Avoid_: listener (a reserved alias — the .NET BCL subscription type is always
 - A Domain Event may be promoted to an Integration Event, published outward via the External Dispatcher (replaced by a broker module).
 - Message Context accompanies every dispatch through the pipeline and handlers.
 - A Context Container belongs to exactly one Message Context: a dispatch that supplies no context gets a fresh Message Context and therefore a fresh container, while a dispatch given an existing Message Context reuses that context's container. See ADR-0011.
-- The Diagnostics Surface observes Command and Event dispatch through the Message Dispatcher; Query dispatch is not instrumented, and nothing is emitted until an application subscribes.
+- The Diagnostics Surface observes Command and Event dispatch through the Message Dispatcher and Query dispatch through the Query Dispatcher; nothing is emitted until an application subscribes.
 
 ## Example dialogue
 

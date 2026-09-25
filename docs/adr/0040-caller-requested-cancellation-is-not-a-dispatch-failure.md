@@ -29,6 +29,10 @@ side: they set the span status to `Error`, tagged the span with `error.type`, ad
 recorded the duration measurement with `error.type`. Query dispatch is not instrumented, so the query seams had only
 the log.
 
+**Amended 2026-09-25 (#529): query dispatch is now instrumented.** The last sentence above describes the query seams
+before #529. Each now has a diagnostics wrapper that emits the `dispatch` span and the `chatter.cqrs.dispatch.duration`
+measurement, and applies this decision to both signals. See the 2026-09-25 amendment under *Decision*.
+
 **How long each seam has behaved this way.** The event seam and both query seams have logged cancellation as an error
 since before 0.14.0, because those methods were already `async` and so already caught faults raised after an `await`.
 The command seam joined them in 0.14.0. Before that release `CommandDispatcher.DispatchToHandler` returned the
@@ -132,6 +136,52 @@ explain falls through to the existing `LogError` clause, as before. The filter i
 caller's token for a fault. The clauses are at `src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs:60-68` and
 `:88-95`; the `INVARIANT:` on the first states the rule, and the second cites it.
 
+**Amended 2026-09-25 (#529): query dispatch is instrumented, and each query seam now classifies a fault once, as
+command and event dispatch do.** The paragraph above no longer describes the code. Neither awaiting `QueryDispatcher`
+overload has a filtered `catch (OperationCanceledException e)` clause. Both classify a fault in one private method,
+`LogDispatchFault` (`src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs:213-229`). It reads
+`CallerRequestedCancellation.Explains` once, makes one `LogDebug` or one `LogError` call as the command and event
+methods do, and returns the verdict that decides whether the span and the measurement are marked failed. It takes the
+query's `Type` as an argument, not as a type parameter, so that `Query<TResult>` can pass the runtime query type. Its
+`INVARIANT:` at `:215-220` states that the caller's token is read there and nowhere else on the fault path of either
+overload.
+
+- **`Query<TQuery, TResult>` has the command shape.** Its uninstrumented dispatch, `DispatchToHandler` (`:147-163`),
+  ends in one `catch (Exception e) when (handleFault)` (`:158-162`). The off path passes `handleFault: true`. The
+  diagnostics wrapper, `DispatchToHandlerWithDiagnostics` (`:165-202`), passes `false` and calls `LogDispatchFault` from
+  its own `catch (Exception e)` (`:176-196`), which holds no predicate: it resolves `error.type` and calls
+  `ActivityOutcome.RecordFailure` only when `LogDispatchFault` returns `true`. The `finally` records the duration once
+  (`:197-200`). That exactly one frame logs is stated in the `INVARIANT:` at `:154-157`; that one verdict decides the
+  log and both signals, at `:178-183`; and that the span and the metric are set together, at `:186-190`.
+- **`Query<TResult>` needs no `handleFault` flag.** Its off path, `DispatchByRuntimeType` (`:67-86`), and its
+  diagnostics wrapper, `DispatchByRuntimeTypeWithDiagnostics` (`:88-127`), each have exactly one frame that logs, their
+  own `catch (Exception e)` (`:81-85` and `:107-121`), because the wrapper awaits the cached invoker directly instead of
+  calling the off path. The wrapper acts on the verdict in the same way; its `INVARIANT:` is at `:109-113`, and its
+  `finally` (`:122-126`) records the duration once, through the invoker.
+
+The oracles, all in `src/Chatter.CQRS/tests/Diagnostics/WhenChatterTracingIsOptedInto.cs` unless another file is named:
+
+- **One verdict, for `Query<TQuery, TResult>`:** `MustMarkTheSpanAsFailedWhenTheCallerTokenIsSignalledOnlyAfterTheQueryFaultWasLoggedAsAnError`
+  and `MustMarkTheMeasurementWithAnErrorTypeWhenTheCallerTokenIsSignalledOnlyAfterTheQueryFaultWasLoggedAsAnError`,
+  which go red when the wrapper reads `CallerRequestedCancellation.Explains` again instead of using the verdict. No
+  such fact dispatches through `Query<TResult>`, so no test goes red if that wrapper reads the predicate again.
+- **One logging frame, for `Query<TQuery, TResult>`:** `MustWriteExactlyOneErrorRecordWhenTheCallerTokenIsSignalledOnlyAfterTheQueryFaultWasLoggedAsAnError`
+  and `WhenDispatchingGenericQuery.MustLogTheAsynchronousFaultExactlyOnceWhenDiagnosticsAreEnabled`
+  (`src/Chatter.CQRS/tests/Queries/UsingQueryDispatcher/WhenDispatchingGenericQuery.cs`), which go red when the
+  `handleFault` filter is deleted so both frames log. For `Query<TResult>`,
+  `MustLogTheFaultOnceAndEmitNoSpanAndNoMeasurementWhenNoInvokerCanBeBuiltForTheRuntimeQueryType` counts one record for
+  a fault raised while the invoker is built; no test counts the records a handler fault writes on that overload's
+  diagnostics path.
+- **A caller-requested cancellation is not marked failed:** `MustLeaveTheSpanStatusUnsetWhenTheCallerCancelledTheQueryDispatch`,
+  `MustNotMarkTheMeasurementWithAnErrorTypeWhenTheCallerCancelledTheQueryDispatch` and
+  `MustStillRecordOneDispatchDurationWhenTheCallerCancelledTheQueryDispatch` for `Query<TQuery, TResult>`, and
+  `MustLeaveTheSpanStatusUnsetAndRecordNoErrorTypeWhenTheCallerCancelledAQueryDispatchedByItsRuntimeType` for
+  `Query<TResult>`. A cancellation the caller did not request still marks both, pinned for `Query<TQuery, TResult>` by
+  `MustMarkTheSpanAndTheMeasurementAsFailedWhenTheQueryCancellationWasNotRequestedByTheCaller`.
+- **The log level:** the two query `MustLogErrorNotDebugWhenTheCancellationWasNotRequestedByTheCaller` facts now go red
+  when the condition in `LogDispatchFault` is replaced by a bare `fault is OperationCanceledException`, as the command
+  and event ones do.
+
 **The telemetry.** The command and event diagnostics wrappers, `DispatchToHandlerWithDiagnostics` and
 `DispatchToHandlersWithDiagnostics`, hold no predicate. Their `catch (Exception e)` calls `LogDispatchFault` and acts
 on the value it returns: only when it returns `true` do they resolve `error.type` and call
@@ -151,6 +201,11 @@ command or an event the log agrees with both signals by construction: the caller
 asked again, a token signalled between the two reads would leave an `Error` record beside an unmarked span and
 measurement. A query has only the log, so its one filter is its only reader. The receiver's dispatch seam still reads
 its token more than once; that is residual R3.
+
+**Amended 2026-09-25 (#529): a query is now classified like a command or an event.** The sentence "A query has only
+the log, so its one filter is its only reader" is superseded. A query now has the log and both signals, and its
+caller's token is read once per fault, in its own `LogDispatchFault`, whose verdict its diagnostics wrapper acts on.
+The shape and the oracles are recorded in the 2026-09-25 amendment above.
 
 **Why a `Debug` record rather than none, or `Information`.** A record at `Debug` is invisible at the default
 `Information` level, so it adds nothing to a normal shutdown, and it can be recovered by enabling `Debug` for the
@@ -206,6 +261,12 @@ red when the wrapper reads `CallerRequestedCancellation.Explains` again instead 
 commands, `WhenDispatching.MustLogTheAsynchronousFaultExactlyOnceWhenDiagnosticsAreEnabled`, which go red when the
 `handleFault` filter is deleted so both frames log. A query has only the log, so it has one reader already.
 
+**Amended 2026-09-25 (#529): both classes above now cover query dispatch.** The "two query clauses" named in the first
+class are gone; each query overload calls the predicate from its `LogDispatchFault`, as command and event dispatch do.
+The last sentence of the second class is superseded: a query now has the log and both signals, and it is classified
+by one read of the caller's token. Its oracles, and the gaps in them, are listed in the 2026-09-25 amendment under
+*Decision*.
+
 **ELIMINATED CLASS: "a genuine timeout is hidden because it looks like a cancellation".** The predicate requires the
 caller's token to be signalled. A timeout, or a handler's own linked token, raises the same exception type while the
 caller's token is not signalled, and it still logs at `Error` and still marks the span and the measurement failed. The
@@ -237,6 +298,10 @@ three read the worker token. Each reads it at its own point, so the only diverge
   and in both query files. The command and event ones go red when the condition in `LogDispatchFault` is replaced by a
   bare `fault is OperationCanceledException`; each query one goes red when its seam's filter is widened to
   `catch (OperationCanceledException)` with no predicate.
+
+  **Amended 2026-09-25 (#529): the query seams have no such filter any more.** Each query one now goes red, like the
+  command and event ones, when the condition in the query `LogDispatchFault` is replaced by a bare
+  `fault is OperationCanceledException`.
 - **The predicate's rule is pinned directly** by `WhenDeciding`
   (`src/Chatter.CQRS/tests/Context/UsingCallerRequestedCancellation/WhenDeciding.cs`):
   `MustExplainOperationCanceledExceptionWhenMessageHandlerContextTokenIsSignalled`,
@@ -256,6 +321,10 @@ three read the worker token. Each reads it at its own point, so the only diverge
   (`src/Chatter.CQRS/tests/Diagnostics/WhenChatterTracingIsOptedInto.cs`). A cancellation the caller did not request
   still marks both, pinned by `MustMarkTheSpanAndTheMeasurementAsFailedWhenTheCommandCancellationWasNotRequestedByTheCaller`
   and `MustMarkTheSpanAndTheMeasurementAsFailedWhenTheEventCancellationWasNotRequestedByTheCaller`.
+
+  **Amended 2026-09-25 (#529): this now holds for a Query dispatch too.** A caller-cancelled query dispatch, through
+  either overload, leaves the span status unset and records the measurement once without `error.type`; a cancellation
+  the caller did not request marks both. The query oracles are listed in the 2026-09-25 amendment under *Decision*.
 - **A Command or Event fault is logged once and classified once, even when the caller's token is signalled after the
   fault was logged at `Error`.** The span and the measurement are then marked failed, in agreement with the `Error`
   record, and no second record is written. Pinned by the six `WhenChatterTracingIsOptedInto` facts whose names end
@@ -337,6 +406,12 @@ These are decisions, not open work, and no issues are filed for them.
   its `INVARIANT:` (`:93-100`), the diagnostics wrapper's catch (`:114-136`) with its two `INVARIANT:` blocks
   (`:116-122`, `:125-130`), and `LogDispatchFault` (`:153-167`) with its `INVARIANT:` (`:155-158`).
 - `src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs` — the two log clauses (`:60-68`, `:88-95`).
+
+  **Amended 2026-09-25 (#529): re-measured.** The two log clauses are gone. `DispatchByRuntimeType` (`:67-86`) with its
+  catch (`:81-85`); `DispatchByRuntimeTypeWithDiagnostics` (`:88-127`) with its catch (`:107-121`) and that catch's
+  `INVARIANT:` (`:109-113`); the `handleFault` catch in `DispatchToHandler` and its `INVARIANT:` (`:154-162`); the
+  diagnostics wrapper's catch (`:176-196`) with its two `INVARIANT:` blocks (`:178-183`, `:186-190`); and
+  `LogDispatchFault` (`:213-229`) with its `INVARIANT:` (`:215-220`).
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs` — the receive call with
   the loop token (`:708`), the ladder's shutdown swallows (`:877-882`) and `DispatchReceivedMessageAsync`
   (`:1034-1062`), with its shutdown log clause (`:1052-1056`) and that clause's `INVARIANT:` (`:1042-1051`).
