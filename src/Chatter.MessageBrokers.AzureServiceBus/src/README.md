@@ -1,114 +1,437 @@
-# <a name="chatter-azureservicebus"></a> Chatter.MessageBrokers.AzureServiceBus
+# Chatter.MessageBrokers.AzureServiceBus
 
-Azure Service Bus transport for the technology-agnostic `Chatter.MessageBrokers` abstractions.
+[![NuGet](https://img.shields.io/nuget/v/Chatter.MessageBrokers.AzureServiceBus.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus)
+[![Downloads](https://img.shields.io/nuget/dt/Chatter.MessageBrokers.AzureServiceBus.svg)](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![CI](https://github.com/brenpike/Chatter/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/brenpike/Chatter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/brenpike/Chatter/blob/master/LICENSE)
 
-## Overview
+**Azure Service Bus transport for Chatter.MessageBrokers: queue receivers, topic subscriptions, sessions and cross-entity transactions.**
 
-`Chatter.MessageBrokers.AzureServiceBus` is the Azure Service Bus (ASB) implementation of the broker-agnostic interfaces defined in `Chatter.MessageBrokers`. It plugs an ASB sender and receiver into the messaging infrastructure so that messages dispatched and handled through your `Chatter.CQRS` command/event handlers flow over Azure Service Bus queues and topic subscriptions.
+This package connects the Chatter.MessageBrokers abstractions to Azure Service Bus. Commands arrive on queues, Events arrive on topic subscriptions, and your handlers send and publish through the same `IMessageHandlerContext` they use for in-process dispatch. It uses one shared `ServiceBusClient` per namespace and creates no entities: queues, topics, subscriptions and session-enabled entities must already exist. Part of the [Chatter](https://github.com/brenpike/Chatter) suite.
 
-The core `Chatter.MessageBrokers` package registers the broker abstraction via `IChatterBuilder.AddMessageBrokers(...)`. This package adds an `AddAzureServiceBus(...)` extension on `IChatterBuilder` that wires the concrete ASB sending/receiving components and `ServiceBusOptions`, registering an `IMessagingInfrastructure` keyed to the `ASBMessageContext.InfrastructureType`.
+## Contents
 
-Key components registered:
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Receiving](#receiving)
+- [Sending and publishing](#sending-and-publishing)
+- [Sessions](#sessions)
+- [Message lock renewal](#message-lock-renewal)
+- [Transactions](#transactions)
+- [Authentication](#authentication)
+- [Configuration](#configuration)
+- [Retry and circuit breaker](#retry-and-circuit-breaker)
+- [Diagnostics](#diagnostics)
+- [Related packages](#related-packages)
+- [Learn more](#learn-more)
+- [License](#license)
 
-- `ServiceBusReceiver` / `ServiceBusReceiverFactory` — pulls messages from queues and topic subscriptions.
-- `ServiceBusMessageSender` / `ServiceBusMessageSenderFactory` / `BrokeredMessageSenderPool` — sends/publishes outbound messages.
-- `AzureServiceBusEntityPathBuilder` — resolves queue/topic/subscription/rule paths (`IBrokeredMessagePathBuilder`).
-- `ServiceBusRetryExceptionPredicatesProvider` / `ServiceBusCircuitBreakerExceptionPredicatesProvider` — feed ASB transient-exception detection into the Chatter retry and circuit-breaker recovery policies.
+## Features
+
+- **Queue receivers and topic subscriptions**: bind Commands to queues and Events to topic subscriptions with one registration call each, or through the `[BrokeredMessage]` attribute.
+- **Per-receiver concurrency**: set `MaxConcurrentCalls` globally or per receiver; a value stated on the receiver wins.
+- **Sessions**: FIFO delivery per session, several sessions held at once, the session id surfaced as the Group Id, and durable session state.
+- **Message lock renewal**: PeekLock message locks are renewed while a handler runs, up to a configurable ceiling.
+- **Cross-entity transactions**: settle the received message and the messages your handler sends in one Azure Service Bus transaction.
+- **SAS or token authentication**: use a connection string with a shared access key, or any `TokenCredential` against an endpoint-only connection string.
+- **Configuration or fluent setup**: bind options from any configuration source, such as `appsettings.json`, user secrets or environment variables; an explicit fluent call wins over configuration.
+- **Transient fault detection**: Azure Service Bus transient errors feed the Chatter.MessageBrokers retry and circuit breaker recovery policies.
 
 ## Installation
 
-```
+```shell
 dotnet add package Chatter.MessageBrokers.AzureServiceBus
 ```
 
-## Getting Started
+Targets .NET 10 (`net10.0`).
 
-Register Chatter CQRS, the message broker abstraction, and then the Azure Service Bus transport. `AddAzureServiceBus` is chained off the `IChatterBuilder` returned by `AddMessageBrokers`:
+Dependencies: `Chatter.MessageBrokers`, `Azure.Messaging.ServiceBus` 7.20.2.
 
-```csharp
-using Microsoft.Extensions.DependencyInjection;
+Companion packages:
 
-services
-    .AddChatterCqrs(configuration)
-    .AddMessageBrokers()
-    .AddAzureServiceBus(asb =>
-    {
-        // connection can come from configuration (see Configuration below) or be set explicitly
-        asb.WithConnectionString(configuration.GetConnectionString("ServiceBus"));
-        asb.WithMaxConcurrentCalls(5);
-        asb.WithPrefetchCount(10);
+- [Chatter.MessageBrokers.AzureServiceBus.Auth](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth) for Microsoft Entra ID token authentication.
+- [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework) or [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos) for a durable Inbox and Outbox.
 
-        // register the queues/subscriptions to receive from
-        asb.AddQueueReceiver<CreateOrder>("orders-queue");
-        asb.AddTopicSubscription<OrderCreated>("order-events-topic", "order-created-subscription");
-    });
-```
+## Quick start
 
-If `WithConnectionString` is omitted, the builder reads `ServiceBusOptions` from configuration (default section `Chatter:Infrastructure:AzureServiceBus`) — see [Configuration](#configuration). A connection string from either source is required; otherwise `Build()` throws.
+The samples use `WebApplication.CreateBuilder(args)` (`builder.Services`, `builder.Configuration`) with implicit usings enabled. Any `IServiceCollection` with an `IConfiguration` works the same way.
 
-### Receiving
-
-Receivers are registered while configuring options:
+### 1. Define your messages
 
 ```csharp
-// commands -> queue (TMessage : ICommand)
-asb.AddQueueReceiver<CreateOrder>(
-    queueName: "orders-queue",
-    errorQueuePath: "orders-error",
-    transactionMode: TransactionMode.ReceiveOnly,
-    maxReceiveAttempts: 10);
+using Chatter.CQRS.Commands;
+using Chatter.CQRS.Events;
 
-// events -> topic subscription (TMessage : IEvent)
-asb.AddTopicSubscription<OrderCreated>(
-    topicName: "order-events-topic",
-    subscriptionName: "order-created-subscription",
-    maxReceiveAttempts: 10);
-```
-
-Received messages are dispatched to the matching `Chatter.CQRS` handler:
-
-```csharp
-public class CreateOrderHandler : IMessageHandler<CreateOrder>
+public class PlaceOrder : ICommand
 {
-    public Task Handle(CreateOrder message, IMessageHandlerContext context)
+    public Guid OrderId { get; set; }
+}
+
+public class OrderPlaced : IEvent
+{
+    public Guid OrderId { get; set; }
+}
+```
+
+### 2. Handle them
+
+```csharp
+using Chatter.CQRS;
+using Chatter.CQRS.Context;
+
+public class PlaceOrderHandler : IMessageHandler<PlaceOrder>
+{
+    public async Task Handle(PlaceOrder message, IMessageHandlerContext context)
     {
-        // handle the command
+        // place the order, then announce it on the "order-events" topic
+        await context.Publish(new OrderPlaced { OrderId = message.OrderId }, "order-events");
+    }
+}
+
+public class BillOrderHandler : IMessageHandler<OrderPlaced>
+{
+    public Task Handle(OrderPlaced message, IMessageHandlerContext context)
+    {
+        // bill the order
         return Task.CompletedTask;
     }
 }
 ```
 
-### Sending
-
-Within a handler you can reach ASB-specific send/publish/forward operations via the `AzureServiceBus()` extension on `IMessageHandlerContext`, which returns an `IAzureServiceBusContextDispatcher`:
+### 3. Register the transport and its receivers
 
 ```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb
+        .WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"))
+        .WithMaxConcurrentCalls(4)
+        .AddQueueReceiver<PlaceOrder>("orders", errorQueuePath: "orders-errors")
+        .AddTopicSubscription<OrderPlaced>("order-events", "billing"));
+```
+
+> **Note:** A message type registered with `AddQueueReceiver`, `AddTopicSubscription` or their session variants must not also carry the `[BrokeredMessage]` attribute. Registration throws `InvalidOperationException` when it does.
+
+### 4. Add the connection string
+
+Store the namespace connection string as a user secret, not in `appsettings.json`, because it contains a shared access key:
+
+```shell
+dotnet user-secrets init
+dotnet user-secrets set "ConnectionStrings:ServiceBus" "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<key-name>;SharedAccessKey=<key>"
+```
+
+For production, and to connect without a key, see [Storing secrets](#storing-secrets).
+
+The `orders` and `orders-errors` queues, the `order-events` topic and its `billing` subscription must exist in the namespace.
+
+### 5. Send a command from your API
+
+```csharp
+using Chatter.MessageBrokers.Sending;
+
+app.MapPost("/orders", async (PlaceOrder command, IBrokeredMessageDispatcher dispatcher) =>
+{
+    await dispatcher.Send(command, "orders");
+    return Results.Accepted();
+});
+```
+
+The command is sent to the `orders` queue, received by the queue receiver and handled by `PlaceOrderHandler`.
+
+## Receiving
+
+### Registration methods
+
+Register receivers inside the `AddAzureServiceBus(asb => ...)` delegate. Each method has two overloads: one inherits the global `MaxConcurrentCalls`, and one takes a required `int maxConcurrentCalls` directly after the path parameters.
+
+| Method | Description |
+| --- | --- |
+| `AddQueueReceiver<TMessage>(queueName, ...)` | Receives a Command (`TMessage : class, ICommand`) from a queue. |
+| `AddTopicSubscription<TMessage>(topicName, subscriptionName, ...)` | Receives an Event (`TMessage : class, IEvent`) from a topic subscription. |
+| `AddSessionQueueReceiver<TMessage>(queueName, ...)` | Receives a Command from a session-enabled queue. See [Sessions](#sessions). |
+| `AddSessionTopicSubscription<TMessage>(topicName, subscriptionName, ...)` | Receives an Event from a session-enabled topic subscription. See [Sessions](#sessions). |
+
+### Receiver parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `maxConcurrentCalls` | `int` | global `MaxConcurrentCalls` | Messages processed at once; in session mode, sessions held at once. Only on the second overload. A value below `1` throws `ArgumentOutOfRangeException` at registration. |
+| `errorQueuePath` | `string` | `null` | Queue a message is routed to once its receive attempts are exhausted. |
+| `description` | `string` | `null` | Free-text description of the receiver. |
+| `transactionMode` | `TransactionMode?` | global `TransactionMode` | Overrides the Chatter.MessageBrokers transaction mode for this receiver. See [Transactions](#transactions). |
+| `maxReceiveAttempts` | `int` | `10` | Delivery attempts before the message is dead-lettered and routed to `errorQueuePath`. |
+
+```csharp
+using Chatter.MessageBrokers.Receiving;
+
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb
+        .WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"))
+        .AddQueueReceiver<PlaceOrder>(
+            "orders",
+            maxConcurrentCalls: 8,
+            errorQueuePath: "orders-errors",
+            transactionMode: TransactionMode.ReceiveOnly,
+            maxReceiveAttempts: 5)
+        .AddTopicSubscription<OrderPlaced>("order-events", "shipping", maxConcurrentCalls: 2));
+```
+
+> **Note:** Passing the literal `default` in the `maxConcurrentCalls` position is ambiguous between the two overloads and does not compile. Pass a typed value or omit the argument.
+
+### Receivers declared with an attribute
+
+Receivers found by the Chatter.MessageBrokers `[BrokeredMessage]` assembly scan also run on Azure Service Bus when it is the default infrastructure. A sending path that is empty or equal to the receiving path means a queue; a different sending path means a topic named by the sending path and a subscription named by the receiving path. Attribute receivers always use the global `MaxConcurrentCalls`.
+
+```csharp
+using Chatter.CQRS.Events;
+using Chatter.MessageBrokers;
+
+// topic "order-events", subscription "billing"
+[BrokeredMessage("order-events", "billing", errorQueueName: "billing-errors")]
+public class OrderPlaced : IEvent
+{
+    public Guid OrderId { get; set; }
+}
+```
+
+### Receive mode
+
+The transaction mode decides how messages are received. `TransactionMode.None` receives in `ReceiveAndDelete` mode, so Azure Service Bus removes the message on receipt and a failed handler loses it. `ReceiveOnly` (the Chatter.MessageBrokers default) and `FullAtomicityViaInfrastructure` receive in `PeekLock` mode, so the message is completed, abandoned or dead-lettered after the handler runs.
+
+## Sending and publishing
+
+### From a handler
+
+Handlers send Commands and publish Events through the `Send` and `Publish` extensions on `IMessageHandlerContext` (namespace `Chatter.CQRS.Context`). The outbound message inherits the entire inbound message context; see [Inbound context inheritance](#inbound-context-inheritance).
+
+```csharp
+using Chatter.CQRS;
 using Chatter.CQRS.Context;
 
-public class OrderCreatedHandler : IMessageHandler<OrderCreated>
+public class OrderPlacedHandler : IMessageHandler<OrderPlaced>
 {
-    public async Task Handle(OrderCreated message, IMessageHandlerContext context)
+    public Task Handle(OrderPlaced message, IMessageHandlerContext context)
+        => context.Send(new ShipOrder { OrderId = message.OrderId }, "shipping");
+}
+```
+
+### From outside a handler
+
+Inject `IBrokeredMessageDispatcher` (scoped) and call `Send` or `Publish` with a destination path, as in the [Quick start](#quick-start).
+
+### Choosing the infrastructure
+
+When your application registers more than one broker, `context.AzureServiceBus()` marks the inbound message for Azure Service Bus and returns the `IMessageBrokerContext`, whose `Send`, `Publish` and `Forward` go out over Azure Service Bus. It returns `null` when the handler was not invoked by a Brokered Message Receiver. Outside a handler, select the infrastructure on the options with `options.UseMessagingInfrastructure(t => t.AzureServiceBus())`.
+
+```csharp
+await context.AzureServiceBus().Publish(new OrderPlaced { OrderId = message.OrderId }, "order-events");
+```
+
+### Azure Service Bus message properties
+
+Set these `ASBMessageContext` keys on `SendOptions` or `PublishOptions` with `WithMessageContext` (namespace `Chatter.MessageBrokers.Routing.Options`). `WithMessageContext` returns `RoutingOptions`, so call it as its own statement.
+
+| Key | Value type | Maps to |
+| --- | --- | --- |
+| `ASBMessageContext.ScheduledEnqueueTimeUtc` | `DateTime` (UTC) | `ServiceBusMessage.ScheduledEnqueueTime`. A value of any other type is ignored. |
+| `ASBMessageContext.PartitionKey` | `string` | `ServiceBusMessage.PartitionKey`. With a Group Id set, it is applied only when non-empty and must equal the Group Id. |
+| `ASBMessageContext.ViaPartitionKey` | `string` | `ServiceBusMessage.TransactionPartitionKey`. |
+| `ASBMessageContext.To` | `string` | `ServiceBusMessage.To`. |
+
+```csharp
+using Chatter.MessageBrokers.AzureServiceBus;
+using Chatter.MessageBrokers.Routing.Options;
+
+var options = new SendOptions();
+options.WithMessageContext(ASBMessageContext.ScheduledEnqueueTimeUtc, DateTime.UtcNow.AddMinutes(10));
+
+await dispatcher.Send(new PlaceOrder { OrderId = orderId }, "orders", options: options);
+```
+
+## Sessions
+
+Azure Service Bus sessions deliver messages that share a `SessionId` to one receiver in strict FIFO order. Chatter maps the session id to the Group Id: inbound, it appears under `MessageContext.GroupId`; outbound, `SendOptions.WithGroupId` sets `ServiceBusMessage.SessionId`. Session-enabled queues and subscriptions (`RequiresSession = true`) must already exist; this package does not create or enable them.
+
+### Registering a session receiver
+
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb
+        .WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"))
+        .AddSessionQueueReceiver<ProcessOrder>("orders-session", maxConcurrentCalls: 4)
+        .AddSessionTopicSubscription<OrderPlaced>("order-events", "billing-session"));
+```
+
+### Sessions held at once
+
+A session receiver holds up to `MaxConcurrentCalls` sessions at once, and each held session still delivers its messages one at a time in FIFO order. At the default of `1`, a receiver holds one session.
+
+- **Handlers must be thread-safe.** Above `1`, handlers for different sessions run concurrently in one process.
+- **Sizing multiplies across replicas.** With M replicas and `MaxConcurrentCalls` N, up to M×N sessions are locked at once. Size N against the number of sessions on the entity.
+
+### Reading the session id
+
+```csharp
+using Chatter.CQRS;
+using Chatter.CQRS.Context;
+using Chatter.MessageBrokers;
+
+public class ProcessOrderHandler : IMessageHandler<ProcessOrder>
+{
+    public Task Handle(ProcessOrder message, IMessageHandlerContext context)
     {
-        await context.AzureServiceBus()
-                     .Publish(new OrderShipped { OrderId = message.OrderId });
+        string? sessionId = null;
+        if (context.GetInboundBrokeredMessage()?.MessageContext.TryGetValue(MessageContext.GroupId, out var groupId) == true)
+        {
+            sessionId = groupId as string;
+        }
+
+        // correlate work within this session
+        return Task.CompletedTask;
     }
 }
 ```
 
-`IAzureServiceBusContextDispatcher` composes the broker abstractions `IMessageBrokerContextPublisher`, `IMessageBrokerContextSender`, and `IMessageBrokerContextForwarder`.
+### Sending to a session
+
+```csharp
+using Chatter.MessageBrokers.Routing.Options;
+
+await context.Send(new ProcessOrder { OrderId = id }, "orders-session", new SendOptions().WithGroupId(id.ToString()));
+```
+
+`WithGroupId` is enough on its own. A partition key is optional; if you set one, it must equal the Group Id, and a mismatch throws `ArgumentOutOfRangeException` from the Azure SDK before the message is sent:
+
+```csharp
+using Chatter.MessageBrokers.AzureServiceBus;
+using Chatter.MessageBrokers.Routing.Options;
+
+var options = new SendOptions().WithGroupId(id.ToString());
+options.WithMessageContext(ASBMessageContext.PartitionKey, id.ToString());
+```
+
+### Inbound context inheritance
+
+A handler that sends or publishes through `IMessageHandlerContext` inherits the entire inbound message context: every application property on the inbound message, plus the values the receiver sets from the delivery. That includes the `CorrelationId`, `Subject`, `ReplyTo`, `ReplyToSessionId`, `To`, `TimeToLive` and Group Id, so a message received in a session is sent with the same `SessionId`. On a plain queue or topic an inherited Group Id has no effect; on a session-enabled or partitioned destination it does. Chatter does not authenticate any of these values; see [Inbound header trust](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#inbound-header-trust).
+
+To opt out, supply your own Group Id on the outbound options, because options you supply win the merge. Alternatively, send through the `IBrokeredMessageDispatcher` overload that takes a `TransactionContext` instead of an `IMessageHandlerContext`; that overload does not merge the inbound context.
+
+### Session state
+
+During handling, read, write and clear durable state stored on the entity for the held session. These extensions on `IMessageHandlerContext` throw `InvalidOperationException` for a message that did not arrive through a session receiver.
+
+```csharp
+using Chatter.CQRS;
+using Chatter.CQRS.Context;
+
+public class ProcessOrderHandler : IMessageHandler<ProcessOrder>
+{
+    public async Task Handle(ProcessOrder message, IMessageHandlerContext context)
+    {
+        BinaryData? state = await context.GetSessionStateAsync(); // null when no state is set
+
+        await context.SetSessionStateAsync(BinaryData.FromString($"last-processed:{message.OrderId}"));
+
+        // when the session's work is complete:
+        // await context.ClearSessionStateAsync();
+    }
+}
+```
+
+### Session timing
+
+| Option | Builder method | Default | Description |
+| --- | --- | --- | --- |
+| `SessionIdleTimeout` | `WithSessionIdleTimeout(TimeSpan)` | `00:01:00` | How long a held session may yield no message before it is released and the receiver moves to the next session. |
+| `MaxSessionLockRenewalDuration` | `WithMaxSessionLockRenewalDuration(TimeSpan)` | `00:05:00` | Ceiling on renewing a held session's lock during long processing. After it, renewal stops and the session lock expires. |
+
+Both apply to session receivers only.
+
+## Message lock renewal
+
+For non-session receivers in `PeekLock` mode, the package renews each delivery's message lock while its handler runs, so a handler that outlasts the entity's lock duration keeps its lock. Renewal is tracked per delivery and stops at the first of: the delivery's settlement, the delivery's release after handling, the receiver closing, or the `MaxMessageLockRenewalDuration` ceiling (default 5 minutes). A handler that runs past the ceiling loses its lock and the message is redelivered.
+
+Set the ceiling with `WithMaxMessageLockRenewalDuration(TimeSpan)` or the `MaxMessageLockRenewalDuration` key. Zero or a negative duration turns message lock renewal off. `ReceiveAndDelete` deliveries have no lock to renew.
+
+## Transactions
+
+The transaction mode comes from the receiver's `transactionMode` argument, or from the global Chatter.MessageBrokers `TransactionMode` (see [Chatter.MessageBrokers configuration](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#configuration)).
+
+A receiver's own `transactionMode` wins over the global mode. Set the global mode on `AddMessageBrokers`; a `Chatter:MessageBrokers:TransactionMode` key in configuration wins over this fluent call:
+
+```csharp
+using Chatter.MessageBrokers.Receiving;
+
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers(options => options.WithTransactionMode(TransactionMode.FullAtomicityViaInfrastructure))
+    .AddAzureServiceBus(asb => asb
+        .WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"))
+        .AddQueueReceiver<PlaceOrder>("orders"));
+```
+
+| Mode | Receive mode | Behaviour |
+| --- | --- | --- |
+| `None` | `ReceiveAndDelete` | No transaction. The message is removed on receipt. |
+| `ReceiveOnly` | `PeekLock` | The message is settled after the handler runs. Sends from the handler are not part of the receive transaction. |
+| `FullAtomicityViaInfrastructure` | `PeekLock` | Settlement and the handler's sends commit or roll back together in one Azure Service Bus cross-entity transaction. |
+
+Cross-entity transactions are enabled on the shared client when any receiver's effective mode is `FullAtomicityViaInfrastructure`, or when you call `WithCrossEntityTransactions()` (or set `EnableCrossEntityTransactions` to `true`). With them on, Azure Service Bus pins the client to one top-level entity, so the host may register receivers for only one queue or one topic. Startup throws `InvalidOperationException` listing the entities when more than one distinct top-level receiver entity is registered; subscriptions on the same topic count once.
+
+> **Important:** The local Azure Service Bus emulator does not support transactions that span entities. Test `FullAtomicityViaInfrastructure` against a real namespace.
+
+## Authentication
+
+### Shared access signature
+
+A connection string that contains `SharedAccessKeyName` and `SharedAccessKey`, or a `SharedAccessSignature`, authenticates with SAS. This is the default.
+
+### Token credential
+
+Pass any `Azure.Core.TokenCredential` to `AddTokenProvider` with an endpoint-only connection string, such as `Endpoint=sb://<namespace>.servicebus.windows.net/`, which holds no secret and can live in `appsettings.json`. The credential is used only when the connection string contains no SAS; with SAS present, SAS is used. The `Func<TokenCredential>` overload is called immediately, at registration.
+
+```csharp
+using Azure.Identity; // from the Azure.Identity package
+
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb
+        .WithConnectionString(builder.Configuration.GetConnectionString("ServiceBus"))
+        .AddTokenProvider(new DefaultAzureCredential())
+        .AddQueueReceiver<PlaceOrder>("orders"));
+```
+
+### Microsoft Entra ID with the Auth package
+
+[Chatter.MessageBrokers.AzureServiceBus.Auth](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth) adds builder extensions for client secret, certificate, interactive and managed identity authentication, for example `asb.UseAadTokenProviderWithManagedIdentity()`. See its [README](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus.Auth/src/README.md).
+
+### Storing secrets
+
+A connection string that contains `SharedAccessKey` or `SharedAccessSignature` is a secret. Keep it out of `appsettings.json` and source control: in development, store it with .NET user secrets as in the [Quick start](#quick-start); in production, supply it from an environment variable or Azure Key Vault. As environment variables, `ConnectionStrings:ServiceBus` is `ConnectionStrings__ServiceBus` and the configuration-section key is `Chatter__Infrastructure__AzureServiceBus__ConnectionString`.
+
+To store no key at all, use an endpoint-only connection string with a token credential, such as managed identity through the Auth package; see [Token credential](#token-credential) and [Microsoft Entra ID with the Auth package](#microsoft-entra-id-with-the-auth-package).
 
 ## Configuration
 
-`ServiceBusOptions` is bound from configuration whenever the section exists — not only when a connection string is missing from code. The default configuration section is `Chatter:Infrastructure:AzureServiceBus` (override with `UseConfig("Your:Section")`). Keys the section omits keep their default, and an explicit fluent call still wins over a configured key (see [Precedence](#precedence-an-explicit-fluent-call-wins)).
+### Configuration section
+
+`AddAzureServiceBus` binds `ServiceBusOptions` from `Chatter:Infrastructure:AzureServiceBus` whenever that section exists. Choose another section with `UseConfig("<section>")`. Keys you omit keep their defaults. Supply the `ConnectionString` key from a secret store, not this file; see [Storing secrets](#storing-secrets).
 
 ```json
 {
   "Chatter": {
     "Infrastructure": {
       "AzureServiceBus": {
-        "ConnectionString": "Endpoint=sb://your-namespace.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...",
-        "MaxConcurrentCalls": 1,
+        "MaxConcurrentCalls": 4,
         "PrefetchCount": 0,
+        "EnableCrossEntityTransactions": false,
+        "SessionIdleTimeout": "00:01:00",
+        "MaxSessionLockRenewalDuration": "00:05:00",
+        "MaxMessageLockRenewalDuration": "00:05:00",
         "RetryPolicy": {
           "NoRetry": false,
           "MaximumRetryCount": 5,
@@ -122,302 +445,141 @@ public class OrderCreatedHandler : IMessageHandler<OrderCreated>
 }
 ```
 
-`ServiceBusOptions` properties:
+With the connection string in configuration, registration needs no fluent calls:
 
-| Property | Default | Description |
-| --- | --- | --- |
-| `ConnectionString` | (required) | Azure Service Bus namespace connection string. |
-| `MaxConcurrentCalls` | `1` | Maximum number of messages processed concurrently for a non-session receiver, or sessions held at once for a session-enabled receiver. Settable globally here or per receiver on the registration call, with the per-receiver value winning when stated. See [Sessions](#sessions). |
-| `PrefetchCount` | `0` | Number of messages eagerly fetched from the broker. |
-| `TokenCredential` | `null` | AAD `Azure.Core.TokenCredential` (see [Authentication](#authentication)). |
-| `SessionIdleTimeout` | `00:01:00` (60 s) | How long a held session may yield no message before it is released and the receiver rolls. Applies only to session-enabled receivers. |
-| `MaxSessionLockRenewalDuration` | `00:05:00` (5 min) | Ceiling on how long a held session's lock is renewed for long-running processing. Applies only to session-enabled receivers. |
-| `RetryPolicy:NoRetry` | `false` | Set to `true` to disable Azure SDK client retry outright (`MaxRetries = 0`). This is the intention-revealing way to switch retry off — see [Client retry](#client-retry-retrypolicy). |
-| `RetryPolicy:MaximumRetryCount` | SDK default | Maximum retry attempts. Omit the key to keep the SDK default; a stated value is carried to `ServiceBusRetryOptions.MaxRetries`, which accepts `0` through `100`. A stated `0` is carried faithfully and disables client retry; `NoRetry` says the same thing in an intention-revealing way. |
-| `RetryPolicy:MinimumBackoffInSeconds` | SDK default | Base backoff the exponential delay is calculated from (`ServiceBusRetryOptions.Delay`). Omit the key to keep the SDK default; a stated value is carried to the Azure SDK unchanged. |
-| `RetryPolicy:MaximumBackoffInSeconds` | SDK default | Ceiling on the delay between attempts (`ServiceBusRetryOptions.MaxDelay`). Omit the key to keep the SDK default; a stated value is carried to the Azure SDK unchanged. |
-| `RetryPolicy:DeltaBackoffInSeconds` | `0` | Accepted for configuration compatibility and **ignored** — `Azure.Messaging.ServiceBus` has no per-attempt delta-backoff knob. |
+```csharp
+builder.Services.AddChatterCqrs(builder.Configuration, typeof(Program).Assembly)
+    .AddMessageBrokers()
+    .AddAzureServiceBus(asb => asb.AddQueueReceiver<PlaceOrder>("orders"));
+```
 
-**Tuning note: `PrefetchCount` is not a throughput lever for a slow handler.** A prefetched message is buffered client-side, and its lock starts ageing the moment it is fetched, not the moment a handler picks it up. With a slow handler, the Nth prefetched message can sit for roughly N times the handler duration before it is served. In session mode this compounds, because a buffered message ages against the session lock rather than the message lock. Reach for `MaxConcurrentCalls` for throughput instead; the knob itself, and its default, are unchanged by this release.
+### Options
 
-### `ServiceBusOptionsBuilder` methods
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `ConnectionString` | `string` | — (required) | Namespace connection string. Registration throws when neither configuration nor `WithConnectionString` supplies one. |
+| `MaxConcurrentCalls` | `int` | `1` | Messages processed at once per receiver; sessions held at once for a session receiver. Must be at least `1`, checked when the receiver starts. |
+| `PrefetchCount` | `int` | `0` | Messages fetched ahead of the handler. Passed to the Azure SDK receiver options. |
+| `EnableCrossEntityTransactions` | `bool` | `false` | Forces cross-entity transactions on. See [Transactions](#transactions). |
+| `SessionIdleTimeout` | `TimeSpan` | `00:01:00` | See [Session timing](#session-timing). |
+| `MaxSessionLockRenewalDuration` | `TimeSpan` | `00:05:00` | See [Session timing](#session-timing). |
+| `MaxMessageLockRenewalDuration` | `TimeSpan` | `00:05:00` | See [Message lock renewal](#message-lock-renewal). |
+| `RetryPolicy:NoRetry` | `bool` | `false` | `true` turns Azure SDK client retry off. See [Client retry policy](#client-retry-policy). |
+| `RetryPolicy:MaximumRetryCount` | `int?` | SDK default | Maps to `ServiceBusRetryOptions.MaxRetries`. |
+| `RetryPolicy:MinimumBackoffInSeconds` | `double?` | SDK default | Maps to `ServiceBusRetryOptions.Delay`. |
+| `RetryPolicy:MaximumBackoffInSeconds` | `double?` | SDK default | Maps to `ServiceBusRetryOptions.MaxDelay`. |
+| `RetryPolicy:DeltaBackoffInSeconds` | `double?` | — | Accepted and ignored. |
+| `RetryOptions` | `ServiceBusRetryOptions` | `null` | Resolved client retry options. Set through the builder or `RetryPolicy`; not bindable directly. |
+| `TokenCredential` | `TokenCredential` | `null` | Set with `AddTokenProvider`; not reachable from configuration. |
 
-The `AddAzureServiceBus(asb => ...)` delegate exposes a `ServiceBusOptionsBuilder`:
+### Builder methods
 
-| Method | Purpose |
+| Method | Description |
 | --- | --- |
-| `WithConnectionString(string)` | Sets the namespace connection string in code. |
-| `WithMaxConcurrentCalls(int)` | Sets `MaxConcurrentCalls`. |
+| `WithConnectionString(string)` | Sets the connection string. |
+| `WithMaxConcurrentCalls(int)` | Sets the global `MaxConcurrentCalls`. |
 | `WithPrefetchCount(int)` | Sets `PrefetchCount`. |
-| `WithNoRetry()` | Sets `RetryOptions` to a `ServiceBusRetryOptions` with `MaxRetries = 0`. |
-| `WithExponentialDelay(maximumRetryCount, maximumBackoffInSeconds, minimumBackoffInSeconds, deltaBackoffInSeconds)` | Sets `RetryOptions` to a `ServiceBusRetryOptions` with `Mode = ServiceBusRetryMode.Exponential`, `MaxRetries = maximumRetryCount`, `Delay = minimumBackoffInSeconds`, and `MaxDelay = maximumBackoffInSeconds`. `deltaBackoffInSeconds` is accepted for source compatibility and has no effect. |
-| `UseConfig(configSectionName)` | Binds `ServiceBusOptions` from the given configuration section (default `Chatter:Infrastructure:AzureServiceBus`). |
-| `AddTokenProvider(TokenCredential)` / `AddTokenProvider(Func<TokenCredential>)` | Supplies an AAD `Azure.Core.TokenCredential`; the `Func<TokenCredential>` overload is invoked eagerly at registration, not deferred (see [Authentication](#authentication)). |
-| `WithSessionIdleTimeout(TimeSpan)` | Overrides how long a held session may yield no message before rolling to the next. Default: 60 s. See [Sessions](#sessions). |
-| `WithMaxSessionLockRenewalDuration(TimeSpan)` | Overrides the ceiling on held-session lock renewal. Default: 5 min. See [Sessions](#sessions). |
-| `AddQueueReceiver<TMessage>(...)` | Registers a queue receiver for an `ICommand`. |
-| `AddQueueReceiver<TMessage>(queueName, maxConcurrentCalls, ...)` | Registers a queue receiver for an `ICommand` that states its own `MaxConcurrentCalls` instead of inheriting the global value. |
-| `AddSessionQueueReceiver<TMessage>(...)` | Registers a session-enabled queue receiver for an `ICommand`. See [Sessions](#sessions). |
-| `AddSessionQueueReceiver<TMessage>(queueName, maxConcurrentCalls, ...)` | Registers a session-enabled queue receiver for an `ICommand` that states its own `MaxConcurrentCalls` — in session mode, sessions held at once. See [Sessions](#sessions). |
-| `AddTopicSubscription<TMessage>(...)` | Registers a topic subscription receiver for an `IEvent`. |
-| `AddTopicSubscription<TMessage>(topicName, subscriptionName, maxConcurrentCalls, ...)` | Registers a topic subscription receiver for an `IEvent` that states its own `MaxConcurrentCalls` instead of inheriting the global value. |
-| `AddSessionTopicSubscription<TMessage>(...)` | Registers a session-enabled topic subscription receiver for an `IEvent`. See [Sessions](#sessions). |
-| `AddSessionTopicSubscription<TMessage>(topicName, subscriptionName, maxConcurrentCalls, ...)` | Registers a session-enabled topic subscription receiver for an `IEvent` that states its own `MaxConcurrentCalls` — in session mode, sessions held at once. See [Sessions](#sessions). |
+| `WithCrossEntityTransactions(bool enabled = true)` | Sets `EnableCrossEntityTransactions`. |
+| `WithSessionIdleTimeout(TimeSpan)` | Sets `SessionIdleTimeout`. |
+| `WithMaxSessionLockRenewalDuration(TimeSpan)` | Sets `MaxSessionLockRenewalDuration`. |
+| `WithMaxMessageLockRenewalDuration(TimeSpan)` | Sets `MaxMessageLockRenewalDuration`. |
+| `WithNoRetry()` | Turns client retry off (`MaxRetries = 0`). |
+| `WithExponentialDelay(int maximumRetryCount, double maximumBackoffInSeconds, double minimumBackoffInSeconds, double deltaBackoffInSeconds)` | Exponential client retry with `MaxRetries`, `MaxDelay` and `Delay` from the arguments. `deltaBackoffInSeconds` is ignored. |
+| `AddTokenProvider(TokenCredential)` | Supplies a token credential. See [Authentication](#authentication). |
+| `AddTokenProvider(Func<TokenCredential>)` | Same, from a factory called immediately. |
+| `UseConfig(string configSectionName = "Chatter:Infrastructure:AzureServiceBus")` | Binds options from the named section. |
+| `AddServiceBusOptions(string configSectionName)` | Obsolete; use `UseConfig`. |
 
-### Precedence: an explicit fluent call wins
+### Precedence
 
-The builder seeds `ServiceBusOptions` with its defaults, binds the configuration section over that instance — its public surface only, and never replacing the instance — and then applies the fluent values last. Each fluent value is held in a nullable sentinel (`int?`, `bool?`, `TimeSpan?`), so the builder can tell "never called" from "called with the default value" and applies only the calls that were actually made. A key present in configuration therefore wins over the builder default, while an explicit fluent call wins over configuration — in either direction, so `WithMaxConcurrentCalls(1)` overrides a configured `5` exactly as `WithMaxConcurrentCalls(5)` overrides a configured `1`. A key absent from configuration and never set fluently keeps the default.
+An explicit fluent call wins over configuration, in either direction: `WithMaxConcurrentCalls(1)` overrides a configured `5`. A key present in configuration wins over the default, and an option set by neither keeps the default. `WithNoRetry()` and `WithExponentialDelay(...)` override the whole `RetryPolicy` section, which is then never read.
 
-### Per-receiver `MaxConcurrentCalls`: specificity beats source
+Chatter.MessageBrokers resolves the other way: its configuration wins over its fluent calls. An application that configures both packages sees the same-looking call behave differently in each.
 
-Each of the four registration methods above has a `maxConcurrentCalls` overload that lets one receiver state its own value at REGISTRATION, as an argument to the registration entry point, instead of inheriting the global `ServiceBusOptions.MaxConcurrentCalls`. **When a receiver states its own value, that value wins — whatever source the global value came from.** A stated per-receiver value beats a global value set fluently and beats a global value bound from configuration alike; specificity decides, and the source of the global does not enter into it. This sits ALONGSIDE the fluent-beats-configuration rule above and does not contradict it — that rule resolves a conflict between two SOURCES for the SAME value, this one resolves a conflict between two SCOPES (global vs. per-receiver), and both apply: the global value is resolved fluent-first from its own two sources, and only then does a stated per-receiver value win over it.
+### Per-receiver concurrency
 
-**Known limitation:** a per-receiver `MaxConcurrentCalls` cannot currently be expressed in configuration at all. `ServiceBusOptions` carries global scalars with no receivers collection, the core `ReceiverOptions` is not on the bindable surface (`src/Chatter.MessageBrokers/src/README.md`), and `BrokeredMessageAttribute` carries no concurrency property. Registration is therefore the only place a per-receiver value can be stated, and a receiver discovered by the attribute scan always inherits the global.
-
-A stated `maxConcurrentCalls` below `1` throws immediately at the registration call; registering the same receiver path twice with two different stated values also throws. The original overloads that omit `maxConcurrentCalls` are unchanged and still bind, so adding a per-receiver value to an existing registration is both source- and binary-compatible — with the single exception of a call passing the literal `default` in that argument position, which is ambiguous and must be written as an explicit typed value or have the argument omitted.
-
-In session mode `MaxConcurrentCalls` means sessions held at once, not messages — see [Sessions](#sessions).
-
-The bind surface is deliberately narrow. `RetryPolicy` is the one non-public configuration property that has to bind, so it is bound explicitly from its own `RetryPolicy` subsection rather than by opening the whole type to the binder. Two things together keep `RetryOptions` and `TokenCredential` unreachable from configuration: that narrow surface, and the fact that both properties are null when the bind runs. Both are left null-defaulted deliberately — neither the null default nor the narrow surface may be changed without re-checking that configuration still cannot reach either property.
-
-The same rule covers retry: `WithNoRetry()` and `WithExponentialDelay(...)` beat a configured `RetryPolicy` section. The effective `ServiceBusRetryOptions` are resolved once, at the end of `Build()`, from the first source that stated any — the fluent call, then the bound `RetryPolicy` section, then the SDK default — so a section-derived one is never constructed at all when a fluent call was made. A configured `RetryPolicy` block the fluent call overrides is therefore never turned into `ServiceBusRetryOptions` at all, which is deliberate: its values are never handed to the Azure SDK, so a retry policy the host was never going to use can no longer stop it from starting.
-
-`Chatter.MessageBrokers` applies the opposite rule: its builders carry no nullable sentinel, so configuration is bound last and wins — over the builder default and over an explicit fluent call alike. The divergence is deliberate, and an application that configures both modules needs to know that the same-looking fluent call is authoritative in one module and overridable in the other.
+A `maxConcurrentCalls` stated on a receiver registration wins over the global value, whatever source the global value came from. The global value is resolved first (fluent, then configuration, then default), and a stated per-receiver value then replaces it for that receiver. A per-receiver value cannot be set in configuration, and attribute receivers always use the global value. Registering the same receiver path twice with different stated values throws.
 
 ### Every injection style resolves the same options instance
 
-`ServiceBusOptions` is registered twice over the one instance the builder finished: once as the concrete type, and once behind `IOptions<ServiceBusOptions>`, `IOptionsSnapshot<ServiceBusOptions>` and `IOptionsMonitor<ServiceBusOptions>`. All four resolve the same object — connection string guarded, section bound, fluent values applied, retry options resolved — so nothing that reads the options can see a differently built one. Previously the three facets went to the container's own options factory, which produced a fresh, all-default `ServiceBusOptions` whose `ConnectionString` was `null`; nothing inside this package injects those facets, so that instance was reachable only by an application resolving a facet itself.
+`ServiceBusOptions` is registered as the concrete type and as `IOptions<ServiceBusOptions>`, `IOptionsSnapshot<ServiceBusOptions>` and `IOptionsMonitor<ServiceBusOptions>`. All four resolve the one fully built instance, and no half-built instance can be resolved. The options are built once and never reload, so `IOptionsMonitor` change callbacks never fire. A `services.Configure<ServiceBusOptions>(...)` registration is not consulted; configure the options fluently or through the configuration section.
 
-`IOptionsMonitor<ServiceBusOptions>` is supported for resolution only. The section is bound once, while the options are being built, so the options never reload and the change callback is inert. Named options are not a concept in this package either — every name, including none, resolves the same built instance.
+### Prefetch tuning
 
-**Behaviour change:** a `services.Configure<ServiceBusOptions>(...)` registration of your own is **no longer consulted**, because the facets are bound directly to the built instance and never go through the options factory. No known application relies on it, but it is a public behaviour change: configure the options fluently or through the `Chatter:Infrastructure:AzureServiceBus` section instead.
+`PrefetchCount` is not a throughput setting for a slow handler. A prefetched message's lock starts ageing when it is fetched, not when a handler picks it up, so with a slow handler the Nth buffered message waits roughly N handler durations. In session mode it ages against the session lock. Raise `MaxConcurrentCalls` for throughput instead.
 
-`Chatter.MessageBrokers` applies the same rule to `MessageBrokerOptions`, `ReliabilityOptions`, `RecoveryOptions` and `CircuitBreakerOptions`. It is not applied across the whole suite: `Chatter.MessageBrokers.RabbitMQ` and `Chatter.MessageBrokers.SqlServiceBroker` still register only the concrete options singleton, deliberately — neither registers a `Configure<T>`, so neither has anything divergent to close.
+### Other APIs
 
-### Retry and Circuit Breaker (receiving)
-
-Receive-side recovery is driven by the broker-agnostic retry and circuit-breaker policies in `Chatter.MessageBrokers.Recovery`. This package contributes ASB-aware transient-exception detection:
-
-- `ServiceBusRetryExceptionPredicatesProvider` (`IRetryExceptionPredicatesProvider`)
-- `ServiceBusCircuitBreakerExceptionPredicatesProvider` (`ICircuitBreakerExceptionPredicatesProvider`)
-
-Both treat a `ServiceBusException` as transient when its `IsTransient` is `true`, or when its `Reason` is `ServiceBusFailureReason.ServiceCommunicationProblem`, `ServiceBusFailureReason.ServiceBusy`, or `ServiceBusFailureReason.ServiceTimeout`. The per-receiver `maxReceiveAttempts` (default `10`) bounds redelivery attempts before a message is routed to its configured `errorQueuePath`.
-
-#### Client retry (`RetryPolicy`)
-
-Separately from the Chatter recovery policies above, the Azure SDK's own `ServiceBusClient` retries transient failures on the wire. The `Chatter:Infrastructure:AzureServiceBus:RetryPolicy` section configures *that* retry, and **it now takes effect**. Earlier versions read the surrounding section in a way that discarded it, so an entire `RetryPolicy` block did nothing at all; a populated section is now carried onto the single shared `ServiceBusClient` as `ServiceBusClientOptions.RetryOptions`. If you have had a `RetryPolicy` section in `appsettings` all along, expect it to start being honored on this version — and to start reaching the Azure SDK, so a value the SDK could never run with now stops the host at startup instead of being quietly discarded.
-
-A fluent `WithNoRetry()` or `WithExponentialDelay(...)` settles the retry options on its own and the configuration below is not consulted at all — see [Precedence: an explicit fluent call wins](#precedence-an-explicit-fluent-call-wins). With no fluent retry call, three rules decide the resulting `ServiceBusRetryOptions`, and nothing is inferred beyond them:
-
-| Configuration | Resulting `ServiceBusRetryOptions` |
+| Method | Description |
 | --- | --- |
-| No `Chatter:Infrastructure:AzureServiceBus` section at all | `RetryOptions` is left **unset** (`null`). Nothing was bound, so no source stated a retry policy and none is invented. The SDK applies its own defaults on the client. |
-| The Service Bus section exists, but has no `RetryPolicy` subsection or an empty one | An explicit `ServiceBusRetryOptions` carrying the SDK's own defaults for every parameter, with `Mode = Exponential`. |
-| `RetryPolicy:NoRetry` is `true` | `MaxRetries = 0` — client retry disabled. |
-| Any other populated `RetryPolicy` | `Mode = Exponential`, with `MaxRetries`, `Delay` and `MaxDelay` taken from `MaximumRetryCount`, `MinimumBackoffInSeconds` and `MaximumBackoffInSeconds` respectively — each one whenever its key was stated, and the SDK default for that parameter when the key was omitted. |
+| `context.AzureServiceBus()` | Routes the handler's outbound messages over Azure Service Bus and returns `IMessageBrokerContext`; `null` outside a receiver-invoked handler. |
+| `InfrastructureTypes.AzureServiceBus()` | The Azure Service Bus infrastructure type, for `UseMessagingInfrastructure(t => t.AzureServiceBus())`. |
+| `pipeline.WithTransactionScopeSupressionBehavior()` | Command Pipeline behavior (namespace `Chatter.MessageBrokers.AzureServiceBus.Receiving`) that suppresses the ambient `TransactionScope` around command handling when the message was received with a `TransactionContext`. |
 
-An absent key and a stated one are distinguishable because every numeric parameter of the `RetryPolicy` section is nullable. Absent means the key was never written: the SDK default for that parameter stands and nothing is passed to the SDK. Stated means an operator wrote it: the value is passed to the SDK unchanged, so one the SDK could not run with is refused there instead of being silently replaced by that same default. A stated `MaximumRetryCount` of `0` is a value the SDK accepts, so it binds faithfully to `MaxRetries = 0` and client retry is off; `RetryPolicy:NoRetry` says the same thing outright and is the intention-revealing form. That binding is deliberate and settled: zero retries is legitimate operator intent, so a stated zero keeps binding to `MaxRetries = 0` rather than being rewritten into the `RetryPolicy:NoRetry` opt-in on your behalf.
+## Retry and circuit breaker
 
-`DeltaBackoffInSeconds` is accepted so that an existing `RetryPolicy` section still binds without error, but it is **ignored**: `Azure.Messaging.ServiceBus` has no per-attempt delta-backoff knob to map it onto, and the value is not folded into any of the other parameters either. The fluent `WithExponentialDelay(...)` treats its own `deltaBackoffInSeconds` argument the same way, for the same reason.
+### Receive-side recovery
 
-**Where each `ServiceBusOptions` key is checked.** A key of the wrong TYPE never reaches a sink at all: it fails during `Build()`, in the configuration binder, with an `InvalidOperationException` naming the full key path — `Chatter:Infrastructure:AzureServiceBus:RetryPolicy:MaximumRetryCount`, say. That applies to every bound key, `RetryPolicy` and public alike, and it is the one configuration failure that names the key you wrote. Every key that DOES convert is then checked at its sink rather than while the options are built. A stated `RetryPolicy` value is handed to the Azure SDK as the retry options are constructed, so a value the SDK cannot run with is refused there and the host does not start — the failure comes from the SDK and does not name the configuration key you wrote. `MaxConcurrentCalls` is checked when a receiver initializes, which raises an `InvalidOperationException` naming the receiver and the offending value when it is below `1`. `PrefetchCount` is handed to the Azure SDK's `ServiceBusReceiverOptions.PrefetchCount` when a receiver is created, and the SDK is the authority on what it accepts. `DeltaBackoffInSeconds` is checked nowhere, because it is ignored everywhere — see above, and it stays the one configuration-reachable value nothing refuses. Nothing in this package aggregates these into one named failure, and this package adds no retry validation rule of its own — a deliberate decision rather than a gap. Each stated `RetryPolicy` value is offered to its own `ServiceBusRetryOptions` setter — `MaximumRetryCount` to `MaxRetries`, `MinimumBackoffInSeconds` to `Delay`, `MaximumBackoffInSeconds` to `MaxDelay` — and that setter is the authority: it already refuses a value it cannot run with while the options are being built, with nothing yet registered in the service collection. A rule here could only repeat the predicate that setter already applies, and one that diverged from it would refuse a value this package accepts today. The bounds those setters enforce on `MaxRetries` and on `Delay`, together with `MaxDelay`'s non-negative rule, are pinned by characterization tests that read each bound from the setter itself at run time instead of restating it as a constant here, so a bound the SDK moves is observed rather than silently outgrown.
+Failed receives and handlers are retried by the Chatter.MessageBrokers retry and circuit breaker policies (see [Recovery](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#recovery)). This package tells those policies which errors are transient: a `ServiceBusException` whose `IsTransient` is `true`, or whose `Reason` is `ServiceCommunicationProblem`, `ServiceBusy` or `ServiceTimeout`. After `maxReceiveAttempts` deliveries, a message is dead-lettered and, by default, routed to the receiver's `errorQueuePath`.
 
-## Authentication
+### Client retry policy
 
-The connection string above uses SAS-based auth. Azure Active Directory (AAD) authentication — via an `Azure.Core.TokenCredential` (falling back to `DefaultAzureCredential` when no explicit credential is given) — is provided by the sibling package [`Chatter.MessageBrokers.AzureServiceBus.Auth`](#chatter-azureservicebus-auth). When a token credential is supplied (via `AddTokenProvider(...)`) and the connection string contains no SAS token/key, that credential is used to authenticate to the namespace.
+The Azure SDK `ServiceBusClient` also retries transient failures on the wire. Its `ServiceBusRetryOptions` are resolved once. A fluent `WithNoRetry()` or `WithExponentialDelay(...)` wins outright; otherwise:
 
-## Testing
+| Configuration | Resulting client retry options |
+| --- | --- |
+| No `Chatter:Infrastructure:AzureServiceBus` section | Unset (`null`); the Azure SDK uses its defaults. |
+| Section present, no `RetryPolicy` subsection | `ServiceBusRetryOptions` with the SDK defaults. |
+| `RetryPolicy:NoRetry` is `true` | `MaxRetries = 0`; client retry is off. |
+| Any other `RetryPolicy` | Exponential mode. Each stated key maps to its SDK setting; each omitted key keeps the SDK default. |
 
-### Real-namespace cross-entity transaction tests
+A stated value is passed to the SDK unchanged, so `MaximumRetryCount: 0` also turns retry off; `NoRetry` says so explicitly. `DeltaBackoffInSeconds` is accepted so existing sections still bind, and is ignored because the Azure SDK has no equivalent.
 
-The `FullAtomicityViaInfrastructure` mode relies on Azure Service Bus cross-entity (multi-top-level-entity) transactions. The local Service Bus emulator **cannot** exercise these — it throws `Local transactions cannot span multiple top-level entities` — so the cross-entity atomic commit/rollback tests run only against a **real** Azure Service Bus namespace. They are tagged `Category=RealNamespaceIntegration` (deliberately *not* `Category=Integration`, so the emulator test lane never selects them).
+### Where each key is validated
 
-These tests **skip cleanly** when no real namespace is configured, so a plain `dotnet test` stays green without any Azure resources.
+- A key of the wrong type fails at registration with an `InvalidOperationException` naming the full key path.
+- `RetryPolicy` values are validated by the Azure SDK's `ServiceBusRetryOptions` setters at registration; an out-of-range value stops the host, and the error does not name the configuration key.
+- `MaxConcurrentCalls` below `1` fails when the receiver starts, naming the receiver and the value.
+- `PrefetchCount` is validated by the Azure SDK when a receiver is created.
+- `DeltaBackoffInSeconds` is never validated, because it is ignored.
 
-**Run locally:** set the `CHATTER_ASB_REAL_NAMESPACE_CONNECTION_STRING` environment variable to a connection string for a real Azure Service Bus namespace. The string must carry the **Manage** claim, because the test fixture creates and deletes uniquely-named queues (per run) via the Service Bus administration client.
+## Diagnostics
 
-```bash
-export CHATTER_ASB_REAL_NAMESPACE_CONNECTION_STRING="Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<key>"
-dotnet test src/Chatter.MessageBrokers.AzureServiceBus/tests/Chatter.MessageBrokers.AzureServiceBus.Tests.csproj --filter 'Category=RealNamespaceIntegration'
-```
+This package emits no telemetry of its own. Broker spans and metrics come from the `Chatter.MessageBrokers` `ActivitySource` and `Meter`; see [Chatter.MessageBrokers diagnostics](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#diagnostics). With tracing on, the W3C `traceparent` header rides the message application properties in both directions (see [Trace context propagation](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#trace-context-propagation)).
 
-When the variable is unset (or blank) the tests are skipped at discovery time.
+### Diagnostic-Id interop
 
-**Run in CI:** the `real-namespace-integration` job in `.github/workflows/ci.yml` runs this lane. Configure a GitHub Actions **repository secret** named `CHATTER_ASB_REAL_NAMESPACE_CONNECTION_STRING` (Manage-claim connection string) for it to execute. Without the secret (forks, or repos that have not configured it) the job is a clean no-op and never fails CI.
+The Azure Service Bus SDK stamps its legacy `Diagnostic-Id` only when a message carries no correlation identifier. Because Chatter writes `traceparent`, the SDK is expected not to stamp `Diagnostic-Id` on messages Chatter sends. The presence of both mechanisms in the shipped SDK assemblies is verified; the short-circuit itself comes from the Azure SDK's published source and is not verified in this repository.
 
-## Sessions
+If your correlation depends on `Diagnostic-Id`, enable the SDK's `ActivitySource` support so it reads `traceparent`. Set it at process start, before the first Azure SDK type is used:
 
-Azure Service Bus message sessions deliver messages sharing the same `SessionId` to a single receiver in strict FIFO order. Chatter surfaces this through the existing Group Id term: inbound `SessionId` appears as `MessageContext.GroupId`; outbound session addressing reuses `SendOptions.WithGroupId`. No new session-specific API is introduced on the core.
-
-Session-enabled entities (queues or subscriptions with `RequiresSession = true`) must be provisioned externally. The adapter does not auto-create or auto-enable them, consistent with the module's no-auto-provision stance.
-
-### Registering a session-enabled receiver
-
-Use `AddSessionQueueReceiver` for Commands and `AddSessionTopicSubscription` for Events in place of their non-session counterparts:
-
-```csharp
-services
-    .AddChatterCqrs(configuration)
-    .AddMessageBrokers()
-    .AddAzureServiceBus(asb =>
-    {
-        asb.WithConnectionString(configuration.GetConnectionString("ServiceBus"));
-
-        // session-enabled queue (Commands)
-        asb.AddSessionQueueReceiver<ProcessOrder>("orders-session-queue");
-
-        // session-enabled topic subscription (Events)
-        asb.AddSessionTopicSubscription<OrderPlaced>("order-events-topic", "order-placed-session-sub");
-    });
-```
-
-### Sessions held at once
-
-A session-enabled receiver holds up to `MaxConcurrentCalls` sessions at once — settable globally on `ServiceBusOptions` or per receiver on `AddSessionQueueReceiver` / `AddSessionTopicSubscription` (see [`ServiceBusOptionsBuilder` methods](#servicebusoptionsbuilder-methods) and [specificity beats source](#per-receiver-maxconcurrentcalls-specificity-beats-source)). Within each held session, messages are still delivered one at a time in strict FIFO order per Group Id — that guarantee is unchanged. At `MaxConcurrentCalls = 1` (the default) a receiver holds exactly one session, exactly as before this knob took effect for session receivers.
-
-```csharp
-asb.AddSessionQueueReceiver<ProcessOrder>("orders-session-queue", maxConcurrentCalls: 5);
-```
-
-**Handler state must be thread-safe or per-scope.** With `MaxConcurrentCalls` above `1`, handlers for different sessions now run concurrently within one process; a static field, a cached client with per-call mutable state, or a non-thread-safe collection captured in a closure is now reached from several threads at once where it previously was not.
-
-**Sizing is a product, not a sum.** A receiver holding N sessions issues up to N concurrent session-accept waits when fewer sessions are available than N — a child with no session available simply waits, costing an idle connection, not a fault. Across M replicas the deployment holds up to M-by-N locked sessions at once; size N against the entity's session population, not against the handler alone.
-
-To keep the previous single-session-at-a-time behaviour explicitly, state `maxConcurrentCalls: 1` on the receiver or set the global `MaxConcurrentCalls` to `1`.
-
-### Reading the session id in a handler
-
-The inbound `SessionId` is surfaced as `MessageContext.GroupId`. Handlers read it through the broker-agnostic `GroupId` property — no Azure-specific import is required:
-
-```csharp
-public class ProcessOrderHandler : IMessageHandler<ProcessOrder>
-{
-    public Task Handle(ProcessOrder message, IMessageHandlerContext context)
-    {
-        var sessionId = context.BrokeredMessage?.GetBrokeredMessageDetail()?.GroupId;
-        // use sessionId to correlate work within this session
-        return Task.CompletedTask;
-    }
-}
-```
-
-### Sending a message to a session
-
-Set `WithGroupId` on `SendOptions` to route the outbound message to the target session:
-
-```csharp
-public class DispatchOrderHandler : IMessageHandler<DispatchOrder>
-{
-    public async Task Handle(DispatchOrder message, IMessageHandlerContext context)
-    {
-        var options = new SendOptions()
-            .WithGroupId(message.OrderId);  // sets ServiceBusMessage.SessionId
-
-        await context.AzureServiceBus()
-                     .Send(new ProcessOrder { OrderId = message.OrderId }, "orders-session-queue", options);
-    }
-}
-```
-
-`WithGroupId` alone is enough: the mapping only assigns `ServiceBusMessage.PartitionKey` when a non-empty partition key was explicitly supplied, letting `SessionId` stand in for it otherwise. An explicit partition key is optional; if set, it must equal the Group Id, and it has to be a separate statement — `WithMessageContext` returns `RoutingOptions`, not `SendOptions`, so it cannot terminate the fluent chain above:
-
-```csharp
-options.WithMessageContext(ASBMessageContext.PartitionKey, message.OrderId);
-```
-
-A mismatched partition key throws `ArgumentOutOfRangeException` from the Azure SDK — client-side, before the message ever reaches the broker.
-
-### Inbound context inheritance
-
-A handler that sends or publishes through `IMessageHandlerContext` (for example `context.AzureServiceBus().Send(...)`) inherits the entire inbound message context. A message received from a session-stamped entity therefore emits an outbound `ServiceBusMessage.SessionId` equal to the inbound one, even if the handler's own `SendOptions` never called `WithGroupId`.
-
-This is by design and is not special to Group Id: `CorrelationId`, `Subject`, `ReplyTo`, `ReplyToSessionId`, `To`, and `TimeToLive` are inherited the same way. It's load-bearing only when the destination is session-enabled or partitioned — on a plain queue or topic an inherited Group Id is an inert wire property, but on a partitioned destination it still affects partition affinity even when that destination is not session-enabled.
-
-To opt out, either resolve `IBrokeredMessageDispatcher` and call the overload that takes a `TransactionContext` instead of an `IMessageHandlerContext` — that overload does not merge inbound context — or supply your own Group Id on the outbound options, since caller-supplied options win the merge.
-
-### Durable per-session state
-
-During handler execution a handler can read, write, and clear durable session state stored on the Azure Service Bus entity for the currently held session:
-
-```csharp
-using Chatter.CQRS.Context;
-
-public class ProcessOrderHandler : IMessageHandler<ProcessOrder>
-{
-    public async Task Handle(ProcessOrder message, IMessageHandlerContext context)
-    {
-        // read existing state (null when no state has been set)
-        var stateBytes = await context.GetSessionStateAsync();
-
-        // compute and persist new state
-        var newState = BinaryData.FromString($"last-processed:{message.OrderId}");
-        await context.SetSessionStateAsync(newState);
-
-        // clear state when the session is complete
-        // await context.ClearSessionStateAsync();
-    }
-}
-```
-
-`GetSessionStateAsync`, `SetSessionStateAsync`, and `ClearSessionStateAsync` are extension methods on `IMessageHandlerContext` provided by this package. Invoking them while handling a message that was not received through a session-enabled receiver throws `InvalidOperationException`.
-
-### Tuning session behavior
-
-Two `ServiceBusOptions` knobs control how long a session is held. Both support fluent-or-config, with the fluent call winning in either direction:
-
-| Knob | Fluent method | Config property | Default | Description |
-| --- | --- | --- | --- | --- |
-| Session idle timeout | `WithSessionIdleTimeout(TimeSpan)` | `SessionIdleTimeout` | 60 s | How long a held session may yield no message before it is released and the receiver rolls to the next session. |
-| Max session lock renewal duration | `WithMaxSessionLockRenewalDuration(TimeSpan)` | `MaxSessionLockRenewalDuration` | 5 min | Ceiling on how long a held session's lock is renewed for long-running processing. Once reached, renewal stops and the session is allowed to expire or roll naturally. |
-
-```csharp
-asb.AddSessionQueueReceiver<ProcessOrder>("orders-session-queue");
-asb.WithSessionIdleTimeout(TimeSpan.FromSeconds(30));
-asb.WithMaxSessionLockRenewalDuration(TimeSpan.FromMinutes(10));
-```
-
-Or via configuration:
-
-```json
-{
-  "Chatter": {
-    "Infrastructure": {
-      "AzureServiceBus": {
-        "SessionIdleTimeout": "00:00:30",
-        "MaxSessionLockRenewalDuration": "00:10:00"
-      }
-    }
-  }
-}
-```
-
-These knobs apply only to session-enabled receivers. Non-session receivers are unaffected.
-
-## Trace Context and the Azure SDK's `Diagnostic-Id`
-
-Chatter's [opt-in tracing](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers/src/README.md#diagnostics-and-trace-context-optional-opt-in) writes the W3C `traceparent` header onto outbound messages, where it rides the application properties in both directions. This has one interop consequence worth knowing about before you turn tracing on.
-
-The Azure Service Bus SDK stamps its own legacy `Diagnostic-Id` correlation identifier **only when the message does not already carry a correlation identifier**. Because Chatter writes `traceparent`, the SDK's own `Diagnostic-Id` stamping is expected to be suppressed on Chatter-sent messages.
-
-> **Confidence note.** The presence of both mechanisms in the shipped `Azure.Messaging.ServiceBus` / `Azure.Core` assemblies is verified; the short-circuit **control flow** itself is taken from the Azure SDK's published source and is **not verified in this repository**. Treat the mitigation below as the safe course if your correlation depends on `Diagnostic-Id`, and confirm against your own traces.
-
-**Mitigation for applications that rely on `Diagnostic-Id`-based correlation:** enable the SDK's `ActivitySource` support so it reads `traceparent` instead of stamping and reading `Diagnostic-Id`:
-
-```bash
+```shell
 AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE=true
 ```
 
 ```csharp
-// equivalent AppContext switch
 AppContext.SetSwitch("Azure.Experimental.EnableActivitySource", true);
 ```
 
-Set it **at process start**, before the first Azure SDK type is touched: the SDK is documented to read the switch once, though that caching is likewise not verified here. Applications that do not correlate on `Diagnostic-Id` need no change — the SDK's own tracing stays off by default either way, and Chatter neither suppresses nor namespaces it.
+### Semantic convention spelling
 
-One further observation on a mixed trace: Chatter's broker-boundary spans use the OpenTelemetry semantic conventions pinned at **v1.30.0** (`messaging.operation.type`), while `Azure.Messaging.ServiceBus` still emits the older `messaging.operation` spelling. Both are valid under their respective pins; Chatter deliberately emits one spelling per concept rather than both. See [ADR-0010](https://github.com/brenpike/Chatter/blob/master/docs/adr/0010-optional-bcl-only-telemetry-per-assembly-sources-and-the-off-guard.md).
+Chatter's broker spans follow OpenTelemetry semantic conventions v1.30.0 and emit `messaging.operation.type`. `Azure.Messaging.ServiceBus` emits the older `messaging.operation`. A mixed trace shows both spellings; Chatter emits one spelling per concept.
 
-## Domain Language
+## Related packages
 
-See the [domain glossary](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/CONTEXT.md) for definitions of Service Bus Receiver, Session Queue Receiver, Session Topic Subscription, Service Bus Sender, Service Bus Options, Service Bus Retry, No Retry Opt-In, Service Bus Circuit Breaker, Session, Session State, Max Concurrent Calls, Session Multiplexer, and Group Id ↔ SessionId realization.
+- [Chatter.CQRS](https://www.nuget.org/packages/Chatter.CQRS): In-process Commands, Queries, Events and the Command Pipeline.
+- [Chatter.MessageBrokers](https://www.nuget.org/packages/Chatter.MessageBrokers): The broker abstractions this transport implements: receivers, routing, Inbox/Outbox and Recovery.
+- [Chatter.MessageBrokers.AzureServiceBus.Auth](https://www.nuget.org/packages/Chatter.MessageBrokers.AzureServiceBus.Auth): Microsoft Entra ID token authentication for this transport.
+- [Chatter.MessageBrokers.Reliability.EntityFramework](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.EntityFramework): EF Core Inbox, Outbox and Unit of Work.
+- [Chatter.MessageBrokers.Reliability.Cosmos](https://www.nuget.org/packages/Chatter.MessageBrokers.Reliability.Cosmos): Azure Cosmos DB Inbox and Outbox Relay.
 
-[← All Chatter modules](https://github.com/brenpike/Chatter/blob/master/README.md)
+## Learn more
+
+- [Domain glossary (CONTEXT.md)](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/CONTEXT.md)
+- [Changelog](https://github.com/brenpike/Chatter/blob/master/src/Chatter.MessageBrokers.AzureServiceBus/src/Chatter.MessageBrokers.AzureServiceBus/CHANGELOG.md)
+- [Context map of all Chatter modules](https://github.com/brenpike/Chatter/blob/master/CONTEXT-MAP.md)
+- [Chatter suite README](https://github.com/brenpike/Chatter/blob/master/README.md)
+
+## License
+
+Licensed under the [MIT License](https://github.com/brenpike/Chatter/blob/master/LICENSE).

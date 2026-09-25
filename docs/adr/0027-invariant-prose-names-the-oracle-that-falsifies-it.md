@@ -80,6 +80,24 @@ mechanism. `CONTEXT.md`, `README.md` and `CHANGELOG.md` cite the mechanism and t
 restate the reasoning. A reader who wants to know why reads the comment; a reader who wants to know whether it
 still holds runs the named test.
 
+**Amended 2026-09-25: Rule 2 is retired; Rule 1 stands unchanged.** Rule 2 — that `CONTEXT.md`, `README.md` and
+`CHANGELOG.md` cite a mechanism and its oracle's NAME rather than restate its reasoning — no longer applies, on
+any of the three surfaces. The reason is the audience. A module `README.md` is packed into its NuGet package and
+rendered as the package page on nuget.org, and a `CHANGELOG.md` is read by someone deciding whether and how to
+upgrade; both are written for the people using the packages, who need behaviour stated plainly and have no use for
+the name of a `[Fact]`. The maintainer-facing proof — which test pins a claim and which mutation reddens it —
+stays where Rule 1 puts it, in the `INVARIANT:` comment next to the mechanism. Existing oracle citations in
+`CONTEXT.md` and `CHANGELOG.md` files are left as written: this amendment rewrites no history and obliges no edit
+to an existing entry. The ADRs that cite this ADR's single-source rule as the reason they point at an `INVARIANT:`
+block rather than restate it (ADR-0032, ADR-0033, ADR-0037, ADR-0039 and ADR-0040) record how they were written
+and are not amended. The cost Rule 2 was adopted to reduce is accepted rather than eliminated: a behaviour a
+README or CHANGELOG states plainly must be re-verified on that surface when its mechanism moves — the restatement
+cost measured under *Context*, which the two drift instances recorded below show is real. Rule 1 does not reduce
+that cost: it binds the `INVARIANT:` comment to its oracle, and binds no copy of the behaviour on a user-facing
+surface. From this date only Rule 1 is in force. The Rule 2 text above and this ADR's title, whose second clause
+names Rule 2, are kept as they were accepted. The analysis below that credits Rule 2 with a reduction is kept too,
+and each such passage is marked where it no longer describes current policy.
+
 ### What the rules would have caught, and what they would not
 
 This is the most important property of this decision, and it is a limitation.
@@ -102,6 +120,9 @@ This is the most important property of this decision, and it is a limitation.
 of restatement, and they are the cost whether the original claim was true or false: a claim restated on four
 surfaces has to be re-verified on four surfaces every time the mechanism moves, and three of those surfaces
 have no test anywhere near them. Rule 2 removes three of the four.
+**Amended 2026-09-25: historical.** This is the reasoning Rule 2 was adopted on. With Rule 2 retired (see the
+amendment under *Decision*), it removes nothing: a behaviour stated on a `README.md` or `CHANGELOG.md` is
+re-verified on that surface when its mechanism moves.
 
 ### Rule 2 has now been given a chance to fail, and failed
 
@@ -201,6 +222,8 @@ honest answer to the gate question is that Rule 1 raises the cost of WRITING an 
 author attempt a sentence that is impossible to complete when the claim is false, which is how it caught
 `a7abdc8e` — and Rule 2 reduces the number of places a claim must be re-verified from four to one. Neither is
 elimination.
+**Amended 2026-09-25:** with Rule 2 retired, only Rule 1's half of that answer stands. The number of places a
+claim must be re-verified is no longer reduced, and the gate answer is unchanged: none.
 
 This is precedented. ADR-0024 records a defense-in-depth check as defense-in-depth rather than as soundness,
 and ADR-0025 records a deferred option with its unverified parts named as unverified. Recording judgment AS
@@ -310,6 +333,7 @@ A tracker entry is now open at #524.
 - `CONTEXT.md`, `README.md` and `CHANGELOG.md` become thinner on rationale and denser on citations. They lose
   the ability to explain a mechanism in full at each surface; that is the point, and a reader following a
   citation reaches prose that sits next to the code and is checked by the same review that changes it.
+  **Amended 2026-09-25: withdrawn with Rule 2; see the amendment under *Decision*.**
 - The conventions apply to comments written from here on. Nothing in this ADR obliges a change to an existing
   comment that is not otherwise being edited.
 - A claim that can be expressed in the type system should be, and the comment then explains the type rather
