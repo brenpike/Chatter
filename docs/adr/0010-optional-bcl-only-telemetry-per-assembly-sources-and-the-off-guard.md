@@ -289,8 +289,8 @@ dispatch is now instrumented with the same Chatter-native attributes as command 
   over, and never the `IQuery<TResult>` the caller dispatched through. This is the rule commands and events already
   follow: `CommandDispatcher` and `EventDispatcher` resolve `IMessageHandler<TMessage>` and name the dispatch by the
   same compile-time `TMessage`. The query overloads resolve their handlers by different types, so the rule is stated
-  for both. It is stated with its oracles in the `INVARIANT:` on `QueryInvoker<TQuery, TResult>.StartDispatch` in
-  `Queries/QueryDispatcher.cs`.
+  for both. It is stated with its oracles in the `INVARIANT:` on the telemetry identity in
+  `DispatchByRuntimeTypeWithDiagnostics` in `Queries/QueryDispatcher.cs`.
 - **No attribute records the result type.** Adding one was considered and rejected. No semantic convention covers
   CQRS dispatch, so it would be one more Chatter-native name with nothing to conform to. For a query type that
   implements one `IQuery<>` closing, the query type already fixes the result type, so the attribute would add a
@@ -303,11 +303,17 @@ dispatch is now instrumented with the same Chatter-native attributes as command 
   `WhenChatterTracingIsOptedInto.MustMarkTheSpanAndTheMeasurementWithTheSameErrorTypeWhenTheQueryHandlerFails` and
   `MustMarkTheSpanAndTheMeasurementWithTheSameErrorTypeWhenAQueryDispatchedByItsRuntimeTypeFails`, which go red when
   `error.type` is resolved as `e.GetType().Name`.
-- **A fault raised before the query's name is known emits no span and no measurement.** `Query<TResult>` emits both
-  through the cached invoker for the runtime query type, so a fault while that invoker is built, such as the one a
-  value-type query raises because it cannot satisfy the invoker's `class` constraint, is logged once at `Error` and
-  rethrown unchanged with no span and no measurement. Pinned by
-  `WhenChatterTracingIsOptedInto.MustLogTheFaultOnceAndEmitNoSpanAndNoMeasurementWhenNoInvokerCanBeBuiltForTheRuntimeQueryType`.
+- **Only a null query fails before the query's name is known.** `Query<TResult>` reads the runtime query type first,
+  then starts the span and records the measurement for that type itself, through internal non-generic
+  `ChatterDiagnostics` overloads, and not through the cached invoker. So a fault while the invoker is built, such as
+  the one a value-type query raises because it cannot satisfy the invoker's `class` constraint, is logged once at
+  `Error`, rethrown unchanged, and marked with `error.type` on both the span and the measurement. Pinned by
+  `WhenChatterTracingIsOptedInto.MustLogTheFaultOnceAndMarkTheSpanAndTheMeasurementWithTheErrorTypeWhenNoInvokerCanBeBuiltForTheRuntimeQueryType`.
+  The measurement is recorded while the span is still current, as at the other seams. Pinned by
+  `MustRecordTheDispatchDurationWhileTheDispatchSpanIsStillCurrentForAQueryDispatchedByItsRuntimeType`. A null query
+  has no runtime type to read: the returned `Task` faults with a `NullReferenceException`, and nothing is logged and
+  no span or measurement is emitted. Pinned by
+  `MustFaultTheReturnedTaskWithANullReferenceExceptionAndLogNothingAndEmitNoTelemetryWhenTheQueryIsNull`.
 
 **Recorded residual: the query identity is a caller-supplied runtime type, so `chatter.message.type` carries that
 type's cardinality out of the process.** Local review raised, at HIGH, that `Query<TResult>(IQuery<TResult>)` keys
@@ -738,9 +744,10 @@ nor fixes it.
 `QueryDispatcher.cs:36-37`, no longer points at a DLR dependency. What remains is `CreateInvoker` in
 `Queries/QueryDispatcher.cs`, which calls `MakeGenericType` and `Activator.CreateInstance` once per distinct
 `(runtime query type, result type)` pair. That is still a pre-existing AOT and trimming constraint, and it is the one
-ADR-0013's revisit trigger names. Query instrumentation adds no reflection to it: the invoker's `StartDispatch` and
-`RecordDispatchDuration` call `ChatterDiagnostics.StartDispatch<TQuery>` and `RecordDispatchDuration<TQuery>` on the
-already-closed type, and `Query<TQuery, TResult>` calls them with its own `TQuery`.
+ADR-0013's revisit trigger names. Query instrumentation adds no reflection to it: `Query<TResult>` passes
+`query.GetType()` to the internal non-generic `ChatterDiagnostics.StartDispatch(Type, string)` and
+`RecordDispatchDuration(Type, long, string, string)`, which close no generic type, and `Query<TQuery, TResult>` calls
+the generic `StartDispatch<TQuery>` and `RecordDispatchDuration<TQuery>` with its own `TQuery`.
 
 ### D11 — The receive failure is retained at ONE choke point, and a shutdown-cancelled delivery is not a failure
 
@@ -1146,9 +1153,17 @@ pin the off-guard: bypassing the guard so the diagnostics wrapper always runs le
 `ChatterDiagnostics.StartDispatch` and `RecordDispatchDuration` each run their own `HasListeners()` or
 `Instrument.Enabled` check and emit nothing. This was observed while #529 was built; the fact went red only when the
 bypass was combined with an `Activity` started without that check. `Query<TQuery, TResult>` has no such fact, and
-`WhenMeasuringGuardCost` measures the command path only. The query off path's cost property, that it reads no
+`WhenMeasuringGuardCost` measures no query dispatch. The query off path's cost property, that it reads no
 timestamp and makes no telemetry call, therefore holds by construction and is not pinned by a test, as the
 `INVARIANT:` on each overload's off-guard in `Queries/QueryDispatcher.cs` says.
+
+The internal non-generic overloads that `Query<TResult>` calls apply the off-guard as their first statement too.
+`ChatterDiagnostics.StartDispatch(Type, string)`'s guard is pinned by
+`WhenMeasuringGuardCost.MustNotAllocateWhileStartingADispatchSpanForARuntimeTypeThatIsOff`, which goes red when the
+span name is built above the guard or the guard is deleted. `RecordDispatchDuration(Type, long, string, string)`'s
+guard is not pinned: `MustNotAllocateWhileRecordingADispatchDurationForARuntimeTypeThatIsOff` stays green when the
+type name is read above the guard or the guard is deleted, as the `INVARIANT:` in `Diagnostics/ChatterDiagnostics.cs`
+says.
 
 ## Propagation scope
 

@@ -127,10 +127,21 @@ The code is unchanged by this decision.
   names they emit from the static generic class `DispatchNames<TQuery>`. The first bullet under *What this is NOT*
   already rules that shape out as the default-context root the unloadability documentation warns about, so the
   instrumented overload adds no process-lifetime root keyed by a caller's `Type`. `Query<TResult>(IQuery<TResult>)`
-  carries its telemetry on the cached `QueryInvoker<TQuery, TResult>` it already resolves for the runtime query type:
-  that invoker's `StartDispatch` and `RecordDispatchDuration` make the same two calls, closed over the runtime type. It
-  adds no cache and no entry beyond the one per pair this ADR already records. The `DispatchNames<TMessage>` citation
-  above, `ChatterDiagnostics.cs:166`, is now `:162`.
+  does not carry its telemetry on the cached invoker, and `QueryInvoker` has no telemetry members. It passes the
+  runtime query type to the internal non-generic `ChatterDiagnostics.StartDispatch(Type, string)` and
+  `RecordDispatchDuration(Type, long, string, string)`, which read the names they emit from that `Type` on each call
+  and store nothing. It adds no cache, no dictionary, no closed generic over the runtime type and no entry beyond the
+  one per pair this ADR already records, and it leaves the invoker cache's lookup path unchanged, so Option 1's
+  blocker, that no benchmark harness can price a change to that path, is not engaged. The `DispatchNames<TMessage>`
+  citation above, `ChatterDiagnostics.cs:166`, is now `:206`.
+
+  **Recorded residual: this seam rebuilds its span name on every traced dispatch.** The generic seams read a span
+  name computed once per closed generic from `DispatchNames<TMessage>`. `Query<TResult>(IQuery<TResult>)` builds
+  `dispatch {type name}` by string concatenation on each dispatch while a listener is attached to Chatter's
+  `ActivitySource`, whether or not it samples the span. It builds no name when only metrics are on or when
+  diagnostics are off. This is accepted, because a cache of span names keyed
+  by the runtime query type would be a second process-lifetime root over caller-supplied `Type`s, beside `_invokers`,
+  which is the only one this ADR accepts. Linked local-review findings: c7936960, d2a86050.
 
   This bounds the IN-PROCESS half only. Instrumenting the runtime-type overload also exports the caller-supplied
   query type out of the process, as the `chatter.message.type` value on the span and on the measurement, so the

@@ -139,25 +139,26 @@ caller's token for a fault. The clauses are at `src/Chatter.CQRS/src/Chatter.CQR
 **Amended 2026-09-25 (#529): query dispatch is instrumented, and each query seam now classifies a fault once, as
 command and event dispatch do.** The paragraph above no longer describes the code. Neither awaiting `QueryDispatcher`
 overload has a filtered `catch (OperationCanceledException e)` clause. Both classify a fault in one private method,
-`LogDispatchFault` (`src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs:213-229`). It reads
+`LogDispatchFault` (`src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs:220-236`). It reads
 `CallerRequestedCancellation.Explains` once, makes one `LogDebug` or one `LogError` call as the command and event
 methods do, and returns the verdict that decides whether the span and the measurement are marked failed. It takes the
 query's `Type` as an argument, not as a type parameter, so that `Query<TResult>` can pass the runtime query type. Its
-`INVARIANT:` at `:215-220` states that the caller's token is read there and nowhere else on the fault path of either
+`INVARIANT:` at `:222-227` states that the caller's token is read there and nowhere else on the fault path of either
 overload.
 
-- **`Query<TQuery, TResult>` has the command shape.** Its uninstrumented dispatch, `DispatchToHandler` (`:147-163`),
-  ends in one `catch (Exception e) when (handleFault)` (`:158-162`). The off path passes `handleFault: true`. The
-  diagnostics wrapper, `DispatchToHandlerWithDiagnostics` (`:165-202`), passes `false` and calls `LogDispatchFault` from
-  its own `catch (Exception e)` (`:176-196`), which holds no predicate: it resolves `error.type` and calls
+- **`Query<TQuery, TResult>` has the command shape.** Its uninstrumented dispatch, `DispatchToHandler` (`:154-170`),
+  ends in one `catch (Exception e) when (handleFault)` (`:165-169`). The off path passes `handleFault: true`. The
+  diagnostics wrapper, `DispatchToHandlerWithDiagnostics` (`:172-209`), passes `false` and calls `LogDispatchFault` from
+  its own `catch (Exception e)` (`:183-203`), which holds no predicate: it resolves `error.type` and calls
   `ActivityOutcome.RecordFailure` only when `LogDispatchFault` returns `true`. The `finally` records the duration once
-  (`:197-200`). That exactly one frame logs is stated in the `INVARIANT:` at `:154-157`; that one verdict decides the
-  log and both signals, at `:178-183`; and that the span and the metric are set together, at `:186-190`.
+  (`:204-207`). That exactly one frame logs is stated in the `INVARIANT:` at `:161-164`; that one verdict decides the
+  log and both signals, at `:185-190`; and that the span and the metric are set together, at `:193-197`.
 - **`Query<TResult>` needs no `handleFault` flag.** Its off path, `DispatchByRuntimeType` (`:67-86`), and its
-  diagnostics wrapper, `DispatchByRuntimeTypeWithDiagnostics` (`:88-127`), each have exactly one frame that logs, their
-  own `catch (Exception e)` (`:81-85` and `:107-121`), because the wrapper awaits the cached invoker directly instead of
-  calling the off path. The wrapper acts on the verdict in the same way; its `INVARIANT:` is at `:109-113`, and its
-  `finally` (`:122-126`) records the duration once, through the invoker.
+  diagnostics wrapper, `DispatchByRuntimeTypeWithDiagnostics` (`:88-134`), each have exactly one frame that logs, their
+  own `catch (Exception e)` (`:81-85` and `:110-124`), because the wrapper awaits the cached invoker directly instead of
+  calling the off path. The wrapper acts on the verdict in the same way; its `INVARIANT:` is at `:112-116`, and its
+  `finally` (`:125-132`) records the duration once, through `ChatterDiagnostics.RecordDispatchDuration(Type, ...)` with
+  the runtime query type, while the span is still current.
 
 The oracles, all in `src/Chatter.CQRS/tests/Diagnostics/WhenChatterTracingIsOptedInto.cs` unless another file is named:
 
@@ -169,7 +170,7 @@ The oracles, all in `src/Chatter.CQRS/tests/Diagnostics/WhenChatterTracingIsOpte
   and `WhenDispatchingGenericQuery.MustLogTheAsynchronousFaultExactlyOnceWhenDiagnosticsAreEnabled`
   (`src/Chatter.CQRS/tests/Queries/UsingQueryDispatcher/WhenDispatchingGenericQuery.cs`), which go red when the
   `handleFault` filter is deleted so both frames log. For `Query<TResult>`,
-  `MustLogTheFaultOnceAndEmitNoSpanAndNoMeasurementWhenNoInvokerCanBeBuiltForTheRuntimeQueryType` counts one record for
+  `MustLogTheFaultOnceAndMarkTheSpanAndTheMeasurementWithTheErrorTypeWhenNoInvokerCanBeBuiltForTheRuntimeQueryType` counts one record for
   a fault raised while the invoker is built; no test counts the records a handler fault writes on that overload's
   diagnostics path.
 - **A caller-requested cancellation is not marked failed:** `MustLeaveTheSpanStatusUnsetWhenTheCallerCancelledTheQueryDispatch`,
@@ -408,10 +409,10 @@ These are decisions, not open work, and no issues are filed for them.
 - `src/Chatter.CQRS/src/Chatter.CQRS/Queries/QueryDispatcher.cs` — the two log clauses (`:60-68`, `:88-95`).
 
   **Amended 2026-09-25 (#529): re-measured.** The two log clauses are gone. `DispatchByRuntimeType` (`:67-86`) with its
-  catch (`:81-85`); `DispatchByRuntimeTypeWithDiagnostics` (`:88-127`) with its catch (`:107-121`) and that catch's
-  `INVARIANT:` (`:109-113`); the `handleFault` catch in `DispatchToHandler` and its `INVARIANT:` (`:154-162`); the
-  diagnostics wrapper's catch (`:176-196`) with its two `INVARIANT:` blocks (`:178-183`, `:186-190`); and
-  `LogDispatchFault` (`:213-229`) with its `INVARIANT:` (`:215-220`).
+  catch (`:81-85`); `DispatchByRuntimeTypeWithDiagnostics` (`:88-134`) with its catch (`:110-124`) and that catch's
+  `INVARIANT:` (`:112-116`); the `handleFault` catch in `DispatchToHandler` and its `INVARIANT:` (`:161-169`); the
+  diagnostics wrapper's catch (`:183-203`) with its two `INVARIANT:` blocks (`:185-190`, `:193-197`); and
+  `LogDispatchFault` (`:220-236`) with its `INVARIANT:` (`:222-227`).
 - `src/Chatter.MessageBrokers/src/Chatter.MessageBrokers/Receiving/BrokeredMessageReceiver.cs` — the receive call with
   the loop token (`:708`), the ladder's shutdown swallows (`:877-882`) and `DispatchReceivedMessageAsync`
   (`:1034-1062`), with its shutdown log clause (`:1052-1056`) and that clause's `INVARIANT:` (`:1042-1051`).
