@@ -75,7 +75,7 @@ exists.
 The rule keys on CONTENT, not on a keyword. Both `Pinned by ...` and `Oracle: ...` are in use in this
 repository and both satisfy it; neither spelling satisfies it on its own.
 
-**Rule 2 — single source (RETIRED 2026-09-25; see the amendment below).** The rationale for a mechanism lives ONCE, in the code comment adjacent to that
+**Rule 2 — single source.** The rationale for a mechanism lives ONCE, in the code comment adjacent to that
 mechanism. `CONTEXT.md`, `README.md` and `CHANGELOG.md` cite the mechanism and the oracle's NAME, and do not
 restate the reasoning. A reader who wants to know why reads the comment; a reader who wants to know whether it
 still holds runs the named test.
@@ -94,7 +94,9 @@ and are not amended. The cost Rule 2 was adopted to reduce is accepted rather th
 README or CHANGELOG states plainly must be re-verified on that surface when its mechanism moves — the restatement
 cost measured under *Context*, which the two drift instances recorded below show is real. Rule 1 does not reduce
 that cost: it binds the `INVARIANT:` comment to its oracle, and binds no copy of the behaviour on a user-facing
-surface.
+surface. From this date only Rule 1 is in force. The Rule 2 text above and this ADR's title, whose second clause
+names Rule 2, are kept as they were accepted. The analysis below that credits Rule 2 with a reduction is kept too,
+and each such passage is marked where it no longer describes current policy.
 
 ### What the rules would have caught, and what they would not
 
@@ -118,6 +120,9 @@ This is the most important property of this decision, and it is a limitation.
 of restatement, and they are the cost whether the original claim was true or false: a claim restated on four
 surfaces has to be re-verified on four surfaces every time the mechanism moves, and three of those surfaces
 have no test anywhere near them. Rule 2 removes three of the four.
+**Amended 2026-09-25: historical.** This is the reasoning Rule 2 was adopted on. With Rule 2 retired (see the
+amendment under *Decision*), it removes nothing: a behaviour stated on a `README.md` or `CHANGELOG.md` is
+re-verified on that surface when its mechanism moves.
 
 ### Rule 2 has now been given a chance to fail, and failed
 
@@ -217,6 +222,8 @@ honest answer to the gate question is that Rule 1 raises the cost of WRITING an 
 author attempt a sentence that is impossible to complete when the claim is false, which is how it caught
 `a7abdc8e` — and Rule 2 reduces the number of places a claim must be re-verified from four to one. Neither is
 elimination.
+**Amended 2026-09-25:** with Rule 2 retired, only Rule 1's half of that answer stands. The number of places a
+claim must be re-verified is no longer reduced, and the gate answer is unchanged: none.
 
 This is precedented. ADR-0024 records a defense-in-depth check as defense-in-depth rather than as soundness,
 and ADR-0025 records a deferred option with its unverified parts named as unverified. Recording judgment AS
