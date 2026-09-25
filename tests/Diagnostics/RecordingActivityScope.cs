@@ -268,7 +268,7 @@ namespace Chatter.Testing.Core.Diagnostics
             var capturedTags = new KeyValuePair<string, object>[tags.Length];
             tags.CopyTo(capturedTags);
 
-            var recorded = new RecordedMeasurement(instrument.Meter.Name, instrument.Name, value, capturedTags);
+            var recorded = new RecordedMeasurement(instrument.Meter.Name, instrument.Name, value, capturedTags, Activity.Current);
 
             lock (_sync)
             {
@@ -288,12 +288,13 @@ namespace Chatter.Testing.Core.Diagnostics
     /// </summary>
     public sealed class RecordedMeasurement
     {
-        public RecordedMeasurement(string meterName, string instrumentName, double value, IReadOnlyList<KeyValuePair<string, object>> tags)
+        public RecordedMeasurement(string meterName, string instrumentName, double value, IReadOnlyList<KeyValuePair<string, object>> tags, Activity ambientActivity)
         {
             MeterName = meterName;
             InstrumentName = instrumentName;
             Value = value;
             Tags = tags;
+            AmbientActivity = ambientActivity;
         }
 
         public string MeterName { get; }
@@ -303,6 +304,12 @@ namespace Chatter.Testing.Core.Diagnostics
         public double Value { get; }
 
         public IReadOnlyList<KeyValuePair<string, object>> Tags { get; }
+
+        /// <summary>
+        /// The <see cref="Activity.Current"/> on the publishing thread when the measurement was published, so a test
+        /// can assert whether a span was still current when the measurement was recorded.
+        /// </summary>
+        public Activity AmbientActivity { get; }
 
         public bool TryGetTag(string tagName, out object tagValue)
         {

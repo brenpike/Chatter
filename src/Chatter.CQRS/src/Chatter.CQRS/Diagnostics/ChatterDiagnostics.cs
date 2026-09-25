@@ -20,8 +20,9 @@ namespace Chatter.CQRS.Diagnostics
     /// INVARIANT: the off-guard is Chatter's own <see cref="ActivitySource.HasListeners"/> or
     /// <see cref="Instrument.Enabled"/> — never <see cref="Activity.Current"/>, which is non-null in any host
     /// that runs unrelated instrumentation and therefore does not mean Chatter diagnostics are on.
-    /// INVARIANT: every public entry point evaluates its off-guard as its first statement, and no span name,
-    /// tag collection, timestamp or per-closed-generic static is read before that guard passes.
+    /// INVARIANT: every public entry point, and every internal overload that takes a runtime <see cref="Type"/>,
+    /// evaluates its off-guard as its first statement, and no span name, tag collection, timestamp,
+    /// per-closed-generic static or runtime <see cref="Type"/>'s name is read before that guard passes.
     /// </remarks>
     public static class ChatterDiagnostics
     {
@@ -77,7 +78,7 @@ namespace Chatter.CQRS.Diagnostics
         /// <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/> scope or the listener
         /// declined to sample.
         /// </summary>
-        /// <typeparam name="TMessage">The type the dispatch is instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams, and, at the query overload that takes an <c>IQuery</c> of the result type alone, the runtime query type the handler was resolved by, which the cached invoker closes this parameter over (ADR-0010 D4).</typeparam>
+        /// <typeparam name="TMessage">The type the dispatch is instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams.</typeparam>
         /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
         /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
         public static Activity StartDispatch<TMessage>(string dispatchKind)
@@ -95,7 +96,7 @@ namespace Chatter.CQRS.Diagnostics
         /// <summary>
         /// Records the duration of a dispatch of <typeparamref name="TMessage"/>, in seconds.
         /// </summary>
-        /// <typeparam name="TMessage">The type the dispatch was instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams, and, at the query overload that takes an <c>IQuery</c> of the result type alone, the runtime query type the handler was resolved by, which the cached invoker closes this parameter over (ADR-0010 D4).</typeparam>
+        /// <typeparam name="TMessage">The type the dispatch was instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams.</typeparam>
         /// <param name="startTimestamp">The <see cref="Stopwatch.GetTimestamp"/> value read when dispatch began.</param>
         /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
         /// <param name="errorType">The value for <see cref="ChatterTelemetryTags.ErrorType"/>, or <c>null</c> when the dispatch succeeded.</param>
@@ -107,6 +108,49 @@ namespace Chatter.CQRS.Diagnostics
             }
 
             RecordDispatchDuration(startTimestamp, DispatchNames<TMessage>.MessageTypeName, dispatchKind, errorType);
+        }
+
+        /// <summary>
+        /// Starts a dispatch span for <paramref name="messageType"/>, or returns <c>null</c> when no .NET
+        /// <c>ActivityListener</c> is attached to the <see cref="ActivitySourceName"/> scope or the listener
+        /// declined to sample.
+        /// </summary>
+        /// <param name="messageType">The type the dispatch is instrumented by: the runtime query type at the query overload that takes an <c>IQuery</c> of the result type alone (ADR-0010 D4).</param>
+        /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
+        /// <returns>The started <see cref="Activity"/>, or <c>null</c>.</returns>
+        internal static Activity StartDispatch(Type messageType, string dispatchKind)
+        {
+            // INVARIANT: in both overloads that take a runtime Type, the off-guard is the first statement and no name is
+            // read from messageType before it. This overload is pinned by
+            // WhenMeasuringGuardCost.MustNotAllocateWhileStartingADispatchSpanForARuntimeTypeThatIsOff, red when
+            // BuildSpanName is hoisted above the guard or the guard is deleted. RecordDispatchDuration(Type, ...) is not
+            // pinned: MustNotAllocateWhileRecordingADispatchDurationForARuntimeTypeThatIsOff stays green when
+            // messageType.FullName is hoisted above its guard or the guard is deleted.
+            // INVARIANT: neither overload guards a null messageType, because its only caller passes query.GetType(). No
+            // test pins this.
+            if (!_source.HasListeners())
+            {
+                return null;
+            }
+
+            return StartDispatchActivity(BuildSpanName(messageType), messageType.FullName, dispatchKind);
+        }
+
+        /// <summary>
+        /// Records the duration of a dispatch of <paramref name="messageType"/>, in seconds.
+        /// </summary>
+        /// <param name="messageType">The type the dispatch was instrumented by: the runtime query type at the query overload that takes an <c>IQuery</c> of the result type alone (ADR-0010 D4).</param>
+        /// <param name="startTimestamp">The <see cref="Stopwatch.GetTimestamp"/> value read when dispatch began.</param>
+        /// <param name="dispatchKind">One of <see cref="ChatterTelemetryTags.DispatchKinds"/>.</param>
+        /// <param name="errorType">The value for <see cref="ChatterTelemetryTags.ErrorType"/>, or <c>null</c> when the dispatch succeeded.</param>
+        internal static void RecordDispatchDuration(Type messageType, long startTimestamp, string dispatchKind, string errorType)
+        {
+            if (!_dispatchDuration.Enabled)
+            {
+                return;
+            }
+
+            RecordDispatchDuration(startTimestamp, messageType.FullName, dispatchKind, errorType);
         }
 
         private static Activity StartDispatchActivity(string spanName, string messageTypeName, string dispatchKind)
@@ -158,7 +202,7 @@ namespace Chatter.CQRS.Diagnostics
         /// <summary>
         /// Names computed once per closed generic, so a dispatch never builds a span name or a type name.
         /// </summary>
-        /// <typeparam name="TMessage">The type the dispatch is instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams, and, at the query overload that takes an <c>IQuery</c> of the result type alone, the runtime query type the handler was resolved by, which the cached invoker closes this parameter over (ADR-0010 D4).</typeparam>
+        /// <typeparam name="TMessage">The type the dispatch is instrumented by: the caller's compile-time message type at the command, event and strongly-typed query seams.</typeparam>
         private static class DispatchNames<TMessage>
         {
             internal static readonly string MessageTypeName = typeof(TMessage).FullName;

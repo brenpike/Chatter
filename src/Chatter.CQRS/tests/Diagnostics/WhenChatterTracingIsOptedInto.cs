@@ -1,4 +1,5 @@
 using Chatter.CQRS.Commands;
+using Chatter.CQRS.Context;
 using Chatter.CQRS.Diagnostics;
 using Chatter.CQRS.Events;
 using Chatter.CQRS.Queries;
@@ -646,7 +647,7 @@ namespace Chatter.CQRS.Tests.Diagnostics
         }
 
         [Fact]
-        public async Task MustLogTheFaultOnceAndEmitNoSpanAndNoMeasurementWhenNoInvokerCanBeBuiltForTheRuntimeQueryType()
+        public async Task MustLogTheFaultOnceAndMarkTheSpanAndTheMeasurementWithTheErrorTypeWhenNoInvokerCanBeBuiltForTheRuntimeQueryType()
         {
             using (var unusedCancellation = new CancellationTokenSource())
             {
@@ -663,6 +664,54 @@ namespace Chatter.CQRS.Tests.Diagnostics
                     loggedEntry.level.Should().Be(LogLevel.Error);
                     loggedEntry.message.Should().Be($"Error dispatching query of type '{nameof(ValueTypeQuery)}'");
                     loggedEntry.exception.Should().BeSameAs(thrown.Which);
+
+                    var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                    span.OperationName.Should().Be("dispatch " + nameof(ValueTypeQuery));
+                    span.GetTagItem(ChatterTelemetryTags.MessageType).Should().Be(typeof(ValueTypeQuery).FullName);
+                    span.GetTagItem(ChatterTelemetryTags.DispatchKind).Should().Be(ChatterTelemetryTags.DispatchKinds.Query);
+                    span.Status.Should().Be(ActivityStatusCode.Error);
+                    span.GetTagItem(ChatterTelemetryTags.ErrorType).Should().Be(typeof(ArgumentException).FullName);
+
+                    var measurement = meterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().ContainSingle().Subject;
+                    ResolveTag(measurement, ChatterTelemetryTags.MessageType).Should().Be(typeof(ValueTypeQuery).FullName);
+                    ResolveTag(measurement, ChatterTelemetryTags.ErrorType).Should().Be(typeof(ArgumentException).FullName);
+                }
+            }
+        }
+
+        [Fact]
+        public async Task MustRecordTheDispatchDurationWhileTheDispatchSpanIsStillCurrentForAQueryDispatchedByItsRuntimeType()
+        {
+            using (var activityScope = new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+            using (var meterScope = new RecordingMeterScope(ChatterDiagnostics.MeterName))
+            {
+                await _harness.QueryTracedByItsRuntimeType();
+
+                var span = activityScope.StoppedActivities.Should().ContainSingle().Subject;
+                var measurement = meterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().ContainSingle().Subject;
+                measurement.AmbientActivity.Should().BeSameAs(span);
+            }
+        }
+
+        [Fact]
+        public async Task MustFaultTheReturnedTaskWithANullReferenceExceptionAndLogNothingAndEmitNoTelemetryWhenTheQueryIsNull()
+        {
+            using (var unusedCancellation = new CancellationTokenSource())
+            {
+                var dispatcherLogger = new CancelOnFirstErrorLogger<QueryDispatcher>(unusedCancellation);
+
+                using (var harness = new DiagnosticsDispatchHarness(queryDispatcherLogger: dispatcherLogger))
+                using (var activityScope = new RecordingActivityScope(ChatterDiagnostics.ActivitySourceName))
+                using (var meterScope = new RecordingMeterScope(ChatterDiagnostics.MeterName))
+                {
+                    Task<string> dispatch = null;
+
+                    Action startDispatch = () => dispatch = harness.QueryDispatcher.Query<string>(null, new QueryHandlerContext());
+
+                    startDispatch.Should().NotThrow();
+
+                    await FluentActions.Awaiting(() => dispatch).Should().ThrowAsync<NullReferenceException>();
+                    dispatcherLogger.LoggedEntries.Should().BeEmpty();
                     activityScope.StoppedActivities.Should().BeEmpty();
                     meterScope.MeasurementsFor(ChatterDiagnostics.DispatchDurationInstrumentName).Should().BeEmpty();
                 }
